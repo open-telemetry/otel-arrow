@@ -9,7 +9,7 @@ use otap_df_telemetry::attributes::{
     AttributeKeySchema, AttributeSetHandler, AttributeSetKeySchema, AttributeValue,
 };
 use otap_df_telemetry::descriptor::{AttributeField, AttributeValueType, AttributesDescriptor};
-use otap_df_telemetry_macros::attribute_set;
+use otap_df_telemetry_macros::{AttributeEnum, attribute_set};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::hash::Hash;
@@ -286,7 +286,7 @@ impl AttributeSetKeySchema for CustomAttributeSet {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_telemetry::attributes::AttributeSetHandler;
+    use otap_df_telemetry::attributes::{AttributeEnum, AttributeSetHandler};
 
     /// Distinct `(group, pipeline)` pairs must not collide on attribute
     /// values: flattening into a single `/`-separated string allows two
@@ -314,11 +314,102 @@ mod tests {
              two real scopes to register the same telemetry entity"
         );
     }
+
+    /// Scenario: Channel entity dimensions are represented by closed enum value sets.
+    /// Guarantees: Their cardinalities and exported lowercase values remain stable.
+    #[test]
+    fn channel_attribute_enums_have_stable_values() {
+        assert_eq!(ChannelKind::CARDINALITY, 2);
+        assert_eq!(ChannelKind::VARIANTS, &["control", "pdata"]);
+        assert_eq!(ChannelMode::CARDINALITY, 2);
+        assert_eq!(ChannelMode::VARIANTS, &["local", "shared"]);
+        assert_eq!(ChannelType::CARDINALITY, 2);
+        assert_eq!(ChannelType::VARIANTS, &["mpsc", "mpmc"]);
+        assert_eq!(ChannelImplementation::CARDINALITY, 3);
+        assert_eq!(
+            ChannelImplementation::VARIANTS,
+            &["internal", "tokio", "flume"]
+        );
+    }
+
+    /// Scenario: A node channel entity is built from typed channel dimensions.
+    /// Guarantees: Scope attributes retain their established keys and string values.
+    #[test]
+    fn node_channel_attribute_enums_serialize_as_scope_strings() {
+        let attrs = NodeChannelAttributeSet {
+            channel_id: "channel-a".into(),
+            node_attrs: NodeAttributeSet::default(),
+            node_port: "output".into(),
+            channel_kind: ChannelKind::Pdata,
+            channel_mode: ChannelMode::Shared,
+            channel_type: ChannelType::Mpmc,
+            channel_impl: ChannelImplementation::Flume,
+        };
+        let attr_map: BTreeMap<&'static str, String> = attrs
+            .iter_attributes()
+            .map(|(key, value)| (key, value.to_string_value()))
+            .collect();
+
+        assert_eq!(
+            attr_map.get("channel.kind").map(String::as_str),
+            Some("pdata")
+        );
+        assert_eq!(
+            attr_map.get("channel.mode").map(String::as_str),
+            Some("shared")
+        );
+        assert_eq!(
+            attr_map.get("channel.type").map(String::as_str),
+            Some("mpmc")
+        );
+        assert_eq!(
+            attr_map.get("channel.impl").map(String::as_str),
+            Some("flume")
+        );
+    }
+}
+
+/// Payload carried by an internal channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, AttributeEnum)]
+pub enum ChannelKind {
+    /// Engine control messages.
+    Control,
+    /// Pipeline telemetry data.
+    Pdata,
+}
+
+/// Concurrency boundary crossed by an internal channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, AttributeEnum)]
+pub enum ChannelMode {
+    /// Both endpoints run on the same local executor.
+    Local,
+    /// The channel can cross thread or executor boundaries.
+    Shared,
+}
+
+/// Producer/consumer topology supported by an internal channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, AttributeEnum)]
+pub enum ChannelType {
+    /// Multiple producers and a single consumer.
+    Mpsc,
+    /// Multiple producers and multiple consumers.
+    Mpmc,
+}
+
+/// Runtime implementation backing an internal channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, AttributeEnum)]
+pub enum ChannelImplementation {
+    /// OTAP Dataflow's internal local channel implementation.
+    Internal,
+    /// Tokio's channel implementation.
+    Tokio,
+    /// Flume's channel implementation.
+    Flume,
 }
 
 /// Channel endpoint attributes for a node-hosted channel.
 #[attribute_set(scope, name = "node.channel.attrs")]
-#[derive(Debug, Clone, Default, Hash)]
+#[derive(Debug, Clone, Hash)]
 pub struct NodeChannelAttributeSet {
     /// Unique channel identifier within the host scope.
     #[attribute_key = "channel.id"]
@@ -337,16 +428,29 @@ pub struct NodeChannelAttributeSet {
 
     /// Channel payload kind ("control" or "pdata").
     #[attribute_key = "channel.kind"]
-    pub channel_kind: Cow<'static, str>,
+    pub channel_kind: ChannelKind,
     /// Concurrency mode of the channel ("local" or "shared").
     #[attribute_key = "channel.mode"]
-    pub channel_mode: Cow<'static, str>,
-    /// Channel type ("mpsc", "mpmc", "spsc", "spmc").
+    pub channel_mode: ChannelMode,
+    /// Channel type ("mpsc" or "mpmc").
     #[attribute_key = "channel.type"]
-    pub channel_type: Cow<'static, str>,
+    pub channel_type: ChannelType,
     /// Channel implementation ("tokio", "flume", "internal").
     #[attribute_key = "channel.impl"]
-    pub channel_impl: Cow<'static, str>,
+    pub channel_impl: ChannelImplementation,
+}
+
+/// Channel endpoint attributes for a node-hosted channel, extended with user-configured custom telemetry attributes.
+#[attribute_set(scope, name = "node.channel.custom.attrs")]
+#[derive(Debug, Clone, Hash)]
+pub struct NodeWithCustomChannelAttributeSet {
+    /// Base node channel attributes.
+    #[compose]
+    pub channel_attrs: NodeChannelAttributeSet,
+
+    /// Custom user-defined telemetry attributes.
+    #[compose]
+    pub custom_attrs: CustomAttributeSet,
 }
 
 /// Channel endpoint attributes for an extension-hosted channel.
@@ -354,7 +458,7 @@ pub struct NodeChannelAttributeSet {
 /// Extensions only have a single control-channel kind (MPSC), so `channel.kind`
 /// and `channel.type` are intentionally omitted as invariants.
 #[attribute_set(scope, name = "extension.channel.attrs")]
-#[derive(Debug, Clone, Default, Hash)]
+#[derive(Debug, Clone, Hash)]
 pub struct ExtensionChannelAttributeSet {
     /// Unique channel identifier within the host scope.
     #[attribute_key = "channel.id"]
@@ -366,8 +470,8 @@ pub struct ExtensionChannelAttributeSet {
 
     /// Concurrency mode of the channel ("local" or "shared").
     #[attribute_key = "channel.mode"]
-    pub channel_mode: Cow<'static, str>,
+    pub channel_mode: ChannelMode,
     /// Channel implementation ("tokio", "internal").
     #[attribute_key = "channel.impl"]
-    pub channel_impl: Cow<'static, str>,
+    pub channel_impl: ChannelImplementation,
 }

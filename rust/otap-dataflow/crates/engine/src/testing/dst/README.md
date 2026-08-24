@@ -53,8 +53,8 @@ DST gives us three benefits that are difficult to get from ordinary async tests
 alone:
 
 - deterministic replay of failures from a printed seed
-- explicit control over time-dependent behavior such as drain deadlines and
-  delayed-data wakeups
+- explicit control over time-dependent behavior such as timer expiry and drain
+  deadlines
 - realistic validation of liveness-sensitive engine behavior with much lower
   flake than broad stress tests
 
@@ -72,8 +72,8 @@ The current seeded scenarios in this directory are:
   buffered `pdata` even when normal admission stays closed.
 - `control_plane.rs`
   Validates runtime-control and completion-path behavior under pressure,
-  including timer and delayed-data progress, Ack/Nack unwind correctness,
-  `RETURN_DATA` retention behavior, and receiver-first shutdown ordering.
+  including timer progress, Ack/Nack unwind correctness, `RETURN_DATA`
+  retention behavior, and receiver-first shutdown ordering.
 - `heavy_ingress.rs`
   Exercises a realistic receiver -> processor -> exporter flow under sustained
   ingress, bounded channel pressure, processor admission gating, mixed

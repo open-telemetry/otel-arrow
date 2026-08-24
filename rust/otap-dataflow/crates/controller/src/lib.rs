@@ -55,8 +55,8 @@ use otap_df_config::pipeline::telemetry::AttributeValue;
 use otap_df_config::pipeline_group::PipelineGroupConfig;
 use otap_df_config::policy::MemoryLimiterMode;
 use otap_df_config::policy::{
-    ChannelCapacityPolicy, CoreAllocation, CoreAllocationStrategy, RuntimeRecoveryPolicy,
-    TelemetryPolicy,
+    ChannelCapacityPolicy, CoreAllocation, CoreAllocationStrategy, RateLimiterPolicy,
+    RuntimeRecoveryPolicy, TelemetryPolicy,
 };
 use otap_df_config::topic::{
     TopicAckPropagationMode, TopicBackendKind, TopicBroadcastAckMode, TopicBroadcastOnLagPolicy,
@@ -80,6 +80,7 @@ use otap_df_engine::entity_context::{
     node_entity_key, pipeline_entity_key, set_pipeline_entity_key,
 };
 use otap_df_engine::error::Error as EngineError;
+use otap_df_engine::listener_group::ListenerGroupSnapshot;
 use otap_df_engine::memory_limiter::{
     EffectiveMemoryLimiter, MemoryLimiterTick, MemoryPressureBehaviorConfig, MemoryPressureChanged,
     MemoryPressureLevel,
@@ -89,16 +90,18 @@ use otap_df_engine::topic::{
     InMemoryBackend, PipelineTopicBinding, TopicBroker, TopicOptions, TopicPublishOutcomeConfig,
     TopicSet,
 };
+use otap_df_engine::topology::NumaTopology;
 use otap_df_state::store::{ObservedStateHandle, ObservedStateStore};
 use otap_df_telemetry::event::{EngineEvent, ErrorSummary, ObservedEventReporter};
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry::{
-    InternalTelemetrySettings, InternalTelemetrySystem, TracingSetup, otel_error, otel_info,
-    otel_info_span, otel_warn, self_tracing::LogContext,
+    InternalTelemetrySettings, InternalTelemetrySystem, TracingSetup,
+    log_filter::RuntimeLogFilterHandle, otel_info_span, resource_detectors,
+    self_tracing::LogContext,
 };
 use smallvec::smallvec;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::pin::Pin;
@@ -118,7 +121,14 @@ pub mod error;
 /// Available controller extensions.
 pub mod extension;
 
+mod listener_group;
+/// URN of the built-in dataflow controller.
+pub const CONTROLLER_URN: &str = "urn:otel:controller:main";
+
+otap_df_telemetry::otel_component_scope!(urn = CONTROLLER_URN, target = "otel.controller.main",);
+
 mod live_control;
+mod placement;
 /// Reusable startup helpers (validation, CLI overrides, system info).
 pub mod startup;
 /// Utilities to spawn async tasks on dedicated threads with graceful shutdown.
@@ -133,6 +143,9 @@ use live_control::{
     ControllerRuntime, LaunchedPipelineThread, PanicReport, RuntimeInstanceError,
     RuntimeInstanceExit,
 };
+use placement::{CorePlacement, PipelinePlacement, PlacementPlanner, PlacementSnapshot};
+
+use otap_df_engine::component_inventory;
 
 /// Controller for managing pipelines in a thread-per-core model.
 ///
@@ -140,6 +153,11 @@ use live_control::{
 /// This struct is designed to be used in multi-threaded contexts. Each pipeline is run on a
 /// dedicated thread pinned to a CPU core.
 /// Intended for use as a long-lived process controller.
+#[component_inventory(
+    id = "urn:otel:controller:main",
+    category = Controller,
+    description = "Pipeline controller managing pipeline lifecycle, dynamic re-configuration, and health monitoring",
+)]
 pub struct Controller<PData: 'static + Clone + Send + Sync + std::fmt::Debug> {
     /// The pipeline factory used to build runtime pipelines.
     pipeline_factory: &'static PipelineFactory<PData>,
@@ -298,6 +316,56 @@ impl ControllerExtensionRegistry {
 pub struct ControllerRunOptions {
     /// Controller extension factories available to configured controller extensions.
     pub extensions: ControllerExtensionRegistry,
+    /// Build-time identity of the binary, used to seed default self-telemetry resource
+    /// attributes. Populate from the binary crate (e.g. `CARGO_BIN_NAME`/`CARGO_PKG_VERSION`).
+    pub build_info: BuildInfo,
+}
+
+/// Build-time identity of the collector binary.
+///
+/// Seeds `service.name`/`service.version` as the lowest-precedence self-telemetry resource
+/// defaults, so an unconfigured collector reports its own name and version. Explicit resource
+/// attributes and the `env`/`service_name` detectors override these. `None` fields are not seeded.
+#[derive(Clone, Debug, Default)]
+pub struct BuildInfo {
+    /// Default `service.name` (e.g. the binary name).
+    pub service_name: Option<String>,
+    /// Default `service.version` (e.g. the crate version).
+    pub service_version: Option<String>,
+}
+
+impl BuildInfo {
+    /// Non-empty build-info values as resource attribute pairs.
+    fn seed_attrs(&self) -> Vec<(String, AttributeValue)> {
+        [
+            ("service.name", self.service_name.as_deref()),
+            ("service.version", self.service_version.as_deref()),
+        ]
+        .into_iter()
+        .filter_map(|(key, value)| {
+            value
+                .filter(|v| !v.is_empty())
+                .map(|v| (key.to_string(), AttributeValue::String(v.to_string())))
+        })
+        .collect()
+    }
+}
+
+/// Layer `detected` then `build_info` defaults into `resource`, filling only keys not already
+/// present. Applied lowest-precedence-last, this yields config > detectors > build-info: the
+/// existing (config) entries win, detected attributes fill remaining gaps, and build-info
+/// defaults fill whatever is still unset.
+fn merge_resource_defaults(
+    resource: &mut HashMap<String, AttributeValue>,
+    detected: Vec<(String, AttributeValue)>,
+    build_info: &BuildInfo,
+) {
+    for (key, value) in detected {
+        let _ = resource.entry(key).or_insert(value);
+    }
+    for (key, value) in build_info.seed_attrs() {
+        let _ = resource.entry(key).or_insert(value);
+    }
 }
 
 struct PreparedControllerExtension {
@@ -1207,6 +1275,15 @@ impl<
         run_mode: RunMode,
         options: ControllerRunOptions,
     ) -> Result<(), Error> {
+        engine_config.validate().map_err(|error| match error {
+            otap_df_config::error::Error::InvalidConfiguration { errors } => {
+                Error::InvalidConfiguration { errors }
+            }
+            other => Error::InvalidConfiguration {
+                errors: vec![other],
+            },
+        })?;
+
         let num_pipeline_groups = engine_config.groups.len();
         let resolved_config = engine_config.resolve();
         let (mut engine, pipelines, observability_pipeline) = resolved_config.into_parts();
@@ -1225,17 +1302,21 @@ impl<
         let telemetry_registry = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry.clone());
 
-        // Inject auto-detected process/host resource attributes (host.id,
-        // container.id, service.instance.id) into the telemetry resource map so
-        // they surface on the OTLP Resource / Prometheus target_info. Explicit
-        // config-provided keys take precedence over auto-detected values.
-        for (key, value) in controller_ctx.resource_attributes() {
-            let _ = engine
-                .telemetry
-                .resource
-                .entry(key)
-                .or_insert_with(|| AttributeValue::String(value));
-        }
+        // Inject auto-detected resource attributes into the telemetry resource map so
+        // they surface on the OTLP Resource / Prometheus target_info. Precedence is
+        // config > detectors > build-info defaults.
+        let detected = resource_detectors::detect(&engine.telemetry.detectors).map_err(|e| {
+            Error::InvalidConfiguration {
+                errors: vec![otap_df_config::error::Error::InvalidUserConfig {
+                    error: format!("engine.telemetry.detectors: {e}"),
+                }],
+            }
+        })?;
+        merge_resource_defaults(
+            &mut engine.telemetry.resource,
+            detected,
+            &options.build_info,
+        );
 
         // Snapshot the resolved resource map (config + auto-detected) for the admin
         // endpoint's target_info, mirroring the native ITS OTLP resource.
@@ -1410,8 +1491,17 @@ impl<
             ),
             observability_pipeline.policies.health.clone(),
         );
-        let planned_core_assignments =
-            Self::preflight_pipeline_core_allocations(&pipelines, &all_cores)?;
+        let topology = NumaTopology::detect();
+        let observability_numa_node_id =
+            topology.numa_node_or_zero(observability_core.id as u32) as usize;
+        otel_info!(
+            "controller.numa_topology.detected",
+            completeness = format!("{:?}", topology.completeness()),
+            visible_cpu_count = topology.visible_cpus().len(),
+            visible_node_count = topology.visible_nodes().len()
+        );
+        let placement_snapshot =
+            Self::preflight_pipeline_placement(&pipelines, &all_cores, &topology)?;
 
         let runtime = Arc::new(ControllerRuntime::new(
             self.pipeline_factory,
@@ -1422,7 +1512,9 @@ impl<
             metrics_reporter.clone(),
             declared_topics,
             all_cores.clone(),
+            topology,
             telemetry_system.engine_tracing_setup(),
+            telemetry_system.log_filter_handle(),
             telemetry_reporting_interval,
             memory_pressure_tx.clone(),
             engine_config.clone(),
@@ -1477,6 +1569,7 @@ impl<
             telemetry_reporting_interval,
             &memory_pressure_tx,
             internal_tracing_setup,
+            observability_numa_node_id,
         )?;
 
         // Initialize the global subscriber AFTER the observability pipeline has signaled
@@ -1549,24 +1642,52 @@ impl<
 
         runtime.register_launched_instance(observability_pipeline_handle);
 
-        for (pipeline_entry, requested_cores) in pipelines.iter().zip(planned_core_assignments) {
-            runtime.register_committed_pipeline(pipeline_entry.clone(), 0);
-            let num_cores = requested_cores.len();
+        for (pipeline_entry, pipeline_placement) in
+            pipelines.iter().zip(placement_snapshot.pipelines.iter())
+        {
+            runtime.register_committed_pipeline(
+                pipeline_entry.clone(),
+                pipeline_placement.clone(),
+                0,
+            );
+            let num_cores = pipeline_placement.core_count();
+            let listener_group_snapshot = Arc::new(listener_group::snapshot_for_pipeline(
+                pipeline_entry,
+                pipeline_placement,
+                placement_snapshot.generation,
+            ));
 
             let core_allocation = pipeline_entry
                 .policies
                 .resources
                 .core_allocation
                 .to_string();
+            let resolved_cores = pipeline_placement
+                .cores
+                .iter()
+                .map(|core| core.core_id.id.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            let resolved_numa_nodes = pipeline_placement
+                .cores
+                .iter()
+                .map(|core| {
+                    core.known_numa_node_id
+                        .map_or_else(|| "unknown".to_owned(), |node| node.to_string())
+                })
+                .collect::<Vec<_>>()
+                .join(",");
             otel_info!(
                 "pipeline.core_allocation",
                 pipeline_group_id = pipeline_entry.pipeline_group_id.as_ref(),
                 pipeline_id = pipeline_entry.pipeline_id.as_ref(),
                 num_cores = num_cores,
-                core_allocation = core_allocation
+                core_allocation = core_allocation,
+                resolved_cores = resolved_cores,
+                resolved_numa_nodes = resolved_numa_nodes
             );
 
-            for core_id in &requested_cores {
+            for placement in &pipeline_placement.cores {
                 // Pass a Weak runtime handle into each pipeline thread. The thread upgrades it
                 // only when it needs to report Success/Error/Panic on exit, and silently skips
                 // that late report if shutdown has already dropped the runtime.
@@ -1575,15 +1696,19 @@ impl<
                     DeployedPipelineKey {
                         pipeline_group_id: pipeline_entry.pipeline_group_id.clone(),
                         pipeline_id: pipeline_entry.pipeline_id.clone(),
-                        core_id: core_id.id,
-                        deployment_generation: 0,
+                        core_id: placement.core_id.id,
+                        deployment_generation: placement_snapshot.generation,
                     },
-                    *core_id,
+                    placement.core_id,
+                    placement.numa_node_id,
+                    Arc::clone(&listener_group_snapshot),
                     num_cores,
                     pipeline_entry.pipeline.clone(),
                     pipeline_entry.policies.channel_capacity.clone(),
                     pipeline_entry.policies.telemetry.clone(),
                     pipeline_entry.policies.transport_headers.clone(),
+                    pipeline_entry.policies.rate_limiters.clone(),
+                    pipeline_entry.policies.rate_limiter_scope.clone(),
                     controller_ctx.clone(),
                     metrics_reporter.clone(),
                     engine_evt_reporter.clone(),
@@ -1904,11 +2029,43 @@ impl<
     }
 
     /// Selects which CPU cores to use based on the given allocation.
+    fn process_visible_core_ids(
+        available_core_ids: &[CoreId],
+        topology: &NumaTopology,
+    ) -> Vec<CoreId> {
+        let mut visible: Vec<_> = if !topology.visible_cpus_known() {
+            available_core_ids.to_vec()
+        } else {
+            available_core_ids
+                .iter()
+                .copied()
+                .filter(|core| topology.visible_cpus().contains(&(core.id as u32)))
+                .collect()
+        };
+        visible.sort_by_key(|core| core.id);
+        visible
+    }
+
+    #[cfg(test)]
     fn select_cores_for_allocation(
-        mut available_core_ids: Vec<CoreId>,
+        available_core_ids: Vec<CoreId>,
         core_allocation: &CoreAllocation,
     ) -> Result<Vec<CoreId>, Error> {
-        available_core_ids.sort_by_key(|c| c.id);
+        Self::select_cores_for_allocation_with_placement(
+            available_core_ids,
+            core_allocation,
+            &NumaTopology::unknown(),
+            &BTreeSet::new(),
+        )
+    }
+
+    fn select_cores_for_allocation_with_placement(
+        mut available_core_ids: Vec<CoreId>,
+        core_allocation: &CoreAllocation,
+        topology: &NumaTopology,
+        reserved_core_ids: &BTreeSet<usize>,
+    ) -> Result<Vec<CoreId>, Error> {
+        available_core_ids = Self::process_visible_core_ids(&available_core_ids, topology);
 
         let max_core_id = available_core_ids.iter().map(|c| c.id).max().unwrap_or(0);
         let num_cores = available_core_ids.len();
@@ -1918,7 +2075,22 @@ impl<
             CoreAllocationStrategy::CoreCount => match core_allocation.count {
                 Some(count) => {
                     if count == 0 {
-                        Ok(available_core_ids)
+                        let selected = available_core_ids
+                            .iter()
+                            .copied()
+                            .filter(|core| !reserved_core_ids.contains(&core.id))
+                            .collect::<Vec<_>>();
+                        if selected.is_empty() {
+                            Err(Error::InvalidCoreAllocation {
+                                alloc: core_allocation.clone(),
+                                message:
+                                    "Requested all unreserved cores but no unreserved cores are available"
+                                        .to_owned(),
+                                available: available_core_ids.iter().map(|c| c.id).collect(),
+                            })
+                        } else {
+                            Ok(selected)
+                        }
                     } else if count > num_cores {
                         Err(Error::InvalidCoreAllocation {
                             alloc: core_allocation.clone(),
@@ -1929,10 +2101,39 @@ impl<
                             available: available_core_ids.iter().map(|c| c.id).collect(),
                         })
                     } else {
-                        Ok(available_core_ids.into_iter().take(count).collect())
+                        PlacementPlanner::new(topology)
+                            .select_core_count(&available_core_ids, reserved_core_ids, count)
+                            .map_err(|err| Error::InvalidCoreAllocation {
+                                alloc: core_allocation.clone(),
+                                message: format!(
+                                    "Requested {count} cores but placement strategy could not produce a valid unreserved core set: {err}"
+                                ),
+                                available: available_core_ids
+                                    .iter()
+                                    .filter(|core| !reserved_core_ids.contains(&core.id))
+                                    .map(|core| core.id)
+                                    .collect(),
+                            })
                     }
                 }
-                None => Ok(available_core_ids),
+                None => {
+                    let selected = available_core_ids
+                        .iter()
+                        .copied()
+                        .filter(|core| !reserved_core_ids.contains(&core.id))
+                        .collect::<Vec<_>>();
+                    if selected.is_empty() {
+                        Err(Error::InvalidCoreAllocation {
+                            alloc: core_allocation.clone(),
+                            message:
+                                "Requested all unreserved cores but no unreserved cores are available"
+                                    .to_owned(),
+                            available: available_core_ids.iter().map(|c| c.id).collect(),
+                        })
+                    } else {
+                        Ok(selected)
+                    }
+                }
             },
             CoreAllocationStrategy::CoreSet => match &core_allocation.set {
                 Some(set) => {
@@ -1991,6 +2192,29 @@ impl<
                         }
                     }
 
+                    let available_core_id_set: BTreeSet<_> =
+                        available_core_ids.iter().map(|core| core.id).collect();
+                    let requested_core_ids: BTreeSet<_> = set
+                        .iter()
+                        .flat_map(|range| range.start..=range.end)
+                        .collect();
+                    let unavailable_core_ids: Vec<_> = requested_core_ids
+                        .difference(&available_core_id_set)
+                        .copied()
+                        .collect();
+                    if !unavailable_core_ids.is_empty() {
+                        return Err(Error::InvalidCoreAllocation {
+                            alloc: core_allocation.clone(),
+                            message: format!(
+                                "Core set includes cores that are not visible to this process: {:?}",
+                                unavailable_core_ids
+                            ),
+                            available: available_core_ids.iter().map(|core| core.id).collect(),
+                        });
+                    }
+
+                    let visible_core_ids: Vec<_> =
+                        available_core_ids.iter().map(|core| core.id).collect();
                     let selected: Vec<_> = available_core_ids
                         .into_iter()
                         .filter(|c| set.iter().any(|r| r.start <= c.id && c.id <= r.end))
@@ -2000,37 +2224,141 @@ impl<
                         return Err(Error::InvalidCoreAllocation {
                             alloc: core_allocation.clone(),
                             message: "No available cores in the specified ranges".to_owned(),
-                            available: core_affinity::get_core_ids()
-                                .unwrap_or_default()
-                                .iter()
-                                .map(|c| c.id)
-                                .collect(),
+                            available: visible_core_ids,
                         });
                     }
 
                     Ok(selected)
                 }
-                None => Ok(Vec::new()),
+                None => Err(Error::InvalidCoreAllocation {
+                    alloc: core_allocation.clone(),
+                    message: "'set' is required when strategy is 'core_set'".to_owned(),
+                    available: available_core_ids.iter().map(|core| core.id).collect(),
+                }),
             },
+        }
+    }
+
+    fn add_pipeline_context_to_core_allocation_error(
+        err: Error,
+        pipeline_entry: &ResolvedPipelineConfig,
+    ) -> Error {
+        match err {
+            Error::InvalidCoreAllocation {
+                alloc,
+                message,
+                available,
+            } => Error::InvalidCoreAllocation {
+                alloc,
+                message: format!(
+                    "Pipeline {}:{} has invalid core allocation: {}",
+                    pipeline_entry.pipeline_group_id.as_ref(),
+                    pipeline_entry.pipeline_id.as_ref(),
+                    message
+                ),
+                available,
+            },
+            other => other,
         }
     }
 
     /// Pre-resolves core assignments for all regular pipelines.
     ///
     /// This validates the full pipeline set before any pipeline thread is spawned.
+    fn preflight_pipeline_placement(
+        pipelines: &[ResolvedPipelineConfig],
+        available_core_ids: &[CoreId],
+        topology: &NumaTopology,
+    ) -> Result<PlacementSnapshot, Error> {
+        let mut reserved_core_ids = BTreeSet::new();
+        let mut placements = vec![None; pipelines.len()];
+
+        for (idx, pipeline_entry) in pipelines.iter().enumerate() {
+            if !matches!(
+                pipeline_entry.policies.resources.core_allocation.strategy,
+                CoreAllocationStrategy::CoreSet
+            ) {
+                continue;
+            }
+            let selected = Self::select_cores_for_allocation_with_placement(
+                available_core_ids.to_vec(),
+                &pipeline_entry.policies.resources.core_allocation,
+                topology,
+                &BTreeSet::new(),
+            )
+            .map_err(|err| {
+                Self::add_pipeline_context_to_core_allocation_error(err, pipeline_entry)
+            })?;
+            reserved_core_ids.extend(selected.iter().map(|core| core.id));
+            placements[idx] = Some(PipelinePlacement {
+                pipeline_group_id: pipeline_entry.pipeline_group_id.clone(),
+                pipeline_id: pipeline_entry.pipeline_id.clone(),
+                cores: selected
+                    .into_iter()
+                    .map(|core_id| CorePlacement::from_core_id(core_id, topology))
+                    .collect(),
+            });
+        }
+
+        for (idx, pipeline_entry) in pipelines.iter().enumerate() {
+            if placements[idx].is_some() {
+                continue;
+            }
+            let selected = Self::select_cores_for_allocation_with_placement(
+                available_core_ids.to_vec(),
+                &pipeline_entry.policies.resources.core_allocation,
+                topology,
+                &reserved_core_ids,
+            )
+            .map_err(|err| {
+                Self::add_pipeline_context_to_core_allocation_error(err, pipeline_entry)
+            })?;
+            if matches!(
+                pipeline_entry.policies.resources.core_allocation.strategy,
+                CoreAllocationStrategy::CoreCount
+            ) {
+                reserved_core_ids.extend(selected.iter().map(|core| core.id));
+            }
+            placements[idx] = Some(PipelinePlacement {
+                pipeline_group_id: pipeline_entry.pipeline_group_id.clone(),
+                pipeline_id: pipeline_entry.pipeline_id.clone(),
+                cores: selected
+                    .into_iter()
+                    .map(|core_id| CorePlacement::from_core_id(core_id, topology))
+                    .collect(),
+            });
+        }
+
+        Ok(PlacementSnapshot::from_assignments(
+            0,
+            placements
+                .into_iter()
+                .map(|placement| placement.expect("every pipeline placement is resolved"))
+                .collect(),
+        ))
+    }
+
+    /// Pre-resolves core assignments for compatibility tests.
+    #[cfg(test)]
     fn preflight_pipeline_core_allocations(
         pipelines: &[ResolvedPipelineConfig],
         available_core_ids: &[CoreId],
     ) -> Result<Vec<Vec<CoreId>>, Error> {
-        pipelines
-            .iter()
-            .map(|pipeline_entry| {
-                Self::select_cores_for_allocation(
-                    available_core_ids.to_vec(),
-                    &pipeline_entry.policies.resources.core_allocation,
-                )
-            })
-            .collect()
+        Ok(Self::preflight_pipeline_placement(
+            pipelines,
+            available_core_ids,
+            &NumaTopology::unknown(),
+        )?
+        .pipelines
+        .into_iter()
+        .map(|placement| {
+            placement
+                .cores
+                .into_iter()
+                .map(|core| core.core_id)
+                .collect()
+        })
+        .collect())
     }
 
     fn observability_pipeline_key(core_id: CoreId) -> DeployedPipelineKey {
@@ -2053,11 +2381,15 @@ impl<
         pipeline_factory: &'static PipelineFactory<PData>,
         pipeline_key: DeployedPipelineKey,
         core_id: CoreId,
+        numa_node_id: usize,
+        listener_group_snapshot: Arc<ListenerGroupSnapshot>,
         num_cores: usize,
         pipeline_config: PipelineConfig,
         channel_capacity_policy: ChannelCapacityPolicy,
         telemetry_policy: TelemetryPolicy,
         transport_headers_policy: Option<TransportHeadersPolicy>,
+        rate_limiter_policies: BTreeMap<String, RateLimiterPolicy>,
+        rate_limiter_scope: Option<otap_df_config::policy::RateLimiterDeclarationScope>,
         controller_ctx: ControllerContext,
         metrics_reporter: MetricsReporter,
         engine_evt_reporter: ObservedEventReporter,
@@ -2073,13 +2405,14 @@ impl<
             std_mpsc::SyncSender<Result<(), EngineError>>,
         )>,
     ) -> Result<LaunchedPipelineThread<PData>, Error> {
-        let mut pipeline_ctx = controller_ctx.pipeline_context_with_generation(
+        let mut pipeline_ctx = controller_ctx.pipeline_context_with_placement(
             pipeline_key.pipeline_group_id.clone(),
             pipeline_key.pipeline_id.clone(),
             pipeline_key.core_id,
             num_cores,
             thread_id,
             pipeline_key.deployment_generation,
+            numa_node_id,
         );
         let topic_set = Self::build_pipeline_topic_set(
             config,
@@ -2089,6 +2422,7 @@ impl<
             pipeline_key.core_id,
         )?;
         pipeline_ctx.set_topic_set(topic_set);
+        pipeline_ctx.set_listener_group_snapshot_arc(listener_group_snapshot);
         let (runtime_ctrl_msg_tx, runtime_ctrl_msg_rx) =
             runtime_ctrl_msg_channel(channel_capacity_policy.control.pipeline);
         let (pipeline_completion_msg_tx, pipeline_completion_msg_rx) =
@@ -2116,6 +2450,8 @@ impl<
                         channel_capacity_policy,
                         telemetry_policy,
                         transport_headers_policy,
+                        rate_limiter_policies,
+                        rate_limiter_scope,
                         telemetry_reporting_interval,
                         pipeline_factory,
                         pipeline_ctx,
@@ -2178,6 +2514,7 @@ impl<
         telemetry_reporting_interval: Duration,
         memory_pressure_tx: &tokio::sync::watch::Sender<MemoryPressureChanged>,
         tracing_setup: TracingSetup,
+        observability_numa_node_id: usize,
     ) -> Result<LaunchedPipelineThread<PData>, Error> {
         debug_assert_eq!(
             observability_pipeline.role,
@@ -2195,10 +2532,14 @@ impl<
             pipeline_factory,
             observability_key,
             observability_core,
+            observability_numa_node_id,
+            Arc::new(ListenerGroupSnapshot::empty()),
             1,
             pipeline_config,
             channel_capacity_policy,
             telemetry_policy,
+            None,
+            BTreeMap::new(),
             None,
             controller_ctx.clone(),
             metrics_reporter.clone(),
@@ -2249,6 +2590,8 @@ impl<
         channel_capacity_policy: ChannelCapacityPolicy,
         telemetry_policy: TelemetryPolicy,
         transport_headers_policy: Option<TransportHeadersPolicy>,
+        rate_limiter_policies: BTreeMap<String, RateLimiterPolicy>,
+        rate_limiter_scope: Option<otap_df_config::policy::RateLimiterDeclarationScope>,
         telemetry_reporting_interval: Duration,
         pipeline_factory: &'static PipelineFactory<PData>,
         pipeline_context: PipelineContext,
@@ -2307,6 +2650,8 @@ impl<
                     channel_capacity_policy,
                     telemetry_policy,
                     transport_headers_policy,
+                    rate_limiter_policies,
+                    rate_limiter_scope,
                     internal_telemetry_settings,
                 )
                 .map_err(|e| {
@@ -2372,7 +2717,94 @@ mod tests {
     use async_trait::async_trait;
     use otap_df_config::engine::{ResolvedPipelineConfig, ResolvedPipelineRole};
     use otap_df_config::node::NodeUserConfig;
-    use otap_df_config::policy::{CoreRange, ResolvedPolicies, ResourcesPolicy};
+    /// Scenario: `BuildInfo::seed_attrs` runs with a mix of set, empty, and absent fields.
+    /// Guarantees: it yields typed pairs for non-empty values only, skipping empty and `None`.
+    #[test]
+    fn build_info_seeds_only_non_empty_values() {
+        let bi = BuildInfo {
+            service_name: Some("df_engine".to_string()),
+            service_version: Some(String::new()),
+        };
+        assert_eq!(
+            bi.seed_attrs(),
+            vec![(
+                "service.name".to_string(),
+                AttributeValue::String("df_engine".to_string())
+            )]
+        );
+        assert!(BuildInfo::default().seed_attrs().is_empty());
+    }
+
+    /// Scenario: `merge_resource_defaults` runs with a config-provided `service.name`, a detector
+    /// providing `service.version`, and build-info defaults for both.
+    /// Guarantees: config wins, a detector value wins over the build-info default, and a
+    /// detector-only key is kept (config > detectors > build-info).
+    #[test]
+    fn merge_resource_defaults_applies_config_detector_build_info_precedence() {
+        let mut resource = HashMap::new();
+        let _ = resource.insert(
+            "service.name".to_string(),
+            AttributeValue::String("configured".to_string()),
+        );
+        let detected = vec![
+            (
+                "service.instance.id".to_string(),
+                AttributeValue::String("detected-id".to_string()),
+            ),
+            (
+                "service.version".to_string(),
+                AttributeValue::String("detected-ver".to_string()),
+            ),
+        ];
+        let build_info = BuildInfo {
+            service_name: Some("df_engine".to_string()),
+            service_version: Some("9.9.9".to_string()),
+        };
+
+        merge_resource_defaults(&mut resource, detected, &build_info);
+
+        // config wins over both the detector and build-info
+        assert_eq!(
+            resource.get("service.name"),
+            Some(&AttributeValue::String("configured".to_string()))
+        );
+        // detector wins over the build-info default
+        assert_eq!(
+            resource.get("service.version"),
+            Some(&AttributeValue::String("detected-ver".to_string()))
+        );
+        // detector-only key is present
+        assert_eq!(
+            resource.get("service.instance.id"),
+            Some(&AttributeValue::String("detected-id".to_string()))
+        );
+    }
+
+    /// Scenario: `merge_resource_defaults` runs with neither config nor detectors setting the
+    /// service identity.
+    /// Guarantees: build-info defaults fill `service.name`/`service.version`.
+    #[test]
+    fn merge_resource_defaults_build_info_fills_gaps() {
+        let mut resource = HashMap::new();
+        merge_resource_defaults(
+            &mut resource,
+            vec![],
+            &BuildInfo {
+                service_name: Some("df_engine".to_string()),
+                service_version: Some("9.9.9".to_string()),
+            },
+        );
+        assert_eq!(
+            resource.get("service.name"),
+            Some(&AttributeValue::String("df_engine".to_string()))
+        );
+        assert_eq!(
+            resource.get("service.version"),
+            Some(&AttributeValue::String("9.9.9".to_string()))
+        );
+    }
+
+    use otap_df_config::policy::{CoreRange, ResolvedPolicies, ResolvedResourcesPolicy};
     use otap_df_config::topic::{TopicAckPropagationMode, TopicBroadcastOnLagPolicy};
     use otap_df_engine::config::{ExporterConfig, ProcessorConfig, ReceiverConfig};
     use otap_df_engine::control::NodeControlMsg;
@@ -2382,9 +2814,11 @@ mod tests {
     use otap_df_engine::processor::ProcessorWrapper;
     use otap_df_engine::receiver::ReceiverWrapper;
     use otap_df_engine::terminal_state::TerminalState;
+    use otap_df_engine::topology::{NumaTopology, TopologyCompleteness};
     use otap_df_engine::wiring_contract::WiringContract;
     use otap_df_engine::{ExporterFactory, ProcessorFactory, ReceiverFactory};
     use otap_df_telemetry::metrics::MetricSetSnapshot;
+    use std::collections::{BTreeMap, BTreeSet};
 
     fn available_core_ids() -> Vec<CoreId> {
         vec![
@@ -2401,6 +2835,16 @@ mod tests {
 
     fn to_ids(v: &[CoreId]) -> Vec<usize> {
         v.iter().map(|c| c.id).collect()
+    }
+
+    fn synthetic_topology(entries: &[(u32, u32)]) -> NumaTopology {
+        NumaTopology::new(
+            entries
+                .iter()
+                .map(|(cpu, node)| (*cpu, *node))
+                .collect::<BTreeMap<_, _>>(),
+            TopologyCompleteness::Complete,
+        )
     }
 
     fn minimal_pipeline_config() -> PipelineConfig {
@@ -2679,9 +3123,9 @@ groups: {{}}
             pipeline_id: pipeline_id.to_string().into(),
             pipeline: minimal_pipeline_config(),
             policies: ResolvedPolicies {
-                resources: ResourcesPolicy {
+                resources: ResolvedResourcesPolicy {
                     core_allocation,
-                    ..Default::default()
+                    memory_limiter: None,
                 },
                 ..Default::default()
             },
@@ -2752,6 +3196,146 @@ groups: {{}}
     }
 
     #[test]
+    fn select_core_count_prefers_single_numa_node() {
+        let topology = synthetic_topology(&[
+            (0, 0),
+            (1, 0),
+            (2, 1),
+            (3, 1),
+            (4, 1),
+            (5, 1),
+            (6, 2),
+            (7, 2),
+        ]);
+        let result = Controller::<()>::select_cores_for_allocation_with_placement(
+            available_core_ids(),
+            &CoreAllocation::core_count(3),
+            &topology,
+            &BTreeSet::new(),
+        )
+        .unwrap();
+
+        assert_eq!(to_ids(&result), vec![2, 3, 4]);
+    }
+
+    #[test]
+    fn select_core_count_falls_back_across_nodes_deterministically() {
+        let topology = synthetic_topology(&[
+            (0, 0),
+            (1, 0),
+            (2, 1),
+            (3, 1),
+            (4, 2),
+            (5, 2),
+            (6, 3),
+            (7, 3),
+        ]);
+        let result = Controller::<()>::select_cores_for_allocation_with_placement(
+            available_core_ids(),
+            &CoreAllocation::core_count(5),
+            &topology,
+            &BTreeSet::new(),
+        )
+        .unwrap();
+
+        assert_eq!(to_ids(&result), vec![0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn select_core_count_avoids_reserved_cores() {
+        let topology = synthetic_topology(&[
+            (0, 0),
+            (1, 0),
+            (2, 0),
+            (3, 0),
+            (4, 1),
+            (5, 1),
+            (6, 1),
+            (7, 1),
+        ]);
+        let result = Controller::<()>::select_cores_for_allocation_with_placement(
+            available_core_ids(),
+            &CoreAllocation::core_count(3),
+            &topology,
+            &BTreeSet::from([0, 1]),
+        )
+        .unwrap();
+
+        assert_eq!(to_ids(&result), vec![4, 5, 6]);
+    }
+
+    #[test]
+    fn partial_topology_keeps_unmapped_visible_cores_usable() {
+        let topology = NumaTopology::with_visible_cpus(
+            BTreeMap::from([(0, 0), (1, 0)]),
+            BTreeSet::from([0, 1, 2, 3]),
+            TopologyCompleteness::Partial,
+        );
+        let result = Controller::<()>::select_cores_for_allocation_with_placement(
+            available_core_ids(),
+            &CoreAllocation::core_set(vec![CoreRange { start: 2, end: 2 }]),
+            &topology,
+            &BTreeSet::new(),
+        )
+        .unwrap();
+
+        assert_eq!(to_ids(&result), vec![2]);
+    }
+
+    #[test]
+    fn unknown_topology_with_visible_cpus_still_filters_available_cores() {
+        let topology = NumaTopology::with_visible_cpus(
+            BTreeMap::new(),
+            BTreeSet::from([2, 3]),
+            TopologyCompleteness::Unknown,
+        );
+        let result = Controller::<()>::select_cores_for_allocation_with_placement(
+            available_core_ids(),
+            &CoreAllocation::all_cores(),
+            &topology,
+            &BTreeSet::new(),
+        )
+        .unwrap();
+
+        assert_eq!(to_ids(&result), vec![2, 3]);
+    }
+
+    #[test]
+    fn known_empty_visible_cpus_do_not_fall_back_to_all_cores() {
+        let topology = NumaTopology::with_visible_cpus(
+            BTreeMap::new(),
+            BTreeSet::new(),
+            TopologyCompleteness::Unknown,
+        );
+        let err = Controller::<()>::select_cores_for_allocation_with_placement(
+            available_core_ids(),
+            &CoreAllocation::core_count(1),
+            &topology,
+            &BTreeSet::new(),
+        )
+        .expect_err("known empty visibility should not fall back to all cores");
+
+        match err {
+            Error::InvalidCoreAllocation { available, .. } => assert!(available.is_empty()),
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn select_filters_to_topology_visible_cpus() {
+        let topology = synthetic_topology(&[(2, 0), (3, 0), (6, 1), (7, 1)]);
+        let result = Controller::<()>::select_cores_for_allocation_with_placement(
+            available_core_ids(),
+            &CoreAllocation::all_cores(),
+            &topology,
+            &BTreeSet::new(),
+        )
+        .unwrap();
+
+        assert_eq!(to_ids(&result), vec![2, 3, 6, 7]);
+    }
+
+    #[test]
     fn default_controller_extension_registry_loads_linked_factories() {
         let registry = ControllerExtensionRegistry::default();
         let monitor_type = CONTROLLER_MONITOR_EXTENSION_URN.into();
@@ -2819,6 +3403,7 @@ groups: {{}}
                 controller_extensions_engine_config(ORDERED_CONTROLLER_EXTENSION_URN),
                 ControllerRunOptions {
                     extensions: registry,
+                    ..Default::default()
                 },
             )
             .expect("controller should run ordered test extensions");
@@ -2828,6 +3413,44 @@ groups: {{}}
                 .lock()
                 .expect("observed order mutex should not be poisoned"),
             vec!["alpha".to_owned(), "beta".to_owned()]
+        );
+    }
+
+    /// Scenario: an embedder deserializes a config directly and starts the controller.
+    /// Guarantees: controller execution still rejects rate limiting without a memory pressure source.
+    #[test]
+    fn controller_run_validates_rate_limit_requires_memory_source() {
+        let config: OtelDataflowSpec = serde_json::from_value(serde_json::json!({
+            "version": otap_df_config::engine::ENGINE_CONFIG_VERSION_V1,
+            "policies": {
+                "resources": {
+                    "rate_limiters": {
+                        "ingress": {
+                            "mode": "enforce",
+                            "aggregation": "receiver_instance",
+                            "unit": "request_bytes",
+                            "pressure": "soft",
+                            "token_bucket": {
+                                "allow": 1000,
+                                "interval": "1s",
+                                "burst": 1000
+                            }
+                        }
+                    }
+                }
+            },
+            "groups": {}
+        }))
+        .expect("directly deserialized config should parse");
+
+        let err = Controller::new(test_pipeline_factory())
+            .run_till_shutdown(config)
+            .expect_err("controller run should reject invalid semantic config");
+
+        assert!(
+            err.to_string()
+                .contains("rate limiter policies require policies.resources.memory_limiter"),
+            "unexpected error: {err}"
         );
     }
 
@@ -2894,6 +3517,7 @@ groups: {{}}
                 controller_monitor_engine_config(""),
                 ControllerRunOptions {
                     extensions: ControllerExtensionRegistry::empty(),
+                    ..Default::default()
                 },
             )
             .expect_err("missing controller extension factory should fail startup");
@@ -2968,6 +3592,7 @@ groups: {{}}
                 ),
                 ControllerRunOptions {
                     extensions: registry,
+                    ..Default::default()
                 },
             )
             .expect_err("invalid controller extension config should fail startup");
@@ -3040,6 +3665,7 @@ groups: {{}}
                     engine_config,
                     ControllerRunOptions {
                         extensions: registry,
+                        ..Default::default()
                     },
                 )
                 .map_err(|err| err.to_string());
@@ -3085,6 +3711,28 @@ groups: {{}}
             Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
                 .unwrap();
         assert_eq!(to_ids(&result), vec![2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn select_with_partially_visible_core_set_errors() {
+        let core_allocation = CoreAllocation::core_set(vec![CoreRange { start: 0, end: 3 }]);
+        let available_core_ids = vec![CoreId { id: 2 }, CoreId { id: 3 }];
+        let err =
+            Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
+                .unwrap_err();
+
+        match err {
+            Error::InvalidCoreAllocation {
+                message, available, ..
+            } => {
+                assert!(
+                    message.contains("not visible to this process"),
+                    "unexpected message: {message}"
+                );
+                assert_eq!(available, vec![2, 3]);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 
     #[test]
@@ -3285,6 +3933,141 @@ groups: {{}}
         assert_eq!(assignments.len(), 2);
         assert_eq!(to_ids(&assignments[0]), vec![1, 2]);
         assert_eq!(to_ids(&assignments[1]), vec![2, 3]);
+    }
+
+    #[test]
+    fn preflight_reserves_core_count_across_pipelines() {
+        let pipelines = vec![
+            resolved_pipeline_with_core_allocation("g1", "p1", CoreAllocation::core_count(5)),
+            resolved_pipeline_with_core_allocation("g1", "p2", CoreAllocation::core_count(5)),
+        ];
+
+        let err = Controller::<()>::preflight_pipeline_placement(
+            &pipelines,
+            &available_core_ids(),
+            &NumaTopology::unknown(),
+        )
+        .expect_err("core_count allocations should not oversubscribe implicit cores");
+
+        match err {
+            Error::InvalidCoreAllocation { message, .. } => {
+                assert!(
+                    message.contains(
+                        "Requested 5 cores but placement strategy could not produce a valid unreserved core set"
+                    ),
+                    "unexpected message: {message}"
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn preflight_reserves_explicit_core_set_before_later_core_count() {
+        let pipelines = vec![
+            resolved_pipeline_with_core_allocation(
+                "g1",
+                "p1",
+                CoreAllocation::core_set(vec![CoreRange { start: 0, end: 3 }]),
+            ),
+            resolved_pipeline_with_core_allocation("g1", "p2", CoreAllocation::core_count(2)),
+        ];
+
+        let placement = Controller::<()>::preflight_pipeline_placement(
+            &pipelines,
+            &available_core_ids(),
+            &NumaTopology::unknown(),
+        )
+        .expect("preflight should succeed");
+
+        assert_eq!(
+            to_ids(
+                &placement.pipelines[0]
+                    .cores
+                    .iter()
+                    .map(|core| core.core_id)
+                    .collect::<Vec<_>>()
+            ),
+            vec![0, 1, 2, 3]
+        );
+        assert_eq!(
+            to_ids(
+                &placement.pipelines[1]
+                    .cores
+                    .iter()
+                    .map(|core| core.core_id)
+                    .collect::<Vec<_>>()
+            ),
+            vec![4, 5]
+        );
+    }
+
+    #[test]
+    fn preflight_core_count_all_uses_only_unreserved_cores() {
+        let pipelines = vec![
+            resolved_pipeline_with_core_allocation(
+                "g1",
+                "p1",
+                CoreAllocation::core_set(vec![CoreRange { start: 0, end: 3 }]),
+            ),
+            resolved_pipeline_with_core_allocation("g1", "p2", CoreAllocation::core_count(0)),
+        ];
+
+        let placement = Controller::<()>::preflight_pipeline_placement(
+            &pipelines,
+            &available_core_ids(),
+            &NumaTopology::unknown(),
+        )
+        .expect("preflight should succeed");
+
+        assert_eq!(
+            to_ids(
+                &placement.pipelines[1]
+                    .cores
+                    .iter()
+                    .map(|core| core.core_id)
+                    .collect::<Vec<_>>()
+            ),
+            vec![4, 5, 6, 7]
+        );
+    }
+
+    #[test]
+    fn preflight_core_count_all_errors_when_no_unreserved_cores_remain() {
+        let pipelines = vec![
+            resolved_pipeline_with_core_allocation(
+                "g1",
+                "p1",
+                CoreAllocation::core_set(vec![CoreRange { start: 0, end: 7 }]),
+            ),
+            resolved_pipeline_with_core_allocation("g1", "p2", CoreAllocation::core_count(0)),
+        ];
+
+        let err = Controller::<()>::preflight_pipeline_placement(
+            &pipelines,
+            &available_core_ids(),
+            &NumaTopology::unknown(),
+        )
+        .expect_err("preflight should reject empty effective core_count placement");
+
+        match err {
+            Error::InvalidCoreAllocation {
+                message, available, ..
+            } => {
+                assert!(
+                    message.contains("no unreserved cores are available"),
+                    "unexpected message: {message}"
+                );
+                assert_eq!(
+                    available,
+                    available_core_ids()
+                        .iter()
+                        .map(|core| core.id)
+                        .collect::<Vec<_>>()
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 
     #[test]

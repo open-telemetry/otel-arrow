@@ -97,14 +97,36 @@ export function updateNodeSeries({
   }
 }
 
-function scanSenderMetrics(metrics) {
+function normalizeDataPointAttributes(attrs) {
+  const out = {};
+  for (const [key, value] of Object.entries(attrs || {})) {
+    if (value == null) continue;
+    if (typeof value === "object") {
+      const entry = Object.entries(value)[0];
+      if (entry) out[key] = String(entry[1]);
+    } else {
+      out[key] = String(value);
+    }
+  }
+  return out;
+}
+
+export function summarizeChannelSenderMetrics(metrics) {
   let send = 0;
   let sendErrorFull = 0;
   let sendErrorClosed = 0;
   for (const metric of metrics || []) {
     if (!metric || typeof metric.name !== "string") continue;
     const value = Number.isFinite(metric.value) ? metric.value : 0;
+    const attrs = normalizeDataPointAttributes(metric.attributes);
     switch (metric.name) {
+      case "messages":
+        if (attrs.outcome === "success") send += value;
+        break;
+      case "failures":
+        if (attrs["error.type"] === "full") sendErrorFull += value;
+        if (attrs["error.type"] === "closed") sendErrorClosed += value;
+        break;
       case "send.count":
         send += value;
         break;
@@ -121,28 +143,23 @@ function scanSenderMetrics(metrics) {
   return { send, sendErrorFull, sendErrorClosed };
 }
 
-function scanReceiverMetrics(metrics) {
+export function summarizeChannelReceiverMetrics(metrics) {
   let recv = 0;
-  let recvErrorEmpty = 0;
-  let recvErrorClosed = 0;
   for (const metric of metrics || []) {
     if (!metric || typeof metric.name !== "string") continue;
     const value = Number.isFinite(metric.value) ? metric.value : 0;
     switch (metric.name) {
-      case "recv.count":
+      case "messages":
         recv += value;
         break;
-      case "recv.error_empty":
-        recvErrorEmpty += value;
-        break;
-      case "recv.error_closed":
-        recvErrorClosed += value;
+      case "recv.count":
+        recv += value;
         break;
       default:
         break;
     }
   }
-  return { recv, recvErrorEmpty, recvErrorClosed };
+  return { recv };
 }
 
 export function updateChannelSeries({
@@ -171,8 +188,6 @@ export function updateChannelSeries({
           recv: 0,
           sendErrorFull: 0,
           sendErrorClosed: 0,
-          recvErrorEmpty: 0,
-          recvErrorClosed: 0,
         });
       }
       return perChannel.get(id);
@@ -188,15 +203,13 @@ export function updateChannelSeries({
 
       const channelEntry = ensureChannel(channelId);
       if (set.name === "channel.sender") {
-        const sender = scanSenderMetrics(set.metrics || []);
+        const sender = summarizeChannelSenderMetrics(set.metrics || []);
         channelEntry.send += sender.send;
         channelEntry.sendErrorFull += sender.sendErrorFull;
         channelEntry.sendErrorClosed += sender.sendErrorClosed;
       } else {
-        const receiver = scanReceiverMetrics(set.metrics || []);
+        const receiver = summarizeChannelReceiverMetrics(set.metrics || []);
         channelEntry.recv += receiver.recv;
-        channelEntry.recvErrorEmpty += receiver.recvErrorEmpty;
-        channelEntry.recvErrorClosed += receiver.recvErrorClosed;
       }
     });
 
@@ -208,8 +221,6 @@ export function updateChannelSeries({
       const recvRate = counts.recv / sampleSeconds;
       const sendErrorFullRate = counts.sendErrorFull / sampleSeconds;
       const sendErrorClosedRate = counts.sendErrorClosed / sampleSeconds;
-      const recvErrorEmptyRate = counts.recvErrorEmpty / sampleSeconds;
-      const recvErrorClosedRate = counts.recvErrorClosed / sampleSeconds;
       const series = channelSeries.get(channelId) || { points: [] };
       series.points.push({
         ts: nowMs,
@@ -217,8 +228,6 @@ export function updateChannelSeries({
         recvRate,
         sendErrorFullRate,
         sendErrorClosedRate,
-        recvErrorEmptyRate,
-        recvErrorClosedRate,
       });
       series.points = series.points.filter((point) => point.ts >= cutoff);
       channelSeries.set(channelId, series);
@@ -239,7 +248,6 @@ export function computeEdgeRates({
   getWindowMs,
   getDisplayTimeMs,
   calcRate,
-  metricMap,
   getSeriesWindowFn = getSeriesWindow,
   getPointAtTimeFn = getPointAtTime,
 }) {
@@ -249,8 +257,8 @@ export function computeEdgeRates({
   const fallbackDisplayTimeMs = getDisplayTimeMs();
 
   (edges || []).forEach((edge) => {
-    const senderMetrics = metricMap(edge.data.sender?.metrics || []);
-    const receiverMetrics = metricMap(edge.data.receiver?.metrics || []);
+    const senderMetrics = summarizeChannelSenderMetrics(edge.data.sender?.metrics || []);
+    const receiverMetrics = summarizeChannelReceiverMetrics(edge.data.receiver?.metrics || []);
     const channelId = edge.channelId || edge.data?.id || edge.id;
     const useChannelSeries = !(edge.data?.multiSender || edge.data?.multiReceiver);
     const point = useChannelSeries
@@ -266,18 +274,11 @@ export function computeEdgeRates({
         })
       : null;
 
-    const fallbackSendRate = calcRate(senderMetrics["send.count"] ?? 0, sampleSeconds) ?? 0;
-    const fallbackRecvRate = calcRate(receiverMetrics["recv.count"] ?? 0, sampleSeconds) ?? 0;
+    const fallbackSendRate = calcRate(senderMetrics.send, sampleSeconds) ?? 0;
+    const fallbackRecvRate = calcRate(receiverMetrics.recv, sampleSeconds) ?? 0;
     const fallbackSendErrRate =
       calcRate(
-        (senderMetrics["send.error_full"] ?? 0) +
-          (senderMetrics["send.error_closed"] ?? 0),
-        sampleSeconds
-      ) ?? 0;
-    const fallbackRecvErrRate =
-      calcRate(
-        (receiverMetrics["recv.error_empty"] ?? 0) +
-          (receiverMetrics["recv.error_closed"] ?? 0),
+        senderMetrics.sendErrorFull + senderMetrics.sendErrorClosed,
         sampleSeconds
       ) ?? 0;
 
@@ -287,10 +288,7 @@ export function computeEdgeRates({
       point == null
         ? fallbackSendErrRate
         : (point.sendErrorFullRate || 0) + (point.sendErrorClosedRate || 0);
-    const recvErrorRate =
-      point == null
-        ? fallbackRecvErrRate
-        : (point.recvErrorEmptyRate || 0) + (point.recvErrorClosedRate || 0);
+    const recvErrorRate = 0;
 
     const errorRate = sendErrorRate + recvErrorRate;
     rates.set(edge.id, {

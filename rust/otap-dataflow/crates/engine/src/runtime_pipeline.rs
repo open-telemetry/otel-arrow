@@ -186,6 +186,8 @@ pub struct RuntimePipeline<PData: Debug> {
     nodes: NodeDefs<PData, PipeNode>,
     /// Channel metrics handles collected during build.
     channel_metrics: Vec<ChannelMetricsHandle>,
+    /// Admission refusal metrics handles collected during node construction.
+    admission_metrics: Vec<crate::admission::metrics::AdmissionMetricsHandle>,
     /// Flags controlling pipeline-internal metrics collection/reporting.
     telemetry_policy: TelemetryPolicy,
 }
@@ -328,12 +330,20 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             extensions,
             nodes,
             channel_metrics: Default::default(),
+            admission_metrics: Default::default(),
             telemetry_policy,
         }
     }
 
     pub(crate) fn set_channel_metrics(&mut self, channel_metrics: Vec<ChannelMetricsHandle>) {
         self.channel_metrics = channel_metrics;
+    }
+
+    pub(crate) fn set_admission_metrics(
+        &mut self,
+        admission_metrics: Vec<crate::admission::metrics::AdmissionMetricsHandle>,
+    ) {
+        self.admission_metrics = admission_metrics;
     }
 
     /// Returns the number of nodes in the pipeline.
@@ -377,6 +387,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             extensions,
             nodes: _nodes,
             channel_metrics,
+            admission_metrics,
             telemetry_policy,
         } = self;
 
@@ -801,6 +812,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         let return_node_metric_handles = node_metric_handles.clone();
         let final_node_metric_handles = node_metric_handles.clone();
         let final_channel_metrics = channel_metrics.clone();
+        let final_admission_metrics = admission_metrics.clone();
         let final_metrics_reporter = metrics_reporter.clone();
         let manager_pipeline_context = pipeline_context.clone();
         let manager_metrics_reporter = metrics_reporter.clone();
@@ -823,6 +835,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                 control_plane_metrics_flush_interval,
                 manager_telemetry_policy,
                 channel_metrics,
+                admission_metrics,
                 node_metric_handles,
                 manager_terminal_metrics_deadline,
             );
@@ -933,7 +946,12 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                     .chain(
                         final_channel_metrics
                             .iter()
-                            .filter_map(ChannelMetricsHandle::snapshot),
+                            .flat_map(ChannelMetricsHandle::terminal_snapshots),
+                    )
+                    .chain(
+                        final_admission_metrics
+                            .iter()
+                            .flat_map(|metrics| metrics.terminal_snapshots()),
                     );
                     report_metric_snapshots(
                         &final_metrics_reporter,
@@ -1064,8 +1082,10 @@ mod tests {
     use crate::attributes::EngineEntityAttributeSet;
     use crate::channel_metrics::ChannelSenderMetrics;
     use crate::entity_context::{NodeTelemetryGuard, NodeTelemetryHandle};
+    use otap_df_config::SignalType;
     use otap_df_config::observed_state::SendPolicy;
     use otap_df_config::pipeline::telemetry::TelemetryConfig;
+    use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use otap_df_telemetry::{InternalTelemetrySystem, LogContext};
 
@@ -1091,25 +1111,33 @@ mod tests {
         let entity_key = registry.register_entity(EngineEntityAttributeSet);
         let telemetry_handle = NodeTelemetryHandle::new(registry.clone(), entity_key);
         let telemetry_guard = NodeTelemetryGuard::new(telemetry_handle.clone());
-        let mut metric_set = telemetry_handle.register_metric_set::<ChannelSenderMetrics>();
-        metric_set.send_count.inc();
+        let mut metric_set = telemetry_handle
+            .entity_handle()
+            .register_measurement_metric_set_for_entity::<ChannelSenderMetrics>(entity_key);
+        metric_set
+            .with(SignalOutcomeAttributes {
+                signal: SignalType::Logs,
+                outcome: Outcome::Success,
+            })
+            .messages
+            .inc();
 
         report_terminal_metrics(
             &reporter,
-            TerminalState::new(std::time::Instant::now(), [metric_set.snapshot()]),
+            TerminalState::new(std::time::Instant::now(), metric_set.terminal_snapshots()),
             &TerminalMetricsDeadline::default(),
         )
         .await;
 
-        let mut send_count = None;
+        let mut message_count = None;
         registry.visit_current_metrics(|_, _, metrics| {
             for (field, value) in metrics {
-                if field.name == "send.count" {
-                    send_count = Some(value.to_u64_lossy());
+                if field.name == "messages" {
+                    message_count = Some(value.to_u64_lossy());
                 }
             }
         });
-        assert_eq!(send_count, Some(1));
+        assert_eq!(message_count, Some(1));
 
         drop(telemetry_guard);
         assert_eq!(registry.metric_set_count(), 1);
@@ -1121,13 +1149,13 @@ mod tests {
             .iter()
             .find(|metric_set| metric_set.descriptor.name == "channel.sender")
             .expect("terminal metric set should remain exportable after cleanup");
-        let send_count_index = exported
+        let message_count_index = exported
             .descriptor
             .metrics
             .iter()
-            .position(|field| field.name == "send.count")
-            .expect("send.count descriptor should exist");
-        assert_eq!(exported.values[send_count_index].to_u64_lossy(), 1);
+            .position(|field| field.name == "messages")
+            .expect("messages descriptor should exist");
+        assert_eq!(exported.values[message_count_index].to_u64_lossy(), 1);
 
         assert_eq!(registry.metric_set_count(), 0);
         assert_eq!(registry.entity_count(), 0);

@@ -30,7 +30,7 @@ otap-df-pdata = { workspace = true, features = ["bench", "testing"] }
 otap-df-pdata-views = { workspace = true }
 
 tracing.workspace = true
-tracing-subscriber = { workspace = true, features = ["registry"] }
+tracing-subscriber = { workspace = true, features = ["env-filter", "registry"] }
 
 fluke-hpack.workspace = true
 futures-channel.workspace = true
@@ -85,6 +85,10 @@ name = "otlp_bytes"
 harness = false
 
 [[bench]]
+name = "admission"
+harness = false
+
+[[bench]]
 name = "transport_optimize"
 harness = false
 
@@ -93,7 +97,7 @@ name = "attribute_transform"
 harness = false
 
 [[bench]]
-name = "item_count"
+name = "payload_measurements"
 harness = false
 
 [[bench]]

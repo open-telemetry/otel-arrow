@@ -1,0 +1,6 @@
+change_type: breaking
+component: pipeline
+note: Remove duplicate fanout counters and identify timeout metrics by configured destination and signal.
+issues: [3530]
+subtext: |
+  Migration: Enable runtime_metrics: normal because the default basic level omits replacement node metrics. Use node.consumer for fanout outcomes, rename in_flight to active, and group timed_out by destination and signal.

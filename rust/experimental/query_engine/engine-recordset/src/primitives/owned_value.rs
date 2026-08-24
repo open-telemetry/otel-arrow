@@ -116,10 +116,10 @@ impl From<Value<'_>> for OwnedValue {
             Value::Map(m) => {
                 let mut values: HashMap<Box<str>, OwnedValue> = HashMap::new();
 
-                m.get_items(&mut KeyValueClosureCallback::new(|k, v| {
+                m.get_items(&mut |k, v| {
                     values.insert(k.into(), v.into());
                     true
-                }));
+                });
 
                 OwnedValue::Map(MapValueStorage::new(values))
             }
@@ -135,10 +135,10 @@ impl From<&dyn ArrayValue> for ArrayValueStorage<OwnedValue> {
     fn from(value: &dyn ArrayValue) -> Self {
         let mut values = Vec::new();
 
-        value.get_items(&mut IndexValueClosureCallback::new(|_, v| {
+        value.get_items(&mut |_, v| {
             values.push(v.into());
             true
-        }));
+        });
 
         ArrayValueStorage::new(values)
     }
@@ -148,10 +148,10 @@ impl From<&dyn MapValue> for MapValueStorage<OwnedValue> {
     fn from(value: &dyn MapValue) -> Self {
         let mut values: HashMap<Box<str>, _> = HashMap::new();
 
-        value.get_items(&mut KeyValueClosureCallback::new(|k, v| {
+        value.get_items(&mut |k, v| {
             values.insert(k.into(), v.into());
             true
-        }));
+        });
 
         MapValueStorage::new(values)
     }
@@ -178,7 +178,7 @@ pub(crate) fn try_convert_value(
             .convert_to_timespan()
             .map(|v| OwnedValue::TimeSpan(TimeSpanValueStorage::new(v))),
         ValueType::String => Some(OwnedValue::String(StringValueStorage::new(
-            value.to_string(),
+            value.convert_to_string().into(),
         ))),
         _ => None,
     }

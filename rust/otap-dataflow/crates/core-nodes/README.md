@@ -100,8 +100,9 @@ Exporters send data out of a pipeline.
 
 | Type                                                               | Feature | Stability    | Description                                                 |
 | ------------------------------------------------------------------ | ------- | ------------ | ----------------------------------------------------------- |
-| [`exporter:console`](src/exporters/console_exporter/README.md)     | default | experimental | Prints OTLP logs, metrics, and traces for local inspection. |
+| [`exporter:console`](src/exporters/console_exporter/README.md)     | default | experimental | Prints logs and pretty metrics; record JSON is logs-only.   |
 | [`exporter:error`](src/exporters/error_exporter/README.md)         | default | experimental | Rejects every received message with a configured NACK.      |
+| [`exporter:file`](src/exporters/file_exporter/README.md)           | default | experimental | Writes signal-exclusive OTLP JSON Lines files.              |
 | [`exporter:noop`](src/exporters/noop_exporter/README.md)           | default | experimental | Acknowledges and discards every received message.           |
 | [`exporter:otap`](src/exporters/otap_exporter/README.md)           | default | experimental | Sends OTAP Arrow payloads over gRPC streams.                |
 | [`exporter:otlp_grpc`](src/exporters/otlp_grpc_exporter/README.md) | default | experimental | Sends telemetry as unary OTLP/gRPC export requests.         |

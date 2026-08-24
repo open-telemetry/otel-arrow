@@ -603,11 +603,6 @@ impl<PData> EffectHandler<PData> {
         self.core.start_periodic_telemetry(duration).await
     }
 
-    /// Delay data.
-    pub async fn delay_data(&self, when: Instant, data: Box<PData>) -> Result<(), PData> {
-        self.core.delay_data(when, data).await
-    }
-
     /// Requeue retained pdata onto this node later.
     pub fn requeue_later(&self, when: Instant, data: Box<PData>) -> Result<(), PData> {
         self.core.requeue_later(when, data)
@@ -1027,7 +1022,12 @@ mod tests {
         let snapshot = metrics_rx
             .try_recv()
             .expect("flow duration metric should be reported");
-        let [MetricValue::Mmsc(duration_snapshot)] = snapshot.get_metrics() else {
+        let [
+            MetricValue::Distribution(otap_df_telemetry::instrument::DistributionValue::Basic(
+                duration_snapshot,
+            )),
+        ] = snapshot.get_metrics()
+        else {
             panic!("expected flow duration MMSC metric");
         };
         assert_eq!(duration_snapshot.count, 3);

@@ -1,4 +1,5 @@
 name: Go-CI
+# See README.md in this directory for CI event, status, and cache strategy.
 permissions:
   contents: read
 
@@ -6,6 +7,9 @@ on:
   push:
     branches:
       - main
+    paths:
+      - "go/**"
+      - ".github/workflows/go-ci.yml"
   pull_request:
     branches:
       - main
@@ -19,6 +23,7 @@ concurrency:
 jobs:
 
   test_and_coverage:
+    if: github.event_name != 'push'
     strategy:
       fail-fast: false
       matrix:
@@ -26,12 +31,12 @@ jobs:
           - pkg/otel
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: true
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          go-version: "1.26.4"
+          go-version: "1.26.5"
       - name: Run tests with coverage
         run: go test -cover -coverprofile=coverage.txt -covermode=atomic -coverpkg=./... ./...
         working-directory: ./go/${{ matrix.folder }}
@@ -46,19 +51,20 @@ jobs:
           fail_ci_if_error: true
 
   codeql:
+    # Keep the default-branch code-scanning baseline current after merges.
     permissions:
       # needed for codeql
       security-events: write
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
     - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
       with:
-        go-version: "1.26.4"
-    - uses: github/codeql-action/init@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4.36.2
+        go-version: "1.26.5"
+    - uses: github/codeql-action/init@d1ba80a13dd99fba24a470575428917156a28b43 # v4.37.5
       with:
         languages: go
-    - uses: github/codeql-action/analyze@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4.36.2
+    - uses: github/codeql-action/analyze@d1ba80a13dd99fba24a470575428917156a28b43 # v4.37.5
       timeout-minutes: 60
 
   # Aggregated status check for all Go CI jobs
@@ -66,7 +72,7 @@ jobs:
   # to simplify maintenance - add/remove jobs from the needs list as needed
   go-required-status-check:
     runs-on: ubuntu-latest
-    if: always()
+    if: github.event_name != 'push' && !cancelled()
     needs:
       - test_and_coverage
       - codeql

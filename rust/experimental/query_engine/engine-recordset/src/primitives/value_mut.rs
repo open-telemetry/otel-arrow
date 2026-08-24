@@ -57,37 +57,11 @@ pub trait ArrayValueMut: ArrayValue {
 
     fn remove(&mut self, index: usize) -> ValueMutRemoveResult;
 
-    fn retain(&mut self, item_callback: &mut dyn IndexValueMutCallback);
+    fn retain(&mut self, item_callback: &mut ArrayValueMutIteratorCallback<'_>);
 }
 
-pub trait IndexValueMutCallback {
-    fn next(&mut self, index: usize, value: &mut (dyn AsStaticValueMut + 'static)) -> bool;
-}
-
-pub struct IndexValueMutClosureCallback<F>
-where
-    F: FnMut(usize, &mut (dyn AsStaticValueMut + 'static)) -> bool,
-{
-    callback: F,
-}
-
-impl<F> IndexValueMutClosureCallback<F>
-where
-    F: FnMut(usize, &mut (dyn AsStaticValueMut + 'static)) -> bool,
-{
-    pub fn new(callback: F) -> IndexValueMutClosureCallback<F> {
-        Self { callback }
-    }
-}
-
-impl<F> IndexValueMutCallback for IndexValueMutClosureCallback<F>
-where
-    F: FnMut(usize, &mut (dyn AsStaticValueMut + 'static)) -> bool,
-{
-    fn next(&mut self, index: usize, value: &mut (dyn AsStaticValueMut + 'static)) -> bool {
-        (self.callback)(index, value)
-    }
-}
+pub type ArrayValueMutIteratorCallback<'a> =
+    dyn FnMut(usize, &mut (dyn AsStaticValueMut + 'static)) -> bool + 'a;
 
 pub trait MapValueMut: MapValue {
     fn get_mut(&mut self, key: &str) -> ValueMutGetResult<'_>;
@@ -98,37 +72,11 @@ pub trait MapValueMut: MapValue {
 
     fn remove(&mut self, key: &str) -> ValueMutRemoveResult;
 
-    fn retain(&mut self, item_callback: &mut dyn KeyValueMutCallback);
+    fn retain(&mut self, item_callback: &mut MapValueMutIteratorCallback<'_>);
 }
 
-pub trait KeyValueMutCallback {
-    fn next(&mut self, key: &str, value: &mut (dyn AsStaticValueMut + 'static)) -> bool;
-}
-
-pub struct KeyValueMutClosureCallback<F>
-where
-    F: FnMut(&str, &mut (dyn AsStaticValueMut + 'static)) -> bool,
-{
-    callback: F,
-}
-
-impl<F> KeyValueMutClosureCallback<F>
-where
-    F: FnMut(&str, &mut (dyn AsStaticValueMut + 'static)) -> bool,
-{
-    pub fn new(callback: F) -> KeyValueMutClosureCallback<F> {
-        Self { callback }
-    }
-}
-
-impl<F> KeyValueMutCallback for KeyValueMutClosureCallback<F>
-where
-    F: FnMut(&str, &mut (dyn AsStaticValueMut + 'static)) -> bool,
-{
-    fn next(&mut self, key: &str, value: &mut (dyn AsStaticValueMut + 'static)) -> bool {
-        (self.callback)(key, value)
-    }
-}
+pub type MapValueMutIteratorCallback<'a> =
+    dyn FnMut(&str, &mut (dyn AsStaticValueMut + 'static)) -> bool + 'a;
 
 pub trait StringValueMut: StringValue {
     fn get_value_mut(&mut self) -> &mut String;

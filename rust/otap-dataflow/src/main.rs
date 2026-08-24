@@ -14,12 +14,18 @@ use otap_df_config::policy::{CoreAllocation, CoreRange};
 use otap_df_contrib_extensions as _;
 use otap_df_contrib_nodes as _;
 use otap_df_controller::startup;
-use otap_df_controller::{Controller, ControllerRunOptions};
+use otap_df_controller::{BuildInfo, Controller, ControllerRunOptions};
 // Keep this side-effect import so the crate is linked and its `linkme`
 // distributed-slice registrations (core nodes) are visible
 // in `OTAP_PIPELINE_FACTORY` at runtime.
 use otap_df_core_nodes as _;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
+// Keep this side-effect import so the experimental wasm-host crate is linked
+// and its `linkme` distributed-slice registration (the `wasm_processor`
+// factory) is visible in `OTAP_PIPELINE_FACTORY` at runtime. Off by default;
+// only present when the `wasm` cargo feature is enabled.
+#[cfg(feature = "wasm")]
+use otap_df_wasm_host as _;
 /// Project license text (Apache-2.0), embedded at compile time.
 const LICENSE_TEXT: &str = include_str!("../LICENSE");
 
@@ -283,7 +289,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     startup::apply_cli_overrides(&mut engine_cfg, num_cores, core_id_range, http_admin_bind);
 
-    let run_options = ControllerRunOptions::default();
+    let run_options = ControllerRunOptions {
+        build_info: BuildInfo {
+            service_name: Some(env!("CARGO_BIN_NAME").to_string()),
+            service_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        },
+        ..Default::default()
+    };
     validate_engine_config_for_startup(&engine_cfg, &run_options)?;
 
     if validate_and_exit {
@@ -422,6 +434,8 @@ groups: {{}}
         assert!(args.validate_and_exit);
     }
 
+    /// Scenario: validation encounters a receiver URN absent from the binary inventory.
+    /// Guarantees: semantic startup validation rejects the pipeline before runtime construction.
     #[test]
     fn validate_unknown_component_rejected() {
         use otap_df_config::pipeline::PipelineConfig;

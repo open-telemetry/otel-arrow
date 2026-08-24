@@ -15,6 +15,7 @@ workspace = true
 [features]
 testing = []
 admin-live-logs-ws = ["otap-df-admin/live-logs-ws"]
+jemalloc-pprof = ["otap-df-admin/jemalloc-pprof"]
 
 [dependencies]
 otap-df-config = { workspace = true }
@@ -36,6 +37,7 @@ chrono = { workspace = true }
 futures-util = { workspace = true }
 prost = { workspace = true }
 serde_json = { workspace = true }
+serde_yaml = { workspace = true }
 serde = { workspace = true }
 tokio-tungstenite = { workspace = true }
 humantime-serde = { workspace = true }
@@ -47,3 +49,5 @@ url = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }
 otap-df-test-net = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["registry"] }

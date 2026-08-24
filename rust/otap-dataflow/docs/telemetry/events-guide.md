@@ -49,11 +49,10 @@ All events MUST be emitted using the `otel_*` macros from the
   event name. Raw `tracing` macros do not require one, and their default name
   includes the file path and line number -- which is not durable and breaks
   filtering, alerting, and dashboards whenever code is moved or reformatted.
-- **Automatic `target`.** The wrappers set the tracing `target` field to the
-  crate name (`env!("CARGO_PKG_NAME")`) automatically. When exported via
-  OTLP, this becomes the `InstrumentationScope.name`. With raw `tracing`
-  macros the default target is the module path, which is an internal
-  implementation detail and can change without notice.
+- **Automatic `target`.** Registered components use
+  `<namespace>.<kind>.<name>`, derived from their registered URN; other code
+  uses the Cargo package name. When exported via OTLP, this becomes
+  `InstrumentationScope.name`.
 
 ### Available macros
 
@@ -63,6 +62,10 @@ All events MUST be emitted using the `otel_*` macros from the
 | `otel_info!` | INFO |
 | `otel_warn!` | WARN |
 | `otel_error!` | ERROR |
+
+Registered components declare `otel_component_scope!` at their root module to
+apply the component target to the module subtree. See the
+[telemetry crate README](../../crates/telemetry/README.md#logging-macros).
 
 ### Basic usage
 
@@ -101,7 +104,8 @@ otel_info!("pipeline.run.start");
 
 // Good -- message explains consequences beyond what the event name conveys:
 otel_warn!("core_affinity.set_failed",
-    message = "Failed to set core affinity for pipeline thread. Performance may be less predictable.",
+    message = "Failed to set core affinity for pipeline thread. \
+        Performance may be less predictable.",
 );
 ```
 

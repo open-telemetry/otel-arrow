@@ -42,6 +42,9 @@ pub mod shared_concurrency;
 /// Shared ingress shedding based on process-wide memory pressure.
 pub mod memory_pressure_layer;
 
+/// Shared ingress shedding based on receiver-local rate limits.
+pub mod rate_limit_layer;
+
 /// gRPC service implementation
 pub mod otlp_grpc;
 
@@ -50,6 +53,10 @@ pub mod otlp_http;
 
 /// Cloud specific auth utilities
 pub mod cloud_auth;
+
+/// Consumer-side adapter over a bound `bearer_token_provider` capability,
+/// shared by every node that authenticates with a bearer token.
+pub mod bearer_auth;
 
 /// Redacted string type for sensitive values.
 pub mod opaque_string;

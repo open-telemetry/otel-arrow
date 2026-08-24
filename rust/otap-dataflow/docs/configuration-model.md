@@ -116,11 +116,13 @@ Policies are scoped runtime controls. Top-level policies provide defaults,
 group policies override those defaults for a group, and pipeline policies
 override them for a single pipeline.
 
-Precedence applies by policy family instead of deep-merging nested fragments.
-This avoids ambiguous partial inheritance and keeps the resolved runtime shape
-deterministic. Some policies are intentionally constrained to specific scopes;
-for example, the memory limiter is process-wide and only supported at top-level
-`policies.resources`.
+Precedence normally applies by policy family instead of deep-merging nested
+fragments. The `resources` family is the deliberate exception: its
+`core_allocation`, `memory_limiter`, and `rate_limiters` members resolve
+independently, while the named `rate_limiters` map resolves as one member rather
+than being merged entry by entry. Some policies are intentionally constrained
+to specific scopes; for example, the memory limiter is process-wide and only
+supported at top-level `policies.resources`.
 
 ### Topics
 
@@ -319,6 +321,8 @@ At node level:
 - `header_capture` (optional): receiver-only transport header capture override
 - `header_propagation` (optional): exporter-only transport header propagation
   override
+- `rate_limiters` (optional): select one named admission limiter with `[name]`;
+  omit the field or use `[]` to leave the node unbound
 
 At connection level:
 
@@ -513,6 +517,16 @@ policies:
       source: auto
       soft_limit: 7 GiB
       hard_limit: 8 GiB
+    rate_limiters:
+      ingress:
+        enforcement: enforce
+        aggregation: receiver_instance
+        unit: request_bytes
+        pressure: soft
+        token_bucket:
+          allow: 10485760
+          interval: 1s
+          burst: 10485760
   runtime_recovery:
     enabled: true
     max_restarts: 5
@@ -560,6 +574,75 @@ Defaults at top-level:
 - `runtime_recovery.reset_after = 60s`
 - `transport_headers = not set` (opt-in; no headers captured or propagated)
 
+### Core Allocation
+
+`resources.core_allocation` controls the worker cores assigned to each regular
+pipeline. It resolves independently at pipeline, group, and top-level policy
+scope. The default is:
+
+```yaml
+resources:
+  core_allocation:
+    type: all_cores
+```
+
+The supported forms are:
+
+```yaml
+# Shared: use every process-visible core.
+core_allocation:
+  type: all_cores
+```
+
+```yaml
+# Exclusive: select four cores through the controller's placement strategy.
+core_allocation:
+  type: core_count
+  count: 4
+```
+
+```yaml
+# Explicit: use inclusive ranges 0-1 and 4-5.
+core_allocation:
+  type: core_set
+  set:
+    - start: 0
+      end: 1
+    - start: 4
+      end: 5
+```
+
+| Type | Required fields | Placement and reservation semantics |
+| --- | --- | --- |
+| `all_cores` | Neither `count` nor `set` | Uses every process-visible core and does not reserve cores from other pipelines. |
+| `core_count` | `count` in YAML | Selects the requested number of unreserved process-visible cores and reserves them against other `core_count` allocations. Explicit `core_set` cores are also excluded. |
+| `core_set` | Non-empty `set` | Uses the exact inclusive ranges. Explicit sets may overlap one another and reserve their cores against `core_count` allocations. |
+
+`core_count` uses strict exhaustion behavior. A positive count fails if there
+are too few unreserved visible cores, and a count greater than the number of
+process-visible cores is always invalid. A count of `0`, or an omitted count in
+programmatically constructed configuration, selects all currently unreserved
+visible cores and fails if that set is empty.
+
+Each `core_set` range requires `start <= end`; ranges in one allocation cannot
+overlap, every requested core must be process-visible, and the set cannot be
+empty. `count` is invalid for `all_cores` and `core_set`, while `set` is invalid
+for `all_cores` and `core_count`.
+
+On Linux, visible cores reflect the process affinity and cgroup constraints.
+The default `core_count` strategy deterministically prefers a single NUMA node
+that can satisfy the complete request. If no one node can do so, it selects by
+ascending visible core ID across nodes. When NUMA topology is unavailable,
+ascending visible core ID provides the deterministic fallback.
+
+The controller plans explicit `core_set` allocations before `core_count`
+allocations at startup, then validates the complete regular-pipeline placement
+before launching any worker. Live updates account for committed and accepted
+in-flight placements and exclude the pipeline being replaced from its own
+reservation calculation. Resource policies are rejected on the system
+observability pipeline. Its worker runs on one core that is not reserved and
+may overlap any regular-pipeline allocation.
+
 Runtime recovery notes:
 
 - `runtime_recovery` applies to regular pipelines and inherits through the
@@ -586,6 +669,26 @@ Memory limiter configuration:
 - Detailed runtime behavior and rollout guidance are documented in
   [memory-limiter-phase1.md](memory-limiter-phase1.md).
 
+Rate limiter configuration:
+
+- Named limiters are declared under `policies.resources.rate_limiters`.
+- Any non-empty rate-limiter declaration requires a top-level
+  `policies.resources.memory_limiter`, which supplies the process pressure
+  signal that activates enforcement.
+- A declaration may appear at top-level, group, or pipeline policy scope. The
+  nearest declared map replaces the broader map; entries are not deep-merged.
+- `rate_limiters: {}` at a narrower policy scope disables an inherited map.
+- A node selects one effective limiter with `rate_limiters: [name]` and opts out
+  with `rate_limiters: []`.
+- Omitting the node field leaves the node unbound, regardless of how many
+  limiters are effective.
+- An unknown or dimension-incompatible selection fails startup.
+- V1 creates one bucket per bound receiver instance. Reusing a declaration does
+  not aggregate rate state across receivers or pipelines.
+- OTLP supports `request_bytes`; Syslog / CEF supports `messages`.
+- Detailed runtime behavior and limits are documented in
+  [memory-limiter-phase1.md](memory-limiter-phase1.md).
+
 Control channel keys:
 
 - `node`: per-node control inboxes
@@ -604,13 +707,18 @@ Telemetry policy notes:
 - `normal` adds message and phase counters
 - `detailed` adds latency/duration summaries and completion unwind-depth
   distribution
+- See [Node and Flow Metrics](node-and-flow-metrics.md) to configure and
+  interpret node item metrics and processor flow metrics.
 
 Resolution semantics:
 
 - precedence is applied at policy-family level (`channel_capacity`, `health`,
-  `telemetry`, `resources`)
+  `telemetry`, and others)
 - selected lower scope replaces upper scope for that family
 - no cross-scope deep merge of nested fields
+- `resources` is the exception: `core_allocation`, `memory_limiter`, and
+  `rate_limiters` resolve independently across scopes; the selected
+  `rate_limiters` map still replaces the broader map as a whole
 - policy objects are default-filled: if a lower-scope `policies` block exists,
   omitted families are populated with defaults at that scope (they do not
   inherit from upper scopes)

@@ -87,30 +87,42 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 ### Metric Sets
 
 Input PData message volume is reported by the engine through
-`channel.receiver.recv.count` on the PData input channel and is not duplicated
-by the exporter.
+`channel.receiver.messages` with its `signal` attribute on the PData input
+channel and is not duplicated by the exporter.
 
-#### `exporter.pdata.exports`
+#### `exporter.exports`
 
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
-| `exporter.pdata.exports.messages` | `{message}` | `signal`, `outcome` | Number of PData messages whose export reached a terminal outcome. |
+| `exporter.exports.messages` | `{message}` | `signal`, `outcome` | Number of PData messages whose export reached a terminal outcome. |
+| `exporter.exports.duration` | `s` | `signal`, `outcome` | Time from dequeuing PData through the terminal OTAP export result, including stream queueing and encoding but excluding Ack/Nack notification. |
 
-#### `otap.exporter.grpc.async`
+#### `exporter.otap.failures`
 
-| Metric | Unit | Description |
-| --- | --- | --- |
-| `otap.exporter.grpc.async.export.rpc.duration` | `ns` | End-to-end duration from yielding a batch to receiving the matching OTAP stream response. |
-| `otap.exporter.grpc.async.stream.enqueue.duration` | `ns` | Time spent waiting to enqueue a batch into the per-signal stream task. |
-| `otap.exporter.grpc.async.stream.enqueue.depth` | `{batch}` | Occupancy of the per-signal stream task queue before enqueueing a batch. |
-| `otap.exporter.grpc.async.stream.encode.duration` | `ns` | Time spent encoding an OTAP batch into outbound Arrow batch records. |
-| `otap.exporter.grpc.async.stream.correlation.enqueue.duration` | `ns` | Time spent enqueueing a yielded batch into the response correlation queue. |
-| `otap.exporter.grpc.async.stream.correlation.depth` | `{batch}` | Occupancy of the response correlation queue before enqueueing a yielded batch. |
-| `otap.exporter.grpc.async.stream.response.wait.duration` | `ns` | Time spent waiting for the next server response on an OTAP stream. |
-| `otap.exporter.grpc.async.stream.response.inflight` | `{batch}` | Number of yielded batches awaiting a matching server response. |
-| `otap.exporter.grpc.async.export.rpc.duration.p50` | `ns` | Median outbound gRPC export response duration for the latest telemetry interval. |
-| `otap.exporter.grpc.async.export.rpc.duration.p90` | `ns` | 90th percentile outbound gRPC export response duration for the latest telemetry interval. |
-| `otap.exporter.grpc.async.export.rpc.duration.p99` | `ns` | 99th percentile outbound gRPC export response duration for the latest telemetry interval. |
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `exporter.otap.failures.messages` | `{message}` | `signal`, `error.type` | Failed OTAP exports classified by actionable error type. |
+
+`error.type` is one of `payload_conversion`, `encoding`, `authentication`,
+`authorization`, `timeout`, `throttled`, `unavailable`, `rejected`,
+`server_error`, `transport`, `internal`, `shutdown`, or `other`. Successful
+exports do not emit this metric.
+
+#### `exporter.otap.streams`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `exporter.otap.streams.enqueue.duration` | `s` | `signal` | Time spent waiting to enqueue a batch into a per-signal stream task. |
+| `exporter.otap.streams.enqueue.depth` | `{batch}` | `signal` | Occupancy of the per-signal stream task queue before enqueueing a batch. |
+| `exporter.otap.streams.encode.duration` | `s` | `signal` | Time spent encoding an OTAP batch into outbound Arrow batch records. |
+| `exporter.otap.streams.correlation.enqueue.duration` | `s` | `signal` | Time spent enqueueing a yielded batch into the response correlation queue. |
+| `exporter.otap.streams.correlation.depth` | `{batch}` | `signal` | Occupancy of the response correlation queue before enqueueing a yielded batch. |
+| `exporter.otap.streams.response.wait.duration` | `s` | `signal` | Time spent waiting for the next server response on an OTAP stream. |
+| `exporter.otap.streams.response.active` | `{batch}` | `signal` | Number of yielded batches actively awaiting a matching server response. |
+
+All stream duration, depth, and active-batch measurements use bounded exponential
+histograms so their distributions and quantiles remain available without
+unbounded telemetry state. Duration measurements are reported in seconds.
 
 ### Events
 

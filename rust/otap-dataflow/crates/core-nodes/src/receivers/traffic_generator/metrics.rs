@@ -3,7 +3,7 @@
 
 //! Metrics for the traffic generator receiver node.
 
-use otap_df_telemetry::instrument::{Counter, Gauge, Mmsc};
+use otap_df_telemetry::instrument::{Counter, Gauge, HistogramNormal, Mmsc};
 use otap_df_telemetry_macros::metric_set;
 
 /// Pdata-oriented metrics for the traffic generator receiver.
@@ -50,10 +50,10 @@ pub struct TrafficGeneratorReceiverMetrics {
     pub smooth_batch_tick_lateness_duration_ns: Mmsc,
     /// Wall-clock time spent generating or cloning one smooth-mode payload.
     #[metric(name = "smooth.payload.generate.duration", unit = "ns")]
-    pub smooth_payload_generate_duration_ns: Mmsc,
+    pub smooth_payload_generate_duration_ns: HistogramNormal,
     /// Wall-clock time spent sending one smooth-mode payload into the downstream channel.
     #[metric(name = "smooth.payload.send.duration", unit = "ns")]
-    pub smooth_payload_send_duration_ns: Mmsc,
+    pub smooth_payload_send_duration_ns: HistogramNormal,
     /// Number of smooth-mode payload send attempts rejected because the downstream channel was full.
     #[metric(name = "smooth.payload.send.full", unit = "{attempt}")]
     pub smooth_payload_send_full: Counter<u64>,

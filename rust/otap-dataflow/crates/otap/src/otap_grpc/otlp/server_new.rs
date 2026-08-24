@@ -18,11 +18,15 @@ use std::task::Poll;
 use crate::accessory::slots::{Key as SlotKey, State as SlotsState};
 use crate::otlp_metrics::{OtlpProtocol, OtlpReceiverMetrics};
 use crate::pdata::{Context, OtapPdata};
+use crate::rate_limit_layer::{
+    grpc_rate_limit_burst_exceeded_status, grpc_rate_limit_saturated_status, grpc_rate_limit_status,
+};
 use bytes::{BufMut, Bytes};
 use futures::future::BoxFuture;
 use http::{Request, Response};
 use otap_df_config::SignalType;
 use otap_df_config::transport_headers::TransportHeaders;
+use otap_df_engine::admission::{AdmissionContext, AdmissionDecision, SharedAdmissionGate};
 use otap_df_engine::control::{CallData, NackMsg};
 use otap_df_engine::shared::receiver::EffectHandler;
 use otap_df_engine::{
@@ -39,10 +43,10 @@ use prost::Message;
 use prost::bytes::Buf;
 use std::sync::OnceLock;
 use tokio::sync::oneshot;
-use tonic::Status;
 use tonic::body::Body;
 use tonic::codec::{Codec, DecodeBuf, Decoder, EnabledCompressionEncodings, EncodeBuf, Encoder};
 use tonic::server::{Grpc, NamedService, UnaryService};
+use tonic::{Code, Status};
 
 use crate::otap_grpc::common::peer_addr_from_extensions;
 
@@ -209,6 +213,12 @@ fn response_channel_closed_status() -> Status {
 
 /// Tonic `Codec` implementation that returns the bytes of the serialized message
 /// Custom tonic codec that keeps OTLP request bodies as raw bytes and writes minimal responses.
+#[derive(Clone)]
+struct GrpcRateLimitContext {
+    metrics: Arc<Mutex<OtlpReceiverMetrics>>,
+    rate_limiter: SharedAdmissionGate,
+}
+
 struct OtlpBytesCodec {
     /// Which OTLP signal this service handles.
     signal: SignalType,
@@ -217,7 +227,7 @@ struct OtlpBytesCodec {
 }
 
 impl OtlpBytesCodec {
-    const fn new(signal: SignalType, preallocate_frame: bool) -> Self {
+    fn new(signal: SignalType, preallocate_frame: bool) -> Self {
         Self {
             signal,
             preallocate_frame,
@@ -272,7 +282,7 @@ struct OtlpBytesDecoder {
 }
 
 impl OtlpBytesDecoder {
-    const fn new(signal: SignalType, preallocate_frame: bool) -> Self {
+    fn new(signal: SignalType, preallocate_frame: bool) -> Self {
         Self {
             signal,
             preallocate_frame,
@@ -286,8 +296,8 @@ impl Decoder for OtlpBytesDecoder {
     type Error = Status;
 
     fn decode(&mut self, src: &mut DecodeBuf<'_>) -> Result<Option<Self::Item>, Self::Error> {
-        // Use copy_to_bytes so we copy once while advancing the buffer.
         let len = src.remaining();
+        // Use copy_to_bytes so accepted requests copy once while advancing the buffer.
         let bytes = src.copy_to_bytes(len);
         let result = match self.signal {
             SignalType::Logs => OtlpProtoBytes::ExportLogsRequest(bytes),
@@ -328,6 +338,7 @@ struct OtapBatchService {
     state: Option<AckSlot>,
     metrics: Arc<Mutex<OtlpReceiverMetrics>>,
     signal: SignalType,
+    rate_limit: Option<GrpcRateLimitContext>,
 }
 
 impl OtapBatchService {
@@ -336,12 +347,14 @@ impl OtapBatchService {
         state: Option<AckSlot>,
         metrics: Arc<Mutex<OtlpReceiverMetrics>>,
         signal: SignalType,
+        rate_limit: Option<GrpcRateLimitContext>,
     ) -> Self {
         Self {
             effect_handler: Some(effect_handler),
             state,
             metrics,
             signal,
+            rate_limit,
         }
     }
 }
@@ -373,12 +386,63 @@ impl Drop for SlotGuard {
     }
 }
 
+fn required_rate_limit_payload_bytes(size: Option<usize>) -> Result<u64, Status> {
+    let size = size.ok_or_else(|| {
+        Status::internal("OTLP gRPC payload does not expose its encoded byte size")
+    })?;
+    u64::try_from(size)
+        .map_err(|_| Status::internal("OTLP gRPC payload byte size exceeds the supported range"))
+}
+
 impl UnaryService<OtapPdata> for OtapBatchService {
     type Response = ();
     type Future = BoxFuture<'static, Result<tonic::Response<Self::Response>, Status>>;
 
     fn call(&mut self, request: tonic::Request<OtapPdata>) -> Self::Future {
         let (metadata, extensions, mut otap_batch) = request.into_parts();
+        let payload_size = otap_batch.num_bytes();
+
+        // Keep the final weighted admission decision at the request-service
+        // boundary, where both transport metadata and the raw payload weight
+        // are available. Tonic has already assembled and decompressed the frame;
+        // this placement adds only the byte-buffer handoff and OtapPdata wrapper
+        // before rejection. Do not move this into the decoder: request metadata
+        // is unavailable there, which would block future tenant-key resolution.
+        if let Some(rate_limit) = &self.rate_limit {
+            let payload_bytes = match required_rate_limit_payload_bytes(payload_size) {
+                Ok(payload_bytes) => payload_bytes,
+                Err(status) => return Box::pin(std::future::ready(Err(status))),
+            };
+            match rate_limit
+                .rate_limiter
+                .admit(payload_bytes, AdmissionContext::for_signal(self.signal))
+            {
+                AdmissionDecision::Admit => {}
+                AdmissionDecision::WouldThrottle => {}
+                AdmissionDecision::Throttle { retry_after_secs } => {
+                    rate_limit.metrics.lock().record_rejection(
+                        OtlpProtocol::Grpc,
+                        ReceiverRejectionErrorType::RateLimit,
+                    );
+                    return Box::pin(std::future::ready(Err(grpc_rate_limit_status(
+                        retry_after_secs,
+                    ))));
+                }
+                AdmissionDecision::Oversized => {
+                    rate_limit.metrics.lock().record_rejection(
+                        OtlpProtocol::Grpc,
+                        ReceiverRejectionErrorType::RateLimit,
+                    );
+                    return Box::pin(std::future::ready(Err(
+                        grpc_rate_limit_burst_exceeded_status(),
+                    )));
+                }
+            }
+        }
+
+        // Payload size is required only by byte admission. When admission is
+        // disabled, missing optional size telemetry must never reject traffic.
+        let payload_bytes = payload_size.and_then(|size| u64::try_from(size).ok());
 
         // Propagate the receiver-observed peer address so downstream processors
         // (e.g. k8sattributes) can correlate telemetry with the originating socket.
@@ -420,8 +484,6 @@ impl UnaryService<OtapPdata> for OtapBatchService {
                 otap_batch.set_transport_headers(transport_headers);
             }
         }
-
-        let payload_bytes = otap_batch.payload_ref().num_bytes().unwrap_or(0) as u64;
 
         let state = self.state.clone();
         let metrics = self.metrics.clone();
@@ -492,10 +554,7 @@ impl UnaryService<OtapPdata> for OtapBatchService {
 fn unimplemented_resp() -> Response<Body> {
     let mut response = Response::new(Body::default());
     let headers = response.headers_mut();
-    _ = headers.insert(
-        Status::GRPC_STATUS,
-        (tonic::Code::Unimplemented as i32).into(),
-    );
+    _ = headers.insert(Status::GRPC_STATUS, (Code::Unimplemented as i32).into());
     _ = headers.insert(
         http::header::CONTENT_TYPE,
         tonic::metadata::GRPC_CONTENT_TYPE,
@@ -510,6 +569,7 @@ pub struct ServerCommon {
     state: Option<AckSlot>,
     settings: OtlpServerSettings,
     metrics: Arc<Mutex<OtlpReceiverMetrics>>,
+    rate_limiter: Option<SharedAdmissionGate>,
 }
 
 impl ServerCommon {
@@ -523,6 +583,7 @@ impl ServerCommon {
         effect_handler: EffectHandler<OtapPdata>,
         settings: &OtlpServerSettings,
         metrics: Arc<Mutex<OtlpReceiverMetrics>>,
+        rate_limiter: Option<SharedAdmissionGate>,
         state: Option<AckSlot>,
     ) -> Self {
         Self {
@@ -530,7 +591,29 @@ impl ServerCommon {
             state,
             settings: settings.clone(),
             metrics,
+            rate_limiter,
         }
+    }
+
+    fn exhausted_rate_limit_response(&self) -> Option<Response<Body>> {
+        let rate_limiter = self.rate_limiter.as_ref()?;
+        if !rate_limiter.refuse_if_instance_saturated() {
+            return None;
+        }
+
+        self.metrics
+            .lock()
+            .record_rejection(OtlpProtocol::Grpc, ReceiverRejectionErrorType::RateLimit);
+        Some(grpc_rate_limit_saturated_status().into_http())
+    }
+
+    fn grpc_rate_limit_context(&self) -> Option<GrpcRateLimitContext> {
+        self.rate_limiter
+            .clone()
+            .map(|rate_limiter| GrpcRateLimitContext {
+                metrics: self.metrics.clone(),
+                rate_limiter,
+            })
     }
 }
 
@@ -548,10 +631,11 @@ impl LogsServiceServer {
         effect_handler: EffectHandler<OtapPdata>,
         settings: &OtlpServerSettings,
         metrics: Arc<Mutex<OtlpReceiverMetrics>>,
+        rate_limiter: Option<SharedAdmissionGate>,
         state: Option<AckSlot>,
     ) -> Self {
         Self {
-            common: ServerCommon::new(effect_handler, settings, metrics, state),
+            common: ServerCommon::new(effect_handler, settings, metrics, rate_limiter, state),
         }
     }
 }
@@ -569,12 +653,20 @@ impl tower_service::Service<Request<Body>> for LogsServiceServer {
         match req.uri().path() {
             super::LOGS_SERVICE_EXPORT_PATH => {
                 let common = self.common.clone();
+                // The outer layer avoids entering this service when exhaustion
+                // is already visible. Re-check here because another service
+                // clone can charge the shared bucket between poll_ready and call.
+                if let Some(response) = common.exhausted_rate_limit_response() {
+                    return Box::pin(async move { Ok(response) });
+                }
                 let mut grpc = new_grpc(SignalType::Logs, common.settings.clone());
+                let rate_limit = common.grpc_rate_limit_context();
                 let service = OtapBatchService::new(
                     common.effect_handler,
                     common.state,
                     common.metrics.clone(),
                     SignalType::Logs,
+                    rate_limit,
                 );
                 Box::pin(async move { Ok(grpc.unary(service, req).await) })
             }
@@ -601,10 +693,11 @@ impl MetricsServiceServer {
         effect_handler: EffectHandler<OtapPdata>,
         settings: &OtlpServerSettings,
         metrics: Arc<Mutex<OtlpReceiverMetrics>>,
+        rate_limiter: Option<SharedAdmissionGate>,
         state: Option<AckSlot>,
     ) -> Self {
         Self {
-            common: ServerCommon::new(effect_handler, settings, metrics, state),
+            common: ServerCommon::new(effect_handler, settings, metrics, rate_limiter, state),
         }
     }
 }
@@ -622,12 +715,17 @@ impl tower_service::Service<Request<Body>> for MetricsServiceServer {
         match req.uri().path() {
             super::METRICS_SERVICE_EXPORT_PATH => {
                 let common = self.common.clone();
+                if let Some(response) = common.exhausted_rate_limit_response() {
+                    return Box::pin(async move { Ok(response) });
+                }
                 let mut grpc = new_grpc(SignalType::Metrics, common.settings.clone());
+                let rate_limit = common.grpc_rate_limit_context();
                 let service = OtapBatchService::new(
                     common.effect_handler,
                     common.state,
                     common.metrics.clone(),
                     SignalType::Metrics,
+                    rate_limit,
                 );
                 Box::pin(async move { Ok(grpc.unary(service, req).await) })
             }
@@ -654,10 +752,11 @@ impl TraceServiceServer {
         effect_handler: EffectHandler<OtapPdata>,
         settings: &OtlpServerSettings,
         metrics: Arc<Mutex<OtlpReceiverMetrics>>,
+        rate_limiter: Option<SharedAdmissionGate>,
         state: Option<AckSlot>,
     ) -> Self {
         Self {
-            common: ServerCommon::new(effect_handler, settings, metrics, state),
+            common: ServerCommon::new(effect_handler, settings, metrics, rate_limiter, state),
         }
     }
 }
@@ -675,12 +774,17 @@ impl tower_service::Service<Request<Body>> for TraceServiceServer {
         match req.uri().path() {
             super::TRACE_SERVICE_EXPORT_PATH => {
                 let common = self.common.clone();
+                if let Some(response) = common.exhausted_rate_limit_response() {
+                    return Box::pin(async move { Ok(response) });
+                }
                 let mut grpc = new_grpc(SignalType::Traces, common.settings.clone());
+                let rate_limit = common.grpc_rate_limit_context();
                 let service = OtapBatchService::new(
                     common.effect_handler,
                     common.state,
                     common.metrics.clone(),
                     SignalType::Traces,
+                    rate_limit,
                 );
                 Box::pin(async move { Ok(grpc.unary(service, req).await) })
             }
@@ -731,7 +835,7 @@ mod tests {
             metrics_reporter,
         );
         (
-            OtapBatchService::new(effect_handler, state, metrics, SignalType::Logs),
+            OtapBatchService::new(effect_handler, state, metrics, SignalType::Logs, None),
             msg_rx,
         )
     }
@@ -745,6 +849,23 @@ mod tests {
         }
     }
 
+    /// Scenario: a future payload variant has no encoded byte size.
+    /// Guarantees: byte admission fails closed, while best-effort payload telemetry represents
+    /// the unknown measurement as absent instead of recording a real zero-byte measurement.
+    #[test]
+    fn grpc_rate_weight_is_required_only_when_admission_is_enabled() {
+        let best_effort_telemetry = None::<usize>.and_then(|size| u64::try_from(size).ok());
+        assert_eq!(best_effort_telemetry, None);
+        let status = required_rate_limit_payload_bytes(None)
+            .expect_err("enabled byte admission must fail closed");
+
+        assert_eq!(status.code(), Code::Internal);
+        assert!(status.message().contains("does not expose"));
+    }
+
+    /// Scenario: a permanent downstream NACK is converted to a gRPC status.
+    /// Guarantees: the client receives `INTERNAL` with both the generic pipeline
+    /// failure context and the specific permanent failure reason.
     #[test]
     fn test_nack_to_status_permanent_returns_internal() {
         let nack = make_nack(true);
@@ -762,6 +883,9 @@ mod tests {
         );
     }
 
+    /// Scenario: a transient downstream NACK is converted to a gRPC status.
+    /// Guarantees: the client receives `UNAVAILABLE` with both the generic pipeline
+    /// failure context and the retryable failure reason.
     #[test]
     fn test_nack_to_status_transient_returns_unavailable() {
         let nack = make_nack(false);

@@ -29,6 +29,13 @@ pub enum Error {
         body: Option<String>,
     },
 
+    /// A batch was ready to export but no usable bearer token was cached.
+    #[error("No usable bearer token: {reason}")]
+    NoBearerToken {
+        /// Why the bearer-auth adapter reports no usable token.
+        reason: &'static str,
+    },
+
     // ==================== HTTP/Network Errors ====================
     /// Failed to create HTTP client.
     #[error("Failed to create HTTP client")]
@@ -184,14 +191,21 @@ impl Error {
     pub fn is_retryable(&self) -> bool {
         matches!(
             self,
-            Error::Network { .. }
-                | Error::Auth {
-                    kind: AuthErrorKind::Unauthorized,
-                    ..
-                }
-                | Error::RateLimited { .. }
-                | Error::ServerError { .. }
+            Error::Network { .. } | Error::RateLimited { .. } | Error::ServerError { .. }
         )
+    }
+
+    /// Returns true if this error was caused by an HTTP 401 response.
+    #[must_use]
+    pub fn is_unauthorized(&self) -> bool {
+        match self {
+            Error::Auth {
+                kind: AuthErrorKind::Unauthorized,
+                ..
+            } => true,
+            Error::ExportFailed { last_error, .. } => last_error.is_unauthorized(),
+            _ => false,
+        }
     }
 
     /// Returns the retry-after duration if specified by the server.
@@ -374,7 +388,6 @@ mod tests {
     #[test]
     fn test_is_retryable() {
         // Retryable
-        assert!(Error::unauthorized(String::new()).is_retryable());
         assert!(
             Error::RateLimited {
                 body: String::new(),
@@ -392,6 +405,7 @@ mod tests {
         );
 
         // Not retryable
+        assert!(!Error::unauthorized(String::new()).is_retryable());
         assert!(!Error::forbidden(String::new()).is_retryable());
         assert!(!Error::PayloadTooLarge.is_retryable());
         assert!(
@@ -400,6 +414,40 @@ mod tests {
                 body: String::new()
             }
             .is_retryable()
+        );
+    }
+
+    /// Scenario: an export wraps the HTTP 401 that terminated its retry loop.
+    /// Guarantees: completion handling can still identify the auth rejection and
+    /// invalidate the bearer-token generation used by the request.
+    #[test]
+    fn wrapped_unauthorized_error_is_identified() {
+        let error = Error::ExportFailed {
+            attempts: 1,
+            last_error: Box::new(Error::unauthorized("rejected".to_string())),
+        };
+
+        assert!(error.is_unauthorized());
+    }
+
+    /// Scenario: failures that are not an HTTP 401, including an export that
+    /// exhausted its retries on a server error.
+    /// Guarantees: they do not invalidate the cached bearer token, so a healthy
+    /// credential survives unrelated export failures.
+    #[test]
+    fn non_401_errors_are_not_reported_as_unauthorized() {
+        assert!(!Error::forbidden("denied".to_string()).is_unauthorized());
+        assert!(!Error::PayloadTooLarge.is_unauthorized());
+        assert!(
+            !Error::ExportFailed {
+                attempts: 5,
+                last_error: Box::new(Error::ServerError {
+                    status: StatusCode::INTERNAL_SERVER_ERROR,
+                    body: String::new(),
+                    retry_after: None,
+                }),
+            }
+            .is_unauthorized()
         );
     }
 

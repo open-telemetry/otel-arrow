@@ -56,9 +56,44 @@ telemetry SDK (see [crates/telemetry](../../crates/telemetry/README.md) for deta
 - ObserveUpDownCounter: observed values that may go up or down.
 - Gauge: instantaneous measurements (last-value), used for capacity,
   utilization, queue depth.
+- MMSC: a compact distribution summary retaining exact minimum, maximum, sum,
+  and count.
+- HistogramNormal: an exponential histogram retaining a normal-resolution
+  bucket distribution.
+- HistogramDetailed: an exponential histogram retaining a higher-resolution
+  bucket distribution.
 
-Histogram support status is tracked in
-[Implementation Gaps](implementation-gaps.md).
+### Choosing counters and distribution tiers
+
+To choose between OpenTelemetry metric instrument types, it is useful to
+consider what you want to observe:
+
+| Instrument           | Useful for calculating                    | Size          | Update cost |
+|----------------------|-------------------------------------------|---------------|-------------|
+| Counter              | Rate                                      | 8 bytes       | 0.2 ns      |
+| UpDownCounter        | Total                                     | 8 bytes       | 0.2 ns      |
+| Gauge                | Average                                   | 8 bytes       | 0.2 ns      |
+| MinMaxSumCount       | Total, Rate, Average, Extremes            | 32 bytes      | 0.9 ns      |
+| ExponentialHistogram | Total, Rate, Average, Extremes, Quantiles | 128-256 bytes | 5-7 ns      |
+
+To choose between MinMaxSumCount and ExponentialHistogram, ask whether
+detailed information about quantiles will be used or is useful for
+observability. Histogram resolution is not currently configurable, see
+the implementation gaps.
+
+All distribution instruments accept the same observations, so a field can
+move between them without changing what a shipped binary records. Values must
+be non-negative and finite. A negative, NaN, or infinite value trips a debug
+assertion; in a release build a non-finite one is dropped, so a stray NaN
+cannot poison a sum for the rest of the reporting interval. That check is
+most of what MinMaxSumCount costs above a plain counter; the histogram tiers
+get it for free, since they already decompose the value to find its bucket.
+
+The tiers differ on one point, and only in debug builds. Negative zero
+compares equal to zero, and `Mmsc` counts it as one, while the histogram tiers
+assert on it because the type behind them declares a non-negative domain and
+tests the sign bit. Every tier reports a plain positive zero for it, so the
+difference never reaches an export.
 
 ### Recording semantics and export temporality
 
@@ -89,7 +124,7 @@ In this project, ObserveUpDownCounter is used for observed totals like
 `otelcol.pipeline.memory_usage` and
 `otelcol.tokio.runtime.task_active_count`, while Gauge is used for instantaneous
 values like `otelcol.pipeline.cpu_utilization` and
-`channel.receiver.capacity`.
+`channel.receiver.capacity` or `channel.receiver.queue.depth`.
 
 Guideline:
 

@@ -24,7 +24,7 @@ use arrow::array::Array;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::testing::{receiver::TestRuntime, test_node, test_pipeline_ctx};
-use otap_df_pdata::OtapPayload;
+use otap_df_pdata::PayloadData;
 use otap_df_pdata::otap::OtapArrowRecords;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
@@ -362,7 +362,8 @@ fn producer_validation() -> impl FnOnce(
                 }
                 match time::timeout(Duration::from_millis(500), ctx.recv()).await {
                     Ok(Ok(pdata)) => {
-                        let OtapPayload::OtapArrowRecords(records) = pdata.payload() else {
+                        let PayloadData::OtapArrowRecords(records) = pdata.payload().into_data()
+                        else {
                             panic!("Expected OtapArrowRecords payload from ETW receiver");
                         };
                         batches.push(records);

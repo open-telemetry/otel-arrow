@@ -143,11 +143,14 @@ pub(crate) fn invalid_child_rule_error(
 #[cfg(test)]
 mod test {
     use data_engine_expressions::{
-        DataExpression, DiscardDataExpression, EqualToLogicalExpression, LogicalExpression,
-        NotLogicalExpression, QueryLocation, ScalarExpression, SourceScalarExpression,
-        StaticScalarExpression, StringScalarExpression, ValueAccessor,
+        BooleanScalarExpression, BranchDataExpression, DataExpression, DataExpressionBranch,
+        DiscardDataExpression, EqualToLogicalExpression, GetRecordTypeScalarExpression,
+        LogicalExpression, MatchesLogicalExpression, NotLogicalExpression, QueryLocation,
+        RegexScalarExpression, ScalarExpression, SourceScalarExpression, StaticScalarExpression,
+        StringScalarExpression, ValueAccessor,
     };
     use data_engine_parser_abstractions::Parser;
+    use regex::Regex;
 
     use super::OplParser;
 
@@ -170,6 +173,66 @@ mod test {
             error
                 .to_string()
                 .contains("supplied in query is not supported")
+        );
+    }
+
+    #[test]
+    fn test_parse_empty_string() {
+        let result = OplParser::parse("");
+        assert!(result.is_err());
+
+        let errors = result.err().unwrap();
+        assert_eq!(errors.len(), 1);
+
+        let error = &errors[0];
+        assert!(
+            error
+                .to_string()
+                .contains("Syntax '' supplied in query is not supported")
+        )
+    }
+
+    #[test]
+    fn test_parse_escape_sequence_double_backslash() {
+        let result =
+            OplParser::parse(r#"logs | where (matches(attributes["code"], "\\d+"))"#).unwrap();
+        let data_exprs = result.pipeline.get_expressions();
+        assert_eq!(data_exprs.len(), 1);
+        pretty_assertions::assert_eq!(
+            &data_exprs[0],
+            &DataExpression::Discard(
+                DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
+                    LogicalExpression::Not(NotLogicalExpression::new(
+                        QueryLocation::new_fake(),
+                        LogicalExpression::Matches(MatchesLogicalExpression::new(
+                            QueryLocation::new_fake(),
+                            ScalarExpression::Source(SourceScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                ValueAccessor::new_with_selectors(vec![
+                                    ScalarExpression::Static(StaticScalarExpression::String(
+                                        StringScalarExpression::new(
+                                            QueryLocation::new_fake(),
+                                            "attributes",
+                                        )
+                                    ),),
+                                    ScalarExpression::Static(StaticScalarExpression::String(
+                                        StringScalarExpression::new(
+                                            QueryLocation::new_fake(),
+                                            "code",
+                                        )
+                                    ),)
+                                ]),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::Regex(
+                                RegexScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    Regex::new("\\d+").unwrap()
+                                ),
+                            )),
+                        )),
+                    )),
+                ),
+            )
         );
     }
 
@@ -304,6 +367,61 @@ mod test {
                 pretty_assertions::assert_eq!(&branch_exprs[0], &expected);
             }
             other => panic!("expected Conditional, got {other:?}"),
+        }
+    }
+
+    /// Scenario: Parse OPL pipelines that use plural concrete metric types as source.
+    /// Guarantees: The parser produces a query plan that only processes rows that have the
+    /// selected metric type
+    #[test]
+    fn test_parses_program_for_metrics_types() {
+        let test_cases = [
+            ("gauges", "Gauge"),
+            ("sums", "Sum"),
+            ("histograms", "Histogram"),
+            ("exponential_histograms", "ExponentialHistogram"),
+            ("summaries", "Summary"),
+        ];
+
+        for (source, metric_type_name) in test_cases {
+            let query = format!("{source} | where true");
+            let pipeline = OplParser::parse(&query).unwrap().pipeline;
+            let expressions = pipeline.get_expressions();
+            assert_eq!(expressions.len(), 1);
+            pretty_assertions::assert_eq!(
+                expressions[0],
+                DataExpression::Branch(
+                    BranchDataExpression::new(QueryLocation::new_fake(), true).with_branch(
+                        DataExpressionBranch::new(
+                            QueryLocation::new_fake(),
+                            Some(LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                                QueryLocation::new_fake(),
+                                ScalarExpression::GetRecordType(
+                                    GetRecordTypeScalarExpression::new(QueryLocation::new_fake())
+                                ),
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        metric_type_name
+                                    )
+                                )),
+                                false
+                            ))),
+                            vec![DataExpression::Discard(
+                                DiscardDataExpression::new(QueryLocation::new_fake())
+                                    .with_predicate(LogicalExpression::Scalar(
+                                        ScalarExpression::Static(StaticScalarExpression::Boolean(
+                                            BooleanScalarExpression::new(
+                                                QueryLocation::new_fake(),
+                                                false
+                                            )
+                                        ))
+                                    ))
+                            )]
+                        )
+                    )
+                )
+            )
         }
     }
 }

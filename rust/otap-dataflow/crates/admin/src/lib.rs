@@ -5,6 +5,7 @@
 
 mod convert;
 mod dashboard;
+mod debug;
 mod engine_config;
 pub mod error;
 mod health;
@@ -21,8 +22,8 @@ pub use otap_df_admin_types::engine::{
 };
 use otap_df_admin_types::operations::{OperationError, OperationErrorKind};
 pub use otap_df_admin_types::pipelines::{
-    PipelineDetails, PipelineRolloutState, PipelineRolloutSummary, ReconfigureRequest,
-    RolloutCoreStatus, RolloutStatus, ShutdownCoreStatus, ShutdownStatus,
+    PipelineDetails, PipelineRolloutState, PipelineRolloutSummary, PipelineShutdownInitiator,
+    ReconfigureRequest, RolloutCoreStatus, RolloutStatus, ShutdownCoreStatus, ShutdownStatus,
 };
 use serde::Serialize;
 use std::collections::HashMap;
@@ -44,6 +45,8 @@ use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::{otel_info, otel_warn};
 
 const TERMINAL_CONTROL_PLANE_PERMITS: usize = 1;
+const CPU_PROFILE_PERMITS: usize = 1;
+const HEAP_PROFILE_PERMITS: usize = 1;
 
 /// Control-plane error surfaced to admin handlers.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -95,6 +98,19 @@ impl ControlPlaneError {
     }
 }
 
+/// Classifies the best-effort, unauthenticated initiator of an admin HTTP request.
+pub(crate) fn pipeline_shutdown_initiator(
+    headers: &axum::http::HeaderMap,
+) -> PipelineShutdownInitiator {
+    headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| value.starts_with("dfctl/"))
+        .map_or(PipelineShutdownInitiator::AdminApi, |_| {
+            PipelineShutdownInitiator::Dfctl
+        })
+}
+
 /// Control-plane interface implemented by the controller runtime.
 pub trait ControlPlane: Send + Sync {
     /// Requests shutdown of all currently running runtime instances.
@@ -106,6 +122,7 @@ pub trait ControlPlane: Send + Sync {
         pipeline_group_id: &str,
         pipeline_id: &str,
         timeout_secs: u64,
+        initiator: PipelineShutdownInitiator,
     ) -> Result<ShutdownStatus, ControlPlaneError>;
 
     /// Reconfigures a logical pipeline and returns the rollout job snapshot.
@@ -208,6 +225,45 @@ pub trait ControlPlane: Send + Sync {
     }
 }
 
+#[cfg(test)]
+mod pipeline_shutdown_initiator_tests {
+    use super::*;
+    use axum::http::{HeaderMap, HeaderValue, header};
+
+    /// Scenario: dfctl sends its versioned User-Agent to the shutdown endpoint.
+    /// Guarantees: version suffixes collapse to the stable `dfctl` initiator.
+    #[test]
+    fn dfctl_user_agent_is_classified() {
+        let mut headers = HeaderMap::new();
+        _ = headers.insert(header::USER_AGENT, HeaderValue::from_static("dfctl/0.51.0"));
+
+        assert_eq!(
+            pipeline_shutdown_initiator(&headers),
+            PipelineShutdownInitiator::Dfctl
+        );
+    }
+
+    /// Scenario: a shutdown request has no recognized dfctl User-Agent prefix.
+    /// Guarantees: unknown and absent identities use the bounded `admin_api` fallback.
+    #[test]
+    fn unknown_user_agent_is_admin_api() {
+        let mut headers = HeaderMap::new();
+        _ = headers.insert(
+            header::USER_AGENT,
+            HeaderValue::from_static("automation-dfctl-compatible/1"),
+        );
+
+        assert_eq!(
+            pipeline_shutdown_initiator(&headers),
+            PipelineShutdownInitiator::AdminApi
+        );
+        assert_eq!(
+            pipeline_shutdown_initiator(&HeaderMap::new()),
+            PipelineShutdownInitiator::AdminApi
+        );
+    }
+}
+
 /// Shared state for the HTTP admin server.
 #[derive(Clone)]
 struct AppState {
@@ -223,6 +279,13 @@ struct AppState {
     /// Bounds long synchronous terminal control-plane operations dispatched
     /// from async HTTP handlers.
     terminal_control_plane_permits: Arc<Semaphore>,
+
+    /// Limits concurrent heap profile dumps to one at a time. Excess
+    /// requests are rejected immediately with HTTP 429.
+    heap_profile_permits: Arc<Semaphore>,
+
+    /// Limits concurrent CPU profile dumps. Excess requests are rejected immediately with HTTP 429
+    cpu_profile_permits: Arc<Semaphore>,
 
     /// Optional internal log tap for querying retained internal logs.
     log_tap: Option<InternalLogTapHandle>,
@@ -324,12 +387,15 @@ pub async fn run(
         metrics_registry,
         controller,
         terminal_control_plane_permits: Arc::new(Semaphore::new(TERMINAL_CONTROL_PLANE_PERMITS)),
+        heap_profile_permits: Arc::new(Semaphore::new(HEAP_PROFILE_PERMITS)),
+        cpu_profile_permits: Arc::new(Semaphore::new(CPU_PROFILE_PERMITS)),
         log_tap,
         memory_pressure_state,
         target_info,
     };
 
     let api_routes = Router::new()
+        .merge(debug::routes())
         .merge(health::routes())
         .merge(telemetry::routes())
         .merge(engine_config::routes())

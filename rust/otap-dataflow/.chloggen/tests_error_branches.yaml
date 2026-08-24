@@ -1,0 +1,4 @@
+change_type: enhancement
+component: pipeline
+note: "Add error branch tests for temporal_reaggregation_processor"
+issues: [3718]

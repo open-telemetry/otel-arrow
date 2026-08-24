@@ -1,4 +1,0 @@
-change_type: breaking
-component: pipeline
-note: Migrate `batch_processor` metrics to use enum attributes.
-issues: [3530]

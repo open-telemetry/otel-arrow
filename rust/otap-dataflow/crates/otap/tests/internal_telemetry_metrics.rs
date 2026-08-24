@@ -30,7 +30,7 @@ use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsSe
 use otap_df_pdata::proto::opentelemetry::metrics::v1::{
     AggregationTemporality, metric, number_data_point,
 };
-use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
+use otap_df_pdata::{OtlpProtoBytes, PayloadData};
 use otap_df_state::store::ObservedStateStore;
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
@@ -65,8 +65,8 @@ impl Exporter<OtapPdata> for CaptureExporter {
             match inbox.recv().await? {
                 Message::Control(NodeControlMsg::Shutdown { .. }) => break,
                 Message::PData(data) => {
-                    if let OtapPayload::OtlpBytes(OtlpProtoBytes::ExportMetricsRequest(bytes)) =
-                        data.payload_ref()
+                    if let PayloadData::OtlpBytes(OtlpProtoBytes::ExportMetricsRequest(bytes)) =
+                        data.payload_ref().data()
                     {
                         let _ = self.sender.try_send(bytes.to_vec());
                     }
@@ -310,6 +310,8 @@ groups: {{}}
             observability_pipeline.pipeline,
             channel_capacity.clone(),
             telemetry_policy,
+            None,
+            std::collections::BTreeMap::new(),
             None,
             Some(internal_settings),
         )

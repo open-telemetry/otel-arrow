@@ -9,6 +9,11 @@
 //! This functionality may be useful for scenarios where attribute data needs to be simplified to match a specific output schema.
 //!
 
+otap_df_telemetry::otel_component_scope!(
+    urn = CONDENSE_ATTRIBUTES_PROCESSOR_URN,
+    target = "otel.processor.condense_attributes",
+);
+
 use arrow::array::{
     Array, BinaryArray, BooleanArray, DictionaryArray, Float64Array, Int64Array, StringArray,
     UInt8Array, UInt16Array,
@@ -35,7 +40,6 @@ use otap_df_pdata::otlp::attributes::AttributeValueType;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
 use otap_df_pdata::{OtapArrowRecords, OtapPayload};
-use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -189,6 +193,7 @@ pub fn create_condense_attributes_processor(
 
 /// Register CondenseAttributesProcessor as an OTAP processor factory
 #[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Processor)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static CONDENSE_ATTRIBUTES_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> =
     otap_df_engine::ProcessorFactory {

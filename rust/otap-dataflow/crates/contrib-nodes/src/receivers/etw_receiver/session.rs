@@ -54,7 +54,9 @@
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::hash_map::Entry;
+use std::ops::ControlFlow;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -62,14 +64,15 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc as std_mpsc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use one_collect::Guid;
 use one_collect::etw::tdh::TdhDecoder;
-use one_collect::etw::{self, EtwSession};
+use one_collect::etw::{
+    self, EtwSession, ProviderSchemaSource, RegisteredProvider, for_each_registered_provider,
+};
+use one_collect::{Guid, guid_from_provider_name};
 use otap_df_engine::error::Error;
-use otap_df_telemetry::{otel_error, otel_info, otel_warn};
 use tokio::sync::mpsc;
 
-use super::{Config, ProviderConfig, TraceLevel};
+use super::{Config, ProviderConfig, ProviderKind, TraceLevel};
 
 // -- QPC -> Unix epoch conversion ----------------------------------------------
 
@@ -231,6 +234,33 @@ impl From<Guid> for CanonicalGuid {
     }
 }
 
+impl std::fmt::Display for CanonicalGuid {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let b = &self.0;
+        write!(
+            f,
+            "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-\
+             {:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+            b[0],
+            b[1],
+            b[2],
+            b[3],
+            b[4],
+            b[5],
+            b[6],
+            b[7],
+            b[8],
+            b[9],
+            b[10],
+            b[11],
+            b[12],
+            b[13],
+            b[14],
+            b[15]
+        )
+    }
+}
+
 /// Lightweight snapshot of an ETW event captured in the `ProcessTrace` callback.
 ///
 /// Because the `EVENT_RECORD` pointer is only valid for the duration of the
@@ -327,18 +357,59 @@ const fn trace_level_to_etw(level: &TraceLevel) -> u8 {
     }
 }
 
-/// Resolve a [`ProviderConfig`] to a [`Guid`].
+/// Resolve a [`ProviderConfig`] to a [`Guid`], parameterized over the
+/// registered-provider `lookup` so the `kind` branching, name-hash fallback,
+/// and enumeration-failure handling can be tested without a live TDH call.
 ///
-/// If the provider specifies a `guid` string it is parsed directly.
-/// If it specifies a `name`, provider-name-to-GUID resolution is not yet
-/// implemented and an error is returned with guidance.
+/// If the provider specifies a `guid` string it is parsed directly and
+/// `lookup` is never called.
+///
+/// If it specifies a `name`, resolution is driven by the provider's optional
+/// [`ProviderKind`] and handles the two provider models the receiver decodes:
+///
+/// * `kind` omitted (automatic; the default): look the name up in the
+///   OS-registered provider database first (authoritative for manifest-based
+///   and classic MOF providers, whose GUID is *not* derivable from the name,
+///   e.g. `Microsoft-Windows-Kernel-Process` is `22fb2cd6-...`), and fall back
+///   to the EventSource/TraceLogging name hash when the name is absent *or*
+///   when the provider database cannot be enumerated, so TraceLogging providers
+///   still resolve even if the TDH lookup fails.
+///
+///   TRADEOFF: on enumeration failure the hash fallback is applied *without*
+///   knowing whether the provider is manifest/MOF or self-describing. For a
+///   manifest/MOF provider this yields the *wrong* control GUID (the name hash
+///   is not its real GUID), so the session subscribes to a GUID that emits no
+///   events. This is deliberate -- it keeps TraceLogging providers working when
+///   TDH is unavailable -- and is surfaced as a `WARN`
+///   (`etw_receiver.provider_name_hashed_after_enumeration_error`). Configure
+///   `kind: manifest` (which errors instead of hashing) or a literal `guid` to
+///   opt out of this best-effort behavior for a known manifest provider.
+/// * [`ProviderKind::Manifest`]: require a registered provider; error if the
+///   name is not in the database (never hashes).
+/// * [`ProviderKind::Tracelogging`]: derive the GUID from the name via the
+///   EventSource/TraceLogging hash with no OS lookup.
+///
+/// `lookup` maps an already-lowercased provider name to `Ok(Some(provider))`
+/// (registered), `Ok(None)` (not registered), or `Err` (the provider database
+/// could not be enumerated). It is invoked at most once, and only for the
+/// automatic (omitted-kind) and `Manifest` name paths, so a `guid` or
+/// `tracelogging` provider incurs no OS lookup. The caller
+/// ([`spawn_etw_session`]) builds `lookup` from a single targeted
+/// [`collect_wanted_providers`] pass shared across all providers.
+///
+// TODO(extended-provider-sources): When the receiver grows support for
+// additional provider source types (e.g. WPP/TMF software-trace providers),
+// extend [`ProviderKind`] with the new variants and branch on them here.
 ///
 /// # Panics
 ///
 /// Panics (debug builds only) if both `name` and `guid` are set, or if
 /// neither is set.  These cases are prevented by [`Config::validate`],
 /// which must be called before this function.
-fn resolve_provider_guid(cfg: &ProviderConfig) -> Result<Guid, Error> {
+fn resolve_provider_guid_with(
+    cfg: &ProviderConfig,
+    lookup: impl FnOnce(&str) -> Result<Option<RegisteredProvider>, Error>,
+) -> Result<Guid, Error> {
     debug_assert!(
         cfg.name.is_some() != cfg.guid.is_some(),
         "Config::validate must be called before resolve_provider_guid; \
@@ -351,21 +422,204 @@ fn resolve_provider_guid(cfg: &ProviderConfig) -> Result<Guid, Error> {
         return parse_guid(guid_str);
     }
 
-    if let Some(name) = &cfg.name {
-        // TODO: Implement provider name -> GUID resolution via
-        // TdhEnumerateProviders or registry lookup.
-        return Err(Error::ConfigError(Box::new(
-            otap_df_config::error::Error::InvalidUserConfig {
-                error: format!(
-                    "provider name resolution is not yet implemented; \
-                     please specify a GUID instead of name '{name}'. \
-                     You can find a provider's GUID via `logman query providers \"{name}\"`"
-                ),
-            },
-        )));
-    }
+    let name = cfg
+        .name
+        .as_deref()
+        .expect("validated upstream: provider must specify either 'name' or 'guid'");
 
-    unreachable!("validated upstream: provider must specify either 'name' or 'guid'")
+    // `kind` is `None` when unspecified, which selects automatic resolution.
+    match cfg.kind {
+        None => {
+            // Automatic: registered database first (authoritative), else name
+            // hash. If the database itself cannot be enumerated, fall back to
+            // the hash rather than erroring so EventSource/TraceLogging
+            // providers still resolve.
+            match lookup(&name.to_ascii_lowercase()) {
+                Ok(Some(provider)) => {
+                    log_name_resolved(name, &provider);
+                    Ok(provider.guid)
+                }
+                Ok(None) => {
+                    log_name_hashed(name);
+                    Ok(guid_from_provider_name(name))
+                }
+                Err(err) => {
+                    // Best-effort: the database is unavailable, so we cannot
+                    // tell a manifest/MOF provider from a self-describing one.
+                    // Hashing a manifest/MOF name yields the wrong control GUID
+                    // (events will not arrive); this is deliberately preferred
+                    // over failing so TraceLogging providers still resolve, and
+                    // is WARN-logged for the operator. `kind: manifest` or an
+                    // explicit `guid` avoids this ambiguity.
+                    log_name_hashed_after_enumeration_error(name, &err);
+                    Ok(guid_from_provider_name(name))
+                }
+            }
+        }
+        Some(ProviderKind::Manifest) => {
+            // Explicit: must be a registered provider; do not hash-fallback.
+            match lookup(&name.to_ascii_lowercase())? {
+                Some(provider) => {
+                    log_name_resolved(name, &provider);
+                    Ok(provider.guid)
+                }
+                None => Err(manifest_not_registered_error(name)),
+            }
+        }
+        Some(ProviderKind::Tracelogging) => {
+            // Explicit: derive the GUID from the name, no OS lookup.
+            log_name_hashed(name);
+            Ok(guid_from_provider_name(name))
+        }
+    }
+}
+
+/// Collect the lowercased provider names that require an OS registered-database
+/// lookup: automatic (omitted-kind) and `manifest` providers.
+///
+/// `guid` providers carry their GUID directly and `tracelogging` providers
+/// derive it from the name, so neither needs the database. A configuration
+/// containing only those therefore never enumerates it.
+fn wanted_lookup_names(providers: &[ProviderConfig]) -> HashSet<String> {
+    providers
+        .iter()
+        .filter_map(|p| match (p.name.as_deref(), p.kind) {
+            (Some(name), None) | (Some(name), Some(ProviderKind::Manifest)) => {
+                Some(name.to_ascii_lowercase())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Enumerate the OS provider database once, retaining only the providers whose
+/// (lowercased) name is in `wanted` and stopping as soon as every wanted name
+/// has been found.
+///
+/// Unlike materializing the whole database, this keeps at most `wanted.len()`
+/// entries and breaks early (via [`ControlFlow::Break`]) once all configured
+/// names are matched, so a typical small configured set does not scan the full
+/// system provider list. Names are lowercased for case-insensitive lookup and
+/// the first entry wins when the OS reports duplicate names, matching
+/// [`one_collect::etw::for_each_registered_provider`]'s enumeration order.
+///
+/// `enumerate` is the database driver (in production,
+/// [`one_collect::etw::for_each_registered_provider`]); passing it as a
+/// parameter lets the collection and early-break logic be tested without a live
+/// TDH call. On enumeration failure the underlying source message is returned
+/// verbatim for the caller to wrap via [`tdh_enumerate_error`].
+fn collect_wanted_providers<E: std::fmt::Display>(
+    wanted: &HashSet<String>,
+    enumerate: impl FnOnce(&mut dyn FnMut(&str, RegisteredProvider) -> ControlFlow<()>) -> Result<(), E>,
+) -> Result<HashMap<String, RegisteredProvider>, String> {
+    let mut found: HashMap<String, RegisteredProvider> = HashMap::with_capacity(wanted.len());
+    enumerate(&mut |name, provider| {
+        // Retain only configured names so the whole database is never
+        // materialized. ASCII case-folding is intentional: ETW provider names
+        // are ASCII in practice, and `for_each_registered_provider` yields
+        // names as registered by the OS (it does not case-fold), so the
+        // consumer owns normalization. A non-ASCII name whose registered
+        // casing differs from the configured casing would not match here.
+        let name_lc = name.to_ascii_lowercase();
+        if wanted.contains(name_lc.as_str()) {
+            // First entry wins for duplicate names; never overwrite.
+            let _ = found.entry(name_lc).or_insert(provider);
+            // Stop once every wanted name has been found.
+            if found.len() == wanted.len() {
+                return ControlFlow::Break(());
+            }
+        }
+        ControlFlow::Continue(())
+    })
+    .map_err(|source| source.to_string())?;
+    Ok(found)
+}
+
+/// Log that a provider name was resolved via the registered database.
+fn log_name_resolved(name: &str, provider: &RegisteredProvider) {
+    // Report the raw TDH `SchemaSource` for unrecognized values so an operator
+    // can identify which source appeared rather than losing it to "unknown".
+    let source = match provider.schema_source {
+        ProviderSchemaSource::Manifest => "manifest".to_string(),
+        ProviderSchemaSource::Wmi => "classic_mof".to_string(),
+        ProviderSchemaSource::Unknown(raw) => format!("unknown({raw})"),
+    };
+    otel_info!(
+        "etw_receiver.provider_name_resolved",
+        message = "resolved ETW provider name to its registered GUID",
+        provider_name = name,
+        schema_source = source.as_str(),
+    );
+}
+
+/// Log that a provider name was resolved via the EventSource/TraceLogging hash.
+fn log_name_hashed(name: &str) {
+    otel_info!(
+        "etw_receiver.provider_name_hashed",
+        message = "deriving ETW provider GUID from its name using the \
+                   EventSource/TraceLogging hash",
+        provider_name = name,
+    );
+}
+
+/// Log that an `Auto` provider fell back to the name hash because the
+/// registered-provider database could not be enumerated.
+///
+/// This is emitted at `WARN` because the fallback can silently mis-target a
+/// manifest/MOF provider: without the database the resolver cannot tell a
+/// self-describing (TraceLogging) provider from a manifest one, so it hashes
+/// the name unconditionally. For a manifest/MOF provider the hash is *not* its
+/// real control GUID, so the session subscribes to a GUID that emits no events.
+fn log_name_hashed_after_enumeration_error(name: &str, error: &Error) {
+    otel_warn!(
+        "etw_receiver.provider_name_hashed_after_enumeration_error",
+        message = "could not enumerate the ETW provider database; falling back \
+                   to the EventSource/TraceLogging name hash for this 'auto' \
+                   provider. If this provider is manifest/MOF-based the hashed \
+                   GUID will be wrong and no events will arrive; configure \
+                   'kind: manifest' or an explicit 'guid' to avoid this.",
+        provider_name = name,
+        error = error.to_string(),
+    );
+}
+
+// -- Registered provider lookup (TDH) -----------------------------------------
+//
+// The `TdhEnumerateProviders` enumeration itself lives in `one_collect`
+// alongside the rest of the TDH code, exposed as
+// [`one_collect::etw::for_each_registered_provider`].  The
+// EventSource/TraceLogging name-hash likewise lives in `one_collect` as
+// [`one_collect::guid_from_provider_name`].  Only the receiver-specific
+// resolution policy (kind branching, name-hash fallback, config diagnostics)
+// stays here.
+
+/// Build the error returned when a `kind: manifest` provider name is not in the
+/// registered provider database.
+fn manifest_not_registered_error(name: &str) -> Error {
+    Error::ConfigError(Box::new(otap_df_config::error::Error::InvalidUserConfig {
+        error: format!(
+            "ETW provider '{name}' is configured with kind 'manifest' but is not \
+             registered in the system provider database. Register its manifest \
+             (`wevtutil im`), set kind to 'tracelogging' if it is an \
+             EventSource/TraceLogging provider, or specify a GUID directly. You \
+             can list registered providers via `logman query providers`."
+        ),
+    }))
+}
+
+/// Build the error returned when [`for_each_registered_provider`] fails
+/// unexpectedly.
+///
+/// Accepts any `Display` source (the underlying `one_collect` error) so the
+/// receiver does not need to depend on `anyhow` directly.
+fn tdh_enumerate_error(source: impl std::fmt::Display) -> Error {
+    Error::ConfigError(Box::new(otap_df_config::error::Error::InvalidUserConfig {
+        error: format!(
+            "failed to enumerate registered ETW providers: {source}. Specify a \
+             GUID directly, or set kind to 'tracelogging' for \
+             EventSource/TraceLogging providers."
+        ),
+    }))
 }
 
 // -- TDH field extraction -----------------------------------------------------
@@ -808,15 +1062,55 @@ fn spawn_etw_session(
 ) -> Result<(), Error> {
     // Resolve all provider GUIDs up-front so configuration errors are
     // reported synchronously (before the session thread is spawned).
+    //
+    // Only automatic and `manifest` names need the OS provider database. Gather
+    // that set first, then enumerate the database a single time - retaining
+    // just those names and breaking early once all are found - instead of
+    // materializing the whole provider list. The stored result (or its failure
+    // message) is shared across every provider's resolution so an enumeration
+    // failure is surfaced per kind: `auto` names hash-fall-back, `manifest`
+    // names error.
+    let wanted = wanted_lookup_names(&config.providers);
+    let lookup: Result<HashMap<String, RegisteredProvider>, String> = if wanted.is_empty() {
+        Ok(HashMap::new())
+    } else {
+        collect_wanted_providers(&wanted, |visit| for_each_registered_provider(visit))
+    };
     let resolved_providers: Vec<(Guid, u8, Option<u64>)> = config
         .providers
         .iter()
         .map(|p| {
-            let guid = resolve_provider_guid(p)?;
+            let guid = resolve_provider_guid_with(p, |name_lc| match &lookup {
+                Ok(map) => Ok(map.get(name_lc).copied()),
+                Err(source) => Err(tdh_enumerate_error(source)),
+            })?;
             let level = trace_level_to_etw(&p.level);
             Ok((guid, level, p.keywords))
         })
         .collect::<Result<Vec<_>, Error>>()?;
+
+    // Reject configurations where two providers resolve to the same control
+    // GUID. Duplicates are only knowable after resolution (identical specs, a
+    // name that hashes to an explicitly configured GUID, or two distinct names
+    // that hash-collide), so this cannot live in `Config::validate`. Left
+    // unchecked, `enable_provider` would merge the entries silently, dropping
+    // one entry's level/keywords and double-registering its wide event. The
+    // intended dual-capture case (the same name under `kind: manifest` vs
+    // `kind: tracelogging`) resolves to two different GUIDs and is unaffected.
+    let mut seen: HashSet<[u8; 16]> = HashSet::with_capacity(resolved_providers.len());
+    for (guid, _, _) in &resolved_providers {
+        if !seen.insert(guid.to_bytes()) {
+            return Err(Error::ConfigError(Box::new(
+                otap_df_config::error::Error::InvalidUserConfig {
+                    error: format!(
+                        "multiple ETW providers resolve to the same GUID {}; \
+                         remove the duplicate provider entry",
+                        CanonicalGuid::from(*guid)
+                    ),
+                },
+            )));
+        }
+    }
 
     let session_name = config.session_name.clone();
     let (ready_tx, ready_rx) = std_mpsc::sync_channel(1);
@@ -1264,6 +1558,7 @@ mod tests {
             providers: vec![ProviderConfig {
                 name: None,
                 guid: Some("22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716".to_string()),
+                kind: None,
                 level: TraceLevel::default(),
                 keywords: None,
             }],
@@ -1365,6 +1660,7 @@ mod tests {
             providers: vec![ProviderConfig {
                 name: None,
                 guid: Some("a0c1853b-5c40-4b15-8766-3cf1c58f985a".to_string()),
+                kind: None,
                 level: TraceLevel::Verbose,
                 keywords: None,
             }],
@@ -1380,6 +1676,45 @@ mod tests {
         assert!(
             msg.contains("test-mismatch"),
             "error should mention the session name, got: {msg}"
+        );
+    }
+
+    /// Scenario: Two provider entries resolve to the same control GUID (here,
+    /// the same GUID written in different letter casing, which textual
+    /// comparison would miss but resolution normalizes).
+    /// Guarantees: `spawn_etw_session` rejects the config before the session
+    /// thread is spawned, so duplicate providers surface as a config error
+    /// instead of being silently merged (and their level/keywords dropped) by
+    /// `enable_provider`.
+    #[test]
+    fn spawn_rejects_duplicate_resolved_guids() {
+        let config = Config {
+            session_name: "test-dup-guid".to_string(),
+            providers: vec![
+                ProviderConfig {
+                    name: None,
+                    guid: Some("22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716".to_string()),
+                    kind: None,
+                    level: TraceLevel::default(),
+                    keywords: None,
+                },
+                ProviderConfig {
+                    name: None,
+                    guid: Some("22FB2CD6-0E7B-422B-A0C7-2FAD1FD0E716".to_string()),
+                    kind: None,
+                    level: TraceLevel::Verbose,
+                    keywords: None,
+                },
+            ],
+            batching: None,
+        };
+        let (tx, _rx) = mpsc::channel::<EtwEventData>(1);
+        let telemetry = Arc::new(SessionWideMetrics::default());
+        let err = spawn_etw_session(&config, vec![tx], telemetry).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("resolve to the same GUID"),
+            "expected a duplicate-GUID config error, got: {msg}"
         );
     }
 
@@ -1415,7 +1750,366 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // -- Field value interpretation -------------------
+    /// Scenario: A canonical GUID is formatted for diagnostics.
+    /// Guarantees: Display renders the canonical dashed-lower-hex form used by
+    /// ETW and Arrow records, so error messages match emitted provider IDs.
+    #[test]
+    fn canonical_guid_display_renders_standard_hyphenated_form() {
+        let guid = Guid::from_u128(0x22fb2cd6_0e7b_422b_a0c7_2fad1fd0e716);
+        assert_eq!(
+            CanonicalGuid::from(guid).to_string(),
+            "22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716"
+        );
+    }
+
+    // -- Provider name -> GUID resolution --
+
+    /// Scenario: A provider name is hashed with the EventSource/TraceLogging
+    /// algorithm (the fallback for providers absent from the manifest/MOF
+    /// database), via the shared `one_collect::guid_from_provider_name`.
+    /// Guarantees: The derived GUID matches the canonical documented vector
+    /// for `"MyProvider"`, so TraceLogging providers are reached under the same
+    /// GUID they emit under. This also guards the consumed `one_collect` hash
+    /// against regressing its namespace seed, uppercasing, or UTF-16BE encoding.
+    #[test]
+    fn eventsource_guid_from_name_matches_known_vector() {
+        // `MyProvider` is the canonical example from the TraceLogging docs.
+        let guid = guid_from_provider_name("MyProvider");
+        assert_eq!(guid.data1, 0xb386_4c38);
+        assert_eq!(guid.data2, 0x4273);
+        assert_eq!(guid.data3, 0x58c5);
+        assert_eq!(guid.data4, [0x54, 0x5b, 0x8b, 0x36, 0x08, 0x34, 0x34, 0x71]);
+    }
+
+    /// Scenario: The same provider name is supplied with different letter
+    /// casing.
+    /// Guarantees: Resolution uppercases the name before hashing, so casing
+    /// does not change the derived GUID (EventSource is case-insensitive on the
+    /// provider name).
+    #[test]
+    fn eventsource_guid_from_name_is_case_insensitive() {
+        assert_eq!(
+            guid_from_provider_name("MyProvider").to_bytes(),
+            guid_from_provider_name("myprovider").to_bytes(),
+        );
+    }
+
+    /// Builds a name-based provider config with the given resolution kind
+    /// (`None` selects automatic resolution).
+    fn name_provider(name: &str, kind: Option<ProviderKind>) -> ProviderConfig {
+        ProviderConfig {
+            name: Some(name.to_string()),
+            guid: None,
+            kind,
+            level: TraceLevel::default(),
+            keywords: None,
+        }
+    }
+
+    /// Builds a registered-provider map entry for hermetic resolution tests.
+    fn registered(
+        name: &str,
+        guid: Guid,
+        schema_source: ProviderSchemaSource,
+    ) -> HashMap<String, RegisteredProvider> {
+        let mut map = HashMap::new();
+        let _ = map.insert(
+            name.to_ascii_lowercase(),
+            RegisteredProvider {
+                guid,
+                schema_source,
+            },
+        );
+        map
+    }
+
+    /// Builds an infallible `lookup` closure backed by an in-memory registered
+    /// map, mirroring the map query the production caller performs against the
+    /// targeted `collect_wanted_providers` result.
+    fn lookup_in(
+        map: &HashMap<String, RegisteredProvider>,
+    ) -> impl Fn(&str) -> Result<Option<RegisteredProvider>, Error> + '_ {
+        move |name_lc| Ok(map.get(name_lc).copied())
+    }
+
+    /// Scenario: A provider is configured with a `guid`.
+    /// Guarantees: The GUID is parsed directly and the `lookup` is never
+    /// invoked, so GUID configs incur no OS lookup. `wanted_lookup_names` also
+    /// excludes it, so it contributes nothing to the enumeration pass.
+    #[test]
+    fn resolve_guid_provider_ignores_registry() {
+        let cfg = ProviderConfig {
+            name: None,
+            guid: Some("22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716".to_string()),
+            kind: None,
+            level: TraceLevel::default(),
+            keywords: None,
+        };
+        let guid = resolve_provider_guid_with(&cfg, |_| {
+            unreachable!("a GUID provider must not consult the registered database")
+        })
+        .expect("valid GUID parses");
+        let expected = Guid::from_u128(0x22fb2cd6_0e7b_422b_a0c7_2fad1fd0e716);
+        assert_eq!(guid.to_bytes(), expected.to_bytes());
+        assert!(
+            wanted_lookup_names(std::slice::from_ref(&cfg)).is_empty(),
+            "a GUID provider must not contribute a name to the enumeration pass"
+        );
+    }
+
+    /// Scenario: An automatic (omitted-kind) name provider is present in the
+    /// registered database.
+    /// Guarantees: Resolution returns the registered GUID (not the name hash),
+    /// so manifest/MOF providers are reached under their real control GUID.
+    #[test]
+    fn resolve_auto_uses_registered_guid() {
+        let expected = Guid::from_u128(0x1111_2222_3333_4444_5555_6666_7777_8888);
+        let map = registered("MyProvider", expected, ProviderSchemaSource::Manifest);
+        let cfg = name_provider("MyProvider", None);
+        let guid = resolve_provider_guid_with(&cfg, lookup_in(&map)).expect("resolves");
+        assert_eq!(guid.to_bytes(), expected.to_bytes());
+    }
+
+    /// Scenario: An automatic (omitted-kind) name provider is absent from the
+    /// registered database.
+    /// Guarantees: Resolution falls back to the EventSource/TraceLogging name
+    /// hash so self-describing providers are still reachable.
+    #[test]
+    fn resolve_auto_falls_back_to_hash() {
+        let map = HashMap::new(); // empty DB
+        let cfg = name_provider("MyProvider", None);
+        let guid = resolve_provider_guid_with(&cfg, lookup_in(&map)).expect("resolves");
+        assert_eq!(
+            guid.to_bytes(),
+            guid_from_provider_name("MyProvider").to_bytes()
+        );
+    }
+
+    /// Scenario: A `tracelogging` name provider is configured while a matching
+    /// entry also exists in the registered database.
+    /// Guarantees: Resolution ignores the database and always hashes the name,
+    /// so the explicit kind is honored even when a same-named manifest provider
+    /// exists.
+    #[test]
+    fn resolve_tracelogging_kind_always_hashes() {
+        let cfg = name_provider("MyProvider", Some(ProviderKind::Tracelogging));
+        let guid = resolve_provider_guid_with(&cfg, |_| {
+            unreachable!("tracelogging kind must not consult the registered database")
+        })
+        .expect("resolves");
+        assert_eq!(
+            guid.to_bytes(),
+            guid_from_provider_name("MyProvider").to_bytes()
+        );
+    }
+
+    /// Scenario: A `manifest` name provider is not registered in the database.
+    /// Guarantees: Resolution errors instead of silently hashing, so a
+    /// misconfigured manifest provider is surfaced rather than subscribed under
+    /// a wrong (hashed) GUID.
+    #[test]
+    fn resolve_manifest_kind_errors_when_unregistered() {
+        let map = HashMap::new(); // empty DB
+        let cfg = name_provider("MyProvider", Some(ProviderKind::Manifest));
+        let msg = match resolve_provider_guid_with(&cfg, lookup_in(&map)) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("expected an error for an unregistered manifest provider"),
+        };
+        assert!(
+            msg.contains("kind 'manifest'") && msg.contains("MyProvider"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    /// Scenario: A `manifest` name provider is present in the registered
+    /// database.
+    /// Guarantees: Resolution returns the registered control GUID, so the
+    /// explicit manifest kind reaches manifest/MOF providers by their real GUID.
+    #[test]
+    fn resolve_manifest_kind_uses_registered_guid() {
+        let expected = Guid::from_u128(0x0123_4567_89ab_cdef_0123_4567_89ab_cdef);
+        let map = registered("MyProvider", expected, ProviderSchemaSource::Manifest);
+        let cfg = name_provider("MyProvider", Some(ProviderKind::Manifest));
+        let guid = resolve_provider_guid_with(&cfg, lookup_in(&map)).expect("resolves");
+        assert_eq!(guid.to_bytes(), expected.to_bytes());
+    }
+
+    /// Scenario: An automatic (omitted-kind) name provider is resolved while the
+    /// registered provider database cannot be enumerated (the `lookup` returns
+    /// `Err`, as it would when `TdhEnumerateProviders` fails).
+    /// Guarantees: Resolution falls back to the EventSource/TraceLogging name
+    /// hash rather than propagating the error, so TraceLogging providers still
+    /// resolve when the OS lookup is unavailable.
+    #[test]
+    fn resolve_auto_falls_back_to_hash_on_enumeration_error() {
+        let cfg = name_provider("MyProvider", None);
+        let guid =
+            resolve_provider_guid_with(&cfg, |_| Err(tdh_enumerate_error("simulated failure")))
+                .expect("auto must not error when enumeration fails");
+        assert_eq!(
+            guid.to_bytes(),
+            guid_from_provider_name("MyProvider").to_bytes(),
+            "auto must hash-fall-back when the provider database cannot be enumerated"
+        );
+    }
+
+    /// Scenario: A `manifest` name provider is resolved while the registered
+    /// provider database cannot be enumerated (the `lookup` returns `Err`).
+    /// Guarantees: Resolution propagates the enumeration error instead of
+    /// hashing, so a manifest provider is never silently subscribed under a
+    /// wrong (hashed) GUID when the database is unavailable.
+    #[test]
+    fn resolve_manifest_kind_propagates_enumeration_error() {
+        let cfg = name_provider("MyProvider", Some(ProviderKind::Manifest));
+        let msg = match resolve_provider_guid_with(&cfg, |_| {
+            Err(tdh_enumerate_error("simulated failure"))
+        }) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("manifest must surface enumeration failure"),
+        };
+        assert!(msg.contains("simulated failure"), "unexpected error: {msg}");
+    }
+
+    /// Drives [`collect_wanted_providers`] from an in-memory provider list,
+    /// recording how many entries were visited so tests can assert early-break
+    /// behavior. Honors the visitor's `ControlFlow::Break` exactly as the live
+    /// `for_each_registered_provider` does.
+    fn drive<'a>(
+        entries: &'a [(&'a str, Guid, ProviderSchemaSource)],
+        visited: &'a Cell<usize>,
+    ) -> impl FnOnce(
+        &mut dyn FnMut(&str, RegisteredProvider) -> ControlFlow<()>,
+    ) -> Result<(), String>
+    + 'a {
+        move |visit| {
+            for (name, guid, schema_source) in entries {
+                visited.set(visited.get() + 1);
+                let provider = RegisteredProvider {
+                    guid: *guid,
+                    schema_source: *schema_source,
+                };
+                if visit(name, provider).is_break() {
+                    break;
+                }
+            }
+            Ok(())
+        }
+    }
+
+    /// Scenario: The configured name set is a subset of the registered database
+    /// and the wanted name appears before the end of the enumeration.
+    /// Guarantees: `collect_wanted_providers` stops as soon as every wanted name
+    /// is found, so a small configured set never scans the whole provider list.
+    #[test]
+    fn collect_wanted_providers_breaks_early_once_all_found() {
+        let g = |n: u128| Guid::from_u128(n);
+        let entries = [
+            ("Alpha", g(1), ProviderSchemaSource::Manifest),
+            ("Beta", g(2), ProviderSchemaSource::Wmi),
+            ("Gamma", g(3), ProviderSchemaSource::Manifest),
+        ];
+        let wanted: HashSet<String> = ["alpha".to_string()].into_iter().collect();
+        let visited = Cell::new(0);
+        let map = collect_wanted_providers(&wanted, drive(&entries, &visited)).expect("enumerates");
+        assert_eq!(map.len(), 1);
+        assert!(map.contains_key("alpha"));
+        assert_eq!(
+            visited.get(),
+            1,
+            "enumeration must stop after the only wanted name is found"
+        );
+    }
+
+    /// Scenario: Multiple names are wanted and the last one sits at the end of
+    /// the database.
+    /// Guarantees: Only the wanted names are retained (unwanted ones are
+    /// skipped, not materialized), and enumeration continues until the final
+    /// wanted name is found.
+    #[test]
+    fn collect_wanted_providers_retains_only_wanted_names() {
+        let g = |n: u128| Guid::from_u128(n);
+        let entries = [
+            ("Alpha", g(1), ProviderSchemaSource::Manifest),
+            ("Beta", g(2), ProviderSchemaSource::Wmi),
+            ("Gamma", g(3), ProviderSchemaSource::Manifest),
+        ];
+        let wanted: HashSet<String> = ["alpha".to_string(), "gamma".to_string()]
+            .into_iter()
+            .collect();
+        let visited = Cell::new(0);
+        let map = collect_wanted_providers(&wanted, drive(&entries, &visited)).expect("enumerates");
+        assert_eq!(map.len(), 2);
+        assert!(map.contains_key("alpha") && map.contains_key("gamma"));
+        assert!(
+            !map.contains_key("beta"),
+            "unwanted names must not be retained"
+        );
+        assert_eq!(visited.get(), 3, "must scan through the last wanted name");
+    }
+
+    /// Scenario: The database reports two entries with the same (case-folded)
+    /// name.
+    /// Guarantees: The first entry wins and enumeration stops once the wanted
+    /// name is satisfied, matching `for_each_registered_provider`'s documented
+    /// first-in-enumeration-order semantics.
+    #[test]
+    fn collect_wanted_providers_keeps_first_duplicate() {
+        let first = Guid::from_u128(0x1111_1111_1111_1111_1111_1111_1111_1111);
+        let second = Guid::from_u128(0x2222_2222_2222_2222_2222_2222_2222_2222);
+        let entries = [
+            ("Dup", first, ProviderSchemaSource::Manifest),
+            ("dup", second, ProviderSchemaSource::Wmi),
+        ];
+        let wanted: HashSet<String> = ["dup".to_string()].into_iter().collect();
+        let visited = Cell::new(0);
+        let map = collect_wanted_providers(&wanted, drive(&entries, &visited)).expect("enumerates");
+        assert_eq!(map["dup"].guid.to_bytes(), first.to_bytes());
+        assert_eq!(visited.get(), 1, "first match satisfies the wanted set");
+    }
+
+    /// Scenario: The enumeration driver itself fails (as a live
+    /// `TdhEnumerateProviders` call could).
+    /// Guarantees: `collect_wanted_providers` surfaces the underlying source
+    /// message verbatim so the caller can wrap it via `tdh_enumerate_error`.
+    #[test]
+    fn collect_wanted_providers_surfaces_enumeration_failure() {
+        let wanted: HashSet<String> = ["alpha".to_string()].into_iter().collect();
+        // Map the `Ok` map to `()` so `expect_err` does not require
+        // `RegisteredProvider: Debug` (which `one_collect` does not implement).
+        let msg =
+            collect_wanted_providers(&wanted, |_| Result::<(), &str>::Err("simulated failure"))
+                .map(|_| ())
+                .expect_err("driver failure must propagate");
+        assert_eq!(msg, "simulated failure");
+    }
+
+    /// Scenario: A mixed provider list contains guid, tracelogging, automatic,
+    /// and manifest entries.
+    /// Guarantees: Only automatic (omitted-kind) and `manifest` names are
+    /// collected for the OS lookup, lowercased; `guid` and `tracelogging`
+    /// providers contribute nothing, so they never drive an enumeration.
+    #[test]
+    fn wanted_lookup_names_selects_only_db_backed_kinds() {
+        let providers = vec![
+            ProviderConfig {
+                name: None,
+                guid: Some("22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716".to_string()),
+                kind: None,
+                level: TraceLevel::default(),
+                keywords: None,
+            },
+            name_provider("AutoName", None),
+            name_provider("ManifestName", Some(ProviderKind::Manifest)),
+            name_provider("TraceLoggingName", Some(ProviderKind::Tracelogging)),
+        ];
+        let wanted = wanted_lookup_names(&providers);
+        assert_eq!(wanted.len(), 2);
+        assert!(wanted.contains("autoname"));
+        assert!(wanted.contains("manifestname"));
+        assert!(!wanted.contains("traceloggingname"));
+    }
+
+    // -- Field value interpretation --
 
     #[test]
     fn interpret_signed_integers() {

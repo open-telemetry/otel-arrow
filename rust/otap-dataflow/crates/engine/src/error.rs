@@ -11,7 +11,6 @@ use otap_df_channel::error::SendError;
 use otap_df_config::node::NodeKind;
 use otap_df_config::{NodeUrn, PortName, TopicName};
 use otap_df_telemetry::event::ErrorSummary;
-use std::borrow::Cow;
 use std::fmt;
 
 use otap_df_config::ExtensionId;
@@ -390,13 +389,6 @@ pub enum Error {
         port_name: PortName,
     },
 
-    /// Unsupported node kind.
-    #[error("Unsupported node kind `{kind}`")]
-    UnsupportedNodeKind {
-        /// The kind of the node that is not supported.
-        kind: Cow<'static, str>,
-    },
-
     /// Node wiring violates the node type contract.
     #[error(
         "Invalid wiring for node `{node}` output `{output}`: allowed at most {max_destinations} destination(s), found {actual_destinations:?}"
@@ -494,13 +486,6 @@ pub enum Error {
     #[error("Pipeline data error: {}", reason)]
     PDataError {
         /// otap_df_pdata error string
-        reason: String,
-    },
-
-    /// Error from the prost encoder.
-    #[error("Prost encode error: {}", reason)]
-    ProtoEncodeError {
-        /// Prost error string
         reason: String,
     },
 
@@ -623,7 +608,6 @@ impl Error {
             Error::RuntimeMsgError { .. } => "RuntimeMsgError",
             Error::ProcessorAlreadyExists { .. } => "ProcessorAlreadyExists",
             Error::ProcessorError { .. } => "ProcessorError",
-            Error::ProtoEncodeError { .. } => "ProtoEncodeError",
             Error::ReceiverAlreadyExists { .. } => "ReceiverAlreadyExists",
             Error::ReceiverError { .. } => "ReceiverError",
             Error::SpmcSharedNotSupported { .. } => "SpmcSharedNotSupported",
@@ -637,7 +621,6 @@ impl Error {
             Error::UnknownOutputPort { .. } => "UnknownOutputPort",
             Error::UnknownProcessor { .. } => "UnknownProcessor",
             Error::UnknownReceiver { .. } => "UnknownReceiver",
-            Error::UnsupportedNodeKind { .. } => "UnsupportedNodeKind",
             Error::InvalidNodeWiring { .. } => "InvalidNodeWiring",
             Error::TopicAlreadyExists { .. } => "TopicAlreadyExists",
             Error::UnknownTopic { .. } => "UnknownTopic",
@@ -699,14 +682,6 @@ pub fn error_summary_from(err: &Error) -> ErrorSummary {
             message: err.to_string(),
             source: None,
         },
-    }
-}
-
-impl From<prost::EncodeError> for Error {
-    fn from(e: prost::EncodeError) -> Self {
-        Self::ProtoEncodeError {
-            reason: e.to_string(),
-        }
     }
 }
 

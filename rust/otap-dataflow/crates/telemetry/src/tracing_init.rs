@@ -8,56 +8,66 @@
 //! trace events are captured and routed.
 
 use crate::event::{LogEvent, ObservedEventReporter};
+use crate::log_filter::RuntimeLogFilter;
 use crate::self_tracing::{ConsoleWriter, LogContextFn, LogRecord};
 use otap_df_config::settings::telemetry::logs::LogLevel;
 use std::time::SystemTime;
 use tracing::{Dispatch, Event, Subscriber};
+#[cfg(test)]
+use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::{Context, Layer as TracingLayer};
 use tracing_subscriber::registry::LookupSpan;
-use tracing_subscriber::{EnvFilter, Registry, layer::SubscriberExt};
-
-/// Creates an `EnvFilter` for the given log level.
-///
-/// The base filter comes from the `RUST_LOG` environment variable if set;
-/// otherwise it falls back to the level's
-/// [`RUST_LOG`-style directive string][env-filter].
-///
-/// [env-filter]: https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#directives
-#[must_use]
-pub fn create_env_filter(level: &LogLevel) -> EnvFilter {
-    EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level.as_str()))
-}
+use tracing_subscriber::{Registry, layer::SubscriberExt};
 
 /// Combined tracing configuration for a thread.
 ///
-/// This struct bundles the provider setup with the log level, allowing
+/// This struct bundles the provider setup with the shared runtime filter, allowing
 /// the `InternalTelemetrySystem` to control all tracing configuration.
 /// Future enhancements may include per-thread log level overrides.
 #[derive(Clone)]
 pub struct TracingSetup {
     /// The provider mode configuration.
     pub provider: ProviderSetup,
-    /// The log level for filtering.
-    pub log_level: LogLevel,
     /// Context function.
     pub context_fn: LogContextFn,
+    /// Shared runtime filter.
+    log_filter: RuntimeLogFilter,
 }
 
 impl TracingSetup {
-    /// Create a new tracing setup.
+    /// Creates a standalone tracing setup with no externally retained update handle.
+    ///
+    /// Use [`Self::with_log_filter`] to attach a shared runtime filter managed by
+    /// the internal telemetry system.
     #[must_use]
     pub fn new(provider: ProviderSetup, log_level: LogLevel, context_fn: LogContextFn) -> Self {
+        let (log_filter, _handle) = RuntimeLogFilter::new(&log_level);
+        Self::from_log_filter(provider, log_filter, context_fn)
+    }
+
+    pub(crate) fn from_log_filter(
+        provider: ProviderSetup,
+        log_filter: RuntimeLogFilter,
+        context_fn: LogContextFn,
+    ) -> Self {
         Self {
             provider,
-            log_level,
             context_fn,
+            log_filter,
         }
+    }
+
+    /// Replaces the setup's private filter with a shared runtime filter.
+    #[must_use]
+    pub fn with_log_filter(mut self, log_filter: RuntimeLogFilter) -> Self {
+        self.log_filter = log_filter;
+        self
     }
 
     /// Initialize this setup as the global tracing subscriber.
     pub fn try_init_global(&self) -> Result<(), tracing::dispatcher::SetGlobalDefaultError> {
         self.provider
-            .try_init_global(&self.log_level, self.context_fn)
+            .try_init_global(self.context_fn, &self.log_filter)
     }
 
     /// Run a closure with the appropriate tracing subscriber for this setup.
@@ -66,7 +76,7 @@ impl TracingSetup {
         F: FnOnce() -> R,
     {
         self.provider
-            .with_subscriber(&self.log_level, self.context_fn, f)
+            .with_subscriber(self.context_fn, &self.log_filter, f)
     }
 
     #[cfg(test)]
@@ -74,8 +84,9 @@ impl TracingSetup {
     where
         F: FnOnce() -> R,
     {
+        let log_level = self.log_filter.configured_level();
         self.provider
-            .with_subscriber_ignoring_env(&self.log_level, self.context_fn, f)
+            .with_subscriber_ignoring_env(&log_level, self.context_fn, f)
     }
 }
 
@@ -98,44 +109,53 @@ pub enum ProviderSetup {
 }
 
 impl ProviderSetup {
-    fn build_dispatch_with_filter(&self, filter: EnvFilter, context_fn: LogContextFn) -> Dispatch {
+    fn build_dispatch_with_filter(
+        &self,
+        filter: &RuntimeLogFilter,
+        context_fn: LogContextFn,
+    ) -> Dispatch {
         match self {
             ProviderSetup::Noop => Dispatch::new(tracing::subscriber::NoSubscriber::new()),
 
             ProviderSetup::ConsoleDirect => {
                 let layer =
                     StructuredLoggingLayer::new(Some(ConsoleWriter::color()), None, context_fn);
-                Dispatch::new(Registry::default().with(filter).with(layer))
+                Dispatch::new(Registry::default().with(filter.layer()).with(layer))
             }
 
             ProviderSetup::InternalAsync { reporter } => {
                 let layer = StructuredLoggingLayer::new(None, Some(reporter.clone()), context_fn);
-                Dispatch::new(Registry::default().with(filter).with(layer))
+                Dispatch::new(Registry::default().with(filter.layer()).with(layer))
             }
         }
     }
 
     /// Build a `Dispatch` for this provider setup with the given log level.
-    fn build_dispatch(&self, log_level: &LogLevel, context_fn: LogContextFn) -> Dispatch {
-        self.build_dispatch_with_filter(create_env_filter(log_level), context_fn)
+    fn build_dispatch(&self, context_fn: LogContextFn, filter: &RuntimeLogFilter) -> Dispatch {
+        self.build_dispatch_with_filter(filter, context_fn)
     }
 
     /// Initialize this setup as the global tracing subscriber.
     pub fn try_init_global(
         &self,
-        log_level: &LogLevel,
         context_fn: LogContextFn,
+        filter: &RuntimeLogFilter,
     ) -> Result<(), tracing::dispatcher::SetGlobalDefaultError> {
-        let dispatch = self.build_dispatch(log_level, context_fn);
+        let dispatch = self.build_dispatch(context_fn, filter);
         tracing::dispatcher::set_global_default(dispatch)
     }
 
     /// Run a closure with the appropriate tracing subscriber for this setup.
-    pub fn with_subscriber<F, R>(&self, log_level: &LogLevel, context_fn: LogContextFn, f: F) -> R
+    pub fn with_subscriber<F, R>(
+        &self,
+        context_fn: LogContextFn,
+        filter: &RuntimeLogFilter,
+        f: F,
+    ) -> R
     where
         F: FnOnce() -> R,
     {
-        let dispatch = self.build_dispatch(log_level, context_fn);
+        let dispatch = self.build_dispatch(context_fn, filter);
         tracing::dispatcher::with_default(&dispatch, f)
     }
 
@@ -149,8 +169,9 @@ impl ProviderSetup {
     where
         F: FnOnce() -> R,
     {
-        let dispatch =
-            self.build_dispatch_with_filter(EnvFilter::new(log_level.as_str()), context_fn);
+        let filter =
+            RuntimeLogFilter::from_filter(log_level.clone(), EnvFilter::new(log_level.as_str()));
+        let dispatch = self.build_dispatch_with_filter(&filter, context_fn);
         tracing::dispatcher::with_default(&dispatch, f)
     }
 }
@@ -201,6 +222,7 @@ where
 mod tests {
     use super::*;
     use crate::event::ObservedEvent;
+    use crate::log_filter::{RuntimeLogFilter, create_env_filter};
     use crate::self_tracing::LogContext;
     use crate::{otel_debug, otel_error, otel_info, otel_warn};
     use otap_df_config::observed_state::SendPolicy;
@@ -249,6 +271,33 @@ mod tests {
             for l in all_simple_levels() {
                 let _ = create_env_filter(&l);
             }
+        });
+    }
+
+    /// Scenario: one info callsite emits through an async provider across warn and info updates.
+    /// Guarantees: an installed tracing setup changes live without rebuilding its subscriber.
+    #[test]
+    fn internal_async_provider_applies_runtime_level_updates() {
+        crate::with_cleared_rust_log(|| {
+            let (reporter, receiver) = test_reporter();
+            let (filter, handle) = RuntimeLogFilter::new(&level("warn"));
+            let setup = test_setup(internal_async_provider(reporter), level("warn"))
+                .with_log_filter(filter);
+
+            setup.with_subscriber(|| {
+                let emit_info = || otel_info!("runtime.level.info");
+
+                emit_info();
+                assert!(receiver.try_recv().is_err());
+
+                handle.apply(&level("info"));
+                emit_info();
+                assert!(matches!(receiver.try_recv(), Ok(ObservedEvent::Log(_))));
+
+                handle.apply(&level("warn"));
+                emit_info();
+                assert!(receiver.try_recv().is_err());
+            });
         });
     }
 

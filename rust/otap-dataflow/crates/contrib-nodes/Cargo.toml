@@ -46,6 +46,7 @@ data_engine_expressions = { workspace = true, optional = true }
 data_engine_kql_parser = { workspace = true, optional = true }
 data_engine_recordset = { workspace = true, optional = true }
 rdkafka = { workspace = true, features = ["zstd", "ssl"], optional = true }
+tokio-util = { workspace = true, optional = true }
 xxhash-rust = { workspace = true, optional = true, features = ["xxh64"] }
 hex = { workspace = true, optional = true }
 aws-config = { workspace = true, optional = true }
@@ -70,6 +71,7 @@ paste = { workspace = true, optional = true }
 uuid = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true, features = ["rustls-no-provider"] }
 sysinfo = { workspace = true, optional = true }
+url = { workspace = true, optional = true }
 urlencoding = { workspace = true, optional = true }
 
 [target.'cfg(target_env = "musl")'.dependencies]
@@ -93,6 +95,7 @@ kafka-receiver = [
     "dep:rdkafka",
     "dep:smallvec",
     "dep:regex",
+    "dep:tokio-util",
 ]
 kafka-exporter = [
     "dep:rdkafka",
@@ -100,6 +103,7 @@ kafka-exporter = [
     "dep:futures-util",
     "dep:xxhash-rust",
     "dep:hex",
+    "dep:regex",
 ]
 aws = [
     "dep:aws-config",
@@ -141,9 +145,15 @@ clickhouse-exporter = [
     "dep:itoa",
     "dep:ryu",
 ]
+clickhouse-exporter-bench = ["clickhouse-exporter"]
 geneva-exporter = [
     "dep:geneva-uploader",
     "dep:opentelemetry-proto",
+    "dep:url",
+]
+geneva-certificate-auth = [
+    "geneva-exporter",
+    "geneva-uploader/certificate-auth",
 ]
 azure-monitor-exporter = [
     "dep:opentelemetry-proto",
@@ -211,6 +221,12 @@ name = "azure_monitor_transformer"
 path = "benches/exporters/azure_monitor_exporter/transformer.rs"
 harness = false
 required-features = ["azure-monitor-exporter"]
+
+[[bench]]
+name = "clickhouse_logs_transformer"
+path = "benches/exporters/clickhouse_exporter/logs_transformer.rs"
+harness = false
+required-features = ["clickhouse-exporter-bench"]
 
 [[bench]]
 name = "azure_monitor_gzip_batcher"

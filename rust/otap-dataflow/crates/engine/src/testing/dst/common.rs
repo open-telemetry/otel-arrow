@@ -132,6 +132,7 @@ pub(super) fn build_manager<PData>(
         core_id: 0,
         num_cores: 1,
         thread_id: 0,
+        numa_node_id: 0,
     };
     let pipeline_context = PipelineContext::new(controller_context, pipeline_context_params);
     let pipeline_entity_key = pipeline_context.register_pipeline_entity();
@@ -160,6 +161,7 @@ pub(super) fn build_manager<PData>(
             tokio_metrics: false,
             flow_metrics: Vec::new(),
         },
+        Vec::new(),
         Vec::new(),
         empty_node_metric_handles(),
         crate::terminal_state::TerminalMetricsDeadline::default(),

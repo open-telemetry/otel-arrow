@@ -19,6 +19,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Instant;
 
+mod component_inventory;
 mod diagnostics;
 mod genproto;
 mod structure_check;
@@ -49,6 +50,7 @@ fn main() -> anyhow::Result<()> {
                 ensure_no_extra_args("structure-check", &args.collect::<Vec<_>>())?;
                 structure_check::run()
             }
+            "component-inventory" => component_inventory::run(&args.collect::<Vec<_>>()),
             "help" => {
                 ensure_no_extra_args("help", &args.collect::<Vec<_>>())?;
                 print_help()
@@ -69,11 +71,12 @@ pub fn print_help() -> anyhow::Result<()> {
 Usage: Execute the command using `cargo xtask <task>`, e.g., `cargo xtask check`.
 
 Tasks:
-  - check [--diagnostics]: Run the required full validation suite: structure check, cargo fmt --all, cargo clippy --workspace --all-targets, and cargo test --workspace. The optional diagnostics flag prints end-of-run timing and hotspot summaries.
+  - check [--diagnostics]: Run the required full validation suite: structure check, cargo fmt --all, cargo clippy --workspace --all-targets, a no_std build of the crates that support it, and cargo test --workspace. The optional diagnostics flag prints end-of-run timing and hotspot summaries.
   - quick-check: Run a faster iterative subset: structure check, cargo fmt --all, cargo clippy --workspace --lib --bins --tests, and cargo test --workspace --lib --bins --tests --no-run. This is not a replacement for `cargo xtask check`.
   - check-benches: Lint and compile bench targets only.
   - structure-check: Validate the entire structure of the project.
   - compile-proto: Compile the protobufs files
+  - component-inventory [--check <baseline>] [--update-baseline] [--format <table|json|yaml>]: Manage and verify the component inventory baseline.
 "
     );
     Ok(())
@@ -112,8 +115,10 @@ fn check_all(options: CheckOptions) -> anyhow::Result<()> {
         .then(diagnostics::DiagnosticsCollector::new);
 
     run_structure_step(diagnostics.as_mut())?;
+    run_component_inventory_step(diagnostics.as_mut())?;
     format_all(diagnostics.as_mut())?;
     clippy_all(options, diagnostics.as_mut())?;
+    build_no_std()?;
     test_all(options, diagnostics.as_mut())?;
 
     if let Some(diagnostics) = diagnostics.as_ref() {
@@ -125,6 +130,10 @@ fn check_all(options: CheckOptions) -> anyhow::Result<()> {
 
 fn quick_check() -> anyhow::Result<()> {
     structure_check::run()?;
+    component_inventory::run(&[
+        "--check".to_string(),
+        "components-baseline.json".to_string(),
+    ])?;
     format_all(None)?;
     clippy_quick()?;
     test_quick()?;
@@ -146,6 +155,33 @@ fn run_structure_step(
 
     if let Some(diagnostics) = &mut diagnostics {
         diagnostics.record_step("structure", duration, step_status_from_result(&result));
+    }
+
+    if result.is_err() {
+        if let Some(diagnostics) = &mut diagnostics {
+            diagnostics.print_summary();
+        }
+    }
+
+    result
+}
+
+fn run_component_inventory_step(
+    mut diagnostics: Option<&mut diagnostics::DiagnosticsCollector>,
+) -> anyhow::Result<()> {
+    let start = Instant::now();
+    let result = component_inventory::run(&[
+        "--check".to_string(),
+        "components-baseline.json".to_string(),
+    ]);
+    let duration = start.elapsed();
+
+    if let Some(diagnostics) = &mut diagnostics {
+        diagnostics.record_step(
+            "component-inventory",
+            duration,
+            step_status_from_result(&result),
+        );
     }
 
     if result.is_err() {
@@ -253,6 +289,21 @@ fn clippy_quick() -> anyhow::Result<()> {
         ],
     )?;
     println!("\u{2705} Fast clippy linting passed without warnings.\n");
+    Ok(())
+}
+
+fn build_no_std() -> anyhow::Result<()> {
+    // A `no_std` crate builds against `std` in every other configuration, so
+    // nothing else in the suite notices a stray `use std::` until a downstream
+    // embedded build fails. Each crate here declares `#![no_std]` when its
+    // `std` feature is off.
+    const NO_STD_PACKAGES: &[&str] = &["otap-df-expohisto"];
+
+    println!("\u{1F680} Building no_std crates without default features...");
+    for package in NO_STD_PACKAGES {
+        run("cargo", &["build", "-p", package, "--no-default-features"])?;
+    }
+    println!("\u{2705} no_std builds succeeded.\n");
     Ok(())
 }
 

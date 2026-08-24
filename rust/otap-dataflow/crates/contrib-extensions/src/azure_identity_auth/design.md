@@ -2,17 +2,15 @@
 
 <!-- markdownlint-disable MD013 -->
 
-**Status:** Draft
-
 **Extension URN:** `urn:microsoft:extension:azure_identity_auth`
 
 **Capability exposed:** `BearerTokenProvider`
 
 **Execution model:** Active + Shared
 
-**Target crate:** `crates/contrib-extensions`
+**Crate:** `crates/contrib-extensions`
 
-**Target module:** `crates/contrib-extensions/src/azure_identity_auth/`
+**Module:** `crates/contrib-extensions/src/azure_identity_auth/`
 
 This document describes the design of the **Azure Identity Auth extension**
 (`azure_identity_auth`) for the OTAP dataflow engine. The extension acquires and
@@ -21,23 +19,24 @@ data-path nodes through a `BearerTokenProvider` capability.
 
 It builds on the extension system foundations:
 
-- [Extension System Proposal](extension-requirements.md) - the *what* and *why*
+- [Extension System Proposal](../../../../docs/extension-requirements.md) - the *what* and *why*
   of the capability-based extension system.
-- [Extension System Architecture](extension-system-architecture.md) - the
+- [Extension System Architecture](../../../../docs/extension-system-architecture.md) - the
   Phase 1 *how* (capability proc macro, registry, Active/Passive lifecycle,
   local/shared execution models).
-- [Design Principles and Constraints](design-principles.md) - thread-per-core
+- [Design Principles and Constraints](../../../../docs/design-principles.md) - thread-per-core
   execution, minimal synchronization, security/privacy first.
 
 ## Problem
 
 Several nodes need to authenticate to Azure services using OAuth bearer tokens.
-Today each owns its own authentication: the Azure Monitor exporter constructs an
-Azure credential, acquires a token, and refreshes it inline, and the Parquet
-exporter independently builds an `Arc<dyn TokenCredential>` (via
-`cloud_auth::azure::from_auth_method`) and wraps it in an `object_store`
-`CredentialProvider` (`AzureTokenCredentialProvider`) for blob-storage writes.
-This couples authentication to each node and has several drawbacks:
+Without a shared token source each owns its own authentication: the Azure
+Monitor exporter constructs an Azure credential, acquires a token, and refreshes
+it inline, and the Parquet exporter independently builds an
+`Arc<dyn TokenCredential>` (via `cloud_auth::azure::from_auth_method`) and wraps
+it in an `object_store` `CredentialProvider` (`AzureTokenCredentialProvider`)
+for blob-storage writes. Coupling authentication to each node has several
+drawbacks:
 
 - **Duplication.** Every Azure-authenticating node must re-implement credential
   construction, token caching, refresh scheduling, and failure handling.
@@ -85,8 +84,8 @@ path free of authentication plumbing.
 - A general-purpose capability framework. `BearerTokenProvider` is a single,
   purpose-built capability trait (defined via the engine's `#[capability]`
   proc macro, see
-  [Extension System Architecture](extension-system-architecture.md)) introduced
-  alongside this extension; this design adds no capability machinery beyond it.
+  [Extension System Architecture](../../../../docs/extension-system-architecture.md));
+  this design adds no capability machinery beyond it.
 - General-purpose OAuth/OIDC support. This extension is Azure-specific.
 - Per-request, per-tenant token selection. One extension instance serves one
   configured identity + scope.
@@ -97,14 +96,14 @@ path free of authentication plumbing.
 
 | Decision | Choice |
 | --- | --- |
-| Component shape | Standalone extension in a new `otap-df-contrib-extensions` crate; the Azure SDK dependency is isolated behind a feature flag. |
+| Component shape | Standalone extension in the `otap-df-contrib-extensions` crate; the Azure SDK dependency is isolated behind a feature flag. |
 | Capability surface | `BearerTokenProvider`: `get_token()` (cached fast path / single coalesced slow path) + `token_stream()` (refresh subscription). A single purpose-built capability trait, not a general framework. |
 | Execution model | `Active + Shared`. Shared serves both `require_shared()` and `require_local()` consumers; Active drives the background refresh loop. |
 | Startup gating | Opt into the engine readiness probe; `signal_ready()` after the first token publish so the engine holds data-path node startup until a token exists (bounded by the probe timeout). |
 | Sharing model | All state behind `Arc<Inner>`; every clone (consumers + background task) observes one token cache. At pipeline scope this is per pipeline instance (per core). |
 | Token cache | `tokio::sync::watch<Option<BearerToken>>` - lock-free fast-path read + pub/sub for `token_stream()`. |
 | Slow-path coalescing | An async `fetch_lock` with double-checked caching so concurrent cache-miss callers - and the background refresh - share one in-flight credential call. |
-| Auth methods (v1) | `managed_identity` (system- or user-assigned), `development` (local dev tooling), and `workload_identity` (federated ServiceAccount token). |
+| Auth methods | `managed_identity` (system- or user-assigned), `development` (local dev tooling), and `workload_identity` (federated ServiceAccount token). |
 | Refresh tuning | Fixed constants (skew before expiry, exponential-backoff-with-jitter retry, min cadence, refresh jitter); not user-configurable. |
 | Expiry handling | Absolute UNIX expiry converted once to a monotonic `Instant`, immune to wall-clock jumps thereafter. |
 | Registration | `#[distributed_slice(OTAP_EXTENSION_FACTORIES)]` link-time discovery, same mechanism as nodes. |
@@ -112,10 +111,9 @@ path free of authentication plumbing.
 
 ## Capability: `BearerTokenProvider`
 
-The extension implements the `BearerTokenProvider` capability - a small engine
-trait introduced alongside this work. The trait (generated via the
-`#[capability]` proc macro into `local::` and `shared::` variants) exposes two
-methods:
+The extension implements the `BearerTokenProvider` capability, a small engine
+trait. The trait (generated via the `#[capability]` proc macro into `local::`
+and `shared::` variants) exposes two methods:
 
 ```rust
 /// A per-consumer subscription to token refreshes. Boxed to hide the concrete
@@ -207,18 +205,33 @@ flowchart LR
 
 ### Internal state
 
+The cache, refresh loop, and capability implementation are not specific to
+Azure, so they live in the shared `crate::common::token_refresh` module and can be reused by other active bearer-token extensions (see [`oauth2_client_auth`](../oauth2_client_auth/design.md)). This extension is a type alias over that generic machinery:
+
 ```rust
-#[derive(Clone)]
-pub struct AzureIdentityAuthExtension {
-    inner: Arc<Inner>,
+pub type AzureIdentityAuthExtension = TokenProviderExtension<Auth, AzureIdentityAuthMetrics>;
+```
+
+```rust
+// Manual `Clone`: deriving would add `S: Clone, M: Clone` bounds, but the
+// state is shared through the `Arc` and is never cloned itself.
+pub struct TokenProviderExtension<S: TokenSource, M: TokenProviderMetrics> {
+    inner: Arc<Inner<S, M>>,
 }
 
-struct Inner {
-    auth: Auth,                                       // credential + scope
+struct Inner<S, M> {
+    source: S,                                        // credential + scope
+    expiry_buffer: Duration,                          // refresh skew
     tx: watch::Sender<Option<BearerToken>>,           // token cache + pub/sub
-    cap_err: CapabilityErrorSource<BearerTokenProvider>,
+    cap_err: CapabilityErrorSource<BearerTokenProviderCap>,
     fetch_lock: tokio::sync::Mutex<()>,               // coalesce slow-path fetches
-    metrics: std::sync::Mutex<AzureIdentityAuthMetricsTracker>,
+    failures: std::sync::Mutex<FailureState>,         // negative cache + retry backoff
+    metrics: std::sync::Mutex<TokenProviderMetricsTracker<M>>,
+}
+
+struct FailureState {
+    last_failure: Option<Instant>,
+    consecutive_failures: u32,
 }
 ```
 
@@ -226,6 +239,19 @@ All mutable state lives behind `Arc<Inner>` so the engine can clone the
 extension freely. The `fetch_lock` is an async `Mutex` (held across an
 `.await`); the metrics `Mutex` is a `std` `Mutex` whose critical sections are
 short and never held across an `.await`.
+
+Only two things are Azure-specific:
+
+- `Auth` implements `token_refresh::TokenSource`: `fetch_token()` calls the
+  `azure_identity` credential for the configured scope, and
+  `log_refresh_failure()` emits the `azure_identity_auth.token_refresh_failed`
+  event.
+- `AzureIdentityAuthMetrics` (metric set `extension.azure_identity_auth`)
+  implements `token_refresh::TokenProviderMetrics`, exposing its counters and
+  latency histogram to the generic tracker.
+
+The `expiry_buffer` is fixed at `TOKEN_EXPIRY_BUFFER_SECS` (299 s) for this
+extension; it is not user-configurable.
 
 ## Configuration
 
@@ -290,8 +316,7 @@ that does not apply to the selected method (`tenant_id`/`token_file_path` are
      control channel is polled even while a refresh is in flight, so a shutdown
      arriving mid-acquisition cancels the in-progress token call rather than
      letting a slow request run past the shutdown deadline.
-   - `Config` - currently a no-op; refresh cadence is governed by token
-     lifetime.
+   - `Config` - a no-op; refresh cadence is governed by token lifetime.
    - `CollectTelemetry` - best-effort flush of the metric set to the reporter,
      serviced without interrupting an in-flight refresh.
 2. **Refresh timer** (`sleep_until(next_refresh)`):
@@ -339,11 +364,10 @@ source.
 
 ### Azure Monitor exporter
 
-The Azure Monitor exporter is refactored to **consume** the capability rather
-than own authentication:
+The Azure Monitor exporter **consumes** the capability rather than owning
+authentication, so it carries no credential construction, token cache, refresh
+schedule, or auth-specific config, errors, and metrics of its own:
 
-- Its `auth.rs`, `AuthConfig`, auth-specific error variants, and auth metrics
-  are removed.
 - At factory time it resolves the capability:
   `capabilities.require_local::<BearerTokenProvider>()`.
 - Cold start needs no exporter-side wait: the readiness probe (see
@@ -351,8 +375,7 @@ than own authentication:
   spawned. If a later refresh fails and the cached token expires, the exporter
   falls back to a **"no token, no pdata"** state: it stops accepting pdata
   (`inbox.recv_when(false)`), applying backpressure upstream via the bounded
-  inbox channel until a fresh token arrives - the same pattern the current Azure
-  Monitor exporter uses (pdata is paused, not dropped).
+  inbox channel until a fresh token arrives (pdata is paused, not dropped).
 
 ### Parquet exporter (object_store)
 
@@ -360,12 +383,11 @@ The Parquet exporter (`urn:otel:exporter:parquet`) writes to Azure Blob Storage
 through the `object_store` crate, which expects an `object_store`
 `CredentialProvider` rather than the engine's `BearerTokenProvider`. The bridge
 is `AzureTokenCredentialProvider` (`crates/otap/src/object_store/azure.rs`): it
-is re-sourced to hold the resolved `BearerTokenProvider` handle instead of
-constructing its own credential, and implements `get_credential()` by calling
-`get_token()` and mapping the result to `AzureCredential::BearerToken`. Token
-caching and refresh move out of the exporter and into the extension; the
-`cloud_auth::azure` credential-construction path is no longer needed on this
-route.
+holds the resolved `BearerTokenProvider` handle rather than constructing its own
+credential, and implements `get_credential()` by calling `get_token()` and
+mapping the result to `AzureCredential::BearerToken`. Token caching and refresh
+belong to the extension, not the exporter, so the `cloud_auth::azure`
+credential-construction path is not used on this route.
 
 - The exporter binds the storage-scoped extension instance
   (`scope: https://storage.azure.com/.default`).
@@ -374,32 +396,21 @@ route.
   error and is retried per the exporter's existing object-store retry policy,
   rather than as inbox backpressure.
 
-### OTLP exporters
+### OTLP HTTP exporter
 
-The OTLP HTTP (`urn:otel:exporter:otlp_http`) exporter today supports only
-static request headers (e.g. a fixed `Authorization` header) and performs no
-token refresh. It **optionally** consumes `BearerTokenProvider`: when the
-capability is bound, the exporter resolves it at factory time
-(`optional_local()`) and subscribes to `token_stream()`. It rebuilds and caches
-the `Authorization: Bearer <token>` header once per refresh, then clones the
-cached header onto each outgoing request, so credentials refresh without a
-restart and the export hot loop never performs a credential read, header
-formatting, or a blocking token fetch. Subscribing rather than calling
+The OTLP HTTP (`urn:otel:exporter:otlp_http`) exporter **optionally** consumes
+`BearerTokenProvider`: when the capability is bound, the exporter resolves it at
+factory time (`optional_local()`) and subscribes to `token_stream()`. It rebuilds
+and caches the `Authorization: Bearer <token>` header once per refresh, then
+clones the cached header onto each outgoing request, so credentials refresh
+without a restart and the export hot loop never performs a credential read,
+header formatting, or a blocking token fetch. Subscribing rather than calling
 `get_token()` per request keeps all credential work off the data path
 (`get_token()`'s coalesced slow path can otherwise block the export loop on a
 token-endpoint call during a refresh failure). Until the provider publishes its
 first token the exporter applies backpressure with a retryable NACK rather than
-sending an unauthenticated request. Its factory already receives a
-`capabilities` argument, so this is additive and does not change the default
-(no-auth) behavior.
-
-The OTLP gRPC (`urn:otel:exporter:otlp_grpc`) exporter can adopt the same
-pattern, but is intentionally left out for now: the only bearer provider today
-is `azure_identity_auth` (scope `https://monitor.azure.com/.default`), and Azure
-Monitor's OTLP ingestion endpoints are HTTP-only (per-signal `.../otlp/v1/{logs,
-metrics,traces}` URLs, consumed by the collector's `otlphttp` exporter), so
-there is no gRPC provider + backend combination to exercise it. It can be wired
-up when a gRPC bearer backend or a non-Azure provider exists.
+sending an unauthenticated request. With no provider bound the exporter uses its
+statically configured request headers and performs no token refresh.
 
 ## Telemetry
 
@@ -419,7 +430,7 @@ Metrics are recorded in both the background refresh loop and the slow-path
 
 1. The engine starts the extension before any consumer that binds it (extensions
    start first; see
-   [Extension System Architecture](extension-system-architecture.md#key-design-decisions)).
+   [Extension System Architecture](../../../../docs/extension-system-architecture.md#key-design-decisions)).
    At factory time `create()` has already built `Auth`, registered the metric
    set, and constructed the extension with an empty token cache.
 2. `SharedExtension::start()` runs the refresh loop. The first acquisition
@@ -455,10 +466,10 @@ Metrics are recorded in both the background refresh loop and the slow-path
 
 The extension is reconfigured over the extension system's own control channel
 (`ExtensionControlMsg`), independent of pipeline-node reconfiguration
-(`NodeControlMsg::Config`). In v1, `ExtensionControlMsg::Config` is a no-op:
+(`NodeControlMsg::Config`). `ExtensionControlMsg::Config` is a no-op:
 refresh cadence is governed by token lifetime, and changing identity/scope is
-treated as an extension restart rather than an in-place swap. Promoting
-identity/scope to hot-swappable config is possible future work.
+treated as an extension restart rather than an in-place swap (see
+[Open Questions](#open-questions)).
 
 ### Cargo features
 
@@ -501,7 +512,7 @@ pub static AZURE_IDENTITY_AUTH_EXTENSION: ExtensionFactory = ExtensionFactory {
 };
 ```
 
-The URN follows the [URN format](urns.md): `urn:microsoft:extension:azure_identity_auth`
+The URN follows the [URN format](../../../../docs/urns.md): `urn:microsoft:extension:azure_identity_auth`
 (`microsoft` namespace, `extension` kind). The main binary links the crate with
 a side-effect import (`use otap_df_contrib_extensions as _;`) so the
 registration takes effect.
@@ -544,7 +555,7 @@ registration takes effect.
   rather than firing on a shared cadence. A future move to a broader scope
   (group/engine) would let a single instance be shared across cores without code
   changes (see
-  [Extension Scopes](extension-requirements.md#extension-scopes)).
+  [Extension Scopes](../../../../docs/extension-requirements.md#extension-scopes)).
 - **Runtime discipline.** The refresh loop runs on the per-core async runtime;
   all I/O is async (`reqwest` via the Azure SDK), so it never blocks other
   futures on the core.
@@ -553,7 +564,7 @@ registration takes effect.
 
 Validation focuses on user-facing scenarios.
 
-First useful end-to-end scenario (local development):
+End-to-end scenario (local development):
 
 - A pipeline declares the extension with `method: development` and binds it to
   the Azure Monitor exporter via `capabilities: { bearer_token_provider: ... }`.
@@ -586,20 +597,19 @@ Additional scenario coverage:
 
 ## Open Questions
 
-1. **Identity/scope hot-swap.** v1 treats an identity or scope change as an
+1. **Identity/scope hot-swap.** An identity or scope change is treated as an
    extension restart. Should `ExtensionControlMsg::Config` instead support
    swapping the credential in place (rebuilding `Auth` and forcing a refresh)
    without dropping the published token? The tradeoff is added complexity in the
    refresh loop versus a brief miss window on restart.
-2. **`AuthMethod` shape.** v1 uses a flat config struct with optional
-   per-method fields (`client_id`, `tenant_id`, `token_file_path`). Now that
+2. **`AuthMethod` shape.** The config is a flat struct with optional
+   per-method fields (`client_id`, `tenant_id`, `token_file_path`). Because
    `workload_identity` adds method-specific fields, should `AuthMethod` become
    an enum whose variants carry those fields, so required fields validate
-   structurally? This refactor was explicitly deferred during
-   [PR #3337](https://github.com/open-telemetry/otel-arrow/pull/3337).
+   structurally?
 3. **Multi-resource tokens.** A node targeting more than one Azure resource
-   needs more than one scope. v1's answer is "declare one extension instance per
-   scope and bind each"; is a single multi-scope instance worth the extra
+   needs more than one scope. The answer here is "declare one extension instance
+   per scope and bind each"; is a single multi-scope instance worth the extra
    capability surface?
 
 ## Future Work
@@ -607,16 +617,15 @@ Additional scenario coverage:
 - **`AuthMethod` enum refactor.** Promote the flat config struct to an
   `AuthMethod` enum so required per-method fields validate structurally (see
   [Open Questions](#open-questions)).
-- **Broader extension scope.** Hoist the extension to group/engine scope (Phase
-  2) for genuine cross-core token-cache sharing, so a single token cache and
+- **Broader extension scope.** Hoist the extension to group/engine scope for
+  genuine cross-core token-cache sharing, so a single token cache and
   refresh loop serve every core (see
-  [Extension Scopes](extension-requirements.md#extension-scopes)).
+  [Extension Scopes](../../../../docs/extension-requirements.md#extension-scopes)).
 
 ## References
 
-- [Extension System Proposal](extension-requirements.md)
-- [Extension System Architecture](extension-system-architecture.md)
-- [Design Principles and Constraints](design-principles.md)
-- [Architecture](architecture.md)
-- [URN Format](urns.md)
-- [PR #3337 - Workload Identity Federation for Azure Monitor exporter (merged)](https://github.com/open-telemetry/otel-arrow/pull/3337)
+- [Extension System Proposal](../../../../docs/extension-requirements.md)
+- [Extension System Architecture](../../../../docs/extension-system-architecture.md)
+- [Design Principles and Constraints](../../../../docs/design-principles.md)
+- [Architecture](../../../../docs/architecture.md)
+- [URN Format](../../../../docs/urns.md)

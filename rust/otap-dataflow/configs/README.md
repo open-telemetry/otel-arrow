@@ -13,22 +13,44 @@ future.
 
 ## Available Configurations
 
-### `internal-telemetry.yaml`
+### `trafficgen-file.yaml`
 
-Routes the engine's own logs and metrics through the Internal Telemetry System:
+Generates logs, metrics, and traces and writes each signal to an exclusive OTLP
+JSON Lines file under `/tmp` using the experimental file exporter. The resolved
+filenames include the signal, core ID, and deployment generation.
+
+### `internal-telemetry-logs.yaml`
+
+Routes only the engine's own logs through the Internal Telemetry System:
 
 - Uses the dedicated engine observability pipeline
-- Receives internal OTLP logs and metrics with `receiver:internal_telemetry`
+- Receives internal OTLP logs with `receiver:internal_telemetry`
+- Routes logs to the console exporter
+- Includes a commented `record_json` console exporter configuration
+
+Validate the configuration, then run the demo on one core:
+
+```bash
+cargo run -- --config configs/internal-telemetry-logs.yaml --validate-and-exit
+cargo run -- --config configs/internal-telemetry-logs.yaml --num-cores 1
+```
+
+### `internal-telemetry-metrics.yaml`
+
+Routes only the engine's own metrics through the Internal Telemetry System:
+
+- Uses the dedicated engine observability pipeline
+- Receives internal OTLP metrics with `receiver:internal_telemetry`
 - Collects metric snapshots every second and emits them every two seconds
 - Applies metric views for engine, pipeline, and flow metrics
-- Routes logs to the console exporter and decoded metrics to the debug processor
+- Routes decoded metrics to the debug processor
 
 Validate the configuration, then run the demo on one core and let it produce
 at least three metric batches:
 
 ```bash
-cargo run -- --config configs/internal-telemetry.yaml --validate-and-exit
-cargo run -- --config configs/internal-telemetry.yaml --num-cores 1 \
+cargo run -- --config configs/internal-telemetry-metrics.yaml --validate-and-exit
+cargo run -- --config configs/internal-telemetry-metrics.yaml --num-cores 1 \
   2>&1 | tee /tmp/its-metrics.log
 ```
 

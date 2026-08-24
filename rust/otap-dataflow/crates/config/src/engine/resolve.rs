@@ -5,7 +5,9 @@
 
 use crate::engine::{EngineConfig, OtelDataflowSpec};
 use crate::pipeline::PipelineConfig;
-use crate::policy::{Policies, ResolvedPolicies, ResourcesPolicy};
+use crate::policy::{
+    Policies, RateLimiterDeclarationScope, ResolvedPolicies, ResolvedResourcesPolicy,
+};
 use crate::topic::TopicSpec;
 use crate::{PipelineGroupId, PipelineId, TopicName};
 
@@ -100,7 +102,10 @@ impl ResolvedPipelineConfig {
         } = other;
 
         self_role == other_role
-            && self_pipeline == other_pipeline
+            // Policy effects are compared through the resolved snapshot below.
+            // Comparing their declaration placement here would redeploy for a
+            // scope-only move whose effective runtime policy is unchanged.
+            && self_pipeline.eq_ignoring_policies(other_pipeline)
             && self_policies == other_policies
     }
 
@@ -168,7 +173,37 @@ impl OtelDataflowSpec {
                 .into_iter()
                 .flatten()
                 .collect();
-                let policies = Policies::resolve(scopes);
+                let mut policies = Policies::resolve(scopes);
+                policies.rate_limiter_scope = if pipeline
+                    .policies()
+                    .and_then(Policies::resources)
+                    .and_then(|resources| resources.rate_limiters.as_ref())
+                    .is_some()
+                {
+                    Some(RateLimiterDeclarationScope::Pipeline(
+                        pipeline_group_id.clone(),
+                        pipeline_id.clone(),
+                    ))
+                } else if pipeline_group
+                    .policies
+                    .as_ref()
+                    .and_then(Policies::resources)
+                    .and_then(|resources| resources.rate_limiters.as_ref())
+                    .is_some()
+                {
+                    Some(RateLimiterDeclarationScope::PipelineGroup(
+                        pipeline_group_id.clone(),
+                    ))
+                } else if self
+                    .policies
+                    .resources()
+                    .and_then(|resources| resources.rate_limiters.as_ref())
+                    .is_some()
+                {
+                    Some(RateLimiterDeclarationScope::Engine)
+                } else {
+                    None
+                };
                 ResolvedPipelineConfig {
                     pipeline_group_id,
                     pipeline_id,
@@ -186,10 +221,12 @@ impl OtelDataflowSpec {
             .map(|p| p.clone().into_policies())
             .unwrap_or_default();
         let mut policies = Policies::resolve([&obs_as_policies, &self.policies]);
-        // Observability pipelines use default resources and do not
-        // capture/propagate transport headers.
-        policies.resources = ResourcesPolicy::default();
+        // Observability pipelines use default resources and do not consume
+        // user-facing receiver policies.
+        policies.resources = ResolvedResourcesPolicy::default();
         policies.transport_headers = None;
+        policies.rate_limiters.clear();
+        policies.rate_limiter_scope = None;
         pipelines.push(ResolvedPipelineConfig {
             pipeline_group_id: SYSTEM_PIPELINE_GROUP_ID.into(),
             pipeline_id: SYSTEM_OBSERVABILITY_PIPELINE_ID.into(),
@@ -230,7 +267,9 @@ impl OtelDataflowSpec {
 mod tests {
     use super::{ResolvedPipelineConfig, ResolvedPipelineRole};
     use crate::pipeline::PipelineConfig;
-    use crate::policy::{CoreAllocation, ResolvedPolicies, ResourcesPolicy, TelemetryPolicy};
+    use crate::policy::{
+        CoreAllocation, ResolvedPolicies, ResolvedResourcesPolicy, TelemetryPolicy,
+    };
 
     #[test]
     fn runtime_shape_matches_ignoring_resources_ignores_resource_only_changes() {
@@ -260,7 +299,7 @@ connections:
             )
             .expect("current pipeline should parse"),
             policies: ResolvedPolicies {
-                resources: ResourcesPolicy {
+                resources: ResolvedResourcesPolicy {
                     core_allocation: CoreAllocation::core_count(1),
                     memory_limiter: None,
                 },
@@ -294,7 +333,7 @@ connections:
             )
             .expect("candidate pipeline should parse"),
             policies: ResolvedPolicies {
-                resources: ResourcesPolicy {
+                resources: ResolvedResourcesPolicy {
                     core_allocation: CoreAllocation::core_count(2),
                     memory_limiter: None,
                 },

@@ -58,6 +58,30 @@ and
 [`configs/trafficgen-parquet-s3.yaml`](../../../../../configs/trafficgen-parquet-s3.yaml)
 for backend-specific configuration examples.
 
+Azure storage authentication is supplied by a bound `bearer_token_provider`
+capability. The top-level `azure` feature enables the Azure identity extension
+for you; you still need to declare it and bind it on the node. Configure it with
+the storage scope, and do not place identity credentials in the exporter config:
+
+```yaml
+extensions:
+  azure_identity:
+    type: urn:microsoft:extension:azure_identity_auth
+    config:
+      method: managed_identity
+      scope: https://storage.azure.com/.default
+
+nodes:
+  parquet:
+    type: exporter:parquet
+    capabilities:
+      bearer_token_provider: azure_identity
+    config:
+      storage:
+        azure:
+          base_uri: https://account.blob.core.windows.net/container/prefix
+```
+
 ## Examples
 
 Partition by schema metadata:
@@ -80,14 +104,15 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 ### Metric Sets
 
 Input PData message volume is reported by the engine through
-`channel.receiver.recv.count` on the PData input channel and is not duplicated
-by the exporter.
+`channel.receiver.messages` with its `signal` attribute on the PData input
+channel and is not duplicated by the exporter.
 
-#### `exporter.pdata.exports`
+#### `exporter.exports`
 
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
-| `exporter.pdata.exports.messages` | `{message}` | `signal`, `outcome` | Number of PData messages whose export reached a terminal outcome. |
+| `exporter.exports.messages` | `{message}` | `signal`, `outcome` | Number of PData messages whose export reached a terminal outcome. |
+| `exporter.exports.duration` | `s` | `signal`, `outcome` | Time from dequeuing PData through the terminal Parquet write result, including conversion and partitioning. |
 
 #### `otap.exporter.parquet`
 

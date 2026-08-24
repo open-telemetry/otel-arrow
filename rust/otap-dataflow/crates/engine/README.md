@@ -147,8 +147,8 @@ Each pipeline runtime uses three channel families:
    with `pdata` through role-specific inboxes.
 3. **Pipeline runtime channels**
    Each pipeline runtime owns two bounded shared MPSC channels:
-   - a **runtime-control channel** for timers, delayed-data requests,
-     receiver-drain notifications, and shutdown requests, consumed by
+   - a **runtime-control channel** for timers, receiver-drain notifications,
+     and shutdown requests, consumed by
      `RuntimeCtrlMsgManager`
    - a **pipeline-completion channel** for `DeliverAck` / `DeliverNack`,
      consumed by `PipelineCompletionMsgDispatcher`
@@ -160,9 +160,8 @@ channel is there to protect liveness.
 
 These two message families have different jobs:
 
-- runtime-control traffic keeps the runtime itself progressing: timers,
-  delayed-data wakeups, receiver drain notifications, and shutdown
-  orchestration
+- runtime-control traffic keeps the runtime itself progressing: timers, receiver
+  drain notifications, and shutdown orchestration
 - completion traffic unwinds the outcome of already admitted work: `Ack` and
   `Nack` delivery back to the closest interested upstream node
 
@@ -180,10 +179,10 @@ A realistic example looks like this:
 # admission while it waits for outstanding completions to reduce its inflight
 # count.
 # An exporter hits a temporary outage and emits a burst of DeliverNack.
-# The processor also needs to enqueue StartTimer / DelayData to retry work.
+# The processor also needs to enqueue timer work.
 #
-# If DeliverNack, StartTimer, DelayData, and Shutdown all share one bounded
-# channel, the DeliverNack burst can fill it first.
+# If DeliverNack, timer work, and Shutdown all share one bounded channel, the
+# DeliverNack burst can fill it first.
 # Then:
 # - the exporter can block trying to publish more completion traffic
 # - the processor can block trying to publish retry/timer work
@@ -195,8 +194,7 @@ A realistic example looks like this:
 #
 # With separate channels:
 # - runtime-control traffic stays live even under heavy Ack/Nack churn
-# - Ack/Nack unwinding stays live even while timers or delayed-data requests
-#   are busy
+# - Ack/Nack unwinding stays live even while timer requests are busy
 # - one path being saturated no longer prevents the other from draining
 ```
 
@@ -231,10 +229,10 @@ closed normal admission.
 The current message families are:
 
 - **Node control messages**: `Ack`, `Nack`, `Config`, `TimerTick`,
-  `CollectTelemetry`, `Wakeup`, `DelayedData`, `DrainIngress`, `Shutdown`
+  `CollectTelemetry`, `Wakeup`, `ResumeData`, `DrainIngress`, `Shutdown`
 - **Runtime control messages**: `StartTimer`, `CancelTimer`,
-  `StartTelemetryTimer`, `CancelTelemetryTimer`, `DelayData`,
-  `ReceiverDrained`, `Shutdown`
+  `StartTelemetryTimer`, `CancelTelemetryTimer`, `ReceiverDrained`,
+  `Shutdown`
 - **Pipeline completion messages**: `DeliverAck`, `DeliverNack`
 
 ## Runtime Message Dynamics
@@ -254,10 +252,10 @@ behavior:
    bounded-fair treatment.
 
 3. **Runtime-control flow**
-   Nodes send timer requests, delayed-data requests, `ReceiverDrained`, and
-   runtime `Shutdown` requests to the runtime-control channel. That channel is
-   consumed by `RuntimeCtrlMsgManager`, which handles orchestration and turns
-   due work back into node-control messages.
+   Nodes send timer requests, `ReceiverDrained`, and runtime `Shutdown`
+   requests to the runtime-control channel. That channel is consumed by
+   `RuntimeCtrlMsgManager`, which handles orchestration and turns due timer
+   work back into node-control messages.
 
 4. **Ack/Nack completion flow**
    Nodes that complete or reject work send `DeliverAck` and `DeliverNack` on
@@ -319,8 +317,9 @@ The current runtime properties and guarantees are:
   through during shutdown
 
 Wakeups are best-effort runtime scheduling signals. They are not durable work
-items and are not part of the runtime-control delayed-data mechanism that is
-still used by retry-oriented flows outside this API.
+items. Retained `pdata` scheduled with `requeue_later(...)` uses the same
+processor-local scheduler but is delivered separately as
+`NodeControlMsg::ResumeData`.
 
 ## Runtime Properties
 
@@ -329,7 +328,7 @@ The runtime is organized around a small set of guarantees:
 - **Isolated control paths:** runtime orchestration and Ack/Nack unwinding use
   separate bounded runtime channels and dedicated runtime components.
 - **Bounded progress under load:** control remains responsive while `pdata`,
-  timer expiry, telemetry collection, and delayed-data resumption still make
+  timer expiry, telemetry collection, and processor-local resumes still make
   progress under sustained control traffic.
 - **Explicit node-level admission control:** processors can temporarily pause
   `pdata` delivery through `accept_pdata()`, and exporters can apply the same
@@ -365,7 +364,7 @@ In practice, effect handlers are how nodes:
 - emit Ack/Nack outcomes onto the pipeline-completion channel
 - schedule or cancel timers on the runtime-control channel
 - schedule or cancel processor-local wakeups
-- return delayed data
+- requeue retained `pdata` through the processor-local scheduler
 - report `ReceiverDrained`
 - create listeners and sockets with engine-defined socket options
 
@@ -532,9 +531,10 @@ When graceful shutdown starts, the runtime control manager:
 
 1. Enters ingress-draining mode.
 2. Cancels recurring timers.
-3. Flushes queued delayed data back to the originating nodes as
-   `NodeControlMsg::DelayedData`.
-4. Sends `NodeControlMsg::DrainIngress` to every receiver.
+3. Sends `NodeControlMsg::DrainIngress` to every receiver.
+
+Processor-local delayed resumes stay inside each node's local scheduler and are
+not part of the shared runtime shutdown path.
 
 Each receiver is then responsible for stopping admission of new external work
 while keeping receiver-local drain state alive long enough to finish local
@@ -671,8 +671,8 @@ For the shared control plane, the engine exports two pipeline metric families:
 
 - `pipeline.runtime_control`
   This family is owned by `RuntimeCtrlMsgManager` and helps explain graceful
-  drain state, pending control-send backpressure, active timers, delayed-data
-  backlog, and whether shutdown finished naturally or was forced by deadline.
+  drain state, pending control-send backpressure, active timers, and whether
+  shutdown finished naturally or was forced by deadline.
 - `pipeline.completion`
   This family is owned by `PipelineCompletionMsgDispatcher` and helps explain
   whether completion traffic is arriving, being delivered upstream, being
@@ -700,8 +700,8 @@ Operationally, these two pipeline-scoped metric families help answer different
 questions:
 
 - if receivers appear stuck during shutdown, `pipeline.runtime_control` shows
-  whether drain is active, how many receivers are still pending, whether timer
-  or delayed-data work is still queued, and whether the shutdown deadline was
+  whether drain is active, how many receivers are still pending, whether
+  runtime timers remain active, and whether the shutdown deadline was
   ultimately forced
 - if upstream callers are not seeing final Ack/Nack outcomes, `pipeline.completion`
   shows whether completions are reaching the dispatcher, whether they are being
@@ -713,9 +713,11 @@ questions:
 <!-- markdownlint-disable MD013 -->
 | Scope    | Attribute           | Type    | Description                                                  |
 |----------|---------------------|---------|--------------------------------------------------------------|
-| Resource | process_instance_id | string  | Unique process instance identifier (base32-encoded UUID v7). |
-| Resource | host_id             | string  | Host identifier (e.g. hostname).                             |
-| Resource | container_id        | string  | Container identifier (e.g. Docker/containerd container ID).  |
+| Resource | service.instance.id | string  | Unique instance id (UUIDv7); `service_instance` default.     |
+| Resource | service.name        | string  | From `OTEL_SERVICE_NAME` or the build-info default.          |
+| Resource | service.version     | string  | Build-info default; config/`OTEL_*` override.                |
+| Resource | host.id             | string  | Host machine id; `host` detector (opt-in).                   |
+| Resource | container.id        | string  | Container id; `container` detector (opt-in).                 |
 | Engine   | core_id             | integer | Core identifier.                                             |
 | Engine   | numa_node_id        | integer | NUMA node identifier.                                        |
 | Pipeline | pipeline_id         | string  | Pipeline identifier.                                         |
@@ -753,12 +755,12 @@ classes without pretending that every failure becomes harmless:
 
 - **Separation of orchestration and result traffic**
   Runtime-control work and Ack/Nack unwinding travel on separate runtime paths,
-  so completion traffic does not share the same queue as timers, delayed data,
-  and receiver-drain coordination.
+  so completion traffic does not share the same queue as timers and
+  receiver-drain coordination.
 
 - **Bounded-fair progress**
   The runtime avoids absolute control priority. Control remains responsive, but
-  `pdata`, due timers, telemetry collection, and delayed-data resumption still
+  `pdata`, due timers, telemetry collection, and processor-local resumes still
   make progress under sustained control load.
 
 - **Receiver-first graceful drain**
@@ -767,8 +769,9 @@ classes without pretending that every failure becomes harmless:
   Ack/Nack outcomes, and then let downstream drain naturally.
 
 - **Explicit drain-time behavior**
-  During graceful shutdown, recurring timers are canceled, delayed data is
-  returned explicitly, and downstream shutdown is gated by `ReceiverDrained`.
+  During graceful shutdown, recurring timers are canceled, pending retained
+  `pdata` becomes immediately resumable in its processor-local scheduler, and
+  downstream shutdown is gated by `ReceiverDrained`.
 
 - **Invalid cross-pipeline topic topologies are rejected early**
   Topic declaration and cycle validation happen before runtimes start, so the

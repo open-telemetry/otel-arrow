@@ -1,6 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+otap_df_telemetry::otel_component_scope!(urn = NOOP_EXPORTER_URN, target = "otel.exporter.noop",);
+
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
@@ -26,6 +28,7 @@ pub struct NoopExporter;
 
 /// Declare the Noop Exporter as a local exporter factory.
 #[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Exporter)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static NOOP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: NOOP_EXPORTER_URN,

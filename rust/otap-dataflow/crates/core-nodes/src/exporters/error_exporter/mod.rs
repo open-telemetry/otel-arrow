@@ -1,6 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+otap_df_telemetry::otel_component_scope!(urn = ERROR_EXPORTER_URN, target = "otel.exporter.error",);
+
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
@@ -37,6 +39,7 @@ struct ErrorExporterConfig {
 
 /// Declare the Error Exporter as a local exporter factory.
 #[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Exporter)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static ERROR_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: ERROR_EXPORTER_URN,

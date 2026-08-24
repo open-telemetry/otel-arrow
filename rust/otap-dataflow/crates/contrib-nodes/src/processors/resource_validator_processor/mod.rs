@@ -39,6 +39,11 @@
 //! The `get_allowed_values` method provides the extension point - it currently
 //! returns static config values, but can be extended to check auth context first.
 
+otap_df_telemetry::otel_component_scope!(
+    urn = RESOURCE_VALIDATOR_PROCESSOR_URN,
+    target = "otel.processor.resource_validator",
+);
+
 mod config;
 mod metrics;
 
@@ -60,7 +65,7 @@ use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::OtapPayload;
+use otap_df_pdata::PayloadData;
 use otap_df_pdata::TryFromWithOptions;
 #[cfg(test)]
 use otap_df_pdata::TryIntoWithOptions;
@@ -75,7 +80,6 @@ use otap_df_pdata_views::views::metrics::{MetricsView, ResourceMetricsView};
 use otap_df_pdata_views::views::resource::ResourceView;
 use otap_df_pdata_views::views::trace::{ResourceSpansView, TracesView};
 use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::otel_warn;
 use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::HashSet;
@@ -171,6 +175,7 @@ pub fn create_resource_validator_processor(
 
 /// Register ResourceValidatorProcessor as an OTAP processor factory
 #[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Processor)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static RESOURCE_VALIDATOR_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> =
     otap_df_engine::ProcessorFactory {
@@ -479,15 +484,15 @@ impl local::Processor<OtapPdata> for ResourceValidatorProcessor {
                 }
                 Ok(())
             }
-            Message::PData(pdata) => {
+            Message::PData(mut pdata) => {
                 let signal_type = pdata.signal_type();
 
                 // Get allowed values (extension point for future dynamic auth)
                 let allowed_values = self.get_allowed_values(&pdata);
 
                 // Validate based on payload type
-                let validation_result = match pdata.payload_ref() {
-                    OtapPayload::OtlpBytes(otlp_bytes) => match (signal_type, otlp_bytes) {
+                let validation_result = match pdata.payload_ref().data() {
+                    PayloadData::OtlpBytes(otlp_bytes) => match (signal_type, otlp_bytes) {
                         (SignalType::Logs, OtlpProtoBytes::ExportLogsRequest(bytes)) => {
                             let logs_data = RawLogsData::new(bytes.as_ref());
                             self.validate_logs(&logs_data, &allowed_values)
@@ -506,7 +511,7 @@ impl local::Processor<OtapPdata> for ResourceValidatorProcessor {
                             Ok(())
                         }
                     },
-                    OtapPayload::OtapArrowRecords(arrow_records) => match signal_type {
+                    PayloadData::OtapArrowRecords(arrow_records) => match signal_type {
                         SignalType::Logs => {
                             self.validate_arrow_logs(arrow_records, &allowed_values)
                         }

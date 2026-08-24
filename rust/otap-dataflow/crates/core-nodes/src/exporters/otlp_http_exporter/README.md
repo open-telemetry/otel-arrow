@@ -97,10 +97,14 @@ optional and additive: without it the exporter sends no `authorization` header
 (the default); with it, the bound extension acquires and refreshes the token in
 the background so credentials rotate without restarting the exporter.
 
-Declare a provider extension (e.g.
-[`azure_identity_auth`](../../../../contrib-extensions/src/azure_identity_auth/README.md))
-in the pipeline's `extensions:` section and bind it on the exporter node via the
-node's `capabilities:` map:
+Declare a provider extension in the pipeline's `extensions:` section and bind it
+on the exporter node via the node's `capabilities:` map. Any provider works and
+the exporter cannot tell them apart; today the available ones are
+[`oauth2_client_auth`](../../../../contrib-extensions/src/oauth2_client_auth/README.md)
+(any OAuth 2.0 token endpoint) and
+[`azure_identity_auth`](../../../../contrib-extensions/src/azure_identity_auth/README.md)
+(Azure identities). See the chosen extension's README for its configuration
+reference; only the binding is documented here.
 
 ```yaml
 groups:
@@ -108,18 +112,19 @@ groups:
     pipelines:
       main:
         extensions:
-          azure_identity:
-            type: "urn:microsoft:extension:azure_identity_auth"
+          token_provider:
+            type: "urn:otel:extension:oauth2_client_auth"
             config:
-              method: managed_identity
-              scope: "https://monitor.azure.com/.default"
+              token_url: "https://idp.example.com/oauth2/v1/token"
+              client_id: "someclientid"
+              client_secret_file: "/etc/secrets/oauth2_client_secret"
 
         nodes:
           otlp-http-exporter:
             type: "urn:otel:exporter:otlp_http"
             # Bind the bearer token provider to the extension declared above.
             capabilities:
-              bearer_token_provider: azure_identity
+              bearer_token_provider: token_provider
             config:
               endpoint: "https://my-endpoint:4318"
               client_pool_size: 1
@@ -137,8 +142,8 @@ small safety margin of expiring -- the exporter **stops accepting new batches**
 request. It resumes as soon as a usable token arrives; nothing is dropped. (If
 buffered batches are force-drained during shutdown while no token is available,
 they are NACK'd as **retryable**.) A token is guaranteed to eventually arrive:
-the `azure_identity_auth` extension holds data-path startup until its first token
-publish, and its token stream stays live for the exporter's lifetime.
+the bound extension holds data-path startup until its first token publish, and
+its token stream stays live for the exporter's lifetime.
 
 ## Examples
 
@@ -161,14 +166,27 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 ### Metric Sets
 
 Input PData message volume is reported by the engine through
-`channel.receiver.recv.count` on the PData input channel and is not duplicated
-by the exporter.
+`channel.receiver.messages` with its `signal` attribute on the PData input
+channel and is not duplicated by the exporter.
 
-#### `exporter.pdata.exports`
+#### `exporter.exports`
 
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
-| `exporter.pdata.exports.messages` | `{message}` | `signal`, `outcome` | Number of PData messages whose export reached a terminal outcome. |
+| `exporter.exports.messages` | `{message}` | `signal`, `outcome` | Number of PData messages whose export reached a terminal outcome. |
+| `exporter.exports.duration` | `s` | `signal`, `outcome` | Time from dequeuing PData through the terminal HTTP export result, including encoding, compression, and in-flight queueing but excluding Ack/Nack notification. |
+
+#### `exporter.otlp_http.failures`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `exporter.otlp_http.failures.messages` | `{message}` | `signal`, `error.type` | Failed OTLP HTTP exports classified by actionable error type. |
+
+`error.type` is one of `encoding`, `compression`, `authentication`,
+`authorization`, `timeout`, `throttled`, `unavailable`, `rejected`,
+`server_error`, `transport`, `response_too_large`, `response_decode`,
+`partial_rejection`, or `other`. Successful exports, zero-rejection partial
+successes, and Ack/Nack notification failures do not emit this metric.
 
 ### Events
 

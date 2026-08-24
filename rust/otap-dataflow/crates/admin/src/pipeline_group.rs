@@ -270,6 +270,7 @@ mod tests {
             _pipeline_group_id: &str,
             _pipeline_id: &str,
             _timeout_secs: u64,
+            _initiator: crate::PipelineShutdownInitiator,
         ) -> Result<ShutdownStatus, ControlPlaneError> {
             Err(ControlPlaneError::PipelineNotFound)
         }
@@ -343,6 +344,8 @@ mod tests {
             metrics_registry,
             controller,
             terminal_control_plane_permits: Arc::new(tokio::sync::Semaphore::new(1)),
+            heap_profile_permits: Arc::new(tokio::sync::Semaphore::new(1)),
+            cpu_profile_permits: Arc::new(tokio::sync::Semaphore::new(1)),
             log_tap: None,
             memory_pressure_state: MemoryPressureState::default(),
             target_info: Arc::from(""),

@@ -33,7 +33,7 @@ pub fn execute_map_reduce_transform_expression<'a, TRecord: Record>(
             let target = execute_mutable_value_expression(execution_context, target)?;
 
             if let Some(ResolvedValueMut::Map(mut m)) = target {
-                m.retain(&mut KeyValueMutClosureCallback::new(|k, v| {
+                m.retain(&mut |k, v| {
                     for p in &reduction.key_patterns {
                         if p.get_value().is_match(k) {
                             execution_context.add_diagnostic_if_enabled(
@@ -82,7 +82,7 @@ pub fn execute_map_reduce_transform_expression<'a, TRecord: Record>(
                     }
 
                     true
-                }));
+                });
             } else {
                 execution_context.add_diagnostic_if_enabled(
                     RecordSetEngineDiagnosticLevel::Warn,
@@ -107,7 +107,7 @@ pub fn execute_map_reduce_transform_expression<'a, TRecord: Record>(
             let target = execute_mutable_value_expression(execution_context, target)?;
 
             if let Some(ResolvedValueMut::Map(mut m)) = target {
-                m.retain(&mut KeyValueMutClosureCallback::new(|k, v| {
+                m.retain(&mut |k, v| {
                     for p in &reduction.key_patterns {
                         if p.get_value().is_match(k) {
                             return true;
@@ -148,7 +148,7 @@ pub fn execute_map_reduce_transform_expression<'a, TRecord: Record>(
                     );
 
                     false
-                }));
+                });
             } else {
                 execution_context.add_diagnostic_if_enabled(
                     RecordSetEngineDiagnosticLevel::Warn,
@@ -389,7 +389,7 @@ fn remove_from_map<'a, TRecord: Record + 'static>(
     map: &mut dyn MapValueMut,
     reduction: &MapReduction<'_>,
 ) {
-    map.retain(&mut KeyValueMutClosureCallback::new(|k, v| {
+    map.retain(&mut |k, v| {
         if !reduction.key_patterns.is_empty() {
             for p in &reduction.key_patterns {
                 if p.get_value().is_match(k) {
@@ -439,7 +439,7 @@ fn remove_from_map<'a, TRecord: Record + 'static>(
             }
         }
         true
-    }));
+    });
 }
 
 fn remove_from_array<'a, TRecord: Record + 'static>(
@@ -472,7 +472,7 @@ fn remove_from_array<'a, TRecord: Record + 'static>(
         }
     }
 
-    array.retain(&mut IndexValueMutClosureCallback::new(|i, v| {
+    array.retain(&mut |i, v| {
         if let Some(inner_reduction) = elements.get(&i) {
             let v = v.to_static_value_mut();
             let remove = match v {
@@ -510,7 +510,7 @@ fn remove_from_array<'a, TRecord: Record + 'static>(
         }
 
         true
-    }));
+    });
 }
 
 fn keep_in_map<'a, TRecord: Record + 'static>(
@@ -519,7 +519,7 @@ fn keep_in_map<'a, TRecord: Record + 'static>(
     map: &mut dyn MapValueMut,
     reduction: &MapReduction<'_>,
 ) {
-    map.retain(&mut KeyValueMutClosureCallback::new(|k, v| {
+    map.retain(&mut |k, v| {
         if !reduction.key_patterns.is_empty() {
             for p in &reduction.key_patterns {
                 if p.get_value().is_match(k) {
@@ -562,7 +562,7 @@ fn keep_in_map<'a, TRecord: Record + 'static>(
         );
 
         false
-    }));
+    });
 }
 
 fn keep_in_array<'a, TRecord: Record + 'static>(
@@ -595,7 +595,7 @@ fn keep_in_array<'a, TRecord: Record + 'static>(
         }
     }
 
-    array.retain(&mut IndexValueMutClosureCallback::new(|i, v| {
+    array.retain(&mut |i, v| {
         if let Some(inner_reduction) = elements.get(&i) {
             let v = v.to_static_value_mut();
             match v {
@@ -630,7 +630,7 @@ fn keep_in_array<'a, TRecord: Record + 'static>(
         );
 
         false
-    }));
+    });
 }
 
 #[cfg(test)]

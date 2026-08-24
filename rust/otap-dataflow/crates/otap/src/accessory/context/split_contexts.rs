@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! utilities for managing context of inbound and outbound requests
+//! Utilities for managing context of inbound and outbound requests
 //! produced by processors that may split the incoming batch into
 //! multiple outbound batches
 
@@ -23,9 +23,10 @@ struct Outbound {
     inbound_key: Key,
 }
 
-/// Contexts manages the context of inbound and outbound batches. The intent here is to keep enough state
-/// that if any batches are split by the pipeline, we can Ack/Nack the inbound batch and when all outbound batches
-/// are completed.
+/// Manages inbound contexts until every outbound split has completed.
+///
+/// This preserves both Ack/Nack routing and pipeline metric frames until the
+/// inbound batch can be completed.
 ///
 /// It contains two slot maps:
 /// - Inbound: manages how many outbound batches are associated with an inbound batch, as well as
@@ -48,8 +49,8 @@ impl Contexts {
 
     /// Insert an inbound batch into the context.
     ///
-    /// If the inbound batch does not need to be managed (no subscribers), it is not inserted into the context
-    /// and a null key is returned.
+    /// If the inbound batch does not need completion tracking, it is not inserted
+    /// into the context and a null key is returned.
     ///
     /// Returns `None` if the inbound slot map is full.
     ///
@@ -62,8 +63,8 @@ impl Contexts {
         context: Context,
         error_reason: Option<String>,
     ) -> Option<Key> {
-        if !context.has_subscribers() {
-            // no point in managing the inbound/outbound the context if there are no subscribers
+        if !context.needs_completion_tracking() {
+            // No completion routing or metrics unwinding depends on this context.
             return Some(Key::null());
         }
 
@@ -79,10 +80,10 @@ impl Contexts {
     /// Inserts an outbound batch into the context. This will update any necessary state related
     /// to the inbound batch (increment count of outbound batches).
     ///
-    /// Returns the key of the outbound batch. IF the inbound batch doesn't exist it will return
-    /// a null key. Note: even after calling insert_inbound, the inbound batch may not exist
-    /// because we determined from the context it doesn't need to be tracked (e.g. it has no
-    /// subscribers).
+    /// Returns the key of the outbound batch. If the inbound batch doesn't exist,
+    /// it returns a null key. Even after calling `insert_inbound`, the inbound
+    /// batch may not exist because its context did not require completion
+    /// tracking.
     ///
     /// Returns `None` if the outbound slot map is full.
     pub fn insert_outbound(&mut self, inbound_key: Key) -> Option<Key> {
@@ -129,8 +130,8 @@ impl Contexts {
     /// Clears the outbound slot and returns the context and error reason if the inbound slot is now empty.
     ///
     /// Returns `Some((context, error_reason))` if the inbound slot is now empty. This would mean that
-    /// all outbound batches for this inbound slot have been processed and the inbound batch could be
-    /// Ack/NAck'd
+    /// all outbound batches for this inbound slot have been processed and the
+    /// inbound batch can be completed.
     pub fn clear_outbound(&mut self, outbound_key: Key) -> Option<(Context, Option<String>)> {
         let inbound_key = {
             let outbound = self.outbound.take(outbound_key)?;
@@ -176,7 +177,7 @@ mod test {
         ctx
     }
 
-    // Helper to create a test context without subscribers
+    // Helper to create a test context without completion interests.
     fn create_context_without_subscribers() -> Context {
         Context::default()
     }
@@ -355,6 +356,29 @@ mod test {
             error_msg1,
             "First error should be preserved"
         );
+    }
+
+    /// Scenario: A split input has pipeline metric interests but no Ack/Nack subscriber.
+    /// Guarantees: The original context is retained until every split output completes.
+    #[test]
+    fn test_with_metrics_only_context() {
+        let mut contexts = new_contexts();
+        let pdata = create_test_pdata().test_subscribe_to(
+            otap_df_engine::Interests::PRODUCER_METRICS,
+            smallvec::smallvec![],
+            1,
+        );
+        let (original_context, _) = pdata.into_parts();
+
+        let inbound_key = contexts
+            .insert_inbound(original_context.clone(), None)
+            .unwrap();
+        assert!(!inbound_key.is_null());
+
+        let outbound_key = contexts.insert_outbound(inbound_key).unwrap();
+        let (completed_context, error) = contexts.clear_outbound(outbound_key).unwrap();
+        assert_eq!(completed_context, original_context);
+        assert!(error.is_none());
     }
 
     #[test]

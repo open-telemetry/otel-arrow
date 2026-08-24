@@ -3,6 +3,11 @@
 
 //! Linux user_events receiver.
 
+otap_df_telemetry::otel_component_scope!(
+    urn = USER_EVENTS_RECEIVER_URN,
+    target = "otel.receiver.user_events",
+);
+
 mod arrow_records_encoder;
 mod decoder;
 mod metrics;
@@ -40,7 +45,6 @@ use self::metrics::UserEventsReceiverMetrics;
 use self::session::SessionInitError;
 use self::session::{RawUserEventsRecord, SessionDrainStats, UserEventsSession};
 use otap_df_engine::control::NodeControlMsg;
-use otap_df_telemetry::{otel_info, otel_warn};
 use tokio::time::{self, MissedTickBehavior};
 
 const DEFAULT_PER_CPU_BUFFER_SIZE: usize = 1024 * 1024;
@@ -561,6 +565,7 @@ async fn process_drained_records(
 }
 
 #[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Receiver)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 /// Declares the Linux user_events receiver as a local receiver factory.
 pub static USER_EVENTS_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
@@ -1270,12 +1275,12 @@ mod config_tests {
                 _ = time::sleep(Duration::from_millis(10)) => {}
             }
 
-            let prefilled = rx.recv().await.expect("prefilled item received");
+            let mut prefilled = rx.recv().await.expect("prefilled item received");
             assert_eq!(prefilled.num_items(), 0);
             flush.await.expect("flush completed after capacity opened");
         }
 
-        let pdata = rx.recv().await.expect("flushed batch received");
+        let mut pdata = rx.recv().await.expect("flushed batch received");
         assert_eq!(pdata.num_items(), 1);
 
         let metrics = metrics.borrow();
@@ -1349,7 +1354,7 @@ mod config_tests {
         .await
         .expect("drained records processed");
 
-        let pdata = rx.recv().await.expect("flushed batch received");
+        let mut pdata = rx.recv().await.expect("flushed batch received");
         assert_eq!(pdata.num_items(), 1);
         let metrics = metrics.borrow();
         assert!(builder.is_empty());
@@ -1429,7 +1434,7 @@ mod config_tests {
             .await
             .expect("partial batch flushed");
 
-        let pdata = rx.recv().await.expect("flushed batch received");
+        let mut pdata = rx.recv().await.expect("flushed batch received");
         assert_eq!(pdata.num_items(), 1);
         let metrics = metrics.borrow();
         assert!(builder.is_empty());

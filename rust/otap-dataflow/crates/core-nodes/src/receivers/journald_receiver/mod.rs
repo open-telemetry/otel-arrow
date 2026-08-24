@@ -10,6 +10,11 @@
 //! platforms the factory rejects construction with a clear error.
 #![cfg_attr(not(target_os = "linux"), allow(dead_code))]
 
+otap_df_telemetry::otel_component_scope!(
+    urn = JOURNALD_RECEIVER_URN,
+    target = "otel.receiver.journald",
+);
+
 #[cfg(target_os = "linux")]
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -43,8 +48,6 @@ use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
 #[cfg(target_os = "linux")]
 use otap_df_telemetry::metrics::MetricSetSnapshot;
-#[cfg(target_os = "linux")]
-use otap_df_telemetry::{otel_debug, otel_info, otel_warn};
 use otap_df_telemetry_macros::metric_set;
 use serde_json::Value;
 #[cfg(any(target_os = "linux", test))]
@@ -136,6 +139,7 @@ pub struct JournaldReceiver {
 }
 
 #[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Receiver)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 /// Declares the journald receiver as a local receiver factory.
 pub static JOURNALD_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
@@ -264,6 +268,7 @@ struct WorkerBatch {
 
 #[cfg(target_os = "linux")]
 enum WorkerEvent {
+    HeadRecovery,
     Batch(WorkerBatch),
     CommitResult {
         batch_id: u64,
@@ -516,6 +521,11 @@ fn worker_loop_inner(
 ) -> Result<(), WorkerError> {
     let mut committed_cursor = checkpoint::read_cursor(&checkpoint_path)?;
     let mut reader = journal::SdJournalReader::open(&config, committed_cursor.as_deref())?;
+    if reader.took_end_head_recovery() {
+        event_tx
+            .blocking_send(WorkerEvent::HeadRecovery)
+            .map_err(|_| WorkerError::EventChannelClosed)?;
+    }
     let mut next_batch_id = 1u64;
     let mut builder = arrow_records_encoder::JournaldArrowRecordsBuilder::new();
     let mut first_cursor = String::new();
@@ -630,9 +640,9 @@ fn worker_loop_inner(
                         first_cursor = entry.cursor.clone();
                         first_record_at = StdInstant::now();
                     }
-                    last_cursor = entry.cursor.clone();
                     dropped_fields = dropped_fields.saturating_add(entry.dropped_fields);
                     builder.append(&entry);
+                    last_cursor = entry.cursor;
                 }
             }
         }
@@ -867,6 +877,13 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
 
                 event = event_rx.recv() => {
                     match event {
+                        Some(WorkerEvent::HeadRecovery) => {
+                            otel_warn!(
+                                "journald_receiver.start_at_end_head_recovery",
+                                source_id = config.source_id.as_str(),
+                                journal_root_path = config.journal.root_path.display().to_string()
+                            );
+                        }
                         Some(WorkerEvent::Batch(batch)) => {
                             if pending.len() >= max_in_flight {
                                 let _ =
@@ -880,7 +897,7 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                             }
                             let mut pdata = OtapPdata::new(
                                 Context::default(),
-                                OtapPayload::OtapArrowRecords(batch.records),
+                                OtapPayload::from(batch.records),
                             );
                             let mut calldata = CallData::new();
                             calldata.push(Context8u8::from(batch.id));

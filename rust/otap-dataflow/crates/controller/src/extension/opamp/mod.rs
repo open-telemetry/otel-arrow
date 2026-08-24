@@ -40,11 +40,6 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use otap_df_config::PipelineKey;
-use otap_df_config::error::Error as ConfigError;
-use otap_df_state::pipeline_status::PipelineStatus;
-use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
-
 use crate::extension::opamp::config::Config;
 use crate::extension::opamp::consts::health_status;
 use crate::extension::opamp::error::Error;
@@ -61,6 +56,9 @@ use crate::{
     CONTROLLER_EXTENSION_FACTORIES, ControllerExtensionContext, ControllerExtensionError,
     ControllerExtensionFactory, ControllerExtensionTaskFactory,
 };
+use otap_df_config::PipelineKey;
+use otap_df_config::error::Error as ConfigError;
+use otap_df_state::pipeline_status::PipelineStatus;
 
 pub mod config;
 pub mod consts;
@@ -69,6 +67,11 @@ pub mod proto;
 mod util;
 
 const CONTROL_EXTENSION_URN: &str = "urn:otel:extension:opamp";
+
+otap_df_telemetry::otel_component_scope!(
+    urn = CONTROL_EXTENSION_URN,
+    target = "otel.extension.opamp",
+);
 
 /// Custom capability type - represents the custom message which can be sent by this OpAMP agent
 /// implementation containing the full pipeline status.
@@ -278,6 +281,7 @@ async fn connect_websocket(
 
         match connect_result {
             Ok((stream, _response)) => {
+                otel_info!("opamp.controller_extension.ws_connect.success");
                 return Some(stream);
             }
 
@@ -698,6 +702,31 @@ struct ReplyError {
     config_hash: Vec<u8>,
 }
 
+fn parse_remote_engine_config(content_type: &str, body: &[u8]) -> Result<OtelDataflowSpec, String> {
+    let media_type = content_type
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    match media_type.as_str() {
+        "application/json" => serde_json::from_slice(body).map_err(|error| error.to_string()),
+        "application/yaml" | "application/x-yaml" | "text/yaml" | "text/x-yaml" => {
+            serde_yaml::from_slice(body).map_err(|error| error.to_string())
+        }
+        // Preserve the historical empty-as-JSON behavior, then support servers such as
+        // opamp-go that omit the content type for YAML payloads.
+        "" => serde_json::from_slice(body).or_else(|json_error| {
+            serde_yaml::from_slice(body).map_err(|yaml_error| {
+                format!("could not parse as JSON ({json_error}) or YAML ({yaml_error})")
+            })
+        }),
+        other => Err(format!(
+            "unsupported content type `{other}`; expected JSON or YAML"
+        )),
+    }
+}
+
 /// Decide what must be done with the ServerToAgent message
 fn handle_server_to_agent_message(
     message: ServerToAgent,
@@ -842,45 +871,38 @@ fn handle_server_to_agent_message(
                     .config_map
                     .get(&config.remote_config_key)
                 {
-                    // assume empty content type to be JSON
-                    if config_file.content_type == "application/json"
-                        || config_file.content_type.is_empty()
-                    {
-                        if !config_file.body.is_empty() {
-                            match serde_json::from_slice::<OtelDataflowSpec>(&config_file.body) {
-                                Ok(engine_config) => {
-                                    updates.engine_config = Some(EngineConfigUpdate {
-                                        engine_config,
-                                        config_hash: remote_config.config_hash,
-                                    })
-                                }
-                                Err(e) => {
-                                    let message =
-                                        "Could not deserialize JSON encoded engine config"
-                                            .to_string();
-                                    otel_error!(
-                                        "opamp.controller_extension.message.invalid_config_json",
-                                        message = message,
-                                        error =? e,
-                                    );
-                                    reply.reply_error = Some(ReplyError {
-                                        message,
-                                        config_hash: remote_config.config_hash,
-                                    })
-                                }
+                    if !config_file.body.is_empty() {
+                        match parse_remote_engine_config(
+                            &config_file.content_type,
+                            &config_file.body,
+                        ) {
+                            Ok(engine_config) => {
+                                otel_debug!("opamp.controller_extension.remote_config.accepted");
+                                updates.engine_config = Some(EngineConfigUpdate {
+                                    engine_config,
+                                    config_hash: remote_config.config_hash,
+                                })
+                            }
+                            Err(error) => {
+                                let message = format!(
+                                    "Remote configuration was rejected: {error}; the current engine configuration remains active"
+                                );
+                                otel_error!(
+                                    "opamp.controller_extension.message.invalid_config",
+                                    message = message,
+                                    error = error,
+                                );
+                                reply.reply_error = Some(ReplyError {
+                                    message,
+                                    config_hash: remote_config.config_hash,
+                                })
                             }
                         }
                     } else {
-                        let message = "Invalid content type. expected application/json".to_string();
-                        otel_error!(
-                            "opamp.controller_extension.message.invalid_serialized_config",
-                            message = message,
-                            received = config_file.content_type,
+                        otel_debug!(
+                            "opamp.controller_extension.remote_config.empty",
+                            message = "Ignoring empty remote configuration body"
                         );
-                        reply.reply_error = Some(ReplyError {
-                            message,
-                            config_hash: remote_config.config_hash,
-                        })
                     }
                 } else {
                     otel_warn!(
@@ -910,6 +932,8 @@ fn handle_server_to_agent_message(
                     )
                 }
             }
+        } else {
+            otel_debug!("opamp.controller_extension.remote_config.missing");
         }
     }
 
@@ -985,6 +1009,10 @@ where
 
             // update engine config & report results to server
             if let Some(engine_config) = updates.engine_config {
+                otel_info!(
+                    "opamp.controller_extension.remote_config.reconcile_start",
+                    delete_missing = config.reconcile.delete_missing
+                );
                 // Send message to let the server we're applying the config
                 session_state.sequence_num += 1;
                 let message = applying_message(
@@ -1011,6 +1039,33 @@ where
                             delete_timeout_secs: config.reconcile.delete_timeout_secs,
                             delete_missing: config.reconcile.delete_missing,
                         });
+
+                match &reconcile_result {
+                    Ok(status) if status.state == EngineConfigReconcileState::Succeeded => {
+                        otel_info!(
+                            "opamp.controller_extension.remote_config.reconcile_succeeded",
+                            changes = status.changes.len()
+                        );
+                    }
+                    Ok(status) => {
+                        let failure_reason = status.failure_reason.as_deref().unwrap_or(
+                            "Controller returned a non-success status without a failure reason",
+                        );
+                        otel_error!(
+                            "opamp.controller_extension.remote_config.reconcile_failed",
+                            message = failure_reason,
+                            state =? status.state,
+                            changes = status.changes.len()
+                        );
+                    }
+                    Err(error) => {
+                        otel_error!(
+                            "opamp.controller_extension.remote_config.reconcile_failed",
+                            message = "Remote configuration was not committed",
+                            error =? error
+                        );
+                    }
+                }
 
                 session_state.sequence_num += 1;
                 let reconcile_result_message = applied_result_message(
@@ -1562,6 +1617,7 @@ fn pipeline_status_custom_message(
 mod test {
     use std::{borrow::Cow, sync::Arc};
 
+    use otap_df_admin::ControlPlane;
     use otap_df_config::{
         extension::{ExtensionUrn, ExtensionUserConfig},
         observed_state::ObservedStateSettings,
@@ -1833,6 +1889,8 @@ mod test {
         assert!(status.error_message.contains("error happen"));
     }
 
+    /// Scenario: the OpAMP server sends a remote configuration containing malformed JSON.
+    /// Guarantees: the agent reports the configuration as failed without reconciling it.
     #[tokio::test]
     async fn test_unparsable_config() {
         let control_plane = Arc::new(MockControlPlane::new(empty_engine_config()));
@@ -1868,9 +1926,117 @@ mod test {
         let applied = &requests[1];
         let status = applied.remote_config_status.as_ref().unwrap();
         assert_eq!(status.status, RemoteConfigStatuses::Failed as i32);
-        assert!(status.error_message.contains("Could not deserialize JSON"));
+        assert!(
+            status.error_message.contains("expected value at line"),
+            "status should include the JSON parser error: {}",
+            status.error_message
+        );
+        assert!(
+            status
+                .error_message
+                .ends_with("the current engine configuration remains active"),
+            "status should explain that the existing config remains active: {}",
+            status.error_message
+        );
     }
 
+    /// Scenario: an OpAMP config file declares a standard YAML media type.
+    /// Guarantees: all supported YAML media types deserialize the engine config.
+    #[test]
+    fn test_parse_remote_yaml_content_types() {
+        let body = serde_yaml::to_string(&test_config()).expect("test config should serialize");
+
+        for content_type in [
+            "application/yaml",
+            "application/x-yaml",
+            "text/yaml",
+            "text/x-yaml; charset=utf-8",
+        ] {
+            let parsed = parse_remote_engine_config(content_type, body.as_bytes())
+                .expect("YAML remote config should parse");
+            assert_eq!(parsed.version, "otel_dataflow/v1");
+        }
+    }
+
+    /// Scenario: an OpAMP config file contains JSON and omits its content type.
+    /// Guarantees: format detection preserves the historical JSON behavior.
+    #[test]
+    fn test_parse_remote_json_without_content_type() {
+        let body = serde_json::to_vec(&test_config()).expect("test config should serialize");
+
+        let parsed = parse_remote_engine_config("", &body)
+            .expect("JSON remote config without a content type should parse");
+
+        assert_eq!(parsed.version, "otel_dataflow/v1");
+    }
+
+    /// Scenario: an OpAMP config file declares an unsupported media type or malformed YAML.
+    /// Guarantees: parsing rejects the payload with an actionable format error.
+    #[test]
+    fn test_parse_remote_config_rejects_unsupported_or_malformed_payload() {
+        let unsupported = parse_remote_engine_config("text/plain", b"version: otel_dataflow/v1")
+            .expect_err("unsupported media type should fail");
+        assert!(unsupported.contains("unsupported content type `text/plain`"));
+
+        let malformed = parse_remote_engine_config("application/yaml", b"version: [")
+            .expect_err("malformed YAML should fail");
+        assert!(!malformed.is_empty());
+    }
+
+    /// Scenario: the opamp-go example UI sends YAML without a content type.
+    /// Guarantees: the agent detects YAML, reconciles it, and reports the config as applied.
+    #[tokio::test]
+    async fn test_yaml_config_without_content_type_is_applied() {
+        let control_plane = Arc::new(MockControlPlane::new(empty_engine_config()));
+        let desired = test_config();
+        let body = serde_yaml::to_string(&desired).expect("test config should serialize");
+        let responses = vec![
+            Some(ServerToAgent {
+                remote_config: Some(AgentRemoteConfig {
+                    config_hash: vec![5, 1, 4],
+                    config: Some(AgentConfigMap {
+                        config_map: HashMap::from_iter([(
+                            "".into(),
+                            AgentConfigFile {
+                                content_type: String::new(),
+                                body: body.into_bytes(),
+                            },
+                        )]),
+                    }),
+                }),
+                instance_uid: EXPECTED_INSTANCE_UID_BYTES.to_vec(),
+                ..Default::default()
+            }),
+            None,
+        ];
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "instance_uid": EXPECTED_INSTANCE_UID_STR,
+            "endpoint": "",
+        }))
+        .expect("OpAMP test config should parse");
+
+        let requests =
+            run_web_socket_test_with_config(responses, Arc::clone(&control_plane), 3, config).await;
+
+        assert_eq!(requests.len(), 3);
+        assert_eq!(
+            requests[2]
+                .remote_config_status
+                .as_ref()
+                .expect("applied response should include remote config status")
+                .status,
+            RemoteConfigStatuses::Applied as i32
+        );
+        assert_eq!(
+            control_plane
+                .engine_config_snapshot()
+                .expect("effective config should be available"),
+            desired
+        );
+    }
+
+    /// Scenario: the agent has successfully applied a remote configuration.
+    /// Guarantees: a later heartbeat reports health and pipeline status with a new sequence number.
     #[tokio::test]
     async fn test_heartbeat_sent_after_applied_config() {
         let control_plane = Arc::new(MockControlPlane::new(empty_engine_config()));

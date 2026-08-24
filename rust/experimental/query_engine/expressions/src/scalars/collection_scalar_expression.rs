@@ -90,9 +90,7 @@ impl CombineScalarExpression {
             .map(|v| v.to_value())
         {
             Some(Value::Array(a)) => {
-                let completed = a.get_items(&mut IndexValueClosureCallback::new(|_, v| {
-                    v.get_value_type() == ValueType::Array
-                }));
+                let completed = a.get_items(&mut |_, v| v.get_value_type() == ValueType::Array);
 
                 if completed {
                     Ok(Some(ValueType::Array))
@@ -202,7 +200,7 @@ impl CombineScalarExpression {
                         Some(e) => {
                             let s = StringScalarExpression::new(
                                 expression.get_query_location().clone(),
-                                e.to_value().to_string().as_str(),
+                                e.to_value().convert_to_string().as_ref(),
                             );
 
                             len += s.get_value().len();

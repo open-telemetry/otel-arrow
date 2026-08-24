@@ -1,4 +1,0 @@
-change_type: breaking
-component: engine
-note: Replace flow `signals.incoming`, `signals.outgoing`, and `signals.dropped` metrics with `consumed.items`, `produced.items`, and `dropped.items` counters, partitioned by the `signal` datapoint attribute.
-issues: [3300]

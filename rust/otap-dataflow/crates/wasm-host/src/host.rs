@@ -3,11 +3,11 @@
 
 //! Host state and native kernel implementations.
 //!
-//! The host owns the Arrow [`RecordBatch`] behind a host-managed pdata
-//! resource in wasmtime's [`ResourceTable`]. Guests receive only that resource
-//! handle and orchestrate kernels that execute natively here.
+//! The host owns OTAP records behind a host-managed pdata resource in
+//! wasmtime's [`ResourceTable`]. Guests receive only that resource handle and
+//! orchestrate kernels that execute natively here.
 
-use arrow::array::{Array, AsArray, BooleanArray, DictionaryArray, RecordBatch, StringArray};
+use arrow::array::{Array, AsArray, BooleanArray, DictionaryArray, StringArray};
 use arrow::datatypes::{
     ArrowDictionaryKeyType, ArrowNativeType, DataType, Int8Type, Int16Type, Int32Type, Int64Type,
     UInt8Type, UInt16Type, UInt32Type, UInt64Type,
@@ -15,14 +15,16 @@ use arrow::datatypes::{
 use wasmtime::component::{Resource, ResourceTable};
 
 use crate::bindings::otel::otap_dataflow_plugin::otel_kernels::{self, AttrScope};
+use otap_df_pdata::OtapArrowRecords;
+use otap_df_pdata::otap::filter::{IdBitmapPool, filter_otap_batch};
 
 /// Host-owned data behind a host-managed `pdata` resource handle.
 ///
 /// This is the concrete type mapped to the WIT `pdata` resource. Guests never
 /// see its contents; they only pass the handle back to host kernels.
 pub struct HostPdata {
-    /// The root Arrow record batch the kernels operate on.
-    pub record_batch: RecordBatch,
+    /// The OTAP payload that host kernels operate on.
+    pub otap_batch: OtapArrowRecords,
 }
 
 /// Per-instance host state stored in the wasmtime [`wasmtime::Store`].
@@ -32,6 +34,11 @@ pub struct HostPdata {
 pub struct HostState {
     /// Resource table backing the `pdata` resource.
     pub table: ResourceTable,
+    /// Reusable bitmap pool for OTAP child-batch filtering propagation.
+    pub id_bitmap_pool: IdBitmapPool,
+    /// Accumulator for total host kernel invocations during a single guest call.
+    /// Drained and added to telemetry counters after each `run_guest` return.
+    pub kernel_calls: u64,
 }
 
 impl HostState {
@@ -40,7 +47,17 @@ impl HostState {
     pub fn new() -> Self {
         Self {
             table: ResourceTable::new(),
+            id_bitmap_pool: IdBitmapPool::new(),
+            kernel_calls: 0,
         }
+    }
+
+    /// Drain the per-call kernel call counter, returning the accumulated count
+    /// and resetting to zero.
+    pub fn drain_kernel_counters(&mut self) -> u64 {
+        let calls = self.kernel_calls;
+        self.kernel_calls = 0;
+        calls
     }
 }
 
@@ -59,11 +76,13 @@ impl otel_kernels::HostPdata for HostState {
 
 impl otel_kernels::Host for HostState {
     fn pdata_num_rows(&mut self, data: Resource<HostPdata>) -> u32 {
+        self.kernel_calls += 1;
         self.table
             .get(&data)
             .expect("invalid wasm host pdata resource handle")
-            .record_batch
-            .num_rows() as u32
+            .otap_batch
+            .root_record_batch()
+            .map_or(0, |batch| batch.num_rows() as u32)
     }
 
     fn filter_by_attribute_eq(
@@ -73,36 +92,35 @@ impl otel_kernels::Host for HostState {
         key: String,
         value: String,
     ) -> Resource<HostPdata> {
-        // Read the input batch, consume the input handle, and return a fresh
-        // handle for the result. Invalid handles are a contract violation and
-        // should trap instead of silently dropping data.
+        self.kernel_calls += 1;
+        // Consume the input handle and take ownership of the batch. Invalid
+        // handles are a contract violation and should trap instead of silently
+        // dropping data.
         let input = self
             .table
-            .get(&data)
-            .expect("invalid wasm host pdata resource handle")
-            .record_batch
-            .clone();
-        let _ = self
-            .table
             .delete(data)
-            .expect("invalid wasm host pdata resource handle");
+            .expect("invalid wasm host pdata resource handle")
+            .otap_batch;
 
         let result = match scope {
-            AttrScope::Resource | AttrScope::Scope => panic!(
-                "unsupported attr scope {scope:?}: this experimental slice currently supports only record scope"
-            ),
-            AttrScope::Record => filter_record_batch_by_column_eq(&input, &key, &value)
-                .unwrap_or_else(|error| {
-                    panic!(
-                        "filter-by-attribute-eq failed for key {key:?} and value {value:?}: {error}"
-                    )
-                }),
+            AttrScope::Resource | AttrScope::Scope => {
+                panic!(
+                    "unsupported attr scope {scope:?}: this experimental slice currently supports only record scope"
+                )
+            }
+            AttrScope::Record => filter_otap_batch_by_column_eq(
+                &input,
+                &key,
+                &value,
+                &mut self.id_bitmap_pool,
+            )
+            .unwrap_or_else(|error| {
+                panic!("filter-by-attribute-eq failed for key {key:?} and value {value:?}: {error}")
+            }),
         };
 
         self.table
-            .push(HostPdata {
-                record_batch: result,
-            })
+            .push(HostPdata { otap_batch: result })
             .expect("resource table push")
     }
 }
@@ -114,15 +132,17 @@ impl otel_kernels::Host for HostState {
 /// using a dictionary-aware comparison fast path and falling back to `Utf8`
 /// casting for other encodings.
 ///
-/// TODO: filtering the root record batch does not yet reindex child
-/// attribute record batches; the reference plugin operates on batches without
-/// child payloads.
-fn filter_record_batch_by_column_eq(
-    batch: &RecordBatch,
+fn filter_otap_batch_by_column_eq(
+    otap_batch: &OtapArrowRecords,
     key: &str,
     value: &str,
-) -> Result<RecordBatch, String> {
-    let Some(column) = batch.column_by_name(key) else {
+    id_bitmap_pool: &mut IdBitmapPool,
+) -> Result<OtapArrowRecords, String> {
+    let Some(root_batch) = otap_batch.root_record_batch() else {
+        return Err("root record batch not present for filtering".to_string());
+    };
+
+    let Some(column) = root_batch.column_by_name(key) else {
         return Err(format!(
             "attribute column {key:?} not present in root record batch"
         ));
@@ -155,15 +175,12 @@ fn filter_record_batch_by_column_eq(
         }
     };
 
-    match arrow_select::filter::filter_record_batch(batch, &mask) {
-        Ok(filtered) => Ok(filtered),
-        Err(error) => Err(format!(
-            "failed to filter record batch for key {key:?} and value {value:?}: {error}"
-        )),
-    }
+    filter_otap_batch(&mask, otap_batch, id_bitmap_pool).map_err(|error| {
+        format!("failed to filter OTAP payload for key {key:?} and value {value:?}: {error}")
+    })
 }
 
-fn dictionary_string_eq_mask(
+pub(crate) fn dictionary_string_eq_mask(
     column: &dyn Array,
     value: &str,
 ) -> Result<Option<BooleanArray>, String> {
@@ -240,16 +257,21 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{Array, DictionaryArray, StringArray, UInt16Array};
+    use arrow::array::{Array, DictionaryArray, RecordBatch, StringArray, UInt16Array};
     use arrow::datatypes::{Field, Schema, UInt8Type};
+    use otap_df_pdata::otap::Logs;
+    use otap_df_pdata::proto::OtlpProtoMessage;
+    use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
+    use otap_df_pdata::proto::opentelemetry::logs::v1::LogRecord;
+    use otap_df_pdata::testing::round_trip::{otap_to_otlp, to_otap_logs};
     use std::sync::Arc;
 
-    fn batch_with_severity(values: &[&str]) -> RecordBatch {
+    fn batch_with_severity(values: &[&str]) -> OtapArrowRecords {
         let schema = Schema::new(vec![
             Field::new("id", DataType::UInt16, true),
             Field::new("severity_text", DataType::Utf8, true),
         ]);
-        RecordBatch::try_new(
+        let record_batch = RecordBatch::try_new(
             Arc::new(schema),
             vec![
                 Arc::new(UInt16Array::from(
@@ -258,11 +280,22 @@ mod tests {
                 Arc::new(StringArray::from(values.to_vec())),
             ],
         )
-        .unwrap()
+        .unwrap();
+        let mut otap = OtapArrowRecords::Logs(Logs::default());
+        otap.set(
+            otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType::Logs,
+            record_batch,
+        )
+        .expect("set logs root batch");
+        otap
     }
 
-    fn severity_values(batch: &RecordBatch) -> Vec<String> {
-        let col = batch.column_by_name("severity_text").unwrap();
+    fn severity_values(otap_batch: &OtapArrowRecords) -> Vec<String> {
+        let col = otap_batch
+            .root_record_batch()
+            .expect("root batch present")
+            .column_by_name("severity_text")
+            .unwrap();
         let arr = arrow_cast::cast(col, &DataType::Utf8).unwrap();
         let strings = arr.as_any().downcast_ref::<StringArray>().unwrap();
         (0..strings.len())
@@ -276,9 +309,10 @@ mod tests {
     #[test]
     fn filters_matching_rows() {
         let batch = batch_with_severity(&["ERROR", "INFO", "ERROR", "WARN"]);
-        let out = filter_record_batch_by_column_eq(&batch, "severity_text", "ERROR")
+        let mut pool = IdBitmapPool::new();
+        let out = filter_otap_batch_by_column_eq(&batch, "severity_text", "ERROR", &mut pool)
             .expect("filter should succeed");
-        assert_eq!(out.num_rows(), 2);
+        assert_eq!(out.root_record_batch().expect("root batch").num_rows(), 2);
         assert_eq!(severity_values(&out), vec!["ERROR", "ERROR"]);
     }
 
@@ -289,7 +323,8 @@ mod tests {
     #[test]
     fn missing_column_is_error() {
         let batch = batch_with_severity(&["ERROR", "INFO"]);
-        let result = filter_record_batch_by_column_eq(&batch, "does_not_exist", "ERROR");
+        let mut pool = IdBitmapPool::new();
+        let result = filter_otap_batch_by_column_eq(&batch, "does_not_exist", "ERROR", &mut pool);
         assert!(
             result.is_err(),
             "missing attribute key should be reported explicitly"
@@ -311,9 +346,16 @@ mod tests {
             true,
         )]);
         let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(dict)]).unwrap();
-        let out = filter_record_batch_by_column_eq(&batch, "severity_text", "ERROR")
+        let mut otap = OtapArrowRecords::Logs(Logs::default());
+        otap.set(
+            otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType::Logs,
+            batch,
+        )
+        .expect("set logs root batch");
+        let mut pool = IdBitmapPool::new();
+        let out = filter_otap_batch_by_column_eq(&otap, "severity_text", "ERROR", &mut pool)
             .expect("filter should succeed");
-        assert_eq!(out.num_rows(), 2);
+        assert_eq!(out.root_record_batch().expect("root batch").num_rows(), 2);
     }
 
     /// Scenario: Record-scope filtering receives a dictionary-encoded string
@@ -332,11 +374,117 @@ mod tests {
             true,
         )]);
         let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(dict)]).unwrap();
-
-        let out = filter_record_batch_by_column_eq(&batch, "severity_text", "ERROR")
+        let mut otap = OtapArrowRecords::Logs(Logs::default());
+        otap.set(
+            otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType::Logs,
+            batch,
+        )
+        .expect("set logs root batch");
+        let mut pool = IdBitmapPool::new();
+        let out = filter_otap_batch_by_column_eq(&otap, "severity_text", "ERROR", &mut pool)
             .expect("filter should succeed");
-        assert_eq!(out.num_rows(), 2);
+        assert_eq!(out.root_record_batch().expect("root batch").num_rows(), 2);
         assert_eq!(severity_values(&out), vec!["ERROR", "ERROR"]);
+    }
+
+    /// Scenario: Root log records are filtered from a payload that includes
+    /// per-record log attributes.
+    /// Guarantees: Child log attribute rows are filtered with the same parent
+    /// selection, so only attributes of surviving records remain.
+    #[test]
+    fn filtering_preserves_log_attribute_relationships() {
+        let input = to_otap_logs(vec![
+            LogRecord::build()
+                .severity_text("ERROR")
+                .attributes(vec![KeyValue::new("k", AnyValue::new_string("e0"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("INFO")
+                .attributes(vec![KeyValue::new("k", AnyValue::new_string("i1"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("ERROR")
+                .attributes(vec![KeyValue::new("k", AnyValue::new_string("e2"))])
+                .finish(),
+        ]);
+
+        let mut pool = IdBitmapPool::new();
+        let output =
+            filter_otap_batch_by_column_eq(&input, "severity_text", "ERROR", &mut pool).unwrap();
+        let OtlpProtoMessage::Logs(logs) = otap_to_otlp(&output) else {
+            panic!("expected logs payload");
+        };
+
+        let records = &logs.resource_logs[0].scope_logs[0].log_records;
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].severity_text, "ERROR");
+        assert_eq!(records[1].severity_text, "ERROR");
+        let attr_values: Vec<String> =
+            records
+                .iter()
+                .map(|record| {
+                    record.attributes[0]
+                        .value
+                        .as_ref()
+                        .expect("attribute value")
+                })
+                .map(|value| {
+                    match value.value.as_ref().expect("typed attribute value") {
+                otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(
+                    s,
+                ) => s.clone(),
+                other => panic!("expected string attribute value, got {other:?}"),
+            }
+                })
+                .collect();
+        assert_eq!(attr_values, vec!["e0", "e2"]);
+    }
+
+    /// Scenario: Guest calls `pdata-num-rows` or `filter-by-attribute-eq`
+    /// with record scope.
+    /// Guarantees: Each kernel invocation increments `kernel_calls` by one.
+    #[test]
+    fn kernel_calls_incremented_per_invocation() {
+        let mut host = HostState::new();
+        let batch = batch_with_severity(&["ERROR", "INFO", "WARN"]);
+
+        // pdata_num_rows counts as one kernel call.
+        let h0 = host
+            .table
+            .push(HostPdata {
+                otap_batch: batch.clone(),
+            })
+            .expect("push batch");
+        let _ = <HostState as otel_kernels::Host>::pdata_num_rows(&mut host, h0);
+        assert_eq!(host.kernel_calls, 1);
+
+        // filter_by_attribute_eq (record scope) also counts as one kernel call.
+        let h1 = host
+            .table
+            .push(HostPdata { otap_batch: batch })
+            .expect("push batch");
+        let out_handle = <HostState as otel_kernels::Host>::filter_by_attribute_eq(
+            &mut host,
+            h1,
+            AttrScope::Record,
+            "severity_text".to_string(),
+            "ERROR".to_string(),
+        );
+        let _ = host.table.delete(out_handle).expect("delete output handle");
+        assert_eq!(host.kernel_calls, 2);
+    }
+
+    /// Scenario: `drain_kernel_counters` is called after accumulating counts.
+    /// Guarantees: The returned value equals the accumulated count and the
+    /// accumulator is reset to zero for the next call.
+    #[test]
+    fn drain_kernel_counters_resets_to_zero() {
+        let mut host = HostState::new();
+        host.kernel_calls = 5;
+
+        let calls = host.drain_kernel_counters();
+        assert_eq!(calls, 5);
+        assert_eq!(host.kernel_calls, 0, "kernel_calls must reset after drain");
     }
 
     /// Scenario: Guest requests `resource` or `scope` filtering in the current
@@ -350,7 +498,7 @@ mod tests {
         let handle = host
             .table
             .push(HostPdata {
-                record_batch: batch_with_severity(&["ERROR", "INFO", "WARN"]),
+                otap_batch: batch_with_severity(&["ERROR", "INFO", "WARN"]),
             })
             .expect("push input batch");
 
@@ -391,5 +539,49 @@ mod tests {
             "severity_text".to_string(),
             "ERROR".to_string(),
         );
+    }
+
+    /// Scenario: `HostState::default()` is used to construct initial state.
+    /// Guarantees: The default construction produces the same empty state as
+    /// `HostState::new()` -- zero kernel counters and an empty resource table.
+    #[test]
+    fn host_state_default_matches_new() {
+        let from_default = HostState::default();
+        assert_eq!(from_default.kernel_calls, 0);
+    }
+
+    /// Scenario: A dictionary-encoded column uses `LargeUtf8` values rather
+    /// than the more common `Utf8`.
+    /// Guarantees: The `LargeUtf8` branch in `dictionary_eq_mask_impl` is
+    /// exercised and correctly identifies matching rows.
+    #[test]
+    fn handles_large_utf8_dictionary_values() {
+        use arrow::array::{Int8Array, LargeStringArray};
+
+        let keys = Int8Array::from(vec![0i8, 1, 0, 2]);
+        let values = Arc::new(LargeStringArray::from(vec!["ERROR", "INFO", "WARN"]));
+        let dict =
+            DictionaryArray::try_new(keys, values as Arc<dyn Array>).expect("build LargeUtf8 dict");
+        let mask = dictionary_string_eq_mask(&dict, "ERROR")
+            .expect("LargeUtf8 dict mask should succeed")
+            .expect("LargeUtf8 dict column should produce a mask");
+        let kept: Vec<bool> = (0..mask.len()).map(|i| mask.value(i)).collect();
+        assert_eq!(kept, vec![true, false, true, false]);
+    }
+
+    /// Scenario: A dictionary-encoded column uses `UInt32` integer keys.
+    /// Guarantees: The `UInt32` dispatch arm in `dictionary_string_eq_mask` is
+    /// exercised and matching rows are correctly identified.
+    #[test]
+    fn handles_uint32_key_dictionary() {
+        use arrow::datatypes::UInt32Type;
+
+        let dict: DictionaryArray<UInt32Type> =
+            vec!["ERROR", "INFO", "ERROR", "WARN"].into_iter().collect();
+        let mask = dictionary_string_eq_mask(&dict, "ERROR")
+            .expect("UInt32-key dict mask should succeed")
+            .expect("UInt32-key dict column should produce a mask");
+        let kept: Vec<bool> = (0..mask.len()).map(|i| mask.value(i)).collect();
+        assert_eq!(kept, vec![true, false, true, false]);
     }
 }

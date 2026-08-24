@@ -45,6 +45,8 @@ pub enum ReceiverRejectionErrorType {
     MemoryPressure,
     /// No configured admission or concurrency capacity is available.
     ConcurrencyLimit,
+    /// The receiver-local rate limit refused the request.
+    RateLimit,
     /// The encoded or decoded payload exceeds the configured size limit.
     PayloadTooLarge,
     /// The request is malformed or otherwise invalid.
@@ -85,6 +87,15 @@ pub struct SignalOutcomeAttributes {
     pub signal: SignalType,
     /// Terminal outcome of the recorded operation.
     pub outcome: Outcome,
+}
+
+/// Error type dimension shared by receiver rejection metrics.
+#[attribute_set(item, measurement)]
+#[derive(Debug, Clone, Copy)]
+pub struct ReceiverRejectionAttributes {
+    /// Bounded category describing why the receiver rejected the request or batch.
+    #[attribute_key = "error.type"]
+    pub error_type: ReceiverRejectionErrorType,
 }
 
 /// Result category for an HTTP request attempt.
