@@ -2286,6 +2286,10 @@ mod test {
         test_filter_with_or::<OplParser>().await;
     }
 
+    /// Scenario: when left-side of OR expression will execute with data scope of attributes
+    /// and some rows that pass the predicate on right-side do not have such attributes
+    /// Guarantees: we correctly return rows on the RHS that pass this predicate (or the inverse
+    /// of the expected results in the case where the case where the overall predicate is inverted)
     #[tokio::test]
     async fn test_filter_attr_or_record_some_rows_no_attrs() {
         let log_records = vec![
