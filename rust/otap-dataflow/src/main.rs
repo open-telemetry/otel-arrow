@@ -294,6 +294,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             service_name: Some(env!("CARGO_BIN_NAME").to_string()),
             service_version: Some(env!("CARGO_PKG_VERSION").to_string()),
         },
+        handle_os_signals: true,
         ..Default::default()
     };
     validate_engine_config_for_startup(&engine_cfg, &run_options)?;

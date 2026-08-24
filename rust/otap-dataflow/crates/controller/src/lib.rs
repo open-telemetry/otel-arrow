@@ -97,7 +97,7 @@ use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use otel_arrow_dfe_telemetry::{
     InternalTelemetrySettings, InternalTelemetrySystem, TracingSetup,
-    log_filter::RuntimeLogFilterHandle, otel_info_span, resource_detectors,
+    log_filter::RuntimeLogFilterHandle, otel_info_span, raw_error, resource_detectors,
     self_tracing::LogContext,
 };
 use smallvec::smallvec;
@@ -322,6 +322,10 @@ pub struct ControllerRunOptions {
     /// Build-time identity of the binary, used to seed default self-telemetry resource
     /// attributes. Populate from the binary crate (e.g. `CARGO_BIN_NAME`/`CARGO_PKG_VERSION`).
     pub build_info: BuildInfo,
+    /// Whether the controller handles process-wide OS termination signals.
+    /// Defaults to `false` so embedding hosts retain signal ownership. Standalone
+    /// binaries that own the process can opt in explicitly.
+    pub handle_os_signals: bool,
 }
 
 /// Build-time identity of the collector binary.
@@ -1730,11 +1734,19 @@ impl<
 
         drop(metrics_reporter);
 
+        // Wake handle for a fatal controller-extension failure: release the main
+        // thread's `wait_until_all_instances_exit` even if the graceful drain
+        // stalls, so the controller always proceeds to teardown and surfaces the
+        // error instead of hanging.
+        let release_instance_wait: Arc<dyn Fn() + Send + Sync> = {
+            let runtime = Arc::clone(&runtime);
+            Arc::new(move || runtime.release_instance_wait())
+        };
         let controller_extension_handles = match Self::spawn_controller_extensions(
             prepared_controller_extensions,
             admin_tracing_setup.clone(),
             Arc::clone(&control_plane),
-            thread::current(),
+            release_instance_wait,
         ) {
             Ok(handles) => handles,
             Err(err) => {
@@ -1770,6 +1782,7 @@ impl<
             }
         };
 
+        let signal_control_plane = Arc::clone(&control_plane);
         let admin_control_plane = Arc::clone(&control_plane);
         let admin_server_handle = spawn_thread_local_task(
             "http-admin",
@@ -1792,9 +1805,20 @@ impl<
             runtime.wait_until_all_producer_instances_exit();
         }
 
-        // In standard engine mode we keep the main thread parked after startup.
+        // In standard engine mode, keep the main thread blocked until an explicit
+        // engine-wide shutdown drains every pipeline. An empty engine, or one whose
+        // last pipeline stops independently, must remain available for live control.
+        let shutdown_signal_listener =
+            if run_mode == RunMode::ParkMainThread && options.handle_os_signals {
+                // Listen for SIGINT/SIGTERM and trigger graceful shutdown via the
+                // control plane.
+                Some(Self::spawn_shutdown_signal_listener(signal_control_plane)?)
+            } else {
+                None
+            };
+
         if run_mode == RunMode::ParkMainThread {
-            thread::park();
+            runtime.wait_until_global_shutdown_drains_or_released();
         }
 
         // Stop controller-owned metric producers before waiting for the phased
@@ -1847,6 +1871,9 @@ impl<
         metrics_agg_handle.shutdown_and_join()?;
         obs_state_join_handle.shutdown_and_join()?;
         drop(telemetry_system);
+        if let Some(listener) = shutdown_signal_listener {
+            listener.shutdown_and_join()?;
+        }
 
         if let Some(err) = controller_extension_error {
             return Err(err);
@@ -1911,7 +1938,7 @@ impl<
         prepared_extensions: Vec<PreparedControllerExtension>,
         tracing_setup: TracingSetup,
         control_plane: Arc<dyn ControlPlane>,
-        controller_thread: thread::Thread,
+        release_instance_wait: Arc<dyn Fn() + Send + Sync>,
     ) -> Result<Vec<ThreadLocalTaskHandle<(), Error>>, Error> {
         let mut handles = Vec::new();
         for prepared_extension in prepared_extensions {
@@ -1922,7 +1949,7 @@ impl<
             let thread_name = format!("controller-extension-{}", extension_id.as_ref());
             let runtime_extension_id = extension_id.to_string();
             let extension_control_plane = Arc::clone(&control_plane);
-            let extension_controller_thread = controller_thread.clone();
+            let extension_release_instance_wait = Arc::clone(&release_instance_wait);
             handles.push(spawn_thread_local_task(
                 thread_name,
                 tracing_setup.clone(),
@@ -1948,7 +1975,10 @@ impl<
                                         message = "Failed to shut down pipelines after controller extension runtime failure"
                                     );
                                 }
-                                extension_controller_thread.unpark();
+                                // Release the main thread's instance wait so the
+                                // controller proceeds to teardown even if the drain
+                                // requested above stalls or failed.
+                                extension_release_instance_wait();
                                 Err(Error::ControllerExtensionRuntimeError {
                                 extension_id: runtime_extension_id,
                                 source,
@@ -2029,6 +2059,129 @@ impl<
                 );
             }
         }
+    }
+
+    /// Spawns a dedicated background thread that listens for OS termination
+    /// signals (SIGINT / SIGTERM on Unix; Ctrl-C, Ctrl-Break, console close, and
+    /// system shutdown on Windows) and initiates a graceful pipeline shutdown
+    /// via the control plane.
+    ///
+    /// Uses a double-signal convention:
+    /// - **First signal** -> initiates graceful shutdown (drain pipelines).
+    /// - **Second signal** -> forces immediate process exit (`std::process::exit(1)`).
+    ///
+    /// This allows Kubernetes (or any process manager that sends SIGTERM, or
+    /// CTRL_SHUTDOWN_EVENT on Windows) to trigger an orderly drain of in-flight
+    /// telemetry data before the pod is killed. If the graceful drain hangs, a
+    /// second signal provides an escape hatch.
+    ///
+    /// On Windows, CTRL_CLOSE_EVENT and CTRL_SHUTDOWN_EVENT are subject to an
+    /// OS-imposed grace period (a few seconds by default) after which the
+    /// process is force-terminated regardless of the drain deadline; the drain
+    /// is best-effort in that case and the second-signal escape hatch does not
+    /// apply.
+    ///
+    /// The returned handle cancels and joins the listener during controller teardown.
+    fn spawn_shutdown_signal_listener(
+        control_plane: Arc<dyn ControlPlane>,
+    ) -> Result<ShutdownSignalListenerHandle, Error> {
+        // Construct the runtime and register handlers before spawning the waiter.
+        // This closes the window in which the thread existed but the process still
+        // had the platform's default termination behavior. Registration failures
+        // are also surfaced synchronously on the controller thread.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("failed to create signal-handler runtime");
+        let mut signals = {
+            let _runtime_guard = rt.enter();
+            TerminationSignals::register()
+        };
+        let cancellation_token = CancellationToken::new();
+        let listener_cancellation_token = cancellation_token.clone();
+
+        let join_handle = thread::Builder::new()
+            .name("os-signal-handler".into())
+            .spawn(move || {
+                rt.block_on(async {
+                    // First signal: graceful shutdown.
+                    let signal_name = tokio::select! {
+                        _ = listener_cancellation_token.cancelled() => return,
+                        signal_name = signals.recv() => signal_name,
+                    };
+
+                    otel_info!(
+                        "shutdown.signal_received",
+                        signal = signal_name,
+                        message = "OS termination signal received, initiating graceful shutdown. Send the signal again to force immediate exit."
+                    );
+
+                        // Give pipelines a generous deadline to drain (60 s by default).
+                        // Note: this exceeds the default Kubernetes
+                        // terminationGracePeriodSeconds (30 s), so under stock pod
+                        // settings the kubelet's SIGKILL -- not this deadline -- is the
+                        // binding constraint. This value only bounds the drain when the
+                        // supervisor grants at least that much time.
+                        // TODO: make this configurable via engine config.
+                        const SHUTDOWN_TIMEOUT_SECS: u64 = 60;
+
+                        // Retry a few times if the control channel is full under
+                        // backpressure -- avoids silently dropping the shutdown request.
+                        const MAX_RETRIES: u32 = 3;
+                        const RETRY_INTERVAL: Duration = Duration::from_millis(500);
+
+                    let mut last_err = None;
+                    for attempt in 0..MAX_RETRIES {
+                        match control_plane.shutdown_all(SHUTDOWN_TIMEOUT_SECS) {
+                            Ok(()) => {
+                                otel_info!(
+                                    "shutdown.signal_dispatched",
+                                    message = "Shutdown requested for all pipelines"
+                                );
+                                last_err = None;
+                                break;
+                            }
+                            Err(e) => {
+                                last_err = Some(e);
+                                if attempt + 1 < MAX_RETRIES {
+                                    tokio::select! {
+                                        _ = listener_cancellation_token.cancelled() => return,
+                                        _ = tokio::time::sleep(RETRY_INTERVAL) => {}
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if let Some(e) = last_err {
+                        otel_error!(
+                            "shutdown.signal_dispatch_failed",
+                            error = ?e,
+                            message = "Failed to request shutdown via control plane after retries"
+                        );
+                    }
+
+                    // Second signal: force exit.
+                    let signal_name = tokio::select! {
+                        _ = listener_cancellation_token.cancelled() => return,
+                        signal_name = signals.recv() => signal_name,
+                    };
+                    raw_error!(
+                        "shutdown.force_exit",
+                        signal = signal_name,
+                        message = "Second termination signal received, forcing immediate exit"
+                    );
+                    std::process::exit(1);
+                });
+            })
+            .map_err(|source| Error::ThreadSpawnError {
+                thread_name: "os-signal-handler".to_owned(),
+                source,
+            })?;
+
+        Ok(ShutdownSignalListenerHandle {
+            cancellation_token,
+            join_handle: Some(join_handle),
+        })
     }
 
     /// Selects which CPU cores to use based on the given allocation.
@@ -2714,6 +2867,134 @@ impl<
     }
 }
 
+/// OS termination-signal streams registered once and reused across waits.
+///
+/// The streams are created a single time and held for the lifetime of the
+/// signal handler so the same registration serves both the first (graceful
+/// shutdown) and second (force-exit) signal. Recreating them between waits
+/// would drop a signal delivered while the shutdown request is in flight,
+/// because tokio only delivers a signal to streams that already exist when it
+/// arrives -- which would defeat the "second signal forces exit" escape hatch.
+struct TerminationSignals {
+    #[cfg(unix)]
+    sigterm: tokio::signal::unix::Signal,
+    #[cfg(unix)]
+    sigint: tokio::signal::unix::Signal,
+    #[cfg(windows)]
+    ctrl_c: tokio::signal::windows::CtrlC,
+    #[cfg(windows)]
+    ctrl_break: tokio::signal::windows::CtrlBreak,
+    // CTRL_CLOSE (console window closed) and CTRL_SHUTDOWN (system shutdown /
+    // container stop) are the Windows equivalents of SIGTERM: Docker,
+    // containerd, and Kubernetes deliver CTRL_SHUTDOWN_EVENT to a Windows
+    // container's process on stop. Without these, orchestrated shutdown would
+    // skip the graceful drain on Windows.
+    //
+    // Note: for these three events Windows enforces its own grace period (a few
+    // seconds by default) and then force-terminates the process regardless of
+    // the 60 s drain deadline. The drain is therefore best-effort under
+    // CTRL_CLOSE/CTRL_SHUTDOWN, and the "second signal forces exit" escape hatch
+    // does not apply because the OS reaps the process itself.
+    #[cfg(windows)]
+    ctrl_close: tokio::signal::windows::CtrlClose,
+    #[cfg(windows)]
+    ctrl_shutdown: tokio::signal::windows::CtrlShutdown,
+}
+
+impl TerminationSignals {
+    /// Registers the platform's termination-signal streams.
+    ///
+    /// On Unix this listens for both SIGINT and SIGTERM; on Windows for Ctrl-C,
+    /// Ctrl-Break, console close, and system shutdown; elsewhere only Ctrl-C
+    /// (SIGINT equivalent) is supported.
+    fn register() -> Self {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{SignalKind, signal};
+
+            Self {
+                sigterm: signal(SignalKind::terminate())
+                    .expect("failed to register SIGTERM handler"),
+                sigint: signal(SignalKind::interrupt()).expect("failed to register SIGINT handler"),
+            }
+        }
+
+        #[cfg(windows)]
+        {
+            use tokio::signal::windows::{ctrl_break, ctrl_c, ctrl_close, ctrl_shutdown};
+
+            Self {
+                ctrl_c: ctrl_c().expect("failed to register Ctrl-C handler"),
+                ctrl_break: ctrl_break().expect("failed to register Ctrl-Break handler"),
+                ctrl_close: ctrl_close().expect("failed to register Ctrl-Close handler"),
+                ctrl_shutdown: ctrl_shutdown().expect("failed to register Ctrl-Shutdown handler"),
+            }
+        }
+
+        #[cfg(not(any(unix, windows)))]
+        {
+            Self {}
+        }
+    }
+
+    /// Awaits the next OS termination signal and returns its name.
+    async fn recv(&mut self) -> &'static str {
+        #[cfg(unix)]
+        {
+            tokio::select! {
+                _ = self.sigterm.recv() => "SIGTERM",
+                _ = self.sigint.recv() => "SIGINT",
+            }
+        }
+
+        #[cfg(windows)]
+        {
+            tokio::select! {
+                _ = self.ctrl_break.recv() => "CTRL_BREAK",
+                _ = self.ctrl_c.recv() => "CTRL_C",
+                _ = self.ctrl_close.recv() => "CTRL_CLOSE",
+                _ = self.ctrl_shutdown.recv() => "CTRL_SHUTDOWN",
+            }
+        }
+
+        #[cfg(not(any(unix, windows)))]
+        {
+            tokio::signal::ctrl_c()
+                .await
+                .expect("failed to listen for Ctrl-C");
+            "Ctrl-C"
+        }
+    }
+}
+
+struct ShutdownSignalListenerHandle {
+    cancellation_token: CancellationToken,
+    join_handle: Option<thread::JoinHandle<()>>,
+}
+
+impl ShutdownSignalListenerHandle {
+    fn shutdown_and_join(mut self) -> Result<(), Error> {
+        self.cancellation_token.cancel();
+        self.join_handle
+            .take()
+            .expect("signal listener join handle missing")
+            .join()
+            .map_err(|panic| Error::ThreadJoinPanic {
+                thread_name: "os-signal-handler".to_owned(),
+                panic_message: format!("{panic:?}"),
+            })
+    }
+}
+
+impl Drop for ShutdownSignalListenerHandle {
+    fn drop(&mut self) {
+        self.cancellation_token.cancel();
+        if let Some(join_handle) = self.join_handle.take() {
+            let _ = join_handle.join();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2736,6 +3017,13 @@ mod tests {
             )]
         );
         assert!(BuildInfo::default().seed_attrs().is_empty());
+    }
+
+    /// Scenario: an embedding host starts from default controller run options.
+    /// Guarantees: process-wide OS signal handling remains disabled unless explicitly enabled.
+    #[test]
+    fn controller_run_options_disable_os_signals_by_default() {
+        assert!(!ControllerRunOptions::default().handle_os_signals);
     }
 
     /// Scenario: `merge_resource_defaults` runs with a config-provided `service.name`, a detector
@@ -3625,6 +3913,10 @@ groups: {{}}
         );
     }
 
+    /// Scenario: a controller extension fails while `run_forever_with_options` is parked with OS
+    /// signal handling enabled.
+    /// Guarantees: controller execution returns the extension error and releases the signal
+    /// listener's control-plane reference before returning to the embedding host.
     #[test]
     fn controller_extension_runtime_error_stops_parked_controller() {
         const FAILING_CONTROLLER_EXTENSION_URN: &str = "urn:test:extension:failing";
@@ -3645,10 +3937,16 @@ groups: {{}}
         ))
         .expect("failing controller extension config should parse");
 
+        let retained_control_plane = Arc::new(std::sync::Mutex::new(None));
+        let retained_control_plane_for_factory = Arc::clone(&retained_control_plane);
         let mut registry = ControllerExtensionRegistry::empty();
         registry.register(
             FAILING_CONTROLLER_EXTENSION_URN.into(),
-            |_context| {
+            move |context| {
+                *retained_control_plane_for_factory
+                    .lock()
+                    .expect("retained control-plane mutex should not be poisoned") =
+                    Some(Arc::downgrade(&context.control_plane));
                 Ok(Box::new(|_cancellation_token| {
                     Box::pin(async {
                         Err::<(), ControllerExtensionError>(Box::new(std::io::Error::other(
@@ -3668,6 +3966,13 @@ groups: {{}}
                     engine_config,
                     ControllerRunOptions {
                         extensions: registry,
+                        // Enabling OS signal handling is what makes this test cover
+                        // the listener lifecycle: with the default of `false` no
+                        // listener is spawned and the control-plane assertion below
+                        // would pass vacuously. Note that tokio's signal registration
+                        // is process-wide and permanent, so this test binary stops
+                        // honoring SIGTERM/SIGINT for the remainder of the run.
+                        handle_os_signals: true,
                         ..Default::default()
                     },
                 )
@@ -3679,7 +3984,7 @@ groups: {{}}
 
         let err = result_rx
             .recv_timeout(Duration::from_secs(5))
-            .expect("controller extension runtime error should unpark the controller")
+            .expect("controller extension runtime error should release the controller")
             .expect_err("controller should fail when a controller extension fails at runtime");
         controller_thread
             .join()
@@ -3687,6 +3992,16 @@ groups: {{}}
 
         assert!(err.contains("Controller extension `failing` failed"));
         assert!(err.contains("simulated controller extension failure"));
+        assert!(
+            retained_control_plane
+                .lock()
+                .expect("retained control-plane mutex should not be poisoned")
+                .as_ref()
+                .expect("controller extension should observe the control plane")
+                .upgrade()
+                .is_none(),
+            "controller teardown should release the signal listener's control plane"
+        );
     }
 
     #[test]
@@ -4945,5 +5260,46 @@ groups:
             }
         }
         assert_eq!(broadcast_messages, 1);
+    }
+
+    /// Scenario: termination-signal streams are registered inside a Tokio runtime in a child process.
+    /// Guarantees: every platform signal source registers without altering the parent test process.
+    #[test]
+    fn termination_signals_register_on_current_platform() {
+        const CHILD_ENV: &str = "OTAP_DF_SIGNAL_REGISTRATION_TEST_CHILD";
+
+        if std::env::var_os(CHILD_ENV).is_none() {
+            let output = std::process::Command::new(
+                std::env::current_exe().expect("current test executable should be available"),
+            )
+            .args([
+                "--exact",
+                "tests::termination_signals_register_on_current_platform",
+                "--nocapture",
+            ])
+            .env(CHILD_ENV, "1")
+            .output()
+            .expect("signal-registration child process should start");
+
+            assert!(
+                output.status.success(),
+                "signal-registration child failed:\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("failed to build signal-handler runtime");
+
+        rt.block_on(async {
+            // `register()` panics on failure, so a successful return is the
+            // assertion. Any process-global handlers disappear with this child.
+            let signals = TerminationSignals::register();
+            drop(signals);
+        });
     }
 }
