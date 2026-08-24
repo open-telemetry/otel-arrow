@@ -228,6 +228,24 @@ impl ShortCircuitStrategy {
         })))
     }
 
+    /// Returns the default value to substitute when a child is absent (its data source
+    /// does not exist in the batch), or `None` if no substitution applies.
+    ///
+    /// For OR/NotOr: absent data means "no match", so we substitute `false` (the OR
+    /// identity element: `false OR B` evaluates to `B`).
+    ///
+    /// For AND/NotAnd: returns `None`. Absent data in an AND already produces the
+    /// correct "no match" result via the `should_short_circuit` check (which treats
+    /// all-false/all-null as a short-circuit to false).
+    fn absent_child_default(&self) -> Option<ScopedValue> {
+        match self {
+            Self::Or | Self::NotOr => {
+                Some(ScopedValue::new_scalar(ScalarValue::Boolean(Some(false))))
+            }
+            Self::And | Self::NotAnd => None,
+        }
+    }
+
     fn invert(&self) -> Self {
         match self {
             Self::And => Self::NotAnd,

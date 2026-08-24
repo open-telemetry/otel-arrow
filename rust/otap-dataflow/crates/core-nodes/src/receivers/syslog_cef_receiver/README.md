@@ -457,15 +457,13 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 | Metric | Unit | Description |
 | --- | --- | --- |
-| `receiver.syslog_cef.received_logs_forwarded` | `{item}` | Number of log records successfully forwarded downstream. |
-| `receiver.syslog_cef.received_logs_invalid` | `{item}` | Number of log records rejected because their payload is zero-length. |
-| `receiver.syslog_cef.received_logs_truncated` | `{item}` | Number of log records whose raw message exceeded `MAX_MESSAGE_SIZE` and were truncated before parsing. For TCP, truncation is detected precisely when a newline-delimited message exceeds the size limit. For UDP, it is a heuristic - a datagram that fills the entire receive buffer is assumed truncated, though a message exactly `MAX_MESSAGE_SIZE` bytes would also trigger this. |
-| `receiver.syslog_cef.received_logs_forward_failed` | `{item}` | Number of log records refused by downstream (backpressure/unavailable) |
-| `receiver.syslog_cef.received_logs_total` | `{item}` | Total number of log records observed at the socket before parsing. |
-| `receiver.syslog_cef.tcp_connections_active` | `{conn}` | Number of active TCP connections. |
-| `receiver.syslog_cef.tls_handshake_failures` | `{error}` | Number of TLS handshake failures. |
-| `receiver.syslog_cef.received_logs_rejected_memory_pressure` | `{item}` | Number of log records dropped due to process-wide memory pressure. |
-| `receiver.syslog_cef.tcp_connections_rejected_memory_pressure` | `{conn}` | Number of TCP connections rejected or closed due to process-wide memory pressure. |
+| `receiver.syslog_cef.received.items` | `{item}` | Number of log records observed at the socket before parsing. |
+| `receiver.syslog_cef.forwards.items` | `{item}` | Number of log records delivered to the pipeline send path, grouped by `outcome`. |
+| `receiver.syslog_cef.rejections.items` | `{item}` | Number of log records rejected before pipeline admission, grouped by bounded `error.type` and `protocol`. |
+| `receiver.syslog_cef.truncations.items` | `{item}` | Number of log records whose raw message exceeded `MAX_MESSAGE_SIZE` and were truncated before parsing. For TCP, truncation is detected precisely when a newline-delimited message exceeds the size limit. For UDP, it is a heuristic - a datagram that fills the entire receive buffer is assumed truncated. |
+| `receiver.syslog_cef.transport.errors` | `{error}` | Number of transport-level errors, grouped by `protocol` (e.g. TLS handshake failures). |
+| `receiver.syslog_cef.connections.active` | `{connection}` | Number of active TCP connections. |
+| `receiver.syslog_cef.connections.rejected` | `{connection}` | Number of TCP connections rejected or closed. |
 
 Rate-admission outcomes are reported by the engine metric set
 `admission.rate_limiter`. Its `refusals` counter uses the bounded attributes
