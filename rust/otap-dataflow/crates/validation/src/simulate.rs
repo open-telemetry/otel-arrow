@@ -18,15 +18,15 @@ use crate::error::ValidationError;
 use crate::metrics_types::{MetricSetSnapshot, MetricsSnapshot};
 use crate::scenario::{SUV_PIPELINE_ID, VALIDATION_GROUP_ID};
 use crate::stage::RolloutAction;
-use otap_df_admin_api::{
+use otel_arrow_dfe_admin_api::{
     AdminClient, AdminEndpoint, HttpAdminClientSettings, engine::ProbeStatus,
     groups::ShutdownStatus, operations::OperationOptions, pipelines::ReconfigureOutcome,
     pipelines::ReconfigureRequest, telemetry::MetricsOptions,
 };
-use otap_df_config::engine::OtelDataflowSpec;
-use otap_df_config::pipeline::PipelineConfig;
-use otap_df_controller::Controller;
-use otap_df_otap::OTAP_PIPELINE_FACTORY;
+use otel_arrow_dfe_config::engine::OtelDataflowSpec;
+use otel_arrow_dfe_config::pipeline::PipelineConfig;
+use otel_arrow_dfe_controller::Controller;
+use otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY;
 use std::collections::HashMap;
 use tokio::time::{Duration, sleep};
 
@@ -328,7 +328,7 @@ fn admin_client(admin_base: &str) -> Result<AdminClient, ValidationError> {
         .map_err(admin_error)
 }
 
-fn admin_error(err: otap_df_admin_api::Error) -> ValidationError {
+fn admin_error(err: otel_arrow_dfe_admin_api::Error) -> ValidationError {
     ValidationError::Http(err.to_string())
 }
 
@@ -342,9 +342,9 @@ fn metric_value(set: &MetricSetSnapshot, metric_name: &str) -> Option<u64> {
 
 // get value from attribute with key node.id
 fn attribute_node_id(
-    attributes: &HashMap<String, otap_df_telemetry::attributes::AttributeValue>,
+    attributes: &HashMap<String, otel_arrow_dfe_telemetry::attributes::AttributeValue>,
 ) -> Option<String> {
-    use otap_df_telemetry::attributes::AttributeValue;
+    use otel_arrow_dfe_telemetry::attributes::AttributeValue;
     match attributes.get("node.id") {
         Some(AttributeValue::String(v)) => Some(v.clone()),
         _ => None,
@@ -469,7 +469,7 @@ mod tests {
     use super::*;
     use crate::metrics_types::MetricValue;
     use crate::metrics_types::{MetricDataPoint, MetricSetSnapshot, MetricsSnapshot};
-    use otap_df_telemetry::descriptor::{Instrument, MetricValueType, Temporality};
+    use otel_arrow_dfe_telemetry::descriptor::{Instrument, MetricValueType, Temporality};
     use std::collections::HashMap;
     use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -480,7 +480,7 @@ mod tests {
             brief: "test".into(),
             attributes: HashMap::from([(
                 "node.id".into(),
-                otap_df_telemetry::attributes::AttributeValue::String(node_id.into()),
+                otel_arrow_dfe_telemetry::attributes::AttributeValue::String(node_id.into()),
             )]),
             metrics: vec![MetricDataPoint {
                 name: metric.into(),
@@ -531,7 +531,7 @@ mod tests {
             brief: "test".into(),
             attributes: HashMap::from([(
                 "node.id".into(),
-                otap_df_telemetry::attributes::AttributeValue::String(node_id.into()),
+                otel_arrow_dfe_telemetry::attributes::AttributeValue::String(node_id.into()),
             )]),
             metrics: vec![
                 MetricDataPoint {

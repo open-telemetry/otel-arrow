@@ -21,7 +21,7 @@
 //! multi-threaded receiver and a single-threaded local one.
 
 use super::clock::AdmissionClock;
-use otap_df_config::policy::RateLimiterPolicy;
+use otel_arrow_dfe_config::policy::RateLimiterPolicy;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Raw result of charging the bucket, before any pressure or enforcement policy.
@@ -210,7 +210,7 @@ impl RateBucket {
 mod tests {
     use super::*;
     use crate::admission::clock::ManualClock;
-    use otap_df_config::policy::{
+    use otel_arrow_dfe_config::policy::{
         RateLimitAggregation, RateLimitEnforcement, RateLimitPressure, RateLimitUnit,
         TokenBucketPolicy,
     };

@@ -1,4 +1,4 @@
-# `otap-df-config`
+# `otel-arrow-dfe-config`
 
 Configuration model crate for the OTAP Dataflow Engine.
 

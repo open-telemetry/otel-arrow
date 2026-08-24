@@ -12,18 +12,18 @@
 //! Valid-config paths are already covered by the CI `validate-configs.sh` script
 //! which runs `--validate-and-exit` against every example YAML in the repo.
 
-use otap_df_otap::OTAP_PIPELINE_FACTORY;
+use otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY;
 use serde_json::json;
 
 // Keep this side-effect import so the crate is linked and its `linkme`
 // distributed-slice registrations (contrib nodes) are visible
 // in `OTAP_PIPELINE_FACTORY` at runtime.
-use otap_df_contrib_nodes as _;
+use otel_arrow_dfe_contrib_nodes as _;
 
 // Keep this side-effect import so the crate is linked and its `linkme`
 // distributed-slice registrations (core nodes) are visible
 // in `OTAP_PIPELINE_FACTORY` at runtime.
-use otap_df_core_nodes as _;
+use otel_arrow_dfe_core_nodes as _;
 
 #[test]
 fn all_receiver_validators_reject_invalid_config() {

@@ -20,14 +20,14 @@ use crate::views::{
     otlp::proto::resource::ObjResource,
     otlp::proto::wrappers::{GenericIterator, GenericObj, Wraps},
 };
-use otap_df_pdata_views::views::common::Str;
-use otap_df_pdata_views::views::metrics::{
+use otel_arrow_dfe_pdata_views::views::common::Str;
+use otel_arrow_dfe_pdata_views::views::metrics::{
     BucketsView, DataPointFlags, DataType, DataView, ExemplarView,
     ExponentialHistogramDataPointView, ExponentialHistogramView, GaugeView, HistogramDataPointView,
     HistogramView, MetricView, MetricsView, NumberDataPointView, ResourceMetricsView,
     ScopeMetricsView, SumView, SummaryDataPointView, SummaryView, Value, ValueAtQuantileView,
 };
-use otap_df_pdata_views::{SpanId, TraceId};
+use otel_arrow_dfe_pdata_views::{SpanId, TraceId};
 
 /* ----------------------------- VIEW WRAPPERS (zero-alloc) -------------- */
 
@@ -402,7 +402,7 @@ impl SumView for ObjSum<'_> {
 
     fn aggregation_temporality(
         &self,
-    ) -> otap_df_pdata_views::views::metrics::AggregationTemporality {
+    ) -> otel_arrow_dfe_pdata_views::views::metrics::AggregationTemporality {
         self.inner.aggregation_temporality().into()
     }
 
@@ -428,7 +428,7 @@ impl HistogramView for ObjHistogram<'_> {
 
     fn aggregation_temporality(
         &self,
-    ) -> otap_df_pdata_views::views::metrics::AggregationTemporality {
+    ) -> otel_arrow_dfe_pdata_views::views::metrics::AggregationTemporality {
         self.inner.aggregation_temporality().into()
     }
 }
@@ -536,7 +536,7 @@ impl ExponentialHistogramView for ObjExponentialHistogram<'_> {
 
     fn aggregation_temporality(
         &self,
-    ) -> otap_df_pdata_views::views::metrics::AggregationTemporality {
+    ) -> otel_arrow_dfe_pdata_views::views::metrics::AggregationTemporality {
         self.inner.aggregation_temporality().into()
     }
 }
@@ -742,10 +742,10 @@ impl From<&metrics_proto::number_data_point::Value> for Value {
 }
 
 impl From<metrics_proto::AggregationTemporality>
-    for otap_df_pdata_views::views::metrics::AggregationTemporality
+    for otel_arrow_dfe_pdata_views::views::metrics::AggregationTemporality
 {
     fn from(value: metrics_proto::AggregationTemporality) -> Self {
-        use otap_df_pdata_views::views::metrics::AggregationTemporality::*;
+        use otel_arrow_dfe_pdata_views::views::metrics::AggregationTemporality::*;
         match value {
             metrics_proto::AggregationTemporality::Unspecified => Unspecified,
             metrics_proto::AggregationTemporality::Delta => Delta,

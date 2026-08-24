@@ -15,8 +15,8 @@ use datafusion::execution::context::SessionContext;
 use datafusion::physical_plan::common::collect;
 use datafusion::physical_plan::streaming::PartitionStream;
 use datafusion::physical_plan::{ExecutionPlan, execute_stream};
-use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_dfe_pdata::OtapArrowRecords;
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use std::sync::Arc;
 
 use crate::error::{Error, Result};
@@ -381,22 +381,24 @@ mod test {
     use data_engine_parser_abstractions::Parser;
     use datafusion::catalog::streaming::StreamingTable;
     use datafusion::logical_expr::{col, lit};
-    use otap_df_pdata::proto::OtlpProtoMessage;
-    use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-    use otap_df_pdata::proto::opentelemetry::logs::v1::{LogRecord, LogsData};
-    use otap_df_pdata::proto::opentelemetry::metrics::v1::{Gauge, Metric, MetricsData, Sum};
-    use otap_df_pdata::proto::opentelemetry::trace::v1::{Span, TracesData};
-    use otap_df_pdata::testing::round_trip::{
+    use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{LogRecord, LogsData};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
+        Gauge, Metric, MetricsData, Sum,
+    };
+    use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::{Span, TracesData};
+    use otel_arrow_dfe_pdata::testing::round_trip::{
         otap_to_otlp, otlp_to_otap, to_otap_logs, to_otap_metrics, to_otap_traces,
     };
-    use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
-    use otap_df_query_engine_languages::opl::parser::OplParser;
+    use otel_arrow_dfe_pdata::{OtapPayload, OtlpProtoBytes};
+    use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
     use prost::Message;
 
     use crate::parser::default_parser_options;
 
     use super::*;
-    use otap_df_pdata::TryIntoWithOptions;
+    use otel_arrow_dfe_pdata::TryIntoWithOptions;
 
     /// helper function for converting [`OtapArrowRecords`] to [`LogsData`]
     pub fn otap_to_logs_data(otap_batch: OtapArrowRecords) -> LogsData {

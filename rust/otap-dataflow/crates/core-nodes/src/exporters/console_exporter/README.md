@@ -119,8 +119,12 @@ RESOURCE [service.name=checkout]
 
 Aggregation temporality and monotonicity are printed before data points.
 Histograms default to compact `count`, `sum`, `avg`, `min`, and `max`
-statistics. `avg` is emitted only when both `sum` is present and `count` is
-non-zero. Percentiles are not currently estimated.
+statistics plus approximate `p50`, `p90`, and `p99` values estimated from
+available bucket data. Approximate values use the `~=` marker. `avg` is emitted
+only when both `sum` is present and `count` is non-zero. Percentiles are omitted
+for empty or bucketless histograms. If an explicit percentile lands in an
+unbounded extreme bucket without the corresponding `min` or `max`, only that
+percentile is omitted.
 
 To inspect the complete histogram representation, including explicit bounds,
 bucket counts, exponential scale, offsets, zero count, and zero threshold,
@@ -153,7 +157,7 @@ config:
 ```
 
 ```json
-{"timestamp":"2025-01-15T10:30:00.000000000Z","severity_number":9,"body":"Starting OTLP gRPC receiver","event_name":"otlp.receiver.grpc.start","attributes":{"endpoint":"0.0.0.0:4317"},"scope":{"name":"otap-df-core-nodes","attributes":{}}}
+{"timestamp":"2025-01-15T10:30:00.000000000Z","severity_number":9,"body":"Starting OTLP gRPC receiver","event_name":"otlp.receiver.grpc.start","attributes":{"endpoint":"0.0.0.0:4317"},"scope":{"name":"otel-arrow-dfe-core-nodes","attributes":{}}}
 ```
 
 With both resource and scope context disabled:
@@ -183,7 +187,7 @@ config:
 ```
 
 ```json
-{"timestamp":"2025-01-15T10:30:00.000000000Z","severity_number":9,"body":"Starting OTLP gRPC receiver","event_name":"otlp.receiver.grpc.start","attributes":{"endpoint":"0.0.0.0:4317"},"resource":{"service.name":"otap_engine"},"scope":{"name":"otap-df-core-nodes","attributes":{}}}
+{"timestamp":"2025-01-15T10:30:00.000000000Z","severity_number":9,"body":"Starting OTLP gRPC receiver","event_name":"otlp.receiver.grpc.start","attributes":{"endpoint":"0.0.0.0:4317"},"resource":{"service.name":"otap_engine"},"scope":{"name":"otel-arrow-dfe-core-nodes","attributes":{}}}
 ```
 
 The top-level `attributes` object is always present. Enabled resource and scope

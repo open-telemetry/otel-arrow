@@ -4,12 +4,12 @@
 //! Implementation of the `#[component_inventory]` attribute macro (RFC 0001).
 //!
 //! The macro annotates a security-relevant component and emits one
-//! `ComponentMeta` entry into the `otap_df_engine::inventory::COMPONENT_INVENTORY`
+//! `ComponentMeta` entry into the `otel_arrow_dfe_engine::inventory::COMPONENT_INVENTORY`
 //! distributed slice at link time, mirroring the `#[capability]` ->
 //! `KNOWN_CAPABILITIES` mechanism. The annotated item is re-emitted unchanged.
 //!
 //! The attribute-argument grammar ([`ComponentInventoryArgs`]) is defined once
-//! in the shared `otap-df-component-inventory-syntax` crate and reused by both
+//! in the shared `otel-arrow-dfe-component-inventory-syntax` crate and reused by both
 //! this macro and the `cargo xtask component-inventory` scanner, so the two can
 //! never disagree about what an annotation means.
 //!
@@ -44,7 +44,7 @@
 //! pub struct AdminServer { /* ... */ }
 //! ```
 
-use otap_df_component_inventory_syntax::ComponentInventoryArgs;
+use otel_arrow_dfe_component_inventory_syntax::ComponentInventoryArgs;
 use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
 use syn::{Attribute, Expr, ExprLit, Ident, Item, Lit};
@@ -136,13 +136,13 @@ fn try_expand(args: &ComponentInventoryArgs, item: &Item) -> syn::Result<TokenSt
     })
 }
 
-/// Path to `otap_df_engine` crate: `crate` when compiled within `otap-df-engine`,
-/// otherwise `::otap_df_engine`.
+/// Path to `otel_arrow_dfe_engine` crate: `crate` when compiled within `otel-arrow-dfe-engine`,
+/// otherwise `::otel_arrow_dfe_engine`.
 fn engine_crate_path() -> TokenStream {
-    if std::env::var("CARGO_CRATE_NAME").as_deref() == Ok("otap_df_engine") {
+    if std::env::var("CARGO_CRATE_NAME").as_deref() == Ok("otel_arrow_dfe_engine") {
         quote! { crate }
     } else {
-        quote! { ::otap_df_engine }
+        quote! { ::otel_arrow_dfe_engine }
     }
 }
 
@@ -215,7 +215,7 @@ fn cfg_attrs(attrs: &[Attribute]) -> Vec<Attribute> {
 // build for its fixture crate that cannot resolve dependencies offline. The
 // expansion/argument-parsing helpers below exercise the same error paths in a
 // self-contained, environment-independent way. (Argument-parsing errors are
-// additionally covered by unit tests in `otap-df-component-inventory-syntax`.)
+// additionally covered by unit tests in `otel-arrow-dfe-component-inventory-syntax`.)
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -3,14 +3,14 @@
 
 //! Metric declarations for the durable buffer processor.
 
-use otap_df_config::SignalType;
-use otap_df_engine::context::PipelineContext;
-use otap_df_telemetry::common_attributes::SignalAttributes;
-use otap_df_telemetry::error::Error;
-use otap_df_telemetry::instrument::{Counter, Gauge};
-use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet};
-use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_telemetry::common_attributes::SignalAttributes;
+use otel_arrow_dfe_telemetry::error::Error;
+use otel_arrow_dfe_telemetry::instrument::{Counter, Gauge};
+use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet};
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 
 /// Metrics that do not have a bounded item dimension.
 #[metric_set(name = "processor.durable_buffer")]

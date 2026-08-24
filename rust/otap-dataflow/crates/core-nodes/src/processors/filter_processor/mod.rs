@@ -8,7 +8,7 @@
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 //! ToDo: Collect telemetry like number of filtered data is removed datapoints
 
-otap_df_telemetry::otel_component_scope!(
+otel_arrow_dfe_telemetry::otel_component_scope!(
     urn = FILTER_PROCESSOR_URN,
     target = "otel.processor.filter",
 );
@@ -17,25 +17,29 @@ use self::config::Config;
 use self::metrics::FilterPdataMetrics;
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::SignalType;
-use otap_df_config::error::Error as ConfigError;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::config::ProcessorConfig;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::{AckMsg, NodeControlMsg};
-use otap_df_engine::error::{Error, ProcessorErrorKind, format_error_sources};
-use otap_df_engine::local::processor as local;
-use otap_df_engine::message::Message;
-use otap_df_engine::node::NodeId;
-use otap_df_engine::process_duration::ComputeDuration;
-use otap_df_engine::processor::{FlowMetricHook, ProcessorRuntimeRequirements, ProcessorWrapper};
-use otap_df_engine::{ConsumerEffectHandlerExtension, MessageSourceLocalEffectHandlerExtension};
-use otap_df_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
-use otap_df_pdata::TryIntoWithOptions;
-use otap_df_pdata::otap::OtapArrowRecords;
-use otap_df_pdata::otap::filter::IdBitmapPool;
-use otap_df_telemetry::common_attributes::SignalAttributes;
-use otap_df_telemetry::metrics::MeasurementMetricSet;
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_engine::config::ProcessorConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::control::{AckMsg, NodeControlMsg};
+use otel_arrow_dfe_engine::error::{Error, ProcessorErrorKind, format_error_sources};
+use otel_arrow_dfe_engine::local::processor as local;
+use otel_arrow_dfe_engine::message::Message;
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::process_duration::ComputeDuration;
+use otel_arrow_dfe_engine::processor::{
+    FlowMetricHook, ProcessorRuntimeRequirements, ProcessorWrapper,
+};
+use otel_arrow_dfe_engine::{
+    ConsumerEffectHandlerExtension, MessageSourceLocalEffectHandlerExtension,
+};
+use otel_arrow_dfe_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
+use otel_arrow_dfe_pdata::TryIntoWithOptions;
+use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
+use otel_arrow_dfe_pdata::otap::filter::IdBitmapPool;
+use otel_arrow_dfe_telemetry::common_attributes::SignalAttributes;
+use otel_arrow_dfe_telemetry::metrics::MeasurementMetricSet;
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -75,21 +79,21 @@ pub fn create_filter_processor(
 
 /// Register FilterProcessor as an OTAP processor factory
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Processor)]
+#[otel_arrow_dfe_engine::component_inventory(category = Processor)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
-pub static FILTER_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> =
-    otap_df_engine::ProcessorFactory {
+pub static FILTER_PROCESSOR_FACTORY: otel_arrow_dfe_engine::ProcessorFactory<OtapPdata> =
+    otel_arrow_dfe_engine::ProcessorFactory {
         name: FILTER_PROCESSOR_URN,
         create:
             |pipeline_ctx: PipelineContext,
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
              proc_cfg: &ProcessorConfig,
-             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
+             _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
                 create_filter_processor(pipeline_ctx, node, node_config, proc_cfg)
             },
-        wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-        validate_config: otap_df_config::validation::validate_typed_config::<Config>,
+        wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
+        validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<Config>,
     };
 
 impl FilterProcessor {
@@ -239,28 +243,28 @@ mod tests {
     use crate::processors::filter_processor::{
         FILTER_PROCESSOR_URN, FilterProcessor, config::Config,
     };
-    use otap_df_config::SignalType;
-    use otap_df_config::node::NodeUserConfig;
-    use otap_df_engine::Interests;
-    use otap_df_engine::context::ControllerContext;
-    use otap_df_engine::control::{
+    use otel_arrow_dfe_config::SignalType;
+    use otel_arrow_dfe_config::node::NodeUserConfig;
+    use otel_arrow_dfe_engine::Interests;
+    use otel_arrow_dfe_engine::context::ControllerContext;
+    use otel_arrow_dfe_engine::control::{
         CallData, PipelineCompletionMsg, pipeline_completion_msg_channel,
     };
-    use otap_df_engine::message::Message;
-    use otap_df_engine::processor::ProcessorWrapper;
-    use otap_df_engine::testing::processor::TestRuntime;
-    use otap_df_engine::testing::processor::{TestContext, ValidateContext};
-    use otap_df_engine::testing::test_node;
-    use otap_df_otap::pdata::OtapPdata;
-    use otap_df_pdata::OtlpProtoBytes;
-    use otap_df_pdata::TryIntoWithOptions;
-    use otap_df_pdata::otap::filter::{
+    use otel_arrow_dfe_engine::message::Message;
+    use otel_arrow_dfe_engine::processor::ProcessorWrapper;
+    use otel_arrow_dfe_engine::testing::processor::TestRuntime;
+    use otel_arrow_dfe_engine::testing::processor::{TestContext, ValidateContext};
+    use otel_arrow_dfe_engine::testing::test_node;
+    use otel_arrow_dfe_otap::pdata::OtapPdata;
+    use otel_arrow_dfe_pdata::OtlpProtoBytes;
+    use otel_arrow_dfe_pdata::TryIntoWithOptions;
+    use otel_arrow_dfe_pdata::otap::filter::{
         AnyValue as AnyValueFilter, KeyValue as KeyValueFilter, MatchType,
         logs::{LogFilter, LogMatchProperties, LogSeverityNumberMatchProperties},
         metrics::{MetricFilter, MetricMatchProperties},
         traces::{TraceFilter, TraceMatchProperties},
     };
-    use otap_df_pdata::proto::opentelemetry::{
+    use otel_arrow_dfe_pdata::proto::opentelemetry::{
         common::v1::{AnyValue, InstrumentationScope, KeyValue},
         logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber},
         metrics::v1::{
@@ -274,7 +278,7 @@ mod tests {
             status::StatusCode,
         },
     };
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use prost::Message as _;
     use serde_json::json;
     use std::future::Future;

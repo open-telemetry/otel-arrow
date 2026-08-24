@@ -3,10 +3,10 @@
 
 //! Validation test module to validate the encoding/decoding process for otlp messages
 
-use otap_df_pdata::otap::{OtapArrowRecords, from_record_messages};
-use otap_df_pdata::proto::OtlpProtoMessage;
-use otap_df_pdata::testing::round_trip::{otap_to_otlp, otlp_to_otap};
-use otap_df_pdata::{Consumer, Producer};
+use otel_arrow_dfe_pdata::otap::{OtapArrowRecords, from_record_messages};
+use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
+use otel_arrow_dfe_pdata::testing::round_trip::{otap_to_otlp, otlp_to_otap};
+use otel_arrow_dfe_pdata::{Consumer, Producer};
 
 /// struct to simulate the otel arrow protocol, uses a producer and consumer to encode and decode a otlp request
 pub struct OtelProtoSimulator {
@@ -61,10 +61,10 @@ impl Default for OtelProtoSimulator {
 #[cfg(test)]
 mod test {
     use super::*;
-    use otap_df_core_nodes::receivers::traffic_generator::semconv_signal::{
+    use otel_arrow_dfe_core_nodes::receivers::traffic_generator::semconv_signal::{
         semconv_otlp_logs, semconv_otlp_metrics, semconv_otlp_traces,
     };
-    use otap_df_pdata::testing::equiv::assert_equivalent;
+    use otel_arrow_dfe_pdata::testing::equiv::assert_equivalent;
     use weaver_common::result::WResult;
     use weaver_common::vdir::VirtualDirectoryPath;
     use weaver_forge::registry::ResolvedRegistry;

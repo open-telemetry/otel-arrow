@@ -24,20 +24,20 @@ use crate::rate_limit_layer::{
 use bytes::{BufMut, Bytes};
 use futures::future::BoxFuture;
 use http::{Request, Response};
-use otap_df_config::SignalType;
-use otap_df_config::transport_headers::TransportHeaders;
-use otap_df_engine::admission::{AdmissionContext, AdmissionDecision, SharedAdmissionGate};
-use otap_df_engine::control::{CallData, NackMsg};
-use otap_df_engine::shared::receiver::EffectHandler;
-use otap_df_engine::{
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::transport_headers::TransportHeaders;
+use otel_arrow_dfe_engine::admission::{AdmissionContext, AdmissionDecision, SharedAdmissionGate};
+use otel_arrow_dfe_engine::control::{CallData, NackMsg};
+use otel_arrow_dfe_engine::shared::receiver::EffectHandler;
+use otel_arrow_dfe_engine::{
     Interests, MessageSourceSharedEffectHandlerExtension, ProducerEffectHandlerExtension,
 };
-use otap_df_pdata::OtapPayload;
-use otap_df_pdata::OtlpProtoBytes;
-use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
-use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceResponse;
-use otap_df_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceResponse;
-use otap_df_telemetry::common_attributes::ReceiverRejectionErrorType;
+use otel_arrow_dfe_pdata::OtapPayload;
+use otel_arrow_dfe_pdata::OtlpProtoBytes;
+use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
+use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceResponse;
+use otel_arrow_dfe_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceResponse;
+use otel_arrow_dfe_telemetry::common_attributes::ReceiverRejectionErrorType;
 use parking_lot::Mutex;
 use prost::Message;
 use prost::bytes::Buf;
@@ -800,19 +800,19 @@ impl NamedService for TraceServiceServer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_engine::control::runtime_ctrl_msg_channel;
-    use otap_df_engine::shared::message::SharedSender;
-    use otap_df_engine::testing::test_node;
-    use otap_df_pdata::OtlpProtoBytes;
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
-    use otap_df_telemetry::reporter::MetricsReporter;
+    use otel_arrow_dfe_engine::control::runtime_ctrl_msg_channel;
+    use otel_arrow_dfe_engine::shared::message::SharedSender;
+    use otel_arrow_dfe_engine::testing::test_node;
+    use otel_arrow_dfe_pdata::OtlpProtoBytes;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
     use std::collections::HashMap;
     use tokio::sync::mpsc as tokio_mpsc;
     use tonic::Code;
 
     fn new_test_metrics() -> Arc<Mutex<OtlpReceiverMetrics>> {
         let registry = TelemetryRegistryHandle::new();
-        let controller = otap_df_engine::context::ControllerContext::new(registry);
+        let controller = otel_arrow_dfe_engine::context::ControllerContext::new(registry);
         let pipeline_ctx =
             controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx)))

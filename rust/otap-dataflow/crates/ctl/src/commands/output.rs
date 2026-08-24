@@ -267,7 +267,7 @@ pub(crate) fn build_operation_options(wait: bool, wait_timeout: Duration) -> Ope
     }
 }
 
-use otap_df_admin_api::operations::OperationOptions;
+use otel_arrow_dfe_admin_api::operations::OperationOptions;
 
 /// Converts a duration to the whole-second timeout accepted by the admin API.
 ///

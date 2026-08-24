@@ -27,7 +27,7 @@ e.g. `receiver`, `exporter`.
 2) **Wire it dynamically** in the test:
 
    ```rust
-   use otap_df_validation::pipeline::Pipeline;
+   use otel_arrow_dfe_validation::pipeline::Pipeline;
 
    let pipeline = Pipeline::from_file("./validation_pipelines/your_pipeline.yaml") // path to your pipeline yaml
        .expect("load pipeline");
@@ -36,7 +36,7 @@ e.g. `receiver`, `exporter`.
 3) **Configure traffic generation**:
 
    ```rust
-   use otap_df_validation::traffic::Generator;
+   use otel_arrow_dfe_validation::traffic::Generator;
 
    let generator = Generator::logs()                // logs(), metrics(), traces()
        .fixed_count(500)                           // total signals to emit
@@ -49,9 +49,9 @@ e.g. `receiver`, `exporter`.
 4) **Configure capture & validations**:
 
    ```rust
-   use otap_df_validation::traffic::Capture;
-   use otap_df_validation::ValidationInstructions;
-   use otap_df_validation::validation_types::attributes::{AttributeDomain, KeyValue, AnyValue};
+   use otel_arrow_dfe_validation::traffic::Capture;
+   use otel_arrow_dfe_validation::ValidationInstructions;
+   use otel_arrow_dfe_validation::validation_types::attributes::{AttributeDomain, KeyValue, AnyValue};
 
    let capture = Capture::default()
        .otlp_grpc("exporter") // or .otap_grpc()
@@ -75,7 +75,7 @@ e.g. `receiver`, `exporter`.
 5) **Build and run the scenario**:
 
    ```rust
-   use otap_df_validation::scenario::Scenario;
+   use otel_arrow_dfe_validation::scenario::Scenario;
 
    Scenario::new()
        .pipeline(pipeline)                      // add your system under validation pipeline
@@ -91,7 +91,7 @@ e.g. `receiver`, `exporter`.
 - **Scenario example**
 
   ```rust
-  use otap_df_validation::scenario::Scenario;
+  use otel_arrow_dfe_validation::scenario::Scenario;
 
   Scenario::new()
       .pipeline(pipeline)               // required: rewired Pipeline
@@ -128,7 +128,7 @@ e.g. `receiver`, `exporter`.
 - **Pipeline example**
 
   ```rust
-  use otap_df_validation::pipeline::Pipeline;
+  use otel_arrow_dfe_validation::pipeline::Pipeline;
 
   let pipeline = Pipeline::from_file("./validation_pipelines/your_pipeline.yaml")
       .expect("load pipeline")
@@ -161,7 +161,7 @@ e.g. `receiver`, `exporter`.
 - **Generator example**
 
   ```rust
-  use otap_df_validation::traffic::Generator;
+  use otel_arrow_dfe_validation::traffic::Generator;
 
   let generator = Generator::logs()
       .fixed_count(1000)   // optional; default 2000
@@ -215,7 +215,7 @@ in your SUV pipeline YAML so cert/key paths can be injected at test time via
 #### TlsConfig
 
 ```rust
-use otap_df_validation::traffic::TlsConfig;
+use otel_arrow_dfe_validation::traffic::TlsConfig;
 ```
 
 - `TlsConfig::tls_only(ca_cert_path)` - create a TLS config with
@@ -265,9 +265,9 @@ Your SUV pipeline YAML should include TLS configuration on the receiver with
 #### Example: TLS scenario
 
 ```rust
-use otap_df_validation::pipeline::Pipeline;
-use otap_df_validation::scenario::Scenario;
-use otap_df_validation::traffic::{Capture, Generator, TlsConfig};
+use otel_arrow_dfe_validation::pipeline::Pipeline;
+use otel_arrow_dfe_validation::scenario::Scenario;
+use otel_arrow_dfe_validation::traffic::{Capture, Generator, TlsConfig};
 
 let server_cert_path = "path/to/server.crt";
 let server_key_path = "path/to/server.key";
@@ -305,9 +305,9 @@ Scenario::new()
 #### Example: mTLS scenario
 
 ```rust
-use otap_df_validation::pipeline::Pipeline;
-use otap_df_validation::scenario::Scenario;
-use otap_df_validation::traffic::{Capture, Generator, TlsConfig};
+use otel_arrow_dfe_validation::pipeline::Pipeline;
+use otel_arrow_dfe_validation::scenario::Scenario;
+use otel_arrow_dfe_validation::traffic::{Capture, Generator, TlsConfig};
 
 let server_cert_path = "path/to/server.crt";
 let server_key_path = "path/to/server.key";
@@ -350,9 +350,9 @@ Scenario::new()
 - **Capture example (with validations)**
 
    ```rust
-   use otap_df_validation::traffic::Capture;
-   use otap_df_validation::ValidationInstructions;
-   use otap_df_validation::validation_types::attributes::{AttributeDomain, KeyValue, AnyValue};
+   use otel_arrow_dfe_validation::traffic::Capture;
+   use otel_arrow_dfe_validation::ValidationInstructions;
+   use otel_arrow_dfe_validation::validation_types::attributes::{AttributeDomain, KeyValue, AnyValue};
 
    let capture = Capture::default()
        .otlp_grpc("node_name")   // required; must pass node name of exporter in your system-under-validation pipeline
@@ -518,11 +518,11 @@ never received headers cannot contain a forbidden key.
 #### Example: transport headers validation
 
 ```rust
-use otap_df_validation::ValidationInstructions;
-use otap_df_validation::pipeline::Pipeline;
-use otap_df_validation::scenario::Scenario;
-use otap_df_validation::traffic::{Capture, Generator};
-use otap_df_validation::validation_types::transport_headers::TransportHeaderKeyValue;
+use otel_arrow_dfe_validation::ValidationInstructions;
+use otel_arrow_dfe_validation::pipeline::Pipeline;
+use otel_arrow_dfe_validation::scenario::Scenario;
+use otel_arrow_dfe_validation::traffic::{Capture, Generator};
+use otel_arrow_dfe_validation::validation_types::transport_headers::TransportHeaderKeyValue;
 
 Scenario::new()
     .pipeline(
@@ -587,7 +587,7 @@ the host are allocated automatically by the framework.
 Describes a Docker container to run alongside the scenario.
 
 ```rust
-use otap_df_validation::ContainerConfig;
+use otel_arrow_dfe_validation::ContainerConfig;
 
 let localstack = ContainerConfig::new("localstack/localstack", "3.4")
     .env("SERVICES", "s3")
@@ -639,7 +639,7 @@ listeners must contain the host-reachable address so that clients outside
 the container can connect. Use `env_host_port` for this:
 
 ```rust
-use otap_df_validation::ContainerConfig;
+use otel_arrow_dfe_validation::ContainerConfig;
 
 let kafka = ContainerConfig::new("confluentinc/cp-kafka", "7.5.0")
     .env("KAFKA_NODE_ID", "1")
@@ -674,7 +674,7 @@ configuration that is rendered with `{{ port }}` set to the allocated host
 port.
 
 ```rust
-use otap_df_validation::traffic::ContainerConnection;
+use otel_arrow_dfe_validation::traffic::ContainerConnection;
 
 let conn = ContainerConnection::new("localstack")
     .internal_port(4566)
@@ -717,7 +717,7 @@ container. Instead of providing a full node template, this rewrites a
 specific config key in the pipeline YAML with the rendered address.
 
 ```rust
-use otap_df_validation::pipeline::PipelineContainerConnection;
+use otel_arrow_dfe_validation::pipeline::PipelineContainerConnection;
 
 let conn = PipelineContainerConnection::new("localstack")
     .internal_port(4566)
@@ -833,11 +833,11 @@ let pipeline = Pipeline::from_file("./validation_pipelines/parquet_pipeline.yaml
 ### Full example
 
 ```rust
-use otap_df_validation::ContainerConfig;
-use otap_df_validation::ValidationInstructions;
-use otap_df_validation::pipeline::{Pipeline, PipelineContainerConnection};
-use otap_df_validation::scenario::Scenario;
-use otap_df_validation::traffic::{Capture, ContainerConnection, Generator};
+use otel_arrow_dfe_validation::ContainerConfig;
+use otel_arrow_dfe_validation::ValidationInstructions;
+use otel_arrow_dfe_validation::pipeline::{Pipeline, PipelineContainerConnection};
+use otel_arrow_dfe_validation::scenario::Scenario;
+use otel_arrow_dfe_validation::traffic::{Capture, ContainerConnection, Generator};
 
 Scenario::new()
     .pipeline(

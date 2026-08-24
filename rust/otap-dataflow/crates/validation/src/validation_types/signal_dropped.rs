@@ -6,7 +6,7 @@
 //! Compare two slices of messages (control vs. system-under-validation)
 //! and verify that the latter contains fewer items.
 
-use otap_df_pdata::proto::OtlpProtoMessage;
+use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
 
 /// Validate that the `suv` messages contain strictly fewer items than `control`.
 pub(crate) fn validate_signal_drop(
@@ -42,7 +42,7 @@ pub(crate) fn validate_signal_drop(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_pdata::proto::opentelemetry::logs::v1::{
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{
         LogRecord, LogsData, ResourceLogs, ScopeLogs,
     };
 

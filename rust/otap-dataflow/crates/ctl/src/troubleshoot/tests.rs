@@ -52,7 +52,7 @@ fn event_filter_matches_scope_kind_and_contains() {
 /// every requested filter clause.
 #[test]
 fn log_filter_matches_context_attributes_and_contains() {
-    let response = otap_df_admin_api::telemetry::LogsResponse {
+    let response = otel_arrow_dfe_admin_api::telemetry::LogsResponse {
         oldest_seq: Some(1),
         newest_seq: Some(1),
         next_seq: 2,
@@ -60,7 +60,7 @@ fn log_filter_matches_context_attributes_and_contains() {
         dropped_on_ingest: 0,
         dropped_on_retention: 0,
         retained_bytes: 32,
-        logs: vec![otap_df_admin_api::telemetry::LogEntry {
+        logs: vec![otel_arrow_dfe_admin_api::telemetry::LogEntry {
             seq: 1,
             timestamp: "2026-01-01T00:00:00Z".to_string(),
             level: "WARN".to_string(),
@@ -69,23 +69,25 @@ fn log_filter_matches_context_attributes_and_contains() {
             file: None,
             line: None,
             rendered: "channel is closed and the message could not be sent".to_string(),
-            contexts: vec![otap_df_admin_api::telemetry::ResolvedLogContext {
+            contexts: vec![otel_arrow_dfe_admin_api::telemetry::ResolvedLogContext {
                 entity_key: "EntityKey(1)".to_string(),
                 schema_name: Some("node.attrs".to_string()),
                 attributes: BTreeMap::from([
                     (
                         "pipeline.group.id".to_string(),
-                        otap_df_admin_api::telemetry::AttributeValue::String("group-a".to_string()),
+                        otel_arrow_dfe_admin_api::telemetry::AttributeValue::String(
+                            "group-a".to_string(),
+                        ),
                     ),
                     (
                         "pipeline.id".to_string(),
-                        otap_df_admin_api::telemetry::AttributeValue::String(
+                        otel_arrow_dfe_admin_api::telemetry::AttributeValue::String(
                             "pipeline-a".to_string(),
                         ),
                     ),
                     (
                         "node.id".to_string(),
-                        otap_df_admin_api::telemetry::AttributeValue::String(
+                        otel_arrow_dfe_admin_api::telemetry::AttributeValue::String(
                             "receiver".to_string(),
                         ),
                     ),
@@ -115,36 +117,42 @@ fn log_filter_matches_context_attributes_and_contains() {
 /// available to downstream diagnosis and rendering code.
 #[test]
 fn metrics_filters_prune_sets_and_metric_names() {
-    let response = otap_df_admin_api::telemetry::CompactMetricsResponse {
+    let response = otel_arrow_dfe_admin_api::telemetry::CompactMetricsResponse {
         timestamp: "2026-01-01T00:00:00Z".to_string(),
-        metric_sets: vec![otap_df_admin_api::telemetry::MetricSet {
+        metric_sets: vec![otel_arrow_dfe_admin_api::telemetry::MetricSet {
             name: "engine.pipeline".to_string(),
             attributes: BTreeMap::from([
                 (
                     "pipeline.group.id".to_string(),
-                    otap_df_admin_api::telemetry::AttributeValue::String("group-a".to_string()),
+                    otel_arrow_dfe_admin_api::telemetry::AttributeValue::String(
+                        "group-a".to_string(),
+                    ),
                 ),
                 (
                     "pipeline.id".to_string(),
-                    otap_df_admin_api::telemetry::AttributeValue::String("pipeline-a".to_string()),
+                    otel_arrow_dfe_admin_api::telemetry::AttributeValue::String(
+                        "pipeline-a".to_string(),
+                    ),
                 ),
                 (
                     "node.id".to_string(),
-                    otap_df_admin_api::telemetry::AttributeValue::String("receiver".to_string()),
+                    otel_arrow_dfe_admin_api::telemetry::AttributeValue::String(
+                        "receiver".to_string(),
+                    ),
                 ),
             ]),
             data_point_attributes: BTreeMap::from([(
                 "signal".to_string(),
-                otap_df_admin_api::telemetry::AttributeValue::String("logs".to_string()),
+                otel_arrow_dfe_admin_api::telemetry::AttributeValue::String("logs".to_string()),
             )]),
             metrics: BTreeMap::from([
                 (
                     "pending.sends".to_string(),
-                    otap_df_admin_api::telemetry::MetricValue::U64(4),
+                    otel_arrow_dfe_admin_api::telemetry::MetricValue::U64(4),
                 ),
                 (
                     "processed".to_string(),
-                    otap_df_admin_api::telemetry::MetricValue::U64(9),
+                    otel_arrow_dfe_admin_api::telemetry::MetricValue::U64(9),
                 ),
             ]),
         }],
@@ -168,7 +176,7 @@ fn metrics_filters_prune_sets_and_metric_names() {
         filtered.metric_sets[0].data_point_attributes,
         BTreeMap::from([(
             "signal".to_string(),
-            otap_df_admin_api::telemetry::AttributeValue::String("logs".to_string()),
+            otel_arrow_dfe_admin_api::telemetry::AttributeValue::String("logs".to_string()),
         )])
     );
     assert!(
@@ -185,11 +193,11 @@ fn metrics_filters_prune_sets_and_metric_names() {
 #[test]
 fn diagnosis_surfaces_drain_deadline_and_drop_signatures() {
     let report = diagnose_group_shutdown(
-        &otap_df_admin_api::groups::Status {
+        &otel_arrow_dfe_admin_api::groups::Status {
             generated_at: "2026-01-01T00:00:00Z".to_string(),
             pipelines: BTreeMap::new(),
         },
-        &otap_df_admin_api::telemetry::LogsResponse {
+        &otel_arrow_dfe_admin_api::telemetry::LogsResponse {
             oldest_seq: Some(1),
             newest_seq: Some(2),
             next_seq: 3,
@@ -197,7 +205,7 @@ fn diagnosis_surfaces_drain_deadline_and_drop_signatures() {
             dropped_on_ingest: 0,
             dropped_on_retention: 0,
             retained_bytes: 32,
-            logs: vec![otap_df_admin_api::telemetry::LogEntry {
+            logs: vec![otel_arrow_dfe_admin_api::telemetry::LogEntry {
                 seq: 2,
                 timestamp: "2026-01-01T00:00:01Z".to_string(),
                 level: "ERROR".to_string(),
@@ -209,15 +217,15 @@ fn diagnosis_surfaces_drain_deadline_and_drop_signatures() {
                 contexts: vec![],
             }],
         },
-        &otap_df_admin_api::telemetry::CompactMetricsResponse {
+        &otel_arrow_dfe_admin_api::telemetry::CompactMetricsResponse {
             timestamp: "2026-01-01T00:00:00Z".to_string(),
-            metric_sets: vec![otap_df_admin_api::telemetry::MetricSet {
+            metric_sets: vec![otel_arrow_dfe_admin_api::telemetry::MetricSet {
                 name: "engine.pipeline".to_string(),
                 attributes: BTreeMap::new(),
                 data_point_attributes: BTreeMap::new(),
                 metrics: BTreeMap::from([(
                     "pending.sends".to_string(),
-                    otap_df_admin_api::telemetry::MetricValue::U64(1),
+                    otel_arrow_dfe_admin_api::telemetry::MetricValue::U64(1),
                 )]),
             }],
         },
@@ -245,7 +253,7 @@ fn normalized_log_event_preserves_record() {
     let event = extract_events_from_pipeline_status(
         "group-a",
         "pipeline-a",
-        &otap_df_admin_api::pipelines::Status {
+        &otel_arrow_dfe_admin_api::pipelines::Status {
             conditions: vec![],
             total_cores: 1,
             running_cores: 1,

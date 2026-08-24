@@ -15,13 +15,13 @@ mod telemetry;
 
 use axum::Router;
 use axum::response::Response;
-pub use otap_df_admin_types::engine::{
+pub use otel_arrow_dfe_admin_types::engine::{
     ConfigChangeAction, ConfigChangeStatus, EngineConfigReconcileRequest,
     EngineConfigReconcileState, EngineConfigReconcileStatus, GroupDeleteStatus,
     PipelineDeleteStatus,
 };
-use otap_df_admin_types::operations::{OperationError, OperationErrorKind};
-pub use otap_df_admin_types::pipelines::{
+use otel_arrow_dfe_admin_types::operations::{OperationError, OperationErrorKind};
+pub use otel_arrow_dfe_admin_types::pipelines::{
     PipelineDetails, PipelineRolloutState, PipelineRolloutSummary, PipelineShutdownInitiator,
     ReconfigureRequest, RolloutCoreStatus, RolloutStatus, ShutdownCoreStatus, ShutdownStatus,
 };
@@ -35,14 +35,14 @@ use tokio_util::sync::CancellationToken;
 use tower::ServiceBuilder;
 
 use crate::error::Error;
-use otap_df_config::engine::{HttpAdminSettings, OtelDataflowSpec};
-use otap_df_config::pipeline::telemetry::AttributeValue as ResourceAttributeValue;
-use otap_df_config::pipeline_group::PipelineGroupConfig;
-use otap_df_engine::memory_limiter::MemoryPressureState;
-use otap_df_state::store::ObservedStateHandle;
-use otap_df_telemetry::log_tap::InternalLogTapHandle;
-use otap_df_telemetry::registry::TelemetryRegistryHandle;
-use otap_df_telemetry::{otel_info, otel_warn};
+use otel_arrow_dfe_config::engine::{HttpAdminSettings, OtelDataflowSpec};
+use otel_arrow_dfe_config::pipeline::telemetry::AttributeValue as ResourceAttributeValue;
+use otel_arrow_dfe_config::pipeline_group::PipelineGroupConfig;
+use otel_arrow_dfe_engine::memory_limiter::MemoryPressureState;
+use otel_arrow_dfe_state::store::ObservedStateHandle;
+use otel_arrow_dfe_telemetry::log_tap::InternalLogTapHandle;
+use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+use otel_arrow_dfe_telemetry::{otel_info, otel_warn};
 
 const TERMINAL_CONTROL_PLANE_PERMITS: usize = 1;
 const CPU_PROFILE_PERMITS: usize = 1;

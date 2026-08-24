@@ -1592,13 +1592,13 @@ mod tls_tests {
     use crate::pipeline::Pipeline;
     use crate::scenario::Scenario;
     use crate::traffic::{Capture, Generator, TlsConfig};
-    use otap_test_tls_certs::{ExtendedKeyUsage, write_ca_and_leaf_to_dir};
+    use otel_arrow_dfe_test_tls_certs::{ExtendedKeyUsage, write_ca_and_leaf_to_dir};
 
     /// End-to-end validation: traffic flows through a TLS-enabled OTLP gRPC
     /// receiver in the SUV pipeline.
     #[test]
     fn validation_tls_no_processor() {
-        let _ = otap_df_otap::crypto::install_crypto_provider();
+        let _ = otel_arrow_dfe_otap::crypto::install_crypto_provider();
 
         let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
         let dir = temp_dir.path();
@@ -1649,7 +1649,7 @@ mod tls_tests {
     /// receiver in the SUV pipeline, requiring client certificate authentication.
     #[test]
     fn validation_mtls_no_processor() {
-        let _ = otap_df_otap::crypto::install_crypto_provider();
+        let _ = otel_arrow_dfe_otap::crypto::install_crypto_provider();
 
         let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
         let dir = temp_dir.path();

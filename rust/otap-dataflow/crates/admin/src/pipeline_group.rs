@@ -39,12 +39,12 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::Utc;
-use otap_df_admin_types::{
+use otel_arrow_dfe_admin_types::{
     groups::{ShutdownResponse, ShutdownStatus, Status as GroupsStatus},
     operations::{DeleteOptions, OperationOptions},
 };
-use otap_df_config::pipeline_group::PipelineGroupConfig;
-use otap_df_telemetry::otel_info;
+use otel_arrow_dfe_config::pipeline_group::PipelineGroupConfig;
+use otel_arrow_dfe_telemetry::otel_info;
 use std::time::{Duration, Instant};
 
 /// All the routes for pipeline groups.
@@ -246,11 +246,11 @@ mod tests {
         RolloutStatus, ShutdownStatus,
     };
     use axum::body::to_bytes;
-    use otap_df_admin_types::operations::{OperationError, OperationErrorKind};
-    use otap_df_config::observed_state::ObservedStateSettings;
-    use otap_df_engine::memory_limiter::MemoryPressureState;
-    use otap_df_state::store::ObservedStateStore;
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_admin_types::operations::{OperationError, OperationErrorKind};
+    use otel_arrow_dfe_config::observed_state::ObservedStateSettings;
+    use otel_arrow_dfe_engine::memory_limiter::MemoryPressureState;
+    use otel_arrow_dfe_state::store::ObservedStateStore;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use std::sync::Arc;
 
     #[derive(Clone)]

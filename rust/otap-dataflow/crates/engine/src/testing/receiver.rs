@@ -19,9 +19,9 @@ use crate::node::NodeWithPDataSender;
 use crate::receiver::ReceiverWrapper;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::testing::{CtrlMsgCounters, setup_test_runtime};
-use otap_df_channel::error::RecvError;
-use otap_df_config::transport_headers_policy::HeaderCapturePolicy;
-use otap_df_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_channel::error::RecvError;
+use otel_arrow_dfe_config::transport_headers_policy::HeaderCapturePolicy;
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use serde_json::Value;
 use std::fmt::Debug;
 use std::future::Future;
@@ -254,7 +254,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
                 runtime_config,
                 ..
             } => {
-                let (sender, receiver) = otap_df_channel::mpsc::Channel::new(
+                let (sender, receiver) = otel_arrow_dfe_channel::mpsc::Channel::new(
                     runtime_config.output_pdata_channel.capacity,
                 );
                 (
