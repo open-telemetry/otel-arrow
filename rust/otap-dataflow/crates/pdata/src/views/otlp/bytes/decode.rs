@@ -710,8 +710,8 @@ pub fn read_varint(buf: &[u8], mut pos: usize) -> Option<(u64, usize)> {
 /// Decode 32 bit zigzag encoding
 #[inline]
 #[must_use]
-pub const fn decode_sint32(val: i32) -> i32 {
-    (val >> 1) ^ -(val & 1)
+pub const fn decode_sint32(val: u32) -> i32 {
+    ((val >> 1) as i32) ^ -((val & 1) as i32)
 }
 
 /// Decode length from byte slice and return a new slice of the buffer and the decoded length.
@@ -789,5 +789,15 @@ mod tests {
             validate_message_wire_format(&oversized_key),
             Err(Error::InvalidProtobufWireFormat)
         ));
+    }
+
+    /// Scenario: ZigZag decoding receives the encoded endpoints of the sint32 range.
+    /// Guarantees: Values using the high bit decode without signed truncation.
+    #[test]
+    fn decodes_full_sint32_range() {
+        assert_eq!(decode_sint32(0), 0);
+        assert_eq!(decode_sint32(1), -1);
+        assert_eq!(decode_sint32(u32::MAX - 1), i32::MAX);
+        assert_eq!(decode_sint32(u32::MAX), i32::MIN);
     }
 }

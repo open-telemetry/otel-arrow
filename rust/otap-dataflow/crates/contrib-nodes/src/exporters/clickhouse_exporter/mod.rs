@@ -38,16 +38,16 @@ use linkme::distributed_slice;
 use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_config::validation::validate_typed_config;
 use otel_arrow_dfe_config::{SignalFormat, SignalType};
-use otel_arrow_dfe_engine::ExporterFactory;
 use otel_arrow_dfe_engine::config::ExporterConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
-use otel_arrow_dfe_engine::control::NodeControlMsg;
+use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otel_arrow_dfe_engine::error::{Error, ExporterErrorKind, format_error_sources};
 use otel_arrow_dfe_engine::exporter::ExporterWrapper;
 use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
 use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
 use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
 use otel_arrow_dfe_otap::metrics::ExporterExportMetrics;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
@@ -158,12 +158,17 @@ impl ClickhouseExporter {
         TerminalState::new(deadline, snapshots)
     }
 
-    fn finalize_write(&mut self, completed: CompletedWrite) {
+    async fn finalize_write(
+        &mut self,
+        completed: CompletedWrite,
+        effect_handler: &EffectHandler<OtapPdata>,
+    ) -> Result<(), Error> {
         let CompletedWrite {
-            signal_type,
+            pdata,
             export_started_at,
             result,
         } = completed;
+        let signal_type = pdata.signal_type();
 
         match result {
             Ok(written_rows) => {
@@ -176,6 +181,7 @@ impl ClickhouseExporter {
                         outcome: Outcome::Success,
                     })
                     .record(export_started_at.elapsed());
+                effect_handler.notify_ack(AckMsg::new(pdata)).await?;
             }
             Err(error) => {
                 self.pdata_metrics
@@ -189,8 +195,12 @@ impl ClickhouseExporter {
                     message = format!("Error writing batch to clickhouse: {error}"),
                     signal_type = format!("{signal_type:?}"),
                 );
+                effect_handler
+                    .notify_nack(NackMsg::new(error.to_string(), pdata))
+                    .await?;
             }
         }
+        Ok(())
     }
 }
 
@@ -211,6 +221,22 @@ fn is_invalid_protobuf(error: &error::ClickhouseExporterError) -> bool {
         error,
         error::ClickhouseExporterError::Child(PdataError::InvalidProtobufWireFormat)
     )
+}
+
+/// Returns true when a non-empty signal cannot currently be persisted by this exporter.
+fn is_unsupported_non_empty_signal(pdata: &OtapPdata) -> bool {
+    pdata.signal_type() == SignalType::Metrics && !pdata.is_empty()
+}
+
+/// Returns a deterministic data rejection to the nearest interested upstream node.
+async fn notify_permanent_rejection(
+    effect_handler: &EffectHandler<OtapPdata>,
+    reason: String,
+    pdata: OtapPdata,
+) -> Result<(), Error> {
+    effect_handler
+        .notify_nack(NackMsg::new_permanent(reason, pdata))
+        .await
 }
 
 /// Register Clickhouse exporter with the OTAP exporter factory
@@ -283,7 +309,7 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
 
                 completed = in_flight_writes.next_completion(), if !in_flight_writes.is_empty() => {
                     if let Some(completed) = completed {
-                        self.finalize_write(completed);
+                        self.finalize_write(completed, &effect_handler).await?;
                     }
                     continue;
                 }
@@ -296,11 +322,19 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                         "clickhouse.exporter.shutdown",
                         message = "Clickhouse exporter shutting down",
                     );
-                    let abandoned = in_flight_writes
-                        .drain_until(tokio::time::Instant::from_std(deadline), |completed| {
-                            self.finalize_write(completed);
-                        })
-                        .await;
+                    let shutdown_deadline = tokio::time::Instant::from_std(deadline);
+                    let abandoned = loop {
+                        match in_flight_writes
+                            .next_completion_until(shutdown_deadline)
+                            .await
+                        {
+                            Ok(Some(completed)) => {
+                                self.finalize_write(completed, &effect_handler).await?;
+                            }
+                            Ok(None) => break 0,
+                            Err(abandoned) => break abandoned,
+                        }
+                    };
                     if abandoned > 0 {
                         otel_warn!(
                             "clickhouse.exporter.shutdown.deadline_exceeded",
@@ -326,7 +360,26 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                     let signal_type = pdata.signal_type();
                     let signal_format = pdata.signal_format();
 
-                    let (_context, payload) = pdata.into_parts();
+                    if is_unsupported_non_empty_signal(&pdata) {
+                        let reason =
+                            "ClickHouse exporter does not support non-empty metrics payloads"
+                                .to_owned();
+                        self.pdata_metrics
+                            .with(SignalOutcomeAttributes {
+                                signal: signal_type,
+                                outcome: Outcome::Failure,
+                            })
+                            .record(export_started_at.elapsed());
+                        otel_warn!(
+                            "clickhouse.exporter.signal.unsupported",
+                            message = reason.clone(),
+                            signal_type = format!("{signal_type:?}"),
+                        );
+                        notify_permanent_rejection(&effect_handler, reason, pdata).await?;
+                        continue;
+                    }
+
+                    let payload = pdata.payload_ref().clone();
 
                     let direct_otlp_batches =
                         match transform_raw_otlp_logs(&payload, &mut otlp_logs_transformer) {
@@ -342,6 +395,7 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                                     )
                                 }
                                 Err(error) if is_invalid_protobuf(&error) => {
+                                    let reason = error.to_string();
                                     self.pdata_metrics
                                         .with(SignalOutcomeAttributes {
                                             signal: signal_type,
@@ -351,8 +405,10 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                                     otel_warn!(
                                         "clickhouse.exporter.otlp.invalid_protobuf",
                                         message = "Rejecting malformed raw OTLP logs.",
-                                        error = error.to_string(),
+                                        error = reason.clone(),
                                     );
+                                    notify_permanent_rejection(&effect_handler, reason, pdata)
+                                        .await?;
                                     continue;
                                 }
                                 Err(error) => {
@@ -372,45 +428,47 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                     let write_batches = if let Some(batches) = direct_otlp_batches {
                         batches
                     } else {
-                        let mut arrow_records: OtapArrowRecords =
-                            match payload.try_into_with_default() {
-                                Ok(arrow_records) => arrow_records,
-                                Err(e) => {
-                                    self.pdata_metrics
-                                        .with(SignalOutcomeAttributes {
-                                            signal: signal_type,
-                                            outcome: Outcome::Failure,
-                                        })
-                                        .record(export_started_at.elapsed());
-                                    otel_warn!(
-                                        "clickhouse.exporter.convert.error",
-                                        message = format!(
-                                            "Failed to convert payload to OtapArrowRecords: {e:?}"
-                                        ),
-                                        signal_type = format!("{:?}", signal_type),
-                                    );
-                                    continue;
-                                }
-                            };
-
-                        // Decode transport-optimized IDs before joining payloads against them.
-                        arrow_records
-                            .decode_transport_optimized_ids()
-                            .map_err(|e| {
+                        let mut arrow_records: OtapArrowRecords = match payload
+                            .try_into_with_default()
+                        {
+                            Ok(arrow_records) => arrow_records,
+                            Err(e) => {
+                                let reason =
+                                    format!("Failed to convert payload to OtapArrowRecords: {e:?}");
                                 self.pdata_metrics
                                     .with(SignalOutcomeAttributes {
                                         signal: signal_type,
                                         outcome: Outcome::Failure,
                                     })
                                     .record(export_started_at.elapsed());
-                                let source_detail = format_error_sources(&e);
-                                Error::ExporterError {
-                                    exporter: exporter_id.clone(),
-                                    kind: ExporterErrorKind::Other,
-                                    error: format!("Failed to decode transport optimized IDs: {e}"),
-                                    source_detail,
-                                }
-                            })?;
+                                otel_warn!(
+                                    "clickhouse.exporter.convert.error",
+                                    message = reason.clone(),
+                                    signal_type = format!("{:?}", signal_type),
+                                );
+                                notify_permanent_rejection(&effect_handler, reason, pdata).await?;
+                                continue;
+                            }
+                        };
+
+                        // Decode transport-optimized IDs before joining payloads against them.
+                        if let Err(e) = arrow_records.decode_transport_optimized_ids() {
+                            let reason = format!("Failed to decode transport optimized IDs: {e}");
+                            self.pdata_metrics
+                                .with(SignalOutcomeAttributes {
+                                    signal: signal_type,
+                                    outcome: Outcome::Failure,
+                                })
+                                .record(export_started_at.elapsed());
+                            otel_warn!(
+                                "clickhouse.exporter.decode.error",
+                                message = reason.clone(),
+                                source_detail = format_error_sources(&e),
+                                signal_type = format!("{:?}", signal_type),
+                            );
+                            notify_permanent_rejection(&effect_handler, reason, pdata).await?;
+                            continue;
+                        }
 
                         let transform_result = if signal_type == SignalType::Logs
                             && signal_format == SignalFormat::OtapRecords
@@ -436,6 +494,7 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                         match transform_result {
                             Ok(batches) => batches,
                             Err(e) => {
+                                let reason = format!("Error transforming batch for export: {e}");
                                 self.pdata_metrics
                                     .with(SignalOutcomeAttributes {
                                         signal: signal_type,
@@ -448,6 +507,7 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                                     error = e.to_string(),
                                     signal_type = format!("{:?}", signal_type),
                                 );
+                                notify_permanent_rejection(&effect_handler, reason, pdata).await?;
                                 continue;
                             }
                         }
@@ -456,7 +516,7 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                     let write_future: LocalBoxFuture<'static, CompletedWrite> =
                         Box::pin(async move {
                             CompletedWrite {
-                                signal_type,
+                                pdata,
                                 export_started_at,
                                 result: writer.write_batches(&write_batches).await,
                             }
@@ -475,6 +535,77 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
 mod tests {
     use super::*;
     use bytes::Bytes;
+    use otel_arrow_dfe_engine::Interests;
+    use otel_arrow_dfe_engine::context::ControllerContext;
+    use otel_arrow_dfe_engine::control::{PipelineCompletionMsg, pipeline_completion_msg_channel};
+    use otel_arrow_dfe_engine::testing::test_node;
+    use otel_arrow_dfe_otap::testing::{TestCallData, create_test_pdata};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
+        Metric, ResourceMetrics, ScopeMetrics,
+    };
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+    use prost::Message as _;
+    use serde_json::json;
+
+    fn test_exporter() -> ClickhouseExporter {
+        let registry = TelemetryRegistryHandle::new();
+        let controller = ControllerContext::new(registry);
+        let pipeline =
+            controller.pipeline_context_with("test-group".into(), "test-pipeline".into(), 0, 1, 0);
+        ClickhouseExporter::from_config(
+            pipeline,
+            &json!({
+                "endpoint": "http://localhost:8123",
+                "database": "otel",
+                "username": "default",
+                "password": ""
+            }),
+        )
+        .expect("create test exporter")
+    }
+
+    fn completion_harness() -> (
+        EffectHandler<OtapPdata>,
+        otel_arrow_dfe_engine::control::PipelineCompletionMsgReceiver<OtapPdata>,
+    ) {
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let mut effect_handler =
+            EffectHandler::new(test_node("clickhouse-completion-test"), metrics_reporter);
+        let (completion_tx, completion_rx) = pipeline_completion_msg_channel(4);
+        effect_handler.set_pipeline_completion_msg_sender(completion_tx);
+        (effect_handler, completion_rx)
+    }
+
+    fn subscribed_logs_pdata() -> OtapPdata {
+        create_test_pdata().test_subscribe_to(
+            Interests::ACKS | Interests::NACKS,
+            TestCallData::default().into(),
+            42,
+        )
+    }
+
+    fn metrics_pdata(request: ExportMetricsServiceRequest) -> OtapPdata {
+        let mut bytes = Vec::new();
+        request.encode(&mut bytes).expect("encode metrics request");
+        OtapPdata::new_default(OtlpProtoBytes::ExportMetricsRequest(Bytes::from(bytes)).into())
+    }
+
+    fn non_empty_metrics_pdata() -> OtapPdata {
+        metrics_pdata(ExportMetricsServiceRequest {
+            resource_metrics: vec![ResourceMetrics {
+                scope_metrics: vec![ScopeMetrics {
+                    metrics: vec![Metric {
+                        name: "requests".to_owned(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        })
+    }
 
     /// Scenario: the ClickHouse exporter is registered with its public component URN.
     /// Guarantees: configuration references continue to resolve to the exporter factory.
@@ -508,5 +639,97 @@ mod tests {
             .expect_err("malformed top-level protobuf must fail");
 
         assert!(is_invalid_protobuf(&error));
+    }
+
+    /// Scenario: the exporter classifies non-empty metrics, empty metrics, and logs before
+    /// transformation.
+    /// Guarantees: only non-empty metrics are rejected as an unsupported signal.
+    #[test]
+    fn only_non_empty_metrics_are_unsupported() {
+        let non_empty_metrics = non_empty_metrics_pdata();
+        let empty_metrics = metrics_pdata(ExportMetricsServiceRequest::default());
+        let logs = create_test_pdata();
+
+        assert!(is_unsupported_non_empty_signal(&non_empty_metrics));
+        assert!(!is_unsupported_non_empty_signal(&empty_metrics));
+        assert!(!is_unsupported_non_empty_signal(&logs));
+    }
+
+    /// Scenario: a deterministic ClickHouse payload rejection is returned to an interested
+    /// upstream node.
+    /// Guarantees: the emitted NACK is permanent and preserves the rejection reason.
+    #[tokio::test]
+    async fn deterministic_rejection_emits_permanent_nack() {
+        let (effect_handler, mut completion_rx) = completion_harness();
+        let pdata = non_empty_metrics_pdata().test_subscribe_to(
+            Interests::NACKS,
+            TestCallData::default().into(),
+            42,
+        );
+
+        notify_permanent_rejection(&effect_handler, "unsupported metrics".to_owned(), pdata)
+            .await
+            .expect("emit permanent NACK");
+
+        match completion_rx.recv().await.expect("receive completion") {
+            PipelineCompletionMsg::DeliverNack { nack } => {
+                assert!(nack.permanent);
+                assert_eq!(nack.reason, "unsupported metrics");
+            }
+            PipelineCompletionMsg::DeliverAck { .. } => panic!("expected permanent NACK"),
+        }
+    }
+
+    /// Scenario: a completed ClickHouse insertion succeeds for a subscribed logs batch.
+    /// Guarantees: finalization emits an ACK after recording the written rows.
+    #[tokio::test]
+    async fn successful_write_emits_ack() {
+        let mut exporter = test_exporter();
+        let (effect_handler, mut completion_rx) = completion_harness();
+
+        exporter
+            .finalize_write(
+                CompletedWrite {
+                    pdata: subscribed_logs_pdata(),
+                    export_started_at: Instant::now(),
+                    result: Ok(vec![(ArrowPayloadType::Logs, 1)]),
+                },
+                &effect_handler,
+            )
+            .await
+            .expect("finalize successful write");
+
+        assert!(matches!(
+            completion_rx.recv().await.expect("receive completion"),
+            PipelineCompletionMsg::DeliverAck { .. }
+        ));
+    }
+
+    /// Scenario: a ClickHouse insertion request fails after transformation completed.
+    /// Guarantees: finalization emits a retryable NACK because insertion failures may be
+    /// transient.
+    #[tokio::test]
+    async fn insertion_failure_emits_retryable_nack() {
+        let mut exporter = test_exporter();
+        let (effect_handler, mut completion_rx) = completion_harness();
+
+        exporter
+            .finalize_write(
+                CompletedWrite {
+                    pdata: subscribed_logs_pdata(),
+                    export_started_at: Instant::now(),
+                    result: Err(error::ClickhouseExporterError::InsertResponseError {
+                        error: "temporary failure".to_owned(),
+                    }),
+                },
+                &effect_handler,
+            )
+            .await
+            .expect("finalize failed write");
+
+        match completion_rx.recv().await.expect("receive completion") {
+            PipelineCompletionMsg::DeliverNack { nack } => assert!(!nack.permanent),
+            PipelineCompletionMsg::DeliverAck { .. } => panic!("expected retryable NACK"),
+        }
     }
 }
