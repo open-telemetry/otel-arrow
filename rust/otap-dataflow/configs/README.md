@@ -91,21 +91,18 @@ Demonstrates metric-name filtering:
 - Generates synthetic metrics -> filter processor by metric name -> debug processor
   -> noop exporter
 
-### `trafficgen-per-signal-metrics-demo.yaml`
+### `trafficgen-universal-produced-consumed-metrics.yaml`
 
-Demonstrates the opt-in per-signal produced/consumed item counts a node can
-emit:
+Demonstrates universal produced/consumed message, item, and logical payload
+size metrics:
 
 - Generates a mix of logs, metrics and traces -> log-sampling processor -> noop
   exporter
-- Only opted-in nodes report `node.producer.produced.items` and
-  `node.consumer.consumed.items`, each split by the `signal` datapoint attribute;
-  nodes that are not opted in omit these metrics
-  (per-node `policies.telemetry.item_counts: true`, or globally via
-  `runtime_metrics: detailed`); recording requires `runtime_metrics: normal` or
-  higher.
-- View metrics at:
-  `http://127.0.0.1:8080/api/v1/telemetry/metrics?format=json`
+- `runtime_metrics: detailed` enables item and size measurements for every
+  node; the second pipeline demonstrates per-node `item_counts: true` and
+  `size: true` opt-ins at the normal level.
+- An internal observability pipeline filters to only produced/consumed
+  instruments and prints normal-verbosity metrics to stdout.
 
 ### `trafficgen-flow-metrics-demo.yaml`
 
