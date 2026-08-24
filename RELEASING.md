@@ -141,8 +141,9 @@ Before publishing the release, run the push workflow in dry-run mode:
    - Resolve the merged `otelbot/release-vX.Y.Z` pull request and use its
      merge commit as the release commit.
    - Obtain a short-lived crates.io token through trusted publishing.
-   - Publish `otel-arrow-dfe-pdata-views`, or verify and skip an existing
-     version with the expected package checksum.
+   - Publish `otel-arrow-dfe-pdata-views`, or skip the version if it already
+     exists.
+   - Wait until crates.io reports the version before creating release tags.
    - Create git tags for the main release, the Go modules, and the Rust
      workspace at that release commit.
    - Publish the GitHub release with the combined changelog content.
@@ -218,11 +219,10 @@ If the workflow fails partway through:
 
 1. Check whether `otel-arrow-dfe-pdata-views@X.Y.Z` exists on crates.io.
 2. If it exists, publication is irreversible. Re-run Push Release with the
-   same version and merged release commit. The publisher verifies the checksum
-   and skips the existing crate before resuming tags and the GitHub release.
-3. Never delete and recreate the release branch for a published version. A new
-   merge commit produces a different package checksum. If the published
-   checksum does not match, prepare a new patch version.
+   same version. The publisher skips the existing crate before resuming tags
+   and the GitHub release.
+3. Never attempt to replace an existing crates.io version. Prepare a new patch
+   version if the published contents are wrong.
 4. If publication did not occur, fix the underlying issue and re-run the
    workflow normally.
 

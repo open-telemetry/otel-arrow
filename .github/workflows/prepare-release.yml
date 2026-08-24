@@ -111,7 +111,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
-          toolchain: stable
+          toolchain: 1.98.0
 
       - name: Update Rust lockfile
         run: cargo generate-lockfile --manifest-path rust/otap-dataflow/Cargo.toml
