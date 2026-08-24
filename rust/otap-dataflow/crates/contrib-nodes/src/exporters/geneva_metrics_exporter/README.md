@@ -25,7 +25,7 @@ Run the current Geneva metrics tests with:
 
 ```bash
 cargo test --manifest-path rust/otap-dataflow/Cargo.toml \
-  -p otap-df-contrib-nodes \
+  -p otel-arrow-dfe-contrib-nodes \
   --features geneva-metrics-exporter \
   geneva_metrics_exporter
 ```
