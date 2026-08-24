@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787594195746,
+  "lastUpdate": 1787596055270,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -22124,6 +22124,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 114.57,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 101.98,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "l.querel@f5.com",
+            "name": "Laurent Quérel",
+            "username": "lquerel"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "82bd4483783fddd9ddc2d665e4c3dcde83ea37dd",
+          "message": "Propagate ClickHouse write results through pipeline ACK/NACK (#3720)\n\n# Change Summary\n\nPropagate ClickHouse insertion outcomes through the pipeline\ndelivery-completion\npath.\n\nThe ClickHouse exporter now retains each original `OtapPdata` message\nuntil its\ninsert resolves. It emits an ACK after a successful insert and a NACK\nwhen\npayload conversion, transport-ID decoding, transformation, or insertion\nfails.\n\nThe OTAP exporter now drains correlated stream responses until the\nshutdown\ndeadline instead of canceling them immediately. When `enable_ack_nack`\nis set,\nthe traffic generator tracks outstanding batches and waits for their\nACK/NACK\ncompletion before reporting ingress as drained. Completion counts and\nforced\ndeadline drains are exposed as traffic-generator metrics.\n\nNo throughput gain is claimed for this change. Its measurable result is\na\ndelivery invariant: every subscribed batch receives an ACK or NACK, and\na\nnormal graceful drain finishes without unresolved generated batches.\nThis\nremoves delivery-accounting ambiguity from subsequent saturation\nbenchmarks.\n\n## What issue does this PR close?\n\n* Closes #3704\n* Related to #3512\n\n## How are these changes tested?\n\n* ClickHouse exporter compile and clippy checks with\n`clickhouse-exporter`\n* Core nodes compile and clippy checks with `dev-tools`\n* ClickHouse in-flight write unit tests\n* OTAP exporter delayed-response graceful-drain test\n* Traffic-generator pending-ACK drain test\n* Markdown lint, changelog validation, and repository sanity checks\n* `cargo xtask check` \n\n## Are there any user-facing changes?\n\nYes. ClickHouse insertion results now participate in pipeline ACK/NACK\ndelivery\ntracking, and traffic generators using `enable_ack_nack` wait for\noutstanding\ncompletions during graceful drain.\n\n### Changelog\n\n* [x] Added a `.chloggen/*.yaml` entry\n* [ ] This PR is a `chore` (indicated in title)\n* [ ] This is a documentation-only PR.",
+          "timestamp": "2026-08-24T17:27:22Z",
+          "tree_id": "91c09e052d18d527eca0f17562e0d6aaaa2a87c3",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/82bd4483783fddd9ddc2d665e4c3dcde83ea37dd"
+        },
+        "date": 1787596038718,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 82.83,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 70.23,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.71,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 114.58,
             "unit": "MB"
           },
           {
