@@ -23,7 +23,7 @@ jobs:
       contents: read
       pull-requests: read
     runs-on: ubuntu-latest
-    environment: release
+    environment: ${{ inputs.dry_run && '' || 'release' }}
     steps:
       - name: Checkout (dry run)
         if: inputs.dry_run
