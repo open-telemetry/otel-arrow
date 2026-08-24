@@ -4,10 +4,15 @@ version.workspace = true
 authors.workspace = true
 edition.workspace = true
 repository.workspace = true
+homepage = "https://github.com/open-telemetry/otel-arrow"
+documentation = "https://docs.rs/otel-arrow-dfe-pdata-views"
 license.workspace = true
-publish.workspace = true
+readme = "README.md"
+publish = true
 rust-version.workspace = true
 description = "Zero-dependency view traits for OTLP/OTAP telemetry data"
+keywords = ["opentelemetry", "otlp", "otap", "telemetry", "views"]
+categories = ["data-structures"]
 
 [dependencies]
 # intentionally empty

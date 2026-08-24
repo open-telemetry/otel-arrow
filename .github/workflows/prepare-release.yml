@@ -116,6 +116,10 @@ jobs:
       - name: Update Rust lockfile
         run: cargo generate-lockfile --manifest-path rust/otap-dataflow/Cargo.toml
 
+      - name: Validate Rust crates.io publish pilot
+        run: cargo xtask crates-publish check
+        working-directory: rust/otap-dataflow
+
       - name: Extract release notes for PR body
         id: changelog
         run: |
