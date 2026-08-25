@@ -1,0 +1,6 @@
+change_type: enhancement
+component: engine
+note: "Add opt-in logical payload size to node produced and consumed metrics."
+issues: [2884]
+subtext: |
+  Enable with runtime_metrics: detailed for every node, or set policies.telemetry.size: true on individual nodes when runtime_metrics is normal.
