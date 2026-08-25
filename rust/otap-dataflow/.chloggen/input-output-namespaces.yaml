@@ -1,0 +1,6 @@
+change_type: breaking
+component: engine
+note: "Rename node and flow metrics to input/output scopes, add flow message and size measurements, and report duration histograms in seconds."
+issues: [2884]
+subtext: |
+  Migration: Replace `node.consumer.consumed.*` with `node.input.*`, `node.producer.produced.*` with `node.output.*`, `flow.consumed.*` with `flow.input.*`, and `flow.produced.*` with `flow.output.*`. Update scope selectors and flow metric configuration values to use input/output terminology. Flow input and output now expose `messages`, `items`, and logical payload `size`; treat node and `flow.compute.duration` histogram values as seconds.
