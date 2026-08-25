@@ -9,7 +9,7 @@
 
 use bytes::Bytes;
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use otap_df_contrib_nodes::exporters::azure_monitor_exporter::{GzipBatcher, PushResult};
+use otel_arrow_dfe_contrib_nodes::exporters::azure_monitor_exporter::{GzipBatcher, PushResult};
 use rand::RngExt;
 
 /// Pre-generate unique JSON entries of `size` bytes with the given data profile.

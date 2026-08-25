@@ -9,8 +9,8 @@ use crate::channel_metrics::{
     ChannelSenderMetricsState, SharedChannelQueueDepth, SharedChannelReceiverMetricsHandle,
     SharedChannelSenderMetricsHandle,
 };
-use otap_df_channel::error::{RecvError, SendError};
-use otap_df_config::SignalType;
+use otel_arrow_dfe_channel::error::{RecvError, SendError};
+use otel_arrow_dfe_config::SignalType;
 use std::sync::{Arc, Mutex};
 
 enum SharedSenderInner<T> {
@@ -362,7 +362,7 @@ impl<T> SharedReceiver<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_channel::error::RecvError;
+    use otel_arrow_dfe_channel::error::RecvError;
 
     #[test]
     fn test_mpsc_try_recv_empty_returns_empty_not_closed() {

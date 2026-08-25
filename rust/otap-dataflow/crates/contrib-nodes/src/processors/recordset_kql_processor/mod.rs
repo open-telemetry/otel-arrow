@@ -4,7 +4,7 @@
 pub(crate) mod config;
 // Moved from `engine-recordset-otlp-bridge` crate which has different lint
 // settings. Lint compliance will be addressed in a follow-up.
-otap_df_telemetry::otel_component_scope!(
+otel_arrow_dfe_telemetry::otel_component_scope!(
     urn = processor::RECORDSET_KQL_PROCESSOR_URN,
     target = "microsoft.processor.recordset_kql",
 );
@@ -26,10 +26,10 @@ pub(crate) mod processor;
 
 use self::config::RecordsetKqlProcessorConfig;
 use self::processor::RecordsetKqlProcessor;
-use otap_df_otap::pdata::OtapPdata;
+use otel_arrow_dfe_otap::pdata::OtapPdata;
 
-use otap_df_config::{error::Error as ConfigError, node::NodeUserConfig};
-use otap_df_engine::{
+use otel_arrow_dfe_config::{error::Error as ConfigError, node::NodeUserConfig};
+use otel_arrow_dfe_engine::{
     config::ProcessorConfig, context::PipelineContext, node::NodeId, processor::ProcessorWrapper,
 };
 use std::sync::Arc;
@@ -40,7 +40,7 @@ pub fn create_recordset_kql_processor(
     node: NodeId,
     node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
-    _capabilities: &otap_df_engine::capability::registry::Capabilities,
+    _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
     let config: RecordsetKqlProcessorConfig = serde_json::from_value(node_config.config.clone())
         .map_err(|e| ConfigError::InvalidUserConfig {

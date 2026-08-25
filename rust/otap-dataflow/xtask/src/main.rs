@@ -297,7 +297,7 @@ fn build_no_std() -> anyhow::Result<()> {
     // nothing else in the suite notices a stray `use std::` until a downstream
     // embedded build fails. Each crate here declares `#![no_std]` when its
     // `std` feature is off.
-    const NO_STD_PACKAGES: &[&str] = &["otap-df-expohisto"];
+    const NO_STD_PACKAGES: &[&str] = &["otel-arrow-dfe-expohisto"];
 
     println!("\u{1F680} Building no_std crates without default features...");
     for package in NO_STD_PACKAGES {

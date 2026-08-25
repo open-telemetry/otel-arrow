@@ -10,8 +10,8 @@ use std::time::Instant;
 use futures::StreamExt;
 use futures::future::LocalBoxFuture;
 use futures::stream::FuturesUnordered;
-use otap_df_config::SignalType;
-use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
 use super::error::ClickhouseExporterError;
 
@@ -19,7 +19,7 @@ pub(super) type WrittenRows = Vec<(ArrowPayloadType, u64)>;
 
 /// Result of one fully transformed pdata message sent to ClickHouse.
 pub(super) struct CompletedWrite {
-    pub signal_type: SignalType,
+    pub pdata: OtapPdata,
     pub export_started_at: Instant,
     pub result: Result<WrittenRows, ClickhouseExporterError>,
 }
@@ -72,23 +72,18 @@ impl InFlightWrites {
         completed
     }
 
-    /// Drains accepted writes until they complete or the shutdown deadline expires.
+    /// Waits for the next accepted write without exceeding the shutdown deadline.
     ///
-    /// Returns the number of active and queued writes left when the deadline
-    /// expires. Those futures are cancelled when this tracker is dropped.
-    pub(super) async fn drain_until(
+    /// The error contains the number of active and queued writes that will be
+    /// abandoned when the tracker is dropped after the deadline.
+    pub(super) async fn next_completion_until(
         &mut self,
         deadline: tokio::time::Instant,
-        mut on_completion: impl FnMut(CompletedWrite),
-    ) -> usize {
-        while !self.is_empty() {
-            match tokio::time::timeout_at(deadline, self.next_completion()).await {
-                Ok(Some(completed)) => on_completion(completed),
-                Ok(None) => break,
-                Err(_) => return self.len(),
-            }
+    ) -> Result<Option<CompletedWrite>, usize> {
+        match tokio::time::timeout_at(deadline, self.next_completion()).await {
+            Ok(completed) => Ok(completed),
+            Err(_) => Err(self.len()),
         }
-        0
     }
 
     fn fill_capacity(&mut self) {
@@ -114,6 +109,14 @@ impl InFlightWrites {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::Bytes;
+    use otel_arrow_dfe_pdata::{OtapPayload, OtlpProtoBytes};
+
+    fn logs_pdata() -> OtapPdata {
+        OtapPdata::new_todo_context(OtapPayload::from(OtlpProtoBytes::ExportLogsRequest(
+            Bytes::new(),
+        )))
+    }
 
     fn limit(value: usize) -> NonZeroUsize {
         NonZeroUsize::new(value).expect("test limit must be non-zero")
@@ -121,7 +124,7 @@ mod tests {
 
     fn completed_write(rows: u64) -> CompletedWrite {
         CompletedWrite {
-            signal_type: SignalType::Logs,
+            pdata: logs_pdata(),
             export_started_at: Instant::now(),
             result: Ok(vec![(ArrowPayloadType::Logs, rows)]),
         }
@@ -160,17 +163,16 @@ mod tests {
         writes.push(Box::pin(async { completed_write(5) }));
 
         let mut rows = Vec::new();
-        let abandoned = writes
-            .drain_until(
-                tokio::time::Instant::now() + std::time::Duration::from_secs(1),
-                |completed| {
-                    rows.push(completed.result.unwrap()[0].1);
-                },
-            )
-            .await;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+        while let Some(completed) = writes
+            .next_completion_until(deadline)
+            .await
+            .expect("writes should complete before the deadline")
+        {
+            rows.push(completed.result.unwrap()[0].1);
+        }
         rows.sort_unstable();
 
-        assert_eq!(abandoned, 0);
         assert_eq!(rows, vec![3, 5]);
         assert!(writes.is_empty());
     }
@@ -184,9 +186,10 @@ mod tests {
         writes.push(Box::pin(async { completed_write(2) }));
 
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-        let abandoned = writes
-            .drain_until(deadline, |_| panic!("stalled writes must not complete"))
-            .await;
+        let abandoned = match writes.next_completion_until(deadline).await {
+            Err(abandoned) => abandoned,
+            Ok(_) => panic!("stalled writes must reach the deadline"),
+        };
 
         assert_eq!(abandoned, 2);
         assert_eq!(writes.active_len(), 1);

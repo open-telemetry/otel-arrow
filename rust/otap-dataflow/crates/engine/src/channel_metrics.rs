@@ -8,17 +8,17 @@
 //! and `channel.kind`.
 
 use crate::attributes::ChannelKind;
-use otap_df_config::SignalType;
-use otap_df_telemetry::attributes::AttributeEnum as _;
-use otap_df_telemetry::common_attributes::{
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_telemetry::attributes::AttributeEnum as _;
+use otel_arrow_dfe_telemetry::common_attributes::{
     Outcome, OutcomeAttributes, SignalAttributes, SignalOutcomeAttributes,
 };
-use otap_df_telemetry::error::Error as TelemetryError;
-use otap_df_telemetry::instrument::{Counter, Gauge, Mmsc};
-use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetSnapshot};
-use otap_df_telemetry::registry::MetricSetKey;
-use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
+use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
+use otel_arrow_dfe_telemetry::instrument::{Counter, Gauge, Mmsc};
+use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetSnapshot};
+use otel_arrow_dfe_telemetry::registry::MetricSetKey;
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -187,6 +187,18 @@ pub struct ConsumedItemMetrics {
     pub consumed_items: Counter<u64>,
 }
 
+/// Optional per-signal logical payload-size metrics for a node input channel.
+#[metric_set(
+    name = "node.consumer",
+    measurement_attributes = SignalOutcomeAttributes
+)]
+#[derive(Debug, Default, Clone)]
+pub struct ConsumedSizeMetrics {
+    /// Consumed logical payload size, grouped by `signal` and `outcome`.
+    #[metric(name = "consumed.size", unit = "By")]
+    pub consumed_size: Counter<u64>,
+}
+
 /// Ack/nack metrics for produced messages, owned exclusively by the runtime control manager.
 /// Registered under the output channel entity key so they share the same
 /// channel attributes as the transport metrics.
@@ -218,6 +230,18 @@ pub struct ProducedItemMetrics {
     /// Produced signal items, grouped by the `signal` datapoint attribute.
     #[metric(name = "produced.items", unit = "{item}")]
     pub produced_items: Counter<u64>,
+}
+
+/// Optional per-signal logical payload-size metrics for a node output channel.
+#[metric_set(
+    name = "node.producer",
+    measurement_attributes = SignalOutcomeAttributes
+)]
+#[derive(Debug, Default, Clone)]
+pub struct ProducedSizeMetrics {
+    /// Produced logical payload size, grouped by `signal` and `outcome`.
+    #[metric(name = "produced.size", unit = "By")]
+    pub produced_size: Counter<u64>,
 }
 
 pub(crate) fn control_channel_id(name: &str) -> Cow<'static, str> {
@@ -574,10 +598,10 @@ mod tests {
     use crate::attributes::{ChannelImplementation, ChannelMode, ChannelType};
     use crate::context::{ControllerContext, PipelineContext};
     use crate::local::message::{LocalReceiver, LocalSender};
-    use otap_df_channel::error::{RecvError, SendError};
-    use otap_df_channel::mpsc;
-    use otap_df_config::node::NodeKind;
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_channel::error::{RecvError, SendError};
+    use otel_arrow_dfe_channel::mpsc;
+    use otel_arrow_dfe_config::node::NodeKind;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use std::collections::HashMap;
 
     #[derive(Debug)]
@@ -604,7 +628,7 @@ mod tests {
 
     fn pdata_sender_metrics(
         pipeline_ctx: &PipelineContext,
-        entity_key: otap_df_telemetry::registry::EntityKey,
+        entity_key: otel_arrow_dfe_telemetry::registry::EntityKey,
     ) -> ChannelSenderMetricSets {
         ChannelSenderMetricSets::Pdata(PdataChannelSenderMetricSets {
             messages: pipeline_ctx.register_measurement_metric_set_for_entity(entity_key),
@@ -614,7 +638,7 @@ mod tests {
 
     fn pdata_receiver_metrics(
         pipeline_ctx: &PipelineContext,
-        entity_key: otap_df_telemetry::registry::EntityKey,
+        entity_key: otel_arrow_dfe_telemetry::registry::EntityKey,
     ) -> ChannelReceiverMetricSets {
         ChannelReceiverMetricSets::Pdata(PdataChannelReceiverMetricSets {
             messages: pipeline_ctx.register_measurement_metric_set_for_entity(entity_key),

@@ -42,10 +42,10 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use otap_df_admin_types::operations::DeleteOptions;
-use otap_df_admin_types::pipelines::{PipelineRolloutState, Status as ApiPipelineStatus};
-use otap_df_config::PipelineKey;
-use otap_df_telemetry::otel_info;
+use otel_arrow_dfe_admin_types::operations::DeleteOptions;
+use otel_arrow_dfe_admin_types::pipelines::{PipelineRolloutState, Status as ApiPipelineStatus};
+use otel_arrow_dfe_config::PipelineKey;
+use otel_arrow_dfe_telemetry::otel_info;
 use serde::Deserialize;
 use std::time::{Duration, Instant};
 
@@ -129,7 +129,7 @@ fn shutdown_is_success(state: &str) -> bool {
 /// Returns committed configuration details for one logical pipeline.
 ///
 /// Credential header values are redacted from the response (see
-/// [`otap_df_config::pipeline::PipelineConfig::redacted_for_snapshot`]) so
+/// [`otel_arrow_dfe_config::pipeline::PipelineConfig::redacted_for_snapshot`]) so
 /// secrets configured in node and extension `headers` are not exposed in
 /// cleartext.
 pub async fn show_pipeline(
@@ -490,11 +490,11 @@ mod tests {
         ShutdownStatus,
     };
     use axum::body::to_bytes;
-    use otap_df_admin_types::operations::{OperationError, OperationErrorKind};
-    use otap_df_config::observed_state::ObservedStateSettings;
-    use otap_df_engine::memory_limiter::MemoryPressureState;
-    use otap_df_state::store::ObservedStateStore;
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_admin_types::operations::{OperationError, OperationErrorKind};
+    use otel_arrow_dfe_config::observed_state::ObservedStateSettings;
+    use otel_arrow_dfe_engine::memory_limiter::MemoryPressureState;
+    use otel_arrow_dfe_state::store::ObservedStateStore;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use serde_json::json;
     use std::sync::Arc;
 

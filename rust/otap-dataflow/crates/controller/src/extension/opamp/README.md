@@ -59,7 +59,7 @@ servers should set `application/json`, `application/yaml`, or `text/yaml`.
             "heartbeat_interval": "5s",
             "agent_description": {
               "identifying_attributes": {
-                "service.name": "otap-df-engine"
+                "service.name": "otel-arrow-dfe-engine"
               }
             }
           }

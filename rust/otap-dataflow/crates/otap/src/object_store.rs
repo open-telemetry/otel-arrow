@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "aws")]
 use crate::cloud_auth;
 
-use otap_df_engine::shared::capability::auth::bearer_token_provider::BearerTokenProvider;
+use otel_arrow_dfe_engine::shared::capability::auth::bearer_token_provider::BearerTokenProvider;
 
 #[cfg(any(feature = "azure", feature = "aws"))]
 use object_store::path::Path;

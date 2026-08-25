@@ -15,7 +15,7 @@ use crate::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor, StringArrayAc
 use crate::otlp::attributes::{Attribute16Arrays, Attribute32Arrays, AttributeValueType};
 use crate::otlp::common::AnyValueArrays;
 use crate::schema::consts;
-use otap_df_pdata_views::views::common::{AnyValueView, AttributeView, Str, ValueType};
+use otel_arrow_dfe_pdata_views::views::common::{AnyValueView, AttributeView, Str, ValueType};
 
 // ===== RowGroup =====
 

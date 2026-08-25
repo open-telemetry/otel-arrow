@@ -4,7 +4,7 @@
 //! Batching for `OtapArrowRecords`
 
 use super::{OtapArrowRecords, error::Result, groups::RecordsGroup};
-use otap_df_config::SignalType;
+use otel_arrow_dfe_config::SignalType;
 use std::num::NonZeroU64;
 
 /// Rebatch records to the appropriate size in a single pass, measured

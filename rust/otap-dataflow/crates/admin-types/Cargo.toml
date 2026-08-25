@@ -1,5 +1,5 @@
 [package]
-name = "otap-df-admin-types"
+name = "otel-arrow-dfe-admin-types"
 description = "Shared admin schema types for the OTAP dataflow engine"
 version.workspace = true
 authors.workspace = true
@@ -13,7 +13,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-otap-df-config = { workspace = true }
+otel-arrow-dfe-config = { workspace = true }
 
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

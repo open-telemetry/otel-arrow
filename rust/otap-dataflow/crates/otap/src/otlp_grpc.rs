@@ -8,7 +8,7 @@
 //! Implements the necessary service traits for OTLP data
 //!
 //! ToDo Modify OTLPData -> Optimize message transport
-use otap_df_pdata::proto::opentelemetry::collector::{
+use otel_arrow_dfe_pdata::proto::opentelemetry::collector::{
     logs::v1::{
         ExportLogsServiceRequest, ExportLogsServiceResponse, logs_service_server::LogsService,
     },
@@ -25,7 +25,7 @@ use otap_df_pdata::proto::opentelemetry::collector::{
     },
 };
 
-use otap_df_engine::shared::receiver as shared;
+use otel_arrow_dfe_engine::shared::receiver as shared;
 use tonic::{Request, Response, Status};
 
 /// struct that implements the Log Service trait

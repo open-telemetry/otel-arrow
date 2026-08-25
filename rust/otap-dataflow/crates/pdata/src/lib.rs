@@ -38,7 +38,7 @@ mod validation;
 pub use decode::decoder::Consumer;
 pub use encode::producer::Producer;
 
-use otap_df_config::ConversionOptions;
+use otel_arrow_dfe_config::ConversionOptions;
 
 /// Try to convert with options, including limits.
 pub trait TryFromWithOptions<T>: Sized {

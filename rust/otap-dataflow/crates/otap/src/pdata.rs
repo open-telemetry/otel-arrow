@@ -17,18 +17,20 @@ use std::net::SocketAddr;
 use std::num::NonZeroU64;
 
 use async_trait::async_trait;
-use otap_df_config::PortName;
-use otap_df_config::{SignalFormat, SignalType};
-use otap_df_engine::_private::AckNackRouting;
-use otap_df_engine::control::{AckMsg, CallData, Frame, NackMsg, RouteData, nanos_since_birth};
-use otap_df_engine::error::{Error, TypedError};
-use otap_df_engine::processor::{FlowMetricEffectHandler, FlowMetricHook};
-use otap_df_engine::{
+use otel_arrow_dfe_config::PortName;
+use otel_arrow_dfe_config::{SignalFormat, SignalType};
+use otel_arrow_dfe_engine::_private::AckNackRouting;
+use otel_arrow_dfe_engine::control::{
+    AckMsg, CallData, Frame, NackMsg, RouteData, nanos_since_birth,
+};
+use otel_arrow_dfe_engine::error::{Error, TypedError};
+use otel_arrow_dfe_engine::processor::{FlowMetricEffectHandler, FlowMetricHook};
+use otel_arrow_dfe_engine::{
     ConsumerEffectHandlerExtension, FlowMetricAccumulation, Interests,
     MessageSourceLocalEffectHandlerExtension, MessageSourceSharedEffectHandlerExtension,
     ProducerEffectHandlerExtension,
 };
-use otap_df_pdata::OtapPayload;
+use otel_arrow_dfe_pdata::OtapPayload;
 
 use crate::transport_headers::TransportHeaders;
 
@@ -121,6 +123,8 @@ impl Context {
             },
             produced_items: 0,
             consumed_items: 0,
+            produced_size: 0,
+            consumed_size: 0,
         });
     }
 
@@ -230,6 +234,8 @@ impl Context {
             route: RouteData::default(),
             produced_items: 0,
             consumed_items: 0,
+            produced_size: 0,
+            consumed_size: 0,
         });
     }
 
@@ -285,6 +291,8 @@ impl Context {
             },
             produced_items: 0,
             consumed_items: 0,
+            produced_size: 0,
+            consumed_size: 0,
         });
     }
 
@@ -314,6 +322,22 @@ impl Context {
         self.capture_signal(signal);
         if let Some(top) = self.stack.last_mut() {
             top.consumed_items = items;
+        }
+    }
+
+    /// Record the logical payload size produced by the current node at send
+    /// time onto the top frame.
+    pub(crate) fn stamp_produced_size(&mut self, size: u64) {
+        if let Some(top) = self.stack.last_mut() {
+            top.produced_size = size;
+        }
+    }
+
+    /// Record the logical payload size consumed by the current node at receive
+    /// time onto the top frame.
+    pub(crate) fn stamp_consumed_size(&mut self, size: u64) {
+        if let Some(top) = self.stack.last_mut() {
+            top.consumed_size = size;
         }
     }
 
@@ -359,6 +383,8 @@ impl Context {
             },
             produced_items: 0,
             consumed_items: 0,
+            produced_size: 0,
+            consumed_size: 0,
         });
     }
 
@@ -449,7 +475,7 @@ impl Context {
     }
 }
 
-// Frame is defined in otap_df_engine::control (imported above).
+// Frame is defined in otel_arrow_dfe_engine::control (imported above).
 
 /// Incremental builder applying the same merge rule as
 /// [`Context::merge_peer_addr`] without allocating a `Vec` of intermediate
@@ -504,7 +530,7 @@ impl PeerAddrMerger {
     }
 }
 
-impl otap_df_engine::Unwindable for OtapPdata {
+impl otel_arrow_dfe_engine::Unwindable for OtapPdata {
     fn has_frames(&self) -> bool {
         self.context.has_context_frames()
     }
@@ -522,7 +548,7 @@ impl otap_df_engine::Unwindable for OtapPdata {
     }
 }
 
-impl otap_df_engine::StampOutputPort for OtapPdata {
+impl otel_arrow_dfe_engine::StampOutputPort for OtapPdata {
     fn stamp_output_port_index(&mut self, index: u16) {
         self.context.stamp_output_port_index(index);
     }
@@ -538,7 +564,7 @@ impl FlowMetricAccumulation for OtapPdata {
         // misconfigured pipeline is diagnosable instead of silently producing
         // truncated histograms.
         if self.context.flow_compute_ns.is_some() {
-            otap_df_telemetry::otel_warn!(
+            otel_arrow_dfe_telemetry::otel_warn!(
                 "flow_metrics.overlap",
                 "start_flow_metric called while another flow_metric is active; \
                  overlapping ranges are not supported \u{2014} previous accumulator discarded"
@@ -776,6 +802,13 @@ impl OtapPdata {
                 let signal = self.signal_type();
                 self.context.stamp_produced_items(items, signal);
             }
+            if node_interests.contains(Interests::PRODUCED_CONSUMED_SIZE)
+                && node_interests.contains(Interests::PRODUCER_METRICS)
+                && let Some(size) = self.num_bytes()
+            {
+                self.context
+                    .stamp_produced_size(u64::try_from(size).unwrap_or(u64::MAX));
+            }
         }
     }
 
@@ -852,19 +885,19 @@ macro_rules! impl_producer_ext {
 }
 
 impl_producer_ext!(
-    otap_df_engine::local::processor::EffectHandler<OtapPdata>,
+    otel_arrow_dfe_engine::local::processor::EffectHandler<OtapPdata>,
     processor_id
 );
 impl_producer_ext!(
-    otap_df_engine::local::receiver::EffectHandler<OtapPdata>,
+    otel_arrow_dfe_engine::local::receiver::EffectHandler<OtapPdata>,
     receiver_id
 );
 impl_producer_ext!(
-    otap_df_engine::shared::processor::EffectHandler<OtapPdata>,
+    otel_arrow_dfe_engine::shared::processor::EffectHandler<OtapPdata>,
     processor_id
 );
 impl_producer_ext!(
-    otap_df_engine::shared::receiver::EffectHandler<OtapPdata>,
+    otel_arrow_dfe_engine::shared::receiver::EffectHandler<OtapPdata>,
     receiver_id
 );
 
@@ -899,10 +932,10 @@ macro_rules! impl_consumer_ext {
     };
 }
 
-impl_consumer_ext!(otap_df_engine::local::processor::EffectHandler<OtapPdata>);
-impl_consumer_ext!(otap_df_engine::local::exporter::EffectHandler<OtapPdata>);
-impl_consumer_ext!(otap_df_engine::shared::processor::EffectHandler<OtapPdata>);
-impl_consumer_ext!(otap_df_engine::shared::exporter::EffectHandler<OtapPdata>);
+impl_consumer_ext!(otel_arrow_dfe_engine::local::processor::EffectHandler<OtapPdata>);
+impl_consumer_ext!(otel_arrow_dfe_engine::local::exporter::EffectHandler<OtapPdata>);
+impl_consumer_ext!(otel_arrow_dfe_engine::shared::processor::EffectHandler<OtapPdata>);
+impl_consumer_ext!(otel_arrow_dfe_engine::shared::exporter::EffectHandler<OtapPdata>);
 
 /* --------  effect handler extensions (shared, local) -------- */
 
@@ -1023,35 +1056,35 @@ macro_rules! impl_message_source_ext {
 impl_message_source_ext!(
     async_trait(?Send),
     MessageSourceLocalEffectHandlerExtension,
-    otap_df_engine::local::processor::EffectHandler<OtapPdata>,
+    otel_arrow_dfe_engine::local::processor::EffectHandler<OtapPdata>,
     processor_id,
     with_hook
 );
 impl_message_source_ext!(
     async_trait(?Send),
     MessageSourceLocalEffectHandlerExtension,
-    otap_df_engine::local::receiver::EffectHandler<OtapPdata>,
+    otel_arrow_dfe_engine::local::receiver::EffectHandler<OtapPdata>,
     receiver_id,
     no_hook
 );
 impl_message_source_ext!(
     async_trait,
     MessageSourceSharedEffectHandlerExtension,
-    otap_df_engine::shared::processor::EffectHandler<OtapPdata>,
+    otel_arrow_dfe_engine::shared::processor::EffectHandler<OtapPdata>,
     processor_id,
     with_hook
 );
 impl_message_source_ext!(
     async_trait,
     MessageSourceSharedEffectHandlerExtension,
-    otap_df_engine::shared::receiver::EffectHandler<OtapPdata>,
+    otel_arrow_dfe_engine::shared::receiver::EffectHandler<OtapPdata>,
     receiver_id,
     no_hook
 );
 
 /* -------- ReceivedAtNode implementation -------- */
 
-impl otap_df_engine::ReceivedAtNode for OtapPdata {
+impl otel_arrow_dfe_engine::ReceivedAtNode for OtapPdata {
     fn received_at_node(&mut self, node_id: usize, node_interests: Interests) {
         self.context.push_entry_frame(node_id, node_interests);
         if node_interests.contains(Interests::CONSUMER_METRICS) {
@@ -1067,6 +1100,13 @@ impl otap_df_engine::ReceivedAtNode for OtapPdata {
             let signal = self.signal_type();
             self.context.stamp_consumed_items(items, signal);
         }
+        if node_interests.contains(Interests::PRODUCED_CONSUMED_SIZE)
+            && node_interests.contains(Interests::CONSUMER_METRICS)
+            && let Some(size) = self.num_bytes()
+        {
+            self.context
+                .stamp_consumed_size(u64::try_from(size).unwrap_or(u64::MAX));
+        }
     }
 }
 
@@ -1078,23 +1118,23 @@ mod test {
         TestCallData, create_empty_test_pdata, create_test_pdata, next_ack, next_nack,
     };
     use crate::transport_headers::TransportHeader;
-    use otap_df_channel::mpsc::Channel as LocalChannel;
-    use otap_df_engine::ConsumerEffectHandlerExtension;
-    use otap_df_engine::control::{
+    use otel_arrow_dfe_channel::mpsc::Channel as LocalChannel;
+    use otel_arrow_dfe_engine::ConsumerEffectHandlerExtension;
+    use otel_arrow_dfe_engine::control::{
         PipelineCompletionMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
     };
-    use otap_df_engine::effect_handler::SourceTagging;
-    use otap_df_engine::local::exporter::EffectHandler as LocalExporterEffectHandler;
-    use otap_df_engine::local::message::LocalSender;
-    use otap_df_engine::local::processor::EffectHandler as LocalProcessorEffectHandler;
-    use otap_df_engine::local::receiver::EffectHandler as LocalReceiverEffectHandler;
-    use otap_df_engine::message::Sender;
-    use otap_df_engine::node::NodeId;
-    use otap_df_engine::shared::exporter::EffectHandler as SharedExporterEffectHandler;
-    use otap_df_engine::shared::message::SharedSender;
-    use otap_df_engine::shared::processor::EffectHandler as SharedProcessorEffectHandler;
-    use otap_df_engine::shared::receiver::EffectHandler as SharedReceiverEffectHandler;
-    use otap_df_telemetry::reporter::MetricsReporter;
+    use otel_arrow_dfe_engine::effect_handler::SourceTagging;
+    use otel_arrow_dfe_engine::local::exporter::EffectHandler as LocalExporterEffectHandler;
+    use otel_arrow_dfe_engine::local::message::LocalSender;
+    use otel_arrow_dfe_engine::local::processor::EffectHandler as LocalProcessorEffectHandler;
+    use otel_arrow_dfe_engine::local::receiver::EffectHandler as LocalReceiverEffectHandler;
+    use otel_arrow_dfe_engine::message::Sender;
+    use otel_arrow_dfe_engine::node::NodeId;
+    use otel_arrow_dfe_engine::shared::exporter::EffectHandler as SharedExporterEffectHandler;
+    use otel_arrow_dfe_engine::shared::message::SharedSender;
+    use otel_arrow_dfe_engine::shared::processor::EffectHandler as SharedProcessorEffectHandler;
+    use otel_arrow_dfe_engine::shared::receiver::EffectHandler as SharedReceiverEffectHandler;
+    use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
     use pretty_assertions::assert_eq;
     use std::cell::Cell;
     use std::collections::HashMap;
@@ -1105,7 +1145,7 @@ mod test {
     }
 
     fn create_test_otap_pdata() -> OtapPdata {
-        use otap_df_pdata::{OtapArrowRecords, TryIntoWithOptions};
+        use otel_arrow_dfe_pdata::{OtapArrowRecords, TryIntoWithOptions};
 
         let payload = create_test_pdata().into_parts().1;
         let records: OtapArrowRecords = payload.try_into_with_default().expect("OTAP conversion");
@@ -1771,7 +1811,7 @@ mod test {
     /// Guarantees: the real pdata retains its signal for message metric attribution without parsing item counts.
     #[test]
     fn test_received_at_node_stamps_consumed_items() {
-        use otap_df_engine::{ReceivedAtNode, Unwindable};
+        use otel_arrow_dfe_engine::{ReceivedAtNode, Unwindable};
 
         // CONSUMER_METRICS + item counts: entry frame carries consumed count.
         let mut pdata = create_test_pdata();
@@ -1816,6 +1856,37 @@ mod test {
         pdata4.received_at_node(11, Interests::PRODUCED_CONSUMED_ITEM_COUNTS);
         assert_eq!(pdata4.context.frames().len(), 0);
         assert_eq!(pdata4.context.signal(), None);
+    }
+
+    /// Scenario: a node opts into consumed payload size at the normal runtime metric level.
+    /// Guarantees: the receive frame captures size only when both consumer metrics and size measurement are enabled.
+    #[test]
+    fn test_received_at_node_stamps_consumed_size() {
+        use otel_arrow_dfe_engine::ReceivedAtNode;
+
+        let mut pdata = create_test_pdata();
+        let size =
+            u64::try_from(pdata.num_bytes().expect("test payload size")).expect("size fits u64");
+        assert!(size > 0);
+        pdata.received_at_node(
+            42,
+            Interests::CONSUMER_METRICS | Interests::PRODUCED_CONSUMED_SIZE,
+        );
+        let frame = pdata.context.frames().last().expect("consumer frame");
+        assert_eq!(frame.consumed_size, size);
+
+        let mut pdata_no_optin = create_test_pdata();
+        pdata_no_optin.received_at_node(43, Interests::CONSUMER_METRICS);
+        let frame_no_optin = pdata_no_optin
+            .context
+            .frames()
+            .last()
+            .expect("consumer frame");
+        assert_eq!(frame_no_optin.consumed_size, 0);
+
+        let mut pdata_without_metrics = create_test_pdata();
+        pdata_without_metrics.received_at_node(44, Interests::PRODUCED_CONSUMED_SIZE);
+        assert!(pdata_without_metrics.context.frames().is_empty());
     }
 
     /// Scenario: a source records normal-level produced messages without item-count opt-in.
@@ -1865,6 +1936,43 @@ mod test {
         let frame3 = pdata3.context.frames().last().expect("source frame");
         assert_eq!(frame3.produced_items, 0);
         assert_eq!(pdata3.context.signal(), None);
+    }
+
+    /// Scenario: a source opts into produced payload size at the normal runtime metric level.
+    /// Guarantees: the source frame captures size only when both producer metrics and size measurement are enabled.
+    #[test]
+    fn test_prepare_source_send_stamps_produced_size() {
+        let mut pdata = create_test_pdata();
+        let size =
+            u64::try_from(pdata.num_bytes().expect("test payload size")).expect("size fits u64");
+        assert!(size > 0);
+        pdata.prepare_source_send(
+            Interests::PRODUCER_METRICS | Interests::PRODUCED_CONSUMED_SIZE,
+            5,
+        );
+        let frame = pdata.context.frames().last().expect("source frame");
+        assert_eq!(frame.produced_size, size);
+
+        let mut pdata_no_optin = create_test_pdata();
+        pdata_no_optin.prepare_source_send(Interests::PRODUCER_METRICS, 6);
+        let frame_no_optin = pdata_no_optin
+            .context
+            .frames()
+            .last()
+            .expect("source frame");
+        assert_eq!(frame_no_optin.produced_size, 0);
+
+        let mut pdata_without_metrics = create_test_pdata();
+        pdata_without_metrics.prepare_source_send(
+            Interests::SOURCE_TAGGING | Interests::PRODUCED_CONSUMED_SIZE,
+            7,
+        );
+        let frame_without_metrics = pdata_without_metrics
+            .context
+            .frames()
+            .last()
+            .expect("source tagging frame");
+        assert_eq!(frame_without_metrics.produced_size, 0);
     }
 
     #[test]
@@ -2436,7 +2544,7 @@ mod test {
     /// Helper: build a local processor EffectHandler wired to a completion channel.
     fn create_local_processor_with_completion_channel() -> (
         LocalProcessorEffectHandler<OtapPdata>,
-        otap_df_engine::shared::message::SharedReceiver<PipelineCompletionMsg<OtapPdata>>,
+        otel_arrow_dfe_engine::shared::message::SharedReceiver<PipelineCompletionMsg<OtapPdata>>,
     ) {
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let mut eh = LocalProcessorEffectHandler::new(
@@ -2456,7 +2564,7 @@ mod test {
     /// Helper: build a local exporter EffectHandler wired to a completion channel.
     fn create_local_exporter_with_completion_channel() -> (
         LocalExporterEffectHandler<OtapPdata>,
-        otap_df_engine::shared::message::SharedReceiver<PipelineCompletionMsg<OtapPdata>>,
+        otel_arrow_dfe_engine::shared::message::SharedReceiver<PipelineCompletionMsg<OtapPdata>>,
     ) {
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let mut eh = LocalExporterEffectHandler::new(
@@ -2474,7 +2582,7 @@ mod test {
     /// Helper: build a shared processor EffectHandler wired to a completion channel.
     fn create_shared_processor_with_completion_channel() -> (
         SharedProcessorEffectHandler<OtapPdata>,
-        otap_df_engine::shared::message::SharedReceiver<PipelineCompletionMsg<OtapPdata>>,
+        otel_arrow_dfe_engine::shared::message::SharedReceiver<PipelineCompletionMsg<OtapPdata>>,
     ) {
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let mut eh = SharedProcessorEffectHandler::new(
@@ -2494,7 +2602,7 @@ mod test {
     /// Helper: build a shared exporter EffectHandler wired to a completion channel.
     fn create_shared_exporter_with_completion_channel() -> (
         SharedExporterEffectHandler<OtapPdata>,
-        otap_df_engine::shared::message::SharedReceiver<PipelineCompletionMsg<OtapPdata>>,
+        otel_arrow_dfe_engine::shared::message::SharedReceiver<PipelineCompletionMsg<OtapPdata>>,
     ) {
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let mut eh = SharedExporterEffectHandler::new(

@@ -16,19 +16,19 @@ use std::sync::Arc;
 use arrow::array::{Array, RecordBatch, StringArray, UInt16Array};
 use arrow::datatypes::{DataType, Field, Schema};
 
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::context::ControllerContext;
-use otap_df_engine::control::NodeControlMsg;
-use otap_df_engine::message::Message;
-use otap_df_engine::testing::{node::test_node, processor::TestRuntime};
-use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
-use otap_df_otap::pdata::{Context, OtapPdata};
-use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::TryIntoWithOptions;
-use otap_df_pdata::otap::Logs;
-use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otap_df_telemetry::registry::TelemetryRegistryHandle;
-use otap_df_wasm_host::WASM_PROCESSOR_URN;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_engine::context::ControllerContext;
+use otel_arrow_dfe_engine::control::NodeControlMsg;
+use otel_arrow_dfe_engine::message::Message;
+use otel_arrow_dfe_engine::testing::{node::test_node, processor::TestRuntime};
+use otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES;
+use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
+use otel_arrow_dfe_pdata::OtapArrowRecords;
+use otel_arrow_dfe_pdata::TryIntoWithOptions;
+use otel_arrow_dfe_pdata::otap::Logs;
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+use otel_arrow_dfe_wasm_host::WASM_PROCESSOR_URN;
 
 /// Compile the reference guest plugin to a `wasm32-wasip2` component and return
 /// the path to the produced `.wasm` file.
@@ -123,7 +123,7 @@ fn wasm_processor_filters_error_severity_end_to_end() {
         node,
         Arc::new(node_config),
         rt.config(),
-        &otap_df_engine::capability::registry::Capabilities::empty(),
+        &otel_arrow_dfe_engine::capability::registry::Capabilities::empty(),
     )
     .expect("create wasm processor");
 

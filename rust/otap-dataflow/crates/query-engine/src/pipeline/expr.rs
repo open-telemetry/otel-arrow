@@ -47,9 +47,9 @@ use arrow::datatypes::{Field, Schema};
 use datafusion::logical_expr::{ColumnarValue, Expr};
 use datafusion::physical_expr::PhysicalExprRef;
 use datafusion::scalar::ScalarValue;
-use otap_df_config::SignalType;
-use otap_df_pdata::schema::consts;
-use otap_df_pdata::{OtapArrowRecords, OtapPayloadHelpers};
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_pdata::schema::consts;
+use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayloadHelpers};
 
 use crate::error::Result;
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
@@ -226,6 +226,24 @@ impl ShortCircuitStrategy {
             Self::Or => true,
             Self::NotOr => false,
         })))
+    }
+
+    /// Returns the default value to substitute when a child is absent (its data source
+    /// does not exist in the batch), or `None` if no substitution applies.
+    ///
+    /// For OR/NotOr: absent data means "no match", so we substitute `false` (the OR
+    /// identity element: `false OR B` evaluates to `B`).
+    ///
+    /// For AND/NotAnd: returns `None`. Absent data in an AND already produces the
+    /// correct "no match" result via the `should_short_circuit` check (which treats
+    /// all-false/all-null as a short-circuit to false).
+    fn absent_child_default(&self) -> Option<ScopedValue> {
+        match self {
+            Self::Or | Self::NotOr => {
+                Some(ScopedValue::new_scalar(ScalarValue::Boolean(Some(false))))
+            }
+            Self::And | Self::NotAnd => None,
+        }
     }
 
     fn invert(&self) -> Self {
@@ -525,13 +543,13 @@ mod test {
     use datafusion::common::cast::as_boolean_array;
     use datafusion::logical_expr::{ColumnarValue, Expr, Operator, col, lit};
     use datafusion::scalar::ScalarValue;
-    use otap_df_config::SignalType;
-    use otap_df_pdata::otap::filter::IdBitmapPool;
-    use otap_df_pdata::proto::OtlpProtoMessage;
-    use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
-    use otap_df_pdata::proto::opentelemetry::logs::v1::LogRecord;
-    use otap_df_pdata::schema::consts;
-    use otap_df_pdata::testing::round_trip::{otlp_to_otap, to_logs_data};
+    use otel_arrow_dfe_config::SignalType;
+    use otel_arrow_dfe_pdata::otap::filter::IdBitmapPool;
+    use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogRecord;
+    use otel_arrow_dfe_pdata::schema::consts;
+    use otel_arrow_dfe_pdata::testing::round_trip::{otlp_to_otap, to_logs_data};
 
     use crate::pipeline::Pipeline;
     use crate::pipeline::expr::{DataScope, VALUE_COLUMN_NAME, arg_column_name};
@@ -580,7 +598,7 @@ mod test {
     }
 
     /// Helper: create test log data with severity and attributes.
-    fn test_logs_data() -> otap_df_pdata::OtapArrowRecords {
+    fn test_logs_data() -> otel_arrow_dfe_pdata::OtapArrowRecords {
         let logs = to_logs_data(vec![
             LogRecord::build()
                 .severity_text("WARN")

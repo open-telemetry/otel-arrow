@@ -3,8 +3,8 @@
 
 //! Configuration for the OTAP Exporter
 
-use otap_df_otap::compression::CompressionMethod;
-use otap_df_otap::otap_grpc::client_settings::GrpcClientSettings;
+use otel_arrow_dfe_otap::compression::CompressionMethod;
+use otel_arrow_dfe_otap::otap_grpc::client_settings::GrpcClientSettings;
 use serde::de::Error as SerdeError;
 use serde::{Deserialize, Deserializer};
 use std::time::Duration;

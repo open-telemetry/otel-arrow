@@ -6,7 +6,7 @@
 mod metrics;
 mod pretty_metrics;
 mod pretty_writer;
-otap_df_telemetry::otel_component_scope!(
+otel_arrow_dfe_telemetry::otel_component_scope!(
     urn = CONSOLE_EXPORTER_URN,
     target = "otel.exporter.console",
 );
@@ -15,35 +15,37 @@ mod record_json;
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::SignalType;
-use otap_df_config::engine::OtelDataflowSpec;
-use otap_df_config::error::Error as ConfigError;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::config::ExporterConfig;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::{AckMsg, NodeControlMsg};
-use otap_df_engine::error::Error;
-use otap_df_engine::exporter::ExporterWrapper;
-use otap_df_engine::local::exporter::{EffectHandler, Exporter};
-use otap_df_engine::message::{ExporterInbox, Message};
-use otap_df_engine::node::NodeId;
-use otap_df_engine::terminal_state::TerminalState;
-use otap_df_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
-use otap_df_otap::OTAP_EXPORTER_FACTORIES;
-use otap_df_otap::pdata::OtapPdata;
-use otap_df_pdata::views::otap::{OtapLogsView, OtapMetricsView};
-use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
-use otap_df_pdata::views::otlp::bytes::metrics::RawMetricsData;
-use otap_df_pdata::{OtapPayload, PayloadData};
-use otap_df_pdata_views::views::common::InstrumentationScopeView;
-use otap_df_pdata_views::views::logs::{
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::engine::OtelDataflowSpec;
+use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_engine::config::ExporterConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::control::{AckMsg, NodeControlMsg};
+use otel_arrow_dfe_engine::error::Error;
+use otel_arrow_dfe_engine::exporter::ExporterWrapper;
+use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
+use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
+use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
+use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_pdata::views::otap::{OtapLogsView, OtapMetricsView};
+use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
+use otel_arrow_dfe_pdata::views::otlp::bytes::metrics::RawMetricsData;
+use otel_arrow_dfe_pdata::{OtapPayload, PayloadData};
+use otel_arrow_dfe_pdata_views::views::common::InstrumentationScopeView;
+use otel_arrow_dfe_pdata_views::views::logs::{
     LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView,
 };
-use otap_df_pdata_views::views::metrics::MetricsView;
-use otap_df_pdata_views::views::resource::ResourceView;
-use otap_df_telemetry::output_service::{Frame, OutputService, StreamHandle};
-use otap_df_telemetry::self_tracing::{AnsiCode, ColorMode, LOG_BUFFER_SIZE, StyledBufWriter};
-use otap_df_telemetry_macros::AttributeEnum;
+use otel_arrow_dfe_pdata_views::views::metrics::MetricsView;
+use otel_arrow_dfe_pdata_views::views::resource::ResourceView;
+use otel_arrow_dfe_telemetry::output_service::{Frame, OutputService, StreamHandle};
+use otel_arrow_dfe_telemetry::self_tracing::{
+    AnsiCode, ColorMode, LOG_BUFFER_SIZE, StyledBufWriter,
+};
+use otel_arrow_dfe_telemetry_macros::AttributeEnum;
 use std::io::Write;
 use std::sync::Arc;
 #[cfg(test)]
@@ -297,29 +299,32 @@ impl ConsoleExporter {
 
 /// Declare the Console Exporter as a local exporter factory
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Exporter)]
+#[otel_arrow_dfe_engine::component_inventory(category = Exporter)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static CONSOLE_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: CONSOLE_EXPORTER_URN,
-    create: |pipeline: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             exporter_config: &ExporterConfig,
-             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
-        let config: ConsoleExporterConfig = serde_json::from_value(node_config.config.clone())
-            .map_err(|e| ConfigError::InvalidUserConfig {
-                error: format!("Failed to parse console exporter config: {}", e),
-            })?;
-        require_structured_stdout_claim(config.format, OutputService::structured_stdout())?;
-        Ok(ExporterWrapper::local(
-            ConsoleExporter::new(&pipeline, config),
-            node,
-            node_config,
-            exporter_config,
-        ))
-    },
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    validate_config: otap_df_config::validation::validate_typed_config::<ConsoleExporterConfig>,
+    create:
+        |pipeline: PipelineContext,
+         node: NodeId,
+         node_config: Arc<NodeUserConfig>,
+         exporter_config: &ExporterConfig,
+         _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
+            let config: ConsoleExporterConfig = serde_json::from_value(node_config.config.clone())
+                .map_err(|e| ConfigError::InvalidUserConfig {
+                    error: format!("Failed to parse console exporter config: {}", e),
+                })?;
+            require_structured_stdout_claim(config.format, OutputService::structured_stdout())?;
+            Ok(ExporterWrapper::local(
+                ConsoleExporter::new(&pipeline, config),
+                node,
+                node_config,
+                exporter_config,
+            ))
+        },
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
+        ConsoleExporterConfig,
+    >,
 };
 
 /// Claims stdout for records when `engine_cfg` deploys a `record_json` console exporter.
@@ -465,7 +470,7 @@ impl ConsoleExporter {
         match payload.data() {
             PayloadData::OtlpBytes(bytes) => {
                 let metrics_bytes = match bytes {
-                    otap_df_pdata::OtlpProtoBytes::ExportMetricsRequest(bytes) => bytes,
+                    otel_arrow_dfe_pdata::OtlpProtoBytes::ExportMetricsRequest(bytes) => bytes,
                     _ => unreachable!("metrics payload must contain metrics OTLP bytes"),
                 };
                 match RawMetricsData::try_new(metrics_bytes) {
@@ -826,17 +831,17 @@ fn nanos_to_time(nanos: u64) -> SystemTime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_config::node::NodeUserConfig;
-    use otap_df_engine::Interests;
-    use otap_df_engine::control::PipelineCompletionMsg;
-    use otap_df_engine::testing::exporter::{
+    use otel_arrow_dfe_config::node::NodeUserConfig;
+    use otel_arrow_dfe_engine::Interests;
+    use otel_arrow_dfe_engine::control::PipelineCompletionMsg;
+    use otel_arrow_dfe_engine::testing::exporter::{
         TestRuntime, create_exporter_from_factory, create_test_pipeline_context,
     };
-    use otap_df_engine::testing::test_node;
-    use otap_df_otap::testing::{TestCallData, create_test_pdata, next_ack};
-    use otap_df_pdata::OtlpProtoBytes;
-    use otap_df_pdata::encode::{encode_logs_otap_batch, encode_metrics_otap_batch};
-    use otap_df_pdata::proto::opentelemetry::{
+    use otel_arrow_dfe_engine::testing::test_node;
+    use otel_arrow_dfe_otap::testing::{TestCallData, create_test_pdata, next_ack};
+    use otel_arrow_dfe_pdata::OtlpProtoBytes;
+    use otel_arrow_dfe_pdata::encode::{encode_logs_otap_batch, encode_metrics_otap_batch};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::{
         common::v1::{
             AnyValue, ArrayValue, InstrumentationScope, KeyValue, KeyValueList, any_value,
         },
@@ -850,9 +855,9 @@ mod tests {
         },
         resource::v1::Resource,
     };
-    use otap_df_pdata::testing::fixtures::logs_with_full_resource_and_scope;
-    use otap_df_pdata::views::otap::OtapLogsView;
-    use otap_df_telemetry::output_service::{
+    use otel_arrow_dfe_pdata::testing::fixtures::logs_with_full_resource_and_scope;
+    use otel_arrow_dfe_pdata::views::otap::OtapLogsView;
+    use otel_arrow_dfe_telemetry::output_service::{
         DEFAULT_STDOUT_BYTE_CAPACITY, OutputSink, OutputStream, StreamId,
     };
     use prost::Message;
@@ -1115,11 +1120,11 @@ mod tests {
             "| | | | | +- EXEMPLAR time_unix_nano=150 value_double=1.25 span_id=0102030405060708 trace_id=0102030405060708090a0b0c0d0e0f10 [sampled=true]\n",
             "| | +- METRIC name=latency unit=ms\n",
             "| | | +- HISTOGRAM temporality=delta\n",
-            "| | | | +- DATA_POINT start_time_unix_nano=100 time_unix_nano=200 count=4 sum=20 avg=5 min=0.5 max=12 flags=1 [series=blue]\n",
+            "| | | | +- DATA_POINT start_time_unix_nano=100 time_unix_nano=200 count=4 sum=20 avg=5 p50~=5.5 p90~=11 p99~=11 min=0.5 max=12 flags=1 [series=blue]\n",
             "| | | | | +- EXEMPLAR time_unix_nano=150 value_double=1.25 span_id=0102030405060708 trace_id=0102030405060708090a0b0c0d0e0f10 [sampled=true]\n",
             "| | +- METRIC name=size_distribution unit=By\n",
             "| | | +- EXPONENTIAL_HISTOGRAM temporality=cumulative\n",
-            "| | | | +- DATA_POINT start_time_unix_nano=100 time_unix_nano=200 count=6 sum=30 avg=5 min=-4 max=16 flags=1 [series=blue]\n",
+            "| | | | +- DATA_POINT start_time_unix_nano=100 time_unix_nano=200 count=6 sum=30 avg=5 p50~=0 p90~=16 p99~=16 min=-4 max=16 flags=1 [series=blue]\n",
             "| | | | | +- EXEMPLAR time_unix_nano=150 value_double=1.25 span_id=0102030405060708 trace_id=0102030405060708090a0b0c0d0e0f10 [sampled=true]\n",
             "| | +- METRIC name=request_summary unit=ms\n",
             "| | | +- SUMMARY\n",
@@ -1175,6 +1180,187 @@ mod tests {
              | | | | | +- NEG_BUCKET offset=-2 bucket_index=-2 count=1\n\
              | | | | | +- NEG_BUCKET offset=-2 bucket_index=-1 count=1\n"
         ));
+        assert!(!text.contains("p50~="));
+        assert!(!text.contains("p90~="));
+        assert!(!text.contains("p99~="));
+    }
+
+    /// Scenario: Explicit percentile ranks land in finite and unbounded buckets without extrema.
+    /// Guarantees: The finite estimate is rendered while only estimates needing absent extrema
+    /// are omitted.
+    #[test]
+    fn pretty_metrics_omit_only_unbounded_explicit_percentiles_without_extrema() {
+        let mut metrics_data = metrics_with_all_data_types();
+        let metrics = &mut metrics_data.resource_metrics[0].scope_metrics[0].metrics;
+        metrics.retain(|metric| metric.name == "latency");
+        let Some(metric::Data::Histogram(histogram)) = metrics[0].data.as_mut() else {
+            panic!("expected explicit histogram");
+        };
+        histogram.data_points[0].min = None;
+        histogram.data_points[0].max = None;
+
+        let text = format_pretty_metrics(&metrics_data);
+
+        assert!(text.contains(" avg=5 p50~=5.5"));
+        assert!(!text.contains("p90~="));
+        assert!(!text.contains("p99~="));
+    }
+
+    /// Scenario: Compact histograms are bucketless or disagree with their declared count.
+    /// Guarantees: Percentiles are omitted rather than inferred from summary fields or malformed
+    /// bucket populations.
+    #[test]
+    fn pretty_metrics_omit_percentiles_for_unusable_bucket_data() {
+        let mut metrics_data = metrics_with_all_data_types();
+        let metrics = &mut metrics_data.resource_metrics[0].scope_metrics[0].metrics;
+        metrics.retain(|metric| metric.name == "latency" || metric.name == "size_distribution");
+        let Some(metric::Data::Histogram(histogram)) = metrics[0].data.as_mut() else {
+            panic!("expected explicit histogram");
+        };
+        histogram.data_points[0].bucket_counts.clear();
+        let Some(metric::Data::ExponentialHistogram(histogram)) = metrics[1].data.as_mut() else {
+            panic!("expected exponential histogram");
+        };
+        histogram.data_points[0].count += 1;
+
+        let text = format_pretty_metrics(&metrics_data);
+
+        assert!(!text.contains("p50~="));
+        assert!(!text.contains("p90~="));
+        assert!(!text.contains("p99~="));
+    }
+
+    /// Scenario: Explicit histogram buckets have invalid ordering, shape, totals, or arithmetic.
+    /// Guarantees: Every malformed representation suppresses percentile estimates without
+    /// panicking or changing the exact summary fields.
+    #[test]
+    fn pretty_metrics_reject_malformed_explicit_buckets() {
+        let cases = [
+            (vec![10.0, 1.0], vec![1, 2, 1], 4),
+            (vec![1.0, 10.0], vec![1, 2, 1, 0], 4),
+            (vec![1.0, 10.0], vec![1, 2, 0], 4),
+            (vec![1.0, 10.0], vec![u64::MAX, 1, 0], u64::MAX),
+        ];
+
+        for (bounds, counts, count) in cases {
+            let mut metrics_data = metrics_with_all_data_types();
+            let metrics = &mut metrics_data.resource_metrics[0].scope_metrics[0].metrics;
+            metrics.retain(|metric| metric.name == "latency");
+            let Some(metric::Data::Histogram(histogram)) = metrics[0].data.as_mut() else {
+                panic!("expected explicit histogram");
+            };
+            let point = &mut histogram.data_points[0];
+            point.explicit_bounds = bounds;
+            point.bucket_counts = counts;
+            point.count = count;
+
+            let text = format_pretty_metrics(&metrics_data);
+
+            assert!(text.contains(&format!("count={count}")));
+            assert!(!text.contains("p50~="), "{text}");
+            assert!(!text.contains("p90~="), "{text}");
+            assert!(!text.contains("p99~="), "{text}");
+        }
+    }
+
+    /// Scenario: Exponential percentile ranks span negative, zero, and positive buckets.
+    /// Guarantees: Numeric ordering and geometric bucket midpoints are applied at scale zero.
+    #[test]
+    fn pretty_metrics_order_exponential_buckets_numerically() {
+        let mut metrics_data = metrics_with_all_data_types();
+        let metrics = &mut metrics_data.resource_metrics[0].scope_metrics[0].metrics;
+        metrics.retain(|metric| metric.name == "size_distribution");
+        let Some(metric::Data::ExponentialHistogram(histogram)) = metrics[0].data.as_mut() else {
+            panic!("expected exponential histogram");
+        };
+        let point = &mut histogram.data_points[0];
+        point.count = 10;
+        point.sum = Some(0.0);
+        point.scale = 0;
+        point.zero_count = 1;
+        point.negative = Some(exponential_histogram_data_point::Buckets {
+            offset: 0,
+            bucket_counts: vec![2, 4],
+        });
+        point.positive = Some(exponential_histogram_data_point::Buckets {
+            offset: 0,
+            bucket_counts: vec![1, 2],
+        });
+        point.min = Some(-4.0);
+        point.max = Some(4.0);
+
+        let text = format_pretty_metrics(&metrics_data);
+
+        assert!(text.contains(
+            "p50~=-1.4142135623730951 p90~=2.8284271247461903 \
+             p99~=2.8284271247461903"
+        ));
+    }
+
+    /// Scenario: An exponential histogram contains only observations in its zero bucket.
+    /// Guarantees: Every requested percentile is represented by zero without requiring a valid
+    /// non-zero bucket scale.
+    #[test]
+    fn pretty_metrics_render_zero_bucket_percentiles() {
+        let mut metrics_data = metrics_with_all_data_types();
+        let metrics = &mut metrics_data.resource_metrics[0].scope_metrics[0].metrics;
+        metrics.retain(|metric| metric.name == "size_distribution");
+        let Some(metric::Data::ExponentialHistogram(histogram)) = metrics[0].data.as_mut() else {
+            panic!("expected exponential histogram");
+        };
+        let point = &mut histogram.data_points[0];
+        point.count = 4;
+        point.sum = Some(0.0);
+        point.scale = i32::MAX;
+        point.zero_count = 4;
+        point.positive = None;
+        point.negative = None;
+        point.min = Some(0.0);
+        point.max = Some(0.0);
+
+        let text = format_pretty_metrics(&metrics_data);
+
+        assert!(text.contains("p50~=0 p90~=0 p99~=0"));
+    }
+
+    /// Scenario: An exponential histogram uses a scale finer than common SDK producer limits.
+    /// Guarantees: The protocol's unrestricted scale is accepted and produces finite estimates.
+    #[test]
+    fn pretty_metrics_render_percentiles_beyond_sdk_scale_limits() {
+        let mut metrics_data = metrics_with_all_data_types();
+        let metrics = &mut metrics_data.resource_metrics[0].scope_metrics[0].metrics;
+        metrics.retain(|metric| metric.name == "size_distribution");
+        let Some(metric::Data::ExponentialHistogram(histogram)) = metrics[0].data.as_mut() else {
+            panic!("expected exponential histogram");
+        };
+        histogram.data_points[0].scale = 21;
+
+        let text = format_pretty_metrics(&metrics_data);
+
+        assert!(text.contains("count=6 sum=30 avg=5"));
+        assert!(text.contains("p50~=0"));
+        assert!(text.contains("p90~="));
+        assert!(text.contains("p99~="));
+    }
+
+    /// Scenario: A non-zero exponential histogram uses the minimum protocol i32 scale.
+    /// Guarantees: Formatting never panics, preserves representable zero-bucket estimates, and
+    /// omits only non-zero bucket midpoints that cannot be represented as finite f64 values.
+    #[test]
+    fn pretty_metrics_omit_unrepresentable_extreme_scale_midpoints() {
+        let mut metrics_data = metrics_with_all_data_types();
+        let metrics = &mut metrics_data.resource_metrics[0].scope_metrics[0].metrics;
+        metrics.retain(|metric| metric.name == "size_distribution");
+        let Some(metric::Data::ExponentialHistogram(histogram)) = metrics[0].data.as_mut() else {
+            panic!("expected exponential histogram");
+        };
+        histogram.data_points[0].scale = i32::MIN;
+
+        let text = format_pretty_metrics(&metrics_data);
+
+        assert!(text.contains("count=6 sum=30 avg=5 p50~=0"));
+        assert!(!text.contains("p90~="), "{text}");
+        assert!(!text.contains("p99~="), "{text}");
     }
 
     /// Scenario: Equivalent metrics use compact and raw formatting through both payload models.

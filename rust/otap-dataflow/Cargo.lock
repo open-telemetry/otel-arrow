@@ -158,7 +158,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -169,7 +169,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -1113,7 +1113,7 @@ dependencies = [
 [[package]]
 name = "azure_core"
 version = "1.2.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=16e18e91a4480e93aa0e155bfdeb38902b04dd06#16e18e91a4480e93aa0e155bfdeb38902b04dd06"
+source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=b28858626ec4ec2188f14b55f20159eb2b9580e9#b28858626ec4ec2188f14b55f20159eb2b9580e9"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -1145,7 +1145,7 @@ dependencies = [
 [[package]]
 name = "azure_core_macros"
 version = "1.1.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=16e18e91a4480e93aa0e155bfdeb38902b04dd06#16e18e91a4480e93aa0e155bfdeb38902b04dd06"
+source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=b28858626ec4ec2188f14b55f20159eb2b9580e9#b28858626ec4ec2188f14b55f20159eb2b9580e9"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1173,7 +1173,7 @@ dependencies = [
 [[package]]
 name = "azure_identity"
 version = "1.1.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=16e18e91a4480e93aa0e155bfdeb38902b04dd06#16e18e91a4480e93aa0e155bfdeb38902b04dd06"
+source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=b28858626ec4ec2188f14b55f20159eb2b9580e9#b28858626ec4ec2188f14b55f20159eb2b9580e9"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -1259,17 +1259,17 @@ dependencies = [
  "futures",
  "futures-channel",
  "local-sync",
- "otap-df-channel",
- "otap-df-config",
- "otap-df-control-channel",
- "otap-df-core-nodes",
- "otap-df-engine",
- "otap-df-otap",
- "otap-df-pdata",
- "otap-df-pdata-views",
- "otap-df-telemetry",
- "otap-df-telemetry-macros",
- "otap-df-test-net",
+ "otel-arrow-dfe-channel",
+ "otel-arrow-dfe-config",
+ "otel-arrow-dfe-control-channel",
+ "otel-arrow-dfe-core-nodes",
+ "otel-arrow-dfe-engine",
+ "otel-arrow-dfe-otap",
+ "otel-arrow-dfe-pdata",
+ "otel-arrow-dfe-pdata-views",
+ "otel-arrow-dfe-telemetry",
+ "otel-arrow-dfe-telemetry-macros",
+ "otel-arrow-dfe-test-net",
  "prost 0.14.4",
  "roaring",
  "serde_json",
@@ -2554,7 +2554,7 @@ dependencies = [
  "openssl-sys",
  "pkg-config",
  "vcpkg",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3528,7 +3528,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3668,7 +3668,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4078,7 +4078,7 @@ dependencies = [
 [[package]]
 name = "geneva-uploader"
 version = "0.5.0"
-source = "git+https://github.com/open-telemetry/opentelemetry-rust-contrib.git?rev=b4cbfda441075af8a6d1f2b7db7632febb3068ae#b4cbfda441075af8a6d1f2b7db7632febb3068ae"
+source = "git+https://github.com/open-telemetry/opentelemetry-rust-contrib.git?rev=43bd04be9e825564eeb3424b3e4caebf3e3ba7c5#43bd04be9e825564eeb3424b3e4caebf3e3ba7c5"
 dependencies = [
  "azure_core 0.29.1",
  "azure_identity 0.29.0",
@@ -7161,7 +7161,7 @@ dependencies = [
 [[package]]
 name = "opentelemetry-resource-detectors"
 version = "0.11.0"
-source = "git+https://github.com/open-telemetry/opentelemetry-rust-contrib.git?rev=7819998d4bd015b7ae7576b1e26aaa56314f03e6#7819998d4bd015b7ae7576b1e26aaa56314f03e6"
+source = "git+https://github.com/open-telemetry/opentelemetry-rust-contrib.git?rev=43bd04be9e825564eeb3424b3e4caebf3e3ba7c5#43bd04be9e825564eeb3424b3e4caebf3e3ba7c5"
 dependencies = [
  "opentelemetry",
  "opentelemetry-semantic-conventions",
@@ -7224,27 +7224,34 @@ dependencies = [
 ]
 
 [[package]]
-name = "otap-df"
+name = "otap-df-pdata-views"
+version = "0.51.0"
+dependencies = [
+ "otel-arrow-dfe-pdata-views",
+]
+
+[[package]]
+name = "otel-arrow-dfe"
 version = "0.51.0"
 dependencies = [
  "cfg-if",
  "clap",
  "dhat",
  "mimalloc",
- "otap-df-config",
- "otap-df-contrib-extensions",
- "otap-df-contrib-nodes",
- "otap-df-controller",
- "otap-df-core-nodes",
- "otap-df-engine",
- "otap-df-otap",
- "otap-df-telemetry",
- "otap-df-wasm-host",
+ "otel-arrow-dfe-config",
+ "otel-arrow-dfe-contrib-extensions",
+ "otel-arrow-dfe-contrib-nodes",
+ "otel-arrow-dfe-controller",
+ "otel-arrow-dfe-core-nodes",
+ "otel-arrow-dfe-engine",
+ "otel-arrow-dfe-otap",
+ "otel-arrow-dfe-telemetry",
+ "otel-arrow-dfe-wasm-host",
  "tikv-jemallocator",
 ]
 
 [[package]]
-name = "otap-df-admin"
+name = "otel-arrow-dfe-admin"
 version = "0.51.0"
 dependencies = [
  "axum",
@@ -7252,12 +7259,12 @@ dependencies = [
  "include_dir",
  "jemalloc_pprof",
  "mime_guess",
- "otap-df-admin-types",
- "otap-df-config",
- "otap-df-engine",
- "otap-df-state",
- "otap-df-telemetry",
- "otap-df-telemetry-macros",
+ "otel-arrow-dfe-admin-types",
+ "otel-arrow-dfe-config",
+ "otel-arrow-dfe-engine",
+ "otel-arrow-dfe-state",
+ "otel-arrow-dfe-telemetry",
+ "otel-arrow-dfe-telemetry-macros",
  "pprof",
  "serde",
  "serde_json",
@@ -7268,13 +7275,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "otap-df-admin-api"
+name = "otel-arrow-dfe-admin-api"
 version = "0.51.0"
 dependencies = [
  "async-trait",
- "otap-df-admin-types",
- "otap-df-config",
- "otap-df-test-tls-certs",
+ "otel-arrow-dfe-admin-types",
+ "otel-arrow-dfe-config",
+ "otel-arrow-dfe-test-tls-certs",
  "reqwest 0.13.4",
  "rustls",
  "rustls-openssl",
@@ -7291,16 +7298,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "otap-df-admin-types"
+name = "otel-arrow-dfe-admin-types"
 version = "0.51.0"
 dependencies = [
- "otap-df-config",
+ "otel-arrow-dfe-config",
  "serde",
  "serde_json",
 ]
 
 [[package]]
-name = "otap-df-channel"
+name = "otel-arrow-dfe-channel"
 version = "0.51.0"
 dependencies = [
  "thiserror 2.0.20",
@@ -7308,19 +7315,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "otap-df-component-inventory"
+name = "otel-arrow-dfe-component-inventory"
 version = "0.51.0"
 dependencies = [
- "otap-df-contrib-nodes",
- "otap-df-core-nodes",
- "otap-df-engine",
- "otap-df-otap",
+ "otel-arrow-dfe-contrib-nodes",
+ "otel-arrow-dfe-core-nodes",
+ "otel-arrow-dfe-engine",
+ "otel-arrow-dfe-otap",
  "serde",
  "serde_json",
 ]
 
 [[package]]
-name = "otap-df-component-inventory-syntax"
+name = "otel-arrow-dfe-component-inventory-syntax"
 version = "0.51.0"
 dependencies = [
  "proc-macro2",
@@ -7328,7 +7335,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "otap-df-config"
+name = "otel-arrow-dfe-config"
 version = "0.51.0"
 dependencies = [
  "byte-unit",
@@ -7350,7 +7357,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "otap-df-contrib-extensions"
+name = "otel-arrow-dfe-contrib-extensions"
 version = "0.51.0"
 dependencies = [
  "async-trait",
@@ -7365,12 +7372,12 @@ dependencies = [
  "linkme",
  "oauth2",
  "openssl",
- "otap-df-config",
- "otap-df-engine",
- "otap-df-otap",
- "otap-df-telemetry",
- "otap-df-telemetry-macros",
- "otap-df-test-tls-certs",
+ "otel-arrow-dfe-config",
+ "otel-arrow-dfe-engine",
+ "otel-arrow-dfe-otap",
+ "otel-arrow-dfe-telemetry",
+ "otel-arrow-dfe-telemetry-macros",
+ "otel-arrow-dfe-test-tls-certs",
  "rand 0.10.2",
  "rcgen",
  "reqwest 0.13.4",
@@ -7390,7 +7397,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "otap-df-contrib-nodes"
+name = "otel-arrow-dfe-contrib-nodes"
 version = "0.51.0"
 dependencies = [
  "ahash 0.8.12",
@@ -7427,14 +7434,14 @@ dependencies = [
  "linkme",
  "one_collect",
  "opentelemetry-proto",
- "otap-df-channel",
- "otap-df-config",
- "otap-df-engine",
- "otap-df-otap",
- "otap-df-pdata",
- "otap-df-pdata-views",
- "otap-df-telemetry",
- "otap-df-telemetry-macros",
+ "otel-arrow-dfe-channel",
+ "otel-arrow-dfe-config",
+ "otel-arrow-dfe-engine",
+ "otel-arrow-dfe-otap",
+ "otel-arrow-dfe-pdata",
+ "otel-arrow-dfe-pdata-views",
+ "otel-arrow-dfe-telemetry",
+ "otel-arrow-dfe-telemetry-macros",
  "paste",
  "pretty_assertions",
  "prost 0.14.4",
@@ -7468,7 +7475,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "otap-df-control-channel"
+name = "otel-arrow-dfe-control-channel"
 version = "0.51.0"
 dependencies = [
  "serde_json",
@@ -7477,7 +7484,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "otap-df-controller"
+name = "otel-arrow-dfe-controller"
 version = "0.51.0"
 dependencies = [
  "async-trait",
@@ -7489,13 +7496,13 @@ dependencies = [
  "humantime-serde",
  "linkme",
  "miette",
- "otap-df-admin",
- "otap-df-config",
- "otap-df-engine",
- "otap-df-state",
- "otap-df-telemetry",
- "otap-df-telemetry-macros",
- "otap-df-test-net",
+ "otel-arrow-dfe-admin",
+ "otel-arrow-dfe-config",
+ "otel-arrow-dfe-engine",
+ "otel-arrow-dfe-state",
+ "otel-arrow-dfe-telemetry",
+ "otel-arrow-dfe-telemetry-macros",
+ "otel-arrow-dfe-test-net",
  "prost 0.14.4",
  "serde",
  "serde_json",
@@ -7513,7 +7520,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "otap-df-core-nodes"
+name = "otel-arrow-dfe-core-nodes"
 version = "0.51.0"
 dependencies = [
  "arrow",
@@ -7545,19 +7552,19 @@ dependencies = [
  "linkme",
  "nix 0.31.3",
  "object_store",
- "otap-df-channel",
- "otap-df-config",
- "otap-df-engine",
- "otap-df-otap",
- "otap-df-pdata",
- "otap-df-pdata-views",
- "otap-df-query-engine",
- "otap-df-query-engine-languages",
- "otap-df-quiver",
- "otap-df-telemetry",
- "otap-df-telemetry-macros",
- "otap-df-test-net",
- "otap-df-test-tls-certs",
+ "otel-arrow-dfe-channel",
+ "otel-arrow-dfe-config",
+ "otel-arrow-dfe-engine",
+ "otel-arrow-dfe-otap",
+ "otel-arrow-dfe-pdata",
+ "otel-arrow-dfe-pdata-views",
+ "otel-arrow-dfe-query-engine",
+ "otel-arrow-dfe-query-engine-languages",
+ "otel-arrow-dfe-quiver",
+ "otel-arrow-dfe-telemetry",
+ "otel-arrow-dfe-telemetry-macros",
+ "otel-arrow-dfe-test-net",
+ "otel-arrow-dfe-test-tls-certs",
  "parking_lot",
  "parquet",
  "pretty_assertions",
@@ -7590,7 +7597,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "otap-df-ctl"
+name = "otel-arrow-dfe-ctl"
 version = "0.51.0"
 dependencies = [
  "clap",
@@ -7598,8 +7605,8 @@ dependencies = [
  "crossterm",
  "humantime",
  "humantime-serde",
- "otap-df-admin-api",
- "otap-df-config",
+ "otel-arrow-dfe-admin-api",
+ "otel-arrow-dfe-config",
  "ratatui",
  "rustls",
  "rustls-openssl",
@@ -7614,7 +7621,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "otap-df-engine"
+name = "otel-arrow-dfe-engine"
 version = "0.51.0"
 dependencies = [
  "async-channel",
@@ -7629,15 +7636,15 @@ dependencies = [
  "linkme",
  "memory-stats",
  "nix 0.31.3",
- "otap-df-channel",
- "otap-df-component-inventory-syntax",
- "otap-df-config",
- "otap-df-engine",
- "otap-df-engine-macros",
- "otap-df-pdata",
- "otap-df-state",
- "otap-df-telemetry",
- "otap-df-telemetry-macros",
+ "otel-arrow-dfe-channel",
+ "otel-arrow-dfe-component-inventory-syntax",
+ "otel-arrow-dfe-config",
+ "otel-arrow-dfe-engine",
+ "otel-arrow-dfe-engine-macros",
+ "otel-arrow-dfe-pdata",
+ "otel-arrow-dfe-state",
+ "otel-arrow-dfe-telemetry",
+ "otel-arrow-dfe-telemetry-macros",
  "parking_lot",
  "prost 0.14.4",
  "secrecy",
@@ -7655,24 +7662,24 @@ dependencies = [
 ]
 
 [[package]]
-name = "otap-df-engine-macros"
+name = "otel-arrow-dfe-engine-macros"
 version = "0.51.0"
 dependencies = [
- "otap-df-component-inventory-syntax",
+ "otel-arrow-dfe-component-inventory-syntax",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
 ]
 
 [[package]]
-name = "otap-df-expohisto"
+name = "otel-arrow-dfe-expohisto"
 version = "0.51.0"
 dependencies = [
  "criterion",
 ]
 
 [[package]]
-name = "otap-df-otap"
+name = "otel-arrow-dfe-otap"
 version = "0.51.0"
 dependencies = [
  "arc-swap",
@@ -7695,19 +7702,19 @@ dependencies = [
  "linkme",
  "notify",
  "object_store",
- "otap-df-channel",
- "otap-df-config",
- "otap-df-contrib-nodes",
- "otap-df-core-nodes",
- "otap-df-engine",
- "otap-df-engine-macros",
- "otap-df-pdata",
- "otap-df-quiver",
- "otap-df-state",
- "otap-df-telemetry",
- "otap-df-telemetry-macros",
- "otap-df-test-net",
- "otap-df-test-tls-certs",
+ "otel-arrow-dfe-channel",
+ "otel-arrow-dfe-config",
+ "otel-arrow-dfe-contrib-nodes",
+ "otel-arrow-dfe-core-nodes",
+ "otel-arrow-dfe-engine",
+ "otel-arrow-dfe-engine-macros",
+ "otel-arrow-dfe-pdata",
+ "otel-arrow-dfe-quiver",
+ "otel-arrow-dfe-state",
+ "otel-arrow-dfe-telemetry",
+ "otel-arrow-dfe-telemetry-macros",
+ "otel-arrow-dfe-test-net",
+ "otel-arrow-dfe-test-tls-certs",
  "parking_lot",
  "pretty_assertions",
  "prost 0.14.4",
@@ -7743,7 +7750,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "otap-df-pdata"
+name = "otel-arrow-dfe-pdata"
 version = "0.51.0"
 dependencies = [
  "ahash 0.8.12",
@@ -7759,11 +7766,11 @@ dependencies = [
  "itertools 0.15.0",
  "nix 0.31.3",
  "num_enum",
- "otap-df-config",
- "otap-df-pdata-otlp-macros",
- "otap-df-pdata-otlp-model",
- "otap-df-pdata-views",
- "otap-df-test-net",
+ "otel-arrow-dfe-config",
+ "otel-arrow-dfe-pdata-otlp-macros",
+ "otel-arrow-dfe-pdata-otlp-model",
+ "otel-arrow-dfe-pdata-views",
+ "otel-arrow-dfe-test-net",
  "paste",
  "pretty_assertions",
  "prost 0.14.4",
@@ -7784,28 +7791,28 @@ dependencies = [
 ]
 
 [[package]]
-name = "otap-df-pdata-otlp-macros"
+name = "otel-arrow-dfe-pdata-otlp-macros"
 version = "0.51.0"
 dependencies = [
- "otap-df-pdata-otlp-model",
+ "otel-arrow-dfe-pdata-otlp-model",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
 ]
 
 [[package]]
-name = "otap-df-pdata-otlp-model"
+name = "otel-arrow-dfe-pdata-otlp-model"
 version = "0.51.0"
 dependencies = [
  "tonic-prost-build",
 ]
 
 [[package]]
-name = "otap-df-pdata-views"
+name = "otel-arrow-dfe-pdata-views"
 version = "0.51.0"
 
 [[package]]
-name = "otap-df-query-engine"
+name = "otel-arrow-dfe-query-engine"
 version = "0.51.0"
 dependencies = [
  "arrow",
@@ -7817,9 +7824,9 @@ dependencies = [
  "datafusion",
  "futures-core",
  "memchr",
- "otap-df-config",
- "otap-df-pdata",
- "otap-df-query-engine-languages",
+ "otel-arrow-dfe-config",
+ "otel-arrow-dfe-pdata",
+ "otel-arrow-dfe-query-engine-languages",
  "parking_lot",
  "pretty_assertions",
  "prost 0.14.4",
@@ -7833,7 +7840,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "otap-df-query-engine-languages"
+name = "otel-arrow-dfe-query-engine-languages"
 version = "0.51.0"
 dependencies = [
  "chrono",
@@ -7848,23 +7855,23 @@ dependencies = [
 ]
 
 [[package]]
-name = "otap-df-query-engine-playground"
+name = "otel-arrow-dfe-query-engine-playground"
 version = "0.51.0"
 dependencies = [
  "arrow",
  "axum",
  "base64 0.23.1",
  "data_engine_parser_abstractions",
- "otap-df-pdata",
- "otap-df-query-engine",
- "otap-df-query-engine-languages",
+ "otel-arrow-dfe-pdata",
+ "otel-arrow-dfe-query-engine",
+ "otel-arrow-dfe-query-engine-languages",
  "prost 0.14.4",
  "serde",
  "tokio",
 ]
 
 [[package]]
-name = "otap-df-quiver"
+name = "otel-arrow-dfe-quiver"
 version = "0.51.0"
 dependencies = [
  "arrow-array",
@@ -7888,14 +7895,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "otap-df-quiver-e2e"
+name = "otel-arrow-dfe-quiver-e2e"
 version = "0.51.0"
 dependencies = [
  "arrow-array",
  "arrow-schema",
  "clap",
  "crossterm",
- "otap-df-quiver",
+ "otel-arrow-dfe-quiver",
  "rand 0.10.2",
  "ratatui",
  "sysinfo",
@@ -7908,13 +7915,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "otap-df-state"
+name = "otel-arrow-dfe-state"
 version = "0.51.0"
 dependencies = [
  "chrono",
  "flume",
- "otap-df-config",
- "otap-df-telemetry",
+ "otel-arrow-dfe-config",
+ "otel-arrow-dfe-telemetry",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
@@ -7925,7 +7932,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "otap-df-telemetry"
+name = "otel-arrow-dfe-telemetry"
 version = "0.51.0"
 dependencies = [
  "arc-swap",
@@ -7936,11 +7943,11 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-resource-detectors",
  "opentelemetry_sdk",
- "otap-df-config",
- "otap-df-expohisto",
- "otap-df-pdata",
- "otap-df-pdata-views",
- "otap-df-telemetry-macros",
+ "otel-arrow-dfe-config",
+ "otel-arrow-dfe-expohisto",
+ "otel-arrow-dfe-pdata",
+ "otel-arrow-dfe-pdata-views",
+ "otel-arrow-dfe-telemetry-macros",
  "parking_lot",
  "prost 0.14.4",
  "serde",
@@ -7957,7 +7964,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "otap-df-telemetry-macros"
+name = "otel-arrow-dfe-telemetry-macros"
 version = "0.51.0"
 dependencies = [
  "proc-macro2",
@@ -7966,35 +7973,35 @@ dependencies = [
 ]
 
 [[package]]
-name = "otap-df-test-net"
+name = "otel-arrow-dfe-test-net"
 version = "0.51.0"
 
 [[package]]
-name = "otap-df-test-tls-certs"
+name = "otel-arrow-dfe-test-tls-certs"
 version = "0.51.0"
 dependencies = [
  "rcgen",
 ]
 
 [[package]]
-name = "otap-df-validation"
+name = "otel-arrow-dfe-validation"
 version = "0.51.0"
 dependencies = [
  "async-trait",
  "humantime-serde",
  "linkme",
  "minijinja",
- "otap-df-admin-api",
- "otap-df-config",
- "otap-df-controller",
- "otap-df-core-nodes",
- "otap-df-engine",
- "otap-df-otap",
- "otap-df-pdata",
- "otap-df-telemetry",
- "otap-df-telemetry-macros",
- "otap-df-test-net",
- "otap-df-test-tls-certs",
+ "otel-arrow-dfe-admin-api",
+ "otel-arrow-dfe-config",
+ "otel-arrow-dfe-controller",
+ "otel-arrow-dfe-core-nodes",
+ "otel-arrow-dfe-engine",
+ "otel-arrow-dfe-otap",
+ "otel-arrow-dfe-pdata",
+ "otel-arrow-dfe-telemetry",
+ "otel-arrow-dfe-telemetry-macros",
+ "otel-arrow-dfe-test-net",
+ "otel-arrow-dfe-test-tls-certs",
  "prost 0.14.4",
  "serde",
  "serde_json",
@@ -8010,7 +8017,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "otap-df-wasm-host"
+name = "otel-arrow-dfe-wasm-host"
 version = "0.51.0"
 dependencies = [
  "arrow",
@@ -8018,12 +8025,12 @@ dependencies = [
  "arrow-select",
  "async-trait",
  "linkme",
- "otap-df-config",
- "otap-df-engine",
- "otap-df-otap",
- "otap-df-pdata",
- "otap-df-telemetry",
- "otap-df-telemetry-macros",
+ "otel-arrow-dfe-config",
+ "otel-arrow-dfe-engine",
+ "otel-arrow-dfe-otap",
+ "otel-arrow-dfe-pdata",
+ "otel-arrow-dfe-telemetry",
+ "otel-arrow-dfe-telemetry-macros",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
@@ -8901,7 +8908,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -9548,7 +9555,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -9621,7 +9628,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -9689,9 +9696,9 @@ dependencies = [
 
 [[package]]
 name = "saphyr"
-version = "0.0.11"
+version = "0.0.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8acd6cfc4803660d26a3fb5bd8f5e47bc0eea5229f4d32f7cb4ee21a733e6961"
+checksum = "372edd44fb1d21f97d7160ca1fb3ed522b7f7315b2369cd10e5127379db5af33"
 dependencies = [
  "encoding_rs",
  "hashlink",
@@ -9702,9 +9709,9 @@ dependencies = [
 
 [[package]]
 name = "saphyr-parser"
-version = "0.0.11"
+version = "0.0.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ebfd783fcf1b3f6bafd557be0e1427ec54f826f513c3cdd749f9844484df2a13"
+checksum = "a0b1b76852c5643f558e7347e4de549474c3ecb7154295a189f4668428c1b453"
 dependencies = [
  "arraydeque",
  "thiserror 2.0.20",
@@ -10264,7 +10271,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -10579,7 +10586,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -10601,7 +10608,7 @@ dependencies = [
  "parking_lot",
  "rustix",
  "signal-hook",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -10611,7 +10618,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "230a1b821ccbd75b185820a1f1ff7b14d21da1e442e22c0863ea5f08771a8874"
 dependencies = [
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -11336,7 +11343,7 @@ dependencies = [
 [[package]]
 name = "typespec"
 version = "1.2.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=16e18e91a4480e93aa0e155bfdeb38902b04dd06#16e18e91a4480e93aa0e155bfdeb38902b04dd06"
+source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=b28858626ec4ec2188f14b55f20159eb2b9580e9#b28858626ec4ec2188f14b55f20159eb2b9580e9"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -11374,7 +11381,7 @@ dependencies = [
 [[package]]
 name = "typespec_client_core"
 version = "1.2.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=16e18e91a4480e93aa0e155bfdeb38902b04dd06#16e18e91a4480e93aa0e155bfdeb38902b04dd06"
+source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=b28858626ec4ec2188f14b55f20159eb2b9580e9#b28858626ec4ec2188f14b55f20159eb2b9580e9"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -11409,7 +11416,7 @@ dependencies = [
 [[package]]
 name = "typespec_macros"
 version = "1.1.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=16e18e91a4480e93aa0e155bfdeb38902b04dd06#16e18e91a4480e93aa0e155bfdeb38902b04dd06"
+source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=b28858626ec4ec2188f14b55f20159eb2b9580e9#b28858626ec4ec2188f14b55f20159eb2b9580e9"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -12013,7 +12020,7 @@ dependencies = [
 [[package]]
 name = "weaver_common"
 version = "0.25.1"
-source = "git+https://github.com/open-telemetry/weaver.git?rev=a3db0b726d19eabaf282b1c71dab1ff254121213#a3db0b726d19eabaf282b1c71dab1ff254121213"
+source = "git+https://github.com/open-telemetry/weaver.git?rev=78b64d8da8e0034374e66a560ae22991b2e88a81#78b64d8da8e0034374e66a560ae22991b2e88a81"
 dependencies = [
  "dirs",
  "flate2",
@@ -12038,7 +12045,7 @@ dependencies = [
 [[package]]
 name = "weaver_diff"
 version = "0.25.1"
-source = "git+https://github.com/open-telemetry/weaver.git?rev=a3db0b726d19eabaf282b1c71dab1ff254121213#a3db0b726d19eabaf282b1c71dab1ff254121213"
+source = "git+https://github.com/open-telemetry/weaver.git?rev=78b64d8da8e0034374e66a560ae22991b2e88a81#78b64d8da8e0034374e66a560ae22991b2e88a81"
 dependencies = [
  "serde_json",
  "similar",
@@ -12048,7 +12055,7 @@ dependencies = [
 [[package]]
 name = "weaver_forge"
 version = "0.25.1"
-source = "git+https://github.com/open-telemetry/weaver.git?rev=a3db0b726d19eabaf282b1c71dab1ff254121213#a3db0b726d19eabaf282b1c71dab1ff254121213"
+source = "git+https://github.com/open-telemetry/weaver.git?rev=78b64d8da8e0034374e66a560ae22991b2e88a81#78b64d8da8e0034374e66a560ae22991b2e88a81"
 dependencies = [
  "convert_case 0.11.0",
  "dirs",
@@ -12083,7 +12090,7 @@ dependencies = [
 [[package]]
 name = "weaver_resolved_schema"
 version = "0.25.1"
-source = "git+https://github.com/open-telemetry/weaver.git?rev=a3db0b726d19eabaf282b1c71dab1ff254121213#a3db0b726d19eabaf282b1c71dab1ff254121213"
+source = "git+https://github.com/open-telemetry/weaver.git?rev=78b64d8da8e0034374e66a560ae22991b2e88a81#78b64d8da8e0034374e66a560ae22991b2e88a81"
 dependencies = [
  "log",
  "schemars 1.2.2",
@@ -12097,7 +12104,7 @@ dependencies = [
 [[package]]
 name = "weaver_resolver"
 version = "0.25.1"
-source = "git+https://github.com/open-telemetry/weaver.git?rev=a3db0b726d19eabaf282b1c71dab1ff254121213#a3db0b726d19eabaf282b1c71dab1ff254121213"
+source = "git+https://github.com/open-telemetry/weaver.git?rev=78b64d8da8e0034374e66a560ae22991b2e88a81#78b64d8da8e0034374e66a560ae22991b2e88a81"
 dependencies = [
  "globset",
  "itertools 0.15.0",
@@ -12121,7 +12128,7 @@ dependencies = [
 [[package]]
 name = "weaver_semconv"
 version = "0.25.1"
-source = "git+https://github.com/open-telemetry/weaver.git?rev=a3db0b726d19eabaf282b1c71dab1ff254121213#a3db0b726d19eabaf282b1c71dab1ff254121213"
+source = "git+https://github.com/open-telemetry/weaver.git?rev=78b64d8da8e0034374e66a560ae22991b2e88a81#78b64d8da8e0034374e66a560ae22991b2e88a81"
 dependencies = [
  "glob",
  "globset",
@@ -12145,7 +12152,7 @@ dependencies = [
 [[package]]
 name = "weaver_version"
 version = "0.25.1"
-source = "git+https://github.com/open-telemetry/weaver.git?rev=a3db0b726d19eabaf282b1c71dab1ff254121213#a3db0b726d19eabaf282b1c71dab1ff254121213"
+source = "git+https://github.com/open-telemetry/weaver.git?rev=78b64d8da8e0034374e66a560ae22991b2e88a81#78b64d8da8e0034374e66a560ae22991b2e88a81"
 dependencies = [
  "schemars 1.2.2",
  "semver",
@@ -12287,7 +12294,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -12715,8 +12722,8 @@ name = "xtask"
 version = "0.51.0"
 dependencies = [
  "anyhow",
- "otap-df-component-inventory-syntax",
- "otap-df-pdata-otlp-model",
+ "otel-arrow-dfe-component-inventory-syntax",
+ "otel-arrow-dfe-pdata-otlp-model",
  "proc-macro2",
  "prost-build 0.14.4",
  "serde",

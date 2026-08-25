@@ -507,7 +507,7 @@ impl LivePipelinePlacement {
 /// Topic runtime properties that cannot be mutated by live rollout.
 pub(super) struct TopicRuntimeProfile {
     pub(super) backend: TopicBackendKind,
-    pub(super) policies: otap_df_config::topic::TopicPolicies,
+    pub(super) policies: otel_arrow_dfe_config::topic::TopicPolicies,
     pub(super) selected_mode: InferredTopicMode,
 }
 
@@ -575,6 +575,12 @@ pub(super) struct ControllerRuntimeState {
     pub(super) next_pipeline_operation_reservation_id: u64,
     /// First runtime failure surfaced to global controller shutdown handling.
     pub(super) first_error: Option<String>,
+    /// One-way latch that releases `wait_until_all_instances_exit` even while
+    /// runtime instances are still active. Set when the engine must tear down
+    /// regardless of whether the graceful drain completes -- e.g. a controller
+    /// extension failed at runtime -- so the main thread never blocks forever on
+    /// a stalled drain.
+    pub(super) instance_wait_released: bool,
 }
 
 impl ControllerRuntimeState {

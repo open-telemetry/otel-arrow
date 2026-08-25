@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! OTAP batch processor.  Batches OtapPdata by item count or timer,
-//! uses the lower-level otap_df_pdata::otap::groups module for
+//! uses the lower-level otel_arrow_dfe_pdata::otap::groups module for
 //! merging and splitting batches.
 //!
 //! Configuration is modelled on the (original) OpenTelemetry batch
@@ -20,7 +20,7 @@
 //! splitting is configured, it means there can be residual data left
 //! after flushing. Retained data is always "first in line" for
 //! considering in the next flush event. Note that the lower-level
-//! function in otap_df_pdata::otap::groups is required to support
+//! function in otel_arrow_dfe_pdata::otap::groups is required to support
 //! "in-line" batching (see that component for the definition).
 //!
 //! This component should be installed before any retry processor
@@ -28,7 +28,7 @@
 //! Interests::RETURN_DATA because (a) more memory required, (b) forces
 //! whole-request retry (instead of partial).
 
-otap_df_telemetry::otel_component_scope!(
+otel_arrow_dfe_telemetry::otel_component_scope!(
     urn = OTAP_BATCH_PROCESSOR_URN,
     target = "otel.processor.batch",
 );
@@ -36,11 +36,11 @@ otap_df_telemetry::otel_component_scope!(
 use async_trait::async_trait;
 use bytes::Bytes;
 use linkme::distributed_slice;
-use otap_df_config::error::Error as ConfigError;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_config::{SignalFormat, SignalType};
-use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
-use otap_df_engine::{
+use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_config::{SignalFormat, SignalType};
+use otel_arrow_dfe_engine::MessageSourceLocalEffectHandlerExtension;
+use otel_arrow_dfe_engine::{
     ConsumerEffectHandlerExtension, Interests, LocalWakeupRequirements,
     ProcessorRuntimeRequirements, ProducerEffectHandlerExtension,
     config::ProcessorConfig,
@@ -51,19 +51,19 @@ use otap_df_engine::{
     node::NodeId,
     processor::{FlowMetricHook, ProcessorWrapper},
 };
-use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
-use otap_df_otap::accessory::slots::{Key as SlotKey, State as SlotState};
-use otap_df_otap::pdata::{Context, OtapPdata, PeerAddrMerger};
-use otap_df_pdata::TryIntoWithOptions;
-use otap_df_pdata::{
+use otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES;
+use otel_arrow_dfe_otap::accessory::slots::{Key as SlotKey, State as SlotState};
+use otel_arrow_dfe_otap::pdata::{Context, OtapPdata, PeerAddrMerger};
+use otel_arrow_dfe_pdata::TryIntoWithOptions;
+use otel_arrow_dfe_pdata::{
     OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProtoBytes, PayloadData,
     error::Error as PDataError,
     otap::batching::make_item_batches,
     otlp::batching::{BytesBatches, make_bytes_batches_owned},
 };
-use otap_df_telemetry::instrument::{Counter, Mmsc};
-use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry_macros::metric_set;
+use otel_arrow_dfe_telemetry::instrument::{Counter, Mmsc};
+use otel_arrow_dfe_telemetry::metrics::MetricSet;
+use otel_arrow_dfe_telemetry_macros::metric_set;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::net::SocketAddr;
@@ -885,11 +885,13 @@ impl Batcher<OtapArrowRecords> for SignalBuffer<OtapArrowRecords> {
 
     fn empty(signal: SignalType) -> OtapArrowRecords {
         match signal {
-            SignalType::Logs => OtapArrowRecords::Logs(otap_df_pdata::otap::Logs::default()),
+            SignalType::Logs => OtapArrowRecords::Logs(otel_arrow_dfe_pdata::otap::Logs::default()),
             SignalType::Metrics => {
-                OtapArrowRecords::Metrics(otap_df_pdata::otap::Metrics::default())
+                OtapArrowRecords::Metrics(otel_arrow_dfe_pdata::otap::Metrics::default())
             }
-            SignalType::Traces => OtapArrowRecords::Traces(otap_df_pdata::otap::Traces::default()),
+            SignalType::Traces => {
+                OtapArrowRecords::Traces(otel_arrow_dfe_pdata::otap::Traces::default())
+            }
         }
     }
 
@@ -1315,7 +1317,7 @@ impl BatchProcessor {
 
 /// Factory function to create a batch processor.
 pub fn create_otap_batch_processor(
-    pipeline_ctx: otap_df_engine::context::PipelineContext,
+    pipeline_ctx: otel_arrow_dfe_engine::context::PipelineContext,
     node: NodeId,
     node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
@@ -1678,63 +1680,65 @@ where
 
 /// Register factory for OTAP batch processor
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Processor)]
+#[otel_arrow_dfe_engine::component_inventory(category = Processor)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
-pub static OTAP_BATCH_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> =
-    otap_df_engine::ProcessorFactory {
+pub static OTAP_BATCH_PROCESSOR_FACTORY: otel_arrow_dfe_engine::ProcessorFactory<OtapPdata> =
+    otel_arrow_dfe_engine::ProcessorFactory {
         name: OTAP_BATCH_PROCESSOR_URN,
         create:
-            |pipeline_ctx: otap_df_engine::context::PipelineContext,
+            |pipeline_ctx: otel_arrow_dfe_engine::context::PipelineContext,
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
              proc_cfg: &ProcessorConfig,
-             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
+             _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
                 create_otap_batch_processor(pipeline_ctx, node, node_config, proc_cfg)
             },
-        wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-        validate_config: otap_df_config::validation::validate_typed_config::<Config>,
+        wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
+        validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<Config>,
     };
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_config::node::NodeUserConfig;
-    use otap_df_config::{PipelineGroupId, PipelineId};
-    use otap_df_engine::config::ProcessorConfig;
-    use otap_df_engine::context::ControllerContext;
-    use otap_df_engine::control::{
+    use otel_arrow_dfe_config::node::NodeUserConfig;
+    use otel_arrow_dfe_config::{PipelineGroupId, PipelineId};
+    use otel_arrow_dfe_engine::config::ProcessorConfig;
+    use otel_arrow_dfe_engine::context::ControllerContext;
+    use otel_arrow_dfe_engine::control::{
         NodeControlMsg, PipelineCompletionMsg, pipeline_completion_msg_channel,
         runtime_ctrl_msg_channel,
     };
-    use otap_df_engine::message::Message;
-    use otap_df_engine::node::Node;
-    use otap_df_engine::testing::liveness::next_completion;
-    use otap_df_engine::testing::processor::TestRuntime;
-    use otap_df_engine::testing::test_node;
-    use otap_df_otap::pdata::OtapPdata;
-    use otap_df_otap::testing::TestCallData;
-    use otap_df_otap::testing::{next_ack, next_nack};
-    use otap_df_pdata::encode::{encode_logs_otap_batch, encode_spans_otap_batch};
-    use otap_df_pdata::otap::OtapArrowRecords;
-    use otap_df_pdata::proto::OtlpProtoMessage;
-    use otap_df_pdata::proto::opentelemetry::common::v1::InstrumentationScope;
-    use otap_df_pdata::proto::opentelemetry::logs::v1::{
+    use otel_arrow_dfe_engine::message::Message;
+    use otel_arrow_dfe_engine::node::Node;
+    use otel_arrow_dfe_engine::testing::liveness::next_completion;
+    use otel_arrow_dfe_engine::testing::processor::TestRuntime;
+    use otel_arrow_dfe_engine::testing::test_node;
+    use otel_arrow_dfe_otap::pdata::OtapPdata;
+    use otel_arrow_dfe_otap::testing::TestCallData;
+    use otel_arrow_dfe_otap::testing::{next_ack, next_nack};
+    use otel_arrow_dfe_pdata::encode::{encode_logs_otap_batch, encode_spans_otap_batch};
+    use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
+    use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::InstrumentationScope;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{
         LogRecord, LogsData, ResourceLogs, ScopeLogs,
     };
-    use otap_df_pdata::proto::opentelemetry::trace::v1::{
+    use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::{
         ResourceSpans, ScopeSpans, Span, TracesData,
     };
-    use otap_df_pdata::testing::equiv::assert_equivalent;
-    use otap_df_pdata::testing::fixtures::DataGenerator;
-    use otap_df_pdata::testing::round_trip::{otap_to_otlp, otlp_message_to_bytes, otlp_to_otap};
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_pdata::testing::equiv::assert_equivalent;
+    use otel_arrow_dfe_pdata::testing::fixtures::DataGenerator;
+    use otel_arrow_dfe_pdata::testing::round_trip::{
+        otap_to_otlp, otlp_message_to_bytes, otlp_to_otap,
+    };
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use serde_json::json;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
     /// Helper to create test pipeline context
     fn create_test_pipeline_context() -> (
-        otap_df_engine::context::PipelineContext,
+        otel_arrow_dfe_engine::context::PipelineContext,
         TelemetryRegistryHandle,
     ) {
         let telemetry_registry = TelemetryRegistryHandle::new();
@@ -1754,8 +1758,8 @@ mod tests {
         cfg: Value,
     ) -> (
         TelemetryRegistryHandle,
-        otap_df_telemetry::reporter::MetricsReporter,
-        otap_df_engine::testing::processor::TestPhase<OtapPdata>,
+        otel_arrow_dfe_telemetry::reporter::MetricsReporter,
+        otel_arrow_dfe_engine::testing::processor::TestPhase<OtapPdata>,
     ) {
         let rt = TestRuntime::new();
         let telemetry_registry = rt.metrics_registry();
@@ -1787,8 +1791,9 @@ mod tests {
             if desc.name == set_name {
                 for (field, metric_value) in iter {
                     if field.name == metric_name
-                        && let otap_df_telemetry::metrics::MetricValue::Distribution(distribution) =
-                            metric_value
+                        && let otel_arrow_dfe_telemetry::metrics::MetricValue::Distribution(
+                            distribution,
+                        ) = metric_value
                     {
                         count = distribution.count();
                     }
@@ -3529,7 +3534,7 @@ mod tests {
             if desc.name == set_name {
                 for (field, metric_value) in iter {
                     if field.name == metric_name
-                        && let otap_df_telemetry::metrics::MetricValue::U64(v) = metric_value
+                        && let otel_arrow_dfe_telemetry::metrics::MetricValue::U64(v) = metric_value
                     {
                         value = *v;
                     }

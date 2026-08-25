@@ -3,34 +3,37 @@
 
 //! Topic exporter.
 
-otap_df_telemetry::otel_component_scope!(urn = TOPIC_EXPORTER_URN, target = "otel.exporter.topic",);
+otel_arrow_dfe_telemetry::otel_component_scope!(
+    urn = TOPIC_EXPORTER_URN,
+    target = "otel.exporter.topic",
+);
 
 use async_trait::async_trait;
 use futures::stream::{FuturesUnordered, StreamExt};
 use linkme::distributed_slice;
-use otap_df_config::TopicName;
-use otap_df_config::error::Error as ConfigError;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_config::topic::{TopicAckPropagationMode, TopicQueueOnFullPolicy};
-use otap_df_engine::config::ExporterConfig;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
-use otap_df_engine::error::Error;
-use otap_df_engine::exporter::ExporterWrapper;
-use otap_df_engine::local::exporter::{EffectHandler, Exporter};
-use otap_df_engine::message::{ExporterInbox, Message};
-use otap_df_engine::node::NodeId;
-use otap_df_engine::terminal_state::TerminalState;
-use otap_df_engine::topic::{
+use otel_arrow_dfe_config::TopicName;
+use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_config::topic::{TopicAckPropagationMode, TopicQueueOnFullPolicy};
+use otel_arrow_dfe_engine::config::ExporterConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
+use otel_arrow_dfe_engine::error::Error;
+use otel_arrow_dfe_engine::exporter::ExporterWrapper;
+use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
+use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_engine::topic::{
     PublishOutcome, TopicHandle, TrackedPublishOutcome, TrackedPublishReceipt,
     TrackedTryPublishOutcome,
 };
-use otap_df_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
-use otap_df_otap::OTAP_EXPORTER_FACTORIES;
-use otap_df_otap::pdata::OtapPdata;
-use otap_df_telemetry::instrument::{Counter, Gauge};
-use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry_macros::metric_set;
+use otel_arrow_dfe_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
+use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
+use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_telemetry::instrument::{Counter, Gauge};
+use otel_arrow_dfe_telemetry::metrics::MetricSet;
+use otel_arrow_dfe_telemetry_macros::metric_set;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -112,54 +115,53 @@ enum BlockedPublishCompletion {
 
 /// Declares the topic exporter as a local exporter factory.
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Exporter)]
+#[otel_arrow_dfe_engine::component_inventory(category = Exporter)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static TOPIC_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: TOPIC_EXPORTER_URN,
-    create: |pipeline: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             exporter_config: &ExporterConfig,
-             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
-        let config = TopicExporter::parse_config(&node_config.config)?;
-        let topic_set =
-            pipeline
-                .topic_set::<OtapPdata>()
-                .ok_or_else(|| ConfigError::InvalidUserConfig {
+    create:
+        |pipeline: PipelineContext,
+         node: NodeId,
+         node_config: Arc<NodeUserConfig>,
+         exporter_config: &ExporterConfig,
+         _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
+            let config = TopicExporter::parse_config(&node_config.config)?;
+            let topic_set = pipeline.topic_set::<OtapPdata>().ok_or_else(|| {
+                ConfigError::InvalidUserConfig {
                     error: "Topic set is not available in pipeline context".to_owned(),
-                })?;
-        let topic_binding =
-            topic_set
-                .get_required(&config.topic)
-                .map_err(|_| ConfigError::InvalidUserConfig {
+                }
+            })?;
+            let topic_binding = topic_set.get_required(&config.topic).map_err(|_| {
+                ConfigError::InvalidUserConfig {
                     error: format!(
                         "Unknown topic `{}` for topic exporter (pipeline `{}`/`{}`)",
                         config.topic,
                         pipeline.pipeline_group_id(),
                         pipeline.pipeline_id(),
                     ),
-                })?;
-        let queue_on_full = config
-            .queue_on_full
-            .clone()
-            .unwrap_or_else(|| topic_binding.default_queue_on_full());
-        let ack_propagation_mode = topic_binding.default_ack_propagation_mode();
-        let metrics = pipeline
-            .register_metrics_with_topic::<TopicExporterMetrics>(topic_binding.name().into());
-        let topic = topic_binding.into_handle();
-        Ok(ExporterWrapper::local(
-            TopicExporter {
-                topic,
-                queue_on_full,
-                ack_propagation_mode,
-                metrics,
-            },
-            node,
-            node_config,
-            exporter_config,
-        ))
-    },
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+                }
+            })?;
+            let queue_on_full = config
+                .queue_on_full
+                .clone()
+                .unwrap_or_else(|| topic_binding.default_queue_on_full());
+            let ack_propagation_mode = topic_binding.default_ack_propagation_mode();
+            let metrics = pipeline
+                .register_metrics_with_topic::<TopicExporterMetrics>(topic_binding.name().into());
+            let topic = topic_binding.into_handle();
+            Ok(ExporterWrapper::local(
+                TopicExporter {
+                    topic,
+                    queue_on_full,
+                    ack_propagation_mode,
+                    metrics,
+                },
+                node,
+                node_config,
+                exporter_config,
+            ))
+        },
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: |config| TopicExporter::parse_config(config).map(|_| ()),
 };
 
@@ -222,7 +224,7 @@ impl TopicExporter {
     /// path has already reported backpressure.
     fn start_blocked_publish(
         data: OtapPdata,
-        tracked_publisher: Option<&otap_df_engine::topic::TrackedTopicPublisher<OtapPdata>>,
+        tracked_publisher: Option<&otel_arrow_dfe_engine::topic::TrackedTopicPublisher<OtapPdata>>,
         topic: &TopicHandle<OtapPdata>,
     ) -> BlockedPublish {
         let published = Arc::new(data.clone_without_context());
@@ -252,7 +254,7 @@ impl TopicExporter {
         queue_on_full: &TopicQueueOnFullPolicy,
         ack_propagation_mode: TopicAckPropagationMode,
         topic: &TopicHandle<OtapPdata>,
-        tracked_publisher: Option<&otap_df_engine::topic::TrackedTopicPublisher<OtapPdata>>,
+        tracked_publisher: Option<&otel_arrow_dfe_engine::topic::TrackedTopicPublisher<OtapPdata>>,
         effect_handler: &EffectHandler<OtapPdata>,
         metrics: &mut MetricSet<TopicExporterMetrics>,
         pending_messages: &mut HashMap<u64, OtapPdata>,
@@ -591,26 +593,26 @@ impl Exporter<OtapPdata> for TopicExporter {
 #[cfg(test)]
 mod tests {
     use super::{TOPIC_EXPORTER, TOPIC_EXPORTER_URN, TopicExporter};
-    use otap_df_config::node::NodeUserConfig;
-    use otap_df_config::topic::{TopicAckPropagationMode, TopicQueueOnFullPolicy};
-    use otap_df_engine::Interests;
-    use otap_df_engine::config::ExporterConfig;
-    use otap_df_engine::control::{
+    use otel_arrow_dfe_config::node::NodeUserConfig;
+    use otel_arrow_dfe_config::topic::{TopicAckPropagationMode, TopicQueueOnFullPolicy};
+    use otel_arrow_dfe_engine::Interests;
+    use otel_arrow_dfe_engine::config::ExporterConfig;
+    use otel_arrow_dfe_engine::control::{
         Controllable, NodeControlMsg, PipelineCompletionMsg, pipeline_completion_msg_channel,
         runtime_ctrl_msg_channel,
     };
-    use otap_df_engine::local::message::LocalReceiver;
-    use otap_df_engine::message::Receiver as PDataReceiver;
-    use otap_df_engine::node::NodeWithPDataReceiver;
-    use otap_df_engine::testing::exporter::create_test_pipeline_context;
-    use otap_df_engine::testing::{create_not_send_channel, setup_test_runtime, test_node};
-    use otap_df_engine::topic::{
+    use otel_arrow_dfe_engine::local::message::LocalReceiver;
+    use otel_arrow_dfe_engine::message::Receiver as PDataReceiver;
+    use otel_arrow_dfe_engine::node::NodeWithPDataReceiver;
+    use otel_arrow_dfe_engine::testing::exporter::create_test_pipeline_context;
+    use otel_arrow_dfe_engine::testing::{create_not_send_channel, setup_test_runtime, test_node};
+    use otel_arrow_dfe_engine::topic::{
         PipelineTopicBinding, SubscriberOptions, SubscriptionMode, TopicBroadcastAckMode,
         TopicBroadcastOnLagPolicy, TopicBroker, TopicOptions, TopicSet,
     };
-    use otap_df_otap::pdata::OtapPdata;
-    use otap_df_otap::testing::{TestCallData, create_test_pdata, next_ack, next_nack};
-    use otap_df_telemetry::reporter::MetricsReporter;
+    use otel_arrow_dfe_otap::pdata::OtapPdata;
+    use otel_arrow_dfe_otap::testing::{TestCallData, create_test_pdata, next_ack, next_nack};
+    use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
     use serde_json::json;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
@@ -655,8 +657,8 @@ mod tests {
         let (rt, local_tasks) = setup_test_runtime();
         rt.block_on(local_tasks.run_until(async move {
             let broker = TopicBroker::<OtapPdata>::new();
-            let topic_name =
-                otap_df_config::TopicName::parse("ingress").expect("topic name should parse");
+            let topic_name = otel_arrow_dfe_config::TopicName::parse("ingress")
+                .expect("topic name should parse");
             let base_handle = broker
                 .create_in_memory_topic(
                     topic_name.clone(),
@@ -689,7 +691,7 @@ mod tests {
                 exporter_node.clone(),
                 Arc::new(exporter_user_cfg),
                 &ExporterConfig::new("topic_exporter"),
-                &otap_df_engine::capability::registry::Capabilities::empty(),
+                &otel_arrow_dfe_engine::capability::registry::Capabilities::empty(),
             )
             .expect("topic exporter should be created");
 
@@ -740,7 +742,7 @@ mod tests {
                 .expect("timed out waiting for topic message")
                 .expect("topic subscription closed unexpectedly")
             {
-                otap_df_engine::topic::RecvItem::Message(env) => env,
+                otel_arrow_dfe_engine::topic::RecvItem::Message(env) => env,
                 other => panic!("unexpected topic receive item: {other:?}"),
             };
             subscriber
@@ -797,8 +799,8 @@ mod tests {
         let (rt, local_tasks) = setup_test_runtime();
         rt.block_on(local_tasks.run_until(async move {
             let broker = TopicBroker::<OtapPdata>::new();
-            let topic_name =
-                otap_df_config::TopicName::parse("ingress").expect("topic name should parse");
+            let topic_name = otel_arrow_dfe_config::TopicName::parse("ingress")
+                .expect("topic name should parse");
             let handle = broker
                 .create_in_memory_topic(
                     topic_name.clone(),
@@ -832,7 +834,7 @@ mod tests {
                 exporter_node.clone(),
                 Arc::new(exporter_user_cfg),
                 &ExporterConfig::new("topic_exporter"),
-                &otap_df_engine::capability::registry::Capabilities::empty(),
+                &otel_arrow_dfe_engine::capability::registry::Capabilities::empty(),
             )
             .expect("topic exporter should be created");
 
@@ -964,8 +966,8 @@ mod tests {
         let (rt, local_tasks) = setup_test_runtime();
         rt.block_on(local_tasks.run_until(async move {
             let broker = TopicBroker::<OtapPdata>::new();
-            let topic_name =
-                otap_df_config::TopicName::parse("ingress").expect("topic name should parse");
+            let topic_name = otel_arrow_dfe_config::TopicName::parse("ingress")
+                .expect("topic name should parse");
             let handle = broker
                 .create_in_memory_topic(
                     topic_name.clone(),
@@ -999,7 +1001,7 @@ mod tests {
                 exporter_node.clone(),
                 Arc::new(exporter_user_cfg),
                 &ExporterConfig::new("topic_exporter"),
-                &otap_df_engine::capability::registry::Capabilities::empty(),
+                &otel_arrow_dfe_engine::capability::registry::Capabilities::empty(),
             )
             .expect("topic exporter should be created");
 
@@ -1145,8 +1147,8 @@ mod tests {
         let (rt, local_tasks) = setup_test_runtime();
         rt.block_on(local_tasks.run_until(async move {
             let broker = TopicBroker::<OtapPdata>::new();
-            let topic_name =
-                otap_df_config::TopicName::parse("ingress").expect("topic name should parse");
+            let topic_name = otel_arrow_dfe_config::TopicName::parse("ingress")
+                .expect("topic name should parse");
             let base_handle = broker
                 .create_in_memory_topic(
                     topic_name.clone(),
@@ -1179,7 +1181,7 @@ mod tests {
                 exporter_node.clone(),
                 Arc::new(exporter_user_cfg),
                 &ExporterConfig::new("topic_exporter"),
-                &otap_df_engine::capability::registry::Capabilities::empty(),
+                &otel_arrow_dfe_engine::capability::registry::Capabilities::empty(),
             )
             .expect("topic exporter should be created");
 

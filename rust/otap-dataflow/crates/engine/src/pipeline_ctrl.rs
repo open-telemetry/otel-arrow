@@ -10,7 +10,8 @@
 //! Note 2: Other runtime-control messages coordinate shutdown and completion flow.
 
 use crate::channel_metrics::{
-    ConsumedItemMetrics, ConsumedMetrics, ProducedItemMetrics, ProducedMetrics,
+    ConsumedItemMetrics, ConsumedMetrics, ConsumedSizeMetrics, ProducedItemMetrics,
+    ProducedMetrics, ProducedSizeMetrics,
 };
 use crate::clock;
 use crate::completion_emission_metrics::CompletionEmissionMetricsHandle;
@@ -27,17 +28,17 @@ use crate::memory_limiter::MemoryPressureChanged;
 use crate::pipeline_metrics::PipelineMetricsMonitor;
 use crate::terminal_state::TerminalMetricsDeadline;
 use crate::{Interests, RequestOutcome, Unwindable};
-use otap_df_config::DeployedPipelineKey;
-use otap_df_config::MetricLevel;
-use otap_df_config::SignalType;
-use otap_df_config::policy::TelemetryPolicy;
-use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
-use otap_df_telemetry::error::Error as TelemetryError;
-use otap_df_telemetry::event::{EngineEvent, ObservedEventReporter};
-use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
-use otap_df_telemetry::registry::TelemetryRegistryHandle;
-use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry::{otel_debug, otel_warn};
+use otel_arrow_dfe_config::DeployedPipelineKey;
+use otel_arrow_dfe_config::MetricLevel;
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::policy::TelemetryPolicy;
+use otel_arrow_dfe_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
+use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
+use otel_arrow_dfe_telemetry::event::{EngineEvent, ObservedEventReporter};
+use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
+use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_telemetry::{otel_debug, otel_warn};
 use std::cell::RefCell;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
@@ -167,10 +168,14 @@ pub(crate) struct NodeMetricHandles {
     pub(crate) input: Option<MeasurementMetricSet<ConsumedMetrics>>,
     /// Optional consumed-item metrics for the node's input channel.
     pub(crate) input_items: Option<MeasurementMetricSet<ConsumedItemMetrics>>,
+    /// Optional consumed-size metrics for the node's input channel.
+    pub(crate) input_size: Option<MeasurementMetricSet<ConsumedSizeMetrics>>,
     /// Produced-message metrics indexed by output port.
     pub(crate) outputs: Vec<MeasurementMetricSet<ProducedMetrics>>,
     /// Optional produced-item metrics indexed by output port.
     pub(crate) output_items: Vec<MeasurementMetricSet<ProducedItemMetrics>>,
+    /// Optional produced-size metrics indexed by output port.
+    pub(crate) output_size: Vec<MeasurementMetricSet<ProducedSizeMetrics>>,
     /// Completion-emission metrics for completions routed by the node.
     pub(crate) completion_emission: Option<CompletionEmissionMetricsHandle>,
 }
@@ -187,11 +192,17 @@ pub(crate) fn report_node_metrics_with_handles(
         if let Some(input_items) = &mut handles.input_items {
             metrics_reporter.report_measurement(input_items)?;
         }
+        if let Some(input_size) = &mut handles.input_size {
+            metrics_reporter.report_measurement(input_size)?;
+        }
         for output in &mut handles.outputs {
             metrics_reporter.report_measurement(output)?;
         }
         for output_items in &mut handles.output_items {
             metrics_reporter.report_measurement(output_items)?;
+        }
+        for output_size in &mut handles.output_size {
+            metrics_reporter.report_measurement(output_size)?;
         }
         if let Some(completion_emission) = &handles.completion_emission {
             let mut completion_emission = completion_emission
@@ -216,11 +227,17 @@ pub(crate) fn snapshot_node_metrics_with_handles(
         if let Some(input_items) = &mut handles.input_items {
             snapshots.extend(input_items.terminal_snapshots());
         }
+        if let Some(input_size) = &mut handles.input_size {
+            snapshots.extend(input_size.terminal_snapshots());
+        }
         for output in &mut handles.outputs {
             snapshots.extend(output.terminal_snapshots());
         }
         for output_items in &mut handles.output_items {
             snapshots.extend(output_items.terminal_snapshots());
+        }
+        for output_size in &mut handles.output_size {
+            snapshots.extend(output_size.terminal_snapshots());
         }
         if let Some(completion_emission) = &handles.completion_emission
             && let Some(snapshot) = completion_emission
@@ -244,6 +261,11 @@ impl Drop for NodeMetricHandles {
                 .registry
                 .unregister_metric_set(input_items.metric_set_key());
         }
+        if let Some(input_size) = self.input_size.take() {
+            let _ = self
+                .registry
+                .unregister_metric_set(input_size.metric_set_key());
+        }
         for output in self.outputs.drain(..) {
             let _ = self.registry.unregister_metric_set(output.metric_set_key());
         }
@@ -251,6 +273,11 @@ impl Drop for NodeMetricHandles {
             let _ = self
                 .registry
                 .unregister_metric_set(output_items.metric_set_key());
+        }
+        for output_size in self.output_size.drain(..) {
+            let _ = self
+                .registry
+                .unregister_metric_set(output_size.metric_set_key());
         }
     }
 }
@@ -861,7 +888,7 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
         if let Some(sender) = self.control_senders.get(node_id) {
             match sender.try_send(msg) {
                 Ok(()) => {}
-                Err(otap_df_channel::error::SendError::Full(msg)) => {
+                Err(otel_arrow_dfe_channel::error::SendError::Full(msg)) => {
                     self.pending_sends.push_back((node_id, msg));
                     self.runtime_control_metrics
                         .set_pending_sends_buffered(self.pending_sends.len());
@@ -874,7 +901,7 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                         );
                     }
                 }
-                Err(otap_df_channel::error::SendError::Closed(_)) => {
+                Err(otel_arrow_dfe_channel::error::SendError::Closed(_)) => {
                     // Ignore closed channel
                 }
             }
@@ -892,10 +919,10 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
             if let Some(sender) = self.control_senders.get(node_id) {
                 match sender.try_send(msg) {
                     Ok(()) => {}
-                    Err(otap_df_channel::error::SendError::Full(msg)) => {
+                    Err(otel_arrow_dfe_channel::error::SendError::Full(msg)) => {
                         self.pending_sends.push_back((node_id, msg));
                     }
-                    Err(otap_df_channel::error::SendError::Closed(_)) => {
+                    Err(otel_arrow_dfe_channel::error::SendError::Closed(_)) => {
                         // Drop message for closed channel
                     }
                 }
@@ -965,7 +992,7 @@ impl<PData> PipelineCompletionMsgDispatcher<PData> {
                         self.completion_metrics.record_nack_delivered();
                     }
                 }
-                Err(otap_df_channel::error::SendError::Full(msg)) => {
+                Err(otel_arrow_dfe_channel::error::SendError::Full(msg)) => {
                     // Completion delivery cannot block the dispatcher for the
                     // same reason runtime-control cannot: a full node-control
                     // inbox would otherwise stall unwinding for unrelated
@@ -981,7 +1008,7 @@ impl<PData> PipelineCompletionMsgDispatcher<PData> {
                         );
                     }
                 }
-                Err(otap_df_channel::error::SendError::Closed(_)) => {}
+                Err(otel_arrow_dfe_channel::error::SendError::Closed(_)) => {}
             }
         }
     }
@@ -1003,10 +1030,10 @@ impl<PData> PipelineCompletionMsgDispatcher<PData> {
                             self.completion_metrics.record_nack_delivered();
                         }
                     }
-                    Err(otap_df_channel::error::SendError::Full(msg)) => {
+                    Err(otel_arrow_dfe_channel::error::SendError::Full(msg)) => {
                         self.pending_sends.push_back((node_id, msg));
                     }
-                    Err(otap_df_channel::error::SendError::Closed(_)) => {}
+                    Err(otel_arrow_dfe_channel::error::SendError::Closed(_)) => {}
                 }
             }
         }
@@ -1022,6 +1049,8 @@ impl<PData> PipelineCompletionMsgDispatcher<PData> {
         signal: Option<SignalType>,
         produced_items: u32,
         consumed_items: u32,
+        produced_size: u64,
+        consumed_size: u64,
         outcome: RequestOutcome,
         now_ns: u64,
     ) {
@@ -1044,6 +1073,14 @@ impl<PData> PipelineCompletionMsgDispatcher<PData> {
                                 .with(SignalOutcomeAttributes { signal, outcome })
                                 .consumed_items
                                 .add(consumed_items as u64);
+                        }
+                        if consumed_size > 0
+                            && let Some(input_size) = &mut handles.input_size
+                        {
+                            input_size
+                                .with(SignalOutcomeAttributes { signal, outcome })
+                                .consumed_size
+                                .add(consumed_size);
                         }
                         if route.entry_time_ns > 0 && now_ns > 0 {
                             let duration_ns = now_ns.saturating_sub(route.entry_time_ns);
@@ -1070,6 +1107,14 @@ impl<PData> PipelineCompletionMsgDispatcher<PData> {
                                 .with(SignalOutcomeAttributes { signal, outcome })
                                 .produced_items
                                 .add(produced_items as u64);
+                        }
+                        if produced_size > 0
+                            && let Some(output_size) = handles.output_size.get_mut(port)
+                        {
+                            output_size
+                                .with(SignalOutcomeAttributes { signal, outcome })
+                                .produced_size
+                                .add(produced_size);
                         }
                         if !interests.contains(Interests::CONSUMER_METRICS)
                             && route.entry_time_ns > 0
@@ -1200,6 +1245,8 @@ impl<PData: Unwindable> PipelineCompletionMsgDispatcher<PData> {
                             signal,
                             frame.produced_items,
                             frame.consumed_items,
+                            frame.produced_size,
+                            frame.consumed_size,
                             outcome,
                             now_ns,
                         );
@@ -1310,17 +1357,17 @@ mod tests {
     use crate::node::{NodeId, NodeType};
     use crate::shared::message::{SharedReceiver, SharedSender};
     use crate::testing::test_nodes;
-    use otap_df_channel::error::RecvError;
-    use otap_df_config::observed_state::{ObservedStateSettings, SendPolicy};
-    use otap_df_config::{PipelineGroupId, PipelineId};
-    use otap_df_state::store::ObservedStateStore;
-    use otap_df_telemetry::event::{
+    use otel_arrow_dfe_channel::error::RecvError;
+    use otel_arrow_dfe_config::observed_state::{ObservedStateSettings, SendPolicy};
+    use otel_arrow_dfe_config::{PipelineGroupId, PipelineId};
+    use otel_arrow_dfe_state::store::ObservedStateStore;
+    use otel_arrow_dfe_telemetry::event::{
         EngineEvent, ErrorEvent as TelemetryErrorEvent, EventType, ObservedEventReporter,
         RequestEvent as TelemetryRequestEvent, SuccessEvent as TelemetrySuccessEvent,
     };
-    use otap_df_telemetry::metrics::{MetricSetSnapshot, MetricValue};
-    use otap_df_telemetry::registry::MetricSetKey;
-    use otap_df_telemetry::reporter::MetricsReporter;
+    use otel_arrow_dfe_telemetry::metrics::{MetricSetSnapshot, MetricValue};
+    use otel_arrow_dfe_telemetry::registry::MetricSetKey;
+    use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
     use std::cell::RefCell;
     use std::collections::HashMap;
     use std::rc::Rc;
@@ -1360,7 +1407,7 @@ mod tests {
 
     fn create_test_pipeline_context()
     -> (PipelineContext, crate::entity_context::PipelineEntityScope) {
-        let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
+        let metrics_system = otel_arrow_dfe_telemetry::InternalTelemetrySystem::default();
         let controller_context = ControllerContext::new(metrics_system.registry());
         let pipeline_context_params = PipelineContextParams {
             pipeline_group_id: Default::default(),
@@ -1411,7 +1458,7 @@ mod tests {
         let (_memory_pressure_tx, memory_pressure_rx) =
             watch::channel(MemoryPressureChanged::initial());
 
-        let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
+        let metrics_system = otel_arrow_dfe_telemetry::InternalTelemetrySystem::default();
         let metrics_reporter = metrics_system.reporter();
         let observed_state_store =
             ObservedStateStore::new(&ObservedStateSettings::default(), metrics_system.registry());
@@ -1885,7 +1932,7 @@ mod tests {
             .run_until(async {
                 let (pipeline_tx, pipeline_rx) = runtime_ctrl_msg_channel(10);
                 // Create a dummy MetricsReporter for testing
-                let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
+                let metrics_system = otel_arrow_dfe_telemetry::InternalTelemetrySystem::default();
                 let metrics_reporter = metrics_system.reporter();
                 let observed_state_store = ObservedStateStore::new(
                     &ObservedStateSettings::default(),
@@ -2800,12 +2847,16 @@ mod tests {
     enum MetricLabel {
         RecvProduced,
         RecvProducedItems,
+        RecvProducedSize,
         ProcConsumed,
         ProcConsumedItems,
+        ProcConsumedSize,
         ProcProduced,
         ProcProducedItems,
+        ProcProducedSize,
         ExpConsumed,
         ExpConsumedItems,
+        ExpConsumedSize,
     }
 
     /// Return value from setup_test_manager_with_metrics.
@@ -2840,7 +2891,7 @@ mod tests {
             control_senders.register(node.clone(), *nt, sender);
         }
 
-        let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
+        let metrics_system = otel_arrow_dfe_telemetry::InternalTelemetrySystem::default();
         // Create a reporter with a receiver so tests can collect snapshots.
         let (snapshot_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(64);
         let observed_state_store =
@@ -2902,17 +2953,25 @@ mod tests {
             registry.register_metric_set_with_measurement_attributes_for_entity(recv_out_key);
         let recv_produced_items: MeasurementMetricSet<ProducedItemMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(recv_out_key);
+        let recv_produced_size: MeasurementMetricSet<ProducedSizeMetrics> =
+            registry.register_metric_set_with_measurement_attributes_for_entity(recv_out_key);
         let proc_consumed: MeasurementMetricSet<ConsumedMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(proc_in_key);
         let proc_consumed_items: MeasurementMetricSet<ConsumedItemMetrics> =
+            registry.register_metric_set_with_measurement_attributes_for_entity(proc_in_key);
+        let proc_consumed_size: MeasurementMetricSet<ConsumedSizeMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(proc_in_key);
         let proc_produced: MeasurementMetricSet<ProducedMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(proc_out_key);
         let proc_produced_items: MeasurementMetricSet<ProducedItemMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(proc_out_key);
+        let proc_produced_size: MeasurementMetricSet<ProducedSizeMetrics> =
+            registry.register_metric_set_with_measurement_attributes_for_entity(proc_out_key);
         let exp_consumed: MeasurementMetricSet<ConsumedMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(exp_in_key);
         let exp_consumed_items: MeasurementMetricSet<ConsumedItemMetrics> =
+            registry.register_metric_set_with_measurement_attributes_for_entity(exp_in_key);
+        let exp_consumed_size: MeasurementMetricSet<ConsumedSizeMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(exp_in_key);
 
         // Save metric set keys for snapshot identification.
@@ -2922,20 +2981,36 @@ mod tests {
             recv_produced_items.metric_set_key(),
             MetricLabel::RecvProducedItems,
         );
+        let _ = key_labels.insert(
+            recv_produced_size.metric_set_key(),
+            MetricLabel::RecvProducedSize,
+        );
         let _ = key_labels.insert(proc_consumed.metric_set_key(), MetricLabel::ProcConsumed);
         let _ = key_labels.insert(
             proc_consumed_items.metric_set_key(),
             MetricLabel::ProcConsumedItems,
+        );
+        let _ = key_labels.insert(
+            proc_consumed_size.metric_set_key(),
+            MetricLabel::ProcConsumedSize,
         );
         let _ = key_labels.insert(proc_produced.metric_set_key(), MetricLabel::ProcProduced);
         let _ = key_labels.insert(
             proc_produced_items.metric_set_key(),
             MetricLabel::ProcProducedItems,
         );
+        let _ = key_labels.insert(
+            proc_produced_size.metric_set_key(),
+            MetricLabel::ProcProducedSize,
+        );
         let _ = key_labels.insert(exp_consumed.metric_set_key(), MetricLabel::ExpConsumed);
         let _ = key_labels.insert(
             exp_consumed_items.metric_set_key(),
             MetricLabel::ExpConsumedItems,
+        );
+        let _ = key_labels.insert(
+            exp_consumed_size.metric_set_key(),
+            MetricLabel::ExpConsumedSize,
         );
 
         let mut node_metric_handles: Vec<Option<NodeMetricHandles>> = Vec::new();
@@ -2947,24 +3022,30 @@ mod tests {
             registry: registry.clone(),
             input: None,
             input_items: None,
+            input_size: None,
             outputs: vec![recv_produced],
             output_items: vec![recv_produced_items],
+            output_size: vec![recv_produced_size],
             completion_emission: None,
         });
         node_metric_handles[nodes[1].index] = Some(NodeMetricHandles {
             registry: registry.clone(),
             input: Some(proc_consumed),
             input_items: Some(proc_consumed_items),
+            input_size: Some(proc_consumed_size),
             outputs: vec![proc_produced],
             output_items: vec![proc_produced_items],
+            output_size: vec![proc_produced_size],
             completion_emission: None,
         });
         node_metric_handles[nodes[2].index] = Some(NodeMetricHandles {
             registry: registry.clone(),
             input: Some(exp_consumed),
             input_items: Some(exp_consumed_items),
+            input_size: Some(exp_consumed_size),
             outputs: Vec::new(),
             output_items: Vec::new(),
+            output_size: Vec::new(),
             completion_emission: None,
         });
 
@@ -3056,11 +3137,11 @@ mod tests {
         values: &[MetricValue],
         index: usize,
         msg: &str,
-    ) -> otap_df_telemetry::instrument::Mmsc {
+    ) -> otel_arrow_dfe_telemetry::instrument::Mmsc {
         match &values[index] {
-            MetricValue::Distribution(otap_df_telemetry::instrument::DistributionValue::Basic(
-                mmsc,
-            )) => **mmsc,
+            MetricValue::Distribution(
+                otel_arrow_dfe_telemetry::instrument::DistributionValue::Basic(mmsc),
+            ) => **mmsc,
             other => panic!("{msg}: expected a basic-tier distribution, got {other:?}"),
         }
     }
@@ -3073,6 +3154,8 @@ mod tests {
     const PRODUCER_REQUESTS: usize = 1;
     // Item metric set field index:
     const ITEMS: usize = 0;
+    // Size metric set field index:
+    const SIZE: usize = 0;
 
     const RUNTIME_DRAIN_ACTIVE: usize = 0;
     const RUNTIME_DRAIN_PENDING_RECEIVERS: usize = 1;
@@ -3180,7 +3263,7 @@ mod tests {
         flush_interval: Duration,
     ) -> RuntimeControlTelemetryHarness<PData> {
         let (pipeline_tx, pipeline_rx) = runtime_ctrl_msg_channel(16);
-        let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
+        let metrics_system = otel_arrow_dfe_telemetry::InternalTelemetrySystem::default();
         let (snapshot_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(64);
         let controller_context = ControllerContext::new(metrics_system.registry());
         let pipeline_group_id: PipelineGroupId = Default::default();
@@ -3261,7 +3344,7 @@ mod tests {
         node_specs: Vec<(&'static str, NodeType, usize)>,
     ) -> MemoryPressureFanoutHarness<PData> {
         let (pipeline_tx, pipeline_rx) = runtime_ctrl_msg_channel(16);
-        let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
+        let metrics_system = otel_arrow_dfe_telemetry::InternalTelemetrySystem::default();
         let metrics_reporter = metrics_system.reporter();
         let controller_context = ControllerContext::new(metrics_system.registry());
         let pipeline_group_id: PipelineGroupId = Default::default();
@@ -3386,7 +3469,7 @@ mod tests {
         reporter_channel_size: usize,
     ) -> CompletionTelemetryHarness {
         let (completion_tx, completion_rx) = pipeline_completion_msg_channel(16);
-        let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
+        let metrics_system = otel_arrow_dfe_telemetry::InternalTelemetrySystem::default();
         let (snapshot_rx, metrics_reporter) =
             MetricsReporter::create_new_and_receiver(reporter_channel_size);
         let controller_context = ControllerContext::new(metrics_system.registry());
@@ -3467,6 +3550,8 @@ mod tests {
             },
             produced_items: 10,
             consumed_items: 0,
+            produced_size: 100,
+            consumed_size: 0,
         });
 
         // Node 1 (processor): consumer + producer metrics + acks/nacks
@@ -3489,6 +3574,8 @@ mod tests {
             },
             produced_items: 7,
             consumed_items: 10,
+            produced_size: 70,
+            consumed_size: 100,
         });
 
         // Node 2 (exporter): consumer metrics only (no acks subscription -- terminal node)
@@ -3507,6 +3594,8 @@ mod tests {
             },
             produced_items: 0,
             consumed_items: 7,
+            produced_size: 0,
+            consumed_size: 70,
         });
 
         pdata
@@ -3536,6 +3625,8 @@ mod tests {
             },
             produced_items: 10,
             consumed_items: 0,
+            produced_size: 100,
+            consumed_size: 0,
         });
 
         // Node 1 (processor): consumer + producer metrics, no ACKS/NACKS.
@@ -3556,6 +3647,8 @@ mod tests {
             },
             produced_items: 7,
             consumed_items: 10,
+            produced_size: 70,
+            consumed_size: 100,
         });
 
         // Node 2 (exporter): consumer metrics only.
@@ -3574,6 +3667,8 @@ mod tests {
             },
             produced_items: 0,
             consumed_items: 7,
+            produced_size: 0,
+            consumed_size: 70,
         });
 
         pdata
@@ -3838,6 +3933,31 @@ mod tests {
         assert_u64(exp, ITEMS, 7, "Exporter consumed logs");
     }
 
+    /// Scenario: a logs batch flows through receiver, processor, and exporter nodes.
+    /// Guarantees: each node reports its produced or consumed logical payload size in the `signal=logs` bucket.
+    #[tokio::test]
+    async fn test_per_signal_payload_size() {
+        let harness = setup_test_manager_with_metrics();
+        let snapshots = run_and_collect(harness, |nodes| {
+            let pdata = build_3node_pdata_no_subscribers(nodes, false);
+            vec![PipelineCompletionMsg::DeliverAck {
+                ack: AckMsg::new(pdata),
+            }]
+        })
+        .await;
+
+        let recv_p = &snapshots[&MetricLabel::RecvProducedSize];
+        assert_u64(recv_p, SIZE, 100, "Receiver produced size");
+
+        let proc_c = &snapshots[&MetricLabel::ProcConsumedSize];
+        assert_u64(proc_c, SIZE, 100, "Processor consumed size");
+        let proc_p = &snapshots[&MetricLabel::ProcProducedSize];
+        assert_u64(proc_p, SIZE, 70, "Processor produced size");
+
+        let exp = &snapshots[&MetricLabel::ExpConsumedSize];
+        assert_u64(exp, SIZE, 70, "Exporter consumed size");
+    }
+
     /// Scenario: request metrics are enabled while per-signal item counting is not.
     /// Guarantees: request series are emitted but no zero-valued item series are reported.
     #[tokio::test]
@@ -3874,6 +3994,42 @@ mod tests {
         );
     }
 
+    /// Scenario: request metrics are enabled while logical payload sizing is not.
+    /// Guarantees: request series are emitted but no zero-valued size series are reported.
+    #[tokio::test]
+    async fn node_metrics_omit_size_without_optin() {
+        let harness = setup_test_manager_with_metrics();
+        for handles in harness
+            .node_metric_handles
+            .borrow_mut()
+            .iter_mut()
+            .flatten()
+        {
+            let _ = handles.input_size.take();
+            handles.output_size.clear();
+        }
+
+        let snapshots = run_and_collect(harness, |nodes| {
+            let pdata = build_3node_pdata_no_subscribers(nodes, false);
+            vec![PipelineCompletionMsg::DeliverAck {
+                ack: AckMsg::new(pdata),
+            }]
+        })
+        .await;
+
+        assert!(
+            snapshots.contains_key(&MetricLabel::RecvProduced),
+            "Request metrics should remain enabled"
+        );
+        assert!(
+            !snapshots.contains_key(&MetricLabel::RecvProducedSize)
+                && !snapshots.contains_key(&MetricLabel::ProcConsumedSize)
+                && !snapshots.contains_key(&MetricLabel::ProcProducedSize)
+                && !snapshots.contains_key(&MetricLabel::ExpConsumedSize),
+            "Size metrics should be absent when payload sizing is disabled"
+        );
+    }
+
     /// Scenario: one processor records successful logs and failed traces.
     /// Guarantees: produced and consumed request and item snapshots retain distinct `signal` and `outcome` datapoint attributes.
     #[test]
@@ -3901,6 +4057,8 @@ mod tests {
             Some(SignalType::Logs),
             4,
             5,
+            0,
+            0,
             RequestOutcome::Success,
             0,
         );
@@ -3911,6 +4069,8 @@ mod tests {
             Some(SignalType::Traces),
             6,
             7,
+            0,
+            0,
             RequestOutcome::Failure,
             0,
         );
@@ -4204,6 +4364,8 @@ mod tests {
                 },
                 produced_items: 0,
                 consumed_items: 0,
+                produced_size: 0,
+                consumed_size: 0,
             });
             let mut ack2 = AckMsg::new(pdata_recv_only);
             ack2.unwind.return_time_ns = nanos_since_birth();
@@ -5864,6 +6026,8 @@ mod tests {
                 },
                 produced_items: 0,
                 consumed_items: 0,
+                produced_size: 0,
+                consumed_size: 0,
             });
             pdata
         }
@@ -5996,6 +6160,8 @@ mod tests {
                 },
                 produced_items: 0,
                 consumed_items: 0,
+                produced_size: 0,
+                consumed_size: 0,
             });
             pdata
         }
@@ -6133,6 +6299,8 @@ mod tests {
                 },
                 produced_items: 0,
                 consumed_items: 0,
+                produced_size: 0,
+                consumed_size: 0,
             });
             pdata
         }

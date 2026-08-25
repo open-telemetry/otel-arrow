@@ -9,7 +9,7 @@ use super::{
     Capabilities, CapabilityRegistry, ConsumedTracker, Error, ResolvedLocalEntry,
     ResolvedSharedEntry,
 };
-use otap_df_config::ExtensionId;
+use otel_arrow_dfe_config::ExtensionId;
 use std::any::TypeId;
 use std::collections::{HashMap, HashSet};
 
@@ -33,7 +33,7 @@ use std::collections::{HashMap, HashSet};
 /// multiple bindings are invalid the specific one reported is stable
 /// across runs.
 pub(crate) fn resolve_bindings(
-    bindings: &HashMap<otap_df_config::CapabilityId, ExtensionId>,
+    bindings: &HashMap<otel_arrow_dfe_config::CapabilityId, ExtensionId>,
     registry: &CapabilityRegistry,
     // Duplicate extension names are rejected at the config layer by
     // `PipelineConfigBuilder::add_extension` (returns
@@ -54,7 +54,7 @@ pub(crate) fn resolve_bindings(
 
     // Iterate in sorted order by capability name for deterministic
     // error messages across runs.
-    let mut sorted_bindings: Vec<(&otap_df_config::CapabilityId, &ExtensionId)> =
+    let mut sorted_bindings: Vec<(&otel_arrow_dfe_config::CapabilityId, &ExtensionId)> =
         bindings.iter().collect();
     sorted_bindings.sort_unstable_by(|(a, _), (b, _)| a.as_ref().cmp(b.as_ref()));
 
@@ -65,7 +65,7 @@ pub(crate) fn resolve_bindings(
         // Step 1: Extension exists
         if !known_extensions.contains(ext_name_str) {
             return Err(Error::ConfigError(Box::new(
-                otap_df_config::error::Error::InvalidUserConfig {
+                otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                     error: format!(
                         "capability binding '{cap_name_str}': no extension named '{ext_name_str}' exists",
                     ),
@@ -77,11 +77,13 @@ pub(crate) fn resolve_bindings(
         let known_cap = known_caps.get(cap_name_str).ok_or_else(|| {
             let mut known_names: Vec<&str> = known_caps.keys().copied().collect();
             known_names.sort_unstable();
-            Error::ConfigError(Box::new(otap_df_config::error::Error::InvalidUserConfig {
-                error: format!(
-                    "unknown capability '{cap_name_str}'. Known capabilities: {known_names:?}",
-                ),
-            }))
+            Error::ConfigError(Box::new(
+                otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                    error: format!(
+                        "unknown capability '{cap_name_str}'. Known capabilities: {known_names:?}",
+                    ),
+                },
+            ))
         })?;
 
         let cap_type_id = (known_cap.type_id)();
@@ -91,7 +93,7 @@ pub(crate) fn resolve_bindings(
         let has_shared = registry.has_shared(&cap_type_id);
         if !has_native_local && !has_shared {
             return Err(Error::ConfigError(Box::new(
-                otap_df_config::error::Error::InvalidUserConfig {
+                otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                     error: format!("capability '{cap_name_str}': no loaded extension provides it",),
                 },
             )));
@@ -103,7 +105,7 @@ pub(crate) fn resolve_bindings(
 
         if local_entry.is_none() && shared_entry.is_none() {
             return Err(Error::ConfigError(Box::new(
-                otap_df_config::error::Error::InvalidUserConfig {
+                otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                     error: format!(
                         "capability '{cap_name_str}': extension '{ext_name_str}' does not provide it",
                     ),

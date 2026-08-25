@@ -17,15 +17,15 @@
 //! # use std::sync::Arc;
 //! # use arrow::array::{RecordBatch, UInt16Array};
 //! # use arrow::datatypes::{DataType, Field, Schema};
-//! # use otap_df_pdata::otap::{OtapArrowRecords, Logs};
-//! # use otap_df_pdata::proto::opentelemetry::{
+//! # use otel_arrow_dfe_pdata::otap::{OtapArrowRecords, Logs};
+//! # use otel_arrow_dfe_pdata::proto::opentelemetry::{
 //!     arrow::v1::ArrowPayloadType,
 //!     collector::logs::v1::ExportLogsServiceRequest,
 //!     common::v1::{AnyValue, InstrumentationScope, KeyValue},
 //!     logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
 //!     resource::v1::Resource
 //! };
-//! # use otap_df_pdata::{OtapPayload, OtlpProtoBytes, TryIntoWithOptions};
+//! # use otel_arrow_dfe_pdata::{OtapPayload, OtlpProtoBytes, TryIntoWithOptions};
 //! # use prost::Message;
 //! # use bytes::Bytes;
 //! let otlp_service_req = ExportLogsServiceRequest::new(vec![
@@ -67,7 +67,7 @@
 //!                                          |                 |
 //!                                          |                 |
 //!                                          v                 |
-//!    otap_df_otap::encoder::encode_<signal>_otap_batch    otap_df_pdata::otlp::<signal>::<signal_>_from()
+//!    otel_arrow_dfe_otap::encoder::encode_<signal>_otap_batch    otel_arrow_dfe_pdata::otlp::<signal>::<signal_>_from()
 //!                                          |                 ^
 //!                                          |                 |
 //!                                          |                 |
@@ -95,7 +95,7 @@ use crate::views::otlp::bytes::metrics::RawMetricsData;
 use crate::views::otlp::bytes::traces::RawTraceData;
 use crate::{TryFromWithOptions, TryIntoWithOptions};
 use bytes::BytesMut;
-use otap_df_config::{ConversionOptions, SignalFormat, SignalType};
+use otel_arrow_dfe_config::{ConversionOptions, SignalFormat, SignalType};
 use prost::{EncodeError, Message};
 
 /// Concrete storage representation backing an [`OtapPayload`].
@@ -182,8 +182,10 @@ impl PayloadData {
 /// - [`Self::take_payload`]'s returned value preserves the cache of the
 ///   payload version it contains.
 ///
-/// This makes it impossible for a processor to observe stale measurements
-/// without any manual invalidation step.
+/// [`Self::data`] exposes only a shared reference. Accessing the underlying
+/// representation for mutation requires consuming the wrapper through
+/// [`Self::into_data`] or [`Self::into_otap`], and wrapping the mutated
+/// representation creates a fresh cache. No manual invalidation is required.
 #[derive(Clone, Debug)]
 pub struct OtapPayload {
     data: PayloadData,
@@ -457,7 +459,7 @@ impl OtapPayloadHelpers for OtlpProtoBytes {
         match self {
             Self::ExportLogsRequest(bytes) => {
                 let logs_data_view = RawLogsData::new(bytes.as_ref());
-                use otap_df_pdata_views::views::logs::{
+                use otel_arrow_dfe_pdata_views::views::logs::{
                     LogsDataView, ResourceLogsView, ScopeLogsView,
                 };
                 logs_data_view
@@ -471,7 +473,7 @@ impl OtapPayloadHelpers for OtlpProtoBytes {
             }
             Self::ExportTracesRequest(bytes) => {
                 let traces_data_view = RawTraceData::new(bytes.as_ref());
-                use otap_df_pdata_views::views::trace::{
+                use otel_arrow_dfe_pdata_views::views::trace::{
                     ResourceSpansView, ScopeSpansView, TracesView,
                 };
                 traces_data_view
@@ -481,7 +483,7 @@ impl OtapPayloadHelpers for OtlpProtoBytes {
             }
             Self::ExportMetricsRequest(bytes) => {
                 let metrics_data_view = RawMetricsData::new(bytes.as_ref());
-                use otap_df_pdata_views::views::metrics::{
+                use otel_arrow_dfe_pdata_views::views::metrics::{
                     DataView, ExponentialHistogramView, GaugeView, HistogramView, MetricView,
                     MetricsView, ResourceMetricsView, ScopeMetricsView, SumView, SummaryView,
                 };

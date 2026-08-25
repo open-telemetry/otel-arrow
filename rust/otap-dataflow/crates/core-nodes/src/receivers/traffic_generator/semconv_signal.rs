@@ -11,7 +11,7 @@ use crate::receivers::traffic_generator::attributes::get_attribute_name_value;
 use crate::receivers::traffic_generator::fake_data::{
     current_time, delay, gen_span_id, gen_trace_id, get_scope_name, get_scope_version,
 };
-use otap_df_pdata::proto::opentelemetry::{
+use otel_arrow_dfe_pdata::proto::opentelemetry::{
     common::v1::{AnyValue, InstrumentationScope, KeyValue},
     logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber},
     metrics::v1::{

@@ -7,15 +7,15 @@
 //! focuses instead on defining the interconnection of nodes within the DAG and each node's specific
 //! settings.
 
-use otap_df_config::ExtensionId;
-use otap_df_config::NodeId;
+use otel_arrow_dfe_config::ExtensionId;
+use otel_arrow_dfe_config::NodeId;
 
 /// Configuration for the process-wide console output service.
 ///
 /// The type is defined by the telemetry crate, which owns the writer threads,
 /// and re-exported here so the engine's system configuration surface stays in
 /// one place. The defaults work with no user configuration.
-pub use otap_df_telemetry::output_service::OutputServiceConfig;
+pub use otel_arrow_dfe_telemetry::output_service::OutputServiceConfig;
 
 /// Default control channel capacity used by legacy constructor paths.
 const DEFAULT_CONTROL_CHANNEL_CAPACITY: usize = 32;

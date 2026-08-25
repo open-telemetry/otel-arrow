@@ -31,9 +31,9 @@
 //! their ownership, recovery, and failure semantics are defined. Profiles can be supported after
 //! OTAP provides a stable profile signal representation and file format.
 
-use otap_df_config::SignalType;
-use otap_df_config::error::Error as ConfigError;
-use otap_df_telemetry_macros::AttributeEnum;
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_telemetry_macros::AttributeEnum;
 use serde::Deserialize;
 use serde_json::Value;
 use std::path::{Component, Path, PathBuf};
@@ -277,7 +277,7 @@ fn invalid(error: impl Into<String>) -> ConfigError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_telemetry::attributes::AttributeEnum as _;
+    use otel_arrow_dfe_telemetry::attributes::AttributeEnum as _;
     use serde_json::json;
 
     fn absolute_template() -> String {
