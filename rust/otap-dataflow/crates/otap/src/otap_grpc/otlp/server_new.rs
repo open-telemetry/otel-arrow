@@ -934,7 +934,8 @@ impl NamedService for TraceServiceServer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otel_arrow_dfe_engine::capability::CapabilityError;
+    use otel_arrow_dfe_engine::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer as BearerTokenAuthorizerCapability;
+    use otel_arrow_dfe_engine::capability::{CapabilityError, CapabilityErrorSource};
     use otel_arrow_dfe_engine::control::runtime_ctrl_msg_channel;
     use otel_arrow_dfe_engine::shared::message::SharedSender;
     use otel_arrow_dfe_engine::testing::test_node;
@@ -958,6 +959,23 @@ mod tests {
                 "invalid" => AuthzDecision::deny(DenyReason::InvalidCredential),
                 _ => AuthzDecision::deny(DenyReason::NotPermitted),
             })
+        }
+    }
+
+    /// An authorizer that cannot reach its backing identity service, so it
+    /// reaches no decision at all.
+    struct FailingAuthorizer;
+
+    #[async_trait::async_trait]
+    impl BearerTokenAuthorizer for FailingAuthorizer {
+        async fn authorize(
+            &self,
+            _credential: &BearerToken,
+        ) -> Result<AuthzDecision, CapabilityError> {
+            Err(
+                CapabilityErrorSource::<BearerTokenAuthorizerCapability>::new("test-ext".into())
+                    .error("token review backend unreachable"),
+            )
         }
     }
 
@@ -1020,6 +1038,27 @@ mod tests {
             .await
             .expect_err("policy-denied credential must be rejected");
         assert_eq!(response.headers()["grpc-status"], "7");
+    }
+
+    /// Scenario: gRPC authorization is attempted while the authorizer cannot
+    /// reach its backing identity service and returns an error rather than a
+    /// decision.
+    /// Guarantees: An undetermined authorization fails closed with gRPC
+    /// UNAVAILABLE (14) rather than admitting the request.
+    #[tokio::test]
+    async fn undetermined_authorization_fails_closed() {
+        let authorizer = FailingAuthorizer;
+        let metrics = new_test_metrics();
+        let mut headers = http::HeaderMap::new();
+        _ = headers.insert(
+            http::header::AUTHORIZATION,
+            http::HeaderValue::from_static("Bearer allowed"),
+        );
+
+        let response = authorize_request(&authorizer, &metrics, &headers)
+            .await
+            .expect_err("an undetermined decision must not admit the request");
+        assert_eq!(response.headers()["grpc-status"], "14");
     }
 
     fn new_test_service(

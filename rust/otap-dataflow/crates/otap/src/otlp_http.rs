@@ -1239,7 +1239,8 @@ mod tests {
     use super::*;
 
     use otel_arrow_dfe_engine::admission::{AdmissionBinder, AdmissionDimension};
-    use otel_arrow_dfe_engine::capability::CapabilityError;
+    use otel_arrow_dfe_engine::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer as BearerTokenAuthorizerCapability;
+    use otel_arrow_dfe_engine::capability::{CapabilityError, CapabilityErrorSource};
     use otel_arrow_dfe_engine::memory_limiter::{MemoryPressureLevel, MemoryPressureState};
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -1272,6 +1273,23 @@ mod tests {
         ) -> Result<AuthzDecision, CapabilityError> {
             _ = self.0.fetch_add(1, Ordering::Relaxed);
             Ok(AuthzDecision::allow_anonymous())
+        }
+    }
+
+    /// An authorizer that cannot reach its backing identity service, so it
+    /// reaches no decision at all.
+    struct FailingAuthorizer;
+
+    #[async_trait::async_trait]
+    impl BearerTokenAuthorizer for FailingAuthorizer {
+        async fn authorize(
+            &self,
+            _credential: &BearerToken,
+        ) -> Result<AuthzDecision, CapabilityError> {
+            Err(
+                CapabilityErrorSource::<BearerTokenAuthorizerCapability>::new("test-ext".into())
+                    .error("token review backend unreachable"),
+            )
         }
     }
 
@@ -1322,6 +1340,32 @@ mod tests {
             .await
             .expect_err("policy-denied credential must be rejected");
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// Scenario: HTTP authorization is attempted while the authorizer cannot
+    /// reach its backing identity service and returns an error rather than a
+    /// decision.
+    /// Guarantees: An undetermined authorization fails closed with HTTP 503
+    /// rather than admitting the request, and does not present a bearer
+    /// challenge that would invite the client to retry with a new credential.
+    #[tokio::test]
+    async fn undetermined_authorization_fails_closed() {
+        let authorizer = FailingAuthorizer;
+        let mut headers = http::HeaderMap::new();
+        _ = headers.insert(
+            http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer allowed"),
+        );
+
+        let response = authorize_request(&authorizer, &headers)
+            .await
+            .expect_err("an undetermined decision must not admit the request");
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            !response
+                .headers()
+                .contains_key(http::header::WWW_AUTHENTICATE)
+        );
     }
 
     fn shared_rate_gate(
