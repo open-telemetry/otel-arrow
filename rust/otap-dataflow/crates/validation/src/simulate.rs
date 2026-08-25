@@ -10,9 +10,9 @@
 //!
 //! Because a live update relaunches a pipeline instance (and drains the old
 //! one), every stage runs with a fresh traffic generator and a fresh validation
-//! exporter. Stage completion is detected edge-triggered against a per-stage
-//! baseline of the cumulative `produced` and `finished` counters, which is
-//! robust to the cumulative, per-instance nature of the metrics.
+//! exporter. Stage completion is detected by polling metrics until each stage's
+//! generators reach their produced-signal targets and each capture's validation
+//! exporter reports `finished >= 1` and `valid >= 1`.
 
 use crate::error::ValidationError;
 use crate::metrics_types::{MetricSetSnapshot, MetricsSnapshot};
