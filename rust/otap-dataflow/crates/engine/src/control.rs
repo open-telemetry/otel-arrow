@@ -184,6 +184,10 @@ pub enum NackCause {
     RouteClosed,
     /// The node had to refuse locally parked work because shutdown started.
     NodeShutdown,
+    /// The request was permanently refused due to its content or a policy
+    /// decision (client error). Non-retryable; the client must change the
+    /// request or its configuration.
+    Rejected,
 }
 
 /// The NACK message.

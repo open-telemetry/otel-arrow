@@ -321,13 +321,12 @@ impl UnaryService<OtapPdata> for OtapBatchService {
                     Ok(Ok(())) => {}
                     Ok(Err(nack)) => {
                         let message = format!("Pipeline processing failed: {}", nack.reason);
-                        // Permanent NACKs -> INTERNAL (non-retryable),
-                        // transient NACKs -> UNAVAILABLE (retryable).
-                        return Err(if nack.permanent {
-                            Status::internal(message)
-                        } else {
-                            Status::unavailable(message)
-                        });
+                        // Permanent client rejections -> INVALID_ARGUMENT, other permanent
+                        // failures -> INTERNAL, transient failures -> UNAVAILABLE.
+                        return Err(
+                            crate::nack_status::classify_nack(nack.permanent, nack.cause)
+                                .to_tonic_status(message),
+                        );
                     }
                     Err(_) => {
                         return Err(Status::internal("Response channel closed unexpectedly"));

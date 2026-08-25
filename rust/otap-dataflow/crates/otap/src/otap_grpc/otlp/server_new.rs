@@ -32,6 +32,8 @@ use otel_arrow_dfe_engine::shared::receiver::EffectHandler;
 use otel_arrow_dfe_engine::{
     Interests, MessageSourceSharedEffectHandlerExtension, ProducerEffectHandlerExtension,
 };
+
+use crate::nack_status::classify_nack;
 use otel_arrow_dfe_pdata::OtapPayload;
 use otel_arrow_dfe_pdata::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
@@ -194,17 +196,14 @@ fn pipeline_send_status<E: Display>(err: E) -> Status {
 /// Converts a pipeline [`NackMsg`] into a [`tonic::Status`] for the gRPC
 /// response.
 ///
-/// Permanent NACKs are mapped to `INTERNAL` (non-retryable) and transient
-/// NACKs to `UNAVAILABLE` (retryable), following the OTLP gRPC status code
+/// The status code is chosen by [`classify_nack`]: permanent client rejections
+/// map to `INVALID_ARGUMENT`, other permanent failures to `INTERNAL`, and
+/// transient failures to `UNAVAILABLE`, following the OTLP gRPC status code
 /// conventions defined in
 /// <https://opentelemetry.io/docs/specs/otlp/#otlpgrpc-response>.
 fn nack_to_status(nack: NackMsg<OtapPdata>) -> Status {
     let message = format!("Pipeline processing failed: {}", nack.reason);
-    if nack.permanent {
-        Status::internal(message)
-    } else {
-        Status::unavailable(message)
-    }
+    classify_nack(nack.permanent, nack.cause).to_tonic_status(message)
 }
 
 fn response_channel_closed_status() -> Status {
@@ -898,6 +897,24 @@ mod tests {
         );
         assert!(
             status.message().contains("transient failure"),
+            "message: {}",
+            status.message()
+        );
+    }
+
+    /// Scenario: a permanent NACK classified as a client rejection is converted
+    /// to a gRPC status.
+    /// Guarantees: the client receives non-retryable `INVALID_ARGUMENT` rather
+    /// than the server-fault `INTERNAL` used for other permanent failures.
+    #[test]
+    fn test_nack_to_status_rejected_returns_invalid_argument() {
+        use otel_arrow_dfe_engine::control::NackCause;
+        let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into());
+        let nack = NackMsg::new_permanent_with_cause("bad request", pdata, NackCause::Rejected);
+        let status = nack_to_status(nack);
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert!(
+            status.message().contains("bad request"),
             "message: {}",
             status.message()
         );

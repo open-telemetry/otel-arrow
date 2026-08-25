@@ -868,10 +868,13 @@ impl HttpHandler {
                             reason = nack.reason.as_str(),
                             signal = format!("{:?}", signal)
                         );
-                        // Include the nack reason in the response for parity with gRPC
+                        // Include the nack reason in the response for parity with gRPC.
+                        // Permanent client rejections -> 400, other permanent failures -> 500,
+                        // transient failures -> 503.
+                        let class = crate::nack_status::classify_nack(nack.permanent, nack.cause);
                         return Err(rpc_status_response(
-                            StatusCode::SERVICE_UNAVAILABLE,
-                            14, // gRPC UNAVAILABLE code
+                            class.http_status(),
+                            class.grpc_code(),
                             format!("Pipeline processing failed: {}", nack.reason),
                         ));
                     }
