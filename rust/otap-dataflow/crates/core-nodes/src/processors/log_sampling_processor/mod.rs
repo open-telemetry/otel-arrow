@@ -324,6 +324,9 @@ mod tests {
                 let output_otap = match output_payload.into_data() {
                     PayloadData::OtlpBytes(_) => panic!("Unexpected otlp bytes"),
                     PayloadData::OtapArrowRecords(otap_arrow_records) => otap_arrow_records,
+                    PayloadData::PluggableArrowRecords(_) | PayloadData::PluggableBytes(_) => {
+                        panic!("Unexpected pluggable representation")
+                    }
                 };
 
                 let output_attrs = output_otap.get(ArrowPayloadType::LogAttrs).unwrap();

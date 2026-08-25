@@ -1079,6 +1079,28 @@ impl DurableBuffer {
                 };
                 (result, num_items)
             }
+            data @ (PayloadData::PluggableArrowRecords(_) | PayloadData::PluggableBytes(_)) => {
+                let format_id = match &data {
+                    PayloadData::PluggableArrowRecords(records) => records.format_id(),
+                    PayloadData::PluggableBytes(bytes) => bytes.format_id(),
+                    _ => unreachable!(),
+                };
+                let message = format!(
+                    "durable buffer has no registered encoding for pluggable representation `{format_id}`"
+                );
+                otel_error!(
+                    "durable_buffer.representation.unsupported",
+                    format_id,
+                    message = message.as_str()
+                );
+                effect_handler
+                    .notify_nack(NackMsg::new_permanent(
+                        message,
+                        OtapPdata::new(context, data.into()),
+                    ))
+                    .await?;
+                return Ok(());
+            }
         };
 
         // Handle ingest result

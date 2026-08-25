@@ -14,7 +14,9 @@ pub mod proto;
 pub mod views;
 
 pub mod error;
+pub mod extended_logs;
 pub mod otap;
+pub mod representation;
 pub mod schema;
 
 pub mod arrays;
@@ -25,6 +27,9 @@ pub(crate) mod payload;
 pub use otap::OtapArrowRecords;
 pub use otlp::OtlpProtoBytes;
 pub use payload::{OtapPayload, OtapPayloadHelpers, PayloadData};
+pub use representation::{
+    PDataArrowRecordSet, PDataArrowTable, PDataBytes, RepresentationError, RepresentationVersion,
+};
 
 /// Testing support
 #[cfg(any(test, feature = "testing"))]

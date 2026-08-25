@@ -176,7 +176,62 @@ impl fmt::Display for LogEvent {
             f,
             "{}",
             format_log_record_to_string(Some(self.time), &self.record)
-        )
+        )?;
+        if let Some(stacktrace) = &self.record.stacktrace {
+            let callsite = self.record.callsite();
+            for (ordinal, address) in stacktrace.frames().iter().enumerate() {
+                let mut rendered = false;
+                let mut format_error = None;
+                backtrace::resolve(*address as *mut std::ffi::c_void, |symbol| {
+                    if rendered {
+                        return;
+                    }
+                    rendered = true;
+                    if let Err(error) = write!(f, "\n  at ") {
+                        format_error = Some(error);
+                        return;
+                    }
+                    if let Some(name) = symbol.name() {
+                        if let Err(error) = write!(f, "{name}") {
+                            format_error = Some(error);
+                            return;
+                        }
+                    } else {
+                        if let Err(error) = write!(f, "0x{address:x}") {
+                            format_error = Some(error);
+                            return;
+                        }
+                    }
+                    let filename = (ordinal == 0)
+                        .then(|| callsite.file())
+                        .flatten()
+                        .map(std::path::Path::new)
+                        .or_else(|| symbol.filename());
+                    if let Some(filename) = filename {
+                        if let Err(error) = write!(f, " ({})", filename.display()) {
+                            format_error = Some(error);
+                            return;
+                        }
+                    }
+                    let line = (ordinal == 0)
+                        .then(|| callsite.line())
+                        .flatten()
+                        .or_else(|| symbol.lineno());
+                    if let Some(line) = line {
+                        if let Err(error) = write!(f, ":{line}") {
+                            format_error = Some(error);
+                        }
+                    }
+                });
+                if let Some(error) = format_error {
+                    return Err(error);
+                }
+                if !rendered {
+                    write!(f, "\n  at 0x{address:x}")?;
+                }
+            }
+        }
+        Ok(())
     }
 }
 

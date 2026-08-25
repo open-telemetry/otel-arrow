@@ -826,6 +826,7 @@ mod tests {
             body_attrs_bytes: Bytes::new(),
             dropped_attributes_count: 0,
             context: LogContext::new(),
+            stacktrace: None,
         };
 
         let output = format_log_record_to_string(Some(time), &record);
@@ -883,6 +884,7 @@ mod tests {
             body_attrs_bytes: Bytes::from(encoded),
             dropped_attributes_count: 0,
             context: LogContext::new(),
+            stacktrace: None,
         };
 
         let mut buf = [0u8; LOG_BUFFER_SIZE];

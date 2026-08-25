@@ -7527,6 +7527,7 @@ dependencies = [
  "arrow-schema",
  "async-stream",
  "async-trait",
+ "backtrace",
  "base64 0.23.1",
  "blake3",
  "byte-unit",
@@ -7935,6 +7936,7 @@ name = "otel-arrow-dfe-telemetry"
 version = "0.51.0"
 dependencies = [
  "arc-swap",
+ "backtrace",
  "bytes",
  "chrono",
  "criterion",

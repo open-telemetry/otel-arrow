@@ -28,6 +28,8 @@
 //!           description: Uptime of the pipeline process.
 //! ```
 
+mod extended_logs;
+
 otel_arrow_dfe_telemetry::otel_component_scope!(
     urn = INTERNAL_TELEMETRY_RECEIVER_URN,
     target = "otel.receiver.internal_telemetry",
@@ -64,6 +66,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::{Instant, MissedTickBehavior, interval_at};
+
+use self::extended_logs::SymbolCache;
 
 /// The URN for the internal telemetry receiver.
 pub use otel_arrow_dfe_config::engine::INTERNAL_TELEMETRY_RECEIVER_URN;
@@ -105,6 +109,10 @@ pub struct Config {
     /// Configuration for registry-backed internal metrics.
     #[serde(default)]
     pub metrics: MetricsConfig,
+
+    /// Configuration for internal log output.
+    #[serde(default)]
+    pub logs: LogsConfig,
 }
 
 impl Default for Config {
@@ -112,8 +120,29 @@ impl Default for Config {
         Self {
             signals: default_signals(),
             metrics: MetricsConfig::default(),
+            logs: LogsConfig::default(),
         }
     }
+}
+
+/// Physical representation emitted for internal logs.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LogsRepresentation {
+    /// Existing direct OTLP protobuf encoding.
+    #[default]
+    Otlp,
+    /// Canonical OTAP log tables with compact stacktrace extension tables.
+    ArrowExtended,
+}
+
+/// Configuration for internal log output.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LogsConfig {
+    /// Physical representation emitted by the receiver.
+    #[serde(default)]
+    pub representation: LogsRepresentation,
 }
 
 /// Registry-backed internal metrics configuration.
@@ -324,6 +353,8 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
     ) -> Result<TerminalState, Error> {
         let internal = self.internal_telemetry.clone();
         let mut scope_cache = ScopeToBytesMap::new(internal.registry.clone());
+        let mut symbol_cache = SymbolCache::default();
+        let logs_representation = self.config.logs.representation;
         let logs_enabled = self.config.logs_enabled();
         let metrics_enabled = self.config.metrics_enabled();
         let metrics_interval = self
@@ -367,6 +398,8 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
                                 &internal,
                                 logs_enabled,
                                 &mut scope_cache,
+                                &mut symbol_cache,
+                                logs_representation,
                                 metrics_encoder.as_ref(),
                                 deadline,
                             ).await?;
@@ -380,6 +413,8 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
                                 &internal,
                                 logs_enabled,
                                 &mut scope_cache,
+                                &mut symbol_cache,
+                                logs_representation,
                                 metrics_encoder.as_ref(),
                                 deadline,
                             ).await?;
@@ -429,6 +464,8 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
                                 log_event,
                                 &internal.resource_field_bytes,
                                 &mut scope_cache,
+                                &mut symbol_cache,
+                                logs_representation,
                             ).await?;
                         }
                         Ok(ObservedEvent::Engine(_)) => {
@@ -451,6 +488,8 @@ impl InternalTelemetryReceiver {
         internal: &otel_arrow_dfe_telemetry::InternalTelemetrySettings,
         logs_enabled: bool,
         scope_cache: &mut ScopeToBytesMap,
+        symbol_cache: &mut SymbolCache,
+        logs_representation: LogsRepresentation,
         encoder: Option<&MetricsOtlpEncoder>,
         deadline: std::time::Instant,
     ) -> Result<(), Error> {
@@ -465,6 +504,8 @@ impl InternalTelemetryReceiver {
                         log_event,
                         &internal.resource_field_bytes,
                         scope_cache,
+                        symbol_cache,
+                        logs_representation,
                     )
                     .await?;
                 }
@@ -541,15 +582,22 @@ impl InternalTelemetryReceiver {
         log_event: LogEvent,
         resource_field_bytes: &Bytes,
         scope_cache: &mut ScopeToBytesMap,
+        symbol_cache: &mut SymbolCache,
+        representation: LogsRepresentation,
     ) -> Result<(), Error> {
-        let mut buf = ProtoBuffer::with_capacity(512);
-
-        encode_export_logs_request(&mut buf, &log_event, resource_field_bytes, scope_cache);
-
-        let pdata = OtapPdata::new(
-            Context::default(),
-            OtlpProtoBytes::ExportLogsRequest(buf.into_bytes()).into(),
-        );
+        let payload = match representation {
+            LogsRepresentation::Otlp => {
+                let mut buf = ProtoBuffer::with_capacity(512);
+                encode_export_logs_request(&mut buf, &log_event, resource_field_bytes, scope_cache);
+                OtlpProtoBytes::ExportLogsRequest(buf.into_bytes()).into()
+            }
+            LogsRepresentation::ArrowExtended => {
+                extended_logs::encode(&log_event, resource_field_bytes, scope_cache, symbol_cache)
+                    .map_err(|error| Error::PdataConversionError { error })?
+                    .into()
+            }
+        };
+        let pdata = OtapPdata::new(Context::default(), payload);
         effect_handler.send_message(pdata).await?;
         Ok(())
     }
@@ -561,7 +609,7 @@ mod tests {
     use otel_arrow_dfe_config::observed_state::SendPolicy;
     use otel_arrow_dfe_config::pipeline::telemetry::TelemetryConfig;
     use otel_arrow_dfe_config::settings::telemetry::logs::{
-        LoggingProviders, LogsConfig, ProviderMode,
+        LoggingProviders, LogsConfig as TelemetryLogsConfig, ProviderMode,
     };
     use otel_arrow_dfe_engine::control::{
         NodeControlMsg, RuntimeControlMsg, runtime_ctrl_msg_channel,
@@ -772,6 +820,7 @@ mod tests {
                 interval: Some(Duration::from_secs(5)),
                 views: Vec::new(),
             },
+            logs: LogsConfig::default(),
         };
         assert_eq!(
             configured.metric_drain_interval(Duration::from_secs(60)),
@@ -784,6 +833,7 @@ mod tests {
                 interval: Some(Duration::from_secs(5)),
                 views: Vec::new(),
             },
+            logs: LogsConfig::default(),
         };
         assert_eq!(
             logs_only.metric_drain_interval(Duration::from_secs(60)),
@@ -911,6 +961,7 @@ mod tests {
                         interval: Some(Duration::from_millis(10)),
                         views: Vec::new(),
                     },
+                    logs: LogsConfig::default(),
                 },
                 otel_arrow_dfe_telemetry::InternalTelemetrySettings {
                     logs_receiver,
@@ -984,14 +1035,14 @@ mod tests {
             let registry = TelemetryRegistryHandle::new();
             let config = TelemetryConfig {
                 reporting_interval: engine_reporting_interval,
-                logs: LogsConfig {
+                logs: TelemetryLogsConfig {
                     providers: LoggingProviders {
                         global: ProviderMode::Noop,
                         engine: ProviderMode::Noop,
                         internal: ProviderMode::Noop,
                         admin: ProviderMode::Noop,
                     },
-                    ..LogsConfig::default()
+                    ..TelemetryLogsConfig::default()
                 },
                 ..TelemetryConfig::default()
             };
@@ -1016,6 +1067,7 @@ mod tests {
                         interval: Some(receiver_interval),
                         views: Vec::new(),
                     },
+                    logs: LogsConfig::default(),
                 },
                 telemetry.internal_telemetry_settings(),
             );

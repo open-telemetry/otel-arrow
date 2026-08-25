@@ -7,7 +7,7 @@ use crate::event::LogEvent;
 use otel_arrow_dfe_config::settings::telemetry::logs::InternalLogTapConfig;
 use parking_lot::RwLock;
 use std::collections::VecDeque;
-use std::mem::size_of;
+use std::mem::{size_of, size_of_val};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::broadcast;
@@ -256,6 +256,11 @@ fn estimate_event_size(event: &LogEvent) -> usize {
     size_of::<RetainedLogEvent>()
         + event.record.body_attrs_bytes.len()
         + event.record.context.len() * size_of::<crate::registry::EntityKey>()
+        + event
+            .record
+            .stacktrace
+            .as_ref()
+            .map_or(0, |stacktrace| size_of_val(stacktrace.frames()))
 }
 
 #[cfg(test)]
@@ -275,7 +280,10 @@ mod tests {
         let (tx, rx) = flume::bounded(1);
         let reporter = ObservedEventReporter::new(SendPolicy::default(), tx);
         let setup = TracingSetup::new(
-            ProviderSetup::InternalAsync { reporter },
+            ProviderSetup::InternalAsync {
+                reporter,
+                stacktraces: Default::default(),
+            },
             level("info"),
             LogContext::new,
         );

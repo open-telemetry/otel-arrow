@@ -10,7 +10,7 @@
 use crate::event::{LogEvent, ObservedEventReporter};
 use crate::log_filter::RuntimeLogFilter;
 use crate::self_tracing::{ConsoleWriter, LogContextFn, LogRecord};
-use otel_arrow_dfe_config::settings::telemetry::logs::LogLevel;
+use otel_arrow_dfe_config::settings::telemetry::logs::{LogLevel, StackTraceConfig};
 use std::time::SystemTime;
 use tracing::{Dispatch, Event, Subscriber};
 #[cfg(test)]
@@ -105,6 +105,8 @@ pub enum ProviderSetup {
     InternalAsync {
         /// Reporter to send log events through.
         reporter: ObservedEventReporter,
+        /// Caller-thread stack capture policy.
+        stacktraces: StackTraceConfig,
     },
 }
 
@@ -118,13 +120,25 @@ impl ProviderSetup {
             ProviderSetup::Noop => Dispatch::new(tracing::subscriber::NoSubscriber::new()),
 
             ProviderSetup::ConsoleDirect => {
-                let layer =
-                    StructuredLoggingLayer::new(Some(ConsoleWriter::color()), None, context_fn);
+                let layer = StructuredLoggingLayer::new(
+                    Some(ConsoleWriter::color()),
+                    None,
+                    context_fn,
+                    StackTraceConfig::default(),
+                );
                 Dispatch::new(Registry::default().with(filter.layer()).with(layer))
             }
 
-            ProviderSetup::InternalAsync { reporter } => {
-                let layer = StructuredLoggingLayer::new(None, Some(reporter.clone()), context_fn);
+            ProviderSetup::InternalAsync {
+                reporter,
+                stacktraces,
+            } => {
+                let layer = StructuredLoggingLayer::new(
+                    None,
+                    Some(reporter.clone()),
+                    context_fn,
+                    *stacktraces,
+                );
                 Dispatch::new(Registry::default().with(filter.layer()).with(layer))
             }
         }
@@ -181,6 +195,7 @@ pub struct StructuredLoggingLayer {
     writer: Option<ConsoleWriter>,
     reporter: Option<ObservedEventReporter>,
     context_fn: LogContextFn,
+    stacktraces: StackTraceConfig,
 }
 
 impl StructuredLoggingLayer {
@@ -190,11 +205,13 @@ impl StructuredLoggingLayer {
         writer: Option<ConsoleWriter>,
         reporter: Option<ObservedEventReporter>,
         context_fn: LogContextFn,
+        stacktraces: StackTraceConfig,
     ) -> Self {
         Self {
             writer,
             reporter,
             context_fn,
+            stacktraces,
         }
     }
 }
@@ -206,7 +223,10 @@ where
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
         let time = SystemTime::now();
         let context = (self.context_fn)();
-        let record = LogRecord::new(event, context);
+        let mut record = LogRecord::new(event, context);
+        if self.stacktraces.enabled {
+            record = record.with_stacktrace(self.stacktraces.max_frames);
+        }
         if let Some(writer) = self.writer {
             writer.print_log_record(time, &record.as_view(), |w| {
                 w.format_entity_suffix_without_registry(&record.context);
@@ -242,7 +262,10 @@ mod tests {
     }
 
     fn internal_async_provider(reporter: ObservedEventReporter) -> ProviderSetup {
-        ProviderSetup::InternalAsync { reporter }
+        ProviderSetup::InternalAsync {
+            reporter,
+            stacktraces: StackTraceConfig::default(),
+        }
     }
 
     fn test_setup(p: ProviderSetup, l: LogLevel) -> TracingSetup {
@@ -377,6 +400,36 @@ mod tests {
                 matches!(event, ObservedEvent::Log(_)),
                 "event should be a log"
             );
+        });
+    }
+
+    /// Scenario: asynchronous logging has bounded caller stack capture enabled.
+    /// Guarantees: the queued log carries unresolved instruction pointers for later symbolization.
+    #[test]
+    fn internal_async_provider_captures_stacktrace_when_enabled() {
+        crate::with_cleared_rust_log(|| {
+            let (reporter, receiver) = test_reporter();
+            let setup = test_setup(
+                ProviderSetup::InternalAsync {
+                    reporter,
+                    stacktraces: StackTraceConfig {
+                        enabled: true,
+                        max_frames: 8,
+                    },
+                },
+                level("info"),
+            );
+
+            setup.with_subscriber_ignoring_env(|| {
+                otel_info!("stacktrace.capture");
+            });
+
+            let ObservedEvent::Log(event) = receiver.try_recv().expect("should receive log") else {
+                panic!("expected log event");
+            };
+            let stacktrace = event.record.stacktrace.expect("stacktrace");
+            assert!(!stacktrace.frames().is_empty());
+            assert!(stacktrace.frames().len() <= 8);
         });
     }
 

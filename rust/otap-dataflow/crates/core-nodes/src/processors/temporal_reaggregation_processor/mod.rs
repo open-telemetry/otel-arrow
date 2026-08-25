@@ -641,6 +641,28 @@ impl TemporalReaggregationProcessor {
                 let view = RawMetricsData::new(otlp.as_bytes());
                 self.process_view(effect_handler, &view).await
             }
+            PayloadData::PluggableArrowRecords(records) => {
+                let message = format!(
+                    "temporal reaggregation does not support pluggable Arrow representation `{}`",
+                    records.format_id()
+                );
+                self.metrics.batches_rejected.inc();
+                effect_handler
+                    .notify_nack(NackMsg::new_permanent(message, pdata))
+                    .await?;
+                return Ok(());
+            }
+            PayloadData::PluggableBytes(bytes) => {
+                let message = format!(
+                    "temporal reaggregation does not support pluggable byte representation `{}`",
+                    bytes.format_id()
+                );
+                self.metrics.batches_rejected.inc();
+                effect_handler
+                    .notify_nack(NackMsg::new_permanent(message, pdata))
+                    .await?;
+                return Ok(());
+            }
         };
 
         match result {

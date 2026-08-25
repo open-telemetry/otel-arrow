@@ -26,6 +26,7 @@ otel-arrow-dfe-telemetry-macros = { workspace = true }
 otel-arrow-dfe-expohisto = { workspace = true }
 
 bytes = { workspace = true }
+backtrace = { workspace = true }
 chrono = { workspace = true }
 flume = { workspace = true }
 tokio = { workspace = true }

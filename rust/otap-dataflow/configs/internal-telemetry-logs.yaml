@@ -16,6 +16,9 @@ engine:
         engine: its
         internal: console_direct
         admin: its
+      stacktraces:
+        enabled: true
+        max_frames: 32
     resource:
       service.id: 1234
       service.name: test
@@ -38,6 +41,8 @@ engine:
           type: "receiver:internal_telemetry"
           config:
             signals: [logs]
+            logs:
+              representation: arrow_extended
         console:
           type: "exporter:console"
           config:

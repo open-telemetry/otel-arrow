@@ -360,6 +360,8 @@ enum EncodeFailure {
     View(String),
     #[error(transparent)]
     Frame(#[from] FrameEncodeError),
+    #[error("unsupported pluggable pdata representation `{0}`")]
+    UnsupportedRepresentation(String),
 }
 
 fn encode_payload(
@@ -403,6 +405,16 @@ fn encode_payload(
                 encode_traces(&view, frame, max_frame_bytes)?;
             }
         },
+        PayloadData::PluggableArrowRecords(records) => {
+            return Err(EncodeFailure::UnsupportedRepresentation(
+                records.format_id().to_owned(),
+            ));
+        }
+        PayloadData::PluggableBytes(bytes) => {
+            return Err(EncodeFailure::UnsupportedRepresentation(
+                bytes.format_id().to_owned(),
+            ));
+        }
     }
     Ok(())
 }

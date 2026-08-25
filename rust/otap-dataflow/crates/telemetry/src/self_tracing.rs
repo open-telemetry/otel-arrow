@@ -58,6 +58,42 @@ pub struct LogRecord {
 
     /// The context of this log record, typically pipeline and node context keys.
     pub context: LogContext,
+
+    /// Unresolved caller instruction pointers captured on the emitting thread.
+    pub stacktrace: Option<Box<RawStackTrace>>,
+}
+
+/// Unresolved caller stack captured with bounded depth.
+#[derive(Debug, Clone)]
+pub struct RawStackTrace {
+    frames: SmallVec<[usize; 16]>,
+}
+
+impl RawStackTrace {
+    /// Captures current-thread instruction pointers without symbolization.
+    #[must_use]
+    pub fn capture(max_frames: usize) -> Self {
+        // Skip capture plus tracing-subscriber dispatch frames so the first
+        // retained address is the tracing macro expansion at the log callsite.
+        const INTERNAL_FRAMES: usize = 12;
+        let mut frames = SmallVec::new();
+        let mut skipped = 0;
+        backtrace::trace(|frame| {
+            if skipped < INTERNAL_FRAMES {
+                skipped += 1;
+                return true;
+            }
+            frames.push(frame.ip() as usize);
+            frames.len() < max_frames
+        });
+        Self { frames }
+    }
+
+    /// Captured instruction pointers in call order.
+    #[must_use]
+    pub fn frames(&self) -> &[usize] {
+        &self.frames
+    }
 }
 
 /// Borrowed view of a log record for zero-copy formatting.
@@ -179,6 +215,7 @@ impl StackLogRecord {
             body_attrs_bytes: self.buf.to_bytes(),
             callsite_id: self.callsite_id,
             context,
+            stacktrace: None,
         }
     }
 }
@@ -216,7 +253,15 @@ impl LogRecord {
             dropped_attributes_count: dropped_count as u16,
             body_attrs_bytes: buf.into_bytes(),
             context,
+            stacktrace: None,
         }
+    }
+
+    /// Attaches a bounded unresolved caller stack.
+    #[must_use]
+    pub fn with_stacktrace(mut self, max_frames: usize) -> Self {
+        self.stacktrace = Some(Box::new(RawStackTrace::capture(max_frames)));
+        self
     }
 
     /// The callsite.

@@ -604,6 +604,9 @@ impl ContentRouter {
                     },
                 }
             }
+            PayloadData::PluggableArrowRecords(_) | PayloadData::PluggableBytes(_) => {
+                RouteResolution::ConversionError
+            }
         }
     }
 

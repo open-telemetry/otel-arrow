@@ -31,7 +31,9 @@ use crate::registry::TelemetryRegistryHandle;
 use log_filter::{RuntimeLogFilter, RuntimeLogFilterHandle};
 use otel_arrow_dfe_config::observed_state::SendPolicy;
 use otel_arrow_dfe_config::pipeline::telemetry::TelemetryConfig;
-use otel_arrow_dfe_config::settings::telemetry::logs::{LogLevel, LoggingProviders, ProviderMode};
+use otel_arrow_dfe_config::settings::telemetry::logs::{
+    LogLevel, LoggingProviders, ProviderMode, StackTraceConfig,
+};
 use self_tracing::LogContextFn;
 use std::sync::Arc;
 use tracing_init::ProviderSetup;
@@ -212,6 +214,9 @@ pub struct InternalTelemetrySystem {
     /// The logging providers.
     provider_modes: LoggingProviders,
 
+    /// Caller-thread stack capture policy for asynchronous providers.
+    stacktraces: StackTraceConfig,
+
     /// Entity key providers for associating log events with their source entity context.
     context_fn: LogContextFn,
 
@@ -294,6 +299,7 @@ impl InternalTelemetrySystem {
             log_filter,
             log_filter_handle,
             provider_modes: config.logs.providers.clone(),
+            stacktraces: config.logs.stacktraces,
             context_fn,
             console_async_reporter,
             its_reporter,
@@ -331,10 +337,12 @@ impl InternalTelemetrySystem {
                     .as_ref()
                     .expect("has provider")
                     .clone(),
+                stacktraces: self.stacktraces,
             },
 
             ProviderMode::ITS => ProviderSetup::InternalAsync {
                 reporter: self.its_reporter.clone(),
+                stacktraces: self.stacktraces,
             },
         };
 

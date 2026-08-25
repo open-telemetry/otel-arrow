@@ -122,6 +122,9 @@ pub enum Error {
     #[error("Unsupported payload type, got: {}", actual)]
     UnsupportedPayloadType { actual: i32 },
 
+    #[error("unsupported pluggable pdata representation `{format_id}`")]
+    UnsupportedRepresentation { format_id: String },
+
     #[error("Failed to build stream reader: {}", source)]
     BuildStreamReader { source: ArrowError },
 

@@ -549,6 +549,29 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
 
                             (Uncompressed::InProtoBuffer, otap_batch.into())
                         }
+                        data @ (PayloadData::PluggableArrowRecords(_)
+                        | PayloadData::PluggableBytes(_)) => {
+                            let format_id = match &data {
+                                PayloadData::PluggableArrowRecords(records) => records.format_id(),
+                                PayloadData::PluggableBytes(bytes) => bytes.format_id(),
+                                _ => unreachable!(),
+                            };
+                            let message = format!(
+                                "OTLP HTTP exporter does not support pluggable representation `{format_id}`"
+                            );
+                            otel_error!(
+                                "otlp_http_exporter.representation.unsupported",
+                                format_id,
+                                message = message.as_str()
+                            );
+                            effect_handler
+                                .notify_nack(NackMsg::new_permanent(
+                                    message,
+                                    OtapPdata::new(context, data.into()),
+                                ))
+                                .await?;
+                            continue;
+                        }
                     };
 
                     let body = match compression {

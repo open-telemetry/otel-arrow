@@ -835,6 +835,22 @@ impl BatchProcessor {
                     return Err(Self::no_active_format_error());
                 }
             }
+            PayloadData::PluggableArrowRecords(records) => {
+                return Err(EngineError::PdataConversionError {
+                    error: format!(
+                        "batch processor does not support pluggable Arrow representation `{}`",
+                        records.format_id()
+                    ),
+                });
+            }
+            PayloadData::PluggableBytes(bytes) => {
+                return Err(EngineError::PdataConversionError {
+                    error: format!(
+                        "batch processor does not support pluggable byte representation `{}`",
+                        bytes.format_id()
+                    ),
+                });
+            }
         };
         Ok(())
     }

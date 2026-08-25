@@ -90,6 +90,7 @@ use crate::otlp::metrics::MetricsProtoBytesEncoder;
 use crate::otlp::traces::TracesProtoBytesEncoder;
 use crate::otlp::{OtlpProtoBytes, ProtoBuffer, ProtoBytesEncoder};
 use crate::proto::OtlpProtoMessage;
+use crate::representation::{PDataArrowRecordSet, PDataBytes};
 use crate::views::otlp::bytes::logs::RawLogsData;
 use crate::views::otlp::bytes::metrics::RawMetricsData;
 use crate::views::otlp::bytes::traces::RawTraceData;
@@ -113,6 +114,12 @@ pub enum PayloadData {
     /// data is contained in `OtapBatch` which contains Arrow `RecordBatches` for OTAP payload type
     /// TODO: Remove "Arrow" from this case name, it stutters; follow SignalFormat.
     OtapArrowRecords(OtapArrowRecords),
+
+    /// Named and versioned set of format-local Arrow record batches.
+    PluggableArrowRecords(PDataArrowRecordSet),
+
+    /// Named and versioned encoded bytes carried without interpretation.
+    PluggableBytes(PDataBytes),
 }
 
 impl PayloadData {
@@ -120,6 +127,8 @@ impl PayloadData {
         match self {
             Self::OtlpBytes(value) => value.signal_type(),
             Self::OtapArrowRecords(value) => value.signal_type(),
+            Self::PluggableArrowRecords(value) => value.signal_type(),
+            Self::PluggableBytes(value) => value.signal_type(),
         }
     }
 
@@ -127,6 +136,8 @@ impl PayloadData {
         match self {
             Self::OtapArrowRecords(_) => SignalFormat::OtapRecords,
             Self::OtlpBytes(_) => SignalFormat::OtlpBytes,
+            Self::PluggableArrowRecords(_) => SignalFormat::OtapRecords,
+            Self::PluggableBytes(_) => SignalFormat::OtlpBytes,
         }
     }
 
@@ -134,6 +145,8 @@ impl PayloadData {
         match self {
             Self::OtlpBytes(value) => value.is_empty(),
             Self::OtapArrowRecords(value) => value.is_empty(),
+            Self::PluggableArrowRecords(value) => value.num_items() == 0,
+            Self::PluggableBytes(value) => value.num_items() == 0,
         }
     }
 
@@ -142,6 +155,8 @@ impl PayloadData {
         match self {
             Self::OtlpBytes(value) => Self::OtlpBytes(value.take_payload()),
             Self::OtapArrowRecords(value) => Self::OtapArrowRecords(value.take_payload()),
+            Self::PluggableArrowRecords(value) => Self::PluggableArrowRecords(value.take_payload()),
+            Self::PluggableBytes(value) => Self::PluggableBytes(value.take_payload()),
         }
     }
 
@@ -149,6 +164,8 @@ impl PayloadData {
         match self {
             Self::OtlpBytes(value) => value.num_items(),
             Self::OtapArrowRecords(value) => value.num_items(),
+            Self::PluggableArrowRecords(value) => value.num_items(),
+            Self::PluggableBytes(value) => value.num_items(),
         }
     }
 
@@ -156,6 +173,8 @@ impl PayloadData {
         match self {
             Self::OtlpBytes(value) => Some(value.num_bytes()),
             Self::OtapArrowRecords(value) => value.num_bytes(),
+            Self::PluggableArrowRecords(value) => value.logical_arrow_bytes().ok(),
+            Self::PluggableBytes(value) => Some(value.bytes().len()),
         }
     }
 
@@ -163,6 +182,8 @@ impl PayloadData {
         match self {
             Self::OtlpBytes(value) => value.retained_memory_bytes(),
             Self::OtapArrowRecords(value) => value.retained_memory_bytes(),
+            Self::PluggableArrowRecords(value) => value.retained_memory_bytes(),
+            Self::PluggableBytes(value) => value.bytes().len(),
         }
     }
 }
@@ -212,6 +233,18 @@ impl OtapPayload {
     #[must_use]
     pub fn from_otap(payload: OtapArrowRecords) -> Self {
         Self::from_data(PayloadData::OtapArrowRecords(payload))
+    }
+
+    /// Constructs a fresh payload from a pluggable Arrow representation.
+    #[must_use]
+    pub fn from_pluggable_arrow(payload: PDataArrowRecordSet) -> Self {
+        Self::from_data(PayloadData::PluggableArrowRecords(payload))
+    }
+
+    /// Constructs a fresh payload from a pluggable byte representation.
+    #[must_use]
+    pub fn from_pluggable_bytes(payload: PDataBytes) -> Self {
+        Self::from_data(PayloadData::PluggableBytes(payload))
     }
 
     /// Borrows the concrete payload data for pattern matching.
@@ -284,7 +317,10 @@ impl OtapPayload {
                 item_count
             }
             // Bypass the cache for OTAP because Arrow batches store row counts.
-            PayloadData::OtapArrowRecords(_) => self.data.num_items(),
+            PayloadData::OtapArrowRecords(_) | PayloadData::PluggableArrowRecords(_) => {
+                self.data.num_items()
+            }
+            PayloadData::PluggableBytes(_) => self.data.num_items(),
         }
     }
 
@@ -299,7 +335,7 @@ impl OtapPayload {
             // OTLP already stores the exact encoded length in Bytes metadata.
             PayloadData::OtlpBytes(_) => self.data.num_bytes(),
             // Cache OTAP sizing because it walks every Arrow array and buffer.
-            PayloadData::OtapArrowRecords(_) => {
+            PayloadData::OtapArrowRecords(_) | PayloadData::PluggableArrowRecords(_) => {
                 if let Some(size) = self.size {
                     return Some(size);
                 }
@@ -307,6 +343,7 @@ impl OtapPayload {
                 self.size = Some(size);
                 Some(size)
             }
+            PayloadData::PluggableBytes(_) => self.data.num_bytes(),
         }
     }
 
@@ -538,6 +575,18 @@ impl From<OtlpProtoBytes> for OtapPayload {
     }
 }
 
+impl From<PDataArrowRecordSet> for OtapPayload {
+    fn from(value: PDataArrowRecordSet) -> Self {
+        Self::from_pluggable_arrow(value)
+    }
+}
+
+impl From<PDataBytes> for OtapPayload {
+    fn from(value: PDataBytes) -> Self {
+        Self::from_pluggable_bytes(value)
+    }
+}
+
 impl From<PayloadData> for OtapPayload {
     fn from(value: PayloadData) -> Self {
         Self::from_data(value)
@@ -554,6 +603,14 @@ impl TryFromWithOptions<OtapPayload> for OtapArrowRecords {
         match value.into_data() {
             PayloadData::OtapArrowRecords(value) => Ok(value),
             PayloadData::OtlpBytes(value) => value.try_into_with_options(opts),
+            PayloadData::PluggableArrowRecords(value) => Err(Error::UnsupportedRepresentation {
+                format_id: value.format_id().to_owned(),
+            }
+            .into()),
+            PayloadData::PluggableBytes(value) => Err(Error::UnsupportedRepresentation {
+                format_id: value.format_id().to_owned(),
+            }
+            .into()),
         }
     }
 }
@@ -568,6 +625,12 @@ impl TryFromWithOptions<OtapPayload> for OtlpProtoBytes {
         match value.into_data() {
             PayloadData::OtapArrowRecords(value) => value.try_into_with_options(opts),
             PayloadData::OtlpBytes(value) => Ok(value),
+            PayloadData::PluggableArrowRecords(value) => Err(Error::UnsupportedRepresentation {
+                format_id: value.format_id().to_owned(),
+            }),
+            PayloadData::PluggableBytes(value) => Err(Error::UnsupportedRepresentation {
+                format_id: value.format_id().to_owned(),
+            }),
         }
     }
 }

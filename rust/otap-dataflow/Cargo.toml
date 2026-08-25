@@ -96,6 +96,7 @@ async-trait = "0.1.88"
 async-unsync = "0.3.0"
 axum = { version = "0.8.4", features = ["ws"] }
 base64 = "0.23.0"
+backtrace = "0.3.76"
 bitflags = "2.10"
 bytes = "1.11.1"
 bytemuck = "1.24"

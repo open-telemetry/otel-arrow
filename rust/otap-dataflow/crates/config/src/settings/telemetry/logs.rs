@@ -39,6 +39,22 @@ pub struct LogsConfig {
     /// Internal log tap configuration.
     #[serde(default)]
     pub tap: InternalLogTapConfig,
+
+    /// Caller stack capture configuration for asynchronous log providers.
+    #[serde(default)]
+    pub stacktraces: StackTraceConfig,
+}
+
+/// Caller-thread stack capture configuration.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct StackTraceConfig {
+    /// Capture instruction pointers for each asynchronous internal log.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Maximum number of captured frames per log.
+    #[serde(default = "default_stacktrace_max_frames")]
+    pub max_frames: usize,
 }
 
 /// Configuration for the internal log tap used by admin/MCP-style consumers.
@@ -235,6 +251,19 @@ const fn default_tap_max_bytes() -> usize {
     16 * 1024 * 1024
 }
 
+const fn default_stacktrace_max_frames() -> usize {
+    32
+}
+
+impl Default for StackTraceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_frames: default_stacktrace_max_frames(),
+        }
+    }
+}
+
 impl Default for InternalLogTapConfig {
     fn default() -> Self {
         Self {
@@ -251,6 +280,7 @@ impl Default for LogsConfig {
             level: LogLevel::default(),
             providers: default_providers(),
             tap: InternalLogTapConfig::default(),
+            stacktraces: StackTraceConfig::default(),
         }
     }
 }
@@ -288,6 +318,16 @@ impl LogsConfig {
         if self.tap.enabled && self.tap.max_bytes == 0 {
             return Err(Error::InvalidUserConfig {
                 error: "logs.tap.max_bytes must be greater than zero".into(),
+            });
+        }
+        if self.stacktraces.enabled && self.stacktraces.max_frames == 0 {
+            return Err(Error::InvalidUserConfig {
+                error: "logs.stacktraces.max_frames must be greater than zero".into(),
+            });
+        }
+        if self.stacktraces.max_frames > 128 {
+            return Err(Error::InvalidUserConfig {
+                error: "logs.stacktraces.max_frames must not exceed 128".into(),
             });
         }
         if self.tap.enabled
@@ -364,6 +404,8 @@ mod tests {
         assert!(!config.tap.enabled);
         assert_eq!(config.tap.max_entries, 2048);
         assert_eq!(config.tap.max_bytes, 16 * 1024 * 1024);
+        assert!(!config.stacktraces.enabled);
+        assert_eq!(config.stacktraces.max_frames, 32);
 
         // Serde defaults should match Rust Default
         let parsed = parse("{}");
@@ -375,6 +417,20 @@ mod tests {
         assert_eq!(parsed.tap.enabled, config.tap.enabled);
         assert_eq!(parsed.tap.max_entries, config.tap.max_entries);
         assert_eq!(parsed.tap.max_bytes, config.tap.max_bytes);
+    }
+
+    /// Scenario: stacktrace capture is enabled with zero or excessive frame limits.
+    /// Guarantees: validation rejects unbounded or non-producing caller capture configurations.
+    #[test]
+    fn test_validate_stacktrace_frame_bounds() {
+        let mut config = LogsConfig::default();
+        config.stacktraces.enabled = true;
+        config.stacktraces.max_frames = 0;
+        assert_invalid(&config, "logs.stacktraces.max_frames");
+
+        let mut config = LogsConfig::default();
+        config.stacktraces.max_frames = 129;
+        assert_invalid(&config, "logs.stacktraces.max_frames");
     }
 
     #[test]

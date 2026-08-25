@@ -30,6 +30,9 @@ use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_pdata::extended_logs::{
+    EXTENDED_LOGS_FORMAT_ID, ExtendedLogStackFrame, ExtendedLogsView,
+};
 use otel_arrow_dfe_pdata::views::otap::{OtapLogsView, OtapMetricsView};
 use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
 use otel_arrow_dfe_pdata::views::otlp::bytes::metrics::RawMetricsData;
@@ -317,6 +320,27 @@ impl ConsoleExporter {
                     Err(ConsoleExportErrorType::OtapViewCreation)
                 }
             },
+            PayloadData::PluggableArrowRecords(records) => {
+                if records.format_id() == EXTENDED_LOGS_FORMAT_ID {
+                    return self.formatter.print_extended_logs(records).await;
+                }
+                otel_error!(
+                    "console.logs_view.unsupported_representation",
+                    format_id = records.format_id(),
+                    message =
+                        "Console exporter does not support this pluggable Arrow representation"
+                );
+                Err(ConsoleExportErrorType::UnsupportedSignal)
+            }
+            PayloadData::PluggableBytes(bytes) => {
+                otel_error!(
+                    "console.logs_view.unsupported_representation",
+                    format_id = bytes.format_id(),
+                    message =
+                        "Console exporter does not support this pluggable byte representation"
+                );
+                Err(ConsoleExportErrorType::UnsupportedSignal)
+            }
         }
     }
 
@@ -346,6 +370,24 @@ impl ConsoleExporter {
                     Err(ConsoleExportErrorType::OtapViewCreation)
                 }
             },
+            PayloadData::PluggableArrowRecords(records) => {
+                otel_error!(
+                    "console.metrics_view.unsupported_representation",
+                    format_id = records.format_id(),
+                    message =
+                        "Console exporter does not support this pluggable Arrow representation"
+                );
+                Err(ConsoleExportErrorType::UnsupportedSignal)
+            }
+            PayloadData::PluggableBytes(bytes) => {
+                otel_error!(
+                    "console.metrics_view.unsupported_representation",
+                    format_id = bytes.format_id(),
+                    message =
+                        "Console exporter does not support this pluggable byte representation"
+                );
+                Err(ConsoleExportErrorType::UnsupportedSignal)
+            }
         }
     }
 
@@ -417,6 +459,85 @@ impl ConsoleFormatter {
         Ok(())
     }
 
+    async fn print_extended_logs(
+        &self,
+        records: &otel_arrow_dfe_pdata::PDataArrowRecordSet,
+    ) -> Result<(), ConsoleExportErrorType> {
+        let extended = ExtendedLogsView::try_from(records).map_err(|error| {
+            otel_error!(
+                "console.logs_view.extended_create_failed",
+                error = ?error,
+                message = "Failed to create extended logs view"
+            );
+            ConsoleExportErrorType::OtapViewCreation
+        })?;
+        let standard = extended.standard_logs().map_err(|error| {
+            otel_error!(
+                "console.logs_view.extended_standard_logs_failed",
+                error = ?error,
+                message = "Failed to reconstruct standard OTAP logs"
+            );
+            ConsoleExportErrorType::OtapViewCreation
+        })?;
+        let logs = OtapLogsView::try_from(&standard).map_err(|error| {
+            otel_error!(
+                "console.logs_view.extended_otap_create_failed",
+                error = ?error,
+                message = "Failed to create OTAP logs view"
+            );
+            ConsoleExportErrorType::OtapViewCreation
+        })?;
+        let stacks = extended.stacks().map_err(|error| {
+            otel_error!(
+                "console.logs_view.extended_stacks_failed",
+                error = ?error,
+                message = "Failed to read extended log stacks"
+            );
+            ConsoleExportErrorType::OtapViewCreation
+        })?;
+
+        let mut output = Vec::new();
+        match self {
+            Self::Pretty(formatter) => {
+                formatter.format_logs_data_to(&logs, &mut output);
+                format_pretty_stacks(&stacks, &mut output).map_err(|error| {
+                    otel_error!(
+                        "console.format_failed",
+                        error = ?error,
+                        message = "Could not format extended stacktrace"
+                    );
+                    ConsoleExportErrorType::Formatting
+                })?;
+            }
+            Self::RecordJson(formatter) => {
+                formatter
+                    .format_logs_data_to(&logs, &mut output)
+                    .map_err(|error| {
+                        otel_error!(
+                            "console.format_failed",
+                            error = ?error,
+                            message = "Could not format console output"
+                        );
+                        ConsoleExportErrorType::Formatting
+                    })?;
+                format_json_stacks(&stacks, &mut output)?;
+            }
+        }
+
+        use tokio::io::AsyncWriteExt;
+        tokio::io::stdout()
+            .write_all(&output)
+            .await
+            .map_err(|error| {
+                otel_error!(
+                    "console.write_failed",
+                    error = ?error,
+                    message = "Could not write to console"
+                );
+                ConsoleExportErrorType::Write
+            })
+    }
+
     /// Format metrics and write the complete payload to stdout.
     async fn print_metrics_data<M: MetricsView>(
         &self,
@@ -447,6 +568,65 @@ impl ConsoleFormatter {
 
         Ok(())
     }
+}
+
+fn format_pretty_stacks(
+    stacks: &std::collections::BTreeMap<u16, Vec<ExtendedLogStackFrame>>,
+    output: &mut Vec<u8>,
+) -> std::io::Result<()> {
+    for (log_id, frames) in stacks {
+        writeln!(output, "STACKTRACE log_id={log_id}")?;
+        for frame in frames {
+            write!(output, "  at ")?;
+            if let Some(function_name) = &frame.function_name {
+                write!(output, "{function_name}")?;
+            } else {
+                write!(output, "0x{:x}", frame.address)?;
+            }
+            if let Some(filename) = &frame.filename {
+                write!(output, " ({filename}")?;
+                if let Some(line) = frame.line {
+                    write!(output, ":{line}")?;
+                }
+                write!(output, ")")?;
+            }
+            writeln!(output)?;
+        }
+    }
+    Ok(())
+}
+
+fn format_json_stacks(
+    stacks: &std::collections::BTreeMap<u16, Vec<ExtendedLogStackFrame>>,
+    output: &mut Vec<u8>,
+) -> Result<(), ConsoleExportErrorType> {
+    for (log_id, frames) in stacks {
+        let frames: Vec<_> = frames
+            .iter()
+            .map(|frame| {
+                serde_json::json!({
+                    "address": format!("0x{:x}", frame.address),
+                    "function": frame.function_name,
+                    "file": frame.filename,
+                    "line": frame.line,
+                })
+            })
+            .collect();
+        serde_json::to_writer(
+            &mut *output,
+            &serde_json::json!({"otap_log_id": log_id, "stacktrace": frames}),
+        )
+        .map_err(|error| {
+            otel_error!(
+                "console.format_failed",
+                error = ?error,
+                message = "Could not format extended stacktrace JSON"
+            );
+            ConsoleExportErrorType::Formatting
+        })?;
+        output.push(b'\n');
+    }
+    Ok(())
 }
 
 /// Tree drawing characters (Unicode or ASCII).
@@ -702,6 +882,37 @@ mod tests {
     use otel_arrow_dfe_pdata::views::otap::OtapLogsView;
     use prost::Message;
     use serde_json::{Value, json};
+
+    /// Scenario: a resolved and an unresolved extended-log frame are rendered for console output.
+    /// Guarantees: pretty output preserves symbol/source details and falls back to hexadecimal addresses.
+    #[test]
+    fn pretty_extended_stacks_show_symbols_and_raw_addresses() {
+        let mut stacks = std::collections::BTreeMap::new();
+        let _ = stacks.insert(
+            7,
+            vec![
+                ExtendedLogStackFrame {
+                    address: 0x1234,
+                    function_name: Some("example::work".to_owned()),
+                    filename: Some("src/example.rs".to_owned()),
+                    line: Some(42),
+                },
+                ExtendedLogStackFrame {
+                    address: 0xabcd,
+                    function_name: None,
+                    filename: None,
+                    line: None,
+                },
+            ],
+        );
+
+        let mut output = Vec::new();
+        format_pretty_stacks(&stacks, &mut output).unwrap();
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("STACKTRACE log_id=7"));
+        assert!(output.contains("example::work (src/example.rs:42)"));
+        assert!(output.contains("0xabcd"));
+    }
 
     /// Format proto logs through the raw OTLP view and parse the resulting JSON lines.
     fn format_record_json(logs_data: &LogsData, formatter: &RecordJsonFormatter) -> Vec<Value> {
