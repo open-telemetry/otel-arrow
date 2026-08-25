@@ -221,7 +221,7 @@ receivers:
 | `batch.max_flush_period` | `1s` | Nonzero first-record batch deadline |
 | `rotation.rotate_wait` | `5s` | Nonzero post-EOF inactivity interval |
 | `rotation.on_truncate` | `fail` | `fail` or `read_new` |
-| `checkpoint.id` | Receiver node identity | Stable nonempty checkpoint namespace name |
+| `checkpoint.id` | Receiver node identity (rename-sensitive) | Stable nonempty checkpoint namespace name; set explicitly to preserve continuity across a receiver-node rename |
 | `checkpoint.sync_interval` | `0s` | Zero syncs every Ack transaction |
 | `checkpoint.compact_after_bytes` | `64MiB` | Nonzero WAL compaction threshold |
 | `checkpoint.compact_after_transactions` | `10000` | Nonzero transaction threshold |
@@ -233,6 +233,13 @@ receivers:
 | `retry.max_backoff` | `5s` | Retry delay ceiling |
 | `on_nack` | `fail` | `fail` or `drop_and_continue` |
 | `drain_timeout` | `10s` | Nonzero receiver drain budget |
+
+The derived checkpoint ID never includes CPU count or deployment generation. It follows
+the configured receiver node identity, so a receiver-node rename changes the default
+namespace. Continuity requires an explicit ID from initial deployment, an explicit ID
+equal to the current effective derived ID before the rename, or an explicit namespace
+migration. Choosing an unrelated ID creates a new namespace rather than pinning the old
+one.
 
 ### Configuration variants
 
@@ -983,7 +990,16 @@ partial unit. A nonfinal fragment commits a continuation only after its batch is
 and durably persisted.
 
 The fragment ID is stable across retry and restart and is derived from the durable
-identity, file epoch, and record start under a domain-separated SHA-256 construction.
+identity, file epoch, and record start. It is the lowercase 64-character hexadecimal
+encoding of the full SHA-256 digest over:
+
+```text
+UTF-8("otel-arrow-filelog-fragment-v1\0") ||
+file_id as its exact 16 opaque bytes ||
+file_epoch as u32 big-endian ||
+record_start_offset as u64 big-endian
+```
+
 The checkpoint-format document owns no fragment-ID byte layout; this value is emitted
 metadata, not checkpoint encoding.
 
@@ -1094,11 +1110,13 @@ This specification does not invent them. Current implementation names for resolv
 path, record offset, and fragment ranges remain experimental until semantic-convention
 review resolves the public surface.
 
-The meaning of optional record number is also unresolved. Current evidence implements
-a process-local, per-`file_id` and per-epoch counter for unsplit records, omits it on
-fragments, preserves it across descriptor eviction, and resets it on process restart.
-That behavior is not yet a compatibility promise and must be resolved before the
-metadata option is documented as stable.
+The public compatibility status of optional record number remains unresolved. Current
+implementation evidence consistently uses a zero-based, process-local counter per
+`file_id` and file epoch. It survives descriptor eviction, resets on process restart or
+epoch change, and is omitted from every split fragment. A successfully appended unsplit
+record emits and consumes one number. Fragment zero consumes one number without emitting
+it; continuation fragments neither emit nor consume one. That implementation choice is
+test-covered but is not yet a stable public promise.
 
 ### Batch construction
 
@@ -1545,21 +1563,31 @@ the lifetime of a stuck OS thread.
 On `DrainIngress` while downstream remains live:
 
 1. Stop discovery and new admissions.
-2. Stop new source turns.
+2. Capture each reader's current provisional source frontier and stop ordinary tail
+   scheduling and advancement beyond it.
 3. Cancel pending descriptor acquisition.
-4. Flush a nonempty open batch.
-5. Await terminal completion of the retained batch.
-6. Apply Ack/Nack policy.
-7. Sync all required durable progress.
-8. Report recoverable buffered partial bytes as pending.
-9. Close descriptors.
-10. Release runtime leases.
-11. Release namespace ownership.
-12. Notify the engine that the receiver drained.
-13. Exit.
+4. Permit bounded rereads only to reconstruct provisional bytes up to the captured
+   frontiers.
+5. Apply a partial-record flush only when the existing EOF-gated idle-flush condition
+   is already satisfied.
+6. Flush a nonempty open batch.
+7. Await terminal completion of the retained batch.
+8. Apply Ack/Nack policy.
+9. Sync all required durable progress.
+10. Measure and report every recoverable uncommitted byte as pending, including an
+    incomplete source unit or unresolved BOM probe.
+11. Rewind uncommitted in-memory tails to durable progress for cleanup.
+12. Close descriptors.
+13. Release runtime leases.
+14. Release namespace ownership.
+15. Notify the engine that the receiver drained.
+16. Exit.
 
 The effective deadline is the earlier of the engine drain deadline and
-`drain_timeout`. Expiry leaves unacknowledged offsets unchanged.
+`drain_timeout`. Drain does not read bytes appended after its captured frontiers and
+does not synthesize a completion or Ack at the deadline. Expiry leaves unacknowledged
+offsets unchanged. Drain-only rewind permits restart reconstruction; it does not decide
+the still-open permanent-EOF behavior at rotation finalization.
 
 A cleanly drained receiver normally does not receive `Shutdown`. Cleanup never waits
 for it.
@@ -2254,48 +2282,66 @@ This appendix records evidence, not normative authority.
 
 Implementation-derived evidence was inspected at initial snapshot HEAD
 `1bcad6ced074a9d7dd267ed3d466268a10315f38` at
-`2026-08-24T17:41:06Z`. The read-only implementation checkout later advanced to
-`ab0499e3979c383af95f236d1614664481e85849`, including bounded decoding and framing
-work. The complete receiver does not yet exist.
+`2026-08-24T17:41:06Z`. A second read-only inspection used active implementation HEAD
+`1af9f3613ae7cd7964c348cd199ce76c64249469` at `2026-08-24T22:36:33Z`. That
+checkout also contained uncommitted delivery, runtime, worker, identity, reader, and
+factory integration, so those observations are implementation experience rather than a
+reproducible committed baseline.
+
+Current evidence confirms these intended behaviors:
+
+- committed decoder, framer, and bounded OTAP batch construction preserve exact source
+  ranges, continuation, and one all-or-nothing progress-delta set;
+- the active integration owns exact `(batch_id, attempt)` correlation over opaque
+  engine `CallData`, rejects stale completions, and independently revalidates file
+  epochs and progress bases before commit;
+- retry resends the retained Arrow data without rereading sources;
+- core drain plumbing captures provisional source frontiers, awaits real completion,
+  rewinds unflushable tails, and forces outstanding progress sync;
+- direct Shutdown and clean drain have distinct live paths;
+- factory registration is present; and
+- optional record numbering implements the process-local behavior described above,
+  although its public compatibility status remains open.
 
 Verified contradictions and open integration gaps are:
 
-1. Exact-locator mismatch handling can currently leave multiple active durable records
-   for one locator. The normative invariant is one active record per live locator;
+1. Exact-locator mismatch handling can still leave multiple active durable records for
+   one locator. The normative invariant is one active record per live locator;
    mismatch resolution must retire, quarantine, or otherwise make the prior record
    ineligible before a replacement becomes active.
-2. The current `Removed` discovery transition lacks a reason distinguishing exclusion
-   revocation from disappearance/rotation. The normative transition carries that
-   distinction because the finalization behavior differs.
-3. Rotation, Ack/Nack delivery, drain, receiver-factory registration, and telemetry
-   wiring were incomplete at the initial snapshot.
-4. Very large accepted discovery poll intervals can overflow reader EOF deadline
+2. `Removed` still lacks a reason distinguishing exclusion revocation from
+   disappearance or rotation. A resident newly excluded file can therefore continue
+   being tailed instead of stopping at the next record boundary.
+3. Production rotation and truncation orchestration remain incomplete even though
+   lower-level framing, batching, and progress hooks exist. Removed pinned descriptors
+   can consume every descriptor slot, and configured durable-record retention is not
+   yet driven by worker maintenance.
+4. The active drain integration can invoke a partial-record flush whenever idle flush
+   is configured without first proving observed EOF. That violates the normative
+   EOF-gated condition and can change a live record boundary.
+5. Telemetry collection and terminal metrics remain incomplete.
+6. Very large accepted discovery poll intervals can overflow reader EOF deadline
    arithmetic. Configuration or scheduler construction must reject such values before
    a deadline can wrap.
-5. Permanent EOF behavior for an incomplete decoder unit or unresolved BOM probe is
-   unresolved. No implementation may silently commit, discard, or fabricate a record
-   while this remains open.
-6. Public OTAP attribute names for body/frame source ranges are unresolved. Existing
-   experimental source-range names do not establish a semantic-convention promise.
-7. Optional record-number meaning is unresolved, including whether it is durable,
-   process-local, fragment-visible, or stable across restart. It remains off by
-   default.
-8. Component-level memory formulas exist, but the aggregate receiver admission ceiling
-   still needs final integration and representative measurement.
-9. Controller `Ready` is not filelog source ownership or source readiness. No stronger
-   readiness claim is available without engine support.
-10. The engine transports opaque completion `CallData`, but filelog owns correlation,
-    attempt validation, stale-completion handling, and file-epoch guards.
-11. The clean drain path normally does not receive `Shutdown`. Direct `Shutdown` still
-    must always be handled.
-12. The engine supplies no bounded worker-thread join. The implementation must avoid
-    synchronous forever-join and must state the remaining stuck-kernel-call/thread
-    limitation honestly.
+7. Permanent EOF behavior for an incomplete decoder unit or unresolved BOM probe
+   remains unresolved. Current drain rewinds such state rather than advancing it, but
+   final rotation still needs an explicit policy.
+8. Public OTAP attribute names for body/frame source ranges remain unresolved.
+   Record-number implementation semantics are now consistent, but their public
+   compatibility status still requires approval.
+9. Component-level memory formulas exist, but the aggregate receiver admission ceiling
+   and representative measurement remain incomplete. Runtime memory-pressure signals
+   are not yet integrated.
+10. The current generated checkpoint ID hashes broader pipeline naming inputs than the
+   proposed receiver-node-identity default. This must be reconciled; an explicit
+   `checkpoint.id` is currently required for reliable rename continuity.
+11. Controller `Ready` remains component-task readiness, not filelog ownership,
+    recovery, reconciliation, or source readiness.
+12. Worker join runs off the current-thread async core, but the active integration
+    still awaits that join without a bounded timeout. A stuck kernel call can therefore
+    outlive the intended bounded lifecycle.
 13. Windows directory sync is not equivalent to Unix directory `fsync`. Equal crash-
     durability claims remain blocked on stronger Windows fault evidence.
-14. The future checkpoint-format specification must remain the sole authority for
-    durable bytes and exact torn-tail recognition. Until it is present in this branch
-    and aligned with implementation, checkpoint release readiness remains blocked.
 
 These gaps do not weaken the intended contracts in this document. They identify work
 required for a conforming Phase 1 implementation and focused review.

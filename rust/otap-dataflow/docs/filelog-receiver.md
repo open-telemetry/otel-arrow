@@ -165,7 +165,7 @@ accepted compromises:
 | D2 | Isolate local discovery behind a candidate-source abstraction without claiming it is the Phase 3 ownership protocol | Distributed ownership also needs revisions, fencing, reconciliation, and revoke completion |
 | D3 | Exclude CPU count and deployment generation from identity and checkpoint keys | Deployment topology must not change source progress |
 | D4 | Key durable progress by an opaque persisted `file_id` | Paths, fingerprints, and native locators are matching evidence rather than permanent identity |
-| D5 | Use a stable checkpoint namespace independent of pipeline generation | Restart and receiver-node rename must reconnect to the same state |
+| D5 | Use a stable checkpoint namespace independent of pipeline generation; allow an explicit ID to pin it across receiver-node renames | Deployment generation must not change source progress; a rename-sensitive derived default does not itself provide rename continuity |
 | D6 | Use runtime locators and fingerprints only as guarded matching evidence | Native locators can be reused and fingerprints can collide |
 | D7 | Advance source progress only after a matching downstream Ack | Nack, shutdown, and failed delivery must not silently lose progress |
 | D8 | Run blocking filesystem and checkpoint work on fixed dedicated threads | Blocking work must not stall the current-thread runtime or create an unbounded worker pool |
@@ -408,6 +408,13 @@ Phase 1 has two local ownership mechanisms with different scopes:
    namespace across overlapping local generations.
 2. Process-local runtime leases prevent two receiver nodes in one engine
    process from controlling the same live runtime locator.
+
+`checkpoint.id` names the durable namespace. A derived default is convenient
+but follows the configured receiver identity; operators that require continuity
+across a receiver-node rename configure an explicit ID from initial deployment,
+pin the current effective ID before the rename, or perform an explicit namespace
+migration. Choosing an unrelated ID creates a new namespace. CPU count and
+deployment generation never enter the namespace.
 
 Runtime leases survive temporary descriptor closure and reopening. They are
 released only when the logical reader is finalized, revoked, drained, or
@@ -654,8 +661,9 @@ acquires local namespace ownership, recovers durable state fail-closed,
 reconciles discovery, resolves identity, acquires runtime leases, durably
 registers new identities, and only then reads.
 
-On normal drain, the receiver stops discovery, admission, and new reads; flushes
-a nonempty open batch; waits within the effective drain deadline for terminal
+On normal drain, the receiver stops discovery, admission, and new reads; bounds
+replay and flushing to source bytes already read when drain begins; flushes a
+nonempty open batch; waits within the effective drain deadline for terminal
 completion; persists and syncs required progress; reports recoverable partial
 bytes as pending; releases descriptors, leases, and namespace ownership; and
 notifies the engine that drain completed.
