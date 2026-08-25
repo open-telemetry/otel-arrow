@@ -23,12 +23,9 @@ The checkpoint-format specification defines durable bytes, magic values, version
 field widths and ordering, checksum coverage, transaction framing, and golden vectors.
 This document intentionally does not duplicate those definitions.
 
-The checkpoint-format document is expected at the linked path in the completed
-three-document design split. Until it is added and approved, Phase 1 checkpoint
-compatibility and release readiness remain open.
-
-Requirements are written as direct declarative statements. Capitalized RFC 2119 terms
-are not assigned special meaning.
+Requirements in this behavioral specification are written as direct declarative
+statements. The checkpoint-format specification states its own normative-keyword
+convention.
 
 ## Terminology
 

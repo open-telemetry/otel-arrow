@@ -62,11 +62,8 @@ correlation, retry, stale-completion, atomic-delta, and drain behavior. The
 checkpoint-format specification owns the exact encoding and replay
 representation of the resulting progress operation.
 
-The checkpoint-format document is intentionally linked before it is added to
-this branch. It is required for Phase 1 completion.
-
-Requirements in these documents use direct declarative language. Capitalized
-RFC 2119 terms are not assigned special meaning.
+Requirements in this architecture use direct declarative language. The
+checkpoint-format specification states its own normative-keyword convention.
 
 ## Goals and non-goals
 
