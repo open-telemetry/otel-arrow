@@ -72,12 +72,12 @@ meanings in this byte-format specification.
   accidental corruption; it is not a MAC, signature, or authentication
   mechanism and does not protect against hostile replacement.
 - **Digest:** within this byte format, SHA-256 (FIPS 180-4), 32 raw bytes, is
-  used only for the
-  framing-profile digest (see
+  used for namespace association (see
+  [Namespace digest](#namespace-digest)) and for the framing-profile digest (see
   [Framing-profile canonical serialization and digest](#framing-profile-canonical-serialization-and-digest)).
-  It is not used as a checksum for structural integrity; CRC-32C alone
-  guards structural integrity, matching the rest of the durability code in
-  this repository.
+  The two constructions use different domain separators. Neither digest is a
+  checksum for structural integrity or an authentication mechanism; CRC-32C
+  guards structural integrity.
 
 ## Namespace and active-generation selection
 
@@ -113,14 +113,43 @@ ${engine.state_dir}/filelog/<checkpoint.id>/
   [D15](filelog-receiver.md#decisions-requested)); it has no format of its
   own and is out of scope for this document.
 
-Recovery always reads `CURRENT` first to select the generation, then loads
-`offsets-<generation>.snapshot` as the recovery base, then replays
-`offsets-<generation>.wal` from sequence `1`. A generation directory MAY
+Recovery always reads `CURRENT` first to select the generation, then opens
+both files named by that generation. A missing, unreadable, or incomplete
+authoritative file fails closed with the distinct recovery errors defined
+below; recovery never selects an older generation by modification time. After
+header validation, it loads `offsets-<generation>.snapshot` as the recovery
+base, then replays `offsets-<generation>.wal` from sequence `1`. A generation directory MAY
 contain snapshot/WAL files for more than one generation simultaneously during
 compaction (the previous generation stays present and valid until `CURRENT`
 is atomically repointed); this document only defines the byte format of each
 individual file, not the atomic-replacement procedure for `CURRENT` itself,
 which is a durable-checkpoint-store concern.
+
+## Namespace digest
+
+Snapshot and WAL headers bind an artifact to the selected opaque
+`checkpoint.id`. Given its exact validated bytes:
+
+```text
+namespace_digest = SHA-256(
+  UTF-8("otel-arrow-filelog-checkpoint-namespace-v1\0") ||
+  checkpoint_id_len : u16 BE ||
+  checkpoint_id_bytes : checkpoint_id_len bytes
+)
+```
+
+`checkpoint_id_len` is the exact byte length in `1..=255`; no Unicode
+normalization, case folding, path escaping, or other transformation occurs.
+The digest is stored in both the snapshot and WAL headers. It is deliberately
+not added to `CURRENT`, whose sole authority function remains selecting a
+generation.
+
+Recovery derives the expected digest from the selected namespace before
+loading records. After validating each header's own CRC, it requires the
+snapshot digest and WAL digest to equal the expected digest and one another.
+Any mismatch fails closed with `NamespaceMismatch` before a snapshot record or
+WAL transaction is applied. The digest detects accidental artifact
+misplacement; it does not authenticate checkpoint data.
 
 ## Trust boundary
 
@@ -156,13 +185,34 @@ of these are corruption/fail-closed conditions; there is no torn-tail
 leniency for `CURRENT` because it is written and synced as a single small
 atomic replacement, never appended to.
 
+## Authoritative-generation recovery errors
+
+After a valid `CURRENT` selects generation `G`, recovery opens exactly
+`offsets-G.snapshot` and `offsets-G.wal`. It never searches another generation
+or chooses by modification time.
+
+| Condition after valid `CURRENT` | Distinct fail-closed result |
+| --- | --- |
+| Either named file does not exist | `AuthoritativeGenerationMissing` |
+| Either named file cannot be opened or completely read for an environmental or permission reason | `AuthoritativeGenerationUnreadable` |
+| The snapshot is physically incomplete, or the WAL lacks its complete 56-byte header | `AuthoritativeGenerationIncomplete` |
+| A validated snapshot or WAL header namespace digest differs from the selected namespace or from its peer | `NamespaceMismatch` |
+| A complete required structure has an invalid CRC, impossible length, or other invalid bytes | The specific corruption error defined by the affected structure |
+
+The allowed incomplete final WAL transaction remains the sole torn-tail
+exception and does not make the authoritative generation incomplete. No error
+above authorizes automatic WAL-prefix recovery after a complete bad-CRC frame.
+Cleanup, including recovery after interrupted cleanup, MUST reread `CURRENT`
+under exclusive namespace ownership and MUST NOT delete either file belonging
+to the generation it currently names.
+
 ## Magic values, versions, and fixed widths at a glance
 
 | File | Magic (8 bytes) | Header width | Footer |
 | --- | --- | --- | --- |
 | `CURRENT` marker | `"FLOGCUR\0"` | 24 bytes (whole file) | none |
-| Snapshot | `"FLOGSNP\0"` | 28 bytes | 24 bytes, magic `"FLOGSFT\0"` |
-| WAL | `"FLOGWAL\0"` | 24 bytes | none (append-only) |
+| Snapshot | `"FLOGSNP\0"` | 60 bytes | 24 bytes, magic `"FLOGSFT\0"` |
+| WAL | `"FLOGWAL\0"` | 56 bytes | none (append-only) |
 
 `format_version` is `u16` and is `1` for every header in this version. The
 snapshot/WAL/`CURRENT` format version is a single coherent number for the
@@ -172,7 +222,7 @@ algorithm (see below) and can in principle advance independently.
 
 ## Snapshot file format
 
-### Snapshot header (28 bytes)
+### Snapshot header (60 bytes)
 
 | Offset | Size | Field | Value |
 | --- | --- | --- | --- |
@@ -180,8 +230,9 @@ algorithm (see below) and can in principle advance independently.
 | 8 | 2 | `format_version` | `u16` BE, `1` |
 | 10 | 2 | `flags` | `u16` BE, reserved, MUST be `0` |
 | 12 | 8 | `generation` | `u64` BE; MUST equal the generation encoded in the file name |
-| 20 | 4 | `record_count` | `u32` BE; number of snapshot records that follow |
-| 24 | 4 | `header_crc32c` | `u32` BE, CRC-32C over bytes `[0, 24)` |
+| 20 | 32 | `namespace_digest` | SHA-256 digest defined in [Namespace digest](#namespace-digest) |
+| 52 | 4 | `record_count` | `u32` BE; number of snapshot records that follow |
+| 56 | 4 | `header_crc32c` | `u32` BE, CRC-32C over bytes `[0, 56)` |
 
 ### Snapshot record (self-delimiting)
 
@@ -261,7 +312,7 @@ a reader never observes a snapshot that is genuinely still being written.
 Therefore any of the following is corruption and fails recovery closed, with
 no leniency, even if it is the physical end of the file:
 
-- fewer than 28 bytes available for the header, or header magic/version/flags/CRC invalid;
+- fewer than 60 bytes available for the header, or header magic/version/flags/CRC invalid;
 - fewer than `record_count` complete, individually CRC-valid records available;
 - a record whose declared `record_len` exceeds the remaining buffer;
 - two records declaring the same `file_id`;
@@ -331,8 +382,10 @@ kind : u8
 starts a new logical record. `Continuation` is the split-record durable resume
 state: the original record's start offset and the next fragment index to emit,
 both of which are required to reconstruct
-`otel_arrow.filelog.fragment.id` and `.index` deterministically after
-restart. `kind` is structural; `0x02`..`0xFF` fail decoding closed.
+the fragment identifier and fragment index defined by the
+[Phase 1 split contract](filelog-receiver-phase1-spec.md#split-behavior)
+deterministically after restart. `kind` is structural; `0x02`..`0xFF` fail
+decoding closed.
 
 ## Lifecycle state discriminant
 
@@ -376,7 +429,8 @@ This document defines these `reason_code` values for `quarantine_file` /
 | `0x0001` | decode-error `fail` policy quarantine |
 | `0x0002` | truncate `fail` policy quarantine |
 | `0x0003` | recovery-mismatch `fail` policy quarantine |
-| `0x0004`-`0x00FF` | reserved for future built-in reasons; profile incompatibility fails closed without mutating the record |
+| `0x0004` | D17 terminal framing ineligible at permanent rotation EOF |
+| `0x0005`-`0x00FF` | reserved for future built-in reasons; profile incompatibility fails closed without mutating the record |
 | `0x0100`-`0xFFFF` | available for distribution- or extension-defined reasons |
 
 `removal_reason` has no assigned values in v1 beyond the requirement that an
@@ -384,7 +438,7 @@ encoder MUST NOT write `0x0000`; `0x0000` is reserved exactly as above.
 
 ## WAL file format
 
-### WAL header (24 bytes)
+### WAL header (56 bytes)
 
 | Offset | Size | Field | Value |
 | --- | --- | --- | --- |
@@ -392,7 +446,8 @@ encoder MUST NOT write `0x0000`; `0x0000` is reserved exactly as above.
 | 8 | 2 | `format_version` | `u16` BE, `1` |
 | 10 | 2 | `flags` | `u16` BE, reserved, MUST be `0` |
 | 12 | 8 | `generation` | `u64` BE; MUST equal the generation encoded in the file name |
-| 20 | 4 | `header_crc32c` | `u32` BE, CRC-32C over bytes `[0, 20)` |
+| 20 | 32 | `namespace_digest` | SHA-256 digest defined in [Namespace digest](#namespace-digest) |
+| 52 | 4 | `header_crc32c` | `u32` BE, CRC-32C over bytes `[0, 52)` |
 
 The header itself follows the same no-torn-tail policy as the snapshot
 header: it is written once when the WAL generation is created and never
@@ -614,9 +669,29 @@ file-path convention alone.
 | `AUDIT_REASON_MAX_BYTES` | `1024` | `audit_reason_bytes` |
 | `NAMESPACE_ID_MAX_BYTES` | `255` | `namespace_id_bytes` |
 | `WAL_MAX_OPS_PER_TX` | `4096` | `op_count` per transaction |
+| `UPDATE_PROGRESS_MAX_OP_PAYLOAD_BYTES` | `59` | Maximum `update_progress` payload with `Continuation` resume |
+| `UPDATE_PROGRESS_MAX_OP_FRAME_BYTES` | `67` | Length + maximum payload + CRC |
+| `MAX_PROGRESS_TX_BODY_BYTES` | `274442` | Sequence + count + 4,096 maximum progress operation frames |
+| `MAX_PROGRESS_TX_FRAME_BYTES` | `274450` | Length + maximum progress transaction body + CRC |
 | framing-profile pattern | `4096` | canonical serialization pattern bytes (see below) |
 
-These are the only field-specific maximums. The remaining length-typed
+The Phase 1 behavioral contract reserves zero non-progress operations in an
+Ack or explicit-drop transaction, so its distinct-file delta maximum is
+exactly `WAL_MAX_OPS_PER_TX = 4096`. The maximum values above derive as:
+
+```text
+update_progress payload =
+  1 op_code + 16 file_id + 8 expected_offset + 4 epoch
+  + 8 new_offset + 13 maximum FramingResume
+  + 8 last_seen + 1 finalize
+  = 59 bytes
+
+maximum progress transaction body =
+  8 sequence + 2 op_count + 4096 * (4 + 59 + 4)
+  = 274442 bytes
+```
+
+These include all field-specific and Phase 1 progress-transaction maximums. The remaining length-typed
 fields (`record_count: u32`, `tx_len: u32`, `op_len: u32`) are bounded only by
 their integer width and by the number of bytes actually present in the input
 buffer; a decoder never trusts a declared length larger than what is
@@ -631,10 +706,10 @@ runtime policies as format constants.
 | Checksum field | Covers |
 | --- | --- |
 | `CURRENT.marker_crc32c` | bytes `[0, 20)` of the marker (magic, format_version, flags, generation) |
-| snapshot `header_crc32c` | bytes `[0, 24)` of the snapshot header |
+| snapshot `header_crc32c` | bytes `[0, 56)` of the snapshot header |
 | snapshot `record_crc32c` | the record's own 4-byte `record_len` field followed by its `payload` |
 | snapshot `footer_crc32c` | bytes `[0, 20)` of the footer (footer_magic, total_record_bytes, record_count_echo) |
-| WAL `header_crc32c` | bytes `[0, 20)` of the WAL header |
+| WAL `header_crc32c` | bytes `[0, 52)` of the WAL header |
 | `tx_crc32c` | the transaction's own 4-byte `tx_len` field followed by its `tx_body` |
 | `op_crc32c` | the operation's own 4-byte `op_len` field followed by its `op_payload` |
 
@@ -689,6 +764,10 @@ not `remove_file` never deletes one.
   `file_epoch` -- there is no field to change it, by construction, which is
   the wire-level enforcement of "an ordinary Ack-driven update cannot change
   `file_epoch`."
+- Equality is valid. In particular, `finalize == 0x01` MAY carry
+  `new_committed_offset == expected_committed_offset` for the behavioral
+  contract's zero-delta finalization after every source delta is already
+  applied.
 - `new_committed_offset` and `new_framing_resume` are applied atomically:
   both are updated together or the whole operation is rejected; there is no
   partially-applied state.
@@ -697,6 +776,10 @@ not `remove_file` never deletes one.
   `lifecycle_state` to `RotatedFinalized` (a terminal state for this
   operation: a later `update_progress` against a `RotatedFinalized` record
   fails replay closed rather than being treated as a further advance).
+- When `finalize == 0x01`, `new_framing_resume` MUST be `Clean`; a continuation
+  cannot be finalized. The runtime-only preconditions concerning EOF,
+  retained batches, D17, Nack policy, and descriptor ownership are enforced
+  before encoding as specified by the behavioral finalization contract.
 
 ### `reset_after_truncate`
 
@@ -900,8 +983,8 @@ to the digest and the digest algorithm, so two independent implementations
 produce byte-identical digests for the same configuration.
 
 `framing_profile_version` (the profile/digest recipe version, stored
-alongside the digest in the snapshot and in `register_file`) is `3` in this
-version of this document. It is independent of the snapshot/WAL/`CURRENT`
+alongside the digest in the snapshot and in `register_file`) is `1` in this
+first version of the design. It is independent of the snapshot/WAL/`CURRENT`
 `format_version` field: this version tracks only the digest recipe below and
 can advance when the identity or framing compatibility inputs change without
 requiring a change to the snapshot/WAL byte layout.
@@ -909,7 +992,7 @@ requiring a change to the snapshot/WAL byte layout.
 ### Canonical serialization input
 
 ```text
-UTF-8("otel-arrow-filelog-framing-profile-v3\0") ||
+UTF-8("otel-arrow-filelog-framing-profile-v1\0") ||
 fingerprint_profile_version : u16 BE ||
 fingerprint_bytes            : u16 BE ||
 ignored_header_bytes         : u32 BE ||
@@ -949,8 +1032,9 @@ that changes record boundaries, emitted bodies, failure behavior, or replay
 determinism (`encoding`, `on_decode_error`, the multiline mode and pattern,
 `max_line_bytes`, `max_record_bytes`, `max_log_size_behavior`,
 `max_multiline_lines`, `force_flush_period`). It deliberately excludes knobs
-that affect neither identity nor framing, such as `checkpoint.id`, `limits.*`,
-`batch.*`, and `retry.*`.
+that affect neither identity nor framing, such as `limits.*`, `batch.*`, and
+`retry.*`. `checkpoint.id` is bound separately by the header
+`namespace_digest`; it is not part of the framing profile.
 
 The digest is:
 
@@ -978,8 +1062,8 @@ newline-framing default profile (`encoding = utf-8 (0x01)`,
 8 + 1 + 4 + 8):
 
 ```text
-canonical_bytes = 6f74656c2d6172726f772d66696c656c6f672d6672616d696e672d70726f66696c652d763300000103e800000000010100000000000000000000100000000000000010000001000001f400000000000001f4
-framing_profile_digest = 84cd122c62b3a4aea428db9f2c41166ed9af1f8087ab3e562f8033a9eedcf513
+canonical_bytes = 6f74656c2d6172726f772d66696c656c6f672d6672616d696e672d70726f66696c652d763100000103e800000000010100000000000000000000100000000000000010000001000001f400000000000001f4
+framing_profile_digest = b89a44439258d045238a81d1d608cb41abede895ab1e047eef2b83898d3e0b25
 ```
 
 A second vector, changing only `multiline_mode` to end-pattern
@@ -988,13 +1072,11 @@ A second vector, changing only `multiline_mode` to end-pattern
 95-byte canonical input and digest:
 
 ```text
-canonical_bytes = 6f74656c2d6172726f772d66696c656c6f672d6672616d696e672d70726f66696c652d763300000103e8000000000101020001000d5e454e442072657175657374240000000000100000000000000010000001000001f400000000000001f4
-framing_profile_digest = 49834e9d951d6c68f351d1a51f70cca9ed4da0b8eef18670607b71aa15c03637
+canonical_bytes = 6f74656c2d6172726f772d66696c656c6f672d6672616d696e672d70726f66696c652d763100000103e8000000000101020001000d5e454e442072657175657374240000000000100000000000000010000001000001f400000000000001f4
+framing_profile_digest = 1c3159dd242ae99f29b6aace2f40c9d16192db416810456c5975ba8b9a020b54
 ```
 
-Both vectors are executable conformance tests in
-`crates/core-nodes/src/receivers/filelog_receiver/checkpoint/framing_profile.rs`
-and MUST continue to match exactly; a change to either value without a
+Both are normative conformance vectors. A change to either value without a
 `framing_profile_version` bump is a specification regression.
 
 ## Unknown version, discriminator, operation, and extension behavior (summary)
@@ -1003,6 +1085,8 @@ and MUST continue to match exactly; a change to either value without a
 | --- | --- |
 | `format_version` other than `1` in `CURRENT`, snapshot, or WAL header | fail closed with a distinct "unsupported version" error, checked before any record/transaction is parsed |
 | nonzero header `flags`, or a nonzero reserved bit in `update_metadata`'s `presence_flags` | fail closed (v1 defines no flag bits) |
+| snapshot or WAL `namespace_digest` differs from the expected selected-namespace digest or from its peer | fail closed with `NamespaceMismatch` before applying any record or transaction |
+| valid `CURRENT` names a missing, unreadable, or incomplete authoritative generation | fail closed with the corresponding distinct authoritative-generation error; never select another generation |
 | unknown `locator.kind`, `framing_resume.kind`, `lifecycle_state`, `op_code`, `reset_quarantined_file.action`, or `remove_file.expected_prior_state` | fail closed; these are all structural discriminants |
 | unknown `reason_code` / `removal_reason` value | accepted at decode time (opaque, non-structural); may still be rejected by apply-time business rules for specific operations |
 | a declared length exceeding either its documented maximum or the bytes actually remaining | fail closed before allocating or slicing |
@@ -1048,8 +1132,10 @@ These encodings do not define or authorize a CLI or API. A separately reviewed
 engine administrative interface or offline tool MUST acquire exclusive
 namespace ownership and append validated operations through the checkpoint
 store. Operators MUST NOT edit snapshots, WAL transactions, checksums, or
-`CURRENT` manually. If no such interface ships, these operations remain
-unavailable even though their wire representation is defined.
+`CURRENT` manually. An operable Phase 1 release with durable quarantine MUST
+provide such a surface. If an initial delivery omits it, these operations remain
+unavailable and quarantine entry is limited by the behavioral specification's
+explicit deterministic failure set even though the wire representation exists.
 
 ## Cross-version and migration behavior
 
@@ -1083,39 +1169,63 @@ unavailable even though their wire representation is defined.
 
 ## Golden and conformance vectors
 
-Executable checkpoint-byte vectors live in
-`crates/core-nodes/src/receivers/filelog_receiver/checkpoint/test_vectors.rs`
-and are consumed by `checkpoint/tests.rs`. The two current profile-v3
-canonical-byte and SHA-256 vectors live in `checkpoint/framing_profile.rs`.
-All expected bytes and digests are independently computed (using a
-separately verified CRC-32C implementation and standard SHA-256, not by
-round-tripping through this crate's own encoder). They cover:
+All expected bytes and digests in conformance tests must be computed
+independently with a verified CRC-32C implementation and standard SHA-256, not
+generated by round-tripping the encoder under test.
 
+For exact `checkpoint.id` bytes `app-logs`:
+
+```text
+namespace_input =
+  6f74656c2d6172726f772d66696c656c6f672d636865636b706f696e742d6e616d6573706163652d76310000086170702d6c6f6773
+
+namespace_digest =
+  400aa7032f9128c39cc7e1403b8745dcccf6c9a5acfc665e908f15e798ac9531
+```
+
+For generation `7`, that digest, and an empty snapshot (`record_count = 0`),
+the complete 60-byte snapshot header is:
+
+```text
+464c4f47534e5000000100000000000000000007400aa7032f9128c39cc7e1403b8745dcccf6c9a5acfc665e908f15e798ac9531000000004e0dcda7
+```
+
+Its header CRC-32C is `0x4e0dcda7`. The corresponding complete 56-byte WAL
+header is:
+
+```text
+464c4f4757414c00000100000000000000000007400aa7032f9128c39cc7e1403b8745dcccf6c9a5acfc665e908f15e798ac953169a613de
+```
+
+Its header CRC-32C is `0x69a613de`.
+
+Phase 1 conformance vectors and recovery tests cover:
+
+- these namespace-input, namespace-digest, snapshot-header, and WAL-header
+  bytes exactly;
+- snapshot and WAL namespace digests that differ from the selected namespace
+  or one another, producing `NamespaceMismatch` before record application;
+- a valid `CURRENT` naming a missing, unreadable, or incomplete authoritative
+  generation, with no fallback to another generation;
+- cleanup that never deletes the generation currently named by `CURRENT`;
 - encode/decode round-trip for a minimal `Active` snapshot record with a
   POSIX locator and `Clean` framing resume;
-- encode/decode round-trip for a `Quarantined` snapshot record with a
-  Windows volume/file-ID locator;
-- a WAL generation containing a `register_file` followed by an
-  `update_progress` transaction, replayed end to end;
-- a WAL whose final transaction is torn (fewer trailing bytes than its
-  declared length): the preceding transactions replay and the torn tail is
-  discarded without error;
-- a WAL whose final transaction is structurally complete but has a
-  corrupted CRC: replay fails closed rather than discarding it;
-- a snapshot and a WAL header each declaring an unsupported
-  `format_version`: both fail closed with the unsupported-version error
+- encode/decode round-trip for a `Quarantined` snapshot record with a Windows
+  volume/file-ID locator;
+- a WAL generation containing `register_file`, ordinary and zero-delta
+  finalizing `update_progress`, and replay of the resulting state;
+- one progress transaction containing exactly 4,096 maximum-size
+  `update_progress` operations and rejection before encoding a 4,097th;
+- a WAL whose final transaction is torn: preceding transactions replay and
+  only the incomplete final transaction is discarded;
+- a structurally complete final WAL transaction with a corrupted CRC,
+  producing fail-closed corruption rather than prefix recovery;
+- snapshot and WAL headers declaring an unsupported `format_version`, rejected
   before any record or transaction is parsed;
-- decoding a Windows-locator snapshot record and a POSIX-locator snapshot
-  record on the same (arbitrary host) platform, demonstrating that decoding
-  never depends on the host's own native locator type; and
-- the two framing-profile digest compatibility vectors above.
+- Windows and POSIX locator records decoded independently of host platform;
+  and
+- the two framing-profile version-1 compatibility vectors above.
 
-The snapshot/WAL byte fixtures intentionally retain opaque legacy
-`framing_profile_version = 1` fields so codec conformance is independent of
-the current recipe. Runtime identity tests separately prove that a
-non-finalized profile-v1 record fails closed against profile v3 even when no
-candidate is present.
-
-Phase 1 conformance requires these tests, plus the corresponding
-round-trip/corruption/torn-write/cross-version/cross-platform/migration tests,
-to pass and remain in lockstep with this specification.
+All round-trip, corruption, torn-write, namespace, cross-version,
+cross-platform, publication, and recovery vectors must remain in lockstep with
+this specification.
