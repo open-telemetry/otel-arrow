@@ -700,7 +700,7 @@ Telemetry policy notes:
 - `telemetry.runtime_metrics` accepts `none`, `basic`, `normal`, or `detailed`
 - this level now gates:
   - channel endpoint transport metrics
-  - per-node produced/consumed outcome metrics
+  - per-node input/output outcome metrics
   - shared pipeline control-plane metrics such as `pipeline.runtime_control`
     and `pipeline.completion`
 - `basic` exports gauges and transport counters

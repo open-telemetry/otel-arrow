@@ -402,9 +402,9 @@ per fanout processor instance.
 
 The common metric sets preserve both fanout telemetry perspectives:
 
-- `node.consumer.consumed.messages` reports the aggregated upstream outcome
+- `node.input.messages` reports the aggregated upstream outcome
   after applying the configured ack and fallback policy.
-- `node.producer` and channel metrics report per-destination sends and outcomes.
+- `node.output` and channel metrics report per-destination sends and outcomes.
 
 The common replacement metrics require `runtime_metrics: normal` or higher.
 The default `basic` level does not emit them:

@@ -1,10 +1,9 @@
-# Demonstrates the per-signal produced/consumed item counts and logical payload
-# sizes that a node emits on its `node.producer` / `node.consumer` metric sets.
+# Compares per-signal node and flow input/output metrics.
 #
-# Two pipelines in the same engine, each running: receiver -> sampler -> noop
-#   - `full`:    detailed metrics enable both measurements on all three nodes.
-#   - `partial`: only the `sampler` opts in -> only the sampler emits per-signal
-#                items and size; the receiver and noop do not.
+# Three pipelines in the same engine:
+#   - `full`: detailed node metrics and a one-processor flow around `sampler`.
+#   - `partial`: only `sampler` opts into node item and size measurements.
+#   - `no_output`: a filter drops every log batch and ACKs without sending.
 # Distinguish them by the `pipeline.id` attribute on each metric set.
 #
 # The traffic generator emits a mix of all three signals (logs, metrics,
@@ -20,33 +19,37 @@
 #   - the node sets `policies.telemetry.item_counts: true` and/or
 #     `policies.telemetry.size: true`.
 # Per-node opt-ins still require `runtime_metrics: normal` or higher because
-# these measurements extend the produced/consumed metric sets.
+# these measurements extend the input/output metric sets.
 #
-# Metrics emitted per opted-in node:
-#   node.producer: produced.items {item}, with `signal` = logs, metrics, or traces
-#   node.producer: produced.size By, with `signal` = logs, metrics, or traces
-#   node.consumer: consumed.items {item}, with `signal` = logs, metrics, or traces
-#   node.consumer: consumed.size By, with `signal` = logs, metrics, or traces
+# The `full` pipeline lets you compare the sampler's terminal node outcomes
+# against forward-path measurements for the same processor range:
+#
+#   node.input.{messages,items,size,duration} {signal,outcome}
+#   node.output.{messages,items,size,duration} {signal,outcome}
+#   flow.input.{messages,items,size} {signal}
+#   flow.output.{messages,items,size} {signal}
+#   flow.compute.duration {signal}
+#   flow.dropped.items {signal}
 #
 # What to look for:
 #   - In `full`, every node reports per-signal items and size. In `partial`,
 #     only the sampler does because the receiver and noop did not opt in.
-#   - receiver `node.producer.produced.items` is the per-signal accepted volume
+#   - receiver `node.output.items` is the per-signal accepted volume
 #     the traffic generator injected.
-#   - sampler `node.consumer.consumed.*` equals the receiver's produced counts
+#   - sampler `node.input.*` equals the receiver's output counts
 #     (everything the sampler received), while sampler
-#     `node.producer.produced.items{signal="logs"}` is LOWER because the sampler
+#     `node.output.items{signal="logs"}` is LOWER because the sampler
 #     keeps only ~1/3 of log records; metrics and traces pass through unchanged
 #     (sampling only targets logs). This shows the per-signal accounting
 #     isolating the affected signal.
-#   - noop `node.consumer.consumed.*` reflects the surviving per-signal volume.
-#
-# The internal observability pipeline filters out everything except the six
-# produced/consumed message, item, and size instruments, then prints their
-# normal-verbosity representation to stdout once per second.
+#   - noop `node.input.*` reflects the surviving per-signal volume.
+#   - In `no_output`, the receiver, filter input, flow input, flow compute, and
+#     flow dropped metrics are present. Filter `node.output.*`,
+#     `flow.output.*`, and noop `node.input.*` are absent because no PData
+#     message is sent.
 #
 # Run with:
-#   cargo run -- --config configs/trafficgen-universal-produced-consumed-metrics.yaml
+#   cargo run -- --config configs/trafficgen-input-output-metrics.yaml
 
 version: otel_dataflow/v1
 engine:
@@ -66,19 +69,17 @@ engine:
             signals: [metrics]
             metrics:
               interval: 1s
-        node_metrics_filter:
+        node_and_flow_metrics:
           type: processor:filter
           config:
             metrics:
               include:
                 match_type: strict
                 metric_names:
-                  - consumed.messages
-                  - consumed.items
-                  - consumed.size
-                  - produced.messages
-                  - produced.items
-                  - produced.size
+                  - messages
+                  - items
+                  - size
+                  - duration
         metrics_debug:
           type: processor:debug
           config:
@@ -90,8 +91,8 @@ engine:
           config: {}
       connections:
         - from: telemetry
-          to: node_metrics_filter
-        - from: node_metrics_filter
+          to: node_and_flow_metrics
+        - from: node_and_flow_metrics
           to: metrics_debug
         - from: metrics_debug
           to: noop
@@ -109,6 +110,20 @@ groups:
             # Detailed runtime metrics enables item counts and logical payload
             # size for every node in the pipeline.
             runtime_metrics: detailed
+            flow_metrics:
+              - id: sampler
+                bounds:
+                  start_node: sampler
+                  end_node: sampler
+                metrics:
+                  - input_messages
+                  - input_items
+                  - input_size
+                  - output_messages
+                  - output_items
+                  - output_size
+                  - compute_duration
+                  - dropped_items
 
         nodes:
           receiver:
@@ -128,8 +143,8 @@ groups:
               data_source: synthetic
 
           # Keeps ~1/3 of log records and drops the rest. Only logs are affected,
-          # so the sampler's produced.items{signal="logs"} is lower than its
-          # consumed.items{signal="logs"}, while the metrics and traces buckets
+          # so the sampler's node.output.items{signal="logs"} is lower than its
+          # node.input.items{signal="logs"}, while the metrics and traces buckets
           # stay equal.
           sampler:
             type: processor:log_sampling
@@ -196,4 +211,62 @@ groups:
           - from: receiver
             to: sampler
           - from: sampler
+            to: noop
+
+      # Every generated log is dropped. This exercises a processor that ACKs
+      # its input without sending an output message.
+      no_output:
+        policies:
+          channel_capacity:
+            control:
+              node: 100
+              pipeline: 100
+            pdata: 128
+          telemetry:
+            runtime_metrics: detailed
+            flow_metrics:
+              - id: drop_all
+                bounds:
+                  start_node: drop_all
+                  end_node: drop_all
+                metrics:
+                  - input_messages
+                  - input_items
+                  - input_size
+                  - output_messages
+                  - output_items
+                  - output_size
+                  - compute_duration
+                  - dropped_items
+
+        nodes:
+          receiver:
+            type: receiver:traffic_generator
+            config:
+              traffic_config:
+                max_batch_size: 10
+                signals_per_second: 30
+                log_weight: 100
+                metric_weight: 0
+                trace_weight: 0
+              data_source: synthetic
+
+          drop_all:
+            type: processor:filter
+            config:
+              logs:
+                include:
+                  match_type: strict
+                  record_attributes:
+                    - key: sample.keep
+                      value: "true"
+
+          noop:
+            type: exporter:noop
+            config: {}
+
+        connections:
+          - from: receiver
+            to: drop_all
+          - from: drop_all
             to: noop
