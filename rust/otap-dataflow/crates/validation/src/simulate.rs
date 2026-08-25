@@ -62,6 +62,9 @@ pub(crate) struct StagePlan {
     pub(crate) step_timeout_secs: u64,
     /// Graceful drain timeout for reconfigure into this stage.
     pub(crate) drain_timeout_secs: u64,
+    /// Per-stage timeout in seconds. This stage's combined load-generation and
+    /// validation work must complete within this budget.
+    pub(crate) stage_timeout_secs: u64,
 }
 
 /// Run every stage in order against a single engine, transitioning between
@@ -94,13 +97,26 @@ pub(crate) async fn run_stages_with_timeout(
                 reconfigure_stage(&admin_client, stage).await?;
             }
 
-            wait_for_loadgen(&admin_client, &stage.expected_signals, metrics_poll)
-                .await
-                .map_err(|e| stage_error(&stage.label, e))?;
+            // A single per-stage budget bounds this stage's load generation and
+            // validation together.
+            let stage_budget = Duration::from_secs(stage.stage_timeout_secs);
 
-            wait_for_validation_finished(&admin_client, &stage.capture_labels, metrics_poll)
-                .await
-                .map_err(|e| stage_error(&stage.label, e))?;
+            tokio::time::timeout(stage_budget, async {
+                wait_for_loadgen(&admin_client, &stage.expected_signals, metrics_poll)
+                    .await
+                    .map_err(|e| stage_error(&stage.label, e))?;
+                wait_for_validation_finished(&admin_client, &stage.capture_labels, metrics_poll)
+                    .await
+                    .map_err(|e| stage_error(&stage.label, e))?;
+                Ok::<(), ValidationError>(())
+            })
+            .await
+            .map_err(|_| {
+                ValidationError::Validation(format!(
+                    "stage '{}': timed out after {stage_budget:?}",
+                    stage.label
+                ))
+            })??;
         }
         shutdown_pipeline(&admin_client).await
     })
@@ -109,11 +125,17 @@ pub(crate) async fn run_stages_with_timeout(
 }
 
 /// Prefix a stage-scoped error with the stage label for easier diagnosis.
+///
+/// Only the variants that a running stage's phases can surface (validation
+/// outcomes, admin HTTP failures, readiness failures) are re-labeled. Other
+/// variants either already carry stage context or arise before execution.
 fn stage_error(label: &str, err: ValidationError) -> ValidationError {
     match err {
         ValidationError::Validation(msg) => {
             ValidationError::Validation(format!("stage '{label}': {msg}"))
         }
+        ValidationError::Http(msg) => ValidationError::Http(format!("stage '{label}': {msg}")),
+        ValidationError::Ready(msg) => ValidationError::Ready(format!("stage '{label}': {msg}")),
         other => other,
     }
 }
@@ -140,7 +162,10 @@ impl PipelineSimulator {
 /// into the target stage. Captures are reconfigured first (so downstream
 /// receivers are ready), then the `suv` pipeline, then generators.
 async fn reconfigure_stage(client: &AdminClient, stage: &StagePlan) -> Result<(), ValidationError> {
-    // Deterministic order: captures, then suv, then remaining (generators).
+    // Order across buckets is deterministic: captures first (so downstream
+    // receivers are ready), then suv, then generators. Order within the
+    // generators bucket is unspecified (HashMap iteration) and safe because
+    // generators are independent of one another.
     let mut ordered: Vec<&String> = stage.pipeline_configs.keys().collect();
     ordered.sort_by_key(|id| {
         if stage.capture_labels.iter().any(|c| c == *id) {
@@ -633,6 +658,32 @@ mod tests {
             validation_finished_and_passed(&snap, &[]),
             ValidationPollResult::FinishedAndPassed
         ));
+    }
+
+    /// Scenario: stage-scoped errors of each execution-phase variant are
+    /// re-labeled with the stage name.
+    /// Guarantees: `Validation`, `Http`, and `Ready` errors surfaced during a
+    /// stage are prefixed with the stage label (and keep their variant), while
+    /// pre-execution variants such as `Config` are left untouched.
+    #[test]
+    fn stage_error_labels_execution_phase_variants() {
+        match stage_error("s0", ValidationError::Validation("boom".into())) {
+            ValidationError::Validation(msg) => assert_eq!(msg, "stage 's0': boom"),
+            other => panic!("expected Validation, got {other:?}"),
+        }
+        match stage_error("s0", ValidationError::Http("boom".into())) {
+            ValidationError::Http(msg) => assert_eq!(msg, "stage 's0': boom"),
+            other => panic!("expected Http, got {other:?}"),
+        }
+        match stage_error("s0", ValidationError::Ready("boom".into())) {
+            ValidationError::Ready(msg) => assert_eq!(msg, "stage 's0': boom"),
+            other => panic!("expected Ready, got {other:?}"),
+        }
+        // Pre-execution variants are passed through unchanged.
+        match stage_error("s0", ValidationError::Config("boom".into())) {
+            ValidationError::Config(msg) => assert_eq!(msg, "boom"),
+            other => panic!("expected Config, got {other:?}"),
+        }
     }
 
     /// Scenario: the harness drives readiness, load-gen, and shutdown against a

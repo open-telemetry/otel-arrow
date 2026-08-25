@@ -12,15 +12,15 @@ nodes:
         include:
           match_type: strict
           record_attributes:
-            - key: ios.app.state
-              value: active
+            - key: thread.name
+              value: main
   debug:
     type: "urn:otel:processor:attribute"
     config:
       actions:
         - action: "rename"
-          source_key: "ios.app.state"
-          destination_key: "ios.app.state2"
+          source_key: "thread.name"
+          destination_key: "thread.name2"
           apply_to: ["signal"]
   exporter:
     type: "urn:otel:exporter:otap"

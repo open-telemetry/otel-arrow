@@ -102,11 +102,11 @@ mod tests {
     fn validation_attribute_processor_pipeline() {
         let deny = ValidationInstructions::AttributeDeny {
             domains: vec![AttributeDomain::Signal],
-            keys: vec!["ios.app.state".into()],
+            keys: vec!["thread.name".into()],
         };
         let require = ValidationInstructions::AttributeRequireKey {
             domains: vec![AttributeDomain::Signal],
-            keys: vec!["ios.app.state2".into()],
+            keys: vec!["thread.name2".into()],
         };
         Scenario::new()
             .pipeline(
@@ -137,8 +137,8 @@ mod tests {
         let attr_check = ValidationInstructions::AttributeRequireKeyValue {
             domains: vec![AttributeDomain::Signal],
             pairs: vec![KeyValue::new(
-                "ios.app.state".into(),
-                AnyValue::String("active".into()),
+                "thread.name".into(),
+                AnyValue::String("main".into()),
             )],
         };
 
@@ -161,8 +161,8 @@ mod tests {
                     .otap_grpc("exporter")
                     .validate(vec![
                         ValidationInstructions::SignalDrop {
-                            min_drop_ratio: None,
-                            max_drop_ratio: None,
+                            min_drop_ratio: Some(0.75),
+                            max_drop_ratio: Some(0.95),
                         },
                         attr_check,
                     ])
@@ -614,9 +614,9 @@ mod tests {
             .expect("transform kql passthrough traces validation failed");
     }
 
-    /// Tests the transform processor OPL `exclude` operation. Removes the
+    /// Tests the transform processor OPL `remove` operation. Removes the
     /// `thread.id` attribute from every log record while preserving `thread.name`.
-    /// Query: `logs | exclude attributes["thread.id"]`
+    /// Query: `logs | remove attributes["thread.id"]`
     #[test]
     fn validation_transform_opl_exclude_attribute() {
         Scenario::new()
@@ -735,10 +735,10 @@ mod tests {
             .expect("transform opl conditional-set validation failed");
     }
 
-    /// Tests the transform processor with chained OPL `set` + `exclude`
+    /// Tests the transform processor with chained OPL `set` + `remove`
     /// operations. First adds a `processed` attribute, then removes
     /// `thread.id`. Both transformations must be reflected in the output.
-    /// Query: `logs | set attributes["processed"] = "yes" | exclude
+    /// Query: `logs | set attributes["processed"] = "yes" | remove
     ///   attributes["thread.id"]`
     #[test]
     fn validation_transform_opl_chained_set_exclude() {

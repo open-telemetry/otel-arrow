@@ -953,6 +953,9 @@ Scenario::new()
   differs, the scenario fails with `ValidationError::Reconfigure`.
 - `Scenario::reconfigure_timeouts(step_secs, drain_secs)` - tune the per-core
   step and drain timeouts used for the reconfigure between stages.
+- `Scenario::phase_timeout(timeout_secs)` - set the per-phase timeout (default
+  60s) applied to each stage's load-generation and validation phases. A phase
+  that exceeds this budget fails with an error naming the stage and phase.
 
 Notes and limitations:
 

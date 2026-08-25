@@ -39,6 +39,10 @@ const DEFAULT_READY_BACKOFF: Duration = Duration::from_secs(3);
 const DEFAULT_METRICS_POLL: Duration = Duration::from_secs(2);
 const DEFAULT_SCENARIO_RUNTIME: Duration = Duration::from_secs(60);
 const DEFAULT_RECONFIGURE_TIMEOUT_SECS: u64 = 60;
+/// Default per-stage budget in seconds. A stage's combined load generation and
+/// validation work must complete within this budget; it is the effective cap on
+/// how long a stage can run before it is considered stalled.
+const DEFAULT_STAGE_TIMEOUT_SECS: u64 = 60;
 const MAX_PORT_ALLOCATION_ATTEMPTS: usize = 64;
 
 /// Pipeline group id used for every rendered stage. The SUV pipeline is
@@ -86,6 +90,7 @@ pub struct Scenario {
     runtime: Duration,
     step_timeout_secs: u64,
     drain_timeout_secs: u64,
+    stage_timeout_secs: u64,
 }
 
 impl Default for Scenario {
@@ -108,6 +113,7 @@ impl Scenario {
             runtime: DEFAULT_SCENARIO_RUNTIME,
             step_timeout_secs: DEFAULT_RECONFIGURE_TIMEOUT_SECS,
             drain_timeout_secs: DEFAULT_RECONFIGURE_TIMEOUT_SECS,
+            stage_timeout_secs: DEFAULT_STAGE_TIMEOUT_SECS,
         }
     }
 
@@ -192,6 +198,17 @@ impl Scenario {
     pub fn reconfigure_timeouts(mut self, step_secs: u64, drain_secs: u64) -> Self {
         self.step_timeout_secs = step_secs;
         self.drain_timeout_secs = drain_secs;
+        self
+    }
+
+    /// Configure the per-stage timeout (in seconds) applied to each stage's
+    /// combined load-generation and validation work.
+    ///
+    /// This is the effective cap on how long a single stage may run before the
+    /// scenario fails with an error naming the stage.
+    #[must_use]
+    pub fn stage_timeout(mut self, timeout_secs: u64) -> Self {
+        self.stage_timeout_secs = timeout_secs;
         self
     }
 
@@ -295,6 +312,12 @@ impl Scenario {
         // Container connections are only supported in single-stage scenarios.
         let multi_stage = self.stages.len() > 1;
 
+        // Timeouts are copied out before the mutable borrows below so the
+        // per-stage plans carry the scenario's configured values.
+        let step_timeout_secs = self.step_timeout_secs;
+        let drain_timeout_secs = self.drain_timeout_secs;
+        let stage_timeout_secs = self.stage_timeout_secs;
+
         // Admin port is allocated once for the whole engine lifetime.
         self.admin_addr = format!("127.0.0.1:{}", pick_port("admin")?);
 
@@ -310,6 +333,9 @@ impl Scenario {
                 &mut control_ports,
                 &pick_port,
                 multi_stage,
+                step_timeout_secs,
+                drain_timeout_secs,
+                stage_timeout_secs,
             )?;
             plans.push(plan);
         }
@@ -348,6 +374,9 @@ impl Scenario {
         control_ports: &mut HashMap<(String, String), u16>,
         pick_port: &impl Fn(&str) -> Result<u16, ValidationError>,
         multi_stage: bool,
+        step_timeout_secs: u64,
+        drain_timeout_secs: u64,
+        stage_timeout_secs: u64,
     ) -> Result<StagePlan, ValidationError> {
         if stage.generators.is_empty() {
             return Err(ValidationError::Config(format!(
@@ -504,8 +533,9 @@ impl Scenario {
             expected_signals,
             capture_labels,
             expected_action: stage.expected_action,
-            step_timeout_secs: DEFAULT_RECONFIGURE_TIMEOUT_SECS,
-            drain_timeout_secs: DEFAULT_RECONFIGURE_TIMEOUT_SECS,
+            step_timeout_secs,
+            drain_timeout_secs,
+            stage_timeout_secs,
         })
     }
 
@@ -920,6 +950,63 @@ connections:
     fn expect_within_overrides_runtime() {
         let scenario = Scenario::new().expect_within(42);
         assert_eq!(scenario.runtime, Duration::from_secs(42));
+    }
+
+    /// Scenario: a scenario configures non-default reconfigure and phase
+    /// timeouts, then builds its stage plans.
+    /// Guarantees: `reconfigure_timeouts` and `phase_timeout` are propagated
+    /// into every StagePlan instead of being silently replaced by the defaults,
+    /// so the setters actually take effect during execution.
+    #[test]
+    fn configured_timeouts_flow_into_stage_plans() {
+        let mut scenario = Scenario::new()
+            .reconfigure_timeouts(90, 120)
+            .phase_timeout(150)
+            .add_stage(
+                "s0",
+                Stage::new()
+                    .pipeline(Pipeline::from_yaml(sample_yaml()).unwrap())
+                    .add_generator("gen", Generator::logs().otlp_grpc("receiver"))
+                    .add_capture(
+                        "cap",
+                        Capture::default()
+                            .otlp_grpc("exporter")
+                            .control_streams(["gen"]),
+                    ),
+            );
+
+        let plans = scenario.build_stage_plans().expect("plan should build");
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].step_timeout_secs, 90);
+        assert_eq!(plans[0].drain_timeout_secs, 120);
+        assert_eq!(plans[0].phase_timeout_secs, 150);
+    }
+
+    /// Scenario: a scenario leaves all timeouts at their defaults.
+    /// Guarantees: stage plans carry the default reconfigure and phase timeouts
+    /// when the setters are not called.
+    #[test]
+    fn default_timeouts_flow_into_stage_plans() {
+        let mut scenario = Scenario::new().add_stage(
+            "s0",
+            Stage::new()
+                .pipeline(Pipeline::from_yaml(sample_yaml()).unwrap())
+                .add_generator("gen", Generator::logs().otlp_grpc("receiver"))
+                .add_capture(
+                    "cap",
+                    Capture::default()
+                        .otlp_grpc("exporter")
+                        .control_streams(["gen"]),
+                ),
+        );
+
+        let plans = scenario.build_stage_plans().expect("plan should build");
+        assert_eq!(plans[0].step_timeout_secs, DEFAULT_RECONFIGURE_TIMEOUT_SECS);
+        assert_eq!(
+            plans[0].drain_timeout_secs,
+            DEFAULT_RECONFIGURE_TIMEOUT_SECS
+        );
+        assert_eq!(plans[0].phase_timeout_secs, DEFAULT_PHASE_TIMEOUT_SECS);
     }
 
     fn kafka_style_yaml() -> &'static str {
