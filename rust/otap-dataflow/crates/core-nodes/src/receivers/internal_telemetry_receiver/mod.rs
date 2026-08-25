@@ -59,10 +59,12 @@ use otel_arrow_dfe_telemetry::metrics::otlp::{
     MetricView, MetricViewSelector, MetricViewStream, MetricsOtlpEncoder,
 };
 use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
-use otel_arrow_dfe_telemetry::self_tracing::{ScopeToBytesMap, encode_export_logs_request};
+use otel_arrow_dfe_telemetry::self_tracing::{ScopeToBytesMap, encode_export_logs_request_batch};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::mem::size_of;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::{Instant, MissedTickBehavior, interval_at};
@@ -96,6 +98,22 @@ fn default_signals() -> Vec<InternalTelemetrySignal> {
         InternalTelemetrySignal::Logs,
         InternalTelemetrySignal::Metrics,
     ]
+}
+
+const MAX_LOG_BATCH_BYTES: usize = 2 * 1024 * 1024;
+const DEFAULT_LOG_BATCH_MIN_BYTES: usize = 64 * 1024;
+const DEFAULT_LOG_BATCH_DURATION: Duration = Duration::from_millis(200);
+
+const fn default_log_batch_min_size() -> NonZeroUsize {
+    NonZeroUsize::new(DEFAULT_LOG_BATCH_MIN_BYTES).expect("default batch size is nonzero")
+}
+
+const fn default_log_batch_max_size() -> NonZeroUsize {
+    NonZeroUsize::new(MAX_LOG_BATCH_BYTES).expect("maximum batch size is nonzero")
+}
+
+const fn default_log_batch_duration() -> Duration {
+    DEFAULT_LOG_BATCH_DURATION
 }
 
 /// Configuration for the internal telemetry receiver.
@@ -137,12 +155,70 @@ pub enum LogsRepresentation {
 }
 
 /// Configuration for internal log output.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct LogsConfig {
     /// Physical representation emitted by the receiver.
     #[serde(default)]
     pub representation: LogsRepresentation,
+
+    /// Retained bytes that trigger a log batch flush.
+    #[serde(default = "default_log_batch_min_size")]
+    pub min_size: NonZeroUsize,
+
+    /// Maximum retained bytes in a log batch.
+    #[serde(default = "default_log_batch_max_size")]
+    pub max_size: NonZeroUsize,
+
+    /// Maximum time the oldest log can wait in a partial batch.
+    #[serde(default = "default_log_batch_duration", with = "humantime_serde")]
+    pub max_batch_duration: Duration,
+}
+
+impl Default for LogsConfig {
+    fn default() -> Self {
+        Self {
+            representation: LogsRepresentation::default(),
+            min_size: default_log_batch_min_size(),
+            max_size: default_log_batch_max_size(),
+            max_batch_duration: default_log_batch_duration(),
+        }
+    }
+}
+
+#[derive(Default)]
+struct LogBatch {
+    events: Vec<LogEvent>,
+    retained_bytes: usize,
+}
+
+impl LogBatch {
+    fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+
+    fn clear(&mut self) {
+        self.events.clear();
+        self.retained_bytes = 0;
+    }
+}
+
+fn retained_log_bytes(event: &LogEvent) -> usize {
+    let context_bytes = if event.record.context.spilled() {
+        event.record.context.capacity() * size_of::<otel_arrow_dfe_telemetry::registry::EntityKey>()
+    } else {
+        0
+    };
+    size_of::<LogEvent>()
+        .saturating_add(event.record.body_attrs_bytes.len())
+        .saturating_add(context_bytes)
+        .saturating_add(
+            event
+                .record
+                .stacktrace
+                .as_ref()
+                .map_or(0, |stacktrace| stacktrace.retained_bytes()),
+        )
 }
 
 /// Registry-backed internal metrics configuration.
@@ -324,6 +400,28 @@ impl Config {
                 ),
             });
         }
+        if self.logs.min_size > self.logs.max_size {
+            return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                error: format!(
+                    "internal telemetry receiver logs min_size ({}) must not exceed max_size ({})",
+                    self.logs.min_size, self.logs.max_size
+                ),
+            });
+        }
+        if self.logs.max_size.get() > MAX_LOG_BATCH_BYTES {
+            return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                error: format!(
+                    "internal telemetry receiver logs max_size must not exceed {MAX_LOG_BATCH_BYTES} bytes"
+                ),
+            });
+        }
+        if self.logs.max_batch_duration.is_zero() {
+            return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                error:
+                    "internal telemetry receiver logs max_batch_duration must be greater than zero"
+                        .to_owned(),
+            });
+        }
         Ok(())
     }
 
@@ -354,7 +452,7 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
         let internal = self.internal_telemetry.clone();
         let mut scope_cache = ScopeToBytesMap::new(internal.registry.clone());
         let mut symbol_cache = SymbolCache::default();
-        let logs_representation = self.config.logs.representation;
+        let logs_config = self.config.logs;
         let logs_enabled = self.config.logs_enabled();
         let metrics_enabled = self.config.metrics_enabled();
         let metrics_interval = self
@@ -379,8 +477,23 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
         metrics_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
         let mut logs_channel_open = logs_enabled;
         let mut pending_metric_export = None;
+        let mut log_batch = LogBatch::default();
+        let mut log_batch_deadline = None;
 
         loop {
+            if log_batch_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                Self::flush_log_batch(
+                    &effect_handler,
+                    &mut log_batch,
+                    &internal.resource_field_bytes,
+                    &mut scope_cache,
+                    &mut symbol_cache,
+                    logs_config.representation,
+                )
+                .await?;
+                log_batch_deadline = None;
+            }
+
             tokio::select! {
                 biased;
 
@@ -397,9 +510,10 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
                                 &effect_handler,
                                 &internal,
                                 logs_enabled,
+                                &mut log_batch,
                                 &mut scope_cache,
                                 &mut symbol_cache,
-                                logs_representation,
+                                logs_config,
                                 metrics_encoder.as_ref(),
                                 deadline,
                             ).await?;
@@ -412,9 +526,10 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
                                 &effect_handler,
                                 &internal,
                                 logs_enabled,
+                                &mut log_batch,
                                 &mut scope_cache,
                                 &mut symbol_cache,
-                                logs_representation,
+                                logs_config,
                                 metrics_encoder.as_ref(),
                                 deadline,
                             ).await?;
@@ -456,26 +571,44 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
                 result = internal.logs_receiver.recv_async(), if logs_channel_open => {
                     match result {
                         Ok(ObservedEvent::Log(log_event)) => {
-                            if let Some(log_tap) = internal.log_tap.as_ref() {
-                                log_tap.record(log_event.clone());
-                            }
-                            Self::send_log_event(
+                            let started_new_batch = Self::buffer_log_event(
                                 &effect_handler,
+                                &mut log_batch,
                                 log_event,
                                 &internal.resource_field_bytes,
                                 &mut scope_cache,
                                 &mut symbol_cache,
-                                logs_representation,
+                                internal.log_tap.as_ref(),
+                                logs_config,
                             ).await?;
+                            if log_batch.is_empty() {
+                                log_batch_deadline = None;
+                            } else if started_new_batch {
+                                log_batch_deadline =
+                                    Some(Instant::now() + logs_config.max_batch_duration);
+                            }
                         }
                         Ok(ObservedEvent::Engine(_)) => {
                             // Engine events are not yet processed
                         }
                         Err(_) => {
+                            Self::flush_log_batch(
+                                &effect_handler,
+                                &mut log_batch,
+                                &internal.resource_field_bytes,
+                                &mut scope_cache,
+                                &mut symbol_cache,
+                                logs_config.representation,
+                            ).await?;
+                            log_batch_deadline = None;
                             logs_channel_open = false;
                         }
                     }
                 }
+
+                _ = tokio::time::sleep_until(
+                    log_batch_deadline.unwrap_or_else(Instant::now)
+                ), if log_batch_deadline.is_some() => {}
             }
         }
     }
@@ -487,29 +620,44 @@ impl InternalTelemetryReceiver {
         effect_handler: &local::EffectHandler<OtapPdata>,
         internal: &otel_arrow_dfe_telemetry::InternalTelemetrySettings,
         logs_enabled: bool,
+        log_batch: &mut LogBatch,
         scope_cache: &mut ScopeToBytesMap,
         symbol_cache: &mut SymbolCache,
-        logs_representation: LogsRepresentation,
+        logs_config: LogsConfig,
         encoder: Option<&MetricsOtlpEncoder>,
         deadline: std::time::Instant,
     ) -> Result<(), Error> {
         if logs_enabled {
-            while let Ok(event) = internal.logs_receiver.try_recv() {
-                if let ObservedEvent::Log(log_event) = event {
-                    if let Some(log_tap) = internal.log_tap.as_ref() {
-                        log_tap.record(log_event.clone());
+            tokio::time::timeout_at(Instant::from_std(deadline), async {
+                while let Ok(event) = internal.logs_receiver.try_recv() {
+                    if let ObservedEvent::Log(log_event) = event {
+                        let _ = Self::buffer_log_event(
+                            effect_handler,
+                            log_batch,
+                            log_event,
+                            &internal.resource_field_bytes,
+                            scope_cache,
+                            symbol_cache,
+                            internal.log_tap.as_ref(),
+                            logs_config,
+                        )
+                        .await?;
                     }
-                    Self::send_log_event(
-                        effect_handler,
-                        log_event,
-                        &internal.resource_field_bytes,
-                        scope_cache,
-                        symbol_cache,
-                        logs_representation,
-                    )
-                    .await?;
                 }
-            }
+                Self::flush_log_batch(
+                    effect_handler,
+                    log_batch,
+                    &internal.resource_field_bytes,
+                    scope_cache,
+                    symbol_cache,
+                    logs_config.representation,
+                )
+                .await
+            })
+            .await
+            .map_err(|_| Error::InternalError {
+                message: "timed out while flushing internal logs during shutdown".to_owned(),
+            })??;
         }
 
         Self::process_metric_batch_until(effect_handler, &internal.registry, encoder, deadline)
@@ -576,29 +724,99 @@ impl InternalTelemetryReceiver {
         Ok(())
     }
 
-    /// Send a log event as OTLP logs with scope attributes from entity context.
-    async fn send_log_event(
+    /// Add a log to the bounded receiver-side batch, flushing as required.
+    ///
+    /// Returns true when the event starts a partial batch whose deadline must
+    /// be scheduled by the caller.
+    async fn buffer_log_event(
         effect_handler: &local::EffectHandler<OtapPdata>,
+        batch: &mut LogBatch,
         log_event: LogEvent,
+        resource_field_bytes: &Bytes,
+        scope_cache: &mut ScopeToBytesMap,
+        symbol_cache: &mut SymbolCache,
+        log_tap: Option<&otel_arrow_dfe_telemetry::log_tap::InternalLogTapHandle>,
+        config: LogsConfig,
+    ) -> Result<bool, Error> {
+        if let Some(log_tap) = log_tap {
+            log_tap.record(log_event.clone());
+        }
+
+        let event_bytes = retained_log_bytes(&log_event);
+        let mut started_new_batch = batch.is_empty();
+        if !batch.is_empty()
+            && batch.retained_bytes.saturating_add(event_bytes) > config.max_size.get()
+        {
+            Self::flush_log_batch(
+                effect_handler,
+                batch,
+                resource_field_bytes,
+                scope_cache,
+                symbol_cache,
+                config.representation,
+            )
+            .await?;
+            started_new_batch = true;
+        }
+
+        batch.retained_bytes = batch.retained_bytes.saturating_add(event_bytes);
+        batch.events.push(log_event);
+        if batch.retained_bytes >= config.min_size.get() {
+            Self::flush_log_batch(
+                effect_handler,
+                batch,
+                resource_field_bytes,
+                scope_cache,
+                symbol_cache,
+                config.representation,
+            )
+            .await?;
+            return Ok(false);
+        }
+
+        Ok(started_new_batch)
+    }
+
+    /// Encode and send all currently buffered logs as one pdata message.
+    async fn flush_log_batch(
+        effect_handler: &local::EffectHandler<OtapPdata>,
+        batch: &mut LogBatch,
         resource_field_bytes: &Bytes,
         scope_cache: &mut ScopeToBytesMap,
         symbol_cache: &mut SymbolCache,
         representation: LogsRepresentation,
     ) -> Result<(), Error> {
+        if batch.is_empty() {
+            return Ok(());
+        }
+
         let payload = match representation {
             LogsRepresentation::Otlp => {
-                let mut buf = ProtoBuffer::with_capacity(512);
-                encode_export_logs_request(&mut buf, &log_event, resource_field_bytes, scope_cache);
+                let capacity = batch.events.iter().fold(
+                    resource_field_bytes.len().saturating_add(512),
+                    |capacity, event| capacity.saturating_add(event.record.body_attrs_bytes.len()),
+                );
+                let mut buf = ProtoBuffer::with_capacity(capacity);
+                let _ = encode_export_logs_request_batch(
+                    &mut buf,
+                    &batch.events,
+                    resource_field_bytes,
+                    scope_cache,
+                );
                 OtlpProtoBytes::ExportLogsRequest(buf.into_bytes()).into()
             }
-            LogsRepresentation::ArrowExtended => {
-                extended_logs::encode(&log_event, resource_field_bytes, scope_cache, symbol_cache)
-                    .map_err(|error| Error::PdataConversionError { error })?
-                    .into()
-            }
+            LogsRepresentation::ArrowExtended => extended_logs::encode(
+                &batch.events,
+                resource_field_bytes,
+                scope_cache,
+                symbol_cache,
+            )
+            .map_err(|error| Error::PdataConversionError { error })?
+            .into(),
         };
         let pdata = OtapPdata::new(Context::default(), payload);
         effect_handler.send_message(pdata).await?;
+        batch.clear();
         Ok(())
     }
 }
@@ -619,17 +837,20 @@ mod tests {
     use otel_arrow_dfe_engine::message::{Receiver as EngineReceiver, Sender as EngineSender};
     use otel_arrow_dfe_engine::testing::{create_not_send_channel, setup_test_runtime, test_node};
     use otel_arrow_dfe_pdata::PayloadData;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
     use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
     use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::ResourceLogs;
     use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{metric, number_data_point};
     use otel_arrow_dfe_telemetry::instrument::Counter;
     use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
     use otel_arrow_dfe_telemetry::testing::EmptyAttributes;
-    use otel_arrow_dfe_telemetry::{InternalTelemetrySystem, LogContext};
+    use otel_arrow_dfe_telemetry::{
+        __log_record_impl, InternalTelemetrySettings, InternalTelemetrySystem, Level, LogContext,
+    };
     use otel_arrow_dfe_telemetry_macros::metric_set;
     use prost::Message as _;
     use std::collections::HashMap;
-    use std::time::{Duration, Instant as StdInstant};
+    use std::time::{Duration, Instant as StdInstant, SystemTime};
     use tokio_util::sync::CancellationToken;
 
     #[metric_set(name = "receiver.internal_telemetry.test")]
@@ -672,6 +893,29 @@ mod tests {
             panic!("expected an integer metric data point")
         };
         value
+    }
+
+    fn test_log_event() -> LogEvent {
+        LogEvent {
+            time: SystemTime::UNIX_EPOCH,
+            record: __log_record_impl!(Level::INFO, "test.itr.batching")
+                .into_record(LogContext::new()),
+        }
+    }
+
+    fn decode_log_count(pdata: OtapPdata) -> usize {
+        let PayloadData::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(bytes)) =
+            pdata.payload().into_data()
+        else {
+            panic!("internal telemetry receiver emitted a non-logs payload")
+        };
+        let request = ExportLogsServiceRequest::decode(bytes).expect("valid OTLP logs request");
+        request
+            .resource_logs
+            .iter()
+            .flat_map(|resource| &resource.scope_logs)
+            .map(|scope| scope.log_records.len())
+            .sum()
     }
 
     /// Scenario: metric settings include an interval, views, and scalar selectors.
@@ -786,6 +1030,30 @@ mod tests {
         assert!(logs_only.logs_enabled());
         assert!(!logs_only.metrics_enabled());
 
+        for (logs, expected) in [
+            (
+                serde_json::json!({ "min_size": 1024, "max_size": 512 }),
+                "must not exceed max_size",
+            ),
+            (
+                serde_json::json!({ "max_size": MAX_LOG_BATCH_BYTES + 1 }),
+                "must not exceed 2097152 bytes",
+            ),
+            (
+                serde_json::json!({ "max_batch_duration": "0s" }),
+                "must be greater than zero",
+            ),
+        ] {
+            let error = InternalTelemetryReceiver::parse_config(&serde_json::json!({
+                "logs": logs
+            }))
+            .expect_err("invalid log batching settings must be rejected");
+            assert!(
+                error.to_string().contains(expected),
+                "unexpected error: {error}"
+            );
+        }
+
         for (signals, expected) in [
             (serde_json::json!([]), "must not be empty"),
             (
@@ -802,6 +1070,148 @@ mod tests {
                 "unexpected error: {error}"
             );
         }
+    }
+
+    /// Scenario: two logs remain below the byte threshold until the batch deadline.
+    /// Guarantees: the timer emits one scope-grouped OTLP request before shutdown.
+    #[test]
+    fn timer_flushes_partial_log_batch() {
+        let (runtime, local_tasks) = setup_test_runtime();
+        runtime.block_on(local_tasks.run_until(async move {
+            let (logs_sender, logs_receiver) = flume::bounded(4);
+            let receiver = InternalTelemetryReceiver::new_with_telemetry(
+                Config {
+                    signals: vec![InternalTelemetrySignal::Logs],
+                    metrics: MetricsConfig::default(),
+                    logs: LogsConfig {
+                        min_size: default_log_batch_max_size(),
+                        max_batch_duration: Duration::from_millis(20),
+                        ..LogsConfig::default()
+                    },
+                },
+                InternalTelemetrySettings {
+                    logs_receiver,
+                    resource_field_bytes: Bytes::new(),
+                    registry: TelemetryRegistryHandle::new(),
+                    default_metric_drain_interval: Duration::from_secs(60),
+                    log_tap: None,
+                },
+            );
+
+            let (output_tx, output_rx) = create_not_send_channel(2);
+            let mut outputs = HashMap::new();
+            let _ = outputs.insert("".into(), EngineSender::Local(LocalSender::mpsc(output_tx)));
+            let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(2);
+            let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(2);
+            let effect_handler = local::EffectHandler::new(
+                test_node("internal_telemetry_receiver"),
+                outputs,
+                None,
+                runtime_ctrl_tx,
+                metrics_reporter,
+            );
+            let (ctrl_tx, ctrl_rx) = create_not_send_channel::<NodeControlMsg<OtapPdata>>(2);
+            let ctrl_channel =
+                local::ControlChannel::new(EngineReceiver::Local(LocalReceiver::mpsc(ctrl_rx)));
+            let receiver_task = tokio::task::spawn_local(async move {
+                Box::new(receiver).start(ctrl_channel, effect_handler).await
+            });
+
+            logs_sender
+                .send(ObservedEvent::Log(test_log_event()))
+                .expect("first log should enqueue");
+            logs_sender
+                .send(ObservedEvent::Log(test_log_event()))
+                .expect("second log should enqueue");
+
+            let output = tokio::time::timeout(Duration::from_millis(150), output_rx.recv())
+                .await
+                .expect("timer should flush before timeout")
+                .expect("output channel should remain open");
+            assert_eq!(decode_log_count(output), 2);
+
+            ctrl_tx
+                .send(NodeControlMsg::Shutdown {
+                    deadline: StdInstant::now() + Duration::from_secs(1),
+                    reason: "test complete".to_owned(),
+                })
+                .expect("shutdown should enqueue");
+            let receiver_result = receiver_task.await.expect("receiver task should join");
+            assert!(receiver_result.is_ok(), "receiver should shut down cleanly");
+        }));
+    }
+
+    /// Scenario: shutdown finds a partial log batch while downstream is blocked.
+    /// Guarantees: the terminal log flush fails at the shutdown deadline instead of hanging.
+    #[test]
+    fn shutdown_bounds_log_flush_blocked_by_downstream_backpressure() {
+        let (runtime, local_tasks) = setup_test_runtime();
+        runtime.block_on(local_tasks.run_until(async move {
+            let (logs_sender, logs_receiver) = flume::bounded(1);
+            let receiver = InternalTelemetryReceiver::new_with_telemetry(
+                Config {
+                    signals: vec![InternalTelemetrySignal::Logs],
+                    ..Config::default()
+                },
+                InternalTelemetrySettings {
+                    logs_receiver,
+                    resource_field_bytes: Bytes::new(),
+                    registry: TelemetryRegistryHandle::new(),
+                    default_metric_drain_interval: Duration::from_secs(60),
+                    log_tap: None,
+                },
+            );
+
+            let (output_tx, _output_rx) = create_not_send_channel(1);
+            output_tx
+                .send(OtapPdata::new(
+                    Context::default(),
+                    OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into(),
+                ))
+                .expect("downstream blocker should enqueue");
+            let mut outputs = HashMap::new();
+            let _ = outputs.insert("".into(), EngineSender::Local(LocalSender::mpsc(output_tx)));
+            let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(2);
+            let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(2);
+            let effect_handler = local::EffectHandler::new(
+                test_node("internal_telemetry_receiver"),
+                outputs,
+                None,
+                runtime_ctrl_tx,
+                metrics_reporter,
+            );
+            let (ctrl_tx, ctrl_rx) = create_not_send_channel::<NodeControlMsg<OtapPdata>>(2);
+            let ctrl_channel =
+                local::ControlChannel::new(EngineReceiver::Local(LocalReceiver::mpsc(ctrl_rx)));
+            let receiver_task = tokio::task::spawn_local(async move {
+                Box::new(receiver).start(ctrl_channel, effect_handler).await
+            });
+
+            logs_sender
+                .send(ObservedEvent::Log(test_log_event()))
+                .expect("log should enqueue");
+            ctrl_tx
+                .send(NodeControlMsg::Shutdown {
+                    deadline: StdInstant::now() + Duration::from_millis(20),
+                    reason: "test deadline".to_owned(),
+                })
+                .expect("shutdown should enqueue");
+
+            let result = tokio::time::timeout(Duration::from_millis(500), receiver_task)
+                .await
+                .expect("shutdown deadline must bound the blocked log flush")
+                .expect("receiver task should join");
+            let error = match result {
+                Ok(_) => panic!("blocked terminal log flush should fail"),
+                Err(error) => error,
+            };
+            assert!(
+                error
+                    .to_string()
+                    .contains("timed out while flushing internal logs"),
+                "unexpected error: {error}"
+            );
+        }));
     }
 
     /// Scenario: metric emission has and does not have a receiver-local interval override.
@@ -963,7 +1373,7 @@ mod tests {
                     },
                     logs: LogsConfig::default(),
                 },
-                otel_arrow_dfe_telemetry::InternalTelemetrySettings {
+                InternalTelemetrySettings {
                     logs_receiver,
                     resource_field_bytes: ResourceLogs::default().encode_to_vec().into(),
                     registry: registry.clone(),

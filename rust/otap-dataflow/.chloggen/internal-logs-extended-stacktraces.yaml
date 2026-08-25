@@ -1,6 +1,6 @@
 change_type: enhancement
 component: observability
-note: "Internal logs can capture bounded caller stacks and emit extended OTAP Arrow logs with symbolized stacktraces."
+note: "Internal logs can batch events and emit extended OTAP Arrow logs with bounded, symbolized caller stacktraces."
 issues: [3452]
 subtext: |
-  Enable engine.telemetry.logs.stacktraces and set the internal telemetry receiver logs representation to arrow_extended.
+  Configure ITR log batch size and latency bounds. Enable stacktraces and select arrow_extended to include compact stack tables.

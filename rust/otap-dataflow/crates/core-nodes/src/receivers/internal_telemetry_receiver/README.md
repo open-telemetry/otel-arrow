@@ -72,10 +72,24 @@ block or its `interval` field is omitted, the receiver uses
 `engine.telemetry.reporting_interval`. That engine setting also controls the
 metric-set snapshot cadence. Setting `metrics` to `null` is invalid.
 
+The `logs` block selects the output representation and controls bounded
+receiver-side batching. `min_size` flushes a batch after it retains that many
+estimated bytes. `max_size` prevents adding an event to a partial batch when
+their combined estimate would exceed the configured limit; one individually
+bounded event is still sent whole. `max_size` cannot exceed 2 MiB.
+`max_batch_duration` bounds how long the oldest event waits. Defaults are
+64 KiB, 2 MiB, and 200 ms. Logs sharing an instrumentation scope are encoded in
+one `ScopeLogs`.
+
 ```yaml
 type: receiver:internal_telemetry
 config:
   signals: [logs, metrics]
+  logs:
+    representation: otlp # otlp or arrow_extended
+    min_size: 65536
+    max_size: 2097152
+    max_batch_duration: 200ms
   metrics:
     interval: 2s
     views:
@@ -125,6 +139,8 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
   telemetry receiver.
 - Logs and metrics can be selected independently with a non-empty `signals`
   list.
+- Receiver-side log batches have a non-configurable 2 MiB retained-size
+  estimate ceiling and a configurable flush threshold and latency bound.
 - Internal metric batches use the receiver's `metrics.interval`, or
   `engine.telemetry.reporting_interval` when no receiver interval is set.
 - Receiver-local views support exact scope name, scalar scope attribute, and

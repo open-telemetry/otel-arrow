@@ -93,8 +93,11 @@ The generic OTLP-to-OTAP path does not construct Prost message objects. It
 still has to traverse protobuf tags, lengths, keys, and nested messages before
 building Arrow records.
 
-The prototype also emits one pdata message per log. It therefore constructs
-and finishes Arrow builders and record batches for each individual event.
+The prototype initially emitted one pdata message per log. It now incorporates
+the receiver-side batching design contributed in #3374: ITR groups logs by
+scope and flushes on bounded size, latency, and lifecycle conditions. For
+extended logs, one OTLP-to-OTAP conversion now produces a multi-log Arrow batch
+and the stack side tables preserve joins across scope-based row reordering.
 
 ## Key Observation
 
@@ -475,7 +478,7 @@ Use workloads with:
    existing body and attribute fragment.
 3. Remove complete `ExportLogsServiceRequest` construction from the extended
    ITR path.
-4. Add bounded multi-log batching and flush policies.
+4. Refine the existing bounded multi-log batching and flush policies.
 5. Establish correctness and performance baselines.
 6. Add a bounded receiver-local callsite translation-plan cache.
 7. Add shape validation, mismatch tests, and cache observability.
@@ -538,7 +541,7 @@ Before resuming implementation:
 1. Rebase or reproduce the #3882 prototype against current `main`.
 2. Confirm the current `LogRecord`, ITR, and canonical OTAP builder APIs.
 3. Capture baseline caller and ITR profiles.
-4. Verify the one-log-per-pdata and complete-OTLP-request costs independently.
+4. Verify batching and complete-OTLP-request costs independently.
 5. Start with the shared canonical builder and batching work.
 6. Retain the generic converter as a differential correctness oracle.
 7. Treat callsite planning as a measured optimization, not an assumed win.

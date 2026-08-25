@@ -17,12 +17,14 @@ use serde::Serialize;
 use serde::ser::Serializer;
 use smallvec::SmallVec;
 use std::fmt;
+use std::mem::size_of;
 use tracing::callsite::Identifier;
 use tracing::{Event, Level, Metadata};
 
 pub use encoder::DirectLogRecordEncoder;
 pub use encoder::ScopeToBytesMap;
 pub use encoder::encode_export_logs_request;
+pub use encoder::encode_export_logs_request_batch;
 pub use formatter::{
     AnsiCode, ColorMode, ConsoleWriter, RawLoggingLayer, StyledBufWriter,
     format_log_record_to_string,
@@ -93,6 +95,17 @@ impl RawStackTrace {
     #[must_use]
     pub fn frames(&self) -> &[usize] {
         &self.frames
+    }
+
+    /// Bytes retained by the boxed trace, including spilled frame storage.
+    #[must_use]
+    pub fn retained_bytes(&self) -> usize {
+        size_of::<Self>()
+            + if self.frames.spilled() {
+                self.frames.capacity() * size_of::<usize>()
+            } else {
+                0
+            }
     }
 }
 

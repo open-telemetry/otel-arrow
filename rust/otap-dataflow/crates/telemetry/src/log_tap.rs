@@ -7,7 +7,7 @@ use crate::event::LogEvent;
 use otel_arrow_dfe_config::settings::telemetry::logs::InternalLogTapConfig;
 use parking_lot::RwLock;
 use std::collections::VecDeque;
-use std::mem::{size_of, size_of_val};
+use std::mem::size_of;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::broadcast;
@@ -253,14 +253,19 @@ pub fn build(config: &InternalLogTapConfig) -> InternalLogTapHandle {
 }
 
 fn estimate_event_size(event: &LogEvent) -> usize {
+    let context_bytes = if event.record.context.spilled() {
+        event.record.context.capacity() * size_of::<crate::registry::EntityKey>()
+    } else {
+        0
+    };
     size_of::<RetainedLogEvent>()
         + event.record.body_attrs_bytes.len()
-        + event.record.context.len() * size_of::<crate::registry::EntityKey>()
+        + context_bytes
         + event
             .record
             .stacktrace
             .as_ref()
-            .map_or(0, |stacktrace| size_of_val(stacktrace.frames()))
+            .map_or(0, |stacktrace| stacktrace.retained_bytes())
 }
 
 #[cfg(test)]

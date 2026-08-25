@@ -76,7 +76,8 @@ impl ExtendedLogsView<'_> {
         Ok(Logs::try_from(raw)?.into())
     }
 
-    /// Resolves compact extension tables into stacks keyed by canonical log row ID.
+    /// Resolves compact extension tables into stacks keyed by zero-based row
+    /// position in the canonical OTAP Logs table.
     pub fn stacks(&self) -> crate::error::Result<BTreeMap<u16, Vec<ExtendedLogStackFrame>>> {
         let Some(log_stacks) = self.records.table(LOG_STACKS_TABLE_ID) else {
             return Ok(BTreeMap::new());
