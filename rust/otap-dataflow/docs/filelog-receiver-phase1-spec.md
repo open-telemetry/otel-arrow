@@ -30,7 +30,7 @@ convention.
 | Term | Meaning |
 | --- | --- |
 | Aggregate completion | The single Ack or Nack the engine/topic runtime returns to filelog for one `(batch_id, attempt)` after applying required-subscriber fan-out semantics. |
-| Advisory path | A bounded, reversible, platform-native representation of a last-known path. It is metadata, not identity. |
+| Advisory path | A bounded platform-native representation of a last-known path; reversible only when its explicit truncated flag is clear. It is metadata, not identity. |
 | Body source range | The half-open source-byte range whose bytes were transformed into the emitted body. |
 | Candidate | An eligible opened regular file presented to identity resolution with stable evidence. |
 | Candidate inventory | The bounded population and multiplicity evidence used by one reconciliation pass. |
@@ -86,7 +86,8 @@ Phase 1 provides:
 - durable logical identity;
 - bounded source reading, decoding, and framing;
 - deterministic newline and multiline behavior;
-- one receiver-wide open or retained batch;
+- one receiver-wide open or retained batch plus at most one bounded carry-over
+  record;
 - one engine-aggregated completion per batch attempt, matching-Ack-gated
   applied progress, and a filesystem-synced durable frontier;
 - bounded Nack retry;
@@ -161,9 +162,6 @@ receivers:
           line_start_pattern: null
           line_end_pattern: null
         max_multiline_lines: 500
-      metadata:
-        include_file_record_offset: false
-        include_file_record_number: false
       limits:
         max_tracked_files: 10000
         max_pending_candidates: 10000
@@ -205,7 +203,7 @@ receivers:
 | `discovery.reconcile_interval` | `5s` | Reviewable initial full-reconciliation delay in `100ms..=24h`; not a discovery-latency guarantee |
 | `discovery.reconcile_jitter_percent` | `10` | Integer percentage in `0..=25`, independently sampled for each completed pass |
 | `reader.eof_reprobe_interval` | `250ms` | Reviewable initial tail reprobe interval in `10ms..=1h`; does not trigger traversal |
-| `ignore_older_than` | `0s` | Zero disables the admission-age filter |
+| `ignore_older_than` | `0s` | Zero disables the new-unrelated-candidate modification-age admission filter |
 | `identity.fingerprint_bytes` | `1000` | Raw evidence window in `16..=65535` bytes |
 | `identity.ignored_header_bytes` | `0` | Prefix bytes skipped before evidence, at most `u32::MAX` |
 | `identity.on_recovery_mismatch` | `beginning` | `beginning`, `skip_to_end`, or `fail` |
@@ -219,9 +217,7 @@ receivers:
 | `framing.multiline.line_start_pattern` | `null` | Optional start boundary |
 | `framing.multiline.line_end_pattern` | `null` | Optional end boundary |
 | `framing.max_multiline_lines` | `500` | Nonzero physical-line count bound |
-| `metadata.include_file_record_offset` | `false` | Include optional source offset metadata |
-| `metadata.include_file_record_number` | `false` | Include optional process-local record number metadata |
-| `limits.max_tracked_files` | `10000` | Nonzero durable identity population |
+| `limits.max_tracked_files` | `10000` | Durable identity population in `1..=u32::MAX` |
 | `limits.max_pending_candidates` | `10000` | Nonzero retained pending population |
 | `limits.max_open_files` | `512` | Nonzero resident tail-handle population |
 | `limits.max_read_bytes_per_turn` | `128KiB` | Nonzero source-byte turn bound |
@@ -267,10 +263,13 @@ encoded input length must fit `u32`; otherwise validation fails.
 Continuity across any logical-key rename requires an explicit ID from initial
 deployment, an explicit ID equal to the current effective derived value before the
 rename, or an explicit namespace migration. Startup opens only the selected ID. If it
-does not exist, the receiver creates an empty namespace, emits a bounded health event,
-and applies `start_at` to newly registered files. It never searches sibling namespaces.
-Changing the ID therefore selects different existing state or an empty namespace and
-can cause replay or intentional `start_at` exclusion.
+is genuinely absent--directory and artifacts are absent--the receiver runs the
+checkpoint-format first-publication state machine, emits a bounded health
+event, and applies new-file admission policy. Existing artifacts without valid
+`CURRENT` are not an empty namespace. The receiver never searches sibling
+namespaces. Changing the ID therefore selects different existing state or a
+genuinely new namespace and can cause replay or intentional `start_at`
+exclusion.
 
 ### Configuration variants
 
@@ -352,36 +351,39 @@ The following relationships are enforced:
 28. `framing.max_multiline_lines` is nonzero.
 29. A nonzero `force_flush_period` resolves exactly to whole milliseconds and fits
     `u64` milliseconds.
-30. `limits.max_tracked_files`, `max_pending_candidates`, `max_open_files`, and
-    `max_read_bytes_per_turn` are nonzero.
-31. `limits.max_open_files <= limits.max_tracked_files`.
-32. Candidate-population and aggregate reader-count sums fit `usize`.
-33. `batch.max_records` is in `1..=65535`.
-34. `batch.max_bytes` fits `usize`.
-35. The hard distinct-file progress-delta limit is 4,096 and the maximum
+30. `ignore_older_than` is zero or representable as positive `i128`
+    nanoseconds.
+31. `limits.max_tracked_files` is in `1..=u32::MAX`; pending candidates, open
+    files, and read bytes per turn are nonzero.
+32. `limits.max_open_files <= limits.max_tracked_files`.
+33. Candidate-population and aggregate reader-count sums fit `usize`.
+34. `batch.max_records` is in `1..=65535`.
+35. `batch.max_bytes` fits `usize`.
+36. The hard distinct-file progress-delta limit is 4,096 and the maximum
     Ack/drop transaction size derived from it is representable.
-36. `batch.max_flush_period`, `rotation.rotate_wait`, `retry.initial_backoff`,
+37. `batch.max_flush_period`, `rotation.rotate_wait`, `retry.initial_backoff`,
     `checkpoint.ownership_timeout`, and `drain_timeout` are nonzero.
-37. `retry.max_attempts` is nonzero.
-38. `retry.max_backoff >= retry.initial_backoff`.
-39. Both checkpoint compaction thresholds and the consecutive-failure budget are
+38. `retry.max_attempts` is nonzero.
+39. `retry.max_backoff >= retry.initial_backoff`.
+40. Both checkpoint compaction thresholds and the consecutive-failure budget are
     nonzero.
-40. Every UTF-8 input to the derived checkpoint-ID recipe has a length representable
+41. Every UTF-8 input to the derived checkpoint-ID recipe has a length representable
     as `u32`.
-41. `checkpoint.id` is nonempty after defaulting.
-42. `checkpoint.id` is neither `.` nor `..`.
-43. `checkpoint.id` contains only ASCII alphanumerics, `_`, `-`, and `.`.
-44. Its ASCII byte length is at most 255, and those exact bytes are its namespace path
+42. `checkpoint.id` is nonempty after defaulting.
+43. `checkpoint.id` is neither `.` nor `..`.
+44. `checkpoint.id` contains only ASCII alphanumerics, `_`, `-`, and `.`.
+45. Its ASCII byte length is at most 255, and those exact bytes are its namespace path
     component.
-45. Both configured framing bounds plus worst-case enabled attributes fit within
+46. Both configured framing bounds plus worst-case enabled attributes fit within
     `batch.max_bytes`.
-46. Identity reconciliation, framer, reader, and checkpoint recovery admission models
+47. Identity reconciliation, framer, reader, carry-over, and checkpoint recovery admission models
     are representable with checked arithmetic and remain within their fixed ceilings.
 
 Separately, engine topology validation rejects a filelog path that requires
 Ack-gated progress across broadcast subscribers unless it provides automatic
-Ack propagation and all-required-subscriber aggregation. That graph-level
-validation is not performed by the receiver factory.
+Ack propagation, all-required-subscriber aggregation, a nonempty ready
+membership, downstream lifecycle handling, and a node-level Ack requirement.
+That graph-level validation is not performed by the receiver factory.
 
 The logical size of a record is:
 
@@ -400,7 +402,11 @@ an Arrow allocation or wire-size measurement.
 
 The checkpoint stores a versioned compatibility digest covering identity evidence and
 all inputs that affect record boundaries or deterministic replay. A mismatch against
-resumable state fails closed and requires an explicit migration or reset.
+resumable state is stored framing-profile incompatibility: it fails closed for
+the affected file and requires audited reset/removal or a separately designed
+versioned migration. It is never routed through
+`identity.on_recovery_mismatch`, never creates a new identity automatically,
+and never applies `skip_to_end` because configuration changed.
 
 Changing these values is therefore not an ordinary live reload:
 
@@ -543,6 +549,40 @@ contents. Least-privilege read access, nonblocking probes, bounded traversal,
 buffers, records, and deterministic failure classification limit resource
 impact; they do not authenticate source content.
 
+### Ignore-older admission filter
+
+`ignore_older_than` is evaluated only after handle validation and identity
+classification prove that a candidate is an unrelated new file. It does not
+apply to recovered `Active` state, exact-locator `Quarantined` reconnection, or
+a recognized move/create replacement. A `RotatedFinalized` record never
+reconnects; a candidate reusing its locator is a new file and may be filtered.
+
+The timestamp is the last-modification time obtained from the same validated
+opened handle. One wall-clock observation is captured for the candidate. Both
+values are converted to signed `i128` nanoseconds, and:
+
+```text
+age = max(0, observation_time - modification_time)
+ignored = ignore_older_than != 0 && age > ignore_older_than
+```
+
+Arithmetic is checked. Equality is eligible. A future modification timestamp or
+wall-clock rollback produces age zero and therefore does not filter. A forward
+clock jump can temporarily filter an unrelated new candidate but never changes
+durable state. If the platform cannot provide a valid modification timestamp,
+the candidate is admitted rather than silently excluded and a bounded health
+event records that the filter could not be applied.
+
+An ignored candidate remains presence evidence in a complete reconciliation.
+Filtering never proves disappearance, revokes a reader, or initiates rotation
+finalization. No `file_id` or checkpoint record is created for it. A later
+append that advances its handle modification time can make it eligible on a
+later pass.
+
+Modification time is source-controlled metadata, not trusted security evidence.
+Enabling this filter intentionally permits an application to defer its own
+unrelated file by presenting an old timestamp.
+
 ### Complete and incomplete inventories
 
 A complete inventory visited every relevant bounded traversal unit and produced stable
@@ -570,11 +610,13 @@ An incomplete pass:
 - emits no removal based only on non-observation;
 - does not evict unseen pending evidence;
 - does not admit stale pending evidence as though it were current;
-- disables fingerprint-only checkpoint inheritance;
+- does not treat fingerprint multiplicity diagnostics as continuity evidence;
 - keeps valid exact-locator matching available; and
 - records bounded health and telemetry evidence.
 
-Only a later complete pass can prove disappearance or complete-population uniqueness.
+Only a later complete pass can prove disappearance or complete-population
+multiplicity. Phase 1 never uses either complete or incomplete fingerprint
+populations to transfer progress across locators.
 
 ### Bounded populations
 
@@ -626,7 +668,7 @@ A complete pass produces one ordered transition stream:
 | --- | --- | --- |
 | Observed | Eligible stable locator is not retained or active | Present candidate to identity resolution |
 | Updated | Retained locator remains eligible but path or mutable metadata changed | Update bounded advisory evidence |
-| Excluded | Active locator now matches an exclusion | Revoke at the next complete record boundary |
+| Excluded | Active locator now matches an exclusion | Stop reads, resolve existing deltas, then revoke without changing durable progress or lifecycle |
 | Disappeared | Complete pass proves locator no longer has an eligible name | Enter rotation/removal handling |
 
 The implementation-facing transition must preserve the reason distinction between
@@ -637,6 +679,14 @@ dependent late-write capture and rotation finalization.
 Transition order for one locator is preserved. A stale removal cannot overtake a later
 observation. Reappearance before the old logical reader and lease finalize is blocked
 and makes the pass incomplete. Reappearance after finalization is a fresh observation.
+
+Exclusion is not disappearance or rotation. After the
+[unresolved-delta invariant](#universal-unresolved-delta-ordering) is satisfied,
+the receiver closes the descriptor and releases the runtime lease, but the
+checkpoint record remains `Active` with identical epoch, offset, framing state,
+identity evidence, and lifecycle. If the same exact locator becomes included
+again, it reconnects that state after ordinary validation; `start_at` does not
+apply. Exclusion alone never writes `RotatedFinalized` or removes state.
 
 Cancellation is checked between bounded directory entries, path resolutions, evidence
 observations, and channel handoff waits. A filesystem operation already blocked in the
@@ -651,35 +701,61 @@ for the discovery thread to join.
 | --- | --- | --- |
 | `file_id` | Opaque durable checkpoint key and future partition input | Not derived from path, locator, fingerprint, CPU, or generation |
 | Runtime locator | Open-reader key, discovery dedup key, and runtime-lease key | Not permanent identity |
-| Fingerprint | Guarded restart/reopen matching evidence | Not a unique key |
-| Advisory path | Reversible bounded diagnostics and recovery context | Not identity |
+| Fingerprint | Validation evidence for one exact-locator recovery and ambiguity diagnostics | Not identity or continuity proof across locators |
+| Advisory path | Bounded diagnostics and recovery context; reversible only when not truncated | Not identity |
 | File epoch | Guards progress against stream reset | Not distributed fencing |
 
 `file_id` is created from operating-system randomness, checked against the loaded
 table, and durably registered before reading. It never changes because a path changes,
 a fingerprint grows, or a runtime locator is refreshed.
 
-Advisory paths retain native representation without lossy conversion. Unix stores
-original native path bytes. Windows stores native UTF-16 code units reversibly. The
-checkpoint-format specification owns the exact durable representation and bound.
+Advisory paths retain a bounded native representation. Unix uses native bytes;
+Windows uses explicit UTF-16LE code-unit bytes. When the complete native path
+exceeds the bound, the checkpoint stores the defined suffix, full-length
+evidence, and a digest rather than claiming reversibility. The
+checkpoint-format specification owns the exact durable encoding.
+
+### Lifecycle eligibility during matching
+
+Only records eligible under this table participate in candidate matching:
+
+| Durable lifecycle | Candidate eligibility |
+| --- | --- |
+| `Active` | May reconnect only through the same exact runtime locator after fingerprint-prefix, size, offset, and framing-profile validation |
+| `Quarantined` | May reconnect only through the exact immutable quarantine locator and remains `Quarantined`; no progress or quarantine transfers to a replacement |
+| `RotatedFinalized` | Never eligible for a live candidate; locator or inode reuse creates a new logical identity |
+
+In later sections, "eligible durable record" means exactly an `Active` record
+eligible under this table. Quarantined matching is governed only by the
+separate exact-locator reconnection rule, and `RotatedFinalized` records are
+retention evidence rather than recovery candidates.
 
 ### Matching hierarchy
 
 Identity resolution uses this order:
 
 1. A live in-process runtime lease wins and prevents a second reader.
-2. A durable exact runtime locator is considered only with successful fingerprint-
-   prefix validation and `committed_offset <= current_size`.
-3. A full-window fingerprint-only match is considered only when the reconciliation
-   inventory is complete.
-4. Fingerprint-only inheritance requires uniqueness across the complete bounded live
-   candidate population and eligible durable records.
-5. Otherwise the candidate receives a new `file_id` or follows the explicit recovery-
-   mismatch failure policy.
+2. An exact locator matching a `Quarantined` record follows
+   [Quarantine reconnection](#quarantine-reconnection) and never reaches
+   ordinary recovery.
+3. An exact locator matching an `Active` record first checks stored
+   framing-profile compatibility. Incompatibility blocks that file as described
+   below; it never creates another identity.
+4. A framing-compatible exact-locator `Active` record reconnects only when its
+   fingerprint prefix validates and `committed_offset <= current_size`.
+5. Any changed locator, including one with byte-identical fingerprint evidence,
+   is a new file and receives a new `file_id`. If fingerprint or path evidence
+   associates it with an old durable record but cannot prove exact-locator
+   continuity, `identity.on_recovery_mismatch` selects the new identity's
+   initial anchor. A recognized move/create replacement instead uses offset
+   zero.
+6. Exact-locator identity-evidence mismatch follows
+   `identity.on_recovery_mismatch` without inheriting uncertain progress.
 
-Fingerprint-only matching is disabled for short/provisional fingerprints and for an
-incomplete inventory. Exact-locator matching remains available when its direct evidence
-validates.
+Phase 1 performs no fingerprint-only recovery. Fingerprints can validate the
+same locator, detect ambiguity or likely reuse, and grow as evidence under an
+already reconnected `file_id`; they never transfer `file_id`, committed offset,
+epoch, or framing state across changed locators.
 
 Two live locators with equal fingerprints are distinct files and receive distinct
 logical identities. Cross-device or cross-volume copy/unlink is a new file. Fingerprint
@@ -692,17 +768,16 @@ replaces only matching evidence. It never rekeys progress or changes lifecycle s
 
 The following conditions never inherit an old offset:
 
-- multiple eligible durable records share the same full fingerprint;
-- multiple live candidates share it;
-- the candidate has only a short fingerprint;
-- the inventory is incomplete;
+- the candidate has a changed runtime locator, even with an equal full
+  fingerprint;
 - an exact-locator fingerprint prefix fails;
 - committed progress exceeds current size;
-- evidence changed while it was observed; or
-- framing/identity compatibility does not match.
+- exact-locator identity evidence changed while it was observed; or
+- a native locator appears reused after a `RotatedFinalized` record.
 
-The candidate becomes a new logical identity and applies
-`identity.on_recovery_mismatch`:
+For a changed locator associated with old durable evidence, or an exact-locator
+identity-evidence mismatch, the candidate becomes a new logical identity and
+applies `identity.on_recovery_mismatch`:
 
 | Policy | Initial durable progress |
 | --- | --- |
@@ -711,10 +786,34 @@ The candidate becomes a new logical identity and applies
 | `fail` | Durable quarantine pending operator action |
 
 The receiver records an identity-reset signal. It does not silently guess.
+The default `beginning` policy intentionally prefers possible duplicate
+ingestion to skipping copied or replaced bytes. A changed locator with no
+durable association is an unrelated new file and uses `start_at`.
+
+For an exact-locator evidence mismatch, after satisfying the
+[unresolved-delta invariant](#universal-unresolved-delta-ordering), one atomic
+checkpoint transaction removes the superseded `Active` record and registers
+the new `file_id` at the selected anchor. Under `fail`, that transaction
+registers the replacement at offset zero and quarantines it before any read.
+The store never leaves two `Active` records claiming the same exact locator.
+For a changed-locator copy or ambiguity, the old record is not removed because
+its original locator may still exist independently; only the new candidate is
+registered.
+
+Stored framing-profile incompatibility is not an identity mismatch. A
+recognized record whose stored profile version or digest is incompatible with
+the selected configuration fails closed for that file. It remains blocked
+without changing `file_id`, epoch, offset, or framing state and requires either
+audited administrative removal/reset followed by registration or a separately
+designed versioned migration. It never automatically creates a new identity or
+applies `skip_to_end` merely because framing configuration changed. Namespace
+corruption remains receiver-wide rather than a per-file profile failure.
 
 ### `start_at` and durable state
 
-`start_at` applies only when no durable identity is recovered.
+`start_at` applies only to first admission of an unrelated file with no
+recoverable durable relationship. It does not apply to exact-locator recovery
+or to a replacement recognized as part of move/create rotation.
 
 For `beginning`, registration stores offset zero and clean framing state.
 
@@ -730,11 +829,19 @@ require existing bytes select `beginning`.
 
 Recovered durable state always wins over `start_at`.
 
+A move/create replacement recognized while the prior locator remains in
+rotation handling is registered at offset zero with clean framing, regardless
+of `start_at`. Bytes written between replacement creation and first
+reconciliation are therefore included. Skipping bytes already present in every
+rotation replacement would require a separately named explicit-loss policy;
+Phase 1 defines none.
+
 ### Quarantine reconnection
 
-A quarantined record reconnects only through the same exact runtime locator with valid
-same-identity evidence. It remains quarantined; general recovery-mismatch policy does
-not release or replace it.
+A quarantined record reconnects only through equality with its immutable exact
+quarantine locator. It remains quarantined; later fingerprint or size changes
+are bounded diagnostics and general recovery-mismatch policy does not release,
+replace, or transfer it.
 
 A different locator at the same path never inherits the old quarantine. It is evaluated
 as a new candidate.
@@ -849,9 +956,10 @@ Eviction is a handshake:
 
 1. Stop scheduling the victim.
 2. Ensure it owns no outstanding read turn.
-3. Preserve only applied checkpoint progress and framing resume.
-4. Discard decoder, physical-line, multiline, provisional record, and speculative
-   batch state derived after applied progress.
+3. Preserve applied checkpoint progress and any separately owned carry-over
+   record state.
+4. Discard decoder, physical-line, multiline, provisional record, and other speculative
+   state derived after applied progress.
 5. Rewind its in-memory frontier to applied progress.
 6. Close the descriptor.
 7. Keep its runtime lease.
@@ -882,17 +990,50 @@ policy for this case.
 Pinned removed handles consume `max_open_files` slots. Waiting present readers cannot
 evict them, and they remain subject to bounded scheduling and finalization deadlines.
 
-### Batch-seal rewind
+### Batch sealing and carry-over
 
-The open batch may refuse a record because adding it would exceed record, byte,
-distinct-delta, or deadline bounds. On seal:
+The scheduler preflights every bound it can know before reading:
 
-- the refused record is not retained across the in-flight window;
-- decoder/framer state beyond the sealed batch is discarded;
-- each file represented by a batch delta rewinds to that delta's final offset;
-- every other speculative reader rewinds to its latest applied checkpoint progress;
-- open descriptors may remain resident; and
-- reconstruction resumes only after terminal processing of the retained batch.
+- a full record-count or expired first-record deadline seals the open batch
+  before another source turn;
+- a file not yet represented in an open batch with 4,096 distinct deltas does
+  not read or resume buffered framing until that batch seals and resolves; and
+- a known minimum projected record that cannot fit the remaining byte budget
+  causes sealing before the read.
+
+The final projected size of a variable record may be known only after framing.
+If one fully framed record cannot enter the current nonempty batch because of
+byte, count, deadline, or defensive distinct-delta admission, it becomes the
+single receiver-wide carry-over record. It is never discarded and reconstructed
+from mutable source bytes.
+
+The carry-over owns:
+
+- the exact body representation;
+- every projected attribute and bounded metadata value;
+- exact body and frame source ranges;
+- `file_id` and file epoch;
+- the complete post-frame decoder/framer resume state; and
+- the required progress delta with its expected and resulting offsets.
+
+Its logical projected size is at most `batch.max_bytes`, and its body and
+metadata obey the ordinary record bounds, so it always fits an empty next
+batch. A second carry-over cannot be created: source reading stops when the
+first is retained.
+
+The current open batch seals and becomes the retained batch. State after its
+last included delta is rewound as usual, except that the carry-over and its
+post-frame state remain separately owned. After the retained batch reaches its
+terminal Ack/Nack or explicit-loss outcome and applicable checkpoint progress
+is applied, the carry-over seeds the next open batch before any source read.
+This works even if the source was renamed, truncated, or otherwise changed
+while the prior batch waited.
+
+On direct shutdown or receiver-terminal failure, an unsent carry-over is
+released only as uncommitted in-memory state, with no progress advancement and
+an explicit pending-capture report. Normal drain emits it after the prior
+retained batch resolves when the drain deadline permits; otherwise restart
+depends on surviving source bytes.
 
 No source read occurs while a batch is in flight.
 
@@ -949,11 +1090,13 @@ explicit terminal policy.
 
 ### Permanent EOF and terminal framing
 
-Live EOF is temporary. It never applies terminal decode policy, completes an
-unterminated record, or proves that a writer is gone. In Phase 1, only rotation
-finalization may request permanent-EOF handling, after the same resident handle has
-observed EOF through `rotate_wait`. The wait is an inactivity heuristic, not writer
-fencing.
+Live EOF is temporary. Its mere observation never applies terminal decode
+policy, completes an unterminated record, or proves that a writer is gone. An
+explicitly enabled EOF-gated idle deadline may establish framing eligibility
+when the deadline expires under the rules below. In Phase 1, only rotation
+finalization may request permanent-EOF handling for bytes still ineligible,
+after the same resident handle has observed EOF through `rotate_wait`. The wait
+is an inactivity heuristic, not writer fencing.
 
 D17 is evaluated in two ordered stages.
 
@@ -976,13 +1119,15 @@ multiline, or idle-flush semantics.
 
 | Condition | Required permanent-EOF behavior |
 | --- | --- |
-| Framing made the record eligible and `on_decode_error: preserve_raw` applies to an incomplete UTF-8 scalar, UTF-16 code unit or surrogate pair, or BOM probe | Emit the exact malformed source bytes in the eligible framed result and mark bounded malformed evidence |
-| Framing made the record eligible and `on_decode_error: replace` applies | Emit one replacement owning the exact incomplete source range in the eligible framed result |
+| Framing made the record eligible and `on_decode_error: preserve_raw` applies to an incomplete UTF-8 scalar, UTF-16 code unit or surrogate pair, or BOM probe | Emit a byte-for-byte recoverable representation of the complete eligible source range, including the exact malformed tail, and mark bounded malformed evidence |
+| Framing made the record eligible and `on_decode_error: replace` applies | Emit the decoded prefix plus one replacement owning the exact incomplete source range |
 | Framing made the record eligible and `on_decode_error: fail` applies | Durably quarantine without advancing over the malformed source unit |
 | No framing rule made all pending bytes eligible | Durably quarantine the identity without advancing across any pending byte, regardless of `preserve_raw` or `replace` |
 
-Earlier complete records are emitted first and must resolve through aggregate
-Ack/Nack policy before quarantine is applied. An emitted preserve or replacement
+Earlier complete records and any carry-over for the file are emitted first and
+must satisfy the
+[unresolved-delta invariant](#universal-unresolved-delta-ordering) before
+quarantine is applied. An emitted preserve or replacement
 result advances only after matching aggregate Ack, atomic WAL application, and
 the configured sync policy. D17 quarantine preserves the last applied offset
 and framing resume, records bounded terminal evidence, and is synced before the
@@ -1023,10 +1168,13 @@ Decode policy is applied in source order:
 | --- | --- |
 | `preserve_raw` | Emit the complete framed source slice as bytes and mark/count malformed evidence |
 | `replace` | Emit decoded text with replacement, mark/count loss |
-| `fail` | Quarantine the file at the earliest malformed unit not already preceded by an emit-ready record |
+| `fail` | Stop at the earliest malformed unit, make every earlier complete record emit-ready, resolve its deltas, then quarantine without malformed-unit progress |
 
 An earlier complete record is emitted before a decode failure caused by later source
-bytes. Later errors never overtake earlier complete records.
+bytes. The quarantine transition waits for that file's open, retained, or
+carry-over deltas under the
+[unresolved-delta invariant](#universal-unresolved-delta-ordering). Later errors
+never overtake earlier complete records.
 
 Under `preserve_raw`, an open-ended split sequence may emit before a later malformed
 unit is observed. Every fragment in that sequence therefore uses exact source bytes,
@@ -1192,9 +1340,10 @@ cannot be represented. A final fragment at the maximum representable index is al
 A resumed continuation with no newly observed source bytes remains pending. It cannot
 fabricate an empty final fragment.
 
-Fragment attributes are experimental project attributes, not registered OpenTelemetry
-semantic conventions. Standardization requires an explicit migration. An implementation
-does not silently rename them to a future standard.
+Fragment projection uses the
+[project-owned experimental attribute registry](#provenance). Standardization
+requires an explicit migration; an implementation does not silently rename the
+keys to a future standard.
 
 ### Truncate behavior
 
@@ -1208,6 +1357,23 @@ used:
 Discarded source bytes count toward frame progress only after the truncated record is
 Acked. They are included in discarded-byte and malformed-unit telemetry. The receiver
 never advances over them merely because they were read.
+
+`on_decode_error: fail` takes precedence over oversize `truncate`. Before a
+truncated prefix from one logical record becomes emit-ready, the decoder scans
+that record's complete deterministic discarded range through its terminal LF
+in bounded units. If a malformed unit occurs anywhere in that range:
+
+- no prefix from that same logical record is emitted or committed;
+- independently complete earlier records resolve first under the
+  [unresolved-delta invariant](#universal-unresolved-delta-ordering);
+- quarantine preserves the committed offset before the failing logical record;
+  and
+- oversize policy cannot reclassify the malformed bytes as harmless discarded
+  tail.
+
+Under `preserve_raw` or `replace`, truncate may still emit the bounded prefix
+and own the complete frame range after applying the configured malformed-unit
+representation and telemetry rules to the discarded tail.
 
 ### Idle partial flush
 
@@ -1224,9 +1390,24 @@ When a later read observes any new source byte:
 3. Continue framing.
 4. Arm a new deadline only after EOF is observed again.
 
-An expired EOF-gated deadline emits the current partial record with a timeout reason.
-Its ending source offset becomes eligible for a clean resume after Ack. Later appended
-bytes begin a new record. This is an explicit slow-writer split risk.
+When the EOF-gated deadline expires, it establishes a framing boundary over the
+complete pending source range, including an incomplete encoded unit or
+unresolved BOM probe. Decode policy then applies in source order:
+
+- `preserve_raw` emits a byte-for-byte recoverable representation covering the
+  complete range and exact malformed tail;
+- `replace` emits the decoded prefix followed by the defined replacement that
+  owns the exact malformed source range; and
+- `fail` first resolves any earlier complete record under the
+  [unresolved-delta invariant](#universal-unresolved-delta-ordering), then
+  quarantines without advancing across the malformed unit.
+
+An emitted timeout record's ending source offset becomes eligible for clean
+resume only after matching aggregate Ack and checkpoint application. Later
+appended bytes begin a new record. This is an explicit slow-writer split risk.
+When idle flush is disabled, neither live EOF nor decode policy establishes a
+boundary; permanent rotation EOF therefore invokes D17 quarantine for an
+otherwise unterminated record.
 
 ### Rotation and drain framing
 
@@ -1254,8 +1435,8 @@ The receiver sets:
 - `body` to decoded text or exact bytes according to decoding and oversize policy;
 - `observed_time_unix_nano` when the framed result becomes ready;
 - required bounded file provenance;
-- optional bounded source metadata when configured; and
-- experimental reason, truncation, decoding, or fragment metadata when applicable.
+- project-experimental bounded path/fragment attributes when applicable; and
+- experimental reason, truncation, or decoding metadata when applicable.
 
 The receiver leaves unset:
 
@@ -1272,35 +1453,38 @@ change record framing or source progress.
 
 ### Provenance
 
-Every record carries registered `log.file.path` and `log.file.name` provenance derived
-from bounded advisory evidence. A non-UTF-8 native path uses a reversible bounded
-representation and an encoding discriminator rather than lossy substitution.
+When complete untruncated advisory evidence converts losslessly to text, the
+receiver emits the registered Development attributes `log.file.path` and
+`log.file.name` according to their documented semantics. A truncated path or
+native path that cannot be represented losslessly as text does not populate
+those attributes with a misleading value.
 
-Record offset and record number are optional and off by default. The architecture
-describes optional resolved-path provenance, but no configuration key for enabling it
-has been approved. This specification does not add one. Fragment source ranges are
-required when fragments are emitted.
+Phase 1 defines the following project-owned experimental attributes in one
+normative registry:
 
-The semantic requirements are:
+| Key | Type | Semantics |
+| --- | --- | --- |
+| `otel.arrow.filelog.path.kind` | string | `unix_bytes` or `windows_utf16le` for native advisory evidence |
+| `otel.arrow.filelog.path.native` | bytes | Exact bounded stored native bytes; the defined suffix when truncated |
+| `otel.arrow.filelog.path.truncated` | boolean | Whether the stored native bytes omit a prefix of the complete path |
+| `otel.arrow.filelog.path.sha256` | string | Lowercase full SHA-256 hex for the complete native path; emitted when truncated |
+| `otel.arrow.filelog.fragment.id` | string | Stable lowercase 64-hex fragment identifier defined by the split contract |
+| `otel.arrow.filelog.fragment.index` | integer | Zero-based fragment index |
+| `otel.arrow.filelog.fragment.is_last` | boolean | Whether this is the final fragment of the deterministic bound-terminated record |
+| `otel.arrow.filelog.fragment.body.start` | integer | Inclusive original-byte start represented by the fragment body |
+| `otel.arrow.filelog.fragment.body.end` | integer | Exclusive original-byte end represented by the fragment body |
+| `otel.arrow.filelog.fragment.frame.start` | integer | Inclusive original-byte start owned by this fragment's complete frame progress |
+| `otel.arrow.filelog.fragment.frame.end` | integer | Exclusive original-byte end owned by this fragment's complete frame progress |
 
-- record offset means the first original source byte represented by the body;
-- body and frame ranges remain distinguishable internally;
-- fragment source ranges identify original source bytes represented by that fragment;
-- opaque `file_id` is not exposed by default; and
-- host identity comes from resource detection or enrichment.
+These keys are a version-1 project contract, not registered OpenTelemetry
+semantic conventions or permanent telemetry API names. A later standardized
+surface requires explicit migration rather than silent renaming.
 
-Public attribute names for general body/frame source ranges are not yet approved.
-This specification does not invent them. Any proposed names for resolved path, record
-offset, and fragment ranges remain experimental until semantic-convention review
-resolves the public surface.
-
-The public compatibility status of optional record number remains unresolved. When
-enabled in Phase 1, it uses a zero-based, process-local counter per `file_id` and file
-epoch. It survives descriptor eviction, resets on process restart or epoch change, and
-is omitted from every split fragment. A successfully appended unsplit record emits and
-consumes one number. Fragment zero consumes one number without emitting it;
-continuation fragments neither emit nor consume one. These semantics are not yet a
-stable public promise.
+General body/frame ranges remain internal when the record is not fragmented.
+Phase 1 exposes no configuration for generic record offset or record number;
+those surfaces are deferred until semantic-convention review. Opaque `file_id`
+is not exposed by default, and host identity comes from resource detection or
+enrichment.
 
 ### Batch construction
 
@@ -1324,9 +1508,9 @@ nonempty batch flushes when the deadline expires.
 
 Progress deltas for multiple records from one file coalesce only when contiguous,
 monotonic, and in the same file epoch. A gap, overlap, regression, or epoch change is
-terminal rather than silently merged. A record for a 4,097th distinct `file_id`
-is refused from the current open batch, the batch seals, and that record is
-reconstructed for the next batch after terminal processing.
+terminal rather than silently merged. Before selecting a source turn for a
+4,097th distinct `file_id`, the current open batch seals. No source byte for
+that file is read until the retained batch resolves.
 
 An Ack or `drop_and_continue` transaction contains exactly one
 `update_progress` operation per distinct-file delta and no unrelated operation.
@@ -1349,8 +1533,10 @@ retained batch can always be applied in one atomic transaction and is never
 split into partially successful progress.
 
 There is one receiver-wide open batch while reading. Once sealed, it becomes the one
-retained in-flight batch. No new open batch is populated until that retained batch
-reaches a terminal completion and the corresponding progress policy completes.
+retained in-flight batch and may coexist only with the one bounded carry-over
+record already framed at seal time. No new open batch is populated until that
+retained batch reaches a terminal completion and the corresponding progress
+policy completes; the carry-over then seeds the next batch before reading.
 
 This is a correctness-first Phase 1 decision, not a throughput guarantee. For a
 steady stream of full batches, one useful illustrative relationship is:
@@ -1366,6 +1552,42 @@ is neither a benchmark nor a production limit. Multiple in-flight batches are
 Phase 2 work and require explicit contiguous-progress, ordering,
 Nack-in-the-middle, retry, memory, and drain contracts.
 
+## Universal unresolved-delta ordering
+
+No operation may change a file's lifecycle, epoch, committed stream
+interpretation, or durable identity while that file owns an unresolved progress
+delta in the open batch, retained batch, or carry-over record.
+
+This invariant applies to decode-failure quarantine, D17 quarantine, truncation
+reset, rotation finalization, exclusion revocation, administrative
+reset/removal, and every other lifecycle or epoch transition. The required
+sequence is:
+
+1. Stop further reads for the affected file.
+2. Seal the open batch when it contains that file's delta or when its carry-over
+   must follow the retained batch.
+3. Resolve every existing delta for that file through matching aggregate
+   Ack/Nack handling or the configured explicit-loss policy.
+4. Atomically append and apply the old-state progress authorized by that
+   terminal outcome.
+5. Only then apply quarantine, truncate reset, finalization, revocation,
+   administrative reset/removal, epoch change, or another interpretation
+   change.
+
+A retryable Nack leaves the old-state delta unresolved and therefore blocks the
+transition. Permanent Nack or retry exhaustion under `fail` terminates the
+receiver without applying the transition. `drop_and_continue` resolves the old
+delta only after its explicit-loss progress transaction is applied.
+
+An old-attempt or old-epoch completion is stale only after that attempt already
+reached a terminal outcome and the guarded transition completed. The receiver
+must not deliberately invalidate its current retained batch by incrementing an
+epoch or changing lifecycle first.
+
+An administrative tool satisfies this invariant by excluding or stopping the
+receiver, acquiring exclusive namespace ownership, and proving no open,
+retained, or carry-over delta exists before changing state.
+
 ## Ack, Nack, and checkpoint timing
 
 ### Correlation
@@ -1380,12 +1602,21 @@ The engine/topic runtime returns exactly one aggregate completion for that tuple
 It owns required-subscriber membership and Ack/Nack aggregation; filelog does
 not maintain a per-destination completion set. For broadcast fan-out:
 
-- aggregate Ack is produced only when every required subscriber eligible for
-  that publication Acks;
-- a required subscriber's Nack or disappearance produces aggregate Nack
-  according to the engine topic contract; and
+- subscriber membership is snapshotted atomically with accepted publication
+  for the attempt, only after downstream readiness establishes at least one
+  required eligible subscriber;
+- aggregate Ack is produced only when every member of that nonempty required
+  snapshot Acks;
+- a required subscriber's Nack, or disappearance before its required Ack,
+  produces aggregate Nack according to the engine topic contract; a later
+  disappearance does not retract an Ack; and
 - retrying the publication may redeliver to subscribers that already
   succeeded, consistent with at-least-once delivery.
+
+Zero eligible required subscribers never produces Ack. The engine must keep
+the publish under bounded backpressure or return `NoRoute`, Nack, or another
+explicit non-success outcome. Subscribers becoming ready after the membership
+snapshot do not join that accepted attempt.
 
 A required broadcast path must provide behavior equivalent to:
 
@@ -1399,8 +1630,20 @@ The names above describe the required engine semantics, not receiver fields.
 The receiver factory does not inspect cross-pipeline topic configuration.
 Engine topology validation rejects a graph that claims Ack-gated progress
 across required broadcast destinations without automatic propagation and
-all-required-subscriber aggregation. No default topic behavior is assumed to
-satisfy this requirement.
+all-required-subscriber aggregation.
+
+Phase 1 also depends on:
+
+- a user-configurable automatic Ack-propagation mode;
+- a user-configurable all-required-subscriber broadcast mode;
+- nonempty membership enforcement;
+- downstream readiness and subscriber-lifecycle behavior;
+- a node-level declaration that filelog requires aggregate Ack; and
+- graph validation connecting those declarations to every required path.
+
+No default topic behavior is assumed to satisfy these requirements. If any
+dependency is unavailable, the topology is rejected and Phase 1 cannot claim
+Ack-gated delivery through it.
 
 A completion can mutate receiver state only when:
 
@@ -1528,6 +1771,11 @@ are encoded, framed, checksummed, published, and replayed as bytes.
 | Rotated finalized | Old identity completed its rotation-finalization policy |
 | Quarantined | Reading is blocked until explicit administration |
 
+Framing-profile incompatibility is a fail-closed runtime condition on the
+existing durable record, not a fourth lifecycle state and not identity
+mismatch. The record remains unchanged and unreadable until audited
+administration or separately designed migration resolves compatibility.
+
 Every mutation names `file_id` and carries expected state and epoch evidence. Stale,
 conflicting, impossible, unknown, or overflowing transitions fail closed.
 
@@ -1553,6 +1801,13 @@ Newly generated IDs are checked for collision. A conflicting existing ID fails c
 A reconciliation batch may register multiple new identities in one atomic transaction,
 but none is read until the complete registration transaction is durable.
 
+Registration is fully preflighted and encoded before append. Candidate evidence
+that cannot satisfy a documented bound is rejected before constructing the
+transaction. A codec/invariant failure or partial append changes no live table,
+makes no candidate readable, and enters the receiver-level checkpoint-store
+failure path. A multi-file registration transaction never exposes a successful
+prefix.
+
 ### Progress
 
 Progress is monotonic within one file epoch. Offset and framing resume advance
@@ -1569,8 +1824,9 @@ valid prefix that survived.
 epoch. It records observed truncation and explicit `read_new` intent, resets to source
 offset zero with clean resume, and is synced before replacement bytes are read.
 
-Stale Ack deltas from the prior epoch fail their guard and cannot advance the new
-stream.
+After the unresolved-delta invariant made every prior-epoch current attempt
+terminal, later duplicate/superseded deltas fail their epoch guard and cannot
+advance the new stream.
 
 ### Fingerprint and metadata updates
 
@@ -1587,14 +1843,15 @@ Quarantine is persisted and synced before the receiver reports it as durable. Re
 therefore cannot bypass the condition.
 
 Administrative actions require exclusive namespace ownership, exact
-`checkpoint.id`, exact `file_id`, matching quarantine epoch, and a bounded nonempty
-audit reason.
+`checkpoint.id`, exact `file_id`, expected lifecycle, matching epoch, and a
+bounded nonempty audit reason. The tool inspects and reports bounded quarantine
+reason, locator, observed-size, and time evidence before accepting an action.
 
 | Action | Effect |
 | --- | --- |
 | `reset_to_beginning` | Increment epoch, offset zero, clean resume, Active |
 | `reset_to_end` | Validate current same-locator stream EOF, increment epoch, store that offset, clean resume, Active |
-| `keep_failed` | Preserve quarantine, epoch, offset, framing state, locator, and evidence exactly |
+| `keep_failed` | Append only the audited decision; preserve every operational field and all quarantine evidence bit-for-bit |
 
 A configuration change is not an administrative action.
 
@@ -1605,26 +1862,29 @@ cannot.
 This specification defines operation semantics, not a complete administrative CLI or
 API. An operable Phase 1 release with durable quarantine must provide a
 separately reviewed engine administrative interface or offline tool that can
-inspect quarantine and invoke these actions. The interface must stop or exclude
-the receiver, acquire exclusive namespace ownership, use supported checkpoint
-operations rather than edit bytes, validate exact namespace, `file_id`, state,
-and epoch, and record the required audit reason.
+inspect quarantine and invoke reset-to-beginning, reset-to-end, keep-failed,
+and audited removal. The interface must stop or exclude the receiver, acquire
+exclusive namespace ownership, prove the
+[unresolved-delta invariant](#universal-unresolved-delta-ordering), use
+supported checkpoint operations rather than edit bytes, validate exact
+namespace, `file_id`, expected lifecycle, and epoch, and record the required
+audit reason.
 
 Normal receiver configuration never releases quarantine or rewrites incompatible
 framing state. An incompatible profile requires a separately reviewed versioned
-migration, or audited administrative removal followed by ordinary registration and
-its configured `start_at` behavior.
+migration, or audited administrative removal/reset followed by explicitly
+selected registration semantics. It never falls through to
+`identity.on_recovery_mismatch`.
 
-If an initial delivery omits that interface or tool, reset, administrative
-removal, and migration are unavailable. In that mode durable quarantine may be
-entered only by the bounded deterministic set defined under
-[Failure containment](#failure-containment): decode `fail`, truncation `fail`,
-D17 terminal-framing failure, recovery mismatch under `fail`, and another
-per-file integrity rule only if this specification adds it explicitly. The
-operator-visible startup and health status must prominently disclose that
-quarantine cannot be released. The receiver still fails closed and preserves
-the affected state. Selecting a different `checkpoint.id` opens another
-namespace; it is not a reset of the blocked state.
+This administrative mechanism is a Phase 1 release requirement for any build
+that can create durable quarantine. A build without it cannot claim Phase 1
+conformance. Selecting a different `checkpoint.id` opens another namespace; it
+is not a reset of the blocked state.
+
+WAL reason fields and administrative transactions are operational records.
+Compaction preserves their resulting state but is not required to retain every
+historical action. A permanent audit history, if required, belongs in a
+separate protected audit sink rather than the checkpoint namespace.
 
 ### Retention
 
@@ -1640,7 +1900,8 @@ it has been absent for the retention interval from:
 - runtime leases;
 - pending candidates;
 - current open-batch deltas;
-- the retained in-flight batch; and
+- the retained in-flight batch;
+- the carry-over record; and
 - rotation-finalization state.
 
 Quarantined records are never ordinary retention candidates. A large forward wall-clock
@@ -1649,6 +1910,14 @@ apply. Returning after removal can cause duplicate ingestion or `start_at: end`
 exclusion, which is the explicit retention tradeoff.
 
 ### Publication, compaction, cleanup, and recovery
+
+Namespace creation follows the
+[checkpoint-format first-generation state machine](filelog-checkpoint-format.md#first-generation-namespace-publication).
+A namespace is new only when its directory and artifacts are absent. Existing
+artifacts without valid `CURRENT` are recovered only as the exact recognized
+interrupted-first-publication state; every other authority gap fails closed.
+No source is registered or read before snapshot, WAL, and `CURRENT` publication
+and required syncs complete.
 
 Compaction constructs one complete new authoritative generation before publishing it.
 The previously authoritative generation remains recoverable until publication
@@ -1678,11 +1947,20 @@ Recovery:
 8. Applies each transaction atomically.
 9. Discards only the exact structurally incomplete final transaction defined by the
    checkpoint-format specification.
-10. Fails closed on every other corruption, invalid length, checksum failure, unknown
+10. Truncates and syncs an allowed torn suffix to the last valid transaction
+    boundary before permitting a new append.
+11. Fails closed on every other corruption, invalid length, checksum failure, unknown
    version or operation, sequence error, impossible transition, or non-tail damage.
 
-Recovery never guesses from modification time when authority is ambiguous. Unknown
-format or framing-profile versions require explicit migration or reset.
+Live WAL append failure distinguishes no-write, known-partial, ambiguous-write,
+and append-success/sync-failure outcomes using the
+[format repair contract](filelog-checkpoint-format.md#wal-append-failure-and-repair).
+No retry appends after an unresolved partial frame.
+
+Recovery never guesses from modification time when authority is ambiguous. An
+unknown checkpoint format/envelope version fails the namespace closed. A stored
+framing-profile incompatibility fails only the affected file unless corruption
+prevents trustworthy record boundaries.
 
 ### Checkpoint trust boundary
 
@@ -1710,13 +1988,22 @@ The receiver:
 1. Keeps A's logical identity, lease, descriptor, epoch, and progress.
 2. Updates A's advisory path when evidence permits.
 3. Independently discovers B.
-4. Gives B a new identity unless B validly reconnects separate durable state.
+4. If B validly reconnects its own separate exact-locator `Active` state, uses
+   that state; otherwise recognizes B as A's move/create replacement, gives B
+   a new identity at offset zero with clean framing, and does not apply
+   `start_at: end`.
 5. Reads A through its retained descriptor.
 6. Reads B under its own source scheduling and progress.
 7. Never gives B A's offset.
 
 Same-filesystem or same-volume rename continuity comes from the locator. Cross-device or
 cross-volume copy/unlink is a new identity.
+
+Recognition requires one ordered reconciliation transition in which the
+original matched path stops naming A while A remains in rotation handling and
+the same path names B. Bytes written to B between its creation and this first
+reconciliation are read from offset zero. A B first observed after A is already
+finalized is an unrelated new file and follows ordinary `start_at`.
 
 ### Late writes and finalization
 
@@ -1737,8 +2024,9 @@ only when every precondition below holds:
    emitted every eligible record.
 5. D17 found no ineligible pending encoded unit, BOM probe, physical line, or
    multiline record; such bytes require quarantine instead.
-6. The identity owns no unresolved source delta in the open batch or retained
-   batch and no completion or retry remains pending for such a delta.
+6. The identity owns no unresolved source delta in the open batch, retained
+   batch, or carry-over record and no completion or retry remains pending for
+   such a delta.
 7. Its final applied committed offset equals the source frontier eligible for
    finalization and its durable framing resume is `Clean`.
 
@@ -1754,7 +2042,7 @@ The ordering around non-Ack outcomes is:
 
 - an open batch containing this identity is sealed and resolved before
   finalization;
-- a retained batch keeps the identity and descriptor pinned;
+- a retained batch or carry-over keeps the identity and descriptor pinned;
 - retryable Nack retains the same batch and cannot finalize;
 - permanent Nack or retry exhaustion under `fail` leaves the identity
   unfinalized and terminates the receiver;
@@ -1822,9 +2110,14 @@ The receiver never advances over unacknowledged bytes.
 
 ### `on_truncate: fail`
 
-The receiver stops the file, persists and syncs quarantine for the exact `file_id`, and
-then reports a high-severity condition. Existing retained batch data can still receive
-its matching completion, but a crash may make destroyed source bytes unreconstructable.
+The receiver stops old-stream reads and satisfies the
+[unresolved-delta invariant](#universal-unresolved-delta-ordering). Only after
+every prior old-epoch delta reaches its terminal policy and authorized progress
+is applied does it persist and sync quarantine for the exact `file_id`. A
+retryable Nack delays quarantine; permanent Nack under `fail` terminates the
+receiver without changing lifecycle. A crash may make source bytes destroyed
+by truncation unreconstructable, but no transition deliberately invalidates the
+current retained batch.
 
 Restart and configuration reload preserve quarantine.
 
@@ -1833,15 +2126,19 @@ Restart and configuration reload preserve quarantine.
 The receiver:
 
 1. Stops old-epoch reads.
-2. Invalidates speculative decoder/framer state.
-3. Increments file epoch with checked arithmetic.
-4. Persists and syncs `reset_after_truncate`.
-5. Resets offset to zero and framing to clean.
-6. Treats offset zero as a new stream for BOM handling.
-7. Emits a high-severity intentional-reset event.
-8. Reads replacement bytes only after durable reset.
+2. Seals and resolves every open, retained, or carry-over old-epoch delta under
+   the [unresolved-delta invariant](#universal-unresolved-delta-ordering).
+3. Invalidates only speculative state not owned by a resolved delta.
+4. Increments file epoch with checked arithmetic.
+5. Persists and syncs `reset_after_truncate`.
+6. Resets offset to zero and framing to clean.
+7. Treats offset zero as a new stream for BOM handling.
+8. Emits a high-severity intentional-reset event.
+9. Reads replacement bytes only after durable reset.
 
-An old-epoch completion cannot advance replacement progress.
+Only a completion from an attempt that was already terminal before the epoch
+reset is stale. The receiver never increments the epoch merely to reject the
+currently retained old-epoch completion.
 
 ## Backpressure, cancellation, and lifecycle
 
@@ -1922,9 +2219,10 @@ On `DrainIngress` while downstream remains live:
    frontiers.
 5. Apply a partial-record flush only when the existing EOF-gated idle-flush condition
    is already satisfied.
-6. Flush a nonempty open batch.
-7. Await terminal completion of the retained batch.
-8. Apply Ack/Nack policy.
+6. Seal and flush a nonempty open batch.
+7. Await terminal completion and apply Ack/Nack policy for the retained batch.
+8. If a carry-over exists, seed the next batch from its retained representation
+   without rereading, emit it, and await its terminal Ack/Nack policy.
 9. Sync all outstanding applied progress to the durable frontier.
 10. Measure and report every recoverable uncommitted byte as pending, including an
     incomplete source unit or unresolved BOM probe.
@@ -1982,6 +2280,7 @@ evidence, not merely an OS error number:
 | Deterministic truncation under `on_truncate: fail` | File | Durable quarantine |
 | D17 terminal framing ineligible for emission | File | Durable quarantine without advancing pending bytes |
 | Deterministic identity or recovery mismatch under `identity.on_recovery_mismatch: fail` | File | Durable quarantine |
+| Stored framing-profile version or digest incompatible with selected configuration | File | Fail closed without new identity or `skip_to_end`; require audited reset/removal or separately designed migration |
 | Another per-file integrity failure | File | Quarantine only if an explicit normative rule in this specification names it; otherwise fail or retry in its documented domain |
 | Ambiguous identity under a non-fail mismatch policy | File | New identity and configured initial anchor; never inherit uncertain progress |
 | Runtime lease timeout | File | Do not start a duplicate reader |
@@ -2021,7 +2320,8 @@ Every sum, product, cast, and duration conversion uses checked arithmetic.
 
 ### Candidate and identity reconciliation
 
-Let `P = ADVISORY_PATH_MAX_BYTES`.
+Let `P = 44 + ADVISORY_PATH_STORED_MAX_BYTES = 4140`, covering path kind,
+flags, full length, stored length, stored bytes, and full-path digest.
 
 ```text
 candidate_base =
@@ -2098,6 +2398,12 @@ One open or retained receiver-wide batch is bounded by:
 
 Retained and outgoing batch values may share Arrow buffers. The model does not claim
 that cloning has zero overhead.
+
+At most one carry-over may coexist with the retained batch. It adds at most one
+record's `batch.max_bytes` logical projection, exact bounded attributes/ranges,
+one progress delta, and one post-frame decoder/framer resume state. Aggregate
+admission includes this simultaneous retained-batch-plus-carry-over peak; it
+does not assume the carry-over shares mutable source or batch storage.
 
 ### Checkpoint recovery
 
@@ -2200,6 +2506,9 @@ handle. This is required for ReFS correctness. The receiver applies
 `FILE_FLAG_OPEN_REPARSE_POINT` only for the non-following path, follows links
 according to the enabled policy otherwise, and validates regular-file type and
 reparse state from the opened handle. It preserves native UTF-16 advisory paths.
+If the required volume/file-ID locator cannot be obtained, the candidate is not
+registered or read and a bounded per-file health event is emitted; Phase 1
+does not substitute an `Unspecified` durable locator.
 
 Tail handles request compatible read, write, and delete sharing. Writers that deny
 shared read access remain unsupported without a separately scoped capture mechanism.
@@ -2269,6 +2578,7 @@ unbounded event queue or log flood.
 | `retry_attempts` | Resend attempts |
 | `retry_exhausted` | Retained batches exhausting budget |
 | `stale_completions` | Ignored stale Ack/Nack completions |
+| `ack_membership_failures` | Required publication rejected for zero/unready/unsafe Ack membership |
 | `records_dropped_on_nack` | Explicit `drop_and_continue` loss |
 | `checkpoint_transactions` | Logical WAL transactions by operation class |
 | `checkpoint_persists` | Successful append/sync/publication operations |
@@ -2292,6 +2602,7 @@ unbounded event queue or log flood.
 | `descriptor_evictions` | Completed resident-handle evictions |
 | `descriptor_reopen_failures` | Revalidation/reopen failures by reason |
 | `descriptor_budget_warnings` | Startup descriptor-budget warnings by bounded result |
+| `carry_over_records` | Records retained across one prior in-flight batch because final projected size did not fit |
 | `eof_reprobes` | Scheduled EOF source probes |
 | `environmental_reprobes` | Bounded transient retries by operation and error class |
 | `read_paused_time` | Source-read pause due to backpressure/in-flight batch |
@@ -2313,6 +2624,8 @@ unbounded event queue or log flood.
 | `multiline_flushes` | Flushes by end/start, line, byte, timeout, rotation, or drain reason |
 | `partial_bytes_pending_drain` | Recoverable uncommitted partial bytes at drain |
 | `terminal_framing_quarantines` | D17 quarantine because pending terminal bytes were not framing-eligible |
+| `framing_profile_incompatible` | Per-file stored profile version/digest mismatch |
+| `advisory_path_truncated` | Native advisory paths represented by bounded suffix and full-path digest |
 | `quarantine_resets` | Administrative action by bounded action |
 | `tracked_capacity_saturation` | Time or events at tracked-file capacity |
 | `open_capacity_saturation` | Time or events at resident-handle capacity |
@@ -2335,6 +2648,7 @@ Rate-limited operator-visible events cover:
 - discovery traversal/evidence failure;
 - exclusion revocation;
 - identity ambiguity, mismatch, and reset policy;
+- framing-profile incompatibility;
 - local locator ownership conflict;
 - runtime lease contention or integrity failure;
 - namespace ownership wait and timeout;
@@ -2344,6 +2658,8 @@ Rate-limited operator-visible events cover:
 - pattern fallback;
 - multiline line, byte, and timeout flush;
 - split, truncate, and discarded-byte outcomes;
+- carry-over retention and shutdown without carry-over progress;
+- advisory-path truncation;
 - pending partial bytes at drain;
 - D17 terminal-framing quarantine;
 - move/create finalization and late-write limitation;
@@ -2353,6 +2669,7 @@ Rate-limited operator-visible events cover:
 - checkpoint append, sync, recovery, corruption, compaction, publication, and cleanup
   failures;
 - retry, permanent Nack, exhaustion, and explicit drop;
+- zero or unsafe required Ack membership;
 - stale completion;
 - drain timeout and forced shutdown; and
 - worker failure or blocked-worker lifecycle detachment.
@@ -2378,6 +2695,7 @@ hardware are intentionally not normative.
 | Configuration | Framing bound below encoding minimum | Rejected |
 | Configuration | Record plus attributes equals batch bound | Accepted |
 | Configuration | Record plus attributes exceeds batch bound | Rejected |
+| Configuration | `max_tracked_files > u32::MAX` | Rejected |
 | Configuration | Memory formula equals ceiling | Accepted if representable |
 | Configuration | Formula exceeds/overflows ceiling | Rejected with actionable knobs |
 | Discovery | New growing file | Admitted without waiting for close |
@@ -2397,14 +2715,20 @@ hardware are intentionally not normative.
 | Discovery | Full tracked table with new file | Bounded deferral |
 | Discovery | Cancellation during large tree | Observed between bounded units |
 | Discovery | Kernel-blocked operation | Async task does not synchronously forever-join |
+| Discovery | Old unrelated candidate exactly at age threshold | Eligible |
+| Discovery | Old unrelated candidate beyond age threshold | Present but not admitted; no checkpoint record |
+| Discovery | Ignored candidate receives later append | Later pass may admit it |
+| Discovery | Recovered/quarantined/rotation-replacement file is old | Age filter does not hide or exclude it |
+| Discovery | Wall clock rolls back or mtime is future | Age zero; no exclusion |
 | Identity | Two live equal fingerprints | Distinct `file_id`s |
-| Identity | Short fingerprint | No fingerprint-only inheritance |
-| Identity | Unique full fingerprint, complete inventory | Guarded recovery permitted |
-| Identity | Unique-looking fingerprint, incomplete inventory | Fingerprint-only recovery disabled |
+| Identity | Short or full equal fingerprint at changed locator | New identity; mismatch policy chooses anchor; no progress transfer |
+| Identity | Copied file on another device/volume with equal fingerprint | New identity; default beginning permits duplicates rather than skipping copied bytes |
 | Identity | Exact locator and valid prefix | Recovery permitted |
-| Identity | Exact locator and mismatched prefix | No old offset inheritance |
+| Identity | Exact locator and mismatched prefix | Atomic superseded-record removal/new registration; no old offset inheritance or duplicate Active locator claim |
 | Identity | Committed offset beyond size | No old offset inheritance |
 | Identity | Growing evidence | Same `file_id`, evidence extends |
+| Identity | Stored framing-profile mismatch | Per-file fail closed; no new identity or `skip_to_end` |
+| Identity | Locator/inode reused after `RotatedFinalized` | New identity; finalized state never reconnects |
 | Identity | `start_at: beginning` new file | Durable offset zero before read |
 | Identity | `start_at: end` new file | Durable handle-derived EOF before read |
 | Identity | Existing checkpoint with different `start_at` | Checkpoint wins |
@@ -2448,8 +2772,12 @@ hardware are intentionally not normative.
 | Framing | Split crosses Ack boundary | Durable continuation reproduces next fragment |
 | Framing | Resume continuation at empty EOF | No fabricated fragment |
 | Framing | Truncate malformed discarded tail | Malformation counted |
+| Framing | Truncate tail malformed under decode `fail` | Same-record prefix not emitted; quarantine before malformed unit |
 | Framing | EOF then new byte before deadline | Deadline canceled before framing |
 | Framing | True idle EOF deadline | Timeout record and clean resume after Ack |
+| Framing | Idle deadline with incomplete UTF-8/UTF-16/BOM under preserve_raw | Complete pending source range emitted byte-for-byte |
+| Framing | Idle deadline with incomplete UTF-8/UTF-16/BOM under replace | Decoded prefix plus one exact-range replacement |
+| Framing | Idle deadline with incomplete unit under fail | Earlier records resolve, then quarantine without malformed-unit progress |
 | Framing | Permanent EOF, framing-eligible incomplete unit under preserve/replace | Exact bytes or one replacement emitted only inside the eligible record |
 | Framing | Permanent EOF without an eligible terminal record | D17 durable quarantine; no progress over pending bytes |
 | Framing | Permanent EOF under decode `fail` | Durable quarantine; prior complete records resolve first |
@@ -2459,19 +2787,30 @@ hardware are intentionally not normative.
 | OTAP | Record ready time | `observed_time_unix_nano` set |
 | OTAP | Timestamp/severity/JSON | Not interpreted by receiver |
 | OTAP | `u16` record boundary | 65,535 accepted; overflow impossible |
-| Batch | Next record crosses byte/count bound | Existing batch seals; refused record rewound |
+| OTAP | Untruncated losslessly textual path | Registered `log.file.path`/`name` emitted |
+| OTAP | Truncated or non-text native path | No misleading registered path; bounded project-native evidence and truncation marker |
+| OTAP | Split fragment | Exact project-experimental ID/index/finality/body/frame attributes |
+| Batch | Final projected size crosses byte bound after framing | Exact bounded record retained as sole carry-over; no reread |
 | Batch | Multiple records same file | Contiguous delta coalesces |
 | Batch | Delta gap or epoch mismatch | Rejected |
 | Batch | 4,096 distinct file deltas | One atomic progress transaction remains encodable |
-| Batch | Record would add a 4,097th distinct file delta | Current batch seals before the record; record is reconstructed for the next batch |
+| Batch | Scheduler selects a 4,097th distinct file | Current batch seals before any source read for that file |
+| Batch | Copytruncate occurs while prior batch waits | Already-framed carry-over remains exact and seeds next batch without source reread |
+| Batch | Direct shutdown with carry-over | Memory released without progress; restart depends on surviving source |
 | Ack | Matching current attempt | Atomic durable delta application |
 | Ack topology | Required broadcast with automatic propagation and `all` aggregation | One aggregate Ack only after every required eligible subscriber Acks |
+| Ack topology | Zero ready required subscribers | Bounded backpressure or explicit non-success; never Ack |
+| Ack topology | Subscriber becomes ready after membership snapshot | Not added retroactively to that attempt |
 | Ack topology | Required subscriber Nack or disappearance | One aggregate Nack under the engine topic contract |
-| Ack topology | Required broadcast without all-required automatic aggregation | Graph rejected by engine topology validation |
+| Ack topology | Missing Ack declaration, readiness, automatic propagation, or all-required aggregation | Graph rejected by engine topology validation |
 | Ack topology | Retry after partial subscriber success | Same publication may redeliver to the previously successful subscriber |
 | Ack | Duplicate/late/old attempt | Ignored and counted |
 | Ack | Prior file epoch | Cannot advance replacement |
 | Ack | Delta set over transaction operation bound | Entire Ack rejected before any advance |
+| Transition ordering | Decode/D17 failure with existing file delta | Stop, seal, resolve old-state delta, apply progress, then quarantine |
+| Transition ordering | Truncation with retained old epoch | Current attempt remains valid until terminal; reset follows progress |
+| Transition ordering | Exclusion with existing delta | Resolve delta, then revoke while preserving `Active` checkpoint state |
+| Transition ordering | Administrative action while receiver owns delta | Exclusive tool cannot proceed until receiver releases ownership with no delta |
 | Nack | Retryable | Same retained batch, bounded backoff, no reread |
 | Nack | Permanent default | Terminal without progress |
 | Nack | `drop_and_continue` | Explicit loss and durable atomic advance |
@@ -2480,21 +2819,35 @@ hardware are intentionally not normative.
 | Checkpoint | Crash after send before Ack | Reconstruct and duplicate if bytes survive |
 | Checkpoint | Crash after Ack before delayed sync | Duplicate window only |
 | Checkpoint | Torn final transaction | Only exact format-defined tail discarded |
-| Checkpoint | Complete final bad checksum | Fail closed |
+| Checkpoint | Incomplete fixed transaction header | Torn tail |
+| Checkpoint | Valid fixed header with incomplete body | Torn tail |
+| Checkpoint | Upward/downward corrupted body length | Header redundancy/CRC corruption; never torn |
+| Checkpoint | Complete final bad header/frame checksum | Fail closed |
 | Checkpoint | Corruption before tail | Fail closed |
 | Checkpoint | Unknown version/operation | Fail closed |
+| Checkpoint | Snapshot unreachable lifecycle/epoch/resume/path state | `InvalidSnapshotState` before WAL replay |
 | Checkpoint | Snapshot or WAL namespace digest differs from selected ID or its peer | Distinct namespace-mismatch error before applying records |
 | Checkpoint | Valid `CURRENT` names missing generation file | Distinct missing-authoritative-generation error; no fallback |
 | Checkpoint | Valid `CURRENT` names unreadable or incomplete authoritative generation | Distinct fail-closed recovery error; no fallback |
+| Checkpoint | Genuinely absent namespace | Exact first-generation publish order and sync before read |
+| Checkpoint | Artifacts exist without valid `CURRENT` | Repair only recognized interrupted first publication; otherwise fail closed |
+| Checkpoint | WAL append writes no bytes | Retry from known boundary |
+| Checkpoint | WAL append is partial | Validate, truncate/sync exact torn suffix, then retry |
+| Checkpoint | WAL append result is ambiguous | Accept complete valid expected sequence, repair exact torn suffix, otherwise fail |
+| Checkpoint | WAL append succeeds and sync fails | Validate transaction and retry sync without duplicate append |
 | Checkpoint | Compaction fault before publication | Previous generation authoritative |
 | Checkpoint | Cleanup interruption | Resumable, bounded artifacts |
 | Checkpoint | Cleanup sees current generation among retired candidates | Files named by `CURRENT` are retained |
 | Checkpoint | Retention age without runtime absence | Not removed |
 | Checkpoint | Quarantined retention candidate | Not removed |
 | Checkpoint | Administrative removal wrong namespace | Fail closed |
+| Checkpoint | Administrative removal wrong namespace and absent `file_id` | Namespace mismatch before absent idempotency |
 | Checkpoint | Quarantine administration available | Exclusive, audited inspect/reset/remove path operates without manual byte edits |
-| Checkpoint | Administration omitted from initial delivery | Only explicit deterministic failures can quarantine; unavailable release is prominent |
+| Checkpoint | Build can quarantine but has no administration mechanism | Phase 1 conformance rejected |
+| Checkpoint | `keep_failed` exact stored resume/epoch/offset | Audit operation appended; operational state byte-identical |
+| Checkpoint | `keep_failed` attempts resume/epoch/offset change | Fail closed with no state change |
 | Rotation | POSIX rename/create | Old and replacement read independently |
+| Rotation | Replacement receives bytes before first reconciliation | Recognized replacement starts at zero regardless of `start_at` |
 | Rotation | POSIX unlink with resident descriptor | Old reads through wait/finalization |
 | Rotation | Windows compatible rename/delete-pending | Old handle continues |
 | Rotation | Windows temporary incompatible sharing | Bounded environmental backoff, no quarantine or skipped progress |
@@ -2602,8 +2955,10 @@ to the exact body source bytes.
 ### Example 10: Later failure ordering
 
 Source contains `ok\n` followed by malformed UTF-8 under `fail`. `ok` is made
-emit-ready first. The later malformed unit then quarantines the file. The failure never
-suppresses or overtakes the earlier complete record.
+emit-ready first. The receiver stops reads and resolves `ok` through terminal
+Ack/Nack policy before quarantining at the malformed unit. The failure never
+suppresses or overtakes the earlier complete record or invalidates its current
+attempt.
 
 ### Example 11: EOF-gated timeout cancellation
 
@@ -2651,7 +3006,8 @@ be selected. No finite admission deadline is promised.
 
 `app.log` locator A is renamed to `app.log.1`; a new `app.log` locator B appears.
 Resident A remains pinned and is read through EOF plus `rotate_wait`. B receives its own
-identity and progress. B never inherits A's offset.
+identity at offset zero and never inherits A's offset, even when
+`start_at: end` is configured.
 
 ### Example 19: Evicted rotation
 
@@ -2668,8 +3024,12 @@ evidence exposes it, but does not claim capture.
 
 ### Example 21: Truncate epoch guard
 
-Batch attempt 1 contains old epoch 7. Detectable truncation under `read_new` persists
-epoch 8 and offset zero. A late Ack for epoch 7 is stale and cannot advance epoch 8.
+Batch attempt 1 contains old epoch 7 when truncation is detected. The receiver
+stops reads but does not increment the epoch. Attempt 1 remains current until
+its aggregate Ack/Nack policy is terminal and any authorized old-stream
+progress is applied. Only then does `read_new` persist epoch 8 and offset zero.
+A duplicate completion for terminal attempt 1 arriving afterward is stale and
+cannot advance epoch 8.
 
 ### Example 22: Retry without reread
 
@@ -2680,10 +3040,11 @@ attempt 1 is ignored.
 ### Example 23: Atomic distinct-delta bound
 
 An open batch already carries deltas for 4,096 distinct files. A record from a
-4,097th file is not added. The existing batch seals and remains encodable as one
-atomic progress transaction; the refused record is reconstructed for the next
-batch. Ack preflight would reject the entire transaction rather than partially
-apply it if this construction invariant were violated.
+4,097th file is ready. Distinct-delta preflight seals the existing batch
+before a source turn or buffered framing resumes, so no record from the
+4,097th file is framed or discarded. The existing batch remains one atomic
+progress transaction. Ack preflight would reject the entire transaction rather
+than partially apply it if this construction invariant were violated.
 
 ### Example 24: Crash duplicate
 
@@ -2730,3 +3091,84 @@ Nacks. The engine returns one aggregate Nack; filelog retains and retries the
 batch. Attempt 2 may reach A again even though A previously succeeded. Only an
 aggregate Ack from an attempt on which all required eligible subscribers Ack
 can authorize progress.
+
+### Example 31: UTF-8 idle flush with an incomplete scalar
+
+At stream offset zero, source bytes are:
+
+```text
+61 62 63 e2
+```
+
+With `force_flush_period: 500ms`, expiry establishes frame range `[0, 4)`.
+Under `preserve_raw`, the body is the exact four bytes and body range `[0, 4)`.
+Under `replace`, the body is text `abc\u{fffd}`; the replacement owns source
+range `[3, 4)`, while body and frame ranges are `[0, 4)`. Under `fail`, no part
+of this logical record emits and quarantine preserves committed offset zero.
+Any emitted variant advances to 4 only after aggregate Ack and checkpoint
+application.
+
+With `force_flush_period: 0s`, mere live EOF emits nothing. At permanent
+rotation EOF, `preserve_raw` still does not establish framing eligibility, so
+D17 quarantines at offset zero.
+
+### Example 32: UTF-16 idle flush with an incomplete surrogate pair
+
+UTF-16LE bytes:
+
+```text
+61 00 62 00 00 d8
+```
+
+contain `ab` followed by an unmatched high surrogate in `[4, 6)`. After the
+enabled idle deadline, `preserve_raw` emits all six exact source bytes;
+`replace` emits `ab\u{fffd}` with the replacement owning `[4, 6)`; and `fail`
+quarantines without advancing through the surrogate. The complete eligible
+frame range is `[0, 6)`.
+
+### Example 33: Idle flush with an unresolved BOM probe
+
+A UTF-8 stream begins with only:
+
+```text
+ef bb
+```
+
+After a 500 ms enabled idle deadline, `preserve_raw` emits the exact two bytes
+and `replace` emits one replacement owning `[0, 2)`. `fail` quarantines at
+offset zero. With idle flush disabled, neither decode policy nor live EOF
+creates a record; permanent rotation EOF uses D17 quarantine.
+
+### Example 34: Decode fail outranks oversize truncate
+
+With UTF-8, `max_line_bytes: 4`, `max_record_bytes: 4`,
+`max_log_size_behavior: truncate`, and `on_decode_error: fail`, source is:
+
+```text
+61 62 63 64 65 e2 0a
+```
+
+The prospective bounded prefix is `[0, 4)` (`abcd`), the valid discarded tail
+is `[4, 5)` (`e`), the malformed unit is `[5, 6)` (`e2`), and terminal LF is
+`[6, 7)`. The receiver scans through the deterministic frame boundary before
+making the prefix emit-ready. Decode fail suppresses this same-record prefix
+and quarantines at committed offset zero; no body or frame range is committed.
+Under a non-failing decode policy, the truncated body range would be `[0, 4)`
+and its complete frame range `[0, 7)`.
+
+### Example 35: Carry-over survives mutable source change
+
+A fully framed record cannot fit the remaining byte budget of a nonempty open
+batch. The receiver retains its exact body, attributes, ranges, epoch,
+post-frame resume, and delta as the sole carry-over, then sends the prior
+batch. The source is copytruncated while that batch waits. After the prior
+batch resolves, the next batch is seeded from retained carry-over bytes rather
+than rereading the changed file.
+
+### Example 36: Recognized rotation replacement ignores `start_at: end`
+
+Locator A moves from `app.log` while A remains in rotation handling. Locator B
+is created at `app.log` and receives bytes before the next reconciliation.
+That ordered transition recognizes B as the replacement. B receives a new
+`file_id`, clean framing, and offset zero even though `start_at: end` is
+configured, so the pre-reconciliation replacement bytes remain eligible.

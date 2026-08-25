@@ -51,17 +51,14 @@ meanings in this byte-format specification.
 - **Opaque byte blobs** (`file_id`, SHA-256 digests, the Windows 128-bit file
   ID): stored verbatim as raw bytes. Byte-order conventions for integers do
   not apply to them; they are not interpreted as numbers.
-- **Variable-length byte fields:** a `u16` big-endian length prefix followed
-  by exactly that many bytes. Every such field has a documented maximum
-  length in this specification. A decoder MUST validate the declared length
-  against both the field's documented maximum and the number of bytes
-  actually remaining in the input **before** allocating or slicing, using
-  checked arithmetic. A declared length that exceeds either bound is a
-  decode error; it is never silently truncated or wrapped.
-- **Self-delimiting records:** every snapshot record, WAL transaction, and WAL
-  operation carries its own length prefix and its own CRC-32C, so it can be
-  parsed and validated independently of anything before or after it in the
-  file.
+- **Variable-length byte fields:** each field uses the exact `u16`, `u32`, or
+  `u64` length stated in its layout. A decoder MUST validate the declared
+  length against the field maximum and bytes remaining **before** allocating
+  or slicing, using checked arithmetic. It never truncates or wraps.
+- **Self-delimiting records:** snapshot records and WAL operations carry
+  explicit length prefixes and CRC-32C. WAL transactions carry a fixed
+  36-byte header with protected `body_len`, followed by a frame CRC. Each
+  outer unit can be bounded and validated independently.
 - **Checksum:** CRC-32C, i.e. the Castagnoli polynomial variant (poly
   `0x1EDC6F41` normal / `0x82F63B78` reflected, init `0xFFFFFFFF`, reflected
   input and output, xorout `0xFFFFFFFF`; this is the same parametrization as
@@ -73,10 +70,11 @@ meanings in this byte-format specification.
   mechanism and does not protect against hostile replacement.
 - **Digest:** within this byte format, SHA-256 (FIPS 180-4), 32 raw bytes, is
   used for namespace association (see
-  [Namespace digest](#namespace-digest)) and for the framing-profile digest (see
+  [Namespace digest](#namespace-digest)), bounded full-path evidence (see
+  [`AdvisoryPath`](#advisorypath-encoding)), and the framing-profile digest (see
   [Framing-profile canonical serialization and digest](#framing-profile-canonical-serialization-and-digest)).
-  The two constructions use different domain separators. Neither digest is a
-  checksum for structural integrity or an authentication mechanism; CRC-32C
+  The constructions use distinct domain separators. None is a checksum for
+  structural integrity or an authentication mechanism; CRC-32C
   guards structural integrity.
 
 ## Namespace and active-generation selection
@@ -206,6 +204,55 @@ Cleanup, including recovery after interrupted cleanup, MUST reread `CURRENT`
 under exclusive namespace ownership and MUST NOT delete either file belonging
 to the generation it currently names.
 
+## First-generation namespace publication
+
+A namespace is genuinely absent only when the namespace directory itself and
+all artifacts beneath its intended path are absent. An existing directory,
+`CURRENT` temporary, snapshot, WAL, or other artifact without a valid
+`CURRENT` is never interpreted as an empty namespace.
+
+Version 1 uses these fixed first-publication temporary names:
+
+```text
+offsets-0.snapshot.create.tmp
+offsets-0.wal.create.tmp
+CURRENT.create.tmp
+```
+
+Under least-privilege permissions, first publication is:
+
+1. Atomically create the namespace directory. An already-existing path enters
+   recovery rather than creation.
+2. Create/acquire `ownership.lock` and hold exclusive ownership.
+3. Inventory the directory. A fresh creation contains only `ownership.lock`.
+4. Write a complete empty snapshot to `offsets-0.snapshot.create.tmp`, sync the
+   file, and close it.
+5. Write the complete 56-byte WAL header to
+   `offsets-0.wal.create.tmp`, sync the file, and close it.
+6. Rename both temporary generation files to `offsets-0.snapshot` and
+   `offsets-0.wal`, then sync the namespace directory where the platform
+   supports directory sync.
+7. Write and sync a complete generation-zero marker to `CURRENT.create.tmp`.
+8. Atomically rename it to `CURRENT`, then sync the namespace directory where
+   supported.
+
+No source is registered or read before step 8 completes.
+
+With no valid `CURRENT`, recovery may classify an interrupted first publication
+only when, under exclusive ownership, the directory contains
+`ownership.lock` plus a subset of the three exact temporary names and the two
+generation-zero final names, and contains no other artifact. It reports the
+interruption, removes that recognized set, syncs the directory where supported,
+and restarts creation from step 3. This is explicit interrupted-publication
+repair, not treatment as an empty namespace. Any other artifact set without a
+valid `CURRENT` is `AuthorityMissingOrAmbiguous` and fails closed.
+
+Once valid `CURRENT` exists, it alone selects authority. A leftover
+`CURRENT.create.tmp` or generation temporary is never authoritative and may be
+removed only after protecting the generation named by `CURRENT`. The Windows
+directory-sync limitation remains as documented by the behavioral platform
+contract.
+
 ## Magic values, versions, and fixed widths at a glance
 
 | File | Magic (8 bytes) | Header width | Footer |
@@ -213,12 +260,16 @@ to the generation it currently names.
 | `CURRENT` marker | `"FLOGCUR\0"` | 24 bytes (whole file) | none |
 | Snapshot | `"FLOGSNP\0"` | 60 bytes | 24 bytes, magic `"FLOGSFT\0"` |
 | WAL | `"FLOGWAL\0"` | 56 bytes | none (append-only) |
+| WAL transaction | `"FLOGTXN\0"` | 36 bytes | 4-byte `frame_crc32c` |
 
 `format_version` is `u16` and is `1` for every header in this version. The
 snapshot/WAL/`CURRENT` format version is a single coherent number for the
 whole on-disk encoding; it is distinct from `framing_profile_version`, which
 versions only the framing-profile canonical serialization and digest
 algorithm (see below) and can in principle advance independently.
+`tx_envelope_version` is also `1`; it versions the fixed WAL transaction
+framing within format version 1, and any other value fails before body-length
+classification.
 
 ## Snapshot file format
 
@@ -234,6 +285,9 @@ algorithm (see below) and can in principle advance independently.
 | 52 | 4 | `record_count` | `u32` BE; number of snapshot records that follow |
 | 56 | 4 | `header_crc32c` | `u32` BE, CRC-32C over bytes `[0, 56)` |
 
+Before allocating record state, recovery validates
+`record_count <= configured limits.max_tracked_files <= u32::MAX`.
+
 ### Snapshot record (self-delimiting)
 
 ```text
@@ -241,6 +295,9 @@ record_len        : u32 BE                     -- length of `payload` in bytes
 payload            : record_len bytes
 record_crc32c      : u32 BE                     -- CRC-32C over (record_len as 4 BE bytes) || payload
 ```
+
+`record_len` MUST be no greater than
+`SNAPSHOT_MAX_RECORD_PAYLOAD_BYTES` and the bytes remaining before allocation.
 
 `payload` field order (this is the exact, implementation-ready field order;
 an encoder MUST write fields in this order and a decoder MUST read them in
@@ -261,8 +318,7 @@ this order):
 | 11 | `lifecycle_state` | `u8` discriminant, see [Lifecycle state](#lifecycle-state-discriminant) | fixed |
 | 12 | `quarantine_evidence` | present iff `lifecycle_state == Quarantined`, see below | see below |
 | 13 | `last_seen_time_unix_nano` | `u64` BE | fixed |
-| 14 | `advisory_path_len` | `u16` BE | fixed |
-| 15 | `advisory_path_bytes` | `[u8; advisory_path_len]`, opaque bytes (not required to be UTF-8; paths are matching/advisory evidence, not a text contract) | `ADVISORY_PATH_MAX_BYTES = 4096` |
+| 14 | `advisory_path` | [`AdvisoryPath`](#advisorypath-encoding) | `44 + stored_path_len` bytes |
 
 `file_id` is the record's key and MUST be unique across every record in a
 single snapshot file. An encoder MUST refuse to write two records sharing a
@@ -294,6 +350,37 @@ carries evidence anyway. Both are structural encode-time failures, not
 debug-only assertions, since a decoder has no way to recover the correct
 shape from an already-inconsistent value.
 
+### Snapshot reachable-state invariants
+
+A CRC-valid record is still rejected unless it is reachable through the
+version-1 logical operations. Snapshot encoders and decoders enforce all of the
+following before WAL replay:
+
+- `file_epoch >= 1`;
+- `file_id` is unique in the snapshot;
+- `locator` is a recognized non-`Unspecified` kind;
+- fingerprint and advisory-path lengths satisfy their bounds, and
+  `ignored_header_bytes + fingerprint_len` is representable as `u64`;
+- `framing_profile_version != 0` and the digest is exactly 32 bytes; current
+  registration emits version 1, while an unrecognized nonzero stored version
+  is preserved and blocked as per-file framing incompatibility rather than
+  snapshot corruption;
+- `FramingResume::Continuation` has `next_fragment_index >= 1` and
+  `record_start_offset < committed_offset`;
+- `Active` has no quarantine evidence;
+- `RotatedFinalized` has `FramingResume::Clean` and no quarantine evidence;
+- `Quarantined` has evidence, `reason_code != 0`,
+  `quarantine_epoch == file_epoch`, and preserves the record's locator,
+  fingerprint, committed offset, and framing resume; and
+- every `AdvisoryPath` flag, length, kind, alignment, suffix-selection, and
+  recomputable untruncated digest invariant holds.
+
+Unknown lifecycle or nested discriminants remain structural decode errors.
+Failure of a reachable-state rule is `InvalidSnapshotState`, not a candidate
+for repair or record omission. The same invariants constrain compaction output,
+so a snapshot encoder cannot serialize an in-memory state that replay could
+never produce.
+
 ### Snapshot footer (24 bytes)
 
 | Offset | Size | Field | Value |
@@ -316,6 +403,7 @@ no leniency, even if it is the physical end of the file:
 - fewer than `record_count` complete, individually CRC-valid records available;
 - a record whose declared `record_len` exceeds the remaining buffer;
 - two records declaring the same `file_id`;
+- a CRC-valid record violating any reachable-state invariant;
 - the 24-byte footer missing, truncated, or CRC-invalid;
 - `record_count_echo` or `total_record_bytes` inconsistent with what was actually parsed;
 - any trailing bytes remaining after a structurally valid footer.
@@ -346,8 +434,8 @@ kind : u8
   The [Phase 1 platform contract](filelog-receiver-phase1-spec.md#platform-requirements)
   requires this case to be defined and tested rather than silently
   substituting a fallback identity; `Unspecified` is that explicit,
-  normalized representation, and higher-level policy decides what a
-  receiver does when it encounters this value.
+  normalized representation. Version-1 reachable snapshot and registration
+  state rejects it; a candidate without a required locator is not read.
 - **`PosixDevIno`** normalizes POSIX `(st_dev, st_ino)`. Both `dev` and `ino`
   are widened to `u64` regardless of the native platform's underlying
   integer width (`dev_t`/`ino_t` sizes vary by OS and architecture); a
@@ -365,6 +453,69 @@ kind : u8
   structural discriminant (it determines how many following bytes exist), so
   an unrecognized value fails decoding closed rather than being skipped or
   guessed at.
+
+## `AdvisoryPath` encoding
+
+Advisory paths are bounded diagnostics, never identity or progress evidence.
+The encoding is:
+
+```text
+path_kind          : u8
+path_flags         : u8
+full_path_len      : u64 BE
+stored_path_len    : u16 BE
+stored_path_bytes  : stored_path_len bytes
+full_path_digest   : [u8; 32]
+```
+
+| `path_kind` | Name | Complete native-byte representation |
+| --- | --- | --- |
+| `0x00` | `Unavailable` | Empty |
+| `0x01` | `UnixBytes` | Native Unix path bytes, with no UTF-8 requirement |
+| `0x02` | `WindowsUtf16Le` | Native UTF-16 code units serialized individually as `u16` little-endian |
+| `0x03`..`0xFF` | reserved | Decode fails closed |
+
+`path_flags` bit `0x01` is `TRUNCATED`; every other bit is reserved and MUST
+be zero. `ADVISORY_PATH_STORED_MAX_BYTES = 4096`.
+
+For `UnixBytes` and `WindowsUtf16Le`, `full_path_len` is the complete native
+byte length, MUST be representable as `u64`, and MUST be nonzero. An
+unrepresentable length fails evidence/registration before encoding. Windows
+length and stored length MUST be even
+so truncation never splits a UTF-16 code unit. The storage rule is exact:
+
+- when `full_path_len <= 4096`, `TRUNCATED` is clear,
+  `stored_path_len == full_path_len`, and the stored bytes are the complete
+  native representation;
+- when `full_path_len > 4096`, `TRUNCATED` is set,
+  `stored_path_len == 4096`, and the stored bytes are the final 4,096 bytes of
+  the complete native representation.
+
+`Unavailable` requires flags zero, lengths zero, and no stored bytes.
+
+The digest is:
+
+```text
+full_path_digest = SHA-256(
+  UTF-8("otel-arrow-filelog-advisory-path-v1\0") ||
+  path_kind : u8 ||
+  full_path_len : u64 BE ||
+  complete_native_path_bytes
+)
+```
+
+For an untruncated path, a decoder recomputes and validates the digest. For a
+truncated path, the complete bytes are unavailable to the decoder, so the
+digest is retained as opaque comparison/diagnostic evidence and cannot
+authenticate the omitted prefix. The runtime emits bounded provenance and a
+truncation marker under the
+[Phase 1 project attribute registry](filelog-receiver-phase1-spec.md#provenance).
+It never uses the stored suffix or digest to match identity or inherit
+progress.
+
+The runtime computes full length, SHA-256, and the rolling final 4,096-byte
+suffix in one bounded pass; checkpoint preparation does not allocate a second
+buffer proportional to the complete native path.
 
 ## `FramingResume` encoding
 
@@ -462,33 +613,53 @@ occur (see [Torn-tail versus corruption](#torn-tail-versus-corruption)).
 ### Transaction framing
 
 ```text
-tx_len       : u32 BE              -- length of the transaction body in bytes
-tx_body       : tx_len bytes
-tx_crc32c     : u32 BE              -- CRC-32C over (tx_len as 4 BE bytes) || tx_body
+transaction_header : 36 bytes
+operation_body     : body_len bytes
+frame_crc32c       : u32 BE
 ```
 
-`tx_body` layout:
+The fixed transaction header is:
 
-```text
-sequence  : u64 BE
-op_count  : u16 BE                  -- 1..=WAL_MAX_OPS_PER_TX (4096); 0 is invalid
-ops       : op_count Operation entries (self-delimiting, see below)
-```
+| Offset | Size | Field | Value |
+| --- | --- | --- | --- |
+| 0 | 8 | `tx_magic` | `"FLOGTXN\0"` |
+| 8 | 2 | `tx_envelope_version` | `u16` BE, `1` |
+| 10 | 2 | `tx_flags` | `u16` BE, reserved, MUST be `0` |
+| 12 | 8 | `sequence` | `u64` BE |
+| 20 | 4 | `body_len` | `u32` BE; total encoded operation-frame bytes |
+| 24 | 4 | `body_len_complement` | `body_len XOR 0xFFFFFFFF` |
+| 28 | 2 | `op_count` | `u16` BE, `1..=WAL_MAX_OPS_PER_TX` |
+| 30 | 2 | `reserved` | `u16` BE, MUST be `0` |
+| 32 | 4 | `header_crc32c` | CRC-32C over header bytes `[0, 32)` |
+
+The operation body is exactly `op_count` self-delimiting operation frames and
+must consume exactly `body_len` bytes. `frame_crc32c` is CRC-32C over the
+complete 36-byte transaction header, including `header_crc32c`, followed by
+the operation body.
 
 - **Sequences** start at `1` for the first transaction ever written into a
   fresh WAL generation and increase by exactly `1` for every subsequent
   transaction, with no gaps and no repeats. A sequence that is not exactly
   `previous + 1` is an ordering error and fails replay closed; it is never
-  treated as a torn tail (a torn tail is only a **length/CRC** availability
-  problem, defined precisely below, not a semantic ordering problem).
+  treated as a torn tail.
+- **Envelope validation order:** after 36 header bytes are physically present,
+  a decoder validates magic, envelope version, flags, reserved, length
+  complement, header CRC, body-length bounds, operation-count bounds, and
+  sequence before using `body_len` to classify the remaining suffix. A failure
+  is corruption or unsupported version, never a torn tail.
 - **Atomicity:** a transaction's operations become visible only as a
   complete, validated set. A decoder MUST NOT expose any operation from a
-  transaction whose `tx_crc32c` does not validate, and MUST NOT expose a
+  transaction whose `frame_crc32c` does not validate, and MUST NOT expose a
   partial prefix of a transaction's operations.
 - `op_count == 0` is rejected: every transaction carries at least one
   operation. This keeps the "smallest replayable unit" concept simple and
   matches the behavioral requirement that one transaction contains a
   [bounded set of operations](filelog-receiver-phase1-spec.md#logical-operations).
+- `TX_MIN_BODY_BYTES = 34` and `TX_MIN_FRAME_BYTES = 74`; the minimum body is
+  one `update_metadata` operation with no optional fields.
+- `body_len` MUST be within
+  `TX_MIN_BODY_BYTES..=WAL_MAX_TX_BODY_BYTES`. Recovery never scans inner
+  operations to reinterpret an invalid outer envelope.
 
 ### Operation framing (self-delimiting)
 
@@ -498,8 +669,11 @@ op_payload    : op_len bytes         -- op_code (u8) || operation-specific field
 op_crc32c     : u32 BE               -- CRC-32C over (op_len as 4 BE bytes) || op_payload
 ```
 
+`op_len` is validated against `MAX_OPERATION_PAYLOAD_BYTES`, the enclosing
+`body_len`, and the bytes remaining before allocation or slicing.
+
 Every operation is individually length-prefixed and individually
-CRC-32C-checked, even though the enclosing transaction's `tx_crc32c` already
+CRC-32C-checked, even though the enclosing transaction's `frame_crc32c` already
 covers the same bytes. This redundancy is intentional: it lets an operation
 be extracted, inspected, or replayed independently (for example by a future
 offline audit or migration tool) without needing the enclosing transaction
@@ -545,8 +719,7 @@ and [`FramingResume`](#framingresume-encoding) encodings above.
 | 9 | `framing_profile_digest` | `[u8; 32]` | fixed |
 | 10 | `framing_resume` | `FramingResume` | see above |
 | 11 | `last_seen_time_unix_nano` | `u64` BE | fixed |
-| 12 | `advisory_path_len` | `u16` BE | fixed |
-| 13 | `advisory_path_bytes` | `[u8; advisory_path_len]` | `ADVISORY_PATH_MAX_BYTES = 4096` |
+| 12 | `advisory_path` | `AdvisoryPath` | `44 + stored_path_len` bytes |
 
 #### `update_progress` (`0x02`)
 
@@ -592,17 +765,11 @@ and [`FramingResume`](#framingresume-encoding) encodings above.
 | 2 | `presence_flags` | `u8` bitfield: bit 0 (`0x01`) = `LOCATOR_PRESENT`, bit 1 (`0x02`) = `PATH_PRESENT`; other bits reserved, MUST be `0` | always |
 | 3 | `locator` | `Locator` | only if `LOCATOR_PRESENT` |
 | 4 | `last_seen_time_unix_nano` | `u64` BE | always |
-| 5 | `advisory_path_len` | `u16` BE | only if `PATH_PRESENT` |
-| 6 | `advisory_path_bytes` | `[u8; advisory_path_len]`, max `ADVISORY_PATH_MAX_BYTES = 4096` | only if `PATH_PRESENT` |
+| 5 | `advisory_path` | `AdvisoryPath` | only if `PATH_PRESENT` |
 
 A field marked "only if" is entirely absent from the byte stream when its
-presence bit is clear -- there is no placeholder or zero-length stand-in
-other than for the length-prefixed `advisory_path` case, where the natural
-representation of "absent" and "present with a zero-length value" would
-otherwise collide; `update_metadata` therefore uses the explicit
-`PATH_PRESENT` bit rather than an empty-string sentinel to distinguish "do
-not touch the advisory path" from "set it to an empty value" (v1 encoders
-never need the latter, but the wire format is unambiguous either way).
+presence bit is clear. `PATH_PRESENT` distinguishes "do not update path" from
+an explicit `AdvisoryPath::Unavailable`.
 
 #### `quarantine_file` (`0x06`)
 
@@ -626,7 +793,7 @@ never need the latter, but the wire format is unambiguous either way).
 | 4 | `resulting_epoch` | `u32` BE | fixed |
 | 5 | `resulting_offset` | `u64` BE | fixed |
 | 6 | `new_framing_resume` | `FramingResume` | see above |
-| 7 | `reset_time_unix_nano` | `u64` BE | fixed |
+| 7 | `action_time_unix_nano` | `u64` BE; audit event time, applied to operational state only for a reset action | fixed |
 | 8 | `audit_reason_len` | `u16` BE | fixed |
 | 9 | `audit_reason_bytes` | `[u8; audit_reason_len]`, UTF-8 | `AUDIT_REASON_MAX_BYTES = 1024`; MUST be non-empty (`audit_reason_len >= 1`) |
 
@@ -665,14 +832,24 @@ file-path convention alone.
 | Constant | Value | Applies to |
 | --- | --- | --- |
 | `FINGERPRINT_MAX_BYTES` | `65535` (`u16::MAX`) | `fingerprint_bytes`, `expected_fingerprint_bytes`, `new_fingerprint_bytes` |
-| `ADVISORY_PATH_MAX_BYTES` | `4096` | `advisory_path_bytes` |
+| `ADVISORY_PATH_STORED_MAX_BYTES` | `4096` | `AdvisoryPath.stored_path_bytes` |
 | `AUDIT_REASON_MAX_BYTES` | `1024` | `audit_reason_bytes` |
 | `NAMESPACE_ID_MAX_BYTES` | `255` | `namespace_id_bytes` |
+| `SNAPSHOT_MAX_RECORD_PAYLOAD_BYTES` | `69812` | Quarantined record with maximum locator, continuation, fingerprint, and advisory path |
+| `SNAPSHOT_MAX_RECORD_FRAME_BYTES` | `69820` | Length + maximum snapshot payload + CRC |
 | `WAL_MAX_OPS_PER_TX` | `4096` | `op_count` per transaction |
+| `TX_HEADER_BYTES` | `36` | Fixed transaction envelope header |
+| `TX_MIN_BODY_BYTES` | `34` | One minimum `update_metadata` operation frame |
+| `TX_MIN_FRAME_BYTES` | `74` | Header + minimum body + frame CRC |
+| `MAX_OPERATION_PAYLOAD_BYTES` | `131095` | Maximum `update_fingerprint` payload |
+| `MAX_OPERATION_FRAME_BYTES` | `131103` | Length + maximum operation payload + operation CRC |
+| `REGISTER_FILE_MAX_OP_PAYLOAD_BYTES` | `69778` | Maximum `register_file` payload with required `Clean` resume |
+| `WAL_MAX_TX_BODY_BYTES` | `536997888` | 4,096 maximum operation frames |
+| `WAL_MAX_TX_FRAME_BYTES` | `536997928` | 36-byte header + maximum body + frame CRC |
 | `UPDATE_PROGRESS_MAX_OP_PAYLOAD_BYTES` | `59` | Maximum `update_progress` payload with `Continuation` resume |
 | `UPDATE_PROGRESS_MAX_OP_FRAME_BYTES` | `67` | Length + maximum payload + CRC |
-| `MAX_PROGRESS_TX_BODY_BYTES` | `274442` | Sequence + count + 4,096 maximum progress operation frames |
-| `MAX_PROGRESS_TX_FRAME_BYTES` | `274450` | Length + maximum progress transaction body + CRC |
+| `MAX_PROGRESS_TX_BODY_BYTES` | `274432` | 4,096 maximum progress operation frames |
+| `MAX_PROGRESS_TX_FRAME_BYTES` | `274472` | 36-byte header + maximum progress body + frame CRC |
 | framing-profile pattern | `4096` | canonical serialization pattern bytes (see below) |
 
 The Phase 1 behavioral contract reserves zero non-progress operations in an
@@ -687,19 +864,40 @@ update_progress payload =
   = 59 bytes
 
 maximum progress transaction body =
-  8 sequence + 2 op_count + 4096 * (4 + 59 + 4)
-  = 274442 bytes
+  4096 * (4 + 59 + 4)
+  = 274432 bytes
+
+maximum progress transaction frame =
+  36 header + 274432 body + 4 frame CRC
+  = 274472 bytes
+
+maximum operation payload =
+  update_fingerprint fixed fields + two 65535-byte fingerprints
+  = 131095 bytes
+
+maximum snapshot record payload =
+  maximum fixed/quarantine fields + 65535 fingerprint
+  + 25 locator + 13 resume + (44 + 4096) advisory path
+  = 69812 bytes
+
+maximum register_file payload =
+  op code + maximum Active registration fields + one-byte Clean resume
+  = 69778 bytes
+
+WAL_MAX_TX_BODY_BYTES =
+  4096 * (4 + 131095 + 4)
+  = 536997888 bytes
+
+WAL_MAX_TX_FRAME_BYTES =
+  36 + 536997888 + 4
+  = 536997928 bytes
 ```
 
-These include all field-specific and Phase 1 progress-transaction maximums. The remaining length-typed
-fields (`record_count: u32`, `tx_len: u32`, `op_len: u32`) are bounded only by
-their integer width and by the number of bytes actually present in the input
-buffer; a decoder never trusts a declared length larger than what is
-actually available, regardless of the field's nominal integer range. Higher
-layers additionally bound the practical number of tracked files and the
-practical transaction size through configuration (`limits.max_tracked_files`,
-checkpoint sync/compaction policy); this document does not duplicate those
-runtime policies as format constants.
+These include all field-specific and transaction-envelope maxima. The remaining
+length-typed fields (`record_count: u32`, `body_len: u32`, `op_len: u32`) are
+validated against these constants and the bytes actually present before
+allocation or slicing. Higher layers additionally constrain tracked files and
+artifact sizes through configuration.
 
 ## CRC-32C coverage
 
@@ -710,12 +908,14 @@ runtime policies as format constants.
 | snapshot `record_crc32c` | the record's own 4-byte `record_len` field followed by its `payload` |
 | snapshot `footer_crc32c` | bytes `[0, 20)` of the footer (footer_magic, total_record_bytes, record_count_echo) |
 | WAL `header_crc32c` | bytes `[0, 52)` of the WAL header |
-| `tx_crc32c` | the transaction's own 4-byte `tx_len` field followed by its `tx_body` |
+| transaction `header_crc32c` | fixed transaction-header bytes `[0, 32)` |
+| transaction `frame_crc32c` | complete 36-byte transaction header followed by exactly `body_len` operation bytes |
 | `op_crc32c` | the operation's own 4-byte `op_len` field followed by its `op_payload` |
 
-Every checksum covers its own length prefix in addition to its payload; this
-prevents a corrupted length field with an otherwise-valid-looking payload
-suffix from passing validation.
+The independently checked length complement and header CRC are validated before
+`body_len` can classify a suffix as torn. The frame CRC then protects the
+validated header and operation body together. Operation CRCs independently
+protect their own length and payload.
 
 ## Replay preconditions, idempotency, and exact transition restrictions
 
@@ -738,6 +938,12 @@ A general restriction that holds for every operation: identity fields
 that is not `register_file` never creates a record, and an operation that is
 not `remove_file` never deletes one.
 
+Before encoding any lifecycle, epoch, interpretation, reset, or removal
+transition, the runtime must satisfy the behavioral
+[unresolved-delta invariant](filelog-receiver-phase1-spec.md#universal-unresolved-delta-ordering).
+The byte guards make stale replay fail closed but do not replace that runtime
+ordering proof.
+
 ### `register_file`
 
 - Precondition: `file_id` is absent from the table, **or** `file_id` is
@@ -750,7 +956,20 @@ not `remove_file` never deletes one.
   first epoch).
 - `framing_resume` MUST be `Clean`; `Continuation` at registration is an
   impossible transition.
+- A version-1 producer MUST write `framing_profile_version = 1`. A decoder can
+  preserve another nonzero value so recovery can report per-file
+  `FramingProfileIncompatible`; zero is invalid.
+- Every field MUST satisfy the `Active`
+  [snapshot reachable-state invariants](#snapshot-reachable-state-invariants),
+  including locator, framing profile, fingerprint arithmetic, and
+  `AdvisoryPath`.
 - Effect: creates the record as `Active` with the operation's fields.
+
+The encoder preflights and encodes a complete registration operation and
+containing transaction before append. Any field, bound, invariant, collision,
+or encoding failure rejects the whole registration transaction without
+creating live state or making the file eligible to read. A multi-file
+registration transaction is all-or-nothing.
 
 ### `update_progress`
 
@@ -798,11 +1017,10 @@ not `remove_file` never deletes one.
   structural check -- see [reason codes](#reason-codes-are-not-structural)).
 - Effect: sets `file_epoch = resulting_epoch`, `committed_offset = 0`,
   `framing_resume = Clean`, `last_seen_time_unix_nano = reset_time_unix_nano`;
-  `lifecycle_state` remains `Active`. Because the epoch strictly increases,
-  any `update_progress` still carrying the prior (now stale) epoch
-  necessarily fails its own `expected_file_epoch` precondition on replay,
-  which is the mechanism behind "an earlier-epoch Ack cannot advance the
-  resulting stream."
+  `lifecycle_state` remains `Active`. The behavioral unresolved-delta
+  invariant guarantees that every current old-epoch attempt was terminal
+  before this operation was encoded; only later duplicate/superseded
+  completions are stale.
 
 ### `update_fingerprint`
 
@@ -839,6 +1057,8 @@ not `remove_file` never deletes one.
 - Precondition, ordinary case: `file_id` is present, `lifecycle_state ==
   Active`, and the stored `file_epoch == expected_file_epoch ==
   quarantine_epoch`.
+- `reason_code` MUST be nonzero; zero is structurally parseable but is an
+  unreachable apply-time value.
 - Idempotency: if the stored record is already `Quarantined` and its
   `(quarantine_epoch, reason_code, locator, observed_size,
   quarantine_time_unix_nano)` are all bit-for-bit identical to this
@@ -861,11 +1081,14 @@ not `remove_file` never deletes one.
   the stored `quarantine_epoch == expected_quarantine_epoch`. Any other state
   fails replay closed.
 - `action == keep_failed` (`0x03`): `lifecycle_state` remains `Quarantined`
-  (no transition). `resulting_epoch` MUST equal the stored `quarantine_epoch`
-  and `resulting_offset` MUST equal the stored `committed_offset` unchanged;
-  this operation exists purely as a durable, audited record of an operator's
-  explicit decision not to release quarantine, and MUST NOT be usable to
-  smuggle a silent state change through a nominally no-op action.
+  (no transition). `resulting_epoch` MUST equal both stored `file_epoch` and
+  `quarantine_epoch`; `resulting_offset` MUST equal stored
+  `committed_offset`; and `new_framing_resume` MUST be bit-for-bit equal to
+  stored `framing_resume`. `action_time_unix_nano` is audit-event data in the
+  WAL and MUST NOT update `last_seen_time_unix_nano`. Locator, fingerprint,
+  advisory metadata, framing profile, quarantine evidence, and every other
+  operational field remain byte-identical. Any attempted difference fails
+  closed with `KeepFailedStateChange`.
 - `action == reset_to_beginning` (`0x01`): `resulting_epoch` MUST equal
   `expected_quarantine_epoch + 1` (checked addition) and `resulting_offset`
   MUST equal exactly `0`.
@@ -877,43 +1100,38 @@ not `remove_file` never deletes one.
 - For either reset action: `new_framing_resume` MUST be `Clean`. Effect:
   `lifecycle_state` transitions to `Active`, `file_epoch = resulting_epoch`,
   `committed_offset = resulting_offset`, `framing_resume = Clean`,
-  `last_seen_time_unix_nano = reset_time_unix_nano`; the quarantine evidence
+  `last_seen_time_unix_nano = action_time_unix_nano`; the quarantine evidence
   fields are cleared (no longer part of an `Active` record's persisted
   shape).
 - `audit_reason` is required and is not independently validated for content
   by replay beyond the non-empty length check already enforced at decode
-  time; it exists for the durable audit trail, not as a machine-checked
-  precondition.
+  time; it records the operator decision while the WAL transaction remains.
+  Compaction preserves resulting operational state but need not retain the
+  historical action; permanent audit history requires a separate sink.
 
 ### `remove_file`
 
-- Idempotency: if `file_id` is absent from the table, replay succeeds as a
-  no-op regardless of the operation's other fields ("replay against an
-  already absent `file_id` is idempotent").
+- Before table lookup or absent-file idempotency, every administrative
+  operation validates that `namespace_id_bytes` exactly equals the selected
+  containing namespace. A mismatch always fails `NamespaceMismatch`, even if
+  `file_id` is absent.
+- After namespace validation, if `file_id` is absent from the table, replay
+  succeeds as an idempotent no-op.
 - Precondition when `file_id` is present: the stored `lifecycle_state` MUST
   equal `expected_prior_state`.
   - If the stored state is `Active` or `RotatedFinalized`: the stored
     `file_epoch` MUST equal `expected_file_epoch`. `administrative` MAY be
-    `0x00` or `0x01` (ordinary retention may remove either state).
+    `0x00` or `0x01`. Ordinary retention may remove either state, and an
+    exact-locator evidence mismatch may remove its superseded `Active` record
+    in the same transaction that registers the replacement.
   - If the stored state is `Quarantined`: the stored `quarantine_epoch` MUST
     equal `expected_file_epoch` (the field is reused as "the epoch value the
     caller expects to match" regardless of lifecycle state, to keep the
     operation's shape uniform), `administrative` MUST be `0x01`, and
     `administrative == 0x00` against a `Quarantined` record fails replay
     closed ("ordinary retention cannot remove quarantined state").
-  - **Namespace validation applies whenever `administrative == 0x01`,
-    regardless of the stored lifecycle state, not only when removing a
-    `Quarantined` record.** Whenever `administrative == 0x01`,
-    `namespace_id_bytes` MUST exactly equal the checkpoint namespace's
-    `checkpoint.id` that the containing WAL generation belongs to (supplied
-    to the replay function by its caller, since a single WAL file has one
-    fixed, known namespace); a mismatched `namespace_id_bytes` fails replay
-    closed with the same `NamespaceMismatch` error whether the target record
-    is `Active`, `RotatedFinalized`, or `Quarantined`. This prevents an
-    administrative removal recorded against the wrong namespace from
-    silently succeeding against an `Active` or `RotatedFinalized` record
-    just because namespace checking was previously reachable only via the
-    `Quarantined` removal path.
+  - The already-completed administrative namespace check applies identically
+    to `Active`, `RotatedFinalized`, and `Quarantined` targets.
   - Any other mismatch (wrong `expected_prior_state`, wrong epoch, or a
     conflicting live record with different evidence) fails replay closed
     ("the operation removes only a matching record").
@@ -933,40 +1151,61 @@ a byte offset immediately after the last successfully validated transaction
 remaining in the file from that offset:
 
 1. If `R == 0`: clean end of file. Nothing to discard.
-2. If `1 <= R < 4`: there are not enough bytes to read a complete `tx_len`
-   field. This is a **torn tail**: discard the remaining `R` bytes and stop
-   replay. This is the only transaction that may be discarded.
-3. If `R >= 4`: read `tx_len`. Let `needed = tx_len + 4` (the transaction
-   body plus the trailing `tx_crc32c`), computed with a checked (overflow
-   -detecting) addition.
-   - If `R - 4 < needed`, i.e. fewer bytes remain than the declared frame
-     requires: this is a **torn tail**: discard the remaining `R` bytes
-     (including the `tx_len` field just read) and stop replay.
-   - If `R - 4 >= needed`: the complete frame (`tx_len` bytes of body plus 4
-     bytes of CRC) is physically present. Validate `tx_crc32c` against the
-     actual bytes.
-     - If the CRC does not match: this is **corruption**, not a torn tail,
-       even if this is the last transaction in the file. A torn write, by
-       construction, never has a complete, self-consistent frame with a
-       merely-wrong checksum; a complete frame with a bad checksum indicates
-       genuine bit-level corruption (or a non-append modification of an
-       already-written region) and fails recovery closed.
-     - If the CRC matches: parse and validate `sequence`, `op_count`, and
-       each operation as normal. A structural failure at this point (for
-       example an operation's own `op_crc32c` not matching, or a length
-       field pointing past the already-validated transaction boundary) is
-       also corruption, because the enclosing `tx_crc32c` already proved
-       these exact bytes were written intentionally; it fails recovery
-       closed rather than being treated as a torn tail.
-4. A **torn tail can only be the last transaction attempted**: once any
+2. If `1 <= R < 36`: the final append contains an incomplete fixed header.
+   This is a **torn tail**; discard those bytes and stop.
+3. If `R >= 36`: parse the complete fixed header and, before trusting
+   `body_len`, validate transaction magic, envelope version, flags, reserved,
+   length complement, header CRC, body-length bounds, operation count, and
+   expected sequence.
+   - Any failure is **corruption** (or a distinct unsupported-envelope-version
+     error), even at physical EOF. Upward- or downward-corrupted lengths cannot
+     become torn tails because redundancy and header CRC fail first.
+   - For a valid header, compute `needed = 36 + body_len + 4` with checked
+     arithmetic.
+4. If `R < needed` after a valid complete header, the body or trailing frame
+   CRC was only partially appended. This is a **torn tail**; discard the whole
+   suffix beginning at this transaction and stop.
+5. If `R >= needed`, validate `frame_crc32c` over the header and body.
+   - A mismatch is corruption, even for the final frame.
+   - A valid frame is then parsed as exactly `op_count` operation frames
+     consuming exactly `body_len`. Any operation CRC, length, discriminant, or
+     exact-consumption failure is corruption. Recovery never scans inner
+     operation bytes to reinterpret an invalid outer envelope.
+   - Continue at the byte immediately after this frame; any later incomplete
+     suffix is classified again from that known boundary.
+6. A **torn tail can only be the last transaction attempted**: once any
    transaction has been discarded as a torn tail, replay stops immediately
    (there is nothing after it to scan, by definition -- the discarded bytes
    were already everything remaining in the file, `R`).
 
-Discarding a torn tail never uncommits an already-Ack'd, previously
+Discarding a torn tail never uncommits an already-Acked, previously
 validated transaction that happened to precede it; those were already
 applied. Discarding a torn tail also never partially applies any of its own
 operations -- the whole trailing partial region is dropped as a unit.
+
+## WAL append failure and repair
+
+The writer encodes and validates a complete transaction in bounded memory
+before issuing an append. It tracks the byte offset immediately after the last
+complete validated transaction. Under exclusive namespace ownership:
+
+| Append result | Required handling |
+| --- | --- |
+| Definitively no bytes written | Keep the known boundary and retry within the store-failure policy |
+| Known partial write | Mark the live store unavailable, reopen the WAL, validate through the known boundary, classify the suffix with the fixed envelope, truncate to the known boundary only when the suffix is a mechanically valid torn append, sync the truncation, then retry |
+| Ambiguous write result | Reopen and validate: accept an exactly sequenced complete valid transaction as appended; truncate and retry only a mechanically valid torn append beginning at the known boundary; fail closed on any complete invalid header/frame or unclassifiable bytes |
+| Append completed but required sync failed | Reopen and validate; if the transaction is complete and valid, do not append it again--retry the sync under the store-failure policy; if incomplete, use the torn-append repair above before applying progress |
+
+Repair never scans for an inner operation pattern, never truncates before the
+known last-valid boundary, and never converts a complete bad header CRC, length
+redundancy failure, frame CRC failure, sequence error, or operation corruption
+into a torn append. After startup recovery discards a permitted torn tail, the
+store must truncate and sync that exact suffix before any new append.
+
+Logical application occurs only after the append is known complete and valid.
+A failed required sync may leave already applied progress newer than the
+durable frontier, but it does not authorize a duplicate append or partial
+operation application.
 
 ## Framing-profile canonical serialization and digest
 
@@ -1042,11 +1281,11 @@ The digest is:
 framing_profile_digest = SHA-256(canonical serialization input above)
 ```
 
-The construction is unkeyed and domain-separated with the same style of
-fixed ASCII prefix (including the trailing NUL) used by the
-[fragment-ID construction](filelog-receiver-phase1-spec.md#split-behavior),
-so the two digests can never collide with each other by construction even if
-their remaining field shapes were ever to coincide.
+The construction is unkeyed and uses a fixed ASCII domain prefix (including
+the trailing NUL) distinct from namespace, advisory-path, and
+[fragment-ID](filelog-receiver-phase1-spec.md#split-behavior) inputs. Equal
+remaining field bytes therefore do not reuse an identical SHA-256 preimage
+across those purposes.
 
 ### Compatibility vectors
 
@@ -1084,17 +1323,20 @@ Both are normative conformance vectors. A change to either value without a
 | Situation | Behavior |
 | --- | --- |
 | `format_version` other than `1` in `CURRENT`, snapshot, or WAL header | fail closed with a distinct "unsupported version" error, checked before any record/transaction is parsed |
-| nonzero header `flags`, or a nonzero reserved bit in `update_metadata`'s `presence_flags` | fail closed (v1 defines no flag bits) |
+| `tx_envelope_version` other than `1` | fail closed before trusting `body_len` |
+| nonzero file/transaction flags or reserved fields, nonzero reserved `AdvisoryPath` flags, or a nonzero reserved bit in `update_metadata.presence_flags` | fail closed |
 | snapshot or WAL `namespace_digest` differs from the expected selected-namespace digest or from its peer | fail closed with `NamespaceMismatch` before applying any record or transaction |
 | valid `CURRENT` names a missing, unreadable, or incomplete authoritative generation | fail closed with the corresponding distinct authoritative-generation error; never select another generation |
-| unknown `locator.kind`, `framing_resume.kind`, `lifecycle_state`, `op_code`, `reset_quarantined_file.action`, or `remove_file.expected_prior_state` | fail closed; these are all structural discriminants |
+| unknown `locator.kind`, `AdvisoryPath.path_kind`, `framing_resume.kind`, `lifecycle_state`, `op_code`, `reset_quarantined_file.action`, or `remove_file.expected_prior_state` | fail closed; these are all structural discriminants |
 | unknown `reason_code` / `removal_reason` value | accepted at decode time (opaque, non-structural); may still be rejected by apply-time business rules for specific operations |
 | a declared length exceeding either its documented maximum or the bytes actually remaining | fail closed before allocating or slicing |
-| any field arithmetic that would overflow its integer width (for example `expected_active_epoch + 1`, or `tx_len + 4`) | fail closed via checked arithmetic; never wraps |
+| complete transaction header with invalid length complement or header CRC | corruption, never torn-tail classification |
+| any field arithmetic that would overflow its integer width (for example `expected_active_epoch + 1`, or `36 + body_len + 4`) | fail closed via checked arithmetic; never wraps |
+| CRC-valid snapshot record violating a reachable-state invariant | fail closed with `InvalidSnapshotState` before WAL replay |
 | trailing bytes after a structurally complete snapshot | fail closed (no torn-tail leniency for snapshots) |
-| a structurally incomplete final WAL transaction | discarded (the sole torn-tail exception); replay stops there |
-| a structurally complete WAL transaction with an invalid CRC, even if it is last | fail closed (corruption, not a torn tail) |
-| any "extension" bytes beyond a record/operation's defined fields | there are none in v1; every record/operation is exactly as long as its defined fields require, and any extra bytes claimed by a self-delimiting length prefix but not consumed by defined fields is a decode error (the length must exactly match the sum of the fields it was declared to contain) |
+| incomplete final transaction header, or complete valid header with incomplete body/frame CRC | discarded as the sole torn-tail exception; replay stops there |
+| complete transaction header or frame with invalid CRC, even if last | fail closed (corruption, not a torn tail) |
+| any "extension" bytes beyond defined record/operation fields, or transaction body bytes not consumed by exactly `op_count` operations | fail closed; v1 defines no trailing extension area |
 
 v1 does not define a TLV-style forward-compatible extension mechanism for
 individual records or operations. A future version that needs additional
@@ -1133,9 +1375,10 @@ engine administrative interface or offline tool MUST acquire exclusive
 namespace ownership and append validated operations through the checkpoint
 store. Operators MUST NOT edit snapshots, WAL transactions, checksums, or
 `CURRENT` manually. An operable Phase 1 release with durable quarantine MUST
-provide such a surface. If an initial delivery omits it, these operations remain
-unavailable and quarantine entry is limited by the behavioral specification's
-explicit deterministic failure set even though the wire representation exists.
+provide such a surface with exact namespace, `file_id`, expected lifecycle and
+epoch, bounded evidence inspection, and all defined reset/removal actions.
+WAL administrative entries remain operational history only until compaction;
+permanent audit retention requires a separate audit sink.
 
 ## Cross-version and migration behavior
 
@@ -1147,6 +1390,9 @@ explicit deterministic failure set even though the wire representation exists.
   version of this document defining the new encoding completely (not as a
   diff), and explicit compatibility/migration vectors analogous to this
   document's golden vectors.
+- A future incompatible transaction-envelope layout increments both the
+  containing WAL `format_version` and `tx_envelope_version`; version 1 never
+  mixes envelope versions in one WAL.
 - A reader encountering an unrecognized `format_version` MUST fail closed
   with a distinct "unsupported version, migration required" error. It MUST
   NOT attempt to guess a compatible subset of the new layout, and MUST NOT
@@ -1155,9 +1401,10 @@ explicit deterministic failure set even though the wire representation exists.
 - The `framing_profile_version` follows the same policy independently: an
   unrecognized profile version, or a recognized version whose digest does
   not match the currently configured framing profile's freshly computed
-  digest, fails closed. Resumption requires either configuration restored to
-  the exact compatible stored profile or an administrative migration before
-  the affected file can resume from its persisted `framing_resume` state. A
+  digest, fails the affected record closed without creating a new identity.
+  Resumption requires configuration restored to the exact compatible stored
+  profile, audited reset/removal, or a separately designed migration before
+  the affected file can resume from persisted `framing_resume`. A
   normal configuration change never resets or removes that state; it is never
   silently reconciled.
 - This document defines the on-disk checkpoint format's own migration
@@ -1169,9 +1416,13 @@ explicit deterministic failure set even though the wire representation exists.
 
 ## Golden and conformance vectors
 
-All expected bytes and digests in conformance tests must be computed
-independently with a verified CRC-32C implementation and standard SHA-256, not
-generated by round-tripping the encoder under test.
+The vectors below were independently generated with standard SHA-256 and a
+standalone bitwise reflected Castagnoli CRC-32C routine. The routine first
+validated `CRC-32C("123456789") == 0xE3069283`. It then encoded fields directly
+from this document; it did not call or round-trip the checkpoint encoder being
+specified.
+
+### Namespace, path, and fixed-file vectors
 
 For exact `checkpoint.id` bytes `app-logs`:
 
@@ -1183,49 +1434,164 @@ namespace_digest =
   400aa7032f9128c39cc7e1403b8745dcccf6c9a5acfc665e908f15e798ac9531
 ```
 
-For generation `7`, that digest, and an empty snapshot (`record_count = 0`),
-the complete 60-byte snapshot header is:
+Advisory-path digest vectors:
+
+| Kind and complete path | Full-path digest |
+| --- | --- |
+| `UnixBytes`, `/var/log/app.log` | `337a8fdfc197d2f02179162dccb0e86c430452449e51368104bbd5cc98fca49b` |
+| `WindowsUtf16Le`, `C:\logs\app.log` encoded as UTF-16LE | `eaf5f1242c984fbf5c1ec523bd5dd9d1fa8c21b7f09a9394ee7b74b3ecdb8357` |
+| `UnixBytes`, 5,000 bytes of `0x78` | `4edffb8c0486f5658b188d349af1b47270dc02bc0459b60dbfd3c314d9ecffa2`; flags `TRUNCATED`, full length 5,000, stored length 4,096, stored suffix all `0x78` |
+
+Generation `7` `CURRENT` is 24 bytes; marker CRC is `0x01f553f3`:
 
 ```text
-464c4f47534e5000000100000000000000000007400aa7032f9128c39cc7e1403b8745dcccf6c9a5acfc665e908f15e798ac9531000000004e0dcda7
+464c4f474355520000010000000000000000000701f553f3
 ```
 
-Its header CRC-32C is `0x4e0dcda7`. The corresponding complete 56-byte WAL
-header is:
+The complete empty snapshot is 84 bytes: 60-byte header, zero records, and
+24-byte footer. Header CRC is `0x4e0dcda7`; footer CRC is `0x65828036`:
+
+```text
+464c4f47534e5000000100000000000000000007400aa7032f9128c39cc7e1403b8745dcccf6c9a5acfc665e908f15e798ac9531000000004e0dcda7464c4f475346540000000000000000000000000065828036
+```
+
+The complete generation `7` WAL header is 56 bytes; CRC is `0x69a613de`:
 
 ```text
 464c4f4757414c00000100000000000000000007400aa7032f9128c39cc7e1403b8745dcccf6c9a5acfc665e908f15e798ac953169a613de
 ```
 
-Its header CRC-32C is `0x69a613de`.
+### Complete snapshot-state vectors
 
-Phase 1 conformance vectors and recovery tests cover:
+The 250-byte `Active` snapshot uses `file_id = 00..0f`, epoch 1, offset 42,
+fingerprint `abc`, POSIX locator `(1, 2)`, clean resume, last-seen 1,000, and
+Unix path `/var/log/app.log`:
 
-- these namespace-input, namespace-digest, snapshot-header, and WAL-header
-  bytes exactly;
-- snapshot and WAL namespace digests that differ from the selected namespace
-  or one another, producing `NamespaceMismatch` before record application;
-- a valid `CURRENT` naming a missing, unreadable, or incomplete authoritative
-  generation, with no fallback to another generation;
-- cleanup that never deletes the generation currently named by `CURRENT`;
-- encode/decode round-trip for a minimal `Active` snapshot record with a
-  POSIX locator and `Clean` framing resume;
-- encode/decode round-trip for a `Quarantined` snapshot record with a Windows
-  volume/file-ID locator;
-- a WAL generation containing `register_file`, ordinary and zero-delta
-  finalizing `update_progress`, and replay of the resulting state;
-- one progress transaction containing exactly 4,096 maximum-size
-  `update_progress` operations and rejection before encoding a 4,097th;
-- a WAL whose final transaction is torn: preceding transactions replay and
-  only the incomplete final transaction is discarded;
-- a structurally complete final WAL transaction with a corrupted CRC,
-  producing fail-closed corruption rather than prefix recovery;
-- snapshot and WAL headers declaring an unsupported `format_version`, rejected
-  before any record or transaction is parsed;
-- Windows and POSIX locator records decoded independently of host platform;
-  and
-- the two framing-profile version-1 compatibility vectors above.
+```text
+464c4f47534e5000000100000000000000000007400aa7032f9128c39cc7e1403b8745dcccf6c9a5acfc665e908f15e798ac953100000001bc664ea40000009e000102030405060708090a0b0c0d0e0f00000001000000000000002a00036162630000000001000000000000000100000000000000020001b89a44439258d045238a81d1d608cb41abede895ab1e047eef2b83898d3e0b25000100000000000003e80100000000000000001000102f7661722f6c6f672f6170702e6c6f67337a8fdfc197d2f02179162dccb0e86c430452449e51368104bbd5cc98fca49bd40e002f464c4f475346540000000000000000a600000001728402d6
+```
 
-All round-trip, corruption, torn-write, namespace, cross-version,
-cross-platform, publication, and recovery vectors must remain in lockstep with
-this specification.
+The 305-byte `Quarantined` snapshot uses `file_id = 10..1f`, epoch 2,
+offset 10, fingerprint `aabb`, Windows locator `(volume 3, file_id 20..2f)`,
+continuation `(start 0, next index 2)`, reason 1, observed size 12,
+quarantine time 2,000, last-seen 1,500, and Windows path
+`C:\logs\app.log`:
+
+```text
+464c4f47534e5000000100000000000000000007400aa7032f9128c39cc7e1403b8745dcccf6c9a5acfc665e908f15e798ac953100000001bc664ea4000000d5101112131415161718191a1b1c1d1e1f00000002000000000000000a0002aabb00000000020000000000000003202122232425262728292a2b2c2d2e2f0001b89a44439258d045238a81d1d608cb41abede895ab1e047eef2b83898d3e0b2501000000000000000000000002030001000000000000000c0000000200000000000007d000000000000005dc0200000000000000001e001e43003a005c006c006f00670073005c006100700070002e006c006f006700eaf5f1242c984fbf5c1ec523bd5dd9d1fa8c21b7f09a9394ee7b74b3ecdb8357ed1c8232464c4f475346540000000000000000dd000000015c0b0799
+```
+
+The 247-byte `RotatedFinalized` snapshot uses `file_id = 30..3f`, epoch 1,
+offset 99, an empty fingerprint, POSIX locator `(4, 5)`, clean resume,
+last-seen 3,000, and Unix path `/var/log/old.log`:
+
+```text
+464c4f47534e5000000100000000000000000007400aa7032f9128c39cc7e1403b8745dcccf6c9a5acfc665e908f15e798ac953100000001bc664ea40000009b303132333435363738393a3b3c3d3e3f00000001000000000000006300000000000001000000000000000400000000000000050001b89a44439258d045238a81d1d608cb41abede895ab1e047eef2b83898d3e0b2500020000000000000bb80100000000000000001000102f7661722f6c6f672f6f6c642e6c6f678d7835f7327949d9d30e9464ec82411c544cfb1f57bfb3380a44322036e779ea37ef6db5464c4f475346540000000000000000a300000001aad0d3ca
+```
+
+Negative snapshot vectors mutate each reachable-state invariant independently
+and recompute the enclosing record/footer CRCs. Decoding must still reject:
+epoch zero; `Unspecified` locator; continuation index zero; continuation start
+at or beyond committed offset; non-clean finalized resume; missing or
+zero-reason quarantine evidence; quarantine/file epoch mismatch; invalid path
+flags/alignment/suffix; and duplicate `file_id`.
+
+### Complete one-operation transaction vectors
+
+Every vector below is sequence 1 with one operation. `register_file` is
+206 bytes; its body length is 166, header CRC `0xf999d0fb`, operation CRC
+`0xf1ae280c`, and frame CRC `0x9e22242a`.
+
+`register_file`:
+
+```text
+464c4f4754584e00000100000000000000000001000000a6ffffff5900010000f999d0fb0000009e01000102030405060708090a0b0c0d0e0f00000001000000000000002a00036162630000000001000000000000000100000000000000020001b89a44439258d045238a81d1d608cb41abede895ab1e047eef2b83898d3e0b250000000000000003e80100000000000000001000102f7661722f6c6f672f6170702e6c6f67337a8fdfc197d2f02179162dccb0e86c430452449e51368104bbd5cc98fca49bf1ae280c9e22242a
+```
+
+`update_progress`:
+
+```text
+464c4f4754584e0000010000000000000000000100000037ffffffc80001000007554ba40000002f02000102030405060708090a0b0c0d0e0f000000000000002a00000001000000000000003200000000000000044c006fb0d6e631dcf84c
+```
+
+`reset_after_truncate`:
+
+```text
+464c4f4754584e000001000000000000000000010000003cffffffc3000100002bdd0e7f0000003403000102030405060708090a0b0c0d0e0f0000000100000000000000000000000200000000000000000000000000000004b00001613cc7a53d130d49
+```
+
+`update_fingerprint`:
+
+```text
+464c4f4754584e0000010000000000000000000100000028ffffffd700010000ef7e80f00000002004000102030405060708090a0b0c0d0e0f00000001000361626300046162636428b6eab5b57d7d02
+```
+
+`update_metadata`:
+
+```text
+464c4f4754584e000001000000000000000000010000005fffffffa0000100006d6d73680000005705000102030405060708090a0b0c0d0e0f0200000000000005140100000000000000001100112f7661722f6c6f672f617070322e6c6f672c4aa12d5e37003e838149fee3c2d76fa4b9e626ab8b73bd9e312be159a6147d67f8f2a5d312c7a6
+```
+
+`quarantine_file`:
+
+```text
+464c4f4754584e0000010000000000000000000100000044ffffffbb00010000bbccc4bf0000003c06000102030405060708090a0b0c0d0e0f0000000100010100000000000000010000000000000002000000000000003200000001000000000000057826f42b67086b36a3
+```
+
+`reset_quarantined_file` (`reset_to_beginning`):
+
+```text
+464c4f4754584e000001000000000000000000010000003affffffc50001000088e477c50000003207101112131415161718191a1b1c1d1e1f000000020100000003000000000000000000000000000000083400057265736574ea70a2117299cea4
+```
+
+`remove_file` (administrative):
+
+```text
+464c4f4754584e000001000000000000000000010000003cffffffc3000100002bdd0e7f0000003408000102030405060708090a0b0c0d0e0f0000000101000100000000000008fc0100086170702d6c6f67730007636c65616e75707ee30ad976694162
+```
+
+### `keep_failed` state-preservation vectors
+
+Starting from the quarantined snapshot fixture, this valid transaction repeats
+epoch 2, offset 10, and continuation `(0, 2)`. Replay appends the audited
+decision but leaves the complete operational record byte-identical:
+
+```text
+464c4f4754584e0000010000000000000000000100000049ffffffb600010000347df8de0000004107101112131415161718191a1b1c1d1e1f000000020300000002000000000000000a01000000000000000000000002000000000000089800087265766965776564c1190c505cf95311
+```
+
+This structurally valid negative vector changes only `new_framing_resume` to
+`Clean`; replay MUST fail `KeepFailedStateChange`:
+
+```text
+464c4f4754584e000001000000000000000000010000003dffffffc200010000e7f2b79b0000003507101112131415161718191a1b1c1d1e1f000000020300000002000000000000000a000000000000000898000872657669657765647a3cbb6867ce9590
+```
+
+Additional negative vectors change encoded epoch or offset and must fail
+without changing state. Locator, fingerprint, metadata, last-seen time, and
+quarantine evidence are not carried by this operation; conformance compares
+the complete pre/post record and proves they remain byte-identical.
+
+### Torn and corrupted transaction vectors
+
+These vectors derive from the valid `register_file` transaction above:
+
+| Case | Exact vector or mutation | Required result |
+| --- | --- | --- |
+| Incomplete fixed header | `464c4f4754584e00000100000000000000` | Torn tail |
+| Complete valid header plus incomplete body | `464c4f4754584e00000100000000000000000001000000a6ffffff5900010000f999d0fb0000009e010001020304` | Torn tail |
+| Upward-corrupted length | In the complete registration vector replace bytes `[20,24)` `000000a6` with `000000a7`, leaving complement and CRC unchanged | Corruption before length is trusted |
+| Downward-corrupted length | Replace bytes `[20,24)` `000000a6` with `000000a5`, leaving complement and CRC unchanged | Corruption before length is trusted |
+| Bad header CRC | Replace header CRC `f999d0fb` with `f999d0fa` | Corruption |
+| Bad frame CRC | Replace final CRC `9e22242a` with `9e22242b` | Corruption |
+
+Conformance also covers a minimum 74-byte transaction, body length below/above
+bounds, bad magic/version/flags/reserved/complement, bad operation CRC,
+operation-count/body-length disagreement, sequence gaps, a complete valid
+registration/control transaction, and rejection before encoding a 4,097th
+progress operation.
+
+All round-trip, reachable-state, corruption, torn-write, append-repair,
+namespace, cross-version, cross-platform, publication, and recovery vectors
+must remain in lockstep with this specification and the framing-profile
+compatibility vectors above.
