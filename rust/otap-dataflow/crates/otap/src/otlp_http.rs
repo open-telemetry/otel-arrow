@@ -350,37 +350,41 @@ fn authorization_unavailable() -> Response<Full<Bytes>> {
 async fn authorize_request(
     authorizer: &dyn BearerTokenAuthorizer,
     headers: &http::HeaderMap,
-) -> Result<(), Response<Full<Bytes>>> {
+) -> Result<(), Box<Response<Full<Bytes>>>> {
     let Some(header) = headers
         .get(http::header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
     else {
-        return Err(unauthenticated());
+        return Err(Box::new(unauthenticated()));
     };
 
     let Some(credential) = BearerToken::from_header_value(header) else {
-        return Err(unauthenticated());
+        return Err(Box::new(unauthenticated()));
     };
     match authorizer.authorize(&credential).await {
         Ok(AuthzDecision::Allow { .. }) => Ok(()),
         Ok(AuthzDecision::Deny {
             reason: DenyReason::MissingCredential | DenyReason::InvalidCredential,
             ..
-        }) => Err(unauthenticated()),
+        }) => Err(Box::new(unauthenticated())),
         Ok(AuthzDecision::Deny {
             reason: DenyReason::NotPermitted,
             ..
-        }) => Err(permission_denied()),
+        }) => Err(Box::new(permission_denied())),
+        // `DenyReason` is `#[non_exhaustive]`, so a variant added upstream lands here.
+        // This is still a definitive deny, so it must map to a non-retryable status:
+        // answering 503 would make OTLP exporters retry a permanent denial forever.
         Ok(AuthzDecision::Deny { reason, .. }) => {
             otel_arrow_dfe_telemetry::otel_warn!("receiver.authz.unknown_deny_reason", reason = ?reason);
-            Err(authorization_unavailable())
+            Err(Box::new(permission_denied()))
         }
+        // No decision was reached, which is a server-side fault rather than a verdict.
         Err(error) => {
             otel_arrow_dfe_telemetry::otel_warn!(
                 "receiver.authz.undetermined",
                 error = error.to_string()
             );
-            Err(authorization_unavailable())
+            Err(Box::new(authorization_unavailable()))
         }
     }
 }
@@ -616,7 +620,7 @@ fn read_to_end_limited<R: std::io::Read>(
 }
 
 trait HttpAuthorization: Clone + Send + Sync + 'static {
-    type Future<'a>: Future<Output = Result<(), Response<Full<Bytes>>>> + Send + 'a
+    type Future<'a>: Future<Output = Result<(), Box<Response<Full<Bytes>>>>> + Send + 'a
     where
         Self: 'a;
 
@@ -627,7 +631,7 @@ trait HttpAuthorization: Clone + Send + Sync + 'static {
 struct NoAuthorization;
 
 impl HttpAuthorization for NoAuthorization {
-    type Future<'a> = Ready<Result<(), Response<Full<Bytes>>>>;
+    type Future<'a> = Ready<Result<(), Box<Response<Full<Bytes>>>>>;
 
     fn authorize<'a>(&'a self, _headers: &'a http::HeaderMap) -> Self::Future<'a> {
         ready(Ok(()))
@@ -638,7 +642,7 @@ impl HttpAuthorization for NoAuthorization {
 struct BearerAuthorization(Arc<dyn BearerTokenAuthorizer>);
 
 impl HttpAuthorization for BearerAuthorization {
-    type Future<'a> = futures::future::BoxFuture<'a, Result<(), Response<Full<Bytes>>>>;
+    type Future<'a> = futures::future::BoxFuture<'a, Result<(), Box<Response<Full<Bytes>>>>>;
 
     fn authorize<'a>(&'a self, headers: &'a http::HeaderMap) -> Self::Future<'a> {
         Box::pin(authorize_request(self.0.as_ref(), headers))
@@ -807,7 +811,7 @@ impl<A: HttpAuthorization> HttpHandler<A> {
 
             if let Err(response) = self.authorization.authorize(req.headers()).await {
                 self.record_rejection(ReceiverRejectionErrorType::Authorization);
-                return Err(response);
+                return Err(*response);
             }
 
             let max_len = self.settings.max_request_body_size as usize;

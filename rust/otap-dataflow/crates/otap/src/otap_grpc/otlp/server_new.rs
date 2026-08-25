@@ -573,7 +573,7 @@ async fn authorize_request(
     authorizer: &dyn BearerTokenAuthorizer,
     metrics: &Arc<Mutex<OtlpReceiverMetrics>>,
     headers: &http::HeaderMap,
-) -> Result<(), Response<Body>> {
+) -> Result<(), Box<Response<Body>>> {
     let Some(header) = headers
         .get(http::header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -582,7 +582,9 @@ async fn authorize_request(
             OtlpProtocol::Grpc,
             ReceiverRejectionErrorType::Authorization,
         );
-        return Err(Status::unauthenticated(UNAUTHENTICATED_MESSAGE).into_http());
+        return Err(Box::new(
+            Status::unauthenticated(UNAUTHENTICATED_MESSAGE).into_http(),
+        ));
     };
 
     let Some(credential) = BearerToken::from_header_value(header) else {
@@ -590,7 +592,9 @@ async fn authorize_request(
             OtlpProtocol::Grpc,
             ReceiverRejectionErrorType::Authorization,
         );
-        return Err(Status::unauthenticated(UNAUTHENTICATED_MESSAGE).into_http());
+        return Err(Box::new(
+            Status::unauthenticated(UNAUTHENTICATED_MESSAGE).into_http(),
+        ));
     };
     let status = match authorizer.authorize(&credential).await {
         Ok(AuthzDecision::Allow { .. }) => return Ok(()),
@@ -602,10 +606,14 @@ async fn authorize_request(
             reason: DenyReason::NotPermitted,
             ..
         }) => Status::permission_denied(PERMISSION_DENIED_MESSAGE),
+        // `DenyReason` is `#[non_exhaustive]`, so a variant added upstream lands here.
+        // This is still a definitive deny, so it must map to a non-retryable status:
+        // answering UNAVAILABLE would make OTLP exporters retry a permanent denial forever.
         Ok(AuthzDecision::Deny { reason, .. }) => {
             otel_arrow_dfe_telemetry::otel_warn!("receiver.authz.unknown_deny_reason", reason = ?reason);
-            Status::unavailable(AUTHORIZATION_UNAVAILABLE_MESSAGE)
+            Status::permission_denied(PERMISSION_DENIED_MESSAGE)
         }
+        // No decision was reached, which is a server-side fault rather than a verdict.
         Err(error) => {
             otel_arrow_dfe_telemetry::otel_warn!(
                 "receiver.authz.undetermined",
@@ -619,7 +627,7 @@ async fn authorize_request(
         OtlpProtocol::Grpc,
         ReceiverRejectionErrorType::Authorization,
     );
-    Err(status.into_http())
+    Err(Box::new(status.into_http()))
 }
 
 /// Applies bearer authorization before a gRPC request reaches an OTLP service.
@@ -689,7 +697,7 @@ where
             if let Err(response) =
                 authorize_request(authorizer.as_ref(), &metrics, req.headers()).await
             {
-                return Ok(response);
+                return Ok(*response);
             }
             inner.call(req).await
         })
