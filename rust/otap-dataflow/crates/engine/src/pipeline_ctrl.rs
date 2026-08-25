@@ -10,8 +10,8 @@
 //! Note 2: Other runtime-control messages coordinate shutdown and completion flow.
 
 use crate::channel_metrics::{
-    ConsumedItemMetrics, ConsumedMetrics, ConsumedSizeMetrics, ProducedItemMetrics,
-    ProducedMetrics, ProducedSizeMetrics,
+    NodeInputItemMetrics, NodeInputMetrics, NodeInputSizeMetrics, NodeOutputItemMetrics,
+    NodeOutputMetrics, NodeOutputSizeMetrics,
 };
 use crate::clock;
 use crate::completion_emission_metrics::CompletionEmissionMetricsHandle;
@@ -165,17 +165,17 @@ pub(crate) struct NodeMetricHandles {
     /// Registry handle for automatic unregistration on drop.
     pub(crate) registry: TelemetryRegistryHandle,
     /// Consumed-message metrics for the node's input channel.
-    pub(crate) input: Option<MeasurementMetricSet<ConsumedMetrics>>,
+    pub(crate) input: Option<MeasurementMetricSet<NodeInputMetrics>>,
     /// Optional consumed-item metrics for the node's input channel.
-    pub(crate) input_items: Option<MeasurementMetricSet<ConsumedItemMetrics>>,
+    pub(crate) input_items: Option<MeasurementMetricSet<NodeInputItemMetrics>>,
     /// Optional consumed-size metrics for the node's input channel.
-    pub(crate) input_size: Option<MeasurementMetricSet<ConsumedSizeMetrics>>,
+    pub(crate) input_size: Option<MeasurementMetricSet<NodeInputSizeMetrics>>,
     /// Produced-message metrics indexed by output port.
-    pub(crate) outputs: Vec<MeasurementMetricSet<ProducedMetrics>>,
+    pub(crate) outputs: Vec<MeasurementMetricSet<NodeOutputMetrics>>,
     /// Optional produced-item metrics indexed by output port.
-    pub(crate) output_items: Vec<MeasurementMetricSet<ProducedItemMetrics>>,
+    pub(crate) output_items: Vec<MeasurementMetricSet<NodeOutputItemMetrics>>,
     /// Optional produced-size metrics indexed by output port.
-    pub(crate) output_size: Vec<MeasurementMetricSet<ProducedSizeMetrics>>,
+    pub(crate) output_size: Vec<MeasurementMetricSet<NodeOutputSizeMetrics>>,
     /// Completion-emission metrics for completions routed by the node.
     pub(crate) completion_emission: Option<CompletionEmissionMetricsHandle>,
 }
@@ -1349,7 +1349,7 @@ mod tests {
     use super::*;
     use crate::attributes::{ChannelImplementation, ChannelKind, ChannelMode, ChannelType};
     use crate::channel_metrics::{
-        ConsumedItemMetrics, ConsumedMetrics, ProducedItemMetrics, ProducedMetrics,
+        NodeInputItemMetrics, NodeInputMetrics, NodeOutputItemMetrics, NodeOutputMetrics,
     };
     use crate::context::{ControllerContext, PipelineContextParams};
     use crate::control::{AckMsg, Frame, NackMsg, RouteData, nanos_since_birth};
@@ -2953,29 +2953,29 @@ mod tests {
             ChannelImplementation::Internal,
         );
 
-        let recv_produced: MeasurementMetricSet<ProducedMetrics> =
+        let recv_produced: MeasurementMetricSet<NodeOutputMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(recv_out_key);
-        let recv_produced_items: MeasurementMetricSet<ProducedItemMetrics> =
+        let recv_produced_items: MeasurementMetricSet<NodeOutputItemMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(recv_out_key);
-        let recv_produced_size: MeasurementMetricSet<ProducedSizeMetrics> =
+        let recv_produced_size: MeasurementMetricSet<NodeOutputSizeMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(recv_out_key);
-        let proc_consumed: MeasurementMetricSet<ConsumedMetrics> =
+        let proc_consumed: MeasurementMetricSet<NodeInputMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(proc_in_key);
-        let proc_consumed_items: MeasurementMetricSet<ConsumedItemMetrics> =
+        let proc_consumed_items: MeasurementMetricSet<NodeInputItemMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(proc_in_key);
-        let proc_consumed_size: MeasurementMetricSet<ConsumedSizeMetrics> =
+        let proc_consumed_size: MeasurementMetricSet<NodeInputSizeMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(proc_in_key);
-        let proc_produced: MeasurementMetricSet<ProducedMetrics> =
+        let proc_produced: MeasurementMetricSet<NodeOutputMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(proc_out_key);
-        let proc_produced_items: MeasurementMetricSet<ProducedItemMetrics> =
+        let proc_produced_items: MeasurementMetricSet<NodeOutputItemMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(proc_out_key);
-        let proc_produced_size: MeasurementMetricSet<ProducedSizeMetrics> =
+        let proc_produced_size: MeasurementMetricSet<NodeOutputSizeMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(proc_out_key);
-        let exp_consumed: MeasurementMetricSet<ConsumedMetrics> =
+        let exp_consumed: MeasurementMetricSet<NodeInputMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(exp_in_key);
-        let exp_consumed_items: MeasurementMetricSet<ConsumedItemMetrics> =
+        let exp_consumed_items: MeasurementMetricSet<NodeInputItemMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(exp_in_key);
-        let exp_consumed_size: MeasurementMetricSet<ConsumedSizeMetrics> =
+        let exp_consumed_size: MeasurementMetricSet<NodeInputSizeMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(exp_in_key);
 
         // Save metric set keys for snapshot identification.

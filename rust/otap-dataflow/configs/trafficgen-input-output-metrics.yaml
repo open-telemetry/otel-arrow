@@ -1,10 +1,8 @@
-# Demonstrates the per-signal input/output item counts and logical payload
-# sizes that a node emits on its `node.input` / `node.output` metric sets.
+# Compares per-signal node and flow input/output metrics.
 #
 # Two pipelines in the same engine, each running: receiver -> sampler -> noop
-#   - `full`:    detailed metrics enable both measurements on all three nodes.
-#   - `partial`: only the `sampler` opts in -> only the sampler emits per-signal
-#                items and size; the receiver and noop do not.
+#   - `full`: detailed node metrics and a one-processor flow around `sampler`.
+#   - `partial`: only `sampler` opts into node item and size measurements.
 # Distinguish them by the `pipeline.id` attribute on each metric set.
 #
 # The traffic generator emits a mix of all three signals (logs, metrics,
@@ -22,11 +20,15 @@
 # Per-node opt-ins still require `runtime_metrics: normal` or higher because
 # these measurements extend the produced/consumed metric sets.
 #
-# Metrics emitted per opted-in node:
-#   node.output: items {item}, with `signal` = logs, metrics, or traces
-#   node.output: size By, with `signal` = logs, metrics, or traces
-#   node.input: items {item}, with `signal` = logs, metrics, or traces
-#   node.input: size By, with `signal` = logs, metrics, or traces
+# The `full` pipeline lets you compare the sampler's terminal node outcomes
+# against forward-path measurements for the same processor range:
+#
+#   node.input.{messages,items,size,duration} {signal,outcome}
+#   node.output.{messages,items,size,duration} {signal,outcome}
+#   flow.input.{messages,items,size} {signal}
+#   flow.output.{messages,items,size} {signal}
+#   flow.compute.duration {signal}
+#   flow.dropped.items {signal}
 #
 # What to look for:
 #   - In `full`, every node reports per-signal items and size. In `partial`,
@@ -41,12 +43,8 @@
 #     isolating the affected signal.
 #   - noop `node.input.*` reflects the surviving per-signal volume.
 #
-# The internal observability pipeline filters out everything except the six
-# input/output message, item, and size instruments, then prints their
-# normal-verbosity representation to stdout once per second.
-#
 # Run with:
-#   cargo run -- --config configs/trafficgen-universal-produced-consumed-metrics.yaml
+#   cargo run -- --config configs/trafficgen-input-output-metrics.yaml
 
 version: otel_dataflow/v1
 engine:
@@ -66,7 +64,7 @@ engine:
             signals: [metrics]
             metrics:
               interval: 1s
-        node_metrics_filter:
+        node_and_flow_metrics:
           type: processor:filter
           config:
             metrics:
@@ -76,6 +74,7 @@ engine:
                   - messages
                   - items
                   - size
+                  - duration
         metrics_debug:
           type: processor:debug
           config:
@@ -87,8 +86,8 @@ engine:
           config: {}
       connections:
         - from: telemetry
-          to: node_metrics_filter
-        - from: node_metrics_filter
+          to: node_and_flow_metrics
+        - from: node_and_flow_metrics
           to: metrics_debug
         - from: metrics_debug
           to: noop
@@ -106,6 +105,20 @@ groups:
             # Detailed runtime metrics enables item counts and logical payload
             # size for every node in the pipeline.
             runtime_metrics: detailed
+            flow_metrics:
+              - id: sampler
+                bounds:
+                  start_node: sampler
+                  end_node: sampler
+                metrics:
+                  - input_messages
+                  - input_items
+                  - input_size
+                  - output_messages
+                  - output_items
+                  - output_size
+                  - compute_duration
+                  - dropped_items
 
         nodes:
           receiver:

@@ -124,8 +124,10 @@ groups:
                   end_node: debug
                 metrics:
                   - compute_duration
-                  - consumed_items
-                  - produced_items
+                  - input_items
+                  - input_size
+                  - output_items
+                  - output_size
                 purpose: manual_test
         nodes:
           generator:

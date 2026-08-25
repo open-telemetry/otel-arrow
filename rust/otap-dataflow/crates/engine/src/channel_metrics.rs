@@ -163,9 +163,10 @@ pub(crate) struct ControlChannelReceiverMetrics {
     measurement_attributes = SignalOutcomeAttributes
 )]
 #[derive(Debug, Default, Clone)]
-pub struct ConsumedMetrics {
-    /// Duration from entry until the corresponding ack or nack is
-    /// routed, in seconds. This is reported at the detailed level.
+pub struct NodeInputMetrics {
+    /// Duration from node input until the corresponding terminal ack or nack
+    /// is routed, in seconds. Reported for processors and exporters at the
+    /// detailed level; receivers have no input and use `node.output.duration`.
     #[metric(unit = "s")]
     pub duration: HistogramNormal,
     /// Consumed messages, grouped by `signal` and `outcome` datapoint attributes.
@@ -179,7 +180,7 @@ pub struct ConsumedMetrics {
     measurement_attributes = SignalOutcomeAttributes
 )]
 #[derive(Debug, Default, Clone)]
-pub struct ConsumedItemMetrics {
+pub struct NodeInputItemMetrics {
     /// Consumed signal items, grouped by the `signal` datapoint attribute.
     #[metric(unit = "{item}")]
     pub items: Counter<u64>,
@@ -191,7 +192,7 @@ pub struct ConsumedItemMetrics {
     measurement_attributes = SignalOutcomeAttributes
 )]
 #[derive(Debug, Default, Clone)]
-pub struct ConsumedSizeMetrics {
+pub struct NodeInputSizeMetrics {
     /// Consumed logical payload size, grouped by `signal` and `outcome`.
     #[metric(unit = "By")]
     pub size: Counter<u64>,
@@ -205,10 +206,11 @@ pub struct ConsumedSizeMetrics {
     measurement_attributes = SignalOutcomeAttributes
 )]
 #[derive(Debug, Default, Clone)]
-pub struct ProducedMetrics {
-    /// Duration from production until the corresponding ack or nack is
-    /// routed, in seconds. This is reported at the detailed level,
-    /// only in receivers. Processors report `node.input.messages`.
+pub struct NodeOutputMetrics {
+    /// Duration from receiver output until the corresponding terminal ack or
+    /// nack is routed, in seconds. Reported only for receivers at the detailed
+    /// level. Processors and exporters use `node.input.duration` so each node
+    /// frame emits one terminal-latency observation rather than duplicating it.
     #[metric(unit = "s")]
     pub duration: HistogramNormal,
     /// Produced messages, grouped by `signal` and `outcome` datapoint attributes.
@@ -222,7 +224,7 @@ pub struct ProducedMetrics {
     measurement_attributes = SignalOutcomeAttributes
 )]
 #[derive(Debug, Default, Clone)]
-pub struct ProducedItemMetrics {
+pub struct NodeOutputItemMetrics {
     /// Produced signal items, grouped by the `signal` datapoint attribute.
     #[metric(unit = "{item}")]
     pub items: Counter<u64>,
@@ -234,7 +236,7 @@ pub struct ProducedItemMetrics {
     measurement_attributes = SignalOutcomeAttributes
 )]
 #[derive(Debug, Default, Clone)]
-pub struct ProducedSizeMetrics {
+pub struct NodeOutputSizeMetrics {
     /// Produced logical payload size, grouped by `signal` and `outcome`.
     #[metric(unit = "By")]
     pub size: Counter<u64>,

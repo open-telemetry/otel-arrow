@@ -24,6 +24,7 @@ use otel_arrow_dfe_engine::control::{
     AckMsg, CallData, Frame, NackMsg, RouteData, nanos_since_birth,
 };
 use otel_arrow_dfe_engine::error::{Error, TypedError};
+use otel_arrow_dfe_engine::flow_metrics::FlowMetricInterests;
 use otel_arrow_dfe_engine::processor::{FlowMetricEffectHandler, FlowMetricHook};
 use otel_arrow_dfe_engine::{
     ConsumerEffectHandlerExtension, FlowMetricAccumulation, Interests,
@@ -945,6 +946,7 @@ impl_consumer_ext!(otel_arrow_dfe_engine::shared::exporter::EffectHandler<OtapPd
 fn flow_accumulate<H: FlowMetricEffectHandler>(handler: &H, data: &mut OtapPdata) {
     let is_start = handler.is_flow_start();
     let is_end = handler.is_flow_end();
+    let interests = handler.flow_metric_interests();
     if !is_start && !is_end && !data.has_active_flow_metric() {
         return;
     }
@@ -956,7 +958,12 @@ fn flow_accumulate<H: FlowMetricEffectHandler>(handler: &H, data: &mut OtapPdata
     data.add_flow_compute(delta_ns);
     if is_end {
         if let Some(total) = data.take_flow_compute() {
-            handler.record_flow_duration(data.signal_type(), total);
+            if interests.contains(FlowMetricInterests::COMPUTE_DURATION) {
+                handler.record_flow_duration(data.signal_type(), total);
+            }
+        }
+        if interests.contains(FlowMetricInterests::OUTPUT_MESSAGES) {
+            handler.record_flow_output_message(data.signal_type());
         }
         // num_items() is only called at flow_metric boundaries to keep
         // overhead off the per-node hot path. At the end node this
@@ -964,7 +971,14 @@ fn flow_accumulate<H: FlowMetricEffectHandler>(handler: &H, data: &mut OtapPdata
         // the flow_metric range. The hook records every traversal,
         // including zero-item batches, although a zero-delta counter is
         // omitted from exported snapshots.
-        handler.record_flow_produced_items(data.signal_type(), data.num_items() as u64);
+        if interests.contains(FlowMetricInterests::OUTPUT_ITEMS) {
+            handler.record_flow_output_items(data.signal_type(), data.num_items() as u64);
+        }
+        if interests.contains(FlowMetricInterests::OUTPUT_SIZE)
+            && let Some(size) = data.num_bytes()
+        {
+            handler.record_flow_output_size(data.signal_type(), size as u64);
+        }
     }
 }
 
@@ -981,7 +995,18 @@ impl FlowMetricHook for OtapPdata {
     /// counter is omitted from exported snapshots.
     fn after_processor_receive<H: FlowMetricEffectHandler>(&mut self, handler: &H) {
         if handler.is_flow_start() {
-            handler.record_flow_consumed_items(self.signal_type(), self.num_items() as u64);
+            let interests = handler.flow_metric_interests();
+            if interests.contains(FlowMetricInterests::INPUT_MESSAGES) {
+                handler.record_flow_input_message(self.signal_type());
+            }
+            if interests.contains(FlowMetricInterests::INPUT_ITEMS) {
+                handler.record_flow_input_items(self.signal_type(), self.num_items() as u64);
+            }
+            if interests.contains(FlowMetricInterests::INPUT_SIZE)
+                && let Some(size) = self.num_bytes()
+            {
+                handler.record_flow_input_size(self.signal_type(), size as u64);
+            }
         }
     }
 }
@@ -1155,11 +1180,16 @@ mod test {
     struct FakeFlowMetricHandler {
         is_start: bool,
         is_end: bool,
+        metrics_enabled: bool,
         elapsed_ns: u64,
         stop_total: Cell<u64>,
         stop_total_calls: Cell<u32>,
+        input_messages: Cell<u32>,
+        input_size: Cell<u64>,
         start_signals: Cell<u64>,
         start_signals_calls: Cell<u32>,
+        output_messages: Cell<u32>,
+        output_size: Cell<u64>,
         stop_signals: Cell<u64>,
         stop_signals_calls: Cell<u32>,
     }
@@ -1169,11 +1199,16 @@ mod test {
             Self {
                 is_start: true,
                 is_end: false,
+                metrics_enabled: true,
                 elapsed_ns,
                 stop_total: Cell::new(0),
                 stop_total_calls: Cell::new(0),
+                input_messages: Cell::new(0),
+                input_size: Cell::new(0),
                 start_signals: Cell::new(0),
                 start_signals_calls: Cell::new(0),
+                output_messages: Cell::new(0),
+                output_size: Cell::new(0),
                 stop_signals: Cell::new(0),
                 stop_signals_calls: Cell::new(0),
             }
@@ -1183,11 +1218,16 @@ mod test {
             Self {
                 is_start: false,
                 is_end: true,
+                metrics_enabled: true,
                 elapsed_ns,
                 stop_total: Cell::new(0),
                 stop_total_calls: Cell::new(0),
+                input_messages: Cell::new(0),
+                input_size: Cell::new(0),
                 start_signals: Cell::new(0),
                 start_signals_calls: Cell::new(0),
+                output_messages: Cell::new(0),
+                output_size: Cell::new(0),
                 stop_signals: Cell::new(0),
                 stop_signals_calls: Cell::new(0),
             }
@@ -1207,21 +1247,45 @@ mod test {
             self.elapsed_ns
         }
 
+        fn flow_metric_interests(&self) -> FlowMetricInterests {
+            if self.metrics_enabled {
+                FlowMetricInterests::all()
+            } else {
+                FlowMetricInterests::empty()
+            }
+        }
+
         fn record_flow_duration(&self, _signal: SignalType, total: u64) {
             self.stop_total.set(total);
             self.stop_total_calls.set(self.stop_total_calls.get() + 1);
         }
 
-        fn record_flow_consumed_items(&self, _signal: SignalType, items: u64) {
+        fn record_flow_input_items(&self, _signal: SignalType, items: u64) {
             self.start_signals.set(items);
             self.start_signals_calls
                 .set(self.start_signals_calls.get() + 1);
         }
 
-        fn record_flow_produced_items(&self, _signal: SignalType, items: u64) {
+        fn record_flow_output_items(&self, _signal: SignalType, items: u64) {
             self.stop_signals.set(items);
             self.stop_signals_calls
                 .set(self.stop_signals_calls.get() + 1);
+        }
+
+        fn record_flow_input_message(&self, _signal: SignalType) {
+            self.input_messages.set(self.input_messages.get() + 1);
+        }
+
+        fn record_flow_input_size(&self, _signal: SignalType, size: u64) {
+            self.input_size.set(size);
+        }
+
+        fn record_flow_output_message(&self, _signal: SignalType) {
+            self.output_messages.set(self.output_messages.get() + 1);
+        }
+
+        fn record_flow_output_size(&self, _signal: SignalType, size: u64) {
+            self.output_size.set(size);
         }
     }
 
@@ -1231,6 +1295,7 @@ mod test {
     fn flow_hooks_record_start_and_end_signal_counts() {
         let mut pdata = create_test_pdata();
         let signals = pdata.num_items() as u64;
+        let size = pdata.num_bytes().expect("test pdata should have a size") as u64;
         assert!(signals > 0, "test pdata must contain signal items");
 
         let start_handler = FakeFlowMetricHandler::start(5);
@@ -1238,13 +1303,19 @@ mod test {
         pdata.after_processor_receive(&start_handler);
         // The send hook still drives compute-duration accumulation.
         pdata.before_processor_send(&start_handler);
+        assert_eq!(start_handler.input_messages.get(), 1);
         assert_eq!(start_handler.start_signals.get(), signals);
+        assert_eq!(start_handler.input_size.get(), size);
+        assert_eq!(start_handler.output_messages.get(), 0);
         assert_eq!(start_handler.stop_signals.get(), 0);
 
         let end_handler = FakeFlowMetricHandler::end(7);
         pdata.after_processor_receive(&end_handler);
         pdata.before_processor_send(&end_handler);
+        assert_eq!(end_handler.input_messages.get(), 0);
+        assert_eq!(end_handler.output_messages.get(), 1);
         assert_eq!(end_handler.stop_signals.get(), signals);
+        assert_eq!(end_handler.output_size.get(), size);
         assert!(end_handler.stop_total.get() > 0);
     }
 
@@ -1262,6 +1333,7 @@ mod test {
         let start_handler = FakeFlowMetricHandler::start(5);
         pdata.after_processor_receive(&start_handler);
         pdata.before_processor_send(&start_handler);
+        assert_eq!(start_handler.input_messages.get(), 1);
         assert_eq!(start_handler.start_signals_calls.get(), 1);
         assert_eq!(start_handler.start_signals.get(), 0);
         assert_eq!(start_handler.stop_signals_calls.get(), 0);
@@ -1271,6 +1343,7 @@ mod test {
         let end_handler = FakeFlowMetricHandler::end(7);
         pdata.after_processor_receive(&end_handler);
         pdata.before_processor_send(&end_handler);
+        assert_eq!(end_handler.output_messages.get(), 1);
         assert_eq!(
             end_handler.stop_total_calls.get(),
             end_handler.stop_signals_calls.get(),
@@ -1278,6 +1351,27 @@ mod test {
         );
         assert_eq!(end_handler.stop_signals.get(), 0);
         assert!(end_handler.stop_total.get() > 0);
+    }
+
+    #[test]
+    fn flow_hooks_skip_disabled_measurements() {
+        let mut pdata = create_test_pdata();
+        let mut start_handler = FakeFlowMetricHandler::start(5);
+        start_handler.metrics_enabled = false;
+        pdata.after_processor_receive(&start_handler);
+        pdata.before_processor_send(&start_handler);
+        assert_eq!(start_handler.input_messages.get(), 0);
+        assert_eq!(start_handler.start_signals_calls.get(), 0);
+        assert_eq!(start_handler.input_size.get(), 0);
+
+        let mut end_handler = FakeFlowMetricHandler::end(7);
+        end_handler.metrics_enabled = false;
+        pdata.after_processor_receive(&end_handler);
+        pdata.before_processor_send(&end_handler);
+        assert_eq!(end_handler.stop_total_calls.get(), 0);
+        assert_eq!(end_handler.output_messages.get(), 0);
+        assert_eq!(end_handler.stop_signals_calls.get(), 0);
+        assert_eq!(end_handler.output_size.get(), 0);
     }
 
     /// Scenario: a processor consumes an active zero-item flow message without forwarding it.

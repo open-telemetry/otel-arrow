@@ -91,30 +91,21 @@ Demonstrates metric-name filtering:
 - Generates synthetic metrics -> filter processor by metric name -> debug processor
   -> noop exporter
 
-### `trafficgen-universal-produced-consumed-metrics.yaml`
+### `trafficgen-input-output-metrics.yaml`
 
-Demonstrates universal produced/consumed message, item, and logical payload
-size metrics:
+Compares universal node and flow input/output message, item, and logical
+payload size metrics:
 
 - Generates a mix of logs, metrics and traces -> log-sampling processor -> noop
   exporter
 - `runtime_metrics: detailed` enables item and size measurements for every
   node; the second pipeline demonstrates per-node `item_counts: true` and
   `size: true` opt-ins at the normal level.
-- An internal observability pipeline filters to only input/output
-  instruments and prints normal-verbosity metrics to stdout.
-
-### `trafficgen-flow-metrics-demo.yaml`
-
-Demonstrates a flow range with multiple drop decision nodes:
-
-- Generates synthetic logs -> sampling, filtering, transform, and recordset KQL
-  processors -> noop exporter
-- Routes metrics-only internal telemetry through an explicit observability pipeline;
-  filters to native flow metric instrument names, and prints them with the detailed
-  debug processor
-- The debug processor displays the bounded `signal` datapoint attribute, while the
-  admin metrics endpoint displays flow scope attributes
+- The `full` pipeline compares a sampler's `node.input` / `node.output`
+  terminal outcomes with `flow.input` / `flow.output` forward-path
+  measurements for the same processor range.
+- The internal observability pipeline prints the node and flow metrics
+  together at normal verbosity.
 
 ### `trafficgen-transform-debug-noop.yaml`
 
