@@ -1390,6 +1390,258 @@ mod tests {
         assert_eq!(map_path_to_signal("/nope"), None);
     }
 
+    /// Scenario: A request carrying an invalid bearer token also carries a body
+    /// larger than `max_request_body_size`, served end to end through `serve`.
+    /// Guarantees: The request is rejected as unauthorized rather than oversized,
+    /// proving the credential is checked before the body is sized or read, so an
+    /// unauthenticated caller cannot make the receiver ingest a large payload.
+    #[tokio::test]
+    async fn rejects_bad_credential_before_reading_oversized_body() {
+        use hyper::Method;
+        use hyper::client::conn::http1;
+        use hyper::header::{AUTHORIZATION, CONTENT_TYPE, HOST};
+        use hyper_util::rt::TokioIo;
+        use otel_arrow_dfe_engine::control::runtime_ctrl_msg_channel;
+        use otel_arrow_dfe_engine::shared::message::SharedSender;
+        use otel_arrow_dfe_engine::testing::test_node;
+        use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+        use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+        use tokio::net::TcpStream;
+        use tokio::sync::mpsc as tokio_mpsc;
+        use tokio_util::sync::CancellationToken;
+
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
+        let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+
+        let (msg_tx, mut msg_rx) = tokio_mpsc::channel(1);
+        let mut senders = HashMap::new();
+        let _ = senders.insert("default".into(), SharedSender::mpsc(msg_tx));
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(1);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let effect_handler = EffectHandler::new(
+            test_node("http_authz_before_body"),
+            senders,
+            None,
+            ctrl_tx,
+            metrics_reporter,
+        );
+
+        // Deliberately tiny, so the body below is unambiguously oversized.
+        let settings = HttpServerSettings {
+            listening_addr: addr,
+            max_request_body_size: 8,
+            max_concurrent_requests: 4,
+            wait_for_result: true,
+            ..Default::default()
+        };
+        let shutdown = CancellationToken::new();
+
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx =
+            otel_arrow_dfe_engine::context::ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let metrics = Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx)));
+
+        let server = tokio::spawn(serve(
+            effect_handler,
+            settings,
+            AckRegistry::new(Some(AckSlot::new(0)), None, None),
+            metrics.clone(),
+            SharedReceiverAdmissionState::default(),
+            None,
+            None,
+            Some(Arc::new(TestAuthorizer)),
+            shutdown.clone(),
+        ));
+
+        let mut stream = None;
+        for _ in 0..10 {
+            match TcpStream::connect(addr).await {
+                Ok(connected) => {
+                    stream = Some(connected);
+                    break;
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+            }
+        }
+        let stream = stream.expect("Failed to connect to server");
+        let (mut sender, conn) = http1::handshake(TokioIo::new(stream)).await.unwrap();
+        drop(tokio::spawn(async move {
+            let _ = conn.await;
+        }));
+
+        let oversized = vec![0_u8; 4096];
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/logs")
+            .header(HOST, "localhost")
+            .header(CONTENT_TYPE, PROTOBUF_CONTENT_TYPE)
+            .header(AUTHORIZATION, "Bearer invalid")
+            .body(Full::new(Bytes::from(oversized)))
+            .unwrap();
+
+        let response = sender.send_request(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response.headers()[http::header::WWW_AUTHENTICATE], "Bearer");
+        assert!(msg_rx.try_recv().is_err());
+
+        {
+            let metrics = metrics.lock();
+            assert_eq!(
+                metrics
+                    .rejections_for(
+                        OtlpProtocol::Http,
+                        ReceiverRejectionErrorType::Authorization
+                    )
+                    .requests
+                    .get(),
+                1
+            );
+            // The body was never sized or read, so it cannot have been rejected for size.
+            assert_eq!(
+                metrics
+                    .rejections_for(
+                        OtlpProtocol::Http,
+                        ReceiverRejectionErrorType::PayloadTooLarge,
+                    )
+                    .requests
+                    .get(),
+                0
+            );
+        }
+
+        shutdown.cancel();
+        let server_result = tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .expect("server finished");
+        assert!(server_result.unwrap().is_ok());
+    }
+
+    /// Scenario: A well-formed request arrives with no `Authorization` header at
+    /// all against a receiver that has an authorizer bound, served end to end
+    /// through `serve`.
+    /// Guarantees: The request is rejected with HTTP 401 and a bearer challenge
+    /// and never reaches the pipeline, so a bound authorizer cannot be bypassed
+    /// by simply omitting the credential.
+    #[tokio::test]
+    async fn rejects_missing_credential_end_to_end() {
+        use hyper::Method;
+        use hyper::client::conn::http1;
+        use hyper::header::{CONTENT_TYPE, HOST};
+        use hyper_util::rt::TokioIo;
+        use otel_arrow_dfe_engine::control::runtime_ctrl_msg_channel;
+        use otel_arrow_dfe_engine::shared::message::SharedSender;
+        use otel_arrow_dfe_engine::testing::test_node;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::ResourceLogs;
+        use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+        use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+        use tokio::net::TcpStream;
+        use tokio::sync::mpsc as tokio_mpsc;
+        use tokio_util::sync::CancellationToken;
+
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
+        let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+
+        let (msg_tx, mut msg_rx) = tokio_mpsc::channel(1);
+        let mut senders = HashMap::new();
+        let _ = senders.insert("default".into(), SharedSender::mpsc(msg_tx));
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(1);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let effect_handler = EffectHandler::new(
+            test_node("http_authz_missing_credential"),
+            senders,
+            None,
+            ctrl_tx,
+            metrics_reporter,
+        );
+
+        let settings = HttpServerSettings {
+            listening_addr: addr,
+            max_concurrent_requests: 4,
+            wait_for_result: true,
+            ..Default::default()
+        };
+        let shutdown = CancellationToken::new();
+
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx =
+            otel_arrow_dfe_engine::context::ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let metrics = Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx)));
+
+        let server = tokio::spawn(serve(
+            effect_handler,
+            settings,
+            AckRegistry::new(Some(AckSlot::new(0)), None, None),
+            metrics.clone(),
+            SharedReceiverAdmissionState::default(),
+            None,
+            None,
+            Some(Arc::new(TestAuthorizer)),
+            shutdown.clone(),
+        ));
+
+        let mut stream = None;
+        for _ in 0..10 {
+            match TcpStream::connect(addr).await {
+                Ok(connected) => {
+                    stream = Some(connected);
+                    break;
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+            }
+        }
+        let stream = stream.expect("Failed to connect to server");
+        let (mut sender, conn) = http1::handshake(TokioIo::new(stream)).await.unwrap();
+        drop(tokio::spawn(async move {
+            let _ = conn.await;
+        }));
+
+        let mut request_bytes = Vec::new();
+        ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs::default()],
+        }
+        .encode(&mut request_bytes)
+        .unwrap();
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/logs")
+            .header(HOST, "localhost")
+            .header(CONTENT_TYPE, PROTOBUF_CONTENT_TYPE)
+            .body(Full::new(Bytes::from(request_bytes)))
+            .unwrap();
+
+        let response = sender.send_request(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response.headers()[http::header::WWW_AUTHENTICATE], "Bearer");
+        assert!(msg_rx.try_recv().is_err());
+
+        {
+            let metrics = metrics.lock();
+            assert_eq!(
+                metrics
+                    .rejections_for(
+                        OtlpProtocol::Http,
+                        ReceiverRejectionErrorType::Authorization
+                    )
+                    .requests
+                    .get(),
+                1
+            );
+            let requests = metrics.requests_for(SignalType::Logs, OtlpProtocol::Http);
+            assert_eq!(requests.started.get(), 0);
+        }
+
+        shutdown.cancel();
+        let server_result = tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .expect("server finished");
+        assert!(server_result.unwrap().is_ok());
+    }
+
     #[tokio::test]
     async fn drains_inflight_requests_on_shutdown() {
         use hyper::Method;
