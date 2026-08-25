@@ -5,7 +5,7 @@ RFC PR: open-telemetry/otel-arrow#0000
 Tracking Issue: open-telemetry/otel-arrow#3510
 ---
 
-# RFC 0005: Validation Framework Harness Plugins
+# RFC 0007: Validation Framework Harness Plugins
 
 ## Summary
 
