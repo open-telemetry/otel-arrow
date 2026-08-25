@@ -1,8 +1,9 @@
 # Compares per-signal node and flow input/output metrics.
 #
-# Two pipelines in the same engine, each running: receiver -> sampler -> noop
+# Three pipelines in the same engine:
 #   - `full`: detailed node metrics and a one-processor flow around `sampler`.
 #   - `partial`: only `sampler` opts into node item and size measurements.
+#   - `no_output`: a filter drops every log batch and ACKs without sending.
 # Distinguish them by the `pipeline.id` attribute on each metric set.
 #
 # The traffic generator emits a mix of all three signals (logs, metrics,
@@ -18,7 +19,7 @@
 #   - the node sets `policies.telemetry.item_counts: true` and/or
 #     `policies.telemetry.size: true`.
 # Per-node opt-ins still require `runtime_metrics: normal` or higher because
-# these measurements extend the produced/consumed metric sets.
+# these measurements extend the input/output metric sets.
 #
 # The `full` pipeline lets you compare the sampler's terminal node outcomes
 # against forward-path measurements for the same processor range:
@@ -42,6 +43,10 @@
 #     (sampling only targets logs). This shows the per-signal accounting
 #     isolating the affected signal.
 #   - noop `node.input.*` reflects the surviving per-signal volume.
+#   - In `no_output`, the receiver, filter input, flow input, flow compute, and
+#     flow dropped metrics are present. Filter `node.output.*`,
+#     `flow.output.*`, and noop `node.input.*` are absent because no PData
+#     message is sent.
 #
 # Run with:
 #   cargo run -- --config configs/trafficgen-input-output-metrics.yaml
@@ -206,4 +211,62 @@ groups:
           - from: receiver
             to: sampler
           - from: sampler
+            to: noop
+
+      # Every generated log is dropped. This exercises a processor that ACKs
+      # its input without sending an output message.
+      no_output:
+        policies:
+          channel_capacity:
+            control:
+              node: 100
+              pipeline: 100
+            pdata: 128
+          telemetry:
+            runtime_metrics: detailed
+            flow_metrics:
+              - id: drop_all
+                bounds:
+                  start_node: drop_all
+                  end_node: drop_all
+                metrics:
+                  - input_messages
+                  - input_items
+                  - input_size
+                  - output_messages
+                  - output_items
+                  - output_size
+                  - compute_duration
+                  - dropped_items
+
+        nodes:
+          receiver:
+            type: receiver:traffic_generator
+            config:
+              traffic_config:
+                max_batch_size: 10
+                signals_per_second: 30
+                log_weight: 100
+                metric_weight: 0
+                trace_weight: 0
+              data_source: synthetic
+
+          drop_all:
+            type: processor:filter
+            config:
+              logs:
+                include:
+                  match_type: strict
+                  record_attributes:
+                    - key: sample.keep
+                      value: "true"
+
+          noop:
+            type: exporter:noop
+            config: {}
+
+        connections:
+          - from: receiver
+            to: drop_all
+          - from: drop_all
             to: noop

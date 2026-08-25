@@ -132,7 +132,7 @@ pub struct FlowAttributeSet {
     /// `dropped.items` aggregates correctly across this attribute: drops at
     /// different decision nodes are disjoint (a dropped item never reaches a
     /// later node), so the sum equals the flow's total removed =
-    /// `consumed.items - produced.items`. There is deliberately no
+    /// `flow.input.items - flow.output.items`. There is deliberately no
     /// per-node "kept" metric: a survivor count is non-additive across series
     /// nodes (nested subsets double-count) and undefined under fan-out, and the
     /// flow-wide kept count is simply `output.items`.
@@ -838,7 +838,7 @@ mod tests {
         assert!((sum - 300.0).abs() < f64::EPSILON);
     }
 
-    /// Scenario: consumed and produced items are recorded for one signal bucket.
+    /// Scenario: input and output items are recorded for one signal bucket.
     /// Guarantees: each counter accumulates its item total independently.
     #[test]
     fn direct_record_increments_items() {

@@ -61,13 +61,13 @@ pub trait FlowMetricEffectHandler {
     /// Record a complete flow_metric transit total (nanoseconds) into the
     /// stop node's local accumulator.
     fn record_flow_duration(&self, signal: SignalType, total: u64);
-    /// Record consumed items into the start node's local accumulator.
+    /// Record input items into the start node's local accumulator.
     fn record_flow_input_items(&self, signal: SignalType, items: u64);
     /// Record a message entering the flow.
     fn record_flow_input_message(&self, signal: SignalType);
     /// Record logical payload bytes entering the flow.
     fn record_flow_input_size(&self, signal: SignalType, size: u64);
-    /// Record produced items into the stop node's local accumulator.
+    /// Record output items into the stop node's local accumulator.
     fn record_flow_output_items(&self, signal: SignalType, items: u64);
     /// Record a message leaving the flow.
     fn record_flow_output_message(&self, signal: SignalType);

@@ -943,7 +943,11 @@ impl_consumer_ext!(otel_arrow_dfe_engine::shared::exporter::EffectHandler<OtapPd
 /// Forward-path flow_metric accumulation for non-overlapping ranges.
 /// Invoked by local and shared processor handlers (via `FlowMetricHook`);
 /// receivers and exporters do not measure flow_metrics.
-fn flow_accumulate<H: FlowMetricEffectHandler>(handler: &H, data: &mut OtapPdata) {
+fn flow_accumulate<H: FlowMetricEffectHandler>(
+    handler: &H,
+    data: &mut OtapPdata,
+    emitted_output: bool,
+) {
     let is_start = handler.is_flow_start();
     let is_end = handler.is_flow_end();
     let interests = handler.flow_metric_interests();
@@ -962,7 +966,7 @@ fn flow_accumulate<H: FlowMetricEffectHandler>(handler: &H, data: &mut OtapPdata
                 handler.record_flow_duration(data.signal_type(), total);
             }
         }
-        if interests.contains(FlowMetricInterests::OUTPUT_MESSAGES) {
+        if emitted_output && interests.contains(FlowMetricInterests::OUTPUT_MESSAGES) {
             handler.record_flow_output_message(data.signal_type());
         }
         // num_items() is only called at flow_metric boundaries to keep
@@ -971,10 +975,11 @@ fn flow_accumulate<H: FlowMetricEffectHandler>(handler: &H, data: &mut OtapPdata
         // the flow_metric range. The hook records every traversal,
         // including zero-item batches, although a zero-delta counter is
         // omitted from exported snapshots.
-        if interests.contains(FlowMetricInterests::OUTPUT_ITEMS) {
+        if emitted_output && interests.contains(FlowMetricInterests::OUTPUT_ITEMS) {
             handler.record_flow_output_items(data.signal_type(), data.num_items() as u64);
         }
-        if interests.contains(FlowMetricInterests::OUTPUT_SIZE)
+        if emitted_output
+            && interests.contains(FlowMetricInterests::OUTPUT_SIZE)
             && let Some(size) = data.num_bytes()
         {
             handler.record_flow_output_size(data.signal_type(), size as u64);
@@ -984,7 +989,11 @@ fn flow_accumulate<H: FlowMetricEffectHandler>(handler: &H, data: &mut OtapPdata
 
 impl FlowMetricHook for OtapPdata {
     fn before_processor_send<H: FlowMetricEffectHandler>(&mut self, handler: &H) {
-        flow_accumulate(handler, self);
+        flow_accumulate(handler, self, true);
+    }
+
+    fn complete_processor_without_output<H: FlowMetricEffectHandler>(&mut self, handler: &H) {
+        flow_accumulate(handler, self, false);
     }
 
     /// At the flow_metric start node, count items *entering* the range --
@@ -1347,7 +1356,7 @@ mod test {
         assert_eq!(
             end_handler.stop_total_calls.get(),
             end_handler.stop_signals_calls.get(),
-            "compute.duration and produced.items hooks must run together"
+            "compute.duration and output.items hooks must run together"
         );
         assert_eq!(end_handler.stop_signals.get(), 0);
         assert!(end_handler.stop_total.get() > 0);
@@ -1375,7 +1384,8 @@ mod test {
     }
 
     /// Scenario: a processor consumes an active zero-item flow message without forwarding it.
-    /// Guarantees: no-output completion records end-node duration and produced zero items.
+    /// Guarantees: no-output completion records end-node duration without
+    /// recording output messages, items, or size.
     #[test]
     fn flow_hook_completes_without_output() {
         let mut pdata = create_empty_test_pdata();
@@ -1385,8 +1395,10 @@ mod test {
         pdata.complete_processor_without_output(&end_handler);
 
         assert_eq!(end_handler.stop_total_calls.get(), 1);
-        assert_eq!(end_handler.stop_signals_calls.get(), 1);
+        assert_eq!(end_handler.output_messages.get(), 0);
+        assert_eq!(end_handler.stop_signals_calls.get(), 0);
         assert_eq!(end_handler.stop_signals.get(), 0);
+        assert_eq!(end_handler.output_size.get(), 0);
         assert!(end_handler.stop_total.get() > 0);
         assert!(!pdata.has_active_flow_metric());
     }

@@ -1401,7 +1401,7 @@ mod tests {
         assert_eq!(
             output_acc,
             [0, 8, 7],
-            "produced items should accumulate by signal"
+            "output items should accumulate by signal"
         );
 
         // MetricSet should still be empty before report.

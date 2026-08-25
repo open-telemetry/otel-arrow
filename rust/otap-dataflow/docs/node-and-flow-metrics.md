@@ -183,6 +183,10 @@ processor range, before its terminal ACK/NACK outcome is known. They describe
 range traversal and decision-node drops, independently of the eventual node
 outcome.
 
+An end processor that ACKs without sending, such as a filter that removes every
+item, does not increment any `flow.output` metric. It still records
+`flow.compute.duration` and may record `flow.dropped.items`.
+
 | Configuration value | Emitted metric | Meaning |
 | --- | --- | --- |
 | `input_messages` | `flow.input.messages` | PData messages entering the start processor. |

@@ -96,8 +96,9 @@ Demonstrates metric-name filtering:
 Compares universal node and flow input/output message, item, and logical
 payload size metrics:
 
-- Generates a mix of logs, metrics and traces -> log-sampling processor -> noop
-  exporter
+- Runs three pipelines: a mixed-signal sampling flow with detailed metrics, the
+  same topology with per-node opt-ins, and a deterministic drop-all filter that
+  ACKs without sending
 - `runtime_metrics: detailed` enables item and size measurements for every
   node; the second pipeline demonstrates per-node `item_counts: true` and
   `size: true` opt-ins at the normal level.
@@ -106,6 +107,9 @@ payload size metrics:
   measurements for the same processor range.
 - The internal observability pipeline prints the node and flow metrics
   together at normal verbosity.
+- The `no_output` pipeline demonstrates that the filter's `node.output.*`,
+  its `flow.output.*`, and the noop exporter's `node.input.*` are absent while
+  flow input, compute, and dropped metrics are present.
 
 ### `trafficgen-transform-debug-noop.yaml`
 
