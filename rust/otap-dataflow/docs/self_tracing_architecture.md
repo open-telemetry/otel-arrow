@@ -65,6 +65,12 @@ to consume internal telemetry. To obtain the partial bytes encoding
 needed, we have a custom [Tokio `tracing` Event][TOKIOEVENT] handler
 based on `otel_arrow_dfe_pdata::otlp::common::ProtoBuffer`.
 
+The experimental
+[callsite-planned OTAP translation design note](internal-log-otap-translation.md)
+records a possible path for retaining this low-cost caller representation while
+avoiding repeated protobuf-to-Arrow discovery and per-log Arrow batch
+construction in ITR.
+
 [TOKIOEVENT]: https://docs.rs/tracing/latest/tracing/struct.Event.html
 
 ## Raw logging
