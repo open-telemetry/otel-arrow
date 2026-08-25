@@ -686,6 +686,57 @@ mod tests {
         }
     }
 
+    fn stage_plan_with_action(label: &str, expected: Option<RolloutAction>) -> StagePlan {
+        StagePlan {
+            label: label.into(),
+            rendered_group: String::new(),
+            pipeline_configs: HashMap::new(),
+            expected_signals: HashMap::new(),
+            capture_labels: Vec::new(),
+            expected_action: expected,
+            step_timeout_secs: 1,
+            drain_timeout_secs: 1,
+            stage_timeout_secs: 1,
+        }
+    }
+
+    /// Scenario: a stage expects a specific rollout action and the engine
+    /// classifies the live update as a different action.
+    /// Guarantees: the mismatch fails with a `Reconfigure` error that names the
+    /// stage, the expected action, and the observed action.
+    #[test]
+    fn assert_expected_action_reports_mismatch() {
+        let plan = stage_plan_with_action("s1", Some(RolloutAction::Replace));
+        match assert_expected_action(&plan, "resize") {
+            Err(ValidationError::Reconfigure(msg)) => {
+                assert_eq!(
+                    msg,
+                    "stage 's1': expected rollout action replace but engine classified it as resize"
+                );
+            }
+            other => panic!("expected Reconfigure error, got {other:?}"),
+        }
+    }
+
+    /// Scenario: a stage expects a rollout action and the engine classifies the
+    /// live update as exactly that action.
+    /// Guarantees: a matching classification passes without error.
+    #[test]
+    fn assert_expected_action_accepts_match() {
+        let plan = stage_plan_with_action("s1", Some(RolloutAction::Replace));
+        assert!(assert_expected_action(&plan, "replace").is_ok());
+    }
+
+    /// Scenario: a stage does not assert any rollout action.
+    /// Guarantees: the classification is not checked, so any observed action
+    /// (including an unknown wire string) passes without error.
+    #[test]
+    fn assert_expected_action_skips_when_unset() {
+        let plan = stage_plan_with_action("s1", None);
+        assert!(assert_expected_action(&plan, "replace").is_ok());
+        assert!(assert_expected_action(&plan, "totally-unknown").is_ok());
+    }
+
     /// Scenario: the harness drives readiness, load-gen, and shutdown against a
     /// mocked admin API using the multi-stage helpers.
     /// Guarantees: the readiness, metrics, and shutdown helpers still speak the

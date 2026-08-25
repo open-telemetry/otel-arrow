@@ -44,3 +44,17 @@ impl fmt::Display for ValidationError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Scenario: a `Reconfigure` error is formatted for display.
+    /// Guarantees: the live-update failure category renders with the stable
+    /// `reconfigure failed:` prefix and preserves the wrapped detail message.
+    #[test]
+    fn reconfigure_error_display_has_stable_prefix() {
+        let err = ValidationError::Reconfigure("stage 's1': boom".into());
+        assert_eq!(err.to_string(), "reconfigure failed: stage 's1': boom");
+    }
+}
