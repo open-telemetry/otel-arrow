@@ -5,9 +5,7 @@
 Status: Proposed normative Phase 1 contract
 
 This document specifies the exact runtime behavior and state transitions of the
-Phase 1 OTAP filelog receiver. The receiver implementation is incomplete. This
-specification describes the intended behavior, not the behavior of every current
-implementation snapshot.
+Phase 1 OTAP filelog receiver.
 
 The companion documents divide normative ownership as follows:
 
@@ -36,9 +34,12 @@ convention.
 | Candidate | An eligible opened regular file presented to identity resolution with stable evidence. |
 | Candidate inventory | The bounded population and multiplicity evidence used by one reconciliation pass. |
 | Clean resume | Durable framing state in which the next complete source unit begins a new logical record. |
-| Committed offset | The durable source-byte offset acknowledged downstream and persisted by the checkpoint store. |
+| Applied progress | An Ack-authorized transaction successfully appended to the WAL and applied atomically to the live checkpoint state; it may be newer than the durable frontier. |
+| Committed offset | The source-byte offset in live applied checkpoint state; it becomes crash-durable only when covered by the durable frontier. |
 | Complete inventory | A reconciliation result that can prove both presence and absence and can establish fingerprint multiplicity over its bounded population. |
 | Continuation | Durable split-fragment state containing only the original record start and next fragment index. |
+| Downstream Ack | The matching downstream completion that authorizes, but does not itself apply or sync, one retained batch's progress transaction. |
+| Durable frontier | The latest applied checkpoint progress guaranteed to survive by a successful required filesystem sync; recovery may also replay a later complete valid WAL prefix that survived. |
 | Exact locator | The platform runtime locator obtained from an opened file handle. |
 | File epoch | A monotonic generation of one `file_id` stream. A truncate reset or administrative reset increments it. |
 | `file_id` | An opaque durable logical identity used as the checkpoint key. |
@@ -83,7 +84,7 @@ Phase 1 provides:
 - bounded source reading, decoding, and framing;
 - deterministic newline and multiline behavior;
 - one receiver-wide open or retained batch;
-- matching-Ack-gated durable progress;
+- matching-Ack-gated applied progress and a filesystem-synced durable frontier;
 - bounded Nack retry;
 - restart recovery when checkpoint state and required source bytes survive;
 - durable quarantine and audited administrative recovery;
@@ -218,8 +219,8 @@ receivers:
 | `batch.max_flush_period` | `1s` | Nonzero first-record batch deadline |
 | `rotation.rotate_wait` | `5s` | Nonzero post-EOF inactivity interval |
 | `rotation.on_truncate` | `fail` | `fail` or `read_new` |
-| `checkpoint.id` | Receiver node identity (rename-sensitive) | Stable nonempty checkpoint namespace name; set explicitly to preserve continuity across a receiver-node rename |
-| `checkpoint.sync_interval` | `0s` | Zero syncs every Ack transaction |
+| `checkpoint.id` | Derived logical receiver key | Optional stable namespace name of 1 to 255 ASCII bytes; set explicitly to preserve continuity across logical-key renames |
+| `checkpoint.sync_interval` | `0s` | Zero syncs every Ack transaction before release; nonzero batches filesystem sync after release |
 | `checkpoint.compact_after_bytes` | `64MiB` | Nonzero WAL compaction threshold |
 | `checkpoint.compact_after_transactions` | `10000` | Nonzero transaction threshold |
 | `checkpoint.retention` | `7d` | Zero retains eligible inactive records indefinitely |
@@ -231,12 +232,31 @@ receivers:
 | `on_nack` | `fail` | `fail` or `drop_and_continue` |
 | `drain_timeout` | `10s` | Nonzero receiver drain budget |
 
-The derived checkpoint ID never includes CPU count or deployment generation. It follows
-the configured receiver node identity, so a receiver-node rename changes the default
-namespace. Continuity requires an explicit ID from initial deployment, an explicit ID
-equal to the current effective derived ID before the rename, or an explicit namespace
-migration. Choosing an unrelated ID creates a new namespace rather than pinning the old
-one.
+When `checkpoint.id` is omitted, derive it as:
+
+```text
+"auto-" + lowercase_hex(
+  SHA-256(
+    UTF-8("otel-arrow-filelog-checkpoint-id-v1\0") ||
+    u32_be(len(UTF-8(pipeline_group_id))) || UTF-8(pipeline_group_id) ||
+    u32_be(len(UTF-8(pipeline_id)))       || UTF-8(pipeline_id)       ||
+    u32_be(len(UTF-8(node_id)))           || UTF-8(node_id)
+  )
+)
+```
+
+The three configured IDs are the complete input set. Renaming the pipeline group,
+pipeline, or receiver node ID changes the default. A receiver component name, component
+URN, deployment generation, CPU count, core ID, and runtime instance ID do not. Each
+encoded input length must fit `u32`; otherwise validation fails.
+
+Continuity across any logical-key rename requires an explicit ID from initial
+deployment, an explicit ID equal to the current effective derived value before the
+rename, or an explicit namespace migration. Startup opens only the selected ID. If it
+does not exist, the receiver creates an empty namespace, emits a bounded health event,
+and applies `start_at` to newly registered files. It never searches sibling namespaces.
+Changing the ID therefore selects different existing state or an empty namespace and
+can cause replay or intentional `start_at` exclusion.
 
 ### Configuration variants
 
@@ -326,13 +346,16 @@ The following relationships are enforced:
 34. `retry.max_backoff >= retry.initial_backoff`.
 35. Both checkpoint compaction thresholds and the consecutive-failure budget are
     nonzero.
-36. `checkpoint.id` is nonempty after defaulting.
-37. `checkpoint.id` contains only ASCII alphanumerics, `_`, `-`, and `.`.
-38. Its durable representation and percent-encoded path segment fit their format and
-    common filesystem component limits.
-39. Both configured framing bounds plus worst-case enabled attributes fit within
+36. Every UTF-8 input to the derived checkpoint-ID recipe has a length representable
+    as `u32`.
+37. `checkpoint.id` is nonempty after defaulting.
+38. `checkpoint.id` is neither `.` nor `..`.
+39. `checkpoint.id` contains only ASCII alphanumerics, `_`, `-`, and `.`.
+40. Its ASCII byte length is at most 255, and those exact bytes are its namespace path
+    component.
+41. Both configured framing bounds plus worst-case enabled attributes fit within
     `batch.max_bytes`.
-40. Identity reconciliation, framer, reader, and checkpoint recovery admission models
+42. Identity reconciliation, framer, reader, and checkpoint recovery admission models
     are representable with checked arithmetic and remain within their fixed ceilings.
 
 The logical size of a record is:
@@ -715,17 +738,20 @@ Eviction is a handshake:
 
 1. Stop scheduling the victim.
 2. Ensure it owns no outstanding read turn.
-3. Preserve only durable committed progress and durable framing resume.
+3. Preserve only applied checkpoint progress and framing resume.
 4. Discard decoder, physical-line, multiline, provisional record, and speculative
-   batch state derived after durable progress.
-5. Rewind its in-memory frontier to committed progress.
+   batch state derived after applied progress.
+5. Rewind its in-memory frontier to applied progress.
 6. Close the descriptor.
 7. Keep its runtime lease.
 8. Make the slot available.
 
 Reopen obtains a new handle, validates it as a regular file, validates the exact
-locator and fingerprint evidence, seeks to durable progress, and reconstructs all
-uncommitted state from source bytes.
+locator and fingerprint evidence, seeks to the latest live applied progress, and
+reconstructs all later state from source bytes. Restart recovery validates the
+authoritative snapshot, replays every complete valid WAL transaction present, and seeks
+to the resulting recovered progress. The filesystem-synced durable frontier is only
+the guaranteed recovery floor.
 
 If those bytes disappeared, ordinary restart/reopen recovery cannot reconstruct them.
 
@@ -752,7 +778,7 @@ distinct-delta, or deadline bounds. On seal:
 - the refused record is not retained across the in-flight window;
 - decoder/framer state beyond the sealed batch is discarded;
 - each file represented by a batch delta rewinds to that delta's final offset;
-- every other speculative reader rewinds to durable committed progress;
+- every other speculative reader rewinds to its latest applied checkpoint progress;
 - open descriptors may remain resident; and
 - reconstruction resumes only after terminal processing of the retained batch.
 
@@ -808,6 +834,35 @@ The decoder and framer never split, commit, truncate, or end a fragment inside:
 
 An incomplete source unit remains uncommittable until completed or handled by an
 explicit terminal policy.
+
+### Permanent EOF with an incomplete encoded unit
+
+Live EOF is temporary. It never applies terminal decode policy, completes an
+unterminated record, or proves that a writer is gone. In Phase 1, only rotation
+finalization may request permanent-EOF handling, after the same resident handle has
+observed EOF through `rotate_wait`. The wait is an inactivity heuristic, not writer
+fencing.
+
+After earlier complete records become emit-ready, an incomplete UTF-8 scalar, UTF-16
+code unit, surrogate pair, or BOM probe follows `on_decode_error`:
+
+| Policy | Permanent-EOF behavior |
+| --- | --- |
+| `preserve_raw` | If an approved terminal-record rule makes the pending record eligible, emit the exact remaining source bytes and mark malformed evidence |
+| `replace` | If an approved terminal-record rule makes the pending record eligible, emit one replacement owning the exact incomplete source range |
+| `fail` | Durably quarantine the file without advancing over the incomplete bytes |
+
+An emitted preserve or replacement result advances only after matching Ack, atomic WAL
+application, and the configured sync policy. If framing does not permit an
+unterminated terminal record, `preserve_raw` and `replace` cannot fabricate one. The
+bytes remain uncommitted and the exact bounded range and capture limitation are
+reported.
+
+One decision remains review-blocking: after that explicit report, either rotation
+finalizes and releases the identity with the bytes recorded as not captured, or the
+identity is quarantined and retained for administration. Until one branch is approved,
+a conforming implementation cannot silently choose drop-and-finalize, silently commit
+the bytes, or treat ordinary live EOF as permanent.
 
 ### LF, CR, and ranges
 
@@ -983,8 +1038,9 @@ next_fragment_index
 ```
 
 It contains no hidden line count, regex state, buffered body, BOM probe, or decoder
-partial unit. A nonfinal fragment commits a continuation only after its batch is Acked
-and durably persisted.
+partial unit. A nonfinal fragment records a continuation only after its batch is Acked
+and its transaction is appended and applied. The continuation becomes crash-durable
+when covered by filesystem sync.
 
 The fragment ID is stable across retry and restart and is derived from the durable
 identity, file epoch, and record start. It is the lowercase 64-character hexadecimal
@@ -1051,10 +1107,10 @@ Without such a flush, recoverable drain bytes remain pending and uncommitted. Th
 reported, not counted as dropped.
 
 At rotation finalization, an unterminated partial line that cannot be emitted under an
-approved rule remains uncommitted and is counted as partial bytes not captured. The
-permanent-EOF treatment of an incomplete decoder unit or unresolved BOM probe remains a
-release-blocking open integration decision; the implementation must not silently skip
-or commit those bytes.
+approved rule remains uncommitted and is counted as partial bytes not captured.
+Incomplete encoded units and unresolved BOM probes follow
+[Permanent EOF with an incomplete encoded unit](#permanent-eof-with-an-incomplete-encoded-unit);
+the finalize-versus-quarantine branch remains release-blocking.
 
 ## OTAP output
 
@@ -1103,17 +1159,17 @@ The semantic requirements are:
 - host identity comes from resource detection or enrichment.
 
 Public attribute names for general body/frame source ranges are not yet approved.
-This specification does not invent them. Current implementation names for resolved
-path, record offset, and fragment ranges remain experimental until semantic-convention
-review resolves the public surface.
+This specification does not invent them. Any proposed names for resolved path, record
+offset, and fragment ranges remain experimental until semantic-convention review
+resolves the public surface.
 
-The public compatibility status of optional record number remains unresolved. Current
-implementation evidence consistently uses a zero-based, process-local counter per
-`file_id` and file epoch. It survives descriptor eviction, resets on process restart or
-epoch change, and is omitted from every split fragment. A successfully appended unsplit
-record emits and consumes one number. Fragment zero consumes one number without emitting
-it; continuation fragments neither emit nor consume one. That implementation choice is
-test-covered but is not yet a stable public promise.
+The public compatibility status of optional record number remains unresolved. When
+enabled in Phase 1, it uses a zero-based, process-local counter per `file_id` and file
+epoch. It survives descriptor eviction, resets on process restart or epoch change, and
+is omitted from every split fragment. A successfully appended unsplit record emits and
+consumes one number. Fragment zero consumes one number without emitting it;
+continuation fragments neither emit nor consume one. These semantics are not yet a
+stable public promise.
 
 ### Batch construction
 
@@ -1170,8 +1226,9 @@ ignored and counted. They never mutate a replacement stream.
 
 ### Ack
 
-Matching Ack makes the retained batch's delta set eligible for durable commit. It does
-not itself mutate committed offsets.
+Matching Ack authorizes the retained batch's delta set for checkpoint application. It
+does not itself append a WAL transaction, apply logical progress, advance the durable
+frontier, release the batch, or resume source reading.
 
 The worker:
 
@@ -1180,29 +1237,40 @@ The worker:
 3. Rejects the complete Ack atomically if the delta set exceeds the WAL transaction
    operation limit.
 4. Never divides an overlarge Ack into partially successful progress transactions.
-5. Persists one atomic logical progress transaction for all deltas.
-6. Syncs according to the checkpoint policy.
-7. Releases the retained batch only when required persistence succeeds.
-8. Reconstructs readers and resumes source scheduling afterward.
+5. Appends one atomic logical progress transaction for all deltas.
+6. Applies that transaction all-or-nothing to live checkpoint state.
+7. Syncs according to the checkpoint policy.
+8. Releases the retained batch at the release point defined below.
+9. Reconstructs readers and resumes source scheduling only after release.
 
-No file advances if preflight or persistence fails.
+No retained batch is released and no source scheduling resumes if preflight, WAL
+append, or logical application fails. With a zero sync interval, sync failure also
+blocks release. Store failure never permits partial release.
 
 ### Sync interval
 
-With `checkpoint.sync_interval: 0s`, every Ack transaction is synced before the batch is
-released.
+With `checkpoint.sync_interval: 0s`, every Ack transaction is appended, applied, and
+filesystem-synced before the batch is released. Source scheduling resumes only after
+that sync succeeds.
 
 With a nonzero interval:
 
-- Acked transactions may be appended before sync;
+- an Acked transaction must append and apply successfully before release;
+- the retained batch is then released and source scheduling resumes without waiting
+  for filesystem sync;
+- the applied progress newer than the last successful sync is not yet at the durable
+  frontier;
 - the worker drives the next-sync deadline even while every source is idle;
-- the interval can widen only the crash-duplicate window;
-- it does not permit reading beyond a progress transaction that has not reached the
-  contractually required persistence frontier; and
-- drain syncs all outstanding Acked progress.
+- the interval may widen the crash-duplicate window;
+- ordered later sync covers all previously applied progress; and
+- drain syncs all outstanding applied progress before releasing namespace ownership.
 
-A crash after downstream acceptance and before durable sync can replay the Acked data.
-It does not authorize skipping it.
+A crash after downstream Ack and release but before filesystem sync may recover only
+the guaranteed durable frontier and replay the Acked data. It may instead replay a
+later complete, valid, Ack-authorized WAL prefix that survived even though its sync was
+not guaranteed. A structurally complete corrupted transaction still fails closed.
+Delayed sync never permits recovery beyond validated Ack-authorized progress or
+skipping unacknowledged source data.
 
 ### Retryable Nack
 
@@ -1233,7 +1301,7 @@ Permanent Nack, closed route, node shutdown completion, and exhausted retry budg
 | Policy | Result |
 | --- | --- |
 | `fail` | Receiver terminates without advancing the retained batch |
-| `drop_and_continue` | Receiver records explicit loss, durably advances the same atomic delta set, and continues only after persistence |
+| `drop_and_continue` | Receiver records explicit loss, applies the same atomic delta set, and releases according to the configured sync policy |
 
 `drop_and_continue` is an intentional data-loss policy. It is counted and produces an
 operator-visible event.
@@ -1277,7 +1345,7 @@ conflicting, impossible, unknown, or overflowing transitions fail closed.
 | Operation | Preconditions | Effect and timing |
 | --- | --- | --- |
 | `register_file` | `file_id` absent, or exactly identical idempotent replay | Create active identity, initial offset, clean resume, evidence, and metadata; durable before read |
-| `update_progress` | Active; expected offset and epoch match | Atomically advance Acked offset and framing resume; may finalize rotation |
+| `update_progress` | Active; expected offset and epoch match | Atomically append and apply Acked offset and framing resume; may finalize rotation; sync follows policy |
 | `reset_after_truncate` | Active; expected epoch matches; `read_new` selected | Increment epoch, reset offset and framing; sync before reading replacement stream |
 | `update_fingerprint` | Active; expected evidence and epoch match | Extend/replace guarded evidence without changing identity or progress |
 | `update_metadata` | Active or quarantined | Update allowed advisory fields; quarantine evidence remains immutable |
@@ -1299,6 +1367,10 @@ but none is read until the complete registration transaction is durable.
 Progress is monotonic within one file epoch. Offset and framing resume advance
 atomically. An ordinary Ack cannot change file epoch. A finalizing progress update may
 transition Active to Rotated finalized only after all included source progress is Acked.
+Applied progress controls live reading. Crash recovery starts from the authoritative
+snapshot and replays every complete valid WAL transaction present in sequence. The
+filesystem-synced durable frontier is the guaranteed replay floor, not a cap on a later
+valid prefix that survived.
 
 ### Truncate reset
 
@@ -1338,6 +1410,22 @@ A configuration change is not an administrative action.
 Administrative removal names the exact namespace and `file_id`, matches prior state and
 epoch, and carries an audit reason. It can remove quarantined state. Ordinary retention
 cannot.
+
+This specification defines operation semantics, not a complete administrative CLI or
+API. A separately reviewed engine administrative interface or offline tool may invoke
+them. The interface must stop or exclude the receiver, acquire exclusive namespace
+ownership, use supported checkpoint operations rather than edit bytes, validate exact
+namespace, `file_id`, state, and epoch, and record the required audit reason.
+
+Normal receiver configuration never releases quarantine or rewrites incompatible
+framing state. An incompatible profile requires a separately reviewed versioned
+migration, or audited administrative removal followed by ordinary registration and
+its configured `start_at` behavior.
+
+If no administrative interface or tool ships with Phase 1, reset, administrative
+removal, and migration are unavailable. The receiver still fails closed and preserves
+the affected state. Selecting a different `checkpoint.id` opens another namespace; it
+is not a reset of the blocked state.
 
 ### Retention
 
@@ -1386,6 +1474,20 @@ Recovery:
 Recovery never guesses from modification time when authority is ambiguous. Unknown
 format or framing-profile versions require explicit migration or reset.
 
+### Checkpoint trust boundary
+
+`engine.state_dir` and the checkpoint namespace are trusted host-local state. The
+operator must prevent writes by untrusted principals and apply least-privilege local
+file and directory permissions. Namespace and artifact access validates opened
+objects and rejects symlink, reparse-point, non-regular-file, and replacement
+substitution rather than trusting path text alone.
+
+CRC and framing digests detect accidental corruption or incompatibility; they do not
+authenticate state or protect against hostile replacement. Advisory paths, locators,
+fingerprints, and failure evidence in health events may be sensitive. Their values are
+bounded and emitted only through appropriately protected, sampled, and rate-limited
+engine telemetry.
+
 ## Rotation and truncation
 
 ### Move/create
@@ -1415,9 +1517,11 @@ When EOF remains through the wait:
 
 - emit only records completed by normal or explicitly enabled idle-flush rules;
 - do not invent completion for unterminated bytes;
+- apply the review-blocking permanent-EOF policy before releasing an incomplete
+  encoded unit or unresolved BOM probe;
 - count noncaptured terminal partial bytes;
 - persist any final Acked progress;
-- transition durably to Rotated finalized;
+- transition durably to Rotated finalized only when the selected policy permits it;
 - close the descriptor; and
 - release the runtime lease.
 
@@ -1570,7 +1674,7 @@ On `DrainIngress` while downstream remains live:
 6. Flush a nonempty open batch.
 7. Await terminal completion of the retained batch.
 8. Apply Ack/Nack policy.
-9. Sync all required durable progress.
+9. Sync all outstanding applied progress to the durable frontier.
 10. Measure and report every recoverable uncommitted byte as pending, including an
     incomplete source unit or unresolved BOM probe.
 11. Rewind uncommitted in-memory tails to durable progress for cleanup.
@@ -1633,9 +1737,9 @@ file failure into silent progress.
 
 ## Resource admission models
 
-The formulas in this section are conservative logical admission models derived from the
-source design and implementation evidence. They are not exact RSS, allocator-resident
-memory, universal throughput, or performance guarantees.
+The formulas in this section are conservative logical admission models for the
+proposed components. They are not exact RSS, allocator-resident memory, universal
+throughput, or performance guarantees.
 
 Every sum, product, cast, and duration conversion uses checked arithmetic.
 
@@ -1759,9 +1863,8 @@ The final implementation must combine candidate/identity, reader, framer, batch,
 checkpoint, regex, decoder, channel, lease, Arrow, and fixed worker state into one
 coherent admission decision without double-counting shared terms.
 
-The current evidence has strong component formulas but does not yet provide the final
-integrated aggregate memory ceiling. Phase 1 does not claim a complete per-instance RSS
-ceiling until that integration and representative measurement exist.
+Phase 1 requires this integrated model and representative measurement before claiming
+a complete per-instance RSS ceiling.
 
 ## Platform requirements
 
@@ -1849,7 +1952,8 @@ local Linux, macOS, or Windows validation.
 
 ### Cardinality contract
 
-Metric set name is `receiver.filelog`.
+The proposed metric-set scope is `receiver.filelog`; it is not an approved stable
+public instrument name.
 
 Metric labels are bounded and use fixed dimensions such as reason, policy, result, or
 rotation type. Paths, `file_id`, runtime locators, fragment IDs, checkpoint IDs supplied
@@ -1861,7 +1965,7 @@ unbounded event queue or log flood.
 
 ### Metric inventory
 
-| Metric family | Required semantics |
+| Semantic handle, not a stable instrument name | Required semantics |
 | --- | --- |
 | `records_emitted` | OTAP records/fragments emitted |
 | `source_bytes_read` | Original source bytes read |
@@ -1874,7 +1978,7 @@ unbounded event queue or log flood.
 | `retry_exhausted` | Retained batches exhausting budget |
 | `stale_completions` | Ignored stale Ack/Nack completions |
 | `records_dropped_on_nack` | Explicit `drop_and_continue` loss |
-| `checkpoint_transactions` | Logical durable transactions by operation class |
+| `checkpoint_transactions` | Logical WAL transactions by operation class |
 | `checkpoint_persists` | Successful append/sync/publication operations |
 | `checkpoint_failures` | Store failures by bounded operation class |
 | `checkpoint_duration` | Append/sync latency |
@@ -1918,10 +2022,11 @@ unbounded event queue or log flood.
 | `tracked_capacity_saturation` | Time or events at tracked-file capacity |
 | `open_capacity_saturation` | Time or events at resident-handle capacity |
 
-Exact instrument kinds, units, and stable exported names require telemetry integration
-review. The semantic inventory and cardinality rules above are normative; an
-implementation does not claim complete observability until the integration defines
-those instrument details.
+The semantic inventory and cardinality constraints above are normative. Exact
+instrument names, kinds, units, aggregation, and stability guarantees require a
+separate telemetry review. The descriptive handles in this table are not a public
+compatibility contract, and an implementation does not claim complete observability
+until that review defines the instrument details.
 
 ### Health-event inventory
 
@@ -2009,7 +2114,7 @@ hardware are intentionally not normative.
 | Reader | Hot and cold ready files | Round-robin bounded turns |
 | Reader | Many EOF files | Deadline reprobe, no busy loop |
 | Reader | Turn hits source-byte bound | Stops and yields |
-| Reader | Descriptor eviction with partial state | Discard and rewind to durable progress |
+| Reader | Descriptor eviction with partial state | Discard and rewind to applied progress |
 | Reader | Reopen same identity | Exact revalidation and deterministic reread |
 | Reader | Reopen mismatch | No read under old identity |
 | Reader | Removed resident identity | Descriptor pinned through finalization |
@@ -2272,78 +2377,3 @@ unacked at deadline, its offsets do not advance.
 
 The engine sends `Shutdown` without a prior drain. The receiver handles it immediately,
 cancels workers and retry waits, and leaves all unacknowledged progress unchanged.
-
-## Implementation status and known integration gaps
-
-This appendix records evidence, not normative authority.
-
-Implementation-derived evidence was inspected at initial snapshot HEAD
-`1bcad6ced074a9d7dd267ed3d466268a10315f38` at
-`2026-08-24T17:41:06Z`. A second read-only inspection used active implementation HEAD
-`1af9f3613ae7cd7964c348cd199ce76c64249469` at `2026-08-24T22:36:33Z`. The
-final read-only reconciliation used committed implementation HEAD
-`1414a0f436c56f8abac371815553feafdf9d842e` plus a seven-file tracked worktree
-delta at `2026-08-25T02:31:55Z`. The SHA-256 digest of `git diff --binary` for that
-delta was `2f9114536556bee7583f68aba29cc302ddf65725e88e5d59cf9dcbca8570e00a`.
-
-Current evidence confirms these intended behaviors:
-
-- committed decoder, framer, and bounded OTAP batch construction preserve exact source
-  ranges, continuation, and one all-or-nothing progress-delta set;
-- the committed delivery integration owns exact `(batch_id, attempt)` correlation over opaque
-  engine `CallData`, rejects stale completions, and independently revalidates file
-  epochs and progress bases before commit;
-- retry resends the retained Arrow data without rereading sources;
-- ordinary truncation and resident-handle rotation are orchestrated through durable
-  epoch or finalization transitions with Ack-gated progress;
-- core drain plumbing captures provisional source frontiers, enforces those bounds,
-  awaits real completion, rewinds unflushable tails, and forces outstanding progress
-  sync;
-- reader EOF scheduling uses checked deadline arithmetic and reports terminal overflow
-  rather than wrapping;
-- direct Shutdown and clean drain have distinct live paths;
-- factory registration is present; and
-- optional record numbering implements the process-local behavior described above,
-  although its public compatibility status remains open.
-
-Verified contradictions and open integration gaps are:
-
-1. Exact-locator mismatch handling can still leave multiple active durable records for
-   one locator. The normative invariant is one active record per live locator;
-   mismatch resolution must retire, quarantine, or otherwise make the prior record
-   ineligible before a replacement becomes active.
-2. `Removed` still lacks a reason distinguishing exclusion revocation from
-   disappearance or rotation. A resident newly excluded file can therefore continue
-   being tailed instead of stopping at the next record boundary.
-3. Two rotation-lifecycle gaps remain after ordinary truncation and resident-handle
-   rotation orchestration. Removed pinned descriptors remain ineligible for normal
-   eviction and can consume every descriptor slot while continued late writes reset
-   finalization. Configured durable-record retention is not yet driven by worker
-   maintenance.
-4. Drain can still invoke a partial-record flush at the captured source frontier
-   without first proving observed EOF. The replay bound itself is enforced, but the
-   missing EOF-gated precondition can still change a live record boundary.
-5. Telemetry collection and terminal metrics remain incomplete.
-6. Final rotation now selects a drop-and-finalize policy for an incomplete decoder
-   unit or unresolved BOM probe: it warns, does not commit those pending bytes, then
-   durably finalizes and releases the record. The permanent-EOF policy remains an open
-   normative decision, so this implementation choice is not yet an approved contract.
-7. Public OTAP attribute names for body/frame source ranges remain unresolved.
-   Record-number implementation semantics are now consistent, but their public
-   compatibility status still requires approval.
-8. Component-level memory formulas exist, but the aggregate receiver admission ceiling
-   and representative measurement remain incomplete. Runtime memory-pressure signals
-   are not yet integrated.
-9. The current generated checkpoint ID hashes broader pipeline naming inputs than the
-   proposed receiver-node-identity default. This must be reconciled; an explicit
-   `checkpoint.id` is currently required for reliable rename continuity.
-10. Controller `Ready` remains component-task readiness, not filelog ownership,
-   recovery, reconciliation, or source readiness.
-11. Worker join runs off the current-thread async core, but the current integration
-   still awaits that join without a bounded timeout. A stuck kernel call can therefore
-   outlive the intended bounded lifecycle.
-12. Windows directory sync is not equivalent to Unix directory `fsync`. Equal crash-
-   durability claims remain blocked on stronger Windows fault evidence.
-
-These gaps do not weaken the intended contracts in this document. They identify work
-required for a conforming Phase 1 implementation and focused review.

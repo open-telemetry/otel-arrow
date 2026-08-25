@@ -68,8 +68,11 @@ meanings in this byte-format specification.
   iSCSI CRC-32C). This is **not** `crc32fast`'s default IEEE 802.3 polynomial
   (`0x04C11DB7`); an implementation MUST use a Castagnoli-parametrized CRC-32
   implementation (for example the `crc` crate's `CRC_32_ISCSI` catalog
-  entry). Reference vector: `CRC-32C("123456789") = 0xE3069283`.
-- **Digest:** SHA-256 (FIPS 180-4), 32 raw bytes, used only for the
+  entry). Reference vector: `CRC-32C("123456789") = 0xE3069283`. CRC detects
+  accidental corruption; it is not a MAC, signature, or authentication
+  mechanism and does not protect against hostile replacement.
+- **Digest:** within this byte format, SHA-256 (FIPS 180-4), 32 raw bytes, is
+  used only for the
   framing-profile digest (see
   [Framing-profile canonical serialization and digest](#framing-profile-canonical-serialization-and-digest)).
   It is not used as a checksum for structural integrity; CRC-32C alone
@@ -89,9 +92,13 @@ ${engine.state_dir}/filelog/<checkpoint.id>/
   ownership.lock
 ```
 
-- `<checkpoint.id>` is percent-encoded using the existing journald path
-  convention (see `journald_receiver::checkpoint::encode_path_segment`); this
-  document does not change that convention.
+- `<checkpoint.id>` is the final explicit or derived namespace ID produced by
+  the [Phase 1 contract](filelog-receiver-phase1-spec.md#fields-defaults-and-variants).
+  This format treats it as opaque: different ID strings are different
+  namespaces and no file-format recovery searches sibling IDs. In version 1 it
+  contains 1 to 255 ASCII bytes, is neither `.` nor `..`, and uses only ASCII
+  alphanumerics, `_`, `-`, and `.`. Those bytes are copied unchanged as the
+  namespace path component; version 1 performs no escaping or percent-encoding.
 - `<generation>` is the ASCII decimal rendering of a `u64` generation number
   with no leading zeros (`0`, `1`, `2`, ... `18446744073709551615`). A
   generation number is assigned once, at compaction time, and is never
@@ -114,6 +121,20 @@ compaction (the previous generation stays present and valid until `CURRENT`
 is atomically repointed); this document only defines the byte format of each
 individual file, not the atomic-replacement procedure for `CURRENT` itself,
 which is a durable-checkpoint-store concern.
+
+## Trust boundary
+
+`engine.state_dir` and this namespace are assumed to be trusted host-local
+state protected from writes by untrusted principals. Implementations MUST use
+least-privilege local file and directory permissions and MUST reject symlink,
+reparse-point, non-regular-file, or replacement substitution for namespace
+artifacts rather than following an untrusted path.
+
+The checksums and digests in this format detect accidental corruption and
+configuration incompatibility; they do not authenticate the writer or bytes.
+Protecting checkpoint confidentiality and integrity against a hostile local
+principal is an operational access-control responsibility, not a property of
+this encoding.
 
 ## The `CURRENT` marker
 
@@ -573,7 +594,7 @@ definition an operator-authorized administrative action (the
 | 5 | `removal_time_unix_nano` | `u64` BE | always |
 | 6 | `administrative` | `u8` bool | always |
 | 7 | `namespace_id_len` | `u16` BE | always; MUST be `0` when `administrative == 0x00` |
-| 8 | `namespace_id_bytes` | `[u8; namespace_id_len]`, UTF-8 | `NAMESPACE_ID_MAX_BYTES = 256`; MUST be non-empty when `administrative == 0x01`, MUST be absent (length `0`) otherwise |
+| 8 | `namespace_id_bytes` | `[u8; namespace_id_len]`, UTF-8 | `NAMESPACE_ID_MAX_BYTES = 255`; MUST be non-empty when `administrative == 0x01`, MUST be absent (length `0`) otherwise |
 | 9 | `audit_reason_len` | `u16` BE | always; MUST be `0` when `administrative == 0x00` |
 | 10 | `audit_reason_bytes` | `[u8; audit_reason_len]`, UTF-8 | `AUDIT_REASON_MAX_BYTES = 1024`; MUST be non-empty when `administrative == 0x01`, MUST be absent otherwise |
 
@@ -591,7 +612,7 @@ file-path convention alone.
 | `FINGERPRINT_MAX_BYTES` | `65535` (`u16::MAX`) | `fingerprint_bytes`, `expected_fingerprint_bytes`, `new_fingerprint_bytes` |
 | `ADVISORY_PATH_MAX_BYTES` | `4096` | `advisory_path_bytes` |
 | `AUDIT_REASON_MAX_BYTES` | `1024` | `audit_reason_bytes` |
-| `NAMESPACE_ID_MAX_BYTES` | `256` | `namespace_id_bytes` |
+| `NAMESPACE_ID_MAX_BYTES` | `255` | `namespace_id_bytes` |
 | `WAL_MAX_OPS_PER_TX` | `4096` | `op_count` per transaction |
 | framing-profile pattern | `4096` | canonical serialization pattern bytes (see below) |
 
@@ -628,6 +649,14 @@ sequence order against an in-memory table keyed by `file_id`, seeded from the
 snapshot. Each operation below states its precondition against that table (a
 missing precondition match is either an "impossible transition" fail-closed
 error or an explicitly documented idempotent no-op) and its effect.
+
+The format does not store a last-filesystem-synced sequence number. Recovery
+therefore replays every complete valid transaction present in order, including
+a later Ack-authorized transaction that survived without a guaranteed sync.
+The behavioral durable frontier is a guaranteed recovery floor, not a replay
+cap. The defined torn-tail exception may discard an incomplete final
+transaction; a structurally complete transaction with an invalid CRC fails
+closed.
 
 A general restriction that holds for every operation: identity fields
 (`file_id`) are the key and are never mutated by any operation; an operation
@@ -1015,6 +1044,13 @@ action without ambiguity:
   path capable of removing a `Quarantined` record, matching the
   [Phase 1 retention contract](filelog-receiver-phase1-spec.md#retention).
 
+These encodings do not define or authorize a CLI or API. A separately reviewed
+engine administrative interface or offline tool MUST acquire exclusive
+namespace ownership and append validated operations through the checkpoint
+store. Operators MUST NOT edit snapshots, WAL transactions, checksums, or
+`CURRENT` manually. If no such interface ships, these operations remain
+unavailable even though their wire representation is defined.
+
 ## Cross-version and migration behavior
 
 - Every stored format (`CURRENT` marker, snapshot, WAL) carries its own
@@ -1033,9 +1069,11 @@ action without ambiguity:
 - The `framing_profile_version` follows the same policy independently: an
   unrecognized profile version, or a recognized version whose digest does
   not match the currently configured framing profile's freshly computed
-  digest, fails closed and requires an explicit configuration change or
-  administrative migration before the affected file can resume from its
-  persisted `framing_resume` state. It is never silently reconciled.
+  digest, fails closed. Resumption requires either configuration restored to
+  the exact compatible stored profile or an administrative migration before
+  the affected file can resume from its persisted `framing_resume` state. A
+  normal configuration change never resets or removes that state; it is never
+  silently reconciled.
 - This document defines the on-disk checkpoint format's own migration
   policy only. It does not define a generic importer for unrelated path- or
   native-identity-keyed state from another product; the
