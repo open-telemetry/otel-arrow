@@ -2280,21 +2280,27 @@ This appendix records evidence, not normative authority.
 Implementation-derived evidence was inspected at initial snapshot HEAD
 `1bcad6ced074a9d7dd267ed3d466268a10315f38` at
 `2026-08-24T17:41:06Z`. A second read-only inspection used active implementation HEAD
-`1af9f3613ae7cd7964c348cd199ce76c64249469` at `2026-08-24T22:36:33Z`. That
-checkout also contained uncommitted delivery, runtime, worker, identity, reader, and
-factory integration, so those observations are implementation experience rather than a
-reproducible committed baseline.
+`1af9f3613ae7cd7964c348cd199ce76c64249469` at `2026-08-24T22:36:33Z`. The
+final read-only reconciliation used committed implementation HEAD
+`1414a0f436c56f8abac371815553feafdf9d842e` plus a seven-file tracked worktree
+delta at `2026-08-25T02:31:55Z`. The SHA-256 digest of `git diff --binary` for that
+delta was `2f9114536556bee7583f68aba29cc302ddf65725e88e5d59cf9dcbca8570e00a`.
 
 Current evidence confirms these intended behaviors:
 
 - committed decoder, framer, and bounded OTAP batch construction preserve exact source
   ranges, continuation, and one all-or-nothing progress-delta set;
-- the active integration owns exact `(batch_id, attempt)` correlation over opaque
+- the committed delivery integration owns exact `(batch_id, attempt)` correlation over opaque
   engine `CallData`, rejects stale completions, and independently revalidates file
   epochs and progress bases before commit;
 - retry resends the retained Arrow data without rereading sources;
-- core drain plumbing captures provisional source frontiers, awaits real completion,
-  rewinds unflushable tails, and forces outstanding progress sync;
+- ordinary truncation and resident-handle rotation are orchestrated through durable
+  epoch or finalization transitions with Ack-gated progress;
+- core drain plumbing captures provisional source frontiers, enforces those bounds,
+  awaits real completion, rewinds unflushable tails, and forces outstanding progress
+  sync;
+- reader EOF scheduling uses checked deadline arithmetic and reports terminal overflow
+  rather than wrapping;
 - direct Shutdown and clean drain have distinct live paths;
 - factory registration is present; and
 - optional record numbering implements the process-local behavior described above,
@@ -2309,36 +2315,35 @@ Verified contradictions and open integration gaps are:
 2. `Removed` still lacks a reason distinguishing exclusion revocation from
    disappearance or rotation. A resident newly excluded file can therefore continue
    being tailed instead of stopping at the next record boundary.
-3. Production rotation and truncation orchestration remain incomplete even though
-   lower-level framing, batching, and progress hooks exist. Removed pinned descriptors
-   can consume every descriptor slot, and configured durable-record retention is not
-   yet driven by worker maintenance.
-4. The active drain integration can invoke a partial-record flush whenever idle flush
-   is configured without first proving observed EOF. That violates the normative
-   EOF-gated condition and can change a live record boundary.
+3. Two rotation-lifecycle gaps remain after ordinary truncation and resident-handle
+   rotation orchestration. Removed pinned descriptors remain ineligible for normal
+   eviction and can consume every descriptor slot while continued late writes reset
+   finalization. Configured durable-record retention is not yet driven by worker
+   maintenance.
+4. Drain can still invoke a partial-record flush at the captured source frontier
+   without first proving observed EOF. The replay bound itself is enforced, but the
+   missing EOF-gated precondition can still change a live record boundary.
 5. Telemetry collection and terminal metrics remain incomplete.
-6. Very large accepted discovery poll intervals can overflow reader EOF deadline
-   arithmetic. Configuration or scheduler construction must reject such values before
-   a deadline can wrap.
-7. Permanent EOF behavior for an incomplete decoder unit or unresolved BOM probe
-   remains unresolved. Current drain rewinds such state rather than advancing it, but
-   final rotation still needs an explicit policy.
-8. Public OTAP attribute names for body/frame source ranges remain unresolved.
+6. Final rotation now selects a drop-and-finalize policy for an incomplete decoder
+   unit or unresolved BOM probe: it warns, does not commit those pending bytes, then
+   durably finalizes and releases the record. The permanent-EOF policy remains an open
+   normative decision, so this implementation choice is not yet an approved contract.
+7. Public OTAP attribute names for body/frame source ranges remain unresolved.
    Record-number implementation semantics are now consistent, but their public
    compatibility status still requires approval.
-9. Component-level memory formulas exist, but the aggregate receiver admission ceiling
+8. Component-level memory formulas exist, but the aggregate receiver admission ceiling
    and representative measurement remain incomplete. Runtime memory-pressure signals
    are not yet integrated.
-10. The current generated checkpoint ID hashes broader pipeline naming inputs than the
+9. The current generated checkpoint ID hashes broader pipeline naming inputs than the
    proposed receiver-node-identity default. This must be reconciled; an explicit
    `checkpoint.id` is currently required for reliable rename continuity.
-11. Controller `Ready` remains component-task readiness, not filelog ownership,
-    recovery, reconciliation, or source readiness.
-12. Worker join runs off the current-thread async core, but the active integration
-    still awaits that join without a bounded timeout. A stuck kernel call can therefore
-    outlive the intended bounded lifecycle.
-13. Windows directory sync is not equivalent to Unix directory `fsync`. Equal crash-
-    durability claims remain blocked on stronger Windows fault evidence.
+10. Controller `Ready` remains component-task readiness, not filelog ownership,
+   recovery, reconciliation, or source readiness.
+11. Worker join runs off the current-thread async core, but the current integration
+   still awaits that join without a bounded timeout. A stuck kernel call can therefore
+   outlive the intended bounded lifecycle.
+12. Windows directory sync is not equivalent to Unix directory `fsync`. Equal crash-
+   durability claims remain blocked on stronger Windows fault evidence.
 
 These gaps do not weaken the intended contracts in this document. They identify work
 required for a conforming Phase 1 implementation and focused review.
