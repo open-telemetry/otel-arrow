@@ -11,7 +11,7 @@ component: engine
 note: Increase the size allowed for log messages to avoid truncating important error information
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
-issues: []
+issues: [3900]
 
 # (Optional) One or more lines of additional information to render under the primary note.
 # These lines will be padded with 2 spaces and then inserted directly into the document.
