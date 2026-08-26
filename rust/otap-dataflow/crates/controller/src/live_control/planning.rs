@@ -639,20 +639,15 @@ impl<
         desired_config: &OtelDataflowSpec,
     ) -> Result<(), ControlPlaneError> {
         let top_level_changed = current_config.policies != desired_config.policies;
-        let group_policy_changed = current_config
+        let group_policy_changed = desired_config
             .groups
-            .keys()
-            .chain(desired_config.groups.keys())
-            .any(|group_id| {
-                current_config
-                    .groups
-                    .get(group_id)
-                    .and_then(|group| group.policies.as_ref())
-                    != desired_config
-                        .groups
-                        .get(group_id)
-                        .and_then(|group| group.policies.as_ref())
-            });
+            .iter()
+            .any(
+                |(group_id, desired_group)| match current_config.groups.get(group_id) {
+                    Some(current_group) => current_group.policies != desired_group.policies,
+                    None => desired_group.policies.is_some(),
+                },
+            );
         if top_level_changed || group_policy_changed {
             return Err(ControlPlaneError::UnsupportedMutation {
                 message: "live reconciliation does not support changing top-level or group policy declarations; move the changes to pipeline-level policies and retry"

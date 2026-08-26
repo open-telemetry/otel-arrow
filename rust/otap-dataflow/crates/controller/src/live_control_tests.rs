@@ -498,6 +498,32 @@ groups:
     .expect("engine config should parse")
 }
 
+fn engine_config_with_group_policy_and_pipeline() -> OtelDataflowSpec {
+    OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+groups:
+    g1:
+        policies:
+            channel_capacity:
+                control:
+                    node: 257
+        pipelines:
+            p1:
+                nodes:
+                    receiver:
+                        type: "urn:test:receiver:example"
+                        config: null
+                    exporter:
+                        type: "urn:test:exporter:example"
+                        config: null
+                connections:
+                    - { from: receiver, to: exporter }
+"#,
+    )
+    .expect("engine config with group policy should parse")
+}
+
 fn empty_engine_config() -> OtelDataflowSpec {
     OtelDataflowSpec::from_yaml("version: otel_dataflow/v1\n")
         .expect("empty engine config should parse")
@@ -3985,13 +4011,13 @@ fn reconcile_engine_config_applies_runtime_log_level() {
     assert_eq!(event_count.load(Ordering::SeqCst), 0);
 }
 
-/// Scenario: a full-config reconciliation request omits live stopped
-/// resources with `delete_missing` enabled.
-/// Guarantees: reconciliation deletes the omitted pipeline and then the
-/// now-empty group from committed live config.
+/// Scenario: a full-config reconciliation request omits a stopped pipeline and
+/// its policy-bearing group with `delete_missing` enabled.
+/// Guarantees: reconciliation deletes the omitted pipeline and group instead
+/// of treating removal of the group's policy declaration as unsupported.
 #[test]
 fn reconcile_engine_config_deletes_missing_resources_by_default() {
-    let config = engine_config_with_pipeline(simple_pipeline_yaml());
+    let config = engine_config_with_group_policy_and_pipeline();
     let runtime = test_runtime(&config);
 
     let status = runtime
@@ -4028,13 +4054,13 @@ fn reconcile_engine_config_deletes_missing_resources_by_default() {
     );
 }
 
-/// Scenario: a full-config reconciliation request omits live resources with
-/// `delete_missing` disabled.
-/// Guarantees: reconciliation succeeds without deleting the omitted group or
-/// pipeline.
+/// Scenario: a full-config reconciliation request omits a pipeline and its
+/// policy-bearing group with `delete_missing` disabled.
+/// Guarantees: reconciliation preserves the omitted pipeline, group, and
+/// group policy.
 #[test]
 fn reconcile_engine_config_preserves_missing_resources_when_requested() {
-    let config = engine_config_with_pipeline(simple_pipeline_yaml());
+    let config = engine_config_with_group_policy_and_pipeline();
     let runtime = test_runtime(&config);
 
     let status = runtime
@@ -4048,6 +4074,11 @@ fn reconcile_engine_config_preserves_missing_resources_when_requested() {
         snapshot.groups[&PipelineGroupId::from("g1")]
             .pipelines
             .contains_key(&PipelineId::from("p1"))
+    );
+    assert!(
+        snapshot.groups[&PipelineGroupId::from("g1")]
+            .policies
+            .is_some()
     );
 }
 
