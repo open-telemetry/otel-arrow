@@ -2804,7 +2804,7 @@ connections:
         .expect_err("topic runtime changes should be rejected");
 
     match err {
-        ControlPlaneError::RestartRequired { message } => {
+        ControlPlaneError::UnsupportedMutation { message } => {
             assert!(message.contains("topic broker configuration"));
             assert!(message.contains("restart required"));
         }
@@ -4193,7 +4193,7 @@ groups:
         .expect_err("topic runtime changes should be rejected");
 
     match err {
-        ControlPlaneError::RestartRequired { message } => {
+        ControlPlaneError::UnsupportedMutation { message } => {
             assert!(message.contains("topic broker configuration"));
             assert!(message.contains("restart required"));
         }
@@ -4406,7 +4406,7 @@ fn reconcile_engine_config_rejects_unsupported_engine_mutation() {
         .expect_err("startup-owned engine settings should be rejected");
 
     match err {
-        ControlPlaneError::RestartRequired { message } => {
+        ControlPlaneError::UnsupportedMutation { message } => {
             assert!(message.contains("engine configuration"));
             assert!(message.contains("restart required"));
         }
@@ -4428,7 +4428,7 @@ fn reconcile_engine_config_rejects_mixed_supported_and_unsupported_changes() {
         .reconcile_engine_config(reconcile_request(desired, true))
         .expect_err("a partially unsupported request should be rejected as a whole");
 
-    assert!(matches!(err, ControlPlaneError::RestartRequired { .. }));
+    assert!(matches!(err, ControlPlaneError::UnsupportedMutation { .. }));
     let state = runtime
         .state
         .lock()
@@ -4620,7 +4620,7 @@ groups:
         .expect_err("memory limiter runtime changes should be rejected");
 
     match err {
-        ControlPlaneError::RestartRequired { message } => {
+        ControlPlaneError::UnsupportedMutation { message } => {
             assert!(message.contains("process memory limiter"));
             assert!(message.contains("restart required"));
         }

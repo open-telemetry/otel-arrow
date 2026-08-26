@@ -119,16 +119,16 @@ traffic flip across the whole pipeline.
 | Regular pipeline topology, node config, and pipeline-level policies | Applied through create, replace, resize, or no-op rollout | Accepted when validation and planning succeed |
 | `engine.telemetry.logs.level` | Applied to running log subscribers | Accepted |
 | `engine.custom` | Committed as application-owned metadata | Accepted |
-| Other current or future `engine` fields | Startup-owned unless an explicit live-apply path is added | `restart_required` |
-| Process memory limiter | Process-wide sampler is created at startup | `restart_required` |
+| Other current or future `engine` fields | Startup-owned unless an explicit live-apply path is added | `unsupported_mutation`; restart required |
+| Process memory limiter | Process-wide sampler is created at startup | `unsupported_mutation`; restart required |
 | Topic declaration description | Committed as metadata; broker behavior is unchanged | Accepted |
-| Topic additions, removals, backend, selected mode, policies, or inferred runtime profile | Topic broker registry is created at startup | `restart_required` |
-| System observability pipeline | Created at startup | `restart_required` |
+| Topic additions, removals, backend, selected mode, policies, or inferred runtime profile | Topic broker registry is created at startup | `unsupported_mutation`; restart required |
+| System observability pipeline | Created at startup | `unsupported_mutation`; restart required |
 | Top-level or group policy declarations | Shared inheritance cannot be committed atomically across several pipeline rollouts | `unsupported_mutation`; move effective settings to pipeline-level policies and retry |
 
-`restart_required` means the submitted configuration is valid but can only be
-applied by restarting the process. `unsupported_mutation` means the caller must
-rewrite the request into a supported live-mutation scope before retrying.
+`unsupported_mutation` means the submitted configuration cannot be applied by
+this live operation. The message and table identify whether the caller should
+restart the process or rewrite the request into a supported scope before retrying.
 
 ## Consistency Model
 

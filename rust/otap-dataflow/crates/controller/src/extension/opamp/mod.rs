@@ -1889,18 +1889,13 @@ mod test {
         assert!(status.error_message.contains("error happen"));
     }
 
-    /// Scenario: OpAMP submits configs rejected by either live-mutation capability gate.
-    /// Guarantees: both errors report Failed and leave the original config effective.
+    /// Scenario: OpAMP submits a config rejected by live-mutation capability admission.
+    /// Guarantees: the error reports Failed and leaves the original config effective.
     #[tokio::test]
     async fn test_config_update_capability_errors_preserve_effective_config() {
-        let errors = [
-            ControlPlaneError::RestartRequired {
-                message: "restart required".into(),
-            },
-            ControlPlaneError::UnsupportedMutation {
-                message: "rewrite the mutation".into(),
-            },
-        ];
+        let errors = [ControlPlaneError::UnsupportedMutation {
+            message: "restart or rewrite the mutation".into(),
+        }];
 
         for error in errors {
             let initial_config = empty_engine_config();

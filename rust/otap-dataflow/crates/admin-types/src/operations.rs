@@ -127,8 +127,6 @@ pub enum OperationErrorKind {
     InvalidRequest,
     /// The requested live mutation is not supported in its submitted form.
     UnsupportedMutation,
-    /// The requested change is valid but requires restarting the process.
-    RestartRequired,
     /// The server failed while processing the request.
     Internal,
 }

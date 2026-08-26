@@ -183,8 +183,7 @@ pub async fn put_pipeline(
                     crate::ControlPlaneError::InvalidRequest { message },
                 );
             }
-            Err(error @ crate::ControlPlaneError::RestartRequired { .. })
-            | Err(error @ crate::ControlPlaneError::UnsupportedMutation { .. }) => {
+            Err(error @ crate::ControlPlaneError::UnsupportedMutation { .. }) => {
                 return operation_error_response(StatusCode::UNPROCESSABLE_ENTITY, error);
             }
             Err(other) => {
@@ -386,8 +385,7 @@ pub async fn shutdown_pipeline(
             StatusCode::UNPROCESSABLE_ENTITY,
             crate::ControlPlaneError::InvalidRequest { message },
         ),
-        Err(error @ crate::ControlPlaneError::RestartRequired { .. })
-        | Err(error @ crate::ControlPlaneError::UnsupportedMutation { .. }) => {
+        Err(error @ crate::ControlPlaneError::UnsupportedMutation { .. }) => {
             operation_error_response(StatusCode::UNPROCESSABLE_ENTITY, error)
         }
         Err(other) => operation_error_response(StatusCode::INTERNAL_SERVER_ERROR, other),
@@ -427,8 +425,7 @@ pub async fn delete_pipeline(
             StatusCode::UNPROCESSABLE_ENTITY,
             crate::ControlPlaneError::InvalidRequest { message },
         ),
-        Err(error @ crate::ControlPlaneError::RestartRequired { .. })
-        | Err(error @ crate::ControlPlaneError::UnsupportedMutation { .. }) => {
+        Err(error @ crate::ControlPlaneError::UnsupportedMutation { .. }) => {
             operation_error_response(StatusCode::UNPROCESSABLE_ENTITY, error)
         }
         Err(other) => operation_error_response(StatusCode::INTERNAL_SERVER_ERROR, other),
@@ -793,7 +790,7 @@ mod tests {
     /// Scenario: a pipeline reconfigure request would mutate startup-owned runtime state.
     /// Guarantees: the admin handler returns HTTP 422 with the restart-required wire kind.
     #[tokio::test]
-    async fn put_pipeline_returns_restart_required_for_runtime_boundary() {
+    async fn put_pipeline_returns_unsupported_mutation_for_runtime_boundary() {
         let response = put_pipeline(
             Path(("default".to_string(), "main".to_string())),
             Query(WaitParams {
@@ -801,7 +798,7 @@ mod tests {
                 timeout_secs: 60,
             }),
             State(test_app_state(Arc::new(StubControlPlane {
-                replace_result: Err(ControlPlaneError::RestartRequired {
+                replace_result: Err(ControlPlaneError::UnsupportedMutation {
                     message: "restart to change topic runtime".to_string(),
                 }),
                 rollout_status_result: Ok(None),
@@ -820,7 +817,7 @@ mod tests {
             .expect("body should collect");
         let error: OperationError =
             serde_json::from_slice(&body).expect("error body should deserialize");
-        assert_eq!(error.kind, OperationErrorKind::RestartRequired);
+        assert_eq!(error.kind, OperationErrorKind::UnsupportedMutation);
     }
 
     /// Scenario: a waited pipeline reconfigure request times out and the

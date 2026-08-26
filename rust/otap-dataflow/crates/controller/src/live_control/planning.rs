@@ -608,7 +608,7 @@ impl<
             .resources()
             .and_then(|resources| resources.memory_limiter.as_ref());
         if current != desired {
-            return Err(ControlPlaneError::RestartRequired {
+            return Err(ControlPlaneError::UnsupportedMutation {
                 message: "live reconciliation does not support changing the process memory limiter; restart required"
                     .to_owned(),
             });
@@ -626,7 +626,7 @@ impl<
         desired_engine.telemetry.logs.level = current_config.engine.telemetry.logs.level.clone();
         desired_engine.custom = current_config.engine.custom.clone();
         if desired_engine != current_config.engine {
-            return Err(ControlPlaneError::RestartRequired {
+            return Err(ControlPlaneError::UnsupportedMutation {
                 message: "live reconciliation does not support changing this engine configuration; restart required"
                     .to_owned(),
             });
@@ -667,7 +667,7 @@ impl<
         let current_profiles = Self::pipeline_topic_profiles(current_config)?;
         let target_profiles = Self::pipeline_topic_profiles(target_config)?;
         if current_profiles != target_profiles {
-            return Err(ControlPlaneError::RestartRequired {
+            return Err(ControlPlaneError::UnsupportedMutation {
                 message: "live reconciliation does not support changing the topic broker configuration; restart required"
                     .to_owned(),
             });
@@ -796,7 +796,7 @@ impl<
         let current_profiles = Self::pipeline_topic_profiles(&live_config)?;
         let candidate_profiles = Self::pipeline_topic_profiles(&candidate_config)?;
         if current_profiles != candidate_profiles {
-            return Err(ControlPlaneError::RestartRequired {
+            return Err(ControlPlaneError::UnsupportedMutation {
                 message: "live reconciliation does not support changing the topic broker configuration; restart required"
                     .to_owned(),
             });
