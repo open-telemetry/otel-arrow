@@ -662,6 +662,26 @@ impl<
         Ok(())
     }
 
+    /// Rejects target changes that do not have a complete live-apply path.
+    fn validate_reconcile_capabilities(
+        current_config: &OtelDataflowSpec,
+        target_config: &OtelDataflowSpec,
+    ) -> Result<(), ControlPlaneError> {
+        Self::validate_live_engine_config_supported(current_config, target_config)?;
+
+        let current_profiles = Self::pipeline_topic_profiles(current_config)?;
+        let target_profiles = Self::pipeline_topic_profiles(target_config)?;
+        if current_profiles != target_profiles {
+            return Err(ControlPlaneError::RestartRequired {
+                message: "live reconciliation does not support changing the topic broker configuration; restart required"
+                    .to_owned(),
+            });
+        }
+
+        Self::validate_live_memory_limiter_unchanged(current_config, target_config)?;
+        Self::validate_live_shared_policies_unchanged(current_config, target_config)
+    }
+
     /// Reserves, plans, and starts one explicit per-pipeline rollout.
     pub(super) fn request_reconfigure_pipeline(
         self: &Arc<Self>,
@@ -2051,18 +2071,7 @@ impl<
             },
         )?;
 
-        Self::validate_live_engine_config_supported(&live_config, &target_config)?;
-
-        let current_profiles = Self::pipeline_topic_profiles(&live_config)?;
-        let desired_profiles = Self::pipeline_topic_profiles(&target_config)?;
-        if current_profiles != desired_profiles {
-            return Err(ControlPlaneError::RestartRequired {
-                message: "live reconciliation does not support changing the topic broker configuration; restart required"
-                    .to_owned(),
-            });
-        }
-        Self::validate_live_memory_limiter_unchanged(&live_config, &target_config)?;
-        Self::validate_live_shared_policies_unchanged(&live_config, &target_config)?;
+        Self::validate_reconcile_capabilities(&live_config, &target_config)?;
 
         let explicitly_desired_keys: HashSet<_> = desired_config
             .groups
