@@ -4472,10 +4472,10 @@ fn reconcile_engine_config_rejects_top_level_policy_mutation() {
     assert_eq!(runtime.engine_config_snapshot(), config);
 }
 
-/// Scenario: full reconciliation changes a pipeline-group policy declaration.
-/// Guarantees: admission rejects the shared-scope mutation before committing the group.
+/// Scenario: full reconciliation creates an empty group with a policy declaration.
+/// Guarantees: the metadata-only group is committed because no running pipeline inherits it.
 #[test]
-fn reconcile_engine_config_rejects_group_policy_mutation() {
+fn reconcile_engine_config_accepts_policy_bearing_empty_group() {
     let config = empty_engine_config();
     let runtime = test_runtime(&config);
     let desired = OtelDataflowSpec::from_yaml(
@@ -4494,9 +4494,25 @@ groups:
     )
     .expect("group policy should parse");
 
+    let status = runtime
+        .reconcile_engine_config(reconcile_request(desired.clone(), true))
+        .expect("policy-bearing empty group should reconcile");
+
+    assert_eq!(status.state, EngineConfigReconcileState::Succeeded);
+    assert_eq!(runtime.engine_config_snapshot(), desired);
+}
+
+/// Scenario: full reconciliation adds a group policy inherited by an existing pipeline.
+/// Guarantees: admission rejects the shared-scope runtime mutation before rollout planning.
+#[test]
+fn reconcile_engine_config_rejects_group_policy_change_for_existing_pipeline() {
+    let config = engine_config_with_pipeline(simple_pipeline_yaml());
+    let runtime = test_runtime(&config);
+    let desired = engine_config_with_group_policy_and_pipeline();
+
     let err = runtime
         .reconcile_engine_config(reconcile_request(desired, true))
-        .expect_err("group policy changes should be rejected");
+        .expect_err("group policy changes affecting a pipeline should be rejected");
 
     assert!(matches!(err, ControlPlaneError::UnsupportedMutation { .. }));
     assert_eq!(runtime.engine_config_snapshot(), config);
