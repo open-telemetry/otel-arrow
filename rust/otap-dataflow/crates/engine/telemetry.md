@@ -15,15 +15,21 @@ emitted via `otel_*` log macros.
 | `channel.receiver.messages` | Number of messages successfully dequeued, grouped by `signal` for PData channels. | `crates/engine/src/channel_metrics.rs` |
 | `channel.receiver.queue.depth` | Current number of messages buffered in the channel. | `crates/engine/src/channel_metrics.rs` |
 | `channel.receiver.capacity` | Configured channel buffer capacity. | `crates/engine/src/channel_metrics.rs` |
-| `node.consumer.consumed.duration` | Duration from entry until the corresponding ack or nack is routed, in nanoseconds (MMSC). | `crates/engine/src/channel_metrics.rs` |
-| `node.consumer.consumed.messages` | Messages consumed by the node, grouped by the `signal` and `outcome` datapoint attributes. | `crates/engine/src/channel_metrics.rs` |
-| `node.consumer.consumed.items` | Signal items consumed (received) by an item-count-enabled node, grouped by the `signal` and `outcome` datapoint attributes. | `crates/engine/src/channel_metrics.rs` |
-| `node.producer.produced.duration` | Duration from production until the corresponding ack or nack is routed, in nanoseconds (MMSC). | `crates/engine/src/channel_metrics.rs` |
-| `node.producer.produced.messages` | Messages produced by the node, grouped by the `signal` and `outcome` datapoint attributes. | `crates/engine/src/channel_metrics.rs` |
-| `node.producer.produced.items` | Signal items produced (emitted) by an item-count-enabled node, grouped by the `signal` and `outcome` datapoint attributes. | `crates/engine/src/channel_metrics.rs` |
-| `flow.consumed.items` | Signal items entering an opted-in processor flow, grouped by the `signal` datapoint attribute. | `crates/engine/src/flow_metrics.rs` |
-| `flow.compute.duration` | Processor compute duration within an opted-in flow, grouped by the `signal` datapoint attribute. | `crates/engine/src/flow_metrics.rs` |
-| `flow.produced.items` | Signal items leaving an opted-in processor flow, grouped by the `signal` datapoint attribute. | `crates/engine/src/flow_metrics.rs` |
+| `node.input.duration` | Duration from entry until the corresponding ack or nack is routed, in seconds (histogram). | `crates/engine/src/channel_metrics.rs` |
+| `node.input.messages` | Messages received by the node, grouped by the `signal` and `outcome` datapoint attributes. | `crates/engine/src/channel_metrics.rs` |
+| `node.input.items` | Signal items received by an item-count-enabled node, grouped by the `signal` and `outcome` datapoint attributes. | `crates/engine/src/channel_metrics.rs` |
+| `node.input.size` | Logical payload bytes received by a size-enabled node, grouped by the `signal` and `outcome` datapoint attributes. | `crates/engine/src/channel_metrics.rs` |
+| `node.output.duration` | Duration from output until the corresponding ack or nack is routed, in seconds (histogram). | `crates/engine/src/channel_metrics.rs` |
+| `node.output.messages` | Messages emitted by the node, grouped by the `signal` and `outcome` datapoint attributes. | `crates/engine/src/channel_metrics.rs` |
+| `node.output.items` | Signal items emitted by an item-count-enabled node, grouped by the `signal` and `outcome` datapoint attributes. | `crates/engine/src/channel_metrics.rs` |
+| `node.output.size` | Logical payload bytes emitted by a size-enabled node, grouped by the `signal` and `outcome` datapoint attributes. | `crates/engine/src/channel_metrics.rs` |
+| `flow.input.messages` | PData messages entering an opted-in processor flow, grouped by the `signal` datapoint attribute. | `crates/engine/src/flow_metrics.rs` |
+| `flow.input.items` | Signal items entering an opted-in processor flow, grouped by the `signal` datapoint attribute. | `crates/engine/src/flow_metrics.rs` |
+| `flow.input.size` | Logical payload bytes entering an opted-in processor flow, grouped by the `signal` datapoint attribute. | `crates/engine/src/flow_metrics.rs` |
+| `flow.output.messages` | PData messages leaving an opted-in processor flow, grouped by the `signal` datapoint attribute. | `crates/engine/src/flow_metrics.rs` |
+| `flow.output.items` | Signal items leaving an opted-in processor flow, grouped by the `signal` datapoint attribute. | `crates/engine/src/flow_metrics.rs` |
+| `flow.output.size` | Logical payload bytes leaving an opted-in processor flow, grouped by the `signal` datapoint attribute. | `crates/engine/src/flow_metrics.rs` |
+| `flow.compute.duration` | Histogram of processor compute duration within an opted-in flow, in seconds and grouped by the `signal` datapoint attribute. | `crates/engine/src/flow_metrics.rs` |
 | `flow.dropped.items` | Signal items dropped at a decision node in an opted-in flow, grouped by the `signal` datapoint attribute. | `crates/engine/src/flow_metrics.rs` |
 | `pipeline.uptime` | Time since pipeline instance start. | `crates/engine/src/pipeline_metrics.rs` |
 | `pipeline.memory_usage` | Current heap memory in use by the pipeline thread (jemalloc only). | `crates/engine/src/pipeline_metrics.rs` |
@@ -75,13 +81,13 @@ neither condition is counted as a receive error. Alert on sustained send
 failures, or on `channel.receiver.queue.depth / channel.receiver.capacity`
 remaining near one, rather than on empty receive attempts.
 
-Channel metrics and node producer/consumer metrics observe different stages of
+Channel metrics and node input/output metrics observe different stages of
 a message's lifecycle:
 
 | Metric layer | Recorded when | Operational use |
 | --- | --- | --- |
 | `channel.sender` / `channel.receiver` | A forward-path send or receive operation completes. | Diagnose edge throughput, queue saturation, backpressure, and closed channels. |
-| `node.producer` / `node.consumer` | A terminal ACK or NACK unwinds through the node's route frame. | Attribute logical PData outcomes, durations, and item counts to nodes. |
+| `node.input` / `node.output` | A terminal ACK or NACK unwinds through the node's route frame. | Attribute logical PData outcomes, durations, item counts, and sizes to nodes. |
 
 Do not aggregate `outcome` values across these layers as equivalent events. For
 channel metrics, `refused` means local capacity backpressure and `failure`
@@ -115,7 +121,7 @@ result.
 | `pipeline.metrics.reporting.fail` | `warn` | Reporting pipeline internal metrics failed (non-fatal). | `crates/engine/src/pipeline_ctrl.rs` |
 | `tokio.metrics.reporting.fail` | `warn` | Reporting Tokio runtime metrics failed (non-fatal). | `crates/engine/src/pipeline_ctrl.rs` |
 | `channel.metrics.reporting.fail` | `warn` | Reporting channel metrics failed (non-fatal). | `crates/engine/src/pipeline_ctrl.rs` |
-| `node.metrics.reporting.fail` | `warn` | Reporting node (consumer/producer) metrics failed (non-fatal). | `crates/engine/src/pipeline_ctrl.rs` |
+| `node.metrics.reporting.fail` | `warn` | Reporting node input/output metrics failed (non-fatal). | `crates/engine/src/pipeline_ctrl.rs` |
 | `pipeline.ctrl.pending_sends.high` | `warn` | Pending sends buffer reached the warning threshold; a node's control channel may be persistently full. | `crates/engine/src/pipeline_ctrl.rs` |
 | `topic.tracked_publish.duplicate_message_id` | `warn` | Tracked publish tracker registered a duplicate message id and overwrote the previous entry. | `crates/engine/src/topic/types.rs` |
 

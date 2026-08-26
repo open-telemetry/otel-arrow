@@ -12,6 +12,126 @@ changes. See [`RELEASING.md`](../../RELEASING.md) for the versioning policy.
 
 <!-- next version -->
 
+## v0.52.0
+
+### :stop_sign: Breaking changes :stop_sign:
+
+- `all`: Rename OTAP Dataflow Engine Cargo packages from `otap-df-*` to `otel-arrow-dfe-*`. ([#1848](https://github.com/open-telemetry/otel-arrow/issues/1848))
+  Migration: Update Git or path dependency names and `cargo -p` selectors to `otel-arrow-dfe-*`, and change Rust imports from `otap_df_*` to `otel_arrow_dfe_*`.
+
+- `engine`: Rename node and flow metric scopes to input/output, add flow messages and size, and report durations as seconds histograms. ([#2884](https://github.com/open-telemetry/otel-arrow/issues/2884))
+  Migration: update node and flow scope selectors and flow metric configuration values from consumed/produced to input/output.
+
+- `observability`: Use component-specific `InstrumentationScope.name` values for internal logs, enabling more targeted log-level filters. ([#3738](https://github.com/open-telemetry/otel-arrow/issues/3738))
+  Component scopes are derived from URNs: `urn:otel:processor:transform` becomes `otel.processor.transform`. Migration: update scope-name queries and `engine.telemetry.logs.level` directives; package filters no longer select component events.
+
+- `pipeline`: Align exporter and Kafka metrics with bounded attributes, end-to-end latency, wire-byte terminology, and actionable failure categories. ([#2884](https://github.com/open-telemetry/otel-arrow/issues/2884), [#3300](https://github.com/open-telemetry/otel-arrow/issues/3300), [#3649](https://github.com/open-telemetry/otel-arrow/issues/3649))
+  Migration: Rename `exporter.pdata.exports.*` to `exporter.exports.*`; Kafka ingress to `receiver.kafka.consumer.records.*`; admitted lifecycle to `receiver.messages.*`. Export duration is seconds and excludes Ack/Nack. OTLP/OTAP failures add bounded `error.type` counters.
+
+- `pipeline`: kafka_exporter: add an allow_auto_create_topics setting (default true, for parity with the Go Kafka exporter) that is always written to the producer config as allow.auto.create.topics. ([#3509](https://github.com/open-telemetry/otel-arrow/issues/3509))
+  The value is always emitted and overrides any producer_config entry for
+  allow.auto.create.topics. Migration: to keep default-deny (recommended when a
+  client-controlled routing header selects the topic), set
+  allow_auto_create_topics: false.
+
+- `pipeline`: Remove duplicate fanout counters and identify timeout metrics by configured destination and signal. ([#3530](https://github.com/open-telemetry/otel-arrow/issues/3530))
+  Migration: Enable runtime_metrics: normal because the default basic level omits replacement node metrics. Use node.input for fanout outcomes, rename in_flight to active, and group timed_out by destination and signal.
+
+- `pipeline`: Consolidate OTAP receiver and exporter metrics into bounded signal, outcome, and rejection error dimensions. ([#3300](https://github.com/open-telemetry/otel-arrow/issues/3300))
+  Migration: Replace legacy OTAP metric queries with the documented `receiver.otap.*`, shared `exporter.exports`, and OTAP-specific `exporter.otap.*` names. Durations now use seconds (`s`) and exponential histograms; the `.p50`, `.p90`, and `.p99` gauges were removed.
+
+- `pipeline`: Parquet Azure storage now authenticates through a bound bearer_token_provider extension. ([#3356](https://github.com/open-telemetry/otel-arrow/issues/3356))
+  Migration: Remove auth and storage_scope from Parquet Azure storage config. Bind an azure_identity_auth extension configured with the Azure Storage scope.
+- `pipeline`: Route Geneva events to logical account groups and their current primary upload monikers. ([#3579](https://github.com/open-telemetry/otel-arrow/issues/3579))
+  Migration: Add `account_routing.default_group` to every Geneva exporter config. Add optional destination event/table overrides under `account_routing.events`.
+- `pipeline`: Refactor syslog_cef_receiver metrics to align with otlp_receiver telemetry. ([#3748](https://github.com/open-telemetry/otel-arrow/issues/3748))
+  Migration: Replaces received_logs_*, tcp_connections_*, tls_handshake_failures with received, forwards, rejections, truncations, connections, and transport metric sets.
+
+### :rocket: New components :rocket:
+
+- `pipeline`: Add the `k8s_service_account_token_auth` extension to authenticate Kubernetes service-account tokens and admit them by allow-list or RBAC. ([#3494](https://github.com/open-telemetry/otel-arrow/issues/3494))
+  Admission keys off the audience `TokenReview` confirms, so an identity is
+  only trusted for its confirmed audience. Kubernetes review calls have a
+  configurable timeout, and concurrent requests for one token share both
+  successful and failed review results.
+
+- `pipeline`: Add an experimental multi-signal file exporter for newline-delimited OTLP JSON capture and replay. ([#3773](https://github.com/open-telemetry/otel-arrow/issues/3773))
+  Configure exporter:file with an absolute path containing {signal}, {core_id}, and {generation}. The initial release supports logs, metrics, and traces.
+
+### :bulb: Enhancements :bulb:
+
+- `dependencies`: Upgrade various Rust dependencies. ([#3778](https://github.com/open-telemetry/otel-arrow/issues/3778), [#3779](https://github.com/open-telemetry/otel-arrow/issues/3779), [#3780](https://github.com/open-telemetry/otel-arrow/issues/3780), [#3781](https://github.com/open-telemetry/otel-arrow/issues/3781), [#3786](https://github.com/open-telemetry/otel-arrow/issues/3786), [#3866](https://github.com/open-telemetry/otel-arrow/issues/3866), [#3867](https://github.com/open-telemetry/otel-arrow/issues/3867), [#3868](https://github.com/open-telemetry/otel-arrow/issues/3868), [#3869](https://github.com/open-telemetry/otel-arrow/issues/3869))
+- `engine`: Add graceful OS signal handling to the Dataflow Engine executable with a double-signal force-exit convention. ([#2325](https://github.com/open-telemetry/otel-arrow/issues/2325))
+  Library embedders can opt in with ControllerRunOptions::handle_os_signals; it defaults to false so the host retains process-wide signal ownership.
+- `engine`: Add opt-in logical payload size to node produced and consumed metrics. ([#2884](https://github.com/open-telemetry/otel-arrow/issues/2884))
+  Enable with runtime_metrics: detailed for every node, or set policies.telemetry.size: true on individual nodes when runtime_metrics is normal.
+
+- `observability`: Avoid cause of failed OTLP gRPC requests getting truncated in error logs ([#3793](https://github.com/open-telemetry/otel-arrow/issues/3793))
+- `observability`: Allow admin API clients to set a User-Agent and identify dfctl requests with its version. ([#3800](https://github.com/open-telemetry/otel-arrow/issues/3800))
+- `observability`: Accept JSON and YAML engine configuration from OpAMP servers. ([#3387](https://github.com/open-telemetry/otel-arrow/issues/3387))
+  YAML is selected by its content type or detected when the OpAMP config file omits a content type, as the opamp-go example server does.
+- `observability`: Report dfctl or admin_api as the initiator in explicit pipeline shutdown status. ([#3800](https://github.com/open-telemetry/otel-arrow/issues/3800))
+- `pdata`: OTAP payload byte measurements now report logical Arrow buffer size. ([#3819](https://github.com/open-telemetry/otel-arrow/issues/3819))
+  This enables representation-native byte accounting for OTAP records without using retained allocation capacity or encoding the payload.
+- `pdata`: Publish the zero-dependency `otel-arrow-dfe-pdata-views` crate through the guarded release workflow. ([#2691](https://github.com/open-telemetry/otel-arrow/issues/2691))
+- `pipeline`: kafka_exporter: add a max_in_flight setting that pipelines Kafka deliveries for higher throughput while bounding in-flight memory and propagating backpressure upstream. ([#3509](https://github.com/open-telemetry/otel-arrow/issues/3509))
+  max_in_flight defaults to 10 (pipelined deliveries) and must be in the range 1
+  to 100000. Live reconfiguration applies the new value. Batches are drained on
+  shutdown and reconfig so none is dropped.
+
+- `pipeline`: kafka_exporter: add per-signal allowed_topics and allowed_topics_regex allowlists for header-routed topics, and require regex patterns to match the whole topic (anchored) rather than a substring. ([#3509](https://github.com/open-telemetry/otel-arrow/issues/3509))
+  A header-supplied topic outside the allowlist is permanently nacked. Whole-topic
+  matching closes a bypass where a substring match (e.g. tenant_.* also allowing
+  evil-tenant_x) permitted unintended topics. Migration: widen patterns that relied
+  on substring matching (e.g. add .*).
+
+- `pipeline`: Expanded the mock-broker integration tests for the contrib-nodes Kafka exporter, organized by focus area, hardening the exporter toward production use. ([#3509](https://github.com/open-telemetry/otel-arrow/issues/3509))
+  Added cases for delivery semantics, dynamic-topic routing, retry, encodings (mixed-signal, malformed payloads, header propagation), the acks and compression matrices, telemetry snapshots, failure recovery, and configuration/packaging. Gated behind the kafka-exporter feature.
+- `pipeline`: kafka_exporter: permanently nack non-retryable send errors instead of retrying them, and apply live reconfiguration (NodeControlMsg::Config) by swapping the producer in place. ([#3509](https://github.com/open-telemetry/otel-arrow/issues/3509))
+  Send errors that can never succeed (message too large, malformed record,
+  authorization failure, unsupported request) are now dropped at the source
+  rather than retried; other send failures stay retryable. Reconfigure drains
+  in-flight records before swapping and ignores an invalid config.
+
+- `pipeline`: kafka_receiver: compute the records_in_flight metric in constant time instead of rescanning every tracked partition on each receive-loop iteration. ([#3740](https://github.com/open-telemetry/otel-arrow/issues/3740))
+  The reported metric value is unchanged; only the per-iteration cost drops,
+  which reduces receiver overhead under high partition fan-out. Manual commit
+  mode only.
+
+- `pipeline`: Operators can now build the df_engine binary with experimental wasm processor plugin support by enabling the `wasm` Cargo feature (`--features wasm`) ([#2973](https://github.com/open-telemetry/otel-arrow/issues/2973), [#3227](https://github.com/open-telemetry/otel-arrow/issues/3227))
+  The `wasm` cargo feature is still off by default; enabling it force-links
+  `otel-arrow-dfe-wasm-host` into `df_engine` and registers the `wasm_processor`
+  factory (URN `urn:otel:processor:wasm_processor`). No wasmtime dependency
+  is pulled into the default build.
+
+- `pipeline`: Add error branch tests for temporal_reaggregation_processor ([#3718](https://github.com/open-telemetry/otel-arrow/issues/3718))
+- `pipeline`: Render metrics from OTLP bytes and OTAP Arrow records in the console exporter's pretty format. ([#3750](https://github.com/open-telemetry/otel-arrow/issues/3750))
+  Histograms use compact statistics by default, with complete bounds and buckets available through pretty.histogram: raw.
+- `pipeline`: Show approximate p50, p90, and p99 values in compact console histogram output. ([#3840](https://github.com/open-telemetry/otel-arrow/issues/3840))
+- `pipeline`: Reduce allocation overhead when exporting raw OTLP logs to ClickHouse. ([#3512](https://github.com/open-telemetry/otel-arrow/issues/3512))
+  Raw OTLP log transformation reuses attribute storage and sizes Arrow builders from recent batches without changing exported values.
+
+- `pipeline`: Reduce CPU used to export raw OTLP logs to ClickHouse. ([#3512](https://github.com/open-telemetry/otel-arrow/issues/3512))
+  Raw OTLP log requests now build ClickHouse columns directly. Inputs that cannot use the direct path automatically use the existing conversion path.
+
+- `query-engine`: add short circuit optimization to OTAP query engine for binary logical expressions having different data scopes ([#3817](https://github.com/open-telemetry/otel-arrow/issues/3817))
+
+### :toolbox: Bug fixes :toolbox:
+
+- `engine`: Keep pipeline identity and part of the failure reason visible when `state.observed_error` logs are too large. ([#3598](https://github.com/open-telemetry/otel-arrow/issues/3598))
+- `pipeline`: Make ClickHouse exports participate in pipeline ACK/NACK delivery tracking. ([#3512](https://github.com/open-telemetry/otel-arrow/issues/3512))
+  OTAP receivers using wait_for_result now respond after ClickHouse inserts finish. Traffic generators with enable_ack_nack wait for outstanding completions during graceful drain.
+
+- `pipeline`: Prevent the filter processor from exporting empty requests when every signal item is dropped. ([#3444](https://github.com/open-telemetry/otel-arrow/issues/3444))
+- `pipeline`: Report durable-buffer loss when finalized segments or WAL-only bundles expire during startup. ([#3705](https://github.com/open-telemetry/otel-arrow/issues/3705))
+  Startup validates existing segment files and decodes expired WAL entries without changing on-disk formats.
+  Finalized-segment loss includes persisted bytes; WAL-only expiry reports bundle, item, and signal counts.
+
+- `pipeline`: Preserve receiver item-count metrics through processors that batch, split, partition, or aggregate telemetry. ([#3803](https://github.com/open-telemetry/otel-arrow/issues/3803))
+- `query-engine`: fix OR expressions dropping matches when one side references an entirely absent attributes payload ([#3855](https://github.com/open-telemetry/otel-arrow/issues/3855))
+
+<!-- previous-version -->
+
 ## v0.51.0
 
 ### :stop_sign: Breaking changes :stop_sign:
