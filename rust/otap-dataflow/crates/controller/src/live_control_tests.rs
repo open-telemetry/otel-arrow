@@ -736,6 +736,32 @@ fn engine_config_with_context_entries(
     OtelDataflowSpec::from_yaml(&yaml).expect("context engine config should parse")
 }
 
+fn engine_config_with_group_policy_and_pipeline() -> OtelDataflowSpec {
+    OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+groups:
+    g1:
+        policies:
+            channel_capacity:
+                control:
+                    node: 257
+        pipelines:
+            p1:
+                nodes:
+                    receiver:
+                        type: "urn:test:receiver:example"
+                        config: null
+                    exporter:
+                        type: "urn:test:exporter:example"
+                        config: null
+                connections:
+                    - { from: receiver, to: exporter }
+"#,
+    )
+    .expect("engine config with group policy should parse")
+}
+
 fn empty_engine_config() -> OtelDataflowSpec {
     OtelDataflowSpec::from_yaml("version: otel_dataflow/v1\n")
         .expect("empty engine config should parse")
@@ -4906,13 +4932,13 @@ fn initial_config_activation_applies_log_level_before_noop_reconciliation() {
     assert_eq!(event_count.load(Ordering::SeqCst), 1);
 }
 
-/// Scenario: a full-config reconciliation request omits live stopped
-/// resources with `delete_missing` enabled.
-/// Guarantees: reconciliation deletes the omitted pipeline and then the
-/// now-empty group from committed live config.
+/// Scenario: a full-config reconciliation request omits a stopped pipeline and
+/// its policy-bearing group with `delete_missing` enabled.
+/// Guarantees: reconciliation deletes the omitted pipeline and group instead
+/// of treating removal of the group's policy declaration as unsupported.
 #[test]
 fn reconcile_engine_config_deletes_missing_resources_by_default() {
-    let config = engine_config_with_pipeline(simple_pipeline_yaml());
+    let config = engine_config_with_group_policy_and_pipeline();
     let runtime = test_runtime(&config);
 
     let status = runtime
@@ -5032,7 +5058,7 @@ groups:
 /// omitting deployed pipeline p2 with context declarations.
 /// Guarantees: `delete_missing=false` plans p1 as a no-op and retains p2.
 #[test]
-fn reconcile_engine_config_preserves_missing_resources_when_requested() {
+fn reconcile_engine_config_preserves_missing_context_pipeline() {
     let desired_config = engine_config_with_pipeline(
         r#"
         policies:
@@ -5087,6 +5113,34 @@ fn reconcile_engine_config_preserves_missing_resources_when_requested() {
                 .contains_key(&PipelineId::from(pipeline_id))
         );
     }
+}
+
+/// Scenario: a full-config reconciliation request omits a pipeline and its
+/// policy-bearing group with `delete_missing` disabled.
+/// Guarantees: reconciliation preserves the omitted pipeline, group, and
+/// group policy.
+#[test]
+fn reconcile_engine_config_preserves_missing_resources_when_requested() {
+    let config = engine_config_with_group_policy_and_pipeline();
+    let runtime = test_runtime(&config);
+
+    let status = runtime
+        .reconcile_engine_config(reconcile_request(empty_engine_config(), false))
+        .expect("missing resources should be preserved");
+
+    assert_eq!(status.state, EngineConfigReconcileState::Succeeded);
+    assert!(status.changes.is_empty());
+    let snapshot = runtime.engine_config_snapshot();
+    assert!(
+        snapshot.groups[&PipelineGroupId::from("g1")]
+            .pipelines
+            .contains_key(&PipelineId::from("p1"))
+    );
+    assert!(
+        snapshot.groups[&PipelineGroupId::from("g1")]
+            .policies
+            .is_some()
+    );
 }
 
 /// Scenario: full-config reconciliation is rejected after validation because a
