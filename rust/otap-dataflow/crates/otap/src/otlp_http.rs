@@ -1393,8 +1393,8 @@ mod tests {
     /// Scenario: A request carrying an invalid bearer token also carries a body
     /// larger than `max_request_body_size`, served end to end through `serve`.
     /// Guarantees: The request is rejected as unauthorized rather than oversized,
-    /// proving the credential is checked before the body is sized or read, so an
-    /// unauthenticated caller cannot make the receiver ingest a large payload.
+    /// pinning the guarantee that the credential is checked before the body is
+    /// sized or read.
     #[tokio::test]
     async fn rejects_bad_credential_before_reading_oversized_body() {
         use hyper::Method;

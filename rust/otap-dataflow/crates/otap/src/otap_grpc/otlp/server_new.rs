@@ -663,7 +663,7 @@ impl<S> Layer<S> for AuthorizationLayer {
     }
 }
 
-/// gRPC service wrapped with a guaranteed bearer authorizer.
+/// gRPC service that authorizes every request before dispatching it.
 #[derive(Clone)]
 pub struct AuthorizationService<S> {
     inner: S,
