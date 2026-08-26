@@ -124,7 +124,11 @@ traffic flip across the whole pipeline.
 | Topic declaration description | Committed as metadata; broker behavior is unchanged | Accepted |
 | Topic additions, removals, backend, selected mode, policies, or inferred runtime profile | Topic broker registry is created at startup | `unsupported_mutation`; restart required |
 | System observability pipeline | Created at startup | `unsupported_mutation`; restart required |
-| Top-level or group policy declarations | Shared inheritance cannot be committed atomically across several pipeline rollouts | `unsupported_mutation`; move effective settings to pipeline-level policies and retry |
+| Top-level policies, or group policies inherited by current or requested pipelines | Shared inheritance cannot be committed atomically across several pipeline rollouts | `unsupported_mutation`; move effective settings to pipeline-level policies and retry |
+
+Policies on empty groups are metadata-only and may be reconciled. Admission
+rejects a group policy change when either the current or requested group
+contains pipelines.
 
 `unsupported_mutation` means the submitted configuration cannot be applied by
 this live operation. The message and table identify whether the caller should
