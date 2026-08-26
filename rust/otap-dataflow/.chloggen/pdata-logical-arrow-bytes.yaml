@@ -1,5 +1,0 @@
-change_type: enhancement
-component: pdata
-note: "OTAP payload byte measurements now report logical Arrow buffer size."
-issues: [3819]
-subtext: "This enables representation-native byte accounting for OTAP records without using retained allocation capacity or encoding the payload."
