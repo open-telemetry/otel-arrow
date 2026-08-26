@@ -62,7 +62,9 @@ use crate::exporters::otlp_grpc_exporter::InFlightExports;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
 use otap_df_otap::metrics::ExporterPDataExportMetrics;
 use otap_df_otap::otlp_http::client_settings::{HttpClientError, HttpClientSettings};
-use otap_df_otap::otlp_http::{LOGS_PATH, METRICS_PATH, PROTOBUF_CONTENT_TYPE, TRACES_PATH};
+use otap_df_otap::otlp_http::{
+    LOGS_PATH, METRICS_PATH, PROTOBUF_CONTENT_TYPE, RpcStatus, TRACES_PATH,
+};
 use otap_df_otap::pdata::{Context, OtapPdata};
 
 use self::bearer_auth::BearerAuth;
@@ -697,6 +699,16 @@ enum ServiceRequestError {
         err: reqwest::Error,
     },
 
+    #[error(
+        "HTTP status client error ({status}) for url ({url}){}",
+        format_error_body(body)
+    )]
+    HttpStatus {
+        status: StatusCode,
+        url: String,
+        body: String,
+    },
+
     #[error("An error occurred decoding response body: {0}")]
     DecodeError(#[from] prost::DecodeError),
 
@@ -708,31 +720,30 @@ impl ServiceRequestError {
     fn is_retryable(&self) -> bool {
         match self {
             Self::RequestError { err: req_err } => {
-                match req_err.status() {
-                    Some(status) => {
-                        // we received a non-200 response. The OTLP HTTP spec defines certain
-                        // status codes for which the client may retry the request
-                        // https://opentelemetry.io/docs/specs/otlp/#retryable-response-codes
-                        status == StatusCode::TOO_MANY_REQUESTS
-                            || status == StatusCode::BAD_GATEWAY
-                            || status == StatusCode::SERVICE_UNAVAILABLE
-                            || status == StatusCode::GATEWAY_TIMEOUT
-                    }
-                    None => {
-                        // we've encountered some other kind of error sending the request. For
-                        // example, maybe there was connection refused, the server disconnected
-                        // without sending a response, or there was non HTTP timeout.
-                        //
-                        // The OTLP spec isn't entirely clear on what to do here, but it does
-                        // instruct to adhere to HTTP spec and explicitly states to retry on
-                        // server disconnects
-                        // https://opentelemetry.io/docs/specs/otlp/#all-other-responses
-                        //
-                        // we'll do something reasonable here and retry on these errors which
-                        // may be transient, network related
-                        req_err.is_connect() || req_err.is_timeout()
-                    }
-                }
+                // At this point the request never received an HTTP response (a
+                // response is instead reported via `HttpStatus`), so this is some
+                // other kind of error sending the request. For example, maybe
+                // there was connection refused, the server disconnected without
+                // sending a response, or there was a non-HTTP timeout.
+                //
+                // The OTLP spec isn't entirely clear on what to do here, but it does
+                // instruct to adhere to HTTP spec and explicitly states to retry on
+                // server disconnects
+                // https://opentelemetry.io/docs/specs/otlp/#all-other-responses
+                //
+                // we'll do something reasonable here and retry on these errors which
+                // may be transient, network related
+                req_err.is_connect() || req_err.is_timeout()
+            }
+
+            Self::HttpStatus { status, .. } => {
+                // The OTLP HTTP spec defines certain status codes for which the
+                // client may retry the request
+                // https://opentelemetry.io/docs/specs/otlp/#retryable-response-codes
+                *status == StatusCode::TOO_MANY_REQUESTS
+                    || *status == StatusCode::BAD_GATEWAY
+                    || *status == StatusCode::SERVICE_UNAVAILABLE
+                    || *status == StatusCode::GATEWAY_TIMEOUT
             }
 
             Self::BodyTooLarge { .. } | ServiceRequestError::DecodeError(_) => {
@@ -755,8 +766,7 @@ impl ServiceRequestError {
     fn is_auth_failure(&self) -> bool {
         matches!(
             self,
-            Self::RequestError { err }
-                if err.status() == Some(StatusCode::UNAUTHORIZED)
+            Self::HttpStatus { status, .. } if *status == StatusCode::UNAUTHORIZED
         )
     }
 }
@@ -776,12 +786,57 @@ fn format_source(e: &reqwest::Error) -> String {
     }
 }
 
+/// Formats a captured HTTP error response body for inclusion in the
+/// [`ServiceRequestError::HttpStatus`] display message, so e.g. a 400 Bad
+/// Request logged by [`finalize_completed_export`] carries the server's
+/// explanation (often the specific field/reason OTLP rejected) instead of
+/// just the status code.
+fn format_error_body(body: &str) -> String {
+    if body.is_empty() {
+        String::new()
+    } else {
+        format!(": {body}")
+    }
+}
+
+const MAX_ERROR_BODY_LOG_LENGTH: usize = 4096;
+
+fn error_body_summary(body: &Bytes) -> String {
+    let summary = RpcStatus::decode(body.clone())
+        .ok()
+        .filter(|status| !status.message.is_empty())
+        .map(|status| format!("{} (RPC code {})", status.message, status.code))
+        .unwrap_or_else(|| String::from_utf8_lossy(body).into_owned());
+
+    if summary.len() <= MAX_ERROR_BODY_LOG_LENGTH {
+        summary
+    } else {
+        let mut end = MAX_ERROR_BODY_LOG_LENGTH;
+        while !summary.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}... <truncated>", &summary[..end])
+    }
+}
+
 async fn query_result_to_service_response(
     signal_type: &SignalType,
     max_response_body_len: usize,
     result: Result<Response, reqwest::Error>,
 ) -> Result<ServiceResponse, ServiceRequestError> {
-    let resp = result?.error_for_status()?;
+    let resp = result?;
+    let status = resp.status();
+    if !status.is_success() {
+        // Capture the response body (bounded/best-effort) instead of relying on
+        // `error_for_status()`, which discards it: OTLP HTTP servers commonly put
+        // the rejection reason (e.g. why a 400 was returned) in the body.
+        let url = resp.url().to_string();
+        let body = match collect_body(resp, max_response_body_len).await {
+            Ok(body) => error_body_summary(&body),
+            Err(_) => "<response body too large to capture>".to_string(),
+        };
+        return Err(ServiceRequestError::HttpStatus { status, url, body });
+    }
     let mut body = collect_body(resp, max_response_body_len).await?;
 
     let service_resp = match signal_type {
@@ -1137,7 +1192,7 @@ mod test {
 
     /// run an http server that returns error for any request
     ///
-    /// if `status_err` is Some, server will return this status code with empty body
+    /// if `status_err` is Some, server will return this status code with an error body
     /// if `status_err` is false, server will return 200 status code with body that
     /// indicates only a partial success
     fn run_error_server(
@@ -1175,7 +1230,7 @@ mod test {
 
                                 Ok::<_, hyper::Error>(Response::builder()
                                     .status(status)
-                                    .body(Full::new(Bytes::from("".as_bytes().to_vec())))
+                                    .body(Full::new(Bytes::from("test backend rejected payload")))
                                     .unwrap())
                             } else {
                                 let mut body = Vec::new();
@@ -2479,7 +2534,8 @@ mod test {
 
                                 assert!(
                                     nack.reason.contains("HTTP status")
-                                        && nack.reason.contains(&status.to_string()),
+                                        && nack.reason.contains(&status.to_string())
+                                        && nack.reason.contains("test backend rejected payload"),
                                     "unexpected error message in Nack: {}",
                                     nack.reason
                                 );
@@ -2503,8 +2559,8 @@ mod test {
             })
     }
 
-    /// Scenario: The OTLP HTTP server returns retryable and permanent non-success statuses.
-    /// Guarantees: Each consumed request yields one Nack and exactly one failed export outcome.
+    /// Scenario: The OTLP HTTP server returns retryable and permanent statuses with an error body.
+    /// Guarantees: Each Nack includes the response body and records exactly one failed outcome.
     #[test]
     fn test_handles_non_200_response_status() {
         let test_cases = [(500, false), (429, true), (503, true), (504, true)];
