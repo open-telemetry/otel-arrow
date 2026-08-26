@@ -290,6 +290,8 @@ impl TransformProcessor {
         // Record flow metrics from the engine's per-batch execution counters
         effect_handler.record_flow_dropped_items(signal, counters.filtered as u64);
 
+        // Normalize every candidate output before deciding whether it contains
+        // semantic telemetry. This keeps default and named outputs consistent.
         if self.sanitize_results {
             sanitize_otap_batch(&mut default_otap_batch);
             for (_, routed_batch) in &mut router_impl.routed {
@@ -297,12 +299,15 @@ impl TransformProcessor {
             }
         }
 
-        // Empty outputs carry no telemetry and must not become downstream work.
+        // Empty named outputs must not consume downstream capacity or participate
+        // in the inbound request's ACK/NACK completion count.
         router_impl
             .routed
             .retain(|(_, routed_batch)| !routed_batch.is_empty());
         let default_has_data = !default_otap_batch.is_empty();
 
+        // With no named outputs, preserve the direct-context fast path. A fully
+        // empty transform instead completes the original request locally.
         if router_impl.routed.is_empty() {
             let mut pdata = OtapPdata::new(inbound_context, default_otap_batch.into());
             if default_has_data {
@@ -313,6 +318,8 @@ impl TransformProcessor {
                         TransformOperationError::new(TransformErrorType::OutputSend, error.into())
                     })?;
             } else {
+                // Report successful processing with no emitted output, then unwind
+                // the original context so upstream receives its ACK.
                 pdata.complete_processor_without_output(effect_handler);
                 effect_handler
                     .notify_ack(AckMsg::new(pdata))
@@ -369,6 +376,8 @@ impl TransformProcessor {
                     },
                 )
             })?;
+        // If the default output is empty, the first named output becomes the
+        // request's first completion dependency.
         let mut has_registered_outbound = false;
 
         // Track the default output only when it contains data. Routed outputs still share
@@ -379,11 +388,6 @@ impl TransformProcessor {
                 .contexts
                 .insert_outbound(inbound_ctx_key)
                 .ok_or_else(|| {
-                    // if we can't emit the default batch, we won't be able to route any of the
-                    // routed batches, so clear them to ensure they're not stuck in the router's
-                    // buffer
-                    router_impl.routed.clear();
-
                     // clear the inbound slot we allocated above as we haven't emitted anything
                     // that would eventually get Ack/Nack'd to clear it later
                     self.contexts.clear_inbound(inbound_ctx_key);
@@ -425,13 +429,15 @@ impl TransformProcessor {
                 .insert_outbound(inbound_ctx_key)
                 .ok_or_else(|| {
                     if has_registered_outbound {
-                        // Earlier outputs will eventually complete this inbound context.
+                        // Earlier outputs will eventually close this inbound context;
+                        // record the partial-send failure so that closure sends a NACK.
                         self.contexts.set_failed_inbound(
                             inbound_ctx_key,
                             "outbound slots were not available".into(),
                         );
                     } else {
-                        // No output can complete an inbound context with a zero count.
+                        // No default or named output was registered, so nothing can
+                        // close an inbound context whose outbound count is still zero.
                         self.contexts.clear_inbound(inbound_ctx_key);
                     }
 
