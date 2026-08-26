@@ -57,7 +57,7 @@ See the [telemetry-macros crate](../telemetry-macros) for details.
 
 ## Logging Macros
 
-There are internal macros defined in `otap_df_telemetry` with names
+There are internal macros defined in `otel_arrow_dfe_telemetry` with names
 `otel_info!`, `otel_warn!`, `otel_error!`, and `otel_debug!`. These
 macros all require a constant event-name string as the first argument;
 the event name must follow
@@ -74,7 +74,7 @@ declaring child modules:
 ```rust
 pub const TRANSFORM_PROCESSOR_URN: &str = "urn:otel:processor:transform";
 
-otap_df_telemetry::otel_component_scope!(
+otel_arrow_dfe_telemetry::otel_component_scope!(
     urn = TRANSFORM_PROCESSOR_URN,
     target = "otel.processor.transform",
 );
@@ -99,7 +99,7 @@ the Cargo package target.
 For example:
 
 ```rust
-use otap_df_telemetry::otel_info;
+use otel_arrow_dfe_telemetry::otel_info;
 
 otel_info!(
     "syslog_cef_receiver.start",
@@ -128,10 +128,10 @@ matches a hypothetical `otel.processor.transform_extra` target.
 
 When an investigation also needs diagnostics from a shared library, enable
 both targets. For example, OTLP receiver HTTP diagnostics include events owned
-by `otap-df-otap`:
+by `otel-arrow-dfe-otap`:
 
 ```text
-warn,otel.receiver.otlp=debug,otap-df-otap=debug
+warn,otel.receiver.otlp=debug,otel-arrow-dfe-otap=debug
 ```
 
 At startup, a valid `RUST_LOG` environment variable takes precedence over

@@ -8,9 +8,9 @@ use std::hint::black_box;
 use arrow::ipc::writer::StreamWriter;
 use bytes::Bytes;
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
-use otap_df_contrib_nodes::exporters::clickhouse_exporter::bench_support::LogsTransformBenchmark;
-use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
-use otap_df_pdata::testing::{fixtures, round_trip::encode_logs};
+use otel_arrow_dfe_contrib_nodes::exporters::clickhouse_exporter::bench_support::LogsTransformBenchmark;
+use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+use otel_arrow_dfe_pdata::testing::{fixtures, round_trip::encode_logs};
 use prost::Message;
 
 const LOGS_PER_BATCH: usize = 8192;

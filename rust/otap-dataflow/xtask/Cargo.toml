@@ -12,15 +12,16 @@ rust-version.workspace = true
 anyhow = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 syn = { workspace = true }
 # `span-locations` gives us `Span::start().line` for informational file:line in
 # the inventory output (line is not part of the baseline diff).
 proc-macro2 = { workspace = true, features = ["span-locations"] }
-otap-df-component-inventory-syntax = { workspace = true }
+otel-arrow-dfe-component-inventory-syntax = { workspace = true }
 toml = { workspace = true }
 tonic-prost-build = { workspace = true, features = ["cleanup-markdown"] }
 prost-build = { workspace = true }
-otap-df-pdata-otlp-model = { workspace = true }
+otel-arrow-dfe-pdata-otlp-model = { workspace = true }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }

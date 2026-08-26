@@ -40,9 +40,10 @@ use crate::effect_handler::{
 };
 use crate::error::{Error, TypedError};
 use crate::flow_metrics::{
-    ConsumedFlowMetrics, DecisionFlowMetrics, EndFlowMetrics, FLOW_SIGNALS,
-    FlowConsumedItemsMetrics, FlowDroppedItemsMetrics, FlowDurationMetrics,
-    FlowProducedItemsMetrics, SharedFlowMetricState, flow_signal_index, nanos_u64,
+    DecisionFlowMetrics, EndFlowMetrics, FLOW_SIGNALS, FlowDroppedItemsMetrics,
+    FlowDurationMetrics, FlowInputItemsMetrics, FlowInputMessageMetrics, FlowInputSizeMetrics,
+    FlowOutputItemsMetrics, FlowOutputMessageMetrics, FlowOutputSizeMetrics, InputFlowMetrics,
+    SharedFlowMetricState, flow_signal_index, nanos_u64,
 };
 use crate::message::Message;
 use crate::node::NodeId;
@@ -51,12 +52,12 @@ use crate::processor::ProcessorRuntimeRequirements;
 use crate::shared::message::SharedSender;
 use crate::{WakeupError, WakeupSetOutcome};
 use async_trait::async_trait;
-use otap_df_config::{PortName, SignalType};
-use otap_df_telemetry::common_attributes::SignalAttributes;
-use otap_df_telemetry::error::Error as TelemetryError;
-use otap_df_telemetry::instrument::Mmsc;
-use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetHandler};
-use otap_df_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_config::{PortName, SignalType};
+use otel_arrow_dfe_telemetry::common_attributes::SignalAttributes;
+use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
+use otel_arrow_dfe_telemetry::instrument::HistogramNormal;
+use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetHandler};
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -201,9 +202,13 @@ impl<PData> EffectHandler<PData> {
         &mut self,
         is_start: bool,
         is_end: bool,
-        consumed_items_metric: Option<MeasurementMetricSet<FlowConsumedItemsMetrics>>,
+        input_message_metric: Option<MeasurementMetricSet<FlowInputMessageMetrics>>,
+        input_items_metric: Option<MeasurementMetricSet<FlowInputItemsMetrics>>,
+        input_size_metric: Option<MeasurementMetricSet<FlowInputSizeMetrics>>,
         duration_metric: Option<MeasurementMetricSet<FlowDurationMetrics>>,
-        produced_items_metric: Option<MeasurementMetricSet<FlowProducedItemsMetrics>>,
+        output_items_metric: Option<MeasurementMetricSet<FlowOutputItemsMetrics>>,
+        output_message_metric: Option<MeasurementMetricSet<FlowOutputMessageMetrics>>,
+        output_size_metric: Option<MeasurementMetricSet<FlowOutputSizeMetrics>>,
         dropped_items_metric: Option<MeasurementMetricSet<FlowDroppedItemsMetrics>>,
         flow_metrics_active: bool,
         flow_needs_timing: bool,
@@ -211,17 +216,60 @@ impl<PData> EffectHandler<PData> {
         self.flow.is_start = is_start;
         self.flow.is_end = is_end;
         self.flow.is_decision = dropped_items_metric.is_some();
+        self.flow.interests.set(
+            crate::flow_metrics::FlowMetricInterests::INPUT_MESSAGES,
+            input_message_metric.is_some(),
+        );
+        self.flow.interests.set(
+            crate::flow_metrics::FlowMetricInterests::INPUT_ITEMS,
+            input_items_metric.is_some(),
+        );
+        self.flow.interests.set(
+            crate::flow_metrics::FlowMetricInterests::INPUT_SIZE,
+            input_size_metric.is_some(),
+        );
+        self.flow.interests.set(
+            crate::flow_metrics::FlowMetricInterests::COMPUTE_DURATION,
+            duration_metric.is_some(),
+        );
+        self.flow.interests.set(
+            crate::flow_metrics::FlowMetricInterests::OUTPUT_ITEMS,
+            output_items_metric.is_some(),
+        );
+        self.flow.interests.set(
+            crate::flow_metrics::FlowMetricInterests::OUTPUT_MESSAGES,
+            output_message_metric.is_some(),
+        );
+        self.flow.interests.set(
+            crate::flow_metrics::FlowMetricInterests::OUTPUT_SIZE,
+            output_size_metric.is_some(),
+        );
+        self.flow.interests.set(
+            crate::flow_metrics::FlowMetricInterests::DROPPED_ITEMS,
+            dropped_items_metric.is_some(),
+        );
         self.flow.active = flow_metrics_active;
         self.flow.needs_timing = flow_needs_timing;
-        self.flow.consumed = ConsumedFlowMetrics {
-            consumed_items: consumed_items_metric
+        self.flow.input = InputFlowMetrics {
+            input_messages: input_message_metric
                 .map(|metrics| (metrics, Arc::new(Mutex::new([0; 3])))),
+            input_items: input_items_metric.map(|metrics| (metrics, Arc::new(Mutex::new([0; 3])))),
+            input_size: input_size_metric.map(|metrics| (metrics, Arc::new(Mutex::new([0; 3])))),
         };
         self.flow.end = EndFlowMetrics {
-            duration: duration_metric
-                .map(|metrics| (metrics, Arc::new(Mutex::new([Mmsc::default(); 3])))),
-            produced_items: produced_items_metric
+            duration: duration_metric.map(|metrics| {
+                (
+                    metrics,
+                    Arc::new(Mutex::new(std::array::from_fn(|_| {
+                        HistogramNormal::default()
+                    }))),
+                )
+            }),
+            output_messages: output_message_metric
                 .map(|metrics| (metrics, Arc::new(Mutex::new([0; 3])))),
+            output_items: output_items_metric
+                .map(|metrics| (metrics, Arc::new(Mutex::new([0; 3])))),
+            output_size: output_size_metric.map(|metrics| (metrics, Arc::new(Mutex::new([0; 3])))),
         };
         self.flow.decision = DecisionFlowMetrics {
             dropped_items: dropped_items_metric
@@ -290,7 +338,7 @@ impl<PData> EffectHandler<PData> {
         nanos_u64(now.duration_since(prev).as_nanos())
     }
 
-    /// Record `total` nanoseconds into the shared flow_metric accumulator.
+    /// Record `total` nanoseconds as seconds into the shared flow metric histogram.
     pub fn record_flow_duration(&self, signal: SignalType, total: u64) {
         let Some((_, acc_mutex)) = self.flow.end.duration.as_ref() else {
             return;
@@ -298,31 +346,79 @@ impl<PData> EffectHandler<PData> {
         let mut acc = acc_mutex
             .lock()
             .expect("flow duration accumulator poisoned");
-        acc[flow_signal_index(signal)].record(total as f64);
+        acc[flow_signal_index(signal)].record(total as f64 / 1_000_000_000.0);
     }
 
-    /// Record consumed items into the shared flow accumulator.
-    pub fn record_flow_consumed_items(&self, signal: SignalType, items: u64) {
-        let Some((_, acc_mutex)) = self.flow.consumed.consumed_items.as_ref() else {
+    /// Record input items into the shared flow accumulator.
+    pub fn record_flow_input_items(&self, signal: SignalType, items: u64) {
+        let Some((_, acc_mutex)) = self.flow.input.input_items.as_ref() else {
             return;
         };
         let mut acc = acc_mutex
             .lock()
-            .expect("flow consumed_items accumulator poisoned");
+            .expect("flow input_items accumulator poisoned");
         let index = flow_signal_index(signal);
         acc[index] = acc[index].saturating_add(items);
     }
 
-    /// Record produced items into the shared flow accumulator.
-    pub fn record_flow_produced_items(&self, signal: SignalType, items: u64) {
-        let Some((_, acc_mutex)) = self.flow.end.produced_items.as_ref() else {
+    /// Record one message entering the flow.
+    pub fn record_flow_input_message(&self, signal: SignalType) {
+        let Some((_, acc_mutex)) = self.flow.input.input_messages.as_ref() else {
             return;
         };
         let mut acc = acc_mutex
             .lock()
-            .expect("flow produced_items accumulator poisoned");
+            .expect("flow input_messages accumulator poisoned");
+        let index = flow_signal_index(signal);
+        acc[index] = acc[index].saturating_add(1);
+    }
+
+    /// Record logical payload bytes entering the flow.
+    pub fn record_flow_input_size(&self, signal: SignalType, size: u64) {
+        let Some((_, acc_mutex)) = self.flow.input.input_size.as_ref() else {
+            return;
+        };
+        let mut acc = acc_mutex
+            .lock()
+            .expect("flow input_size accumulator poisoned");
+        let index = flow_signal_index(signal);
+        acc[index] = acc[index].saturating_add(size);
+    }
+
+    /// Record output items into the shared flow accumulator.
+    pub fn record_flow_output_items(&self, signal: SignalType, items: u64) {
+        let Some((_, acc_mutex)) = self.flow.end.output_items.as_ref() else {
+            return;
+        };
+        let mut acc = acc_mutex
+            .lock()
+            .expect("flow output_items accumulator poisoned");
         let index = flow_signal_index(signal);
         acc[index] = acc[index].saturating_add(items);
+    }
+
+    /// Record one message leaving the flow.
+    pub fn record_flow_output_message(&self, signal: SignalType) {
+        let Some((_, acc_mutex)) = self.flow.end.output_messages.as_ref() else {
+            return;
+        };
+        let mut acc = acc_mutex
+            .lock()
+            .expect("flow output_messages accumulator poisoned");
+        let index = flow_signal_index(signal);
+        acc[index] = acc[index].saturating_add(1);
+    }
+
+    /// Record logical payload bytes leaving the flow.
+    pub fn record_flow_output_size(&self, signal: SignalType, size: u64) {
+        let Some((_, acc_mutex)) = self.flow.end.output_size.as_ref() else {
+            return;
+        };
+        let mut acc = acc_mutex
+            .lock()
+            .expect("flow output_size accumulator poisoned");
+        let index = flow_signal_index(signal);
+        acc[index] = acc[index].saturating_add(size);
     }
 
     /// Record the count of items this decision node chose to drop.
@@ -342,11 +438,11 @@ impl<PData> EffectHandler<PData> {
 
     /// Drain accumulated flow_metric observations into the MetricSet and report.
     pub(crate) fn report_flow_metrics(&mut self) {
-        if let Some((metrics, acc_mutex)) = self.flow.consumed.consumed_items.as_mut() {
+        if let Some((metrics, acc_mutex)) = self.flow.input.input_messages.as_mut() {
             let drained = {
                 let mut guard = acc_mutex
                     .lock()
-                    .expect("flow consumed_items accumulator poisoned");
+                    .expect("flow input_messages accumulator poisoned");
                 std::mem::take(&mut *guard)
             };
             for signal in FLOW_SIGNALS {
@@ -354,8 +450,38 @@ impl<PData> EffectHandler<PData> {
                 if count != 0 {
                     metrics
                         .with(SignalAttributes { signal })
-                        .consumed_items
+                        .messages
                         .add(count);
+                }
+            }
+            let _ = self.core.metrics_reporter.report_measurement(metrics);
+        }
+        if let Some((metrics, acc_mutex)) = self.flow.input.input_items.as_mut() {
+            let drained = {
+                let mut guard = acc_mutex
+                    .lock()
+                    .expect("flow input_items accumulator poisoned");
+                std::mem::take(&mut *guard)
+            };
+            for signal in FLOW_SIGNALS {
+                let count = drained[flow_signal_index(signal)];
+                if count != 0 {
+                    metrics.with(SignalAttributes { signal }).items.add(count);
+                }
+            }
+            let _ = self.core.metrics_reporter.report_measurement(metrics);
+        }
+        if let Some((metrics, acc_mutex)) = self.flow.input.input_size.as_mut() {
+            let drained = {
+                let mut guard = acc_mutex
+                    .lock()
+                    .expect("flow input_size accumulator poisoned");
+                std::mem::take(&mut *guard)
+            };
+            for signal in FLOW_SIGNALS {
+                let size = drained[flow_signal_index(signal)];
+                if size != 0 {
+                    metrics.with(SignalAttributes { signal }).size.add(size);
                 }
             }
             let _ = self.core.metrics_reporter.report_measurement(metrics);
@@ -367,22 +493,21 @@ impl<PData> EffectHandler<PData> {
                     .expect("flow duration accumulator poisoned");
                 std::mem::take(&mut *guard)
             };
-            for signal in FLOW_SIGNALS {
-                let duration = drained[flow_signal_index(signal)];
-                if duration.get().count != 0 {
+            for (duration, signal) in drained.into_iter().zip(FLOW_SIGNALS) {
+                if !duration.is_empty() {
                     metrics
                         .with(SignalAttributes { signal })
-                        .compute_duration
+                        .duration
                         .merge(duration);
                 }
             }
             let _ = self.core.metrics_reporter.report_measurement(metrics);
         }
-        if let Some((metrics, acc_mutex)) = self.flow.end.produced_items.as_mut() {
+        if let Some((metrics, acc_mutex)) = self.flow.end.output_messages.as_mut() {
             let drained = {
                 let mut guard = acc_mutex
                     .lock()
-                    .expect("flow produced_items accumulator poisoned");
+                    .expect("flow output_messages accumulator poisoned");
                 std::mem::take(&mut *guard)
             };
             for signal in FLOW_SIGNALS {
@@ -390,8 +515,38 @@ impl<PData> EffectHandler<PData> {
                 if count != 0 {
                     metrics
                         .with(SignalAttributes { signal })
-                        .produced_items
+                        .messages
                         .add(count);
+                }
+            }
+            let _ = self.core.metrics_reporter.report_measurement(metrics);
+        }
+        if let Some((metrics, acc_mutex)) = self.flow.end.output_items.as_mut() {
+            let drained = {
+                let mut guard = acc_mutex
+                    .lock()
+                    .expect("flow output_items accumulator poisoned");
+                std::mem::take(&mut *guard)
+            };
+            for signal in FLOW_SIGNALS {
+                let count = drained[flow_signal_index(signal)];
+                if count != 0 {
+                    metrics.with(SignalAttributes { signal }).items.add(count);
+                }
+            }
+            let _ = self.core.metrics_reporter.report_measurement(metrics);
+        }
+        if let Some((metrics, acc_mutex)) = self.flow.end.output_size.as_mut() {
+            let drained = {
+                let mut guard = acc_mutex
+                    .lock()
+                    .expect("flow output_size accumulator poisoned");
+                std::mem::take(&mut *guard)
+            };
+            for signal in FLOW_SIGNALS {
+                let size = drained[flow_signal_index(signal)];
+                if size != 0 {
+                    metrics.with(SignalAttributes { signal }).size.add(size);
                 }
             }
             let _ = self.core.metrics_reporter.report_measurement(metrics);
@@ -406,10 +561,7 @@ impl<PData> EffectHandler<PData> {
             for signal in FLOW_SIGNALS {
                 let count = drained[flow_signal_index(signal)];
                 if count != 0 {
-                    metrics
-                        .with(SignalAttributes { signal })
-                        .dropped_items
-                        .add(count);
+                    metrics.with(SignalAttributes { signal }).items.add(count);
                 }
             }
             let _ = self.core.metrics_reporter.report_measurement(metrics);
@@ -425,11 +577,11 @@ impl<PData> EffectHandler<PData> {
         deadline: Instant,
     ) -> Result<(), TelemetryError> {
         let reporter = self.core.metrics_reporter.clone();
-        if let Some((metrics, acc_mutex)) = self.flow.consumed.consumed_items.as_mut() {
+        if let Some((metrics, acc_mutex)) = self.flow.input.input_messages.as_mut() {
             let drained = {
                 let mut guard = acc_mutex
                     .lock()
-                    .expect("flow consumed_items accumulator poisoned");
+                    .expect("flow input_messages accumulator poisoned");
                 std::mem::take(&mut *guard)
             };
             for signal in FLOW_SIGNALS {
@@ -437,8 +589,42 @@ impl<PData> EffectHandler<PData> {
                 if count != 0 {
                     metrics
                         .with(SignalAttributes { signal })
-                        .consumed_items
+                        .messages
                         .add(count);
+                }
+            }
+            let _ = reporter
+                .report_measurement_reliably_until(metrics, deadline)
+                .await?;
+        }
+        if let Some((metrics, acc_mutex)) = self.flow.input.input_items.as_mut() {
+            let drained = {
+                let mut guard = acc_mutex
+                    .lock()
+                    .expect("flow input_items accumulator poisoned");
+                std::mem::take(&mut *guard)
+            };
+            for signal in FLOW_SIGNALS {
+                let count = drained[flow_signal_index(signal)];
+                if count != 0 {
+                    metrics.with(SignalAttributes { signal }).items.add(count);
+                }
+            }
+            let _ = reporter
+                .report_measurement_reliably_until(metrics, deadline)
+                .await?;
+        }
+        if let Some((metrics, acc_mutex)) = self.flow.input.input_size.as_mut() {
+            let drained = {
+                let mut guard = acc_mutex
+                    .lock()
+                    .expect("flow input_size accumulator poisoned");
+                std::mem::take(&mut *guard)
+            };
+            for signal in FLOW_SIGNALS {
+                let size = drained[flow_signal_index(signal)];
+                if size != 0 {
+                    metrics.with(SignalAttributes { signal }).size.add(size);
                 }
             }
             let _ = reporter
@@ -452,12 +638,11 @@ impl<PData> EffectHandler<PData> {
                     .expect("flow duration accumulator poisoned");
                 std::mem::take(&mut *guard)
             };
-            for signal in FLOW_SIGNALS {
-                let duration = drained[flow_signal_index(signal)];
-                if duration.get().count != 0 {
+            for (duration, signal) in drained.into_iter().zip(FLOW_SIGNALS) {
+                if !duration.is_empty() {
                     metrics
                         .with(SignalAttributes { signal })
-                        .compute_duration
+                        .duration
                         .merge(duration);
                 }
             }
@@ -465,11 +650,11 @@ impl<PData> EffectHandler<PData> {
                 .report_measurement_reliably_until(metrics, deadline)
                 .await?;
         }
-        if let Some((metrics, acc_mutex)) = self.flow.end.produced_items.as_mut() {
+        if let Some((metrics, acc_mutex)) = self.flow.end.output_messages.as_mut() {
             let drained = {
                 let mut guard = acc_mutex
                     .lock()
-                    .expect("flow produced_items accumulator poisoned");
+                    .expect("flow output_messages accumulator poisoned");
                 std::mem::take(&mut *guard)
             };
             for signal in FLOW_SIGNALS {
@@ -477,8 +662,42 @@ impl<PData> EffectHandler<PData> {
                 if count != 0 {
                     metrics
                         .with(SignalAttributes { signal })
-                        .produced_items
+                        .messages
                         .add(count);
+                }
+            }
+            let _ = reporter
+                .report_measurement_reliably_until(metrics, deadline)
+                .await?;
+        }
+        if let Some((metrics, acc_mutex)) = self.flow.end.output_items.as_mut() {
+            let drained = {
+                let mut guard = acc_mutex
+                    .lock()
+                    .expect("flow output_items accumulator poisoned");
+                std::mem::take(&mut *guard)
+            };
+            for signal in FLOW_SIGNALS {
+                let count = drained[flow_signal_index(signal)];
+                if count != 0 {
+                    metrics.with(SignalAttributes { signal }).items.add(count);
+                }
+            }
+            let _ = reporter
+                .report_measurement_reliably_until(metrics, deadline)
+                .await?;
+        }
+        if let Some((metrics, acc_mutex)) = self.flow.end.output_size.as_mut() {
+            let drained = {
+                let mut guard = acc_mutex
+                    .lock()
+                    .expect("flow output_size accumulator poisoned");
+                std::mem::take(&mut *guard)
+            };
+            for signal in FLOW_SIGNALS {
+                let size = drained[flow_signal_index(signal)];
+                if size != 0 {
+                    metrics.with(SignalAttributes { signal }).size.add(size);
                 }
             }
             let _ = reporter
@@ -495,10 +714,7 @@ impl<PData> EffectHandler<PData> {
             for signal in FLOW_SIGNALS {
                 let count = drained[flow_signal_index(signal)];
                 if count != 0 {
-                    metrics
-                        .with(SignalAttributes { signal })
-                        .dropped_items
-                        .add(count);
+                    metrics.with(SignalAttributes { signal }).items.add(count);
                 }
             }
             let _ = reporter
@@ -603,11 +819,6 @@ impl<PData> EffectHandler<PData> {
         self.core.start_periodic_telemetry(duration).await
     }
 
-    /// Delay data.
-    pub async fn delay_data(&self, when: Instant, data: Box<PData>) -> Result<(), PData> {
-        self.core.delay_data(when, data).await
-    }
-
     /// Requeue retained pdata onto this node later.
     pub fn requeue_later(&self, when: Instant, data: Box<PData>) -> Result<(), PData> {
         self.core.requeue_later(when, data)
@@ -694,6 +905,10 @@ impl<PData> crate::processor::FlowMetricEffectHandler for EffectHandler<PData> {
         EffectHandler::is_flow_end(self)
     }
     #[inline]
+    fn flow_metric_interests(&self) -> crate::flow_metrics::FlowMetricInterests {
+        self.flow.interests
+    }
+    #[inline]
     fn take_elapsed_since_send_marker_ns(&self) -> u64 {
         EffectHandler::take_elapsed_since_send_marker_ns(self)
     }
@@ -702,12 +917,28 @@ impl<PData> crate::processor::FlowMetricEffectHandler for EffectHandler<PData> {
         EffectHandler::record_flow_duration(self, signal, total);
     }
     #[inline]
-    fn record_flow_consumed_items(&self, signal: SignalType, items: u64) {
-        EffectHandler::record_flow_consumed_items(self, signal, items);
+    fn record_flow_input_items(&self, signal: SignalType, items: u64) {
+        EffectHandler::record_flow_input_items(self, signal, items);
     }
     #[inline]
-    fn record_flow_produced_items(&self, signal: SignalType, items: u64) {
-        EffectHandler::record_flow_produced_items(self, signal, items);
+    fn record_flow_input_message(&self, signal: SignalType) {
+        EffectHandler::record_flow_input_message(self, signal);
+    }
+    #[inline]
+    fn record_flow_input_size(&self, signal: SignalType, size: u64) {
+        EffectHandler::record_flow_input_size(self, signal, size);
+    }
+    #[inline]
+    fn record_flow_output_items(&self, signal: SignalType, items: u64) {
+        EffectHandler::record_flow_output_items(self, signal, items);
+    }
+    #[inline]
+    fn record_flow_output_message(&self, signal: SignalType) {
+        EffectHandler::record_flow_output_message(self, signal);
+    }
+    #[inline]
+    fn record_flow_output_size(&self, signal: SignalType, size: u64) {
+        EffectHandler::record_flow_output_size(self, signal, size);
     }
 }
 
@@ -726,12 +957,12 @@ impl<PData: crate::Unwindable> crate::_private::AckNackRouting<PData> for Effect
 mod tests {
     #![allow(missing_docs)]
     use super::*;
-    use crate::flow_metrics::{FlowAttributeSet, FlowProducedItemsMetrics};
+    use crate::flow_metrics::{FlowAttributeSet, FlowOutputItemsMetrics};
     use crate::shared::message::SharedSender;
     use crate::testing::{test_node, test_pipeline_ctx};
-    use otap_df_channel::error::SendError;
-    use otap_df_telemetry::metrics::MetricValue;
-    use otap_df_telemetry::reporter::MetricsReporter;
+    use otel_arrow_dfe_channel::error::SendError;
+    use otel_arrow_dfe_telemetry::metrics::MetricValue;
+    use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
     use std::collections::HashMap;
 
     // Note: `impl FlowMetricHook for u64` lives in `crate::local::processor`
@@ -857,7 +1088,9 @@ mod tests {
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let mut eh =
             EffectHandler::<u64>::new(test_node("proc"), HashMap::new(), None, metrics_reporter);
-        eh.set_flow_roles(true, false, None, None, None, None, true, true);
+        eh.set_flow_roles(
+            true, false, None, None, None, None, None, None, None, None, true, true,
+        );
         assert!(eh.is_flow_start());
         assert!(eh.flow.active);
         assert!(eh.flow.needs_timing);
@@ -885,7 +1118,9 @@ mod tests {
         let mut eh =
             EffectHandler::<u64>::new(test_node("proc"), HashMap::new(), None, metrics_reporter);
         // active = true, needs_timing = false.
-        eh.set_flow_roles(true, false, None, None, None, None, true, false);
+        eh.set_flow_roles(
+            true, false, None, None, None, None, None, None, None, None, true, false,
+        );
         assert!(eh.flow.active);
         assert!(!eh.flow.needs_timing);
 
@@ -911,9 +1146,9 @@ mod tests {
             .metrics_registry()
             .register_entity(FlowAttributeSet::default());
         let registrar = ctx.metric_set_registrar_for_entity(entity_key);
-        let start_metric_set = FlowConsumedItemsMetrics::register(&registrar);
+        let start_metric_set = FlowInputItemsMetrics::register(&registrar);
         let duration_metric_set = FlowDurationMetrics::register(&registrar);
-        let outgoing_metric_set = FlowProducedItemsMetrics::register(&registrar);
+        let outgoing_metric_set = FlowOutputItemsMetrics::register(&registrar);
 
         let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(5);
         let mut eh =
@@ -921,9 +1156,13 @@ mod tests {
         eh.set_flow_roles(
             true,
             true,
+            None,
             Some(start_metric_set),
+            None,
             Some(duration_metric_set),
             Some(outgoing_metric_set),
+            None,
+            None,
             None,
             true,
             true,
@@ -931,18 +1170,18 @@ mod tests {
         assert!(eh.is_flow_start());
         assert!(eh.is_flow_end());
 
-        eh.record_flow_consumed_items(SignalType::Logs, 10);
-        eh.record_flow_consumed_items(SignalType::Metrics, 20);
+        eh.record_flow_input_items(SignalType::Logs, 10);
+        eh.record_flow_input_items(SignalType::Metrics, 20);
         for ns in [1000, 2000, 3000] {
             eh.record_flow_duration(SignalType::Logs, ns);
         }
-        eh.record_flow_produced_items(SignalType::Logs, 7);
-        eh.record_flow_produced_items(SignalType::Metrics, 8);
+        eh.record_flow_output_items(SignalType::Logs, 7);
+        eh.record_flow_output_items(SignalType::Metrics, 8);
 
         let start_before_report = eh
             .flow
-            .consumed
-            .consumed_items
+            .input
+            .input_items
             .as_ref()
             .unwrap()
             .1
@@ -951,28 +1190,21 @@ mod tests {
         assert_eq!(*start_before_report, [0, 20, 10]);
 
         let before_report = eh.flow.end.duration.as_ref().unwrap().1.lock().unwrap();
-        assert_eq!(before_report[2].get().count, 3);
-        assert!((before_report[2].get().sum - 6000.0).abs() < f64::EPSILON);
+        let (count, sum, _, _) = before_report[2].get().summary();
+        assert_eq!(count, 3);
+        assert!((sum - 0.000_006).abs() < f64::EPSILON);
         drop(before_report);
-        let produced_before_report = eh
-            .flow
-            .end
-            .produced_items
-            .as_ref()
-            .unwrap()
-            .1
-            .lock()
-            .unwrap();
-        assert_eq!(*produced_before_report, [0, 8, 7]);
+        let output_before_report = eh.flow.end.output_items.as_ref().unwrap().1.lock().unwrap();
+        assert_eq!(*output_before_report, [0, 8, 7]);
 
         drop(start_before_report);
-        drop(produced_before_report);
+        drop(output_before_report);
         eh.report_flow_metrics();
 
         let start_drained = eh
             .flow
-            .consumed
-            .consumed_items
+            .input
+            .input_items
             .as_ref()
             .unwrap()
             .1
@@ -985,21 +1217,13 @@ mod tests {
 
         let drained = eh.flow.end.duration.as_ref().unwrap().1.lock().unwrap();
         assert_eq!(
-            drained[2].get().count,
+            drained[2].get().summary().0,
             0,
             "duration accumulator should be drained"
         );
-        let produced_drained = eh
-            .flow
-            .end
-            .produced_items
-            .as_ref()
-            .unwrap()
-            .1
-            .lock()
-            .unwrap();
+        let output_drained = eh.flow.end.output_items.as_ref().unwrap().1.lock().unwrap();
         assert_eq!(
-            *produced_drained, [0; 3],
+            *output_drained, [0; 3],
             "stop item accumulator should be drained"
         );
 
@@ -1007,7 +1231,7 @@ mod tests {
             .try_recv()
             .expect("start flow_metric metric should be reported");
         let [MetricValue::U64(consumed_snapshot)] = snapshot.get_metrics() else {
-            panic!("expected one start flow consumed-item metric");
+            panic!("expected one flow input-item metric");
         };
         assert_eq!(
             snapshot.measurement_attribute_value("signal"),
@@ -1017,9 +1241,9 @@ mod tests {
 
         let snapshot = metrics_rx
             .try_recv()
-            .expect("logs flow consumed-item metric should be reported");
+            .expect("logs flow input-item metric should be reported");
         let [MetricValue::U64(consumed_snapshot)] = snapshot.get_metrics() else {
-            panic!("expected one start flow consumed-item metric");
+            panic!("expected one flow input-item metric");
         };
         assert_eq!(snapshot.measurement_attribute_value("signal"), Some("logs"));
         assert_eq!(*consumed_snapshot, 10);
@@ -1027,23 +1251,19 @@ mod tests {
         let snapshot = metrics_rx
             .try_recv()
             .expect("flow duration metric should be reported");
-        let [
-            MetricValue::Distribution(otap_df_telemetry::instrument::DistributionValue::Basic(
-                duration_snapshot,
-            )),
-        ] = snapshot.get_metrics()
-        else {
-            panic!("expected flow duration MMSC metric");
+        let [MetricValue::Distribution(duration_snapshot)] = snapshot.get_metrics() else {
+            panic!("expected flow duration histogram");
         };
-        assert_eq!(duration_snapshot.count, 3);
-        assert!((duration_snapshot.sum - 6000.0).abs() < f64::EPSILON);
+        let (count, sum, _, _) = duration_snapshot.summary();
+        assert_eq!(count, 3);
+        assert!((sum - 0.000_006).abs() < f64::EPSILON);
         assert_eq!(snapshot.measurement_attribute_value("signal"), Some("logs"));
 
         let snapshot = metrics_rx
             .try_recv()
-            .expect("metrics flow produced-item metric should be reported");
+            .expect("metrics flow output-item metric should be reported");
         let [MetricValue::U64(produced_snapshot)] = snapshot.get_metrics() else {
-            panic!("expected flow produced-item metric");
+            panic!("expected flow output-item metric");
         };
         assert_eq!(
             snapshot.measurement_attribute_value("signal"),
@@ -1053,11 +1273,122 @@ mod tests {
 
         let snapshot = metrics_rx
             .try_recv()
-            .expect("logs flow produced-item metric should be reported");
+            .expect("logs flow output-item metric should be reported");
         let [MetricValue::U64(produced_snapshot)] = snapshot.get_metrics() else {
-            panic!("expected flow produced-item metric");
+            panic!("expected flow output-item metric");
         };
         assert_eq!(snapshot.measurement_attribute_value("signal"), Some("logs"));
         assert_eq!(*produced_snapshot, 7);
+    }
+
+    #[test]
+    fn shared_flow_message_and_size_accumulators_drain_to_metric_sets() {
+        let (ctx, _) = test_pipeline_ctx();
+        let entity_key = ctx
+            .metrics_registry()
+            .register_entity(FlowAttributeSet::default());
+        let registrar = ctx.metric_set_registrar_for_entity(entity_key);
+        let input_messages = FlowInputMessageMetrics::register(&registrar);
+        let input_size = FlowInputSizeMetrics::register(&registrar);
+        let output_messages = FlowOutputMessageMetrics::register(&registrar);
+        let output_size = FlowOutputSizeMetrics::register(&registrar);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(16);
+        let mut handler =
+            EffectHandler::<u64>::new(test_node("proc"), HashMap::new(), None, metrics_reporter);
+        handler.set_flow_roles(
+            true,
+            true,
+            Some(input_messages),
+            None,
+            Some(input_size),
+            None,
+            None,
+            Some(output_messages),
+            Some(output_size),
+            None,
+            true,
+            false,
+        );
+
+        handler.record_flow_input_message(SignalType::Logs);
+        handler.record_flow_input_size(SignalType::Logs, 10);
+        handler.record_flow_output_message(SignalType::Metrics);
+        handler.record_flow_output_size(SignalType::Metrics, 20);
+
+        assert_eq!(
+            *handler
+                .flow
+                .input
+                .input_messages
+                .as_ref()
+                .unwrap()
+                .1
+                .lock()
+                .unwrap(),
+            [0, 0, 1]
+        );
+        assert_eq!(
+            *handler
+                .flow
+                .end
+                .output_size
+                .as_ref()
+                .unwrap()
+                .1
+                .lock()
+                .unwrap(),
+            [0, 20, 0]
+        );
+
+        handler.report_flow_metrics();
+
+        assert_eq!(
+            *handler
+                .flow
+                .input
+                .input_messages
+                .as_ref()
+                .unwrap()
+                .1
+                .lock()
+                .unwrap(),
+            [0; 3]
+        );
+        assert_eq!(
+            *handler
+                .flow
+                .input
+                .input_size
+                .as_ref()
+                .unwrap()
+                .1
+                .lock()
+                .unwrap(),
+            [0; 3]
+        );
+        assert_eq!(
+            *handler
+                .flow
+                .end
+                .output_messages
+                .as_ref()
+                .unwrap()
+                .1
+                .lock()
+                .unwrap(),
+            [0; 3]
+        );
+        assert_eq!(
+            *handler
+                .flow
+                .end
+                .output_size
+                .as_ref()
+                .unwrap()
+                .1
+                .lock()
+                .unwrap(),
+            [0; 3]
+        );
     }
 }

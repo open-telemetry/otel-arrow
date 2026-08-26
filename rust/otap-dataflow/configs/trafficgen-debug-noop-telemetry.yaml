@@ -22,8 +22,8 @@ engine:
                     name: "otlp.logs.produced.count"
                     description: "Count of logs produced"
                 - selector:
-                    scope_name: "node.consumer"
-                    instrument_name: "consumed.messages"
+                    scope_name: "node.input"
+                    instrument_name: "messages"
                   stream:
                     name: "node.messages.consumed.count"
                     description: "Count of messages consumed by each node"

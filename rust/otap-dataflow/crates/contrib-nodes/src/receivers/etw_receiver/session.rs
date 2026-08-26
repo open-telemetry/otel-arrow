@@ -69,7 +69,7 @@ use one_collect::etw::{
     self, EtwSession, ProviderSchemaSource, RegisteredProvider, for_each_registered_provider,
 };
 use one_collect::{Guid, guid_from_provider_name};
-use otap_df_engine::error::Error;
+use otel_arrow_dfe_engine::error::Error;
 use tokio::sync::mpsc;
 
 use super::{Config, ProviderConfig, ProviderKind, TraceLevel};
@@ -327,7 +327,7 @@ fn parse_guid(s: &str) -> Result<Guid, Error> {
             .all(|(part, &len)| part.len() == len && part.chars().all(|c| c.is_ascii_hexdigit()))
     {
         return Err(Error::ConfigError(Box::new(
-            otap_df_config::error::Error::InvalidUserConfig {
+            otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: format!(
                     "invalid GUID '{s}': expected format xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
                 ),
@@ -338,9 +338,11 @@ fn parse_guid(s: &str) -> Result<Guid, Error> {
     // Concatenate hex parts and parse.
     let hex: String = parts.concat();
     let val = u128::from_str_radix(&hex, 16).map_err(|e| {
-        Error::ConfigError(Box::new(otap_df_config::error::Error::InvalidUserConfig {
-            error: format!("invalid GUID '{s}': {e}"),
-        }))
+        Error::ConfigError(Box::new(
+            otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                error: format!("invalid GUID '{s}': {e}"),
+            },
+        ))
     })?;
 
     Ok(Guid::from_u128(val))
@@ -596,15 +598,17 @@ fn log_name_hashed_after_enumeration_error(name: &str, error: &Error) {
 /// Build the error returned when a `kind: manifest` provider name is not in the
 /// registered provider database.
 fn manifest_not_registered_error(name: &str) -> Error {
-    Error::ConfigError(Box::new(otap_df_config::error::Error::InvalidUserConfig {
-        error: format!(
-            "ETW provider '{name}' is configured with kind 'manifest' but is not \
+    Error::ConfigError(Box::new(
+        otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+            error: format!(
+                "ETW provider '{name}' is configured with kind 'manifest' but is not \
              registered in the system provider database. Register its manifest \
              (`wevtutil im`), set kind to 'tracelogging' if it is an \
              EventSource/TraceLogging provider, or specify a GUID directly. You \
              can list registered providers via `logman query providers`."
-        ),
-    }))
+            ),
+        },
+    ))
 }
 
 /// Build the error returned when [`for_each_registered_provider`] fails
@@ -613,13 +617,15 @@ fn manifest_not_registered_error(name: &str) -> Error {
 /// Accepts any `Display` source (the underlying `one_collect` error) so the
 /// receiver does not need to depend on `anyhow` directly.
 fn tdh_enumerate_error(source: impl std::fmt::Display) -> Error {
-    Error::ConfigError(Box::new(otap_df_config::error::Error::InvalidUserConfig {
-        error: format!(
-            "failed to enumerate registered ETW providers: {source}. Specify a \
+    Error::ConfigError(Box::new(
+        otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+            error: format!(
+                "failed to enumerate registered ETW providers: {source}. Specify a \
              GUID directly, or set kind to 'tracelogging' for \
              EventSource/TraceLogging providers."
-        ),
-    }))
+            ),
+        },
+    ))
 }
 
 // -- TDH field extraction -----------------------------------------------------
@@ -1101,7 +1107,7 @@ fn spawn_etw_session(
     for (guid, _, _) in &resolved_providers {
         if !seen.insert(guid.to_bytes()) {
             return Err(Error::ConfigError(Box::new(
-                otap_df_config::error::Error::InvalidUserConfig {
+                otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                     error: format!(
                         "multiple ETW providers resolve to the same GUID {}; \
                          remove the duplicate provider entry",
@@ -1234,8 +1240,22 @@ fn spawn_etw_session(
                                     result.event_data.event_data(),
                                 );
                             }
-                            Err(_) => {
+                            Err(e) => {
                                 let _ = telemetry.decode_failed.fetch_add(1, Ordering::Relaxed);
+                                // Per-event diagnostic at DEBUG (suppressed at the
+                                // default `info` log level). `NotFound` is expected
+                                // for unregistered-manifest, EventSource in-band, and
+                                // opaque events (e.g. EventWriteString);
+                                // `Malformed`/`Win32` signal a truncated payload or a
+                                // real TDH failure.
+                                otel_debug!(
+                                    "etw.event.decode_failed",
+                                    provider = %CanonicalGuid::from(anc.provider()),
+                                    event_id = event_id,
+                                    opcode = opcode,
+                                    version = version,
+                                    error = %e,
+                                );
                             }
                         }
                     }
@@ -1477,7 +1497,7 @@ pub(super) fn subscribe(
             // from node A's session and receive the wrong events.
             if existing.config != *config {
                 return Err(Error::ConfigError(Box::new(
-                    otap_df_config::error::Error::InvalidUserConfig {
+                    otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                         error: format!(
                             "ETW session_name '{}' is already in use with a different \
                              provider configuration; each receiver:etw node must use a \
@@ -1493,13 +1513,15 @@ pub(super) fn subscribe(
 
     let telemetry = Arc::clone(&entry.telemetry);
     let rx = entry.pool.pop().ok_or_else(|| {
-        Error::ConfigError(Box::new(otap_df_config::error::Error::InvalidUserConfig {
-            error: format!(
-                "ETW session_name '{}' is already in use; \
+        Error::ConfigError(Box::new(
+            otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                error: format!(
+                    "ETW session_name '{}' is already in use; \
                      each receiver:etw node must specify a distinct session_name",
-                config.session_name,
-            ),
-        }))
+                    config.session_name,
+                ),
+            },
+        ))
     })?;
 
     Ok((rx, telemetry))

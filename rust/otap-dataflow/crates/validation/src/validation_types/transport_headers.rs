@@ -13,7 +13,7 @@
 //! For **deny** checks, `None` entries are acceptable -- a signal without
 //! headers cannot contain a forbidden key.
 
-use otap_df_config::transport_headers::TransportHeaders;
+use otel_arrow_dfe_config::transport_headers::TransportHeaders;
 use serde::{Deserialize, Serialize};
 
 /// A key/value pair for transport header assertions.
@@ -144,7 +144,7 @@ pub fn validate_transport_header_deny_keys(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_config::transport_headers::{TransportHeader, TransportHeaders};
+    use otel_arrow_dfe_config::transport_headers::{TransportHeader, TransportHeaders};
 
     fn make_headers(entries: &[(&str, &str)]) -> TransportHeaders {
         let mut headers = TransportHeaders::default();

@@ -16,18 +16,18 @@
 
 use super::*;
 use chrono::Utc;
-use otap_df_admin::{
+use otel_arrow_dfe_admin::{
     ConfigChangeAction, ConfigChangeStatus, ControlPlane, ControlPlaneError,
     EngineConfigReconcileRequest, EngineConfigReconcileState, EngineConfigReconcileStatus,
     GroupDeleteStatus, PipelineDeleteStatus, PipelineDetails,
     PipelineRolloutState as ApiPipelineRolloutState,
-    PipelineRolloutSummary as ApiPipelineRolloutSummary, ReconfigureRequest, RolloutCoreStatus,
-    RolloutStatus, ShutdownCoreStatus, ShutdownStatus,
+    PipelineRolloutSummary as ApiPipelineRolloutSummary, PipelineShutdownInitiator,
+    ReconfigureRequest, RolloutCoreStatus, RolloutStatus, ShutdownCoreStatus, ShutdownStatus,
 };
-use otap_df_engine::topology::NumaTopology;
-use otap_df_state::conditions::ConditionStatus;
-use otap_df_state::phase::PipelinePhase;
-use otap_df_state::pipeline_status::{PipelineRolloutState, PipelineRolloutSummary};
+use otel_arrow_dfe_engine::topology::NumaTopology;
+use otel_arrow_dfe_state::conditions::ConditionStatus;
+use otel_arrow_dfe_state::phase::PipelinePhase;
+use otel_arrow_dfe_state::pipeline_status::{PipelineRolloutState, PipelineRolloutSummary};
 use std::any::Any;
 use std::backtrace::Backtrace;
 use std::collections::VecDeque;
@@ -89,8 +89,6 @@ pub(super) struct ControllerRuntime<PData: 'static + Clone + Send + Sync + std::
     telemetry_reporting_interval: Duration,
     /// Memory-pressure signal fanout shared with pipeline runtimes.
     memory_pressure_tx: tokio::sync::watch::Sender<MemoryPressureChanged>,
-    /// Main controller thread unparked when recovery becomes fatal.
-    controller_thread: thread::Thread,
     /// All mutable live-control state protected by a single mutex.
     state: Mutex<ControllerRuntimeState>,
     /// Wakes global shutdown waiters when runtime instance liveness changes.
@@ -152,7 +150,6 @@ impl<
             log_filter_handle,
             telemetry_reporting_interval,
             memory_pressure_tx,
-            controller_thread: thread::current(),
             state: Mutex::new(ControllerRuntimeState {
                 live_config,
                 config_revision: 0,
@@ -179,6 +176,7 @@ impl<
                 next_recovery_id: 0,
                 next_pipeline_operation_reservation_id: 0,
                 first_error: None,
+                instance_wait_released: false,
                 global_shutdown_requested: false,
                 global_shutdown_coordinators: 0,
             }),
@@ -487,9 +485,14 @@ impl<
         pipeline_group_id: &str,
         pipeline_id: &str,
         timeout_secs: u64,
+        initiator: PipelineShutdownInitiator,
     ) -> Result<ShutdownStatus, ControlPlaneError> {
-        self.runtime
-            .request_shutdown_pipeline(pipeline_group_id, pipeline_id, timeout_secs)
+        self.runtime.request_shutdown_pipeline_with_initiator(
+            pipeline_group_id,
+            pipeline_id,
+            timeout_secs,
+            initiator,
+        )
     }
 
     fn reconfigure_pipeline(

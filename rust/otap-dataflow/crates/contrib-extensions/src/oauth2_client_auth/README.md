@@ -85,7 +85,7 @@ The extension reaches the token endpoint over TLS through a `reqwest`/`rustls`
 client, which requires a process-wide `rustls` crypto provider. The deployed
 binary **must** enable exactly one `crypto-*` feature (`crypto-ring`,
 `crypto-aws-lc`, `crypto-openssl`, or `crypto-symcrypt`, forwarded to
-`otap-df-otap`); the workspace binary's default build includes `crypto-ring`. A
+`otel-arrow-dfe-otap`); the workspace binary's default build includes `crypto-ring`. A
 build that enables `oauth2-client-auth-extension` without any `crypto-*` feature
 installs no provider, and token acquisition panics at runtime with "No provider
 set".

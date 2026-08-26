@@ -10,16 +10,16 @@
 //!
 //! ## Note on Naming
 //!
-//! These macros use `otel_*` names to match the API of `otap_df_telemetry` macros,
+//! These macros use `otel_*` names to match the API of `otel_arrow_dfe_telemetry` macros,
 //! providing a familiar interface for developers working across the codebase.
 //! However, these are **crate-private** macros that do not depend on
-//! `otap_df_telemetry` - they are simple wrappers around `tracing` with
+//! `otel_arrow_dfe_telemetry` - they are simple wrappers around `tracing` with
 //! enforced event names.
 //!
-//! ## Keeping in Sync with `otap_df_telemetry`
+//! ## Keeping in Sync with `otel_arrow_dfe_telemetry`
 //!
 //! The macro implementations here should stay aligned with
-//! [`otap_df_telemetry::internal_events`](../../telemetry/src/internal_events.rs).
+//! [`otel_arrow_dfe_telemetry::internal_events`](../../telemetry/src/internal_events.rs).
 //! If the telemetry crate changes how it invokes `tracing` (e.g., field
 //! wrapping, target strategy), apply the same changes here so that quiver
 //! log output is consistent with the rest of the engine.

@@ -6,7 +6,7 @@
 use crate::pipeline::expr::VALUE_COLUMN_NAME;
 use arrow::datatypes::{DataType, TimeUnit};
 use datafusion::logical_expr::{Expr, cast};
-use otap_df_pdata::schema::consts;
+use otel_arrow_dfe_pdata::schema::consts;
 
 /// Identifier of the logical type of some expression/column.
 ///

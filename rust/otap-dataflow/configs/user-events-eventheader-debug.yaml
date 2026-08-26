@@ -10,7 +10,7 @@ groups:
         #
         # Build:    cargo build --features user_events-eventheader
         # Run:      ./target/debug/df_engine --config configs/user-events-eventheader-debug.yaml --num-cores 1
-        # Produce:  taskset -c 0 cargo run -p otap-df-contrib-nodes --features user_events-eventheader --example user_events_eventheader_producer
+        # Produce:  taskset -c 0 cargo run -p otel-arrow-dfe-contrib-nodes --features user_events-eventheader --example user_events_eventheader_producer
         # Verify:   cat /tmp/user_events_eventheader_debug.log
         #
         # With --num-cores 1, df_engine drains CPU 0 only. Keep the producer on
@@ -28,7 +28,7 @@ groups:
             type: urn:otel:receiver:user_events
             config:
               subscriptions:
-                - tracepoint: "otap_df_eventheader_demo_L4K1"
+                - tracepoint: "otel_arrow_dfe_eventheader_demo_L4K1"
                   format:
                     type: event_header
               session:

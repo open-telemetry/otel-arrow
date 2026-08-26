@@ -18,28 +18,28 @@ use crate::common::kafka::{MSG_FORMAT_OTAP, MSG_FORMAT_OTLP, MessageFormat};
 use async_trait::async_trait;
 use bytes::Bytes;
 use linkme::distributed_slice;
-use otap_df_config::SignalType;
-use otap_df_config::error::Error as ConfigError;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_config::transport_headers::TransportHeaders;
-use otap_df_config::transport_headers_policy::HeaderCapturePolicy;
-use otap_df_config::validation::validate_typed_config;
-use otap_df_engine::config::ReceiverConfig;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::{CallData, Context8u8, NodeControlMsg};
-use otap_df_engine::error::{Error as EngineError, ReceiverErrorKind, format_error_sources};
-use otap_df_engine::local::receiver as local;
-use otap_df_engine::node::NodeId;
-use otap_df_engine::receiver::ReceiverWrapper;
-use otap_df_engine::terminal_state::TerminalState;
-use otap_df_engine::{Interests, ProducerEffectHandlerExtension, ReceiverFactory};
-use otap_df_otap::OTAP_RECEIVER_FACTORIES;
-use otap_df_otap::pdata::{Context, OtapPdata};
-use otap_df_pdata::Consumer as PdataConsumer;
-use otap_df_pdata::OtlpProtoBytes;
-use otap_df_pdata::otap::{OtapArrowRecords, from_record_messages};
-use otap_df_pdata::proto::opentelemetry::arrow::v1::BatchArrowRecords;
-use otap_df_telemetry::common_attributes::{Outcome, ReceiverRejectionErrorType};
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_config::transport_headers::TransportHeaders;
+use otel_arrow_dfe_config::transport_headers_policy::HeaderCapturePolicy;
+use otel_arrow_dfe_config::validation::validate_typed_config;
+use otel_arrow_dfe_engine::config::ReceiverConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::control::{CallData, Context8u8, NodeControlMsg};
+use otel_arrow_dfe_engine::error::{Error as EngineError, ReceiverErrorKind, format_error_sources};
+use otel_arrow_dfe_engine::local::receiver as local;
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
+use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_engine::{Interests, ProducerEffectHandlerExtension, ReceiverFactory};
+use otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES;
+use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
+use otel_arrow_dfe_pdata::Consumer as PdataConsumer;
+use otel_arrow_dfe_pdata::OtlpProtoBytes;
+use otel_arrow_dfe_pdata::otap::{OtapArrowRecords, from_record_messages};
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::BatchArrowRecords;
+use otel_arrow_dfe_telemetry::common_attributes::{Outcome, ReceiverRejectionErrorType};
 use prost::Message;
 use rdkafka::Message as _;
 use rdkafka::consumer::stream_consumer::StreamConsumer;
@@ -221,24 +221,25 @@ pub struct KafkaReceiver {
 /// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
 /// This macro is part of the `linkme` crate which is considered safe and well maintained.
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Receiver)]
+#[otel_arrow_dfe_engine::component_inventory(category = Receiver)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static KAFKA_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: KAFKA_RECEIVER_URN,
-    create: |pipeline: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             receiver_config: &ReceiverConfig,
-             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
-        Ok(ReceiverWrapper::local(
-            KafkaReceiver::from_config(pipeline, &node_config.config)?,
-            node,
-            node_config,
-            receiver_config,
-        ))
-    },
+    create:
+        |pipeline: PipelineContext,
+         node: NodeId,
+         node_config: Arc<NodeUserConfig>,
+         receiver_config: &ReceiverConfig,
+         _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
+            Ok(ReceiverWrapper::local(
+                KafkaReceiver::from_config(pipeline, &node_config.config)?,
+                node,
+                node_config,
+                receiver_config,
+            ))
+        },
     validate_config: validate_typed_config::<KafkaReceiverConfig>,
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
 };
 
 impl KafkaReceiver {
@@ -1693,24 +1694,26 @@ mod tests {
     use crate::common::kafka::test::producer::SendRecord;
     use crate::common::kafka::test::wait::poll_until;
     use crate::common::kafka::test::with_cluster;
-    use otap_df_config::transport_headers_policy::{CaptureDefaults, CaptureRule};
-    use otap_df_engine::context::ControllerContext;
-    use otap_df_engine::control::RuntimeControlMsg;
-    use otap_df_pdata::OtlpProtoBytes;
-    use otap_df_pdata::Producer;
-    use otap_df_pdata::otap::{Logs, Metrics};
-    use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
-    use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
-    use otap_df_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
-    use otap_df_pdata::proto::opentelemetry::common::v1::{
+    use otel_arrow_dfe_config::transport_headers_policy::{CaptureDefaults, CaptureRule};
+    use otel_arrow_dfe_engine::context::ControllerContext;
+    use otel_arrow_dfe_engine::control::RuntimeControlMsg;
+    use otel_arrow_dfe_pdata::OtlpProtoBytes;
+    use otel_arrow_dfe_pdata::Producer;
+    use otel_arrow_dfe_pdata::otap::{Logs, Metrics};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{
         AnyValue, InstrumentationScope, KeyValue, any_value,
     };
-    use otap_df_pdata::proto::opentelemetry::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
-    use otap_df_pdata::proto::opentelemetry::metrics::v1::{ResourceMetrics, ScopeMetrics};
-    use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
-    use otap_df_pdata::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans, Span};
-    use otap_df_pdata::{OtapArrowRecords, OtapPayload, PayloadData, TryIntoWithOptions};
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{
+        LogRecord, ResourceLogs, ScopeLogs,
+    };
+    use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{ResourceMetrics, ScopeMetrics};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans, Span};
+    use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayload, PayloadData, TryIntoWithOptions};
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use prost::Message;
     use rdkafka::ClientConfig;
     use rdkafka::consumer::{Consumer, StreamConsumer};
@@ -1727,7 +1730,7 @@ mod tests {
     // ---- Shared test helpers ----
 
     fn measurement_counter(
-        snapshots: &[otap_df_telemetry::metrics::MetricSetSnapshot],
+        snapshots: &[otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot],
         metric_set: &str,
         attributes: &[(&str, &str)],
         metric: &str,

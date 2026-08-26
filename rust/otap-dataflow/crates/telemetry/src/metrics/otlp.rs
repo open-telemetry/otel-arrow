@@ -123,16 +123,16 @@ use crate::entity::EntityAttributeSet;
 use crate::instrument::DistributionValue;
 use crate::metrics::{MetricExportBatch, MetricSetExport, MetricValue};
 use bytes::Bytes;
-use otap_df_config::pipeline::telemetry::AttributeValue as ConfigAttributeValue;
-use otap_df_expohisto::HistogramView;
-use otap_df_pdata::OtlpProtoBytes;
-use otap_df_pdata::otlp::common::{BoundedBuf, Dropped, MAX_OTLP_SIZE_LIMIT, ProtoBuffer};
-use otap_df_pdata::proto::consts::field_num::common::{
+use otel_arrow_dfe_config::pipeline::telemetry::AttributeValue as ConfigAttributeValue;
+use otel_arrow_dfe_expohisto::HistogramView;
+use otel_arrow_dfe_pdata::OtlpProtoBytes;
+use otel_arrow_dfe_pdata::otlp::common::{BoundedBuf, Dropped, MAX_OTLP_SIZE_LIMIT, ProtoBuffer};
+use otel_arrow_dfe_pdata::proto::consts::field_num::common::{
     ANY_VALUE_BOOL_VALUE, ANY_VALUE_DOUBLE_VALUE, ANY_VALUE_INT_VALUE, ANY_VALUE_KVLIST_VALUE,
     ANY_VALUE_STRING_VALUE, INSTRUMENTATION_SCOPE_ATTRIBUTES, INSTRUMENTATION_SCOPE_NAME,
     KEY_VALUE_KEY, KEY_VALUE_LIST_VALUES, KEY_VALUE_VALUE,
 };
-use otap_df_pdata::proto::consts::field_num::metrics::{
+use otel_arrow_dfe_pdata::proto::consts::field_num::metrics::{
     EXP_HISTOGRAM_BUCKET_BUCKET_COUNTS, EXP_HISTOGRAM_BUCKET_OFFSET, EXP_HISTOGRAM_DP_ATTRIBUTES,
     EXP_HISTOGRAM_DP_COUNT, EXP_HISTOGRAM_DP_MAX, EXP_HISTOGRAM_DP_MIN, EXP_HISTOGRAM_DP_POSITIVE,
     EXP_HISTOGRAM_DP_SCALE, EXP_HISTOGRAM_DP_START_TIME_UNIX_NANO, EXP_HISTOGRAM_DP_SUM,
@@ -147,7 +147,7 @@ use otap_df_pdata::proto::consts::field_num::metrics::{
     RESOURCE_METRICS_SCOPE_METRICS, SCOPE_METRICS_METRICS, SCOPE_METRICS_SCOPE,
     SUM_AGGREGATION_TEMPORALITY, SUM_DATA_POINTS, SUM_IS_MONOTONIC,
 };
-use otap_df_pdata::proto::consts::wire_types;
+use otel_arrow_dfe_pdata::proto::consts::wire_types;
 use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -1243,26 +1243,26 @@ mod tests {
         MetricsDescriptor,
     };
     use crate::entity::{EntityAttributeSet, EntityRegistry};
-    use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
-    use otap_df_pdata::proto::opentelemetry::common::v1::{
+    use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{
         AnyValue, KeyValue, KeyValueList, any_value,
     };
-    use otap_df_pdata::proto::opentelemetry::logs::v1::ResourceLogs;
-    use otap_df_pdata::proto::opentelemetry::metrics::v1::{
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::ResourceLogs;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
         AggregationTemporality, Metric, NumberDataPoint, ScopeMetrics, Sum, metric,
         number_data_point,
     };
-    use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
-    use otap_df_pdata::views::otap::OtapMetricsView;
-    use otap_df_pdata::{OtapArrowRecords, OtapPayload, TryIntoWithOptions};
-    use otap_df_pdata_views::views::common::{
+    use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
+    use otel_arrow_dfe_pdata::views::otap::OtapMetricsView;
+    use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayload, TryIntoWithOptions};
+    use otel_arrow_dfe_pdata_views::views::common::{
         AnyValueView, AttributeView, InstrumentationScopeView,
     };
-    use otap_df_pdata_views::views::metrics::{
+    use otel_arrow_dfe_pdata_views::views::metrics::{
         DataView, MetricView as PdataMetricView, MetricsView, NumberDataPointView,
         ResourceMetricsView, ScopeMetricsView, SumView, Value,
     };
-    use otap_df_pdata_views::views::resource::ResourceView;
+    use otel_arrow_dfe_pdata_views::views::resource::ResourceView;
     use prost::Message;
     use std::collections::BTreeMap;
     use std::sync::Arc;
@@ -3048,7 +3048,7 @@ mod tests {
         assert!(sum.is_monotonic());
         assert_eq!(
             sum.aggregation_temporality(),
-            otap_df_pdata_views::views::metrics::AggregationTemporality::Delta
+            otel_arrow_dfe_pdata_views::views::metrics::AggregationTemporality::Delta
         );
         let mut points = sum.data_points();
         let point = points.next().expect("counter data point");

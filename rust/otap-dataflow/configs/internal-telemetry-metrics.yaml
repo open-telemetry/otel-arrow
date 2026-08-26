@@ -72,20 +72,20 @@ engine:
                     description: >-
                       Uptime of the pipeline group process since last start.
                 - selector:
-                    scope_name: flow
-                    instrument_name: consumed.items
+                    scope_name: flow.input
+                    instrument_name: items
                   stream:
                     name: processor_incoming_items
                     description: The count of items passed to the processor.
                 - selector:
-                    scope_name: flow
-                    instrument_name: produced.items
+                    scope_name: flow.output
+                    instrument_name: items
                   stream:
                     name: processor_outgoing_items
                     description: The count of items emitted from the processor.
                 - selector:
-                    scope_name: flow
-                    instrument_name: compute.duration
+                    scope_name: flow.compute
+                    instrument_name: duration
                   stream:
                     name: processing_duration
                     description: Duration of the processing of the items.
@@ -124,8 +124,10 @@ groups:
                   end_node: debug
                 metrics:
                   - compute_duration
-                  - consumed_items
-                  - produced_items
+                  - input_items
+                  - input_size
+                  - output_items
+                  - output_size
                 purpose: manual_test
         nodes:
           generator:

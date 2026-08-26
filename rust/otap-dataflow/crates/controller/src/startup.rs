@@ -11,7 +11,7 @@
 //! # Example
 //!
 //! ```ignore
-//! use otap_df_controller::startup;
+//! use otel_arrow_dfe_controller::startup;
 //!
 //! let mut cfg = OtelDataflowSpec::from_file(&path)?;
 //! startup::apply_cli_overrides(&mut cfg, num_cores, core_id_range, http_admin_bind);
@@ -21,12 +21,12 @@
 //! ```
 
 use crate::{CONTROLLER_EXTENSION_FACTORIES, ControllerExtensionRegistry};
-use otap_df_config::engine::{HttpAdminSettings, OtelDataflowSpec};
-use otap_df_config::node::NodeKind;
-use otap_df_config::pipeline::PipelineConfig;
-use otap_df_config::policy::{CoreAllocation, ResolvedPolicies, ResourcesPolicy};
-use otap_df_config::{PipelineGroupId, PipelineId};
-use otap_df_engine::PipelineFactory;
+use otel_arrow_dfe_config::engine::{HttpAdminSettings, OtelDataflowSpec};
+use otel_arrow_dfe_config::node::NodeKind;
+use otel_arrow_dfe_config::pipeline::PipelineConfig;
+use otel_arrow_dfe_config::policy::{CoreAllocation, ResolvedPolicies, ResourcesPolicy};
+use otel_arrow_dfe_config::{PipelineGroupId, PipelineId};
+use otel_arrow_dfe_engine::PipelineFactory;
 use std::fmt::Debug;
 use sysinfo::System;
 
@@ -380,44 +380,44 @@ Example configuration files can be found in the configs/ directory.{}",
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_config::policy::{CoreRange, Policies};
-    use otap_df_config::{PipelineGroupId, PipelineId, node::NodeUserConfig};
-    use otap_df_engine::config::{ExporterConfig, ProcessorConfig, ReceiverConfig};
-    use otap_df_engine::context::PipelineContext;
-    use otap_df_engine::exporter::ExporterWrapper;
-    use otap_df_engine::processor::ProcessorWrapper;
-    use otap_df_engine::receiver::ReceiverWrapper;
-    use otap_df_engine::wiring_contract::WiringContract;
-    use otap_df_engine::{ExporterFactory, ProcessorFactory, ReceiverFactory};
+    use otel_arrow_dfe_config::policy::{CoreRange, Policies};
+    use otel_arrow_dfe_config::{PipelineGroupId, PipelineId, node::NodeUserConfig};
+    use otel_arrow_dfe_engine::config::{ExporterConfig, ProcessorConfig, ReceiverConfig};
+    use otel_arrow_dfe_engine::context::PipelineContext;
+    use otel_arrow_dfe_engine::exporter::ExporterWrapper;
+    use otel_arrow_dfe_engine::processor::ProcessorWrapper;
+    use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
+    use otel_arrow_dfe_engine::wiring_contract::WiringContract;
+    use otel_arrow_dfe_engine::{ExporterFactory, ProcessorFactory, ReceiverFactory};
     use std::sync::Arc;
 
     fn test_receiver_create(
         _pipeline_ctx: PipelineContext,
-        _node: otap_df_engine::node::NodeId,
+        _node: otel_arrow_dfe_engine::node::NodeId,
         _node_config: Arc<NodeUserConfig>,
         _receiver_config: &ReceiverConfig,
-        _capabilities: &otap_df_engine::capability::registry::Capabilities,
-    ) -> Result<ReceiverWrapper<()>, otap_df_config::error::Error> {
+        _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+    ) -> Result<ReceiverWrapper<()>, otel_arrow_dfe_config::error::Error> {
         panic!("test receiver factory should not be constructed")
     }
 
     fn test_exporter_create(
         _pipeline_ctx: PipelineContext,
-        _node: otap_df_engine::node::NodeId,
+        _node: otel_arrow_dfe_engine::node::NodeId,
         _node_config: Arc<NodeUserConfig>,
         _exporter_config: &ExporterConfig,
-        _capabilities: &otap_df_engine::capability::registry::Capabilities,
-    ) -> Result<ExporterWrapper<()>, otap_df_config::error::Error> {
+        _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+    ) -> Result<ExporterWrapper<()>, otel_arrow_dfe_config::error::Error> {
         panic!("test exporter factory should not be constructed")
     }
 
     fn test_processor_create(
         _pipeline_ctx: PipelineContext,
-        _node: otap_df_engine::node::NodeId,
+        _node: otel_arrow_dfe_engine::node::NodeId,
         _node_config: Arc<NodeUserConfig>,
         _processor_config: &ProcessorConfig,
-        _capabilities: &otap_df_engine::capability::registry::Capabilities,
-    ) -> Result<ProcessorWrapper<()>, otap_df_config::error::Error> {
+        _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+    ) -> Result<ProcessorWrapper<()>, otel_arrow_dfe_config::error::Error> {
         panic!("test processor factory should not be constructed")
     }
 
@@ -427,39 +427,39 @@ mod tests {
                 name: "urn:test:receiver:example",
                 create: test_receiver_create,
                 wiring_contract: WiringContract::UNRESTRICTED,
-                validate_config: otap_df_config::validation::no_config,
+                validate_config: otel_arrow_dfe_config::validation::no_config,
             },
             ReceiverFactory {
                 name: "urn:otel:receiver:internal_telemetry",
                 create: test_receiver_create,
                 wiring_contract: WiringContract::UNRESTRICTED,
-                validate_config: otap_df_config::validation::no_config,
+                validate_config: otel_arrow_dfe_config::validation::no_config,
             },
         ]));
         let processor_factories = Box::leak(Box::new([ProcessorFactory {
             name: "urn:otel:processor:type_router",
             create: test_processor_create,
             wiring_contract: WiringContract::UNRESTRICTED,
-            validate_config: otap_df_config::validation::no_config,
+            validate_config: otel_arrow_dfe_config::validation::no_config,
         }]));
         let exporter_factories = Box::leak(Box::new([
             ExporterFactory {
                 name: "urn:test:exporter:example",
                 create: test_exporter_create,
                 wiring_contract: WiringContract::UNRESTRICTED,
-                validate_config: otap_df_config::validation::no_config,
+                validate_config: otel_arrow_dfe_config::validation::no_config,
             },
             ExporterFactory {
                 name: "urn:otel:exporter:console",
                 create: test_exporter_create,
                 wiring_contract: WiringContract::UNRESTRICTED,
-                validate_config: otap_df_config::validation::no_config,
+                validate_config: otel_arrow_dfe_config::validation::no_config,
             },
             ExporterFactory {
                 name: "urn:otel:exporter:noop",
                 create: test_exporter_create,
                 wiring_contract: WiringContract::UNRESTRICTED,
-                validate_config: otap_df_config::validation::no_config,
+                validate_config: otel_arrow_dfe_config::validation::no_config,
             },
         ]));
         PipelineFactory::new(

@@ -15,10 +15,10 @@ use crate::error::Error;
 use crate::node::NodeId;
 use crate::node_local_scheduler::NodeLocalSchedulerHandle;
 use crate::{WakeupError, WakeupSetOutcome};
-use otap_df_channel::error::SendError;
-use otap_df_telemetry::error::Error as TelemetryError;
-use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
-use otap_df_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_channel::error::SendError;
+use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
+use otel_arrow_dfe_telemetry::metrics::{MetricSet, MetricSetHandler};
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 use tokio::net::{TcpListener, UdpSocket};
@@ -402,23 +402,6 @@ impl<PData> EffectHandlerCore<PData> {
         } else {
             Ok(())
         }
-    }
-
-    /// Delay a message.
-    pub async fn delay_data(&self, when: Instant, data: Box<PData>) -> Result<(), PData> {
-        self.send_runtime_ctrl_msg(RuntimeControlMsg::DelayData {
-            node_id: self.node_id().index,
-            when,
-            data,
-        })
-        .await
-        .map(|_| ())
-        .map_err(|e| -> PData {
-            match e.inner() {
-                RuntimeControlMsg::DelayData { data, .. } => *data,
-                _ => unreachable!(),
-            }
-        })
     }
 
     /// Requeue retained pdata onto this node later.
