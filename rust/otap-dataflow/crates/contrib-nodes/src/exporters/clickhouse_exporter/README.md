@@ -137,13 +137,14 @@ insert_batching:
   max_delay_ms: 100
 ```
 
-All three thresholds are required and must be greater than zero. `max_bytes`
-uses the batches' estimated Arrow in-memory size, not their encoded HTTP wire
-size, and an insertion can exceed a row or byte threshold by its final batch.
-The delay starts when the first batch enters the coalescer. Batches with a
-different destination table or Arrow schema dispatch the current group before
-starting another one. Because coalescing happens before lane selection,
-increasing `max_in_flight` does not dilute the batch arrival rate across lanes.
+All three thresholds are required and must be greater than zero.
+`max_delay_ms` cannot exceed 24 hours (86,400,000 ms). `max_bytes` uses the
+batches' estimated Arrow in-memory size, not their encoded HTTP wire size, and
+an insertion can exceed a row or byte threshold by its final batch. The delay
+starts when the first batch enters the coalescer. Batches with a different
+destination table or Arrow schema dispatch the current group before starting
+another one. Because coalescing happens before lane selection, increasing
+`max_in_flight` does not dilute the batch arrival rate across lanes.
 
 When `insert_batching` is enabled, `max_in_flight` is the number of independent
 writer lanes that can execute completed insertion groups concurrently. Each

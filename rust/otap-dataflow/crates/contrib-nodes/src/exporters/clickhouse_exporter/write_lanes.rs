@@ -24,6 +24,9 @@ use super::error::ClickhouseExporterError;
 use super::in_flight::{CompletedWrite, InFlightWrites, WrittenRows};
 use super::writer::ClickHouseWriter;
 
+/// Maximum number of individual completions emitted without yielding to other local tasks.
+const COMPLETIONS_BEFORE_YIELD: usize = 64;
+
 pub(super) struct WriteJob {
     pdata: OtapPdata,
     export_started_at: StdInstant,
@@ -44,13 +47,69 @@ impl WriteJob {
     }
 }
 
-#[allow(
-    clippy::large_enum_variant,
-    reason = "boxing CompletedWrite would allocate on every completed insertion"
-)]
-enum WriteEvent {
-    LaneAvailable(usize),
-    Completed(CompletedWrite),
+/// Shared result for every original message represented by one ClickHouse insertion.
+enum CompletionOutcome {
+    Success,
+    RequestError(String),
+    ResponseError(String),
+}
+
+struct CompletedGroup {
+    pending: std::vec::IntoIter<PendingWrite>,
+    outcome: CompletionOutcome,
+}
+
+impl CompletedGroup {
+    fn with_outcome(pending: Vec<PendingWrite>, outcome: CompletionOutcome) -> Self {
+        Self {
+            pending: pending.into_iter(),
+            outcome,
+        }
+    }
+
+    fn success(pending: Vec<PendingWrite>) -> Self {
+        Self::with_outcome(pending, CompletionOutcome::Success)
+    }
+
+    fn request_error(pending: Vec<PendingWrite>, error: String) -> Self {
+        Self::with_outcome(pending, CompletionOutcome::RequestError(error))
+    }
+
+    fn response_error(pending: Vec<PendingWrite>, error: String) -> Self {
+        Self::with_outcome(pending, CompletionOutcome::ResponseError(error))
+    }
+
+    fn next_completion(&mut self) -> Option<CompletedWrite> {
+        let pending = self.pending.next()?;
+        let result = match &self.outcome {
+            CompletionOutcome::Success => Ok(pending.written_rows),
+            CompletionOutcome::RequestError(error) => {
+                Err(ClickhouseExporterError::InsertRequestError {
+                    error: error.clone(),
+                })
+            }
+            CompletionOutcome::ResponseError(error) => {
+                Err(ClickhouseExporterError::InsertResponseError {
+                    error: error.clone(),
+                })
+            }
+        };
+        Some(CompletedWrite {
+            pdata: pending.pdata,
+            export_started_at: pending.export_started_at,
+            result,
+        })
+    }
+
+    fn is_empty(&self) -> bool {
+        self.pending.len() == 0
+    }
+}
+
+/// One bounded channel event for all messages completed by a writer-lane job.
+struct LaneCompletion {
+    lane: usize,
+    group: CompletedGroup,
 }
 
 #[allow(
@@ -127,13 +186,19 @@ impl PendingInsertion {
         let rows = batch.num_rows();
         let bytes = batch.get_array_memory_size();
         let schema = batch.schema();
+        let now = Instant::now();
+        // Configuration parsing caps this duration. Falling back to an immediate deadline keeps
+        // programmatically constructed configs safe on platforms with narrower Instant ranges.
+        let deadline = now
+            .checked_add(Duration::from_millis(config.max_delay_ms.get()))
+            .unwrap_or(now);
         Self {
             table_name,
             schema,
             rows,
             bytes,
             batches: vec![batch],
-            deadline: Instant::now() + Duration::from_millis(config.max_delay_ms.get()),
+            deadline,
             pending: vec![PendingWrite {
                 pdata,
                 export_started_at,
@@ -169,42 +234,10 @@ impl PendingInsertion {
     }
 }
 
-fn emit_completion(events: &mpsc::UnboundedSender<WriteEvent>, completed: CompletedWrite) {
-    let _ = events.send(WriteEvent::Completed(completed));
-}
-
-fn emit_failure(
-    events: &mpsc::UnboundedSender<WriteEvent>,
-    pending: Vec<PendingWrite>,
-    response_error: bool,
-    error: String,
-) {
-    for pending_write in pending {
-        let error = if response_error {
-            ClickhouseExporterError::InsertResponseError {
-                error: error.clone(),
-            }
-        } else {
-            ClickhouseExporterError::InsertRequestError {
-                error: error.clone(),
-            }
-        };
-        emit_completion(
-            events,
-            CompletedWrite {
-                pdata: pending_write.pdata,
-                export_started_at: pending_write.export_started_at,
-                result: Err(error),
-            },
-        );
-    }
-}
-
 async fn write_insertion<I: LaneInsert>(
     mut insert: I,
     insertion: PendingInsertion,
-    events: &mpsc::UnboundedSender<WriteEvent>,
-) {
+) -> CompletedGroup {
     let PendingInsertion {
         table_name,
         rows,
@@ -216,8 +249,7 @@ async fn write_insertion<I: LaneInsert>(
 
     for batch in batches {
         if let Err(error) = insert.write(&batch).await {
-            emit_failure(events, pending, false, error);
-            return;
+            return CompletedGroup::request_error(pending, error);
         }
     }
 
@@ -230,34 +262,20 @@ async fn write_insertion<I: LaneInsert>(
                 rows = rows,
                 batches = batch_count,
             );
-            for pending_write in pending {
-                emit_completion(
-                    events,
-                    CompletedWrite {
-                        pdata: pending_write.pdata,
-                        export_started_at: pending_write.export_started_at,
-                        result: Ok(pending_write.written_rows),
-                    },
-                );
-            }
+            CompletedGroup::success(pending)
         }
-        Err(error) => emit_failure(events, pending, true, error),
+        Err(error) => CompletedGroup::response_error(pending, error),
     }
 }
 
-async fn write_coalesced<W: LaneWriter>(
-    writer: &W,
-    insertion: PendingInsertion,
-    events: &mpsc::UnboundedSender<WriteEvent>,
-) {
+async fn write_coalesced<W: LaneWriter>(writer: &W, insertion: PendingInsertion) -> CompletedGroup {
     let insert = match writer.start_insert(&insertion.table_name) {
         Ok(insert) => insert,
         Err(error) => {
-            emit_failure(events, insertion.pending, false, error);
-            return;
+            return CompletedGroup::request_error(insertion.pending, error);
         }
     };
-    write_insertion(insert, insertion, events).await;
+    write_insertion(insert, insertion).await
 }
 
 async fn write_immediately<W: LaneWriter>(
@@ -265,47 +283,39 @@ async fn write_immediately<W: LaneWriter>(
     pdata: OtapPdata,
     export_started_at: StdInstant,
     batches: Vec<(ArrowPayloadType, String, RecordBatch)>,
-    events: &mpsc::UnboundedSender<WriteEvent>,
-) {
+) -> CompletedGroup {
     let mut written_rows = Vec::with_capacity(batches.len());
     for (payload_type, table_name, batch) in batches {
         let result = async {
             let mut insert = writer
                 .start_insert(&table_name)
-                .map_err(|error| ClickhouseExporterError::InsertRequestError { error })?;
+                .map_err(CompletionOutcome::RequestError)?;
             insert
                 .write(&batch)
                 .await
-                .map_err(|error| ClickhouseExporterError::InsertRequestError { error })?;
-            insert
-                .end()
-                .await
-                .map_err(|error| ClickhouseExporterError::InsertResponseError { error })
+                .map_err(CompletionOutcome::RequestError)?;
+            insert.end().await.map_err(CompletionOutcome::ResponseError)
         }
         .await;
 
-        if let Err(error) = result {
-            emit_completion(
-                events,
-                CompletedWrite {
+        if let Err(outcome) = result {
+            return CompletedGroup::with_outcome(
+                vec![PendingWrite {
                     pdata,
                     export_started_at,
-                    result: Err(error),
-                },
+                    written_rows,
+                }],
+                outcome,
             );
-            return;
         }
         written_rows.push((payload_type, batch.num_rows() as u64));
     }
 
-    emit_completion(
-        events,
-        CompletedWrite {
-            pdata,
-            export_started_at,
-            result: Ok(written_rows),
-        },
-    );
+    CompletedGroup::success(vec![PendingWrite {
+        pdata,
+        export_started_at,
+        written_rows,
+    }])
 }
 
 enum LaneJob {
@@ -318,22 +328,20 @@ enum LaneJob {
 }
 
 impl LaneJob {
-    fn fail(self, events: &mpsc::UnboundedSender<WriteEvent>, error: String) {
+    fn fail(self, error: String) -> CompletedGroup {
         match self {
-            Self::Coalesced(insertion) => {
-                emit_failure(events, insertion.pending, false, error);
-            }
+            Self::Coalesced(insertion) => CompletedGroup::request_error(insertion.pending, error),
             Self::Immediate {
                 pdata,
                 export_started_at,
                 ..
-            } => emit_completion(
-                events,
-                CompletedWrite {
+            } => CompletedGroup::request_error(
+                vec![PendingWrite {
                     pdata,
                     export_started_at,
-                    result: Err(ClickhouseExporterError::InsertRequestError { error }),
-                },
+                    written_rows: Vec::new(),
+                }],
+                error,
             ),
         }
     }
@@ -343,22 +351,20 @@ async fn run_lane<W: LaneWriter>(
     lane: usize,
     writer: W,
     mut jobs: mpsc::Receiver<LaneJob>,
-    events: mpsc::UnboundedSender<WriteEvent>,
+    events: mpsc::Sender<LaneCompletion>,
 ) {
     while let Some(job) = jobs.recv().await {
-        match job {
-            LaneJob::Coalesced(insertion) => {
-                write_coalesced(&writer, insertion, &events).await;
-            }
+        let group = match job {
+            LaneJob::Coalesced(insertion) => write_coalesced(&writer, insertion).await,
             LaneJob::Immediate {
                 pdata,
                 export_started_at,
                 batches,
-            } => {
-                write_immediately(&writer, pdata, export_started_at, batches, &events).await;
-            }
+            } => write_immediately(&writer, pdata, export_started_at, batches).await,
+        };
+        if events.send(LaneCompletion { lane, group }).await.is_err() {
+            break;
         }
-        let _ = events.send(WriteEvent::LaneAvailable(lane));
     }
 }
 
@@ -368,8 +374,10 @@ pub(super) struct PersistentWritePool<W: LaneWriter> {
     pending: Option<PendingInsertion>,
     waiting_jobs: VecDeque<LaneJob>,
     senders: Vec<mpsc::Sender<LaneJob>>,
-    event_sender: mpsc::UnboundedSender<WriteEvent>,
-    events: mpsc::UnboundedReceiver<WriteEvent>,
+    events: mpsc::Receiver<LaneCompletion>,
+    completed_groups: VecDeque<CompletedGroup>,
+    completed_group_capacity: usize,
+    completions_since_yield: usize,
     handles: Vec<JoinHandle<()>>,
     available_lanes: VecDeque<usize>,
     outstanding: usize,
@@ -378,7 +386,9 @@ pub(super) struct PersistentWritePool<W: LaneWriter> {
 impl<W: LaneWriter> PersistentWritePool<W> {
     fn new(writer: W, lane_count: usize, config: InsertBatchingConfig) -> Self {
         let lane_count = lane_count.max(1);
-        let (event_sender, events) = mpsc::unbounded_channel();
+        // Each lane can have at most one completion waiting to be consumed. Keeping the channel
+        // bounded makes acknowledgement delivery part of the writer's backpressure chain.
+        let (event_sender, events) = mpsc::channel(lane_count);
         let mut senders = Vec::with_capacity(lane_count);
         let mut handles = Vec::with_capacity(lane_count);
         for lane in 0..lane_count {
@@ -397,8 +407,10 @@ impl<W: LaneWriter> PersistentWritePool<W> {
             pending: None,
             waiting_jobs: VecDeque::new(),
             senders,
-            event_sender,
             events,
+            completed_groups: VecDeque::with_capacity(lane_count),
+            completed_group_capacity: lane_count,
+            completions_since_yield: 0,
             handles,
             available_lanes: (0..lane_count).collect(),
             outstanding: 0,
@@ -431,9 +443,8 @@ impl<W: LaneWriter> PersistentWritePool<W> {
                     break;
                 }
                 Err(mpsc::error::TrySendError::Closed(returned_job)) => {
-                    returned_job.fail(
-                        &self.event_sender,
-                        format!("ClickHouse writer lane {lane} is closed"),
+                    self.completed_groups.push_back(
+                        returned_job.fail(format!("ClickHouse writer lane {lane} is closed")),
                     );
                 }
             }
@@ -515,7 +526,60 @@ impl<W: LaneWriter> PersistentWritePool<W> {
         }
     }
 
+    fn accept_lane_completion(&mut self, event: LaneCompletion) {
+        self.completed_groups.push_back(event.group);
+        self.available_lanes.push_back(event.lane);
+        self.schedule_waiting_jobs();
+    }
+
+    fn pop_completion(&mut self) -> Option<CompletedWrite> {
+        while let Some(mut group) = self.completed_groups.pop_front() {
+            let completed = group.next_completion();
+            if !group.is_empty() {
+                self.completed_groups.push_back(group);
+            }
+            if completed.is_some() {
+                self.outstanding = self.outstanding.saturating_sub(1);
+                self.completions_since_yield = self.completions_since_yield.saturating_add(1);
+                return completed;
+            }
+        }
+        None
+    }
+
     async fn next_event(&mut self) -> Option<DispatcherEvent> {
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.deadline <= Instant::now())
+        {
+            self.flush_pending();
+            return Some(DispatcherEvent::CapacityAvailable);
+        }
+
+        if self.completed_groups.len() < self.completed_group_capacity {
+            match self.events.try_recv() {
+                Ok(event) => self.accept_lane_completion(event),
+                Err(mpsc::error::TryRecvError::Empty) => {}
+                Err(mpsc::error::TryRecvError::Disconnected)
+                    if self.completed_groups.is_empty() =>
+                {
+                    return None;
+                }
+                Err(mpsc::error::TryRecvError::Disconnected) => {}
+            }
+        }
+
+        if !self.completed_groups.is_empty() {
+            if self.completions_since_yield >= COMPLETIONS_BEFORE_YIELD {
+                tokio::task::yield_now().await;
+                self.completions_since_yield = 0;
+            }
+            return self.pop_completion().map(DispatcherEvent::Completed);
+        }
+
+        // Waiting on the bounded lane channel already gives the local runtime a scheduling point.
+        self.completions_since_yield = 0;
         let event = if let Some(deadline) = self.pending.as_ref().map(|pending| pending.deadline) {
             tokio::select! {
                 biased;
@@ -531,17 +595,8 @@ impl<W: LaneWriter> PersistentWritePool<W> {
         };
 
         let event = event?;
-        match event {
-            WriteEvent::LaneAvailable(lane) => {
-                self.available_lanes.push_back(lane);
-                self.schedule_waiting_jobs();
-                Some(DispatcherEvent::CapacityAvailable)
-            }
-            WriteEvent::Completed(completed) => {
-                self.outstanding = self.outstanding.saturating_sub(1);
-                Some(DispatcherEvent::Completed(completed))
-            }
-        }
+        self.accept_lane_completion(event);
+        self.pop_completion().map(DispatcherEvent::Completed)
     }
 
     async fn next_event_until(
@@ -869,6 +924,22 @@ mod tests {
             .await;
     }
 
+    /// Scenario: an internal caller bypasses parsing with the largest possible insertion delay.
+    /// Guarantees: platform-specific Instant limits cannot make deadline construction panic.
+    #[test]
+    fn oversized_programmatic_delay_is_panic_free() {
+        let insertion = PendingInsertion::new(
+            config(usize::MAX, usize::MAX, u64::MAX),
+            logs_pdata(),
+            StdInstant::now(),
+            ArrowPayloadType::Logs,
+            "logs".to_string(),
+            batch(2),
+        );
+
+        assert_eq!(insertion.rows, 2);
+    }
+
     /// Scenario: shutdown arrives while the coalescer holds a group below every threshold.
     /// Guarantees: shutdown dispatches that insertion and retains the input message's completion.
     #[tokio::test(flavor = "current_thread")]
@@ -993,6 +1064,36 @@ mod tests {
                     writer.state.borrow().insertion_rows,
                     vec![vec![2, 2], vec![2, 2]]
                 );
+            })
+            .await;
+    }
+
+    /// Scenario: one lane completes a three-message insertion while another group is queued.
+    /// Guarantees: one bounded event releases the lane before individual completions finish draining.
+    #[tokio::test(flavor = "current_thread")]
+    async fn aggregate_completion_releases_lane_before_ack_fanout_finishes() {
+        LocalSet::new()
+            .run_until(async {
+                let writer = FakeWriter::default();
+                let mut pool =
+                    PersistentWritePool::new(writer.clone(), 1, config(3, usize::MAX, 60_000));
+                assert_eq!(pool.events.max_capacity(), 1);
+
+                for _ in 0..6 {
+                    submit(&mut pool, logs_job(1));
+                }
+                assert!(pool.is_at_capacity());
+
+                assert!(next_completed(&mut pool).await.result.is_ok());
+                tokio::task::yield_now().await;
+
+                assert_eq!(writer.state.borrow().insertions_started, 2);
+                assert_eq!(pool.outstanding, 5);
+
+                for _ in 0..5 {
+                    assert!(next_completed(&mut pool).await.result.is_ok());
+                }
+                assert_eq!(writer.state.borrow().insertion_rows, vec![vec![1; 3]; 2]);
             })
             .await;
     }

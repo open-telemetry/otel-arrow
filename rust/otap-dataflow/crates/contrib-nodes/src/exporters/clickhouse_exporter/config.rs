@@ -26,11 +26,13 @@
 //! downstream code can generate schemas and write data without needing to reason about missing
 //! configuration fields.
 use secrecy::SecretString;
-use serde::Deserialize;
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer};
 use std::num::{NonZeroU64, NonZeroUsize};
 
 const DEFAULT_MAX_IN_FLIGHT: NonZeroUsize =
     NonZeroUsize::new(10).expect("default max_in_flight must be non-zero");
+const MAX_INSERT_BATCHING_DELAY_MS: u64 = 24 * 60 * 60 * 1_000;
 
 /// ClickHouse exporter configuration supplied by the user.
 ///
@@ -120,8 +122,22 @@ pub struct InsertBatchingConfig {
     pub max_rows: NonZeroUsize,
     /// Maximum estimated Arrow memory size accumulated in one insertion.
     pub max_bytes: NonZeroUsize,
-    /// Maximum elapsed time after the first batch enters the coalescer.
+    /// Maximum elapsed time after the first batch enters the coalescer, capped at 24 hours.
+    #[serde(deserialize_with = "deserialize_insert_batching_delay")]
     pub max_delay_ms: NonZeroU64,
+}
+
+fn deserialize_insert_batching_delay<'de, D>(deserializer: D) -> Result<NonZeroU64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let delay = NonZeroU64::deserialize(deserializer)?;
+    if delay.get() > MAX_INSERT_BATCHING_DELAY_MS {
+        return Err(D::Error::custom(format!(
+            "max_delay_ms must not exceed {MAX_INSERT_BATCHING_DELAY_MS}"
+        )));
+    }
+    Ok(delay)
 }
 
 /// Configuration for a ClickHouse table engine
@@ -458,6 +474,30 @@ mod tests {
         }))
         .unwrap_err();
         assert!(missing_error.to_string().contains("max_delay_ms"));
+    }
+
+    /// Scenario: insertion batching specifies a delay larger than the supported 24-hour limit.
+    /// Guarantees: an excessive delay is rejected during parsing instead of overflowing at runtime.
+    #[test]
+    fn insert_batching_rejects_excessive_delay() {
+        let error = serde_json::from_value::<UserConfig>(serde_json::json!({
+            "endpoint": "http://localhost:8123",
+            "database": "otap",
+            "username": "clickhouse",
+            "password": "secret",
+            "insert_batching": {
+                "max_rows": 8192,
+                "max_bytes": 16777216,
+                "max_delay_ms": u64::MAX
+            }
+        }))
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("max_delay_ms must not exceed 86400000")
+        );
     }
 
     /// Scenario: all supported top-level and nested exporter fields are configured.
