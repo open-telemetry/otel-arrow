@@ -649,13 +649,8 @@ impl TemporalReaggregationProcessor {
         match result {
             Ok(agg_result) => match agg_result {
                 AggregationResult::NoAggregations => {
-                    let send_res = effect_handler.send_message_with_source_node(pdata).await;
-                    if send_res.is_ok() {
-                        self.metrics.record_success();
-                    } else {
-                        self.metrics.record_failure(ErrorType::OutputSend);
-                    }
-                    Ok(send_res?)
+                    self.try_send_message_with_metrics(effect_handler, pdata)
+                        .await
                 }
                 AggregationResult::SomeAggregations(records) => {
                     // The aggregated portion of this input has been folded into
@@ -672,13 +667,9 @@ impl TemporalReaggregationProcessor {
                         }
                         let pt_pdata = OtapPdata::new(inbound_ctx, OtapPayload::from(records));
 
-                        let send_res = effect_handler.send_message_with_source_node(pt_pdata).await;
-                        if send_res.is_ok() {
-                            self.metrics.record_success();
-                        } else {
-                            self.metrics.record_failure(ErrorType::OutputSend);
-                        }
-                        return Ok(send_res?);
+                        return self
+                            .try_send_message_with_metrics(effect_handler, pt_pdata)
+                            .await;
                     }
 
                     // The partial-passthrough output represents exactly one
@@ -723,13 +714,8 @@ impl TemporalReaggregationProcessor {
                         &mut pt_pdata,
                     );
 
-                    let send_res = effect_handler.send_message_with_source_node(pt_pdata).await;
-                    if send_res.is_ok() {
-                        self.metrics.record_success();
-                    } else {
-                        self.metrics.record_failure(ErrorType::OutputSend);
-                    }
-                    Ok(send_res?)
+                    self.try_send_message_with_metrics(effect_handler, pt_pdata)
+                        .await
                 }
                 AggregationResult::AllAggregated => {
                     // The full input was folded into the in-progress builder;
@@ -796,8 +782,21 @@ impl TemporalReaggregationProcessor {
     /// the data appended before the checkpoint is clean and should be sent
     /// downstream, while the partial data from the failed call is discarded
     /// by slicing the record batches.
-    /// Flush accumulated metrics up to the given checkpoint.
     ///
+    async fn try_send_message_with_metrics(
+        &mut self,
+        effect_handler: &mut local::EffectHandler<OtapPdata>,
+        pdata: OtapPdata,
+    ) -> Result<(), Error> {
+        let send_res = effect_handler.send_message_with_source_node(pdata).await;
+        if send_res.is_ok() {
+            self.metrics.record_success();
+        } else {
+            self.metrics.record_failure(ErrorType::OutputSend);
+        }
+        Ok(send_res?)
+    }
+
     /// Records a `flushes` metric only when records are actually emitted (non-empty flush).
     /// The metric is recorded after the send result is known so that outcome is accurate.
     async fn flush(
@@ -1597,7 +1596,7 @@ mod tests {
     #[test]
     fn test_gauge_correlation() {
         // Two batches with the same gauge stream. The later timestamp wins.
-        run_processor_test(json!({}), move |mut ctx| async move {
+        run_processor_test(json!({}), |mut ctx| async move {
             #[rustfmt::skip]
             let batch1 = OtapArrowRecords::Metrics(metrics!(
                 (UnivariateMetrics,
@@ -1646,7 +1645,7 @@ mod tests {
     fn test_cumulative_sum_correlation() {
         // Two batches with the same cumulative monotonic sum. The later
         // timestamp wins.
-        run_processor_test(json!({}), move |mut ctx| async move {
+        run_processor_test(json!({}), |mut ctx| async move {
             #[rustfmt::skip]
             let batch1 = OtapArrowRecords::Metrics(metrics!(
                 (UnivariateMetrics,
@@ -1698,7 +1697,7 @@ mod tests {
     #[test]
     fn test_cumulative_histogram_correlation() {
         // Two batches with the same cumulative histogram. The later timestamp wins.
-        run_processor_test(json!({}), move |mut ctx| async move {
+        run_processor_test(json!({}), |mut ctx| async move {
             let batch1 = make_otlp_pdata(MetricsData::new(vec![ResourceMetrics::new(
                 Resource::build().finish(),
                 vec![ScopeMetrics::new(
@@ -1761,7 +1760,7 @@ mod tests {
     fn test_cumulative_exp_histogram_correlation() {
         // Two batches with the same cumulative exp histogram. The later
         // timestamp wins.
-        run_processor_test(json!({}), move |mut ctx| async move {
+        run_processor_test(json!({}), |mut ctx| async move {
             let batch1 = make_otlp_pdata(MetricsData::new(vec![ResourceMetrics::new(
                 Resource::build().finish(),
                 vec![ScopeMetrics::new(
@@ -1825,7 +1824,7 @@ mod tests {
     #[test]
     fn test_summary_correlation() {
         // Two batches with the same summary stream. The later timestamp wins.
-        run_processor_test(json!({}), move |mut ctx| async move {
+        run_processor_test(json!({}), |mut ctx| async move {
             let batch1 = make_otlp_pdata(MetricsData::new(vec![ResourceMetrics::new(
                 Resource::build().finish(),
                 vec![ScopeMetrics::new(
@@ -1886,7 +1885,7 @@ mod tests {
     fn test_different_resources_preserved() {
         // Two gauges with different resource attributes should be treated as
         // separate streams and both preserved.
-        run_processor_test(json!({}), move |mut ctx| async move {
+        run_processor_test(json!({}), |mut ctx| async move {
             #[rustfmt::skip]
             let batch1 = OtapArrowRecords::Metrics(metrics!(
                 (UnivariateMetrics,
@@ -1944,7 +1943,7 @@ mod tests {
     fn test_different_scope_attributes_preserved() {
         // Two gauges with the same resource but different scope attributes
         // should both be preserved.
-        run_processor_test(json!({}), move |mut ctx| async move {
+        run_processor_test(json!({}), |mut ctx| async move {
             #[rustfmt::skip]
             let input = OtapArrowRecords::Metrics(metrics!(
                 (UnivariateMetrics,
@@ -1980,7 +1979,7 @@ mod tests {
     fn test_different_scope_name_preserved() {
         // Two gauges with the same resource but different scope names should
         // both be preserved.
-        run_processor_test(json!({}), move |mut ctx| async move {
+        run_processor_test(json!({}), |mut ctx| async move {
             #[rustfmt::skip]
             let batch1 = OtapArrowRecords::Metrics(metrics!(
                 (UnivariateMetrics,
@@ -2040,7 +2039,7 @@ mod tests {
     fn test_different_metric_name_preserved() {
         // Two gauges with the same resource/scope but different metric names
         // should both be preserved.
-        run_processor_test(json!({}), move |mut ctx| async move {
+        run_processor_test(json!({}), |mut ctx| async move {
             #[rustfmt::skip]
             let input = OtapArrowRecords::Metrics(metrics!(
                 (UnivariateMetrics,
@@ -2071,7 +2070,7 @@ mod tests {
     fn test_different_metric_type_preserved() {
         // A gauge and a cumulative sum with the same name should be treated as
         // different metrics and both preserved.
-        run_processor_test(json!({}), move |mut ctx| async move {
+        run_processor_test(json!({}), |mut ctx| async move {
             #[rustfmt::skip]
             let input = OtapArrowRecords::Metrics(metrics!(
                 (UnivariateMetrics,
@@ -2104,7 +2103,7 @@ mod tests {
     fn test_different_dp_attributes_preserved() {
         // One gauge with two data points that have different DP attributes
         // should treat them as distinct streams and preserve both.
-        run_processor_test(json!({}), move |mut ctx| async move {
+        run_processor_test(json!({}), |mut ctx| async move {
             #[rustfmt::skip]
             let input = OtapArrowRecords::Metrics(metrics!(
                 (UnivariateMetrics,
@@ -2140,7 +2139,7 @@ mod tests {
     fn test_mixed_metric_types_in_single_batch() {
         // A batch containing both a gauge and a cumulative sum should preserve
         // both in the output.
-        run_processor_test(json!({}), move |mut ctx| async move {
+        run_processor_test(json!({}), |mut ctx| async move {
             #[rustfmt::skip]
             let input = OtapArrowRecords::Metrics(metrics!(
                 (UnivariateMetrics,
@@ -2329,7 +2328,7 @@ mod tests {
     #[test]
     fn test_otlp_gauge_correlation() {
         // Two OTLP gauge batches with the same stream. The later timestamp wins.
-        run_processor_test(json!({}), move |mut ctx| async move {
+        run_processor_test(json!({}), |mut ctx| async move {
             let batch1 = make_otlp_bytes_pdata(MetricsData::new(vec![ResourceMetrics::new(
                 Resource::build().finish(),
                 vec![ScopeMetrics::new(
@@ -2369,7 +2368,7 @@ mod tests {
     #[test]
     fn test_otlp_cumulative_sum_correlation() {
         // Two OTLP cumulative monotonic sum batches. The later timestamp wins.
-        run_processor_test(json!({}), move |mut ctx| async move {
+        run_processor_test(json!({}), |mut ctx| async move {
             let batch1 = make_otlp_bytes_pdata(MetricsData::new(vec![ResourceMetrics::new(
                 Resource::build().finish(),
                 vec![ScopeMetrics::new(
@@ -2413,7 +2412,7 @@ mod tests {
     #[test]
     fn test_otlp_histogram_correlation() {
         // Two OTLP cumulative histogram batches. The later timestamp wins.
-        run_processor_test(json!({}), move |mut ctx| async move {
+        run_processor_test(json!({}), |mut ctx| async move {
             let batch1 = make_otlp_bytes_pdata(MetricsData::new(vec![ResourceMetrics::new(
                 Resource::build().finish(),
                 vec![ScopeMetrics::new(
@@ -2459,7 +2458,7 @@ mod tests {
     #[test]
     fn test_otlp_exp_histogram_correlation() {
         // Two OTLP cumulative exponential histogram batches. Later timestamp wins.
-        run_processor_test(json!({}), move |mut ctx| async move {
+        run_processor_test(json!({}), |mut ctx| async move {
             let batch1 = make_otlp_bytes_pdata(MetricsData::new(vec![ResourceMetrics::new(
                 Resource::build().finish(),
                 vec![ScopeMetrics::new(
@@ -2506,7 +2505,7 @@ mod tests {
     #[test]
     fn test_otlp_summary_correlation() {
         // Two OTLP summary batches. The later timestamp wins.
-        run_processor_test(json!({}), move |mut ctx| async move {
+        run_processor_test(json!({}), |mut ctx| async move {
             let batch1 = make_otlp_bytes_pdata(MetricsData::new(vec![ResourceMetrics::new(
                 Resource::build().finish(),
                 vec![ScopeMetrics::new(
@@ -2567,7 +2566,7 @@ mod tests {
     fn test_otlp_different_resources_preserved() {
         // Two OTLP gauges with different resource attributes should be treated
         // as separate streams.
-        run_processor_test(json!({}), move |mut ctx| async move {
+        run_processor_test(json!({}), |mut ctx| async move {
             let batch1 = make_otlp_bytes_pdata(MetricsData::new(vec![ResourceMetrics::new(
                 Resource::build()
                     .attributes(vec![KeyValue::new("env", AnyValue::new_string("prod"))])
@@ -2616,7 +2615,7 @@ mod tests {
     fn test_otlp_different_dp_attributes_preserved() {
         // One OTLP gauge with two data points that have different DP
         // attributes should treat them as distinct streams.
-        run_processor_test(json!({}), move |mut ctx| async move {
+        run_processor_test(json!({}), |mut ctx| async move {
             let batch = make_otlp_bytes_pdata(MetricsData::new(vec![ResourceMetrics::new(
                 Resource::build().finish(),
                 vec![ScopeMetrics::new(
@@ -2690,7 +2689,7 @@ mod tests {
     fn test_mixed_otap_otlp_gauge_correlation() {
         // One OTAP batch and one OTLP bytes batch for the same gauge stream.
         // They should be correlated and the later timestamp wins.
-        run_processor_test(json!({}), move |mut ctx| async move {
+        run_processor_test(json!({}), |mut ctx| async move {
             // First batch via OTAP encoding.
             let otap_batch = make_otlp_pdata(MetricsData::new(vec![ResourceMetrics::new(
                 Resource::build().finish(),
@@ -2733,7 +2732,7 @@ mod tests {
     fn test_full_passthrough_delta_sum() {
         // A batch containing only a delta sum (non-aggregatable) should be
         // passed through immediately without waiting for a wakeup.
-        run_processor_test(json!({}), move |mut ctx| async move {
+        run_processor_test(json!({}), |mut ctx| async move {
             let input_data = MetricsData::new(vec![ResourceMetrics::new(
                 Resource::build().finish(),
                 vec![ScopeMetrics::new(
@@ -2779,7 +2778,7 @@ mod tests {
     fn test_full_passthrough_non_monotonic_cumulative_sum() {
         // A non-monotonic cumulative sum is not aggregatable and should pass
         // through immediately.
-        run_processor_test(json!({}), move |mut ctx| async move {
+        run_processor_test(json!({}), |mut ctx| async move {
             let input_data = MetricsData::new(vec![ResourceMetrics::new(
                 Resource::build().finish(),
                 vec![ScopeMetrics::new(
@@ -2818,7 +2817,7 @@ mod tests {
     #[test]
     fn test_full_passthrough_delta_histogram() {
         // A delta histogram should pass through immediately.
-        run_processor_test(json!({}), move |mut ctx| async move {
+        run_processor_test(json!({}), |mut ctx| async move {
             let input_data = MetricsData::new(vec![ResourceMetrics::new(
                 Resource::build().finish(),
                 vec![ScopeMetrics::new(
@@ -2857,7 +2856,7 @@ mod tests {
         // delta sum (passthrough) in the same resource and scope. The delta
         // sum should be passed through immediately while the cumulative sum
         // should be buffered.
-        run_processor_test(json!({}), move |mut ctx| async move {
+        run_processor_test(json!({}), |mut ctx| async move {
             let aggregatable = make_sum("requests.total", true, 100, vec![]);
             let passthrough = make_sum("requests.delta", false, 50, vec![]);
 
@@ -2910,7 +2909,7 @@ mod tests {
     fn test_passthrough_all_aggregated_no_immediate_output() {
         // When a batch contains only aggregatable metrics, nothing should be
         // emitted until a wakeup.
-        run_processor_test(json!({}), move |mut ctx| async move {
+        run_processor_test(json!({}), |mut ctx| async move {
             let pdata = make_otlp_pdata(MetricsData::new(vec![ResourceMetrics::new(
                 Resource::build().finish(),
                 vec![ScopeMetrics::new(
@@ -2939,7 +2938,7 @@ mod tests {
     #[test]
     fn test_passthrough_delta_exp_histogram() {
         // A delta exponential histogram should pass through.
-        run_processor_test(json!({}), move |mut ctx| async move {
+        run_processor_test(json!({}), |mut ctx| async move {
             let input_data = MetricsData::new(vec![ResourceMetrics::new(
                 Resource::build().finish(),
                 vec![ScopeMetrics::new(
@@ -2981,7 +2980,7 @@ mod tests {
         // Multiple exemplars on a single data point should all survive
         // the passthrough path, exercising the exemplar loop and ID
         // allocation in append_number_dp_exemplars.
-        run_processor_test(json!({}), move |mut ctx| async move {
+        run_processor_test(json!({}), |mut ctx| async move {
             let input_data = MetricsData::new(vec![ResourceMetrics::new(
                 Resource::build().finish(),
                 vec![ScopeMetrics::new(
@@ -3035,7 +3034,7 @@ mod tests {
     fn test_mixed_batch_all_passthrough_types_with_exemplars() {
         // A mixed batch forces the slow path through the builder so all three
         // exemplar append functions are exercised.
-        run_processor_test(json!({}), move |mut ctx| async move {
+        run_processor_test(json!({}), |mut ctx| async move {
             let aggregatable_sum = make_sum("requests.total", true, 100, vec![]);
 
             let delta_sum = make_sum(
@@ -3135,7 +3134,7 @@ mod tests {
     fn test_mixed_resources_passthrough_and_aggregate() {
         // Two different resources: one with only aggregatable metrics, the
         // other with only passthrough metrics.
-        run_processor_test(json!({}), move |mut ctx| async move {
+        run_processor_test(json!({}), |mut ctx| async move {
             let passthrough = make_sum("requests.delta", false, 10, vec![]);
 
             let input_data = MetricsData::new(vec![
@@ -3192,7 +3191,7 @@ mod tests {
         // The gauge data point should be aggregated and flushed on timer.
         // We use OTLP bytes encoding because the OTAP encoder normalizes
         // None resources, but the raw bytes view preserves the None.
-        run_processor_test(json!({}), move |mut ctx| async move {
+        run_processor_test(json!({}), |mut ctx| async move {
             let input_data = MetricsData::new(vec![resource_metrics_without_resource(vec![
                 ScopeMetrics::new(
                     InstrumentationScope::build().finish(),
@@ -3221,7 +3220,7 @@ mod tests {
     #[test]
     fn test_none_scope_aggregation() {
         // A batch with scope=None should still be processed.
-        run_processor_test(json!({}), move |mut ctx| async move {
+        run_processor_test(json!({}), |mut ctx| async move {
             let input_data = MetricsData::new(vec![ResourceMetrics::new(
                 Resource::build().finish(),
                 vec![scope_metrics_without_scope(vec![make_gauge("mem", 1024.0)])],
@@ -3245,7 +3244,7 @@ mod tests {
         // A delta sum under a None resource should pass through immediately.
         // This uses OTLP bytes encoding and the full passthrough path forwards
         // the original pdata unchanged (still as OTLP bytes, not OTAP records).
-        run_processor_test(json!({}), move |mut ctx| async move {
+        run_processor_test(json!({}), |mut ctx| async move {
             let input_data = MetricsData::new(vec![resource_metrics_without_resource(vec![
                 ScopeMetrics::new(
                     InstrumentationScope::build().finish(),
@@ -3270,7 +3269,7 @@ mod tests {
     #[test]
     fn test_none_resource_and_scope() {
         // Both resource=None and scope=None should still work.
-        run_processor_test(json!({}), move |mut ctx| async move {
+        run_processor_test(json!({}), |mut ctx| async move {
             let input_data = MetricsData::new(vec![resource_metrics_without_resource(vec![
                 scope_metrics_without_scope(vec![make_gauge("temp", 98.6)]),
             ])]);
@@ -3788,7 +3787,7 @@ mod tests {
     /// `Ok(false)` because no wakeup was ever scheduled.
     #[test]
     fn test_no_wakeup_scheduled_when_idle() {
-        run_processor_test(json!({}), move |mut ctx| async move {
+        run_processor_test(json!({}), |mut ctx| async move {
             let fired = ctx.fire_wakeup().await.unwrap();
             assert!(
                 !fired,
@@ -3970,7 +3969,7 @@ mod tests {
     /// Guarantees: Shutdown emits one non-empty successful flush with the `shutdown` reason.
     #[test]
     fn test_shutdown_flush() {
-        run_processor_test(json!({}), move |mut ctx| async move {
+        run_processor_test(json!({}), |mut ctx| async move {
             let batch = make_otlp_bytes_pdata(make_n_gauge_metrics(1));
             ctx.process(Message::PData(batch)).await.unwrap();
 
