@@ -55,6 +55,12 @@ The design is split into four normative layers:
 | [Filelog Receiver Phase 1 Conformance Specification](filelog-receiver-phase1-conformance.md) | Resource models, telemetry semantics, validation cases, and normative examples |
 | [Filelog Receiver Checkpoint Format](filelog-checkpoint-format.md) | Exact durable byte format and replay representation |
 
+Recommended review order is to approve the architecture decisions first,
+review the behavioral specification by subsystem, review the checkpoint format
+with storage and crash-consistency reviewers, and use the conformance
+specification as the final implementation-readiness gate. All four contracts
+remain required before an implementation can claim Phase 1 conformance.
+
 The lower-level specifications refine the architecture and cannot contradict it.
 A conflict is a design defect that must be surfaced and resolved deliberately;
 it is not resolved by allowing one document to override another.
@@ -258,13 +264,15 @@ flowchart LR
     A -->|"bounded commands"| W
   end
 
-  A -->|"raw OTAP logs"| P["Processors"]
+  A -->|"publish raw OTAP logs"| T["Engine delivery / topic runtime<br/>required-membership aggregation"]
+  T --> P["Processors"]
   P --> E["Exporters"]
-  E -.->|"Ack or Nack"| A
+  E -.->|"Completion"| T
+  T -.->|"Aggregate Ack or Nack"| A
 
   class D discoveryNode
   class W workerNode
-  class A controlNode
+  class A,T controlNode
   class C stateNode
   class P,E downstreamNode
 
@@ -306,17 +314,20 @@ flowchart LR
   end
 
   R["Assigned receiver instances<br/>(each independently fenced)"]
+  T["Engine delivery / topic runtime<br/>required-membership aggregation"]
   P["Processors"]
   E["Exporters"]
 
   O -->|"file_id assignment,<br/>fencing token"| R
   R <-->|"Load and persist progress<br/>with current fencing token"| C
-  R -->|"Raw OTAP logs"| P
+  R -->|"Publish raw OTAP logs"| T
+  T --> P
   P --> E
-  E -.->|"Ack or Nack"| R
+  E -.->|"Completion"| T
+  T -.->|"Aggregate Ack or Nack"| R
 
   class S discoveryNode
-  class I,O controlNode
+  class I,O,T controlNode
   class R workerNode
   class C stateNode
   class P,E downstreamNode

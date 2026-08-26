@@ -19,7 +19,7 @@ The companion documents divide normative ownership as follows:
 
 | Document | Normative ownership |
 | --- | --- |
-| [Filelog Receiver Design](filelog-receiver.md) | Architecture, scope, guarantees, decisions, and tradeoffs |
+| [Filelog Receiver Architecture](filelog-receiver.md) | Architecture, scope, guarantees, decisions, and tradeoffs |
 | [Filelog Receiver Phase 1 Behavioral Specification](filelog-receiver-phase1-spec.md) | Exact Phase 1 runtime behavior and state transitions |
 | [Filelog Receiver Phase 1 Conformance Specification](filelog-receiver-phase1-conformance.md) | Resource models, telemetry semantics, validation cases, and normative examples |
 | This document | Exact durable byte format and replay representation |
