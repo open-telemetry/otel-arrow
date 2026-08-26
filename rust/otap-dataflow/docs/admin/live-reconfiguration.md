@@ -98,30 +98,37 @@ traffic flip across the whole pipeline.
 - Empty pipeline groups can be created through the group lifecycle endpoint.
   The first endpoint version allows group-level settings but rejects create
   payloads that already contain pipelines or group-local topic declarations.
-- Runtime topic broker mutation is rejected. In practice this means:
-  - no new or removed declared topics;
-  - no change to the selected topic mode;
-  - no change to topic backend or topic policies.
 - Full-engine reconciliation rejects desired configs that would change runtime
   topic profiles. Deleting or restoring pipelines that use `receiver:topic` or
   `exporter:topic` can therefore be rejected even when the YAML is otherwise
   valid.
-- Per-pipeline reconfiguration does not mutate group-level or engine-level
-  policy. Full-engine reconciliation accepts pipeline-level policy changes,
-  but rejects top-level and group policy declaration changes. Move those
-  effective settings to each affected pipeline and retry.
 - Full-engine reconciliation uses fail-closed capability admission. Runtime log
-  level and `engine.custom` metadata are mutable. Other `engine` settings, the
-  process memory limiter, the topic broker configuration, and the system
-  observability pipeline are startup-owned and require a restart to change.
+  level and `engine.custom` metadata are mutable. All other current and future
+  `engine` fields require restart until they gain an explicit live-apply path.
   If one request combines supported changes with any unsupported change, the
-  complete request is rejected before rollout planning starts. Rejections use
-  `restart_required` when restarting can apply the submitted configuration and
-  `unsupported_mutation` when the request must be rewritten.
+  complete request is rejected before rollout planning starts.
 - With `delete_missing: false`, omitted groups and pipelines remain in the
   effective target.
 - There is no dedicated scale endpoint. Scale-only changes use the same `PUT`
   endpoint as topology changes.
+
+### Full-Config Reconciliation Capabilities
+
+| Configuration area | Live behavior | Rejection kind or action |
+| --- | --- | --- |
+| Regular pipeline topology, node config, and pipeline-level policies | Applied through create, replace, resize, or no-op rollout | Accepted when validation and planning succeed |
+| `engine.telemetry.logs.level` | Applied to running log subscribers | Accepted |
+| `engine.custom` | Committed as application-owned metadata | Accepted |
+| Other current or future `engine` fields | Startup-owned unless an explicit live-apply path is added | `restart_required` |
+| Process memory limiter | Process-wide sampler is created at startup | `restart_required` |
+| Topic declaration description | Committed as metadata; broker behavior is unchanged | Accepted |
+| Topic additions, removals, backend, selected mode, policies, or inferred runtime profile | Topic broker registry is created at startup | `restart_required` |
+| System observability pipeline | Created at startup | `restart_required` |
+| Top-level or group policy declarations | Shared inheritance cannot be committed atomically across several pipeline rollouts | `unsupported_mutation`; move effective settings to pipeline-level policies and retry |
+
+`restart_required` means the submitted configuration is valid but can only be
+applied by restarting the process. `unsupported_mutation` means the caller must
+rewrite the request into a supported live-mutation scope before retrying.
 
 ## Consistency Model
 
