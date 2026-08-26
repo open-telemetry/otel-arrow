@@ -406,8 +406,9 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                 let max_batch_duration = self.config.max_batch_duration();
                 let max_batch_size = self.config.max_batch_size();
 
-                // Signal spawned connection tasks to terminate, optionally flushing for drain.
-                let shutdown_flag = Rc::new(Cell::new(false));
+                // This watch channel stays core-local and wakes blocked connection reads when
+                // the receiver must terminate, while retaining the state for newly polled tasks.
+                let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
                 let flush_on_shutdown = Rc::new(Cell::new(false));
                 // Counter to track active connection tasks for graceful shutdown
                 let active_task_count = Rc::new(Cell::new(0usize));
@@ -425,7 +426,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     // to flush their per-connection buffers before reporting
                                     // ReceiverDrained to the runtime.
                                     flush_on_shutdown.set(true);
-                                    shutdown_flag.set(true); // Signal all connection tasks to flush and exit
+                                    let _ = shutdown_tx.send_replace(true);
 
                                     // Wait for active tasks to finish flushing.
                                     // Use 90% of remaining time (keeping 10% buffer for cleanup),
@@ -455,7 +456,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                 }
                                 Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
                                     flush_on_shutdown.set(false);
-                                    shutdown_flag.set(true);
+                                    let _ = shutdown_tx.send_replace(true);
                                     let _ = tokio::time::timeout(MAX_TASK_DRAIN_WAIT, async {
                                         while active_task_count.get() > 0 {
                                             tokio::task::yield_now().await;
@@ -499,8 +500,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     let tls_acceptor = maybe_tls_acceptor.clone();
                                     let tls_handshake_timeout = maybe_handshake_timeout;
 
-                                    // Clone shutdown flag for the spawned task
-                                    let task_shutdown_flag = shutdown_flag.clone();
+                                    let mut task_shutdown_rx = shutdown_rx.clone();
                                     let task_flush_on_shutdown = flush_on_shutdown.clone();
                                     // Clone active task counter for the spawned task
                                     let task_active_count = active_task_count.clone();
@@ -509,7 +509,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     // ToDo should this be abstracted and exposed a method in the effect handler?
                                     _ = tokio::task::spawn_local(async move {
                                         // If already shutting down, exit immediately (nothing to process yet)
-                                        if task_shutdown_flag.get() {
+                                        if *task_shutdown_rx.borrow() {
                                             return;
                                         }
 
@@ -561,8 +561,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                         let mut interval = tokio::time::interval_at(start, max_batch_duration);
 
                                         loop {
-                                            // Check for shutdown signal (simple bool check - very cheap)
-                                            if task_shutdown_flag.get() {
+                                            if *task_shutdown_rx.borrow() {
                                                 if !pending_messages.is_empty()
                                                     && !task_flush_on_shutdown.get()
                                                 {
@@ -611,6 +610,10 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 
                                             tokio::select! {
                                                 biased; // Prioritize incoming data over timeout
+
+                                                _ = task_shutdown_rx.changed() => {
+                                                    continue;
+                                                }
 
                                                 // Handle incoming data
                                                 read_result = read_line_bounded(&mut reader, &mut line_bytes, MAX_MESSAGE_SIZE) => {
@@ -2767,6 +2770,165 @@ mod telemetry_tests {
                 1,
                 "forward_failed == 1"
             );
+        }));
+    }
+
+    /// Scenario: immediate shutdown terminates a classified UDP message still waiting in a batch.
+    /// Guarantees: the buffered message is reported once as refused and is not handed downstream.
+    #[test]
+    fn udp_shutdown_refuses_buffered_message() {
+        let (rt, local) = setup_test_runtime();
+        rt.block_on(local.run_until(async move {
+            let telemetry_registry = TelemetryRegistryHandle::new();
+            let controller = ControllerContext::new(telemetry_registry.clone());
+            let pipeline = controller.pipeline_context_with(
+                otel_arrow_dfe_config::PipelineGroupId::from("grp".to_string()),
+                otel_arrow_dfe_config::PipelineId::from("pipe".to_string()),
+                0,
+                1,
+                0,
+            );
+            let port = otel_arrow_dfe_test_net::pick_unused_loopback_udp_port();
+            let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+            let receiver = SyslogCefReceiver::with_pipeline(
+                pipeline,
+                Config {
+                    protocol: Protocol::Udp(UdpConfig {
+                        listening_addr: addr,
+                    }),
+                    batch: Some(BatchConfig {
+                        max_batch_duration_ms: NonZeroU64::new(10_000),
+                        max_size: NonZeroU16::new(2),
+                    }),
+                },
+            );
+
+            let (out_tx, out_rx) = otel_arrow_dfe_channel::mpsc::Channel::new(1);
+            let mut senders = std::collections::HashMap::new();
+            let _ = senders.insert(
+                "".into(),
+                Sender::Local(otel_arrow_dfe_engine::local::message::LocalSender::mpsc(
+                    out_tx,
+                )),
+            );
+            let (pipe_tx, _pipe_rx) = otel_arrow_dfe_engine::control::runtime_ctrl_msg_channel(10);
+            let (_metrics_rx, reporter) = MetricsReporter::create_new_and_receiver(2);
+            let eh = otel_arrow_dfe_engine::local::receiver::EffectHandler::new(
+                test_node("syslog_udp_shutdown"),
+                senders,
+                None,
+                pipe_tx,
+                reporter,
+            );
+            let (ctrl_tx, ctrl_rx) = otel_arrow_dfe_channel::mpsc::Channel::new(8);
+            let ctrl_rx = otel_arrow_dfe_engine::message::Receiver::Local(
+                otel_arrow_dfe_engine::local::message::LocalReceiver::mpsc(ctrl_rx),
+            );
+            let ctrl_chan = otel_arrow_dfe_engine::local::receiver::ControlChannel::new(ctrl_rx);
+            let handle =
+                tokio::task::spawn_local(
+                    async move { Box::new(receiver).start(ctrl_chan, eh).await },
+                );
+
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let _ = sock
+                .send_to(b"<34>1 2024-01-15T10:30:45.123Z host app - ID1 msg", addr)
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+
+            let _ = ctrl_tx.send(NodeControlMsg::Shutdown {
+                deadline: Instant::now() + Duration::from_secs(1),
+                reason: "test".into(),
+            });
+            let terminal_state = handle.await.unwrap().unwrap();
+
+            assert_eq!(received_count(terminal_state.metrics(), Some("refused")), 1);
+            assert!(out_rx.try_recv().is_err());
+        }));
+    }
+
+    /// Scenario: receiver-first drain reaches a classified TCP message still waiting in a batch.
+    /// Guarantees: the buffered message is handed downstream and reported once as successful.
+    #[test]
+    fn tcp_drain_flushes_buffered_message() {
+        let (rt, local) = setup_test_runtime();
+        rt.block_on(local.run_until(async move {
+            let telemetry_registry = TelemetryRegistryHandle::new();
+            let controller = ControllerContext::new(telemetry_registry.clone());
+            let pipeline = controller.pipeline_context_with(
+                otel_arrow_dfe_config::PipelineGroupId::from("grp".to_string()),
+                otel_arrow_dfe_config::PipelineId::from("pipe".to_string()),
+                0,
+                1,
+                0,
+            );
+            let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
+            let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+            let receiver = SyslogCefReceiver::with_pipeline(
+                pipeline,
+                Config {
+                    protocol: Protocol::Tcp(TcpConfig {
+                        listening_addr: addr,
+                        tls: None,
+                    }),
+                    batch: Some(BatchConfig {
+                        max_batch_duration_ms: NonZeroU64::new(10_000),
+                        max_size: NonZeroU16::new(2),
+                    }),
+                },
+            );
+
+            let (out_tx, out_rx) = otel_arrow_dfe_channel::mpsc::Channel::new(1);
+            let mut senders = std::collections::HashMap::new();
+            let _ = senders.insert(
+                "".into(),
+                Sender::Local(otel_arrow_dfe_engine::local::message::LocalSender::mpsc(
+                    out_tx,
+                )),
+            );
+            let (pipe_tx, mut pipe_rx) =
+                otel_arrow_dfe_engine::control::runtime_ctrl_msg_channel(10);
+            let (_metrics_rx, reporter) = MetricsReporter::create_new_and_receiver(2);
+            let eh = otel_arrow_dfe_engine::local::receiver::EffectHandler::new(
+                test_node("syslog_tcp_drain"),
+                senders,
+                None,
+                pipe_tx,
+                reporter,
+            );
+            let (ctrl_tx, ctrl_rx) = otel_arrow_dfe_channel::mpsc::Channel::new(8);
+            let ctrl_rx = otel_arrow_dfe_engine::message::Receiver::Local(
+                otel_arrow_dfe_engine::local::message::LocalReceiver::mpsc(ctrl_rx),
+            );
+            let ctrl_chan = otel_arrow_dfe_engine::local::receiver::ControlChannel::new(ctrl_rx);
+            let handle =
+                tokio::task::spawn_local(
+                    async move { Box::new(receiver).start(ctrl_chan, eh).await },
+                );
+
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let mut stream = TcpStream::connect(addr).await.unwrap();
+            stream
+                .write_all(b"<34>1 2024-01-15T10:30:45.123Z host app - ID1 msg\n")
+                .await
+                .unwrap();
+            stream.flush().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+
+            let _ = ctrl_tx.send(NodeControlMsg::DrainIngress {
+                deadline: Instant::now() + Duration::from_secs(1),
+                reason: "test".into(),
+            });
+            let terminal_state = handle.await.unwrap().unwrap();
+
+            assert_eq!(received_count(terminal_state.metrics(), Some("success")), 1);
+            assert!(out_rx.recv().await.is_ok());
+            assert!(matches!(
+                pipe_rx.recv().await,
+                Ok(otel_arrow_dfe_engine::control::RuntimeControlMsg::ReceiverDrained { .. })
+            ));
         }));
     }
 
