@@ -96,8 +96,9 @@ checkpoint-format specification states its own normative-keyword convention.
 ### Non-goals
 
 - Compatibility with the Go filelog receiver or Stanza operator chains.
-- Embedded timestamp extraction, JSON parsing, severity mapping, trace
-  correlation, enrichment, filtering, or routing.
+- Performing timestamp extraction, JSON parsing, severity mapping, trace
+  correlation, enrichment, filtering, or routing inside the receiver; these
+  remain processor responsibilities.
 - Destination-specific body conversion, field mapping, or delivery behavior.
 - Durable telemetry spooling or recovery after required source bytes disappear.
 - Guaranteed copytruncate capture or unconditional "never lose data" claims.
@@ -369,6 +370,36 @@ assignment, rendezvous or consistent hashing, or fixed virtual partitions when
 assignment scale justifies that additional indirection. None is required for
 checkpoint continuity, and this design does not select among them.
 
+## Delivery phases
+
+| Phase | Deliverables | Principal limitation or gate |
+| --- | --- | --- |
+| Phase 1 | One receiver; bounded periodic discovery, reading, decoding, framing, and batching; durable identity and quarantine; one retained batch; Ack-gated progress; move/create rotation | Receiver-wide head-of-line coupling; no distributed fencing or lossless rollout readiness; checkpoint-format approval required |
+| Phase 2 | Native discovery hints, bounded read-ahead or local shards, multiple in-flight batches, optional source metadata, measured background compaction | Ownership remains local and single-instance; new contiguous-commit and failure-isolation contracts required |
+| Phase 3 | Shared identity resolution, measured file assignment, fenced checkpoint persistence, revoke/assign and readiness coordination, explicit Phase 1 state migration | Requires shared coordination and storage semantics not provided by Phase 1 |
+
+Phase 1 satisfies the single-instance subset of #2844. It demonstrates
+CPU-independent identity keys and restart continuity, but it does not satisfy
+the epic's multi-instance assignment, live resize, fenced handoff, or source
+readiness criteria.
+
+Phase 2 optimizations cannot weaken periodic reconciliation, boundedness,
+ordering, or Ack-gated progress. Multiple in-flight batches require explicit
+contiguous commit, Nack-in-the-middle, read-ahead reconstruction, memory, drain,
+and failure-domain rules before adoption.
+
+Phase 3 preserves the source-side semantics approved here while replacing the
+ownership boundary. Shared identity must precede file assignment because a
+receiver cannot be assigned by an opaque `file_id` that only it can create.
+The final scheme remains a future measured proposal.
+
+Issue #2844 should separately evaluate topology-independent identity,
+CPU-independent checkpoints, and fenced assignment without treating fixed
+virtual partitions as mandatory. Direct sticky assignment, rendezvous or
+consistent hashing, and virtual partitions remain alternatives. This Phase 1
+proposal does not close the multi-instance epic or add its coordination
+machinery.
+
 ## Core Phase 1 invariants
 
 The behavioral specification owns exact procedures and transition ordering.
@@ -572,36 +603,6 @@ allowed torn tail, causing replay from 100, or may replay through 200 if the
 complete valid transaction survived. It cannot recover progress beyond a
 validated Ack-authorized transaction. Duplicate delivery is possible; skipping
 unacknowledged source data is not.
-
-## Delivery phases
-
-| Phase | Deliverables | Principal limitation or gate |
-| --- | --- | --- |
-| Phase 1 | One receiver; bounded periodic discovery, reading, decoding, framing, and batching; durable identity and quarantine; one retained batch; Ack-gated progress; move/create rotation | Receiver-wide head-of-line coupling; no distributed fencing or lossless rollout readiness; checkpoint-format approval required |
-| Phase 2 | Native discovery hints, bounded read-ahead or local shards, multiple in-flight batches, optional source metadata, measured background compaction | Ownership remains local and single-instance; new contiguous-commit and failure-isolation contracts required |
-| Phase 3 | Shared identity resolution, measured file assignment, fenced checkpoint persistence, revoke/assign and readiness coordination, explicit Phase 1 state migration | Requires shared coordination and storage semantics not provided by Phase 1 |
-
-Phase 1 satisfies the single-instance subset of #2844. It demonstrates
-CPU-independent identity keys and restart continuity, but it does not satisfy
-the epic's multi-instance assignment, live resize, fenced handoff, or source
-readiness criteria.
-
-Phase 2 optimizations cannot weaken periodic reconciliation, boundedness,
-ordering, or Ack-gated progress. Multiple in-flight batches require explicit
-contiguous commit, Nack-in-the-middle, read-ahead reconstruction, memory, drain,
-and failure-domain rules before adoption.
-
-Phase 3 preserves the source-side semantics approved here while replacing the
-ownership boundary. Shared identity must precede file assignment because a
-receiver cannot be assigned by an opaque `file_id` that only it can create.
-The final scheme remains a future measured proposal.
-
-Issue #2844 should separately evaluate topology-independent identity,
-CPU-independent checkpoints, and fenced assignment without treating fixed
-virtual partitions as mandatory. Direct sticky assignment, rendezvous or
-consistent hashing, and virtual partitions remain alternatives. This Phase 1
-proposal does not close the multi-instance epic or add its coordination
-machinery.
 
 ## Alternatives considered
 
