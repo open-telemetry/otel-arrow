@@ -187,7 +187,7 @@ pub enum NackCause {
     /// The request was permanently refused due to its content or a policy
     /// decision (client error). Non-retryable; the client must change the
     /// request or its configuration.
-    Rejected,
+    Refused,
 }
 
 /// The NACK message.

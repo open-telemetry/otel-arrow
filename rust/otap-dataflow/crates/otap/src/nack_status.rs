@@ -28,12 +28,12 @@ pub(crate) enum NackClass {
 /// Classifies a NACK from its permanence and cause.
 ///
 /// A transient NACK is always retryable. A permanent NACK is a client error
-/// only when it is explicitly classified as [`NackCause::Rejected`]; every
+/// only when it is explicitly classified as [`NackCause::Refused`]; every
 /// other permanent NACK is treated as a server-side failure.
 pub(crate) const fn classify_nack(permanent: bool, cause: NackCause) -> NackClass {
     if permanent {
         match cause {
-            NackCause::Rejected => NackClass::ClientError,
+            NackCause::Refused => NackClass::ClientError,
             NackCause::Unspecified
             | NackCause::RouteFull
             | NackCause::RouteClosed
@@ -78,11 +78,11 @@ mod tests {
     use super::*;
     use tonic::Code;
 
-    /// Scenario: a permanent NACK explicitly classified as a client rejection.
+    /// Scenario: a permanent NACK explicitly classified as a client refusal.
     /// Guarantees: it maps to a non-retryable client error across both transports.
     #[test]
-    fn rejected_permanent_nack_is_a_client_error() {
-        let class = classify_nack(true, NackCause::Rejected);
+    fn refused_permanent_nack_is_a_client_error() {
+        let class = classify_nack(true, NackCause::Refused);
         assert_eq!(class, NackClass::ClientError);
         assert_eq!(class.grpc_code(), 3);
         assert_eq!(class.http_status(), StatusCode::BAD_REQUEST);
@@ -92,7 +92,7 @@ mod tests {
         );
     }
 
-    /// Scenario: a permanent NACK with any non-rejection cause.
+    /// Scenario: a permanent NACK with any non-refusal cause.
     /// Guarantees: it maps to a non-retryable server error across both transports.
     #[test]
     fn other_permanent_nack_is_a_server_error() {
@@ -114,7 +114,7 @@ mod tests {
     /// Guarantees: it maps to a retryable status across both transports.
     #[test]
     fn transient_nack_is_retryable() {
-        let class = classify_nack(false, NackCause::Rejected);
+        let class = classify_nack(false, NackCause::Refused);
         assert_eq!(class, NackClass::Retryable);
         assert_eq!(class.grpc_code(), 14);
         assert_eq!(class.http_status(), StatusCode::SERVICE_UNAVAILABLE);

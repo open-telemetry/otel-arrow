@@ -549,7 +549,7 @@ impl local::Processor<OtapPdata> for ResourceValidatorProcessor {
                         Ok(())
                     }
                     Err((failure, error_msg)) => {
-                        // Client-caused failures are permanent rejections (INVALID_ARGUMENT);
+                        // Client-caused failures are permanent refusals (INVALID_ARGUMENT);
                         // an internal conversion error is a permanent server failure (INTERNAL).
                         let nack = match failure {
                             ValidationFailure::ConversionError => {
@@ -561,7 +561,7 @@ impl local::Processor<OtapPdata> for ResourceValidatorProcessor {
                                 NackMsg::new_permanent_with_cause(
                                     &error_msg,
                                     pdata,
-                                    NackCause::Rejected,
+                                    NackCause::Refused,
                                 )
                             }
                         };

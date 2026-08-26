@@ -902,15 +902,15 @@ mod tests {
         );
     }
 
-    /// Scenario: a permanent NACK classified as a client rejection is converted
+    /// Scenario: a permanent NACK classified as a client refusal is converted
     /// to a gRPC status.
     /// Guarantees: the client receives non-retryable `INVALID_ARGUMENT` rather
     /// than the server-fault `INTERNAL` used for other permanent failures.
     #[test]
-    fn test_nack_to_status_rejected_returns_invalid_argument() {
+    fn test_nack_to_status_refused_returns_invalid_argument() {
         use otel_arrow_dfe_engine::control::NackCause;
         let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into());
-        let nack = NackMsg::new_permanent_with_cause("bad request", pdata, NackCause::Rejected);
+        let nack = NackMsg::new_permanent_with_cause("bad request", pdata, NackCause::Refused);
         let status = nack_to_status(nack);
         assert_eq!(status.code(), Code::InvalidArgument);
         assert!(
