@@ -33,12 +33,12 @@ pub use formatter::{
 /// During encoding, `ProtoBuffer<LOG_ARGUMENTS_ENCODE_INLINE>` keeps data on the
 /// stack.  After encoding the result is converted to `Bytes` for
 /// cheap reference-counted storage.
-pub const LOG_ARGUMENTS_ENCODE_INLINE: usize = 1024;
+pub const LOG_ARGUMENTS_ENCODE_INLINE: usize = 2048;
 
 /// Default buffer size for log formatting. Note that we truncate and
 /// recognize dropped_attributes_count at the top-level of each log
 /// record.
-pub const LOG_BUFFER_SIZE: usize = 512;
+pub const LOG_BUFFER_SIZE: usize = 1024;
 
 /// A log record with structural metadata and pre-encoded body/attributes.
 /// A SystemTime value for the event is presumed to be external.
