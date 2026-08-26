@@ -414,14 +414,14 @@ impl SegmentStore {
                     if let (Some(budget), Some(size)) = (&self.budget, file_size) {
                         budget.remove(size);
                     }
-                    return Ok(file_size);
+                    Ok(file_size)
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                     // Raced with external deletion -- file is gone, release budget.
                     if let (Some(budget), Some(size)) = (&self.budget, file_size) {
                         budget.remove(size);
                     }
-                    return Ok(file_size);
+                    Ok(file_size)
                 }
                 Err(e) => {
                     // File still on disk (sharing violation, permission error, etc.).
@@ -444,7 +444,7 @@ impl SegmentStore {
                         );
                     }
                     self.defer_delete(seq, file_size.unwrap_or(0));
-                    return Ok(None);
+                    Ok(None)
                 }
             }
         } else {
@@ -452,7 +452,7 @@ impl SegmentStore {
             if let (Some(budget), Some(size)) = (&self.budget, file_size) {
                 budget.remove(size);
             }
-            return Ok(file_size);
+            Ok(file_size)
         }
     }
 
