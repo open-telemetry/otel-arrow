@@ -48,7 +48,8 @@ jobs:
       - name: Block merge during active release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: ./.github/workflows/scripts/check-release-freeze.sh "${{ steps.merge_group.outputs.pr_number }}"
+          STEPS_MERGE_GROUP_OUTPUTS_PR_NUMBER: ${{ steps.merge_group.outputs.pr_number }}
+        run: ./.github/workflows/scripts/check-release-freeze.sh "${STEPS_MERGE_GROUP_OUTPUTS_PR_NUMBER}"
 
   changelog-bot-pull-request:
     name: changelog

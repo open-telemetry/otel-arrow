@@ -99,11 +99,12 @@ jobs:
       - name: Update tracking issue
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          STEPS_PARSE_OUTPUTS_FLAKY_COUNT: ${{ steps.parse.outputs.flaky_count }}
         run: |
           set -euo pipefail
 
           BODY=$(cat flaky-report.md)
-          FLAKY_COUNT="${{ steps.parse.outputs.flaky_count }}"
+          FLAKY_COUNT="${STEPS_PARSE_OUTPUTS_FLAKY_COUNT}"
           FLAKY_COUNT="${FLAKY_COUNT:-0}"
 
           echo "Updating tracking issue #$FLAKY_ISSUE_NUMBER (flaky_count: $FLAKY_COUNT)"

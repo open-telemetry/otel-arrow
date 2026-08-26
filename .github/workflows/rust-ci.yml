@@ -288,7 +288,7 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" == "pull_request" ]; then
             # For PRs, check if the file was changed
-            git diff --name-only origin/${{ github.base_ref }}...HEAD | grep -q "rust/otap-dataflow/crates/query-engine-languages/src/opl/opl.pest" && echo "changed=true" >> $GITHUB_OUTPUT || echo "changed=false" >> $GITHUB_OUTPUT
+            git diff --name-only origin/${GITHUB_BASE_REF}...HEAD | grep -q "rust/otap-dataflow/crates/query-engine-languages/src/opl/opl.pest" && echo "changed=true" >> $GITHUB_OUTPUT || echo "changed=false" >> $GITHUB_OUTPUT
           else
             # For pushes to main, always check
             echo "changed=true" >> $GITHUB_OUTPUT
