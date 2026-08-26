@@ -23,7 +23,7 @@ jobs:
       contents: read
       pull-requests: read
     runs-on: ubuntu-latest
-    environment: release
+    environment: ${{ !inputs.dry_run && 'release' || '' }}
     steps:
       - name: Checkout (dry run)
         if: inputs.dry_run
@@ -111,10 +111,14 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
-          toolchain: stable
+          toolchain: 1.98.0
 
       - name: Update Rust lockfile
         run: cargo generate-lockfile --manifest-path rust/otap-dataflow/Cargo.toml
+
+      - name: Validate Rust crates.io publish pilot
+        run: cargo xtask crates-publish check
+        working-directory: rust/otap-dataflow
 
       - name: Extract release notes for PR body
         id: changelog

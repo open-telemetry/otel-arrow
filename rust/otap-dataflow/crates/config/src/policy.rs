@@ -788,10 +788,18 @@ pub struct FlowBounds {
 pub enum FlowMetric {
     /// Aggregate processor compute duration across the flow.
     ComputeDuration,
-    /// Item count consumed at the start of the flow.
-    ConsumedItems,
-    /// Item count produced at the end of the flow.
-    ProducedItems,
+    /// Message count entering the start of the flow.
+    InputMessages,
+    /// Item count entering the start of the flow.
+    InputItems,
+    /// Logical payload size entering the start of the flow.
+    InputSize,
+    /// Message count leaving the end of the flow.
+    OutputMessages,
+    /// Item count leaving the end of the flow.
+    OutputItems,
+    /// Logical payload size leaving the end of the flow.
+    OutputSize,
     /// Item count a decision node chose to drop.
     DroppedItems,
 }
@@ -1787,8 +1795,12 @@ hard_limit: 2 GiB
         let flow = &policy.flow_metrics[0];
         assert!(flow.metrics.is_none());
         assert!(flow.has(super::FlowMetric::ComputeDuration));
-        assert!(flow.has(super::FlowMetric::ConsumedItems));
-        assert!(flow.has(super::FlowMetric::ProducedItems));
+        assert!(flow.has(super::FlowMetric::InputMessages));
+        assert!(flow.has(super::FlowMetric::InputItems));
+        assert!(flow.has(super::FlowMetric::InputSize));
+        assert!(flow.has(super::FlowMetric::OutputMessages));
+        assert!(flow.has(super::FlowMetric::OutputItems));
+        assert!(flow.has(super::FlowMetric::OutputSize));
         assert!(flow.has(super::FlowMetric::DroppedItems));
     }
 
@@ -1803,8 +1815,12 @@ hard_limit: 2 GiB
         let policy: super::TelemetryPolicy = serde_yaml::from_str(yaml).expect("parse");
         let flow = &policy.flow_metrics[0];
         assert!(flow.has(super::FlowMetric::ComputeDuration));
-        assert!(!flow.has(super::FlowMetric::ConsumedItems));
-        assert!(!flow.has(super::FlowMetric::ProducedItems));
+        assert!(!flow.has(super::FlowMetric::InputMessages));
+        assert!(!flow.has(super::FlowMetric::InputItems));
+        assert!(!flow.has(super::FlowMetric::InputSize));
+        assert!(!flow.has(super::FlowMetric::OutputMessages));
+        assert!(!flow.has(super::FlowMetric::OutputItems));
+        assert!(!flow.has(super::FlowMetric::OutputSize));
         assert!(!flow.has(super::FlowMetric::DroppedItems));
     }
 
