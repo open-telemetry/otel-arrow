@@ -618,13 +618,7 @@ fingerprints, and rotation differ. Quiver provides useful versioning, integrity,
 and atomic-publication conventions, but its segment and cursor data model is not
 the filelog checkpoint model.
 
-## Open questions
-
-D17 resolves the former permanent-EOF release blocker: confirmed permanent EOF
-makes a nonempty pending frame terminally eligible, and the emitted record is
-marked with bounded terminal-unterminated evidence. It is not reported as a
-normally newline- or multiline-completed record. Silent discard and
-finalize-with-noncapture are not alternatives.
+## Future questions -- non-blocking for Phase 1
 
 1. Is the single-instance Phase 1 delivery an acceptable first step for #2844
    while shared identity, ownership, and fencing remain the target?
