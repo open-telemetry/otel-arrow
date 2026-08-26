@@ -12727,6 +12727,7 @@ dependencies = [
  "prost-build 0.14.4",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "syn 2.0.119",
  "toml",
  "tonic-prost-build",

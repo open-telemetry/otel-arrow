@@ -29,6 +29,7 @@ description = "OTel-Arrow Dataflow Engine supporting natively OTLP and OTAP Data
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
+publish.workspace = true
 keywords = ["OpenTelemetry", "OTLP", "OTAP", "Dataflow", "Engine"]
 categories = ["asynchronous", "network-programming"]
 
