@@ -290,13 +290,8 @@ impl TransformProcessor {
         // Record flow metrics from the engine's per-batch execution counters
         effect_handler.record_flow_dropped_items(signal, counters.filtered as u64);
 
-        // Normalize every candidate output before deciding whether it contains
-        // semantic telemetry. This keeps default and named outputs consistent.
         if self.sanitize_results {
             sanitize_otap_batch(&mut default_otap_batch);
-            for (_, routed_batch) in &mut router_impl.routed {
-                sanitize_otap_batch(routed_batch);
-            }
         }
 
         // Empty named outputs must not consume downstream capacity or participate
@@ -307,7 +302,7 @@ impl TransformProcessor {
         let default_has_data = !default_otap_batch.is_empty();
 
         // With no named outputs, preserve the direct-context fast path. A fully
-        // empty transform instead completes the original request locally.
+        // empty transform result instead completes the original request locally.
         if router_impl.routed.is_empty() {
             let mut pdata = OtapPdata::new(inbound_context, default_otap_batch.into());
             if default_has_data {
@@ -331,7 +326,9 @@ impl TransformProcessor {
             return Ok(());
         }
 
-        // Resolve every route before emitting anything or allocating completion state.
+        // Validate every route before emitting anything or allocating completion
+        // state. Otherwise a missing route discovered after the default output is
+        // sent can leave a partially dispatched request awaiting completion.
         let mut routed_outputs = Vec::with_capacity(router_impl.routed.len());
         for (route_name, otap_batch) in router_impl.routed.drain(..) {
             let port_name = effect_handler
@@ -355,6 +352,9 @@ impl TransformProcessor {
                 .clone();
             routed_outputs.push((port_name, otap_batch));
         }
+
+        // TODO: When the default output is empty and exactly one routed output
+        // remains, reuse the inbound context instead of allocating completion state.
 
         // Must be built before the context is moved into the slot map below. Holds no
         // frames, so cloning it per outbound batch is cheap.
@@ -420,7 +420,11 @@ impl TransformProcessor {
 
         // handle any batches that need to be forwarded to a specific output port thanks to invocation
         // of a "route_to" operator call
-        for (port_name, otap_batch) in routed_outputs {
+        for (port_name, mut otap_batch) in routed_outputs {
+            if self.sanitize_results {
+                sanitize_otap_batch(&mut otap_batch);
+            }
+
             // setup the pdata with the new outbound context
             let payload = OtapPayload::from(otap_batch);
             let mut pdata = OtapPdata::new(outbound_context.clone(), payload);
@@ -1087,6 +1091,48 @@ mod test {
                 assert!(
                     ctx.drain_pdata().await.is_empty(),
                     "fully filtered transform output must not be forwarded"
+                );
+
+                match completion_rx.recv().await.expect("upstream completion") {
+                    PipelineCompletionMsg::DeliverAck { mut ack } => {
+                        assert_eq!(ack.accepted.num_items(), 0);
+                        assert_eq!(ack.accepted.signal_type(), SignalType::Logs);
+                    }
+                    other => panic!("expected DeliverAck, got {other:?}"),
+                }
+            })
+            .validate(|_ctx| async move {});
+    }
+
+    /// Scenario: An OPL transform filters every log before routing to a named output.
+    /// Guarantees: Empty default and routed batches are omitted and the input is ACKed locally.
+    #[test]
+    fn test_fully_filtered_routed_transform_completes_without_output() {
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let mut processor =
+            try_create_with_opl_query("logs | where false | route_to \"test_port\"", &runtime)
+                .expect("created processor");
+        let test_port_rx = set_pdata_sender("test_port", &mut processor);
+
+        runtime
+            .set_processor(processor)
+            .run_test(|mut ctx| async move {
+                let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(1);
+                ctx.set_pipeline_completion_sender(completion_tx);
+
+                let input = to_otap_logs(vec![LogRecord::build().event_name("filtered").finish()]);
+                let pdata = create_pdata_with_subscriber(input, Interests::ACKS, 1, 999);
+
+                ctx.process(Message::PData(pdata))
+                    .await
+                    .expect("no process error");
+                assert!(
+                    ctx.drain_pdata().await.is_empty(),
+                    "empty default output must not be forwarded"
+                );
+                assert!(
+                    test_port_rx.is_empty(),
+                    "empty routed output must not be forwarded"
                 );
 
                 match completion_rx.recv().await.expect("upstream completion") {
