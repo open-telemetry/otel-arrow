@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787703987206,
+  "lastUpdate": 1787777139113,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -23704,6 +23704,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 114.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 102.16,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "289780372+otelbot-arrow[bot]@users.noreply.github.com",
+            "name": "otelbot-arrow[bot]",
+            "username": "otelbot-arrow[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a27d207d70c567ce9307fc7e7b10faa4e7836a73",
+          "message": "chore(release) Prepare Release v0.52.0 (#3896)\n\n## Release v0.52.0\n\nThis PR prepares the repository for release v0.52.0.\n\n### Changes included:\n- Rendered pending chloggen entries into `go/CHANGELOG.md` and\n`rust/otap-dataflow/CHANGELOG.md`\n- Bumped `rust/otap-dataflow/Cargo.toml` (workspace + root package)\n\n## What's Changed (Go :hamster:)\n\n### :bulb: Enhancements :bulb:\n\n- `dependencies`: Upgrade various Go dependencies.\n([#3761](https://github.com/open-telemetry/otel-arrow/issues/3761),\n[#3783](https://github.com/open-telemetry/otel-arrow/issues/3783))\n\n## What's Changed (Rust :crab:)\n\n### :stop_sign: Breaking changes :stop_sign:\n\n- `all`: Rename OTAP Dataflow Engine Cargo packages from `otap-df-*` to\n`otel-arrow-dfe-*`.\n([#1848](https://github.com/open-telemetry/otel-arrow/issues/1848))\n\n- `engine`: Rename node and flow metric scopes to input/output, add flow\nmessages and size, and report durations as seconds histograms.\n([#2884](https://github.com/open-telemetry/otel-arrow/issues/2884))\n\n- `observability`: Use component-specific `InstrumentationScope.name`\nvalues for internal logs, enabling more targeted log-level filters.\n([#3738](https://github.com/open-telemetry/otel-arrow/issues/3738))\n\n- `pipeline`: Align exporter and Kafka metrics with bounded attributes,\nend-to-end latency, wire-byte terminology, and actionable failure\ncategories.\n([#2884](https://github.com/open-telemetry/otel-arrow/issues/2884),\n[#3300](https://github.com/open-telemetry/otel-arrow/issues/3300),\n[#3649](https://github.com/open-telemetry/otel-arrow/issues/3649))\n\n- `pipeline`: kafka_exporter: add an allow_auto_create_topics setting\n(default true, for parity with the Go Kafka exporter) that is always\nwritten to the producer config as allow.auto.create.topics.\n([#3509](https://github.com/open-telemetry/otel-arrow/issues/3509))\n\n- `pipeline`: Remove duplicate fanout counters and identify timeout\nmetrics by configured destination and signal.\n([#3530](https://github.com/open-telemetry/otel-arrow/issues/3530))\n\n- `pipeline`: Consolidate OTAP receiver and exporter metrics into\nbounded signal, outcome, and rejection error dimensions.\n([#3300](https://github.com/open-telemetry/otel-arrow/issues/3300))\n\n- `pipeline`: Parquet Azure storage now authenticates through a bound\nbearer_token_provider extension.\n([#3356](https://github.com/open-telemetry/otel-arrow/issues/3356))\n- `pipeline`: Route Geneva events to logical account groups and their\ncurrent primary upload monikers.\n([#3579](https://github.com/open-telemetry/otel-arrow/issues/3579))\n- `pipeline`: Refactor syslog_cef_receiver metrics to align with\notlp_receiver telemetry.\n([#3748](https://github.com/open-telemetry/otel-arrow/issues/3748))\n\n### :rocket: New components :rocket:\n\n- `pipeline`: Add the `k8s_service_account_token_auth` extension to\nauthenticate Kubernetes service-account tokens and admit them by\nallow-list or RBAC.\n([#3494](https://github.com/open-telemetry/otel-arrow/issues/3494))\n\n- `pipeline`: Add an experimental multi-signal file exporter for\nnewline-delimited OTLP JSON capture and replay.\n([#3773](https://github.com/open-telemetry/otel-arrow/issues/3773))\n\n### :bulb: Enhancements :bulb:\n\n- `dependencies`: Upgrade various Rust dependencies.\n([#3778](https://github.com/open-telemetry/otel-arrow/issues/3778),\n[#3779](https://github.com/open-telemetry/otel-arrow/issues/3779),\n[#3780](https://github.com/open-telemetry/otel-arrow/issues/3780),\n[#3781](https://github.com/open-telemetry/otel-arrow/issues/3781),\n[#3786](https://github.com/open-telemetry/otel-arrow/issues/3786),\n[#3866](https://github.com/open-telemetry/otel-arrow/issues/3866),\n[#3867](https://github.com/open-telemetry/otel-arrow/issues/3867),\n[#3868](https://github.com/open-telemetry/otel-arrow/issues/3868),\n[#3869](https://github.com/open-telemetry/otel-arrow/issues/3869))\n- `engine`: Add graceful OS signal handling to the Dataflow Engine\nexecutable with a double-signal force-exit convention.\n([#2325](https://github.com/open-telemetry/otel-arrow/issues/2325))\n- `engine`: Add opt-in logical payload size to node produced and\nconsumed metrics.\n([#2884](https://github.com/open-telemetry/otel-arrow/issues/2884))\n\n- `observability`: Avoid cause of failed OTLP gRPC requests getting\ntruncated in error logs\n([#3793](https://github.com/open-telemetry/otel-arrow/issues/3793))\n- `observability`: Allow admin API clients to set a User-Agent and\nidentify dfctl requests with its version.\n([#3800](https://github.com/open-telemetry/otel-arrow/issues/3800))\n- `observability`: Accept JSON and YAML engine configuration from OpAMP\nservers.\n([#3387](https://github.com/open-telemetry/otel-arrow/issues/3387))\n- `observability`: Report dfctl or admin_api as the initiator in\nexplicit pipeline shutdown status.\n([#3800](https://github.com/open-telemetry/otel-arrow/issues/3800))\n- `pdata`: OTAP payload byte measurements now report logical Arrow\nbuffer size.\n([#3819](https://github.com/open-telemetry/otel-arrow/issues/3819))\n- `pdata`: Publish the zero-dependency `otel-arrow-dfe-pdata-views`\ncrate through the guarded release workflow.\n([#2691](https://github.com/open-telemetry/otel-arrow/issues/2691))\n- `pipeline`: kafka_exporter: add a max_in_flight setting that pipelines\nKafka deliveries for higher throughput while bounding in-flight memory\nand propagating backpressure upstream.\n([#3509](https://github.com/open-telemetry/otel-arrow/issues/3509))\n\n- `pipeline`: kafka_exporter: add per-signal allowed_topics and\nallowed_topics_regex allowlists for header-routed topics, and require\nregex patterns to match the whole topic (anchored) rather than a\nsubstring.\n([#3509](https://github.com/open-telemetry/otel-arrow/issues/3509))\n\n- `pipeline`: Expanded the mock-broker integration tests for the\ncontrib-nodes Kafka exporter, organized by focus area, hardening the\nexporter toward production use.\n([#3509](https://github.com/open-telemetry/otel-arrow/issues/3509))\n- `pipeline`: kafka_exporter: permanently nack non-retryable send errors\ninstead of retrying them, and apply live reconfiguration\n(NodeControlMsg::Config) by swapping the producer in place.\n([#3509](https://github.com/open-telemetry/otel-arrow/issues/3509))\n\n- `pipeline`: kafka_receiver: compute the records_in_flight metric in\nconstant time instead of rescanning every tracked partition on each\nreceive-loop iteration.\n([#3740](https://github.com/open-telemetry/otel-arrow/issues/3740))\n\n- `pipeline`: Operators can now build the df_engine binary with\nexperimental wasm processor plugin support by enabling the `wasm` Cargo\nfeature (`--features wasm`)\n([#2973](https://github.com/open-telemetry/otel-arrow/issues/2973),\n[#3227](https://github.com/open-telemetry/otel-arrow/issues/3227))\n\n- `pipeline`: Add error branch tests for\ntemporal_reaggregation_processor\n([#3718](https://github.com/open-telemetry/otel-arrow/issues/3718))\n- `pipeline`: Render metrics from OTLP bytes and OTAP Arrow records in\nthe console exporter's pretty format.\n([#3750](https://github.com/open-telemetry/otel-arrow/issues/3750))\n- `pipeline`: Show approximate p50, p90, and p99 values in compact\nconsole histogram output.\n([#3840](https://github.com/open-telemetry/otel-arrow/issues/3840))\n- `pipeline`: Reduce allocation overhead when exporting raw OTLP logs to\nClickHouse.\n([#3512](https://github.com/open-telemetry/otel-arrow/issues/3512))\n\n- `pipeline`: Reduce CPU used to export raw OTLP logs to ClickHouse.\n([#3512](https://github.com/open-telemetry/otel-arrow/issues/3512))\n\n- `query-engine`: add short circuit optimization to OTAP query engine\nfor binary logical expressions having different data scopes\n([#3817](https://github.com/open-telemetry/otel-arrow/issues/3817))\n\n### :toolbox: Bug fixes :toolbox:\n\n- `engine`: Keep pipeline identity and part of the failure reason\nvisible when `state.observed_error` logs are too large.\n([#3598](https://github.com/open-telemetry/otel-arrow/issues/3598))\n- `pipeline`: Make ClickHouse exports participate in pipeline ACK/NACK\ndelivery tracking.\n([#3512](https://github.com/open-telemetry/otel-arrow/issues/3512))\n\n- `pipeline`: Prevent the filter processor from exporting empty requests\nwhen every signal item is dropped.\n([#3444](https://github.com/open-telemetry/otel-arrow/issues/3444))\n- `pipeline`: Report durable-buffer loss when finalized segments or\nWAL-only bundles expire during startup.\n([#3705](https://github.com/open-telemetry/otel-arrow/issues/3705))\n\n- `pipeline`: Preserve receiver item-count metrics through processors\nthat batch, split, partition, or aggregate telemetry.\n([#3803](https://github.com/open-telemetry/otel-arrow/issues/3803))\n- `query-engine`: fix OR expressions dropping matches when one side\nreferences an entirely absent attributes payload\n([#3855](https://github.com/open-telemetry/otel-arrow/issues/3855))\n\n### Checklist:\n- [ ] Verify both CHANGELOG.md files render the expected entries\n- [ ] Verify Rust crate versions updated\n- [ ] Confirm all tests pass\n- [ ] Ready to merge and tag release\n\nAfter merging this PR, run the **Push Release** workflow to create git\ntags and publish the GitHub release.\n\nCo-authored-by: otelbot-arrow[bot] <289780372+otelbot-arrow[bot]@users.noreply.github.com>",
+          "timestamp": "2026-08-26T19:40:19Z",
+          "tree_id": "9116ecb148b93c8cbdf4b1297a3c0d2f8772d774",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/a27d207d70c567ce9307fc7e7b10faa4e7836a73"
+        },
+        "date": 1787777124879,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 82.9,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.65,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 70.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.56,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.5,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 114.67,
             "unit": "MB"
           },
           {
