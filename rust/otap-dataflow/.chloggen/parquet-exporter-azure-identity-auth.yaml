@@ -1,8 +1,0 @@
-# Use this changelog template to create an entry for release notes.
-
-change_type: breaking
-component: pipeline
-note: "Parquet Azure storage now authenticates through a bound bearer_token_provider extension."
-issues: [3356]
-subtext: |
-  Migration: Remove auth and storage_scope from Parquet Azure storage config. Bind an azure_identity_auth extension configured with the Azure Storage scope.
