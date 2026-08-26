@@ -344,7 +344,7 @@ impl TransformProcessor {
                         EngineError::ProcessorError {
                             processor: effect_handler.processor_id(),
                             kind: ProcessorErrorKind::Transport,
-                            error: "Routing error: ".into(),
+                            error: "Routing error:".into(),
                             source_detail: format!(
                                 "output port name {} not configured",
                                 route_name
@@ -1064,6 +1064,8 @@ mod test {
             });
     }
 
+    /// Scenario: An OPL transform filters every log from an input carrying an ACK subscriber.
+    /// Guarantees: The input is ACKed without forwarding empty PData downstream.
     #[test]
     fn test_fully_filtered_transform_completes_without_output() {
         let runtime = TestRuntime::<OtapPdata>::new();
@@ -1658,6 +1660,8 @@ mod test {
             .validate(|_ctx| async move {})
     }
 
+    /// Scenario: An OPL transform moves every log to a named output.
+    /// Guarantees: The empty default output is omitted and the routed ACK completes the input.
     #[test]
     fn test_only_routed_output_controls_inbound_ack() {
         let runtime = TestRuntime::<OtapPdata>::new();
