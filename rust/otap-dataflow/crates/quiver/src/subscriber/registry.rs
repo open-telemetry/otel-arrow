@@ -1964,6 +1964,8 @@ mod tests {
         next2.ack();
     }
 
+    /// Scenario: Force-completing a segment snapshots the union of unresolved bundles across subscribers.
+    /// Guarantees: Each stored bundle index appears once if any subscriber has not resolved it.
     #[test]
     fn force_complete_segments_with_unresolved_unions_subscriber_progress() {
         let (registry, _dir) = setup_registry();

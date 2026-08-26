@@ -501,7 +501,8 @@ impl SegmentWriter {
 
         let mut bundle_index_builder = UInt32Builder::with_capacity(entries.len());
         let mut item_count_builder = UInt64Builder::with_capacity(entries.len());
-        let mut byte_count_builder = UInt64Builder::with_capacity(entries.len());
+        let mut byte_count_builder =
+            has_any_byte_counts.then(|| UInt64Builder::with_capacity(entries.len()));
 
         // Create the list builder with a struct builder inside
         let struct_builder = StructBuilder::from_fields(
@@ -515,7 +516,9 @@ impl SegmentWriter {
             if let Some(item_count) = entry.exact_item_count() {
                 item_count_builder.append_value(item_count);
             }
-            byte_count_builder.append_option(entry.exact_byte_count());
+            if let Some(byte_count_builder) = &mut byte_count_builder {
+                byte_count_builder.append_option(entry.exact_byte_count());
+            }
 
             // Get the struct builder from the list builder
             let struct_builder = slot_refs_builder.values();
@@ -546,7 +549,7 @@ impl SegmentWriter {
         if has_item_counts {
             columns.push(Arc::new(item_count_builder.finish()));
         }
-        if has_any_byte_counts {
+        if let Some(mut byte_count_builder) = byte_count_builder {
             columns.push(Arc::new(byte_count_builder.finish()));
         }
         columns.push(Arc::new(slot_refs_builder.finish()));
