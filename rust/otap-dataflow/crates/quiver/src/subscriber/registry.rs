@@ -35,7 +35,7 @@
 //! layer should call `flush_progress()` periodically (e.g., every 25ms) to
 //! write dirty subscribers to disk.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -70,6 +70,8 @@ use crate::record_bundle::SlotId;
 pub struct BundleMetadata {
     /// Number of logical data items in this bundle.
     pub item_count: u64,
+    /// Authoritative logical payload bytes in this bundle, when available.
+    pub byte_count: Option<u64>,
     /// All populated slot IDs for this bundle.
     ///
     /// The consumer is responsible for interpreting these IDs.  For
@@ -897,12 +899,18 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     /// Returns the list of segment sequences that were force-completed and
     /// can be safely deleted from disk.
     pub fn force_drop_oldest_pending_segments(&self) -> Vec<SegmentSeq> {
+        self.force_drop_oldest_pending_segments_with_unresolved().0
+    }
+
+    /// Force-drops the oldest eligible segment and returns its logical loss set.
+    pub(crate) fn force_drop_oldest_pending_segments_with_unresolved(
+        &self,
+    ) -> (Vec<SegmentSeq>, BTreeMap<SegmentSeq, BTreeSet<BundleIndex>>) {
         let subscribers = self.subscribers.read();
 
         // Build a set of all pending (incomplete) segments across all subscribers
         // and track which segments have claimed bundles
-        let mut pending_segments: std::collections::BTreeSet<SegmentSeq> =
-            std::collections::BTreeSet::new();
+        let mut pending_segments: BTreeSet<SegmentSeq> = BTreeSet::new();
         let mut segments_with_readers: HashSet<SegmentSeq> = HashSet::new();
 
         for state_lock in subscribers.values() {
@@ -930,11 +938,12 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
             .collect();
 
         if droppable.is_empty() {
-            return Vec::new();
+            return (Vec::new(), BTreeMap::new());
         }
 
         // Take only the oldest segment to drop (be conservative)
         let to_drop = vec![droppable[0]];
+        let mut unresolved = BTreeMap::from([(droppable[0], BTreeSet::new())]);
 
         // Force-complete these segments for all subscribers
         for state_lock in subscribers.values() {
@@ -943,6 +952,17 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
 
             // Process all segments before releasing the lock
             for &segment_seq in &to_drop {
+                if let Some(progress) = state.segments().get(&segment_seq) {
+                    let unresolved_for_segment = unresolved
+                        .get_mut(&segment_seq)
+                        .expect("the selected segment has an unresolved set");
+                    for bundle_index in 0..progress.bundle_count() {
+                        let bundle_index = BundleIndex::new(bundle_index);
+                        if !progress.is_resolved(bundle_index) {
+                            let _ = unresolved_for_segment.insert(bundle_index);
+                        }
+                    }
+                }
                 if state.force_complete_segment(segment_seq) {
                     any_completed = true;
                 }
@@ -957,7 +977,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
             }
         }
 
-        to_drop
+        (to_drop, unresolved)
     }
 
     /// Force-completes the specified segments for all subscribers.
@@ -969,17 +989,54 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     /// Any bundles that were claimed but not yet resolved will be abandoned.
     /// Subscribers will see these segments as completed and move on.
     pub fn force_complete_segments(&self, segments: &[SegmentSeq]) {
+        let _ = self.force_complete_segments_with_unresolved(segments);
+    }
+
+    /// Snapshots unresolved bundles, then force-completes the specified segments.
+    ///
+    /// The returned set is the union of bundles unresolved by any subscriber.
+    /// A bundle needed by multiple subscribers appears only once because loss
+    /// accounting describes the stored data, not per-subscriber deliveries.
+    ///
+    /// Returns `None` when no subscribers are registered. Callers can use this
+    /// distinction to preserve physical-segment accounting when there is no
+    /// subscriber progress from which to derive logical loss.
+    pub(crate) fn force_complete_segments_with_unresolved(
+        &self,
+        segments: &[SegmentSeq],
+    ) -> Option<BTreeMap<SegmentSeq, BTreeSet<BundleIndex>>> {
         if segments.is_empty() {
-            return;
+            return Some(BTreeMap::new());
         }
 
         let subscribers = self.subscribers.read();
+        if subscribers.is_empty() {
+            return None;
+        }
+
+        let mut unresolved = segments
+            .iter()
+            .copied()
+            .map(|segment_seq| (segment_seq, BTreeSet::new()))
+            .collect::<BTreeMap<_, _>>();
 
         for state_lock in subscribers.values() {
             let mut state = state_lock.write();
             let mut any_completed = false;
 
             for &segment_seq in segments {
+                if let Some(progress) = state.segments().get(&segment_seq) {
+                    let unresolved_for_segment = unresolved
+                        .get_mut(&segment_seq)
+                        .expect("all requested segments have an unresolved set");
+                    for bundle_index in 0..progress.bundle_count() {
+                        let bundle_index = BundleIndex::new(bundle_index);
+                        if !progress.is_resolved(bundle_index) {
+                            let _ = unresolved_for_segment.insert(bundle_index);
+                        }
+                    }
+                }
+
                 if state.force_complete_segment(segment_seq) {
                     any_completed = true;
                 }
@@ -992,6 +1049,8 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
                 let _ = dirty_set.insert(id);
             }
         }
+
+        Some(unresolved)
     }
 }
 
@@ -1106,6 +1165,7 @@ mod tests {
             Ok((0..info.bundle_count)
                 .map(|_| BundleMetadata {
                     item_count: info.items_per_bundle,
+                    byte_count: None,
                     slot_ids: Vec::new(),
                 })
                 .collect())
@@ -1902,6 +1962,40 @@ mod tests {
         handle2.ack();
         next1.ack();
         next2.ack();
+    }
+
+    #[test]
+    fn force_complete_segments_with_unresolved_unions_subscriber_progress() {
+        let (registry, _dir) = setup_registry();
+        let provider = registry.segment_provider.clone();
+        provider.add_segment(1, 2);
+
+        let id1 = SubscriberId::new("sub-1").unwrap();
+        let id2 = SubscriberId::new("sub-2").unwrap();
+        for id in [&id1, &id2] {
+            registry.register(id.clone()).unwrap();
+            registry.activate(id).unwrap();
+        }
+
+        let sub1_bundle0 = registry.poll_next_bundle(&id1).unwrap().unwrap();
+        sub1_bundle0.ack();
+        let sub1_bundle1 = registry.poll_next_bundle(&id1).unwrap().unwrap();
+
+        let sub2_bundle0 = registry.poll_next_bundle(&id2).unwrap().unwrap();
+        let sub2_bundle1 = registry.poll_next_bundle(&id2).unwrap().unwrap();
+        sub2_bundle1.ack();
+
+        let unresolved = registry
+            .force_complete_segments_with_unresolved(&[SegmentSeq::new(1)])
+            .expect("registered subscribers");
+        assert_eq!(
+            unresolved[&SegmentSeq::new(1)],
+            BTreeSet::from([BundleIndex::new(0), BundleIndex::new(1)]),
+            "each stored bundle should be counted once when any subscriber still needs it"
+        );
+
+        sub1_bundle1.ack();
+        sub2_bundle0.ack();
     }
 
     #[test]
