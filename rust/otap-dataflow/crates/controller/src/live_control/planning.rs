@@ -611,6 +611,21 @@ impl<
         Ok(())
     }
 
+    fn validate_topic_profiles_unchanged(
+        current_config: &OtelDataflowSpec,
+        desired_config: &OtelDataflowSpec,
+    ) -> Result<(), ControlPlaneError> {
+        let current_profiles = Self::pipeline_topic_profiles(current_config)?;
+        let desired_profiles = Self::pipeline_topic_profiles(desired_config)?;
+        if current_profiles != desired_profiles {
+            return Err(ControlPlaneError::UnsupportedMutation {
+                message: "live reconciliation does not support changing the topic broker configuration; restart required"
+                    .to_owned(),
+            });
+        }
+        Ok(())
+    }
+
     // Runtime log filtering is live-reconfigurable and custom values are metadata.
     // Every other engine field remains startup-owned until it has an explicit apply path.
     fn validate_live_engine_config_supported(
@@ -639,8 +654,12 @@ impl<
             .iter()
             .any(
                 |(group_id, desired_group)| match current_config.groups.get(group_id) {
-                    Some(current_group) => current_group.policies != desired_group.policies,
-                    None => desired_group.policies.is_some(),
+                    Some(current_group) => {
+                        current_group.policies != desired_group.policies
+                            && (!current_group.pipelines.is_empty()
+                                || !desired_group.pipelines.is_empty())
+                    }
+                    None => desired_group.policies.is_some() && !desired_group.pipelines.is_empty(),
                 },
             );
         if top_level_changed || group_policy_changed {
@@ -658,16 +677,7 @@ impl<
         target_config: &OtelDataflowSpec,
     ) -> Result<(), ControlPlaneError> {
         Self::validate_live_engine_config_supported(current_config, target_config)?;
-
-        let current_profiles = Self::pipeline_topic_profiles(current_config)?;
-        let target_profiles = Self::pipeline_topic_profiles(target_config)?;
-        if current_profiles != target_profiles {
-            return Err(ControlPlaneError::UnsupportedMutation {
-                message: "live reconciliation does not support changing the topic broker configuration; restart required"
-                    .to_owned(),
-            });
-        }
-
+        Self::validate_topic_profiles_unchanged(current_config, target_config)?;
         Self::validate_live_memory_limiter_unchanged(current_config, target_config)?;
         Self::validate_live_shared_policies_unchanged(current_config, target_config)
     }
@@ -886,14 +896,7 @@ impl<
             },
         )?;
 
-        let current_profiles = Self::pipeline_topic_profiles(&live_config)?;
-        let candidate_profiles = Self::pipeline_topic_profiles(&candidate_config)?;
-        if current_profiles != candidate_profiles {
-            return Err(ControlPlaneError::UnsupportedMutation {
-                message: "live reconciliation does not support changing the topic broker configuration; restart required"
-                    .to_owned(),
-            });
-        }
+        Self::validate_topic_profiles_unchanged(&live_config, &candidate_config)?;
         Self::validate_live_memory_limiter_unchanged(&live_config, &candidate_config)?;
 
         let resolved_candidate_config = candidate_config.resolve();
@@ -2234,31 +2237,18 @@ impl<
 
         Self::validate_reconcile_capabilities(&live_config, &target_config)?;
 
-        let explicitly_desired_keys: HashSet<_> = desired_config
+        let mut desired_keys: Vec<_> = desired_config
             .groups
             .iter()
             .flat_map(|(pipeline_group_id, group)| {
-                group.pipelines.keys().map(|pipeline_id| {
-                    PipelineKey::new(pipeline_group_id.clone(), pipeline_id.clone())
+                group.pipelines.iter().map(|(pipeline_id, pipeline)| {
+                    (
+                        PipelineKey::new(pipeline_group_id.clone(), pipeline_id.clone()),
+                        pipeline.clone(),
+                    )
                 })
             })
             .collect();
-        let current_resolved: HashMap<_, _> = live_config
-            .resolve()
-            .pipelines
-            .into_iter()
-            .filter(|pipeline| pipeline.role == ResolvedPipelineRole::Regular)
-            .map(|pipeline| {
-                (
-                    PipelineKey::new(
-                        pipeline.pipeline_group_id.clone(),
-                        pipeline.pipeline_id.clone(),
-                    ),
-                    pipeline,
-                )
-            })
-            .collect();
-
         let target_resolved_config = target_config.resolve();
         let target_context_bindings = self.compile_context_bindings(&target_resolved_config)?;
         let retained_pipeline_keys: HashSet<_> = target_resolved_config
@@ -2298,20 +2288,6 @@ impl<
                 )
             })
             .collect();
-        let mut desired_keys = Vec::new();
-        for (pipeline_group_id, group) in &target_config.groups {
-            for (pipeline_id, pipeline) in &group.pipelines {
-                let pipeline_key = PipelineKey::new(pipeline_group_id.clone(), pipeline_id.clone());
-                let changed = target_resolved.get(&pipeline_key).is_some_and(|target| {
-                    current_resolved
-                        .get(&pipeline_key)
-                        .is_none_or(|current| !current.runtime_matches(target))
-                });
-                if explicitly_desired_keys.contains(&pipeline_key) || changed {
-                    desired_keys.push((pipeline_key, pipeline.clone()));
-                }
-            }
-        }
         let desired_phase_by_key: HashMap<_, _> = target_resolved
             .iter()
             .map(|(pipeline_key, pipeline)| {
