@@ -62,7 +62,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::exporters::clickhouse_exporter::config::{Config, ConfigPatch};
+use crate::exporters::clickhouse_exporter::config::{RuntimeConfig, UserConfig};
 use crate::exporters::clickhouse_exporter::in_flight::CompletedWrite;
 use crate::exporters::clickhouse_exporter::metrics::ClickhouseExporterMetrics;
 use crate::exporters::clickhouse_exporter::transform::logs_fast::{
@@ -109,7 +109,7 @@ const SUPPORTED_ARROW_PAYLOAD_TYPES: &[ArrowPayloadType] = &[
 
 /// Clickhouse exporter that sends OTAP data to Clickhouse backend
 pub struct ClickhouseExporter {
-    config: Config,
+    config: RuntimeConfig,
     pdata_metrics: MeasurementMetricSet<ExporterExportMetrics>,
     ch_metrics: MetricSet<ClickhouseExporterMetrics>,
 }
@@ -123,15 +123,15 @@ impl ClickhouseExporter {
         let ch_metrics = pipeline_ctx.register_metrics::<ClickhouseExporterMetrics>();
         let pdata_metrics = ExporterExportMetrics::register(&pipeline_ctx);
 
-        let patch: ConfigPatch = serde_json::from_value(config.clone()).map_err(|e| {
+        let user_config: UserConfig = serde_json::from_value(config.clone()).map_err(|e| {
             otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
             }
         })?;
-        let config: Config = Config::from_patch(patch);
+        let runtime_config = RuntimeConfig::from_user_config(user_config);
 
         Ok(Self {
-            config,
+            config: runtime_config,
             pdata_metrics,
             ch_metrics,
         })
@@ -139,7 +139,7 @@ impl ClickhouseExporter {
 
     /// Get exporter configuration
     #[must_use]
-    pub fn config(&self) -> &Config {
+    pub fn config(&self) -> &RuntimeConfig {
         &self.config
     }
 
@@ -261,7 +261,7 @@ pub static CLICKHOUSE_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
                 exporter_config,
             ))
         },
-    validate_config: validate_typed_config::<ConfigPatch>,
+    validate_config: validate_typed_config::<UserConfig>,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
 };
 

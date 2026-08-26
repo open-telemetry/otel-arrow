@@ -1609,34 +1609,34 @@ mod realistic_otap_tests {
         use arrow::datatypes::{DataType, Field, Schema};
         use clickhouse_ext_arrow::ArrowClientExt;
 
-        use crate::exporters::clickhouse_exporter::config::Config;
+        use crate::exporters::clickhouse_exporter::config::RuntimeConfig;
         use crate::exporters::clickhouse_exporter::transform::transform_batch::BatchTransformer;
         use crate::exporters::clickhouse_exporter::writer::{ClickHouseWriter, build_client};
 
-        /// Build an exporter `Config` aimed at the live ClickHouse for `database`.
+        /// Build an exporter `RuntimeConfig` aimed at the live ClickHouse for `database`.
         ///
         /// Honors `CLICKHOUSE_URL` / `CLICKHOUSE_USER` / `CLICKHOUSE_PASSWORD`, defaulting to the
         /// container started in the module docs. `async_insert` is disabled so reads are immediately
         /// consistent (we don't want to race a server-side async-insert buffer in assertions).
-        fn e2e_config(database: &str) -> Config {
+        fn e2e_config(database: &str) -> RuntimeConfig {
             let endpoint =
                 std::env::var("CLICKHOUSE_URL").unwrap_or_else(|_| "http://localhost:8123".into());
             let username = std::env::var("CLICKHOUSE_USER").unwrap_or_else(|_| "default".into());
             let password = std::env::var("CLICKHOUSE_PASSWORD").unwrap_or_else(|_| "test".into());
 
-            let patch = serde_json::from_value(serde_json::json!({
+            let user_config = serde_json::from_value(serde_json::json!({
                 "endpoint": endpoint,
                 "database": database,
                 "username": username,
                 "password": password,
                 "async_insert": false,
             }))
-            .expect("valid config patch");
-            Config::from_patch(patch)
+            .expect("valid user config");
+            RuntimeConfig::from_user_config(user_config)
         }
 
         /// Drop `database` if present so each run starts from a clean, deterministic schema.
-        async fn reset_database(config: &Config) {
+        async fn reset_database(config: &RuntimeConfig) {
             build_client(config, "default")
                 .query(&format!("DROP DATABASE IF EXISTS {}", config.database))
                 .execute()

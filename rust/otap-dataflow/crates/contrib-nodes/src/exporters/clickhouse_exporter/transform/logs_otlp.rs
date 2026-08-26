@@ -1291,7 +1291,7 @@ mod tests {
     };
     use crate::exporters::clickhouse_exporter::transform::transform_batch::BatchTransformer;
     use crate::exporters::clickhouse_exporter::{
-        config::Config,
+        config::RuntimeConfig,
         writer::{ClickHouseWriter, build_client},
     };
 
@@ -1796,7 +1796,7 @@ mod tests {
             std::env::var("CLICKHOUSE_URL").unwrap_or_else(|_| "http://localhost:8123".into());
         let username = std::env::var("CLICKHOUSE_USER").unwrap_or_else(|_| "default".into());
         let password = std::env::var("CLICKHOUSE_PASSWORD").unwrap_or_else(|_| "test".into());
-        let patch = serde_json::from_value(serde_json::json!({
+        let user_config = serde_json::from_value(serde_json::json!({
             "endpoint": endpoint,
             "database": "otap_e2e_raw_otlp_logs",
             "username": username,
@@ -1804,7 +1804,7 @@ mod tests {
             "async_insert": false,
         }))
         .expect("valid ClickHouse config");
-        let config = Config::from_patch(patch);
+        let config = RuntimeConfig::from_user_config(user_config);
         build_client(&config, "default")
             .query("DROP DATABASE IF EXISTS otap_e2e_raw_otlp_logs")
             .execute()

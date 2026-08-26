@@ -32,7 +32,7 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use secrecy::ExposeSecret;
 
 use crate::exporters::clickhouse_exporter::{
-    config::Config,
+    config::RuntimeConfig,
     error::ClickhouseExporterError,
     tables::{build_payload_destination_table_map, init_table, validate_identifier},
 };
@@ -44,7 +44,7 @@ pub struct ClickHouseWriter {
 }
 
 impl ClickHouseWriter {
-    pub async fn new(config: &Config) -> Result<Self, ClickhouseExporterError> {
+    pub async fn new(config: &RuntimeConfig) -> Result<Self, ClickhouseExporterError> {
         let payload_destination_tables = build_payload_destination_table_map(config);
         otel_info!(
             "clickhouse.exporter.tables.bound",
@@ -133,7 +133,7 @@ impl ClickHouseWriter {
 ///
 /// `Client` is cheap to clone (it is `Arc`-backed internally), so callers can build one per
 /// target database without concern.
-pub fn build_client(config: &Config, database: &str) -> Client {
+pub fn build_client(config: &RuntimeConfig, database: &str) -> Client {
     let mut client = Client::default()
         .with_url(config.endpoint.clone())
         .with_database(database)
@@ -148,7 +148,7 @@ pub fn build_client(config: &Config, database: &str) -> Client {
 }
 
 /// Ensure db and all tables are initialized if required.
-async fn ensure_db(client: &Client, config: &Config) -> Result<(), ClickhouseExporterError> {
+async fn ensure_db(client: &Client, config: &RuntimeConfig) -> Result<(), ClickhouseExporterError> {
     validate_identifier(&config.database, "database")?;
     client
         .query(&format!(
@@ -164,7 +164,7 @@ async fn ensure_db(client: &Client, config: &Config) -> Result<(), ClickhouseExp
 }
 
 /// Initialize tables.
-async fn init_db(client: &Client, config: &Config) -> Result<(), ClickhouseExporterError> {
+async fn init_db(client: &Client, config: &RuntimeConfig) -> Result<(), ClickhouseExporterError> {
     ensure_db(client, config).await?;
     for entry in config.tables.iter_tables() {
         init_table(client, &entry, config).await?;

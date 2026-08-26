@@ -3,8 +3,8 @@
 
 //! ClickHouse schema initialization for the OTAP-based ClickHouse exporter.
 //!
-//! This module is responsible for translating the exporter [`Config`] into concrete ClickHouse
-//! DDL (CREATE TABLE) for the OTAP (Arrow) payload types that are stored in ClickHouse.
+//! This module is responsible for translating the exporter [`RuntimeConfig`] into concrete
+//! ClickHouse DDL (CREATE TABLE) for the OTAP (Arrow) payload types that are stored in ClickHouse.
 //! Attributes are always stored inline on the signal tables (logs/spans) using a
 //! `Map(LowCardinality(String), String)` representation.
 //!
@@ -26,7 +26,7 @@ use clickhouse::Client;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
 use crate::exporters::clickhouse_exporter::config::{
-    Config, DefaultTableConfig, MetricsTableConfig, TableConfig, TableEngine, TablesConfig,
+    DefaultTableConfig, MetricsTableConfig, RuntimeConfig, TableConfig, TableEngine, TablesConfig,
 };
 use crate::exporters::clickhouse_exporter::consts as ch_consts;
 use crate::exporters::clickhouse_exporter::error::ClickhouseExporterError;
@@ -254,7 +254,7 @@ fn finalize_table_config(t: &TableConfig, d: &DefaultTableConfig) -> FinalTableC
 /// Only signal payloads (Logs, Spans) get entries. Attribute payloads are consumed during
 /// transformation and don't need table mappings.
 pub(crate) fn build_payload_destination_table_map(
-    config: &Config,
+    config: &RuntimeConfig,
 ) -> HashMap<ArrowPayloadType, String> {
     let mut dst_tables = HashMap::new();
     let _ = dst_tables.insert(ArrowPayloadType::Logs, config.tables.logs.name.clone());
@@ -264,7 +264,7 @@ pub(crate) fn build_payload_destination_table_map(
 
 fn build_table_sql(
     entry: &TableEntry<'_>,
-    config: &Config,
+    config: &RuntimeConfig,
 ) -> Result<Option<String>, ClickhouseExporterError> {
     let final_config = finalize_table_config(entry.config, &config.table_defaults);
     // Check if we need to create the schema or return if not.
@@ -420,7 +420,7 @@ fn build_table_sql(
 pub async fn init_table(
     client: &Client,
     entry: &TableEntry<'_>,
-    config: &Config,
+    config: &RuntimeConfig,
 ) -> Result<(), ClickhouseExporterError> {
     let Some(sql) = build_table_sql(entry, config)? else {
         return Ok(());
@@ -507,11 +507,11 @@ impl TablesConfig {
 
 #[cfg(test)]
 mod tests {
-    use crate::exporters::clickhouse_exporter::config::ConfigPatch;
+    use crate::exporters::clickhouse_exporter::config::UserConfig;
 
     use super::*;
 
-    fn base_config() -> Config {
+    fn base_config() -> RuntimeConfig {
         let json = serde_json::json!({
             "endpoint": "http://localhost:8123",
             "database": "otap",
@@ -519,11 +519,11 @@ mod tests {
             "password": "bar",
         });
 
-        let patch: ConfigPatch = serde_json::from_value(json).unwrap();
-        Config::from_patch(patch)
+        let user_config: UserConfig = serde_json::from_value(json).unwrap();
+        RuntimeConfig::from_user_config(user_config)
     }
 
-    fn get_table_config(kind: TableKind, config: &Config) -> &TableConfig {
+    fn get_table_config(kind: TableKind, config: &RuntimeConfig) -> &TableConfig {
         match kind {
             TableKind::Logs => &config.tables.logs,
             TableKind::Traces => &config.tables.traces,
@@ -709,8 +709,8 @@ mod tests {
             "password": "bar",
             "table_defaults": { "create_schema": false },
         });
-        let patch: ConfigPatch = serde_json::from_value(json).unwrap();
-        let config = Config::from_patch(patch);
+        let user_config: UserConfig = serde_json::from_value(json).unwrap();
+        let config = RuntimeConfig::from_user_config(user_config);
         let entry = TableEntry {
             kind: TableKind::Logs,
             config: &config.tables.logs,
@@ -764,8 +764,8 @@ mod tests {
             "password": "bar",
             "table_defaults": { "ttl_interval": "48 HOUR" },
         });
-        let patch: ConfigPatch = serde_json::from_value(json).unwrap();
-        let config = Config::from_patch(patch);
+        let user_config: UserConfig = serde_json::from_value(json).unwrap();
+        let config = RuntimeConfig::from_user_config(user_config);
         let entry = TableEntry {
             kind: TableKind::Logs,
             config: &config.tables.logs,
@@ -788,8 +788,8 @@ mod tests {
             "table_defaults": { "ttl_interval": "48 HOUR" },
             "tables": { "logs": { "ttl": "12 HOUR" } },
         });
-        let patch: ConfigPatch = serde_json::from_value(json).unwrap();
-        let config = Config::from_patch(patch);
+        let user_config: UserConfig = serde_json::from_value(json).unwrap();
+        let config = RuntimeConfig::from_user_config(user_config);
         let entry = TableEntry {
             kind: TableKind::Logs,
             config: &config.tables.logs,

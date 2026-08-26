@@ -73,7 +73,7 @@ SELECT * FROM otel_traces LIMIT 10;
 
 At runtime the exporter does the following:
 
-1. Deserializes `ConfigPatch` and normalizes it into `Config`
+1. Deserializes `UserConfig` and normalizes it into `RuntimeConfig`
 2. Connects to ClickHouse and creates the target database and configured
    tables if enabled
 3. Receives `OtapPdata` messages from the engine
