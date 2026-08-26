@@ -90,9 +90,7 @@ impl CombineScalarExpression {
             .map(|v| v.to_value())
         {
             Some(Value::Array(a)) => {
-                let completed = a.get_items(&mut IndexValueClosureCallback::new(|_, v| {
-                    v.get_value_type() == ValueType::Array
-                }));
+                let completed = a.get_items(&mut |_, v| v.get_value_type() == ValueType::Array);
 
                 if completed {
                     Ok(Some(ValueType::Array))

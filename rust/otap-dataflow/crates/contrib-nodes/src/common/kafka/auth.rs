@@ -286,6 +286,10 @@ mod tests {
         assert_eq!(SaslMechanism::ScramSha512.as_rdkafka_str(), "SCRAM-SHA-512");
     }
 
+    /// Scenario (configuration and packaging: feature gates): map the AWS-gated MSK mechanism to
+    /// its librdkafka `sasl.mechanism` string, with the `aws` feature enabled.
+    /// Guarantees: `AwsMskIamOauthbearer` maps to `OAUTHBEARER`, so the
+    /// feature-gated variant produces the correct wire value.
     #[cfg(feature = "aws")]
     #[test]
     fn mechanism_as_rdkafka_str_aws() {
@@ -302,6 +306,10 @@ mod tests {
         assert!(SaslMechanism::ScramSha512.is_username_password());
     }
 
+    /// Scenario (configuration and packaging: feature gates): classify the AWS-gated MSK mechanism
+    /// as username/password or not, with the `aws` feature enabled.
+    /// Guarantees: `AwsMskIamOauthbearer` is not a username/password mechanism,
+    /// so the credential-application path is correctly skipped for it.
     #[cfg(feature = "aws")]
     #[test]
     fn mechanism_is_username_password_aws() {
@@ -535,6 +543,12 @@ mod tests {
         assert_eq!(m, SaslMechanism::ScramSha512);
     }
 
+    /// Scenario (configuration and packaging: feature gates): deserialize the
+    /// `AWS_MSK_IAM_OAUTHBEARER` mechanism string with the `aws` feature
+    /// enabled.
+    /// Guarantees: the string deserializes to the `AwsMskIamOauthbearer`
+    /// variant, so AWS MSK IAM is configurable exactly when the feature is
+    /// built (paired with the `not(aws)` rejection test).
     #[cfg(feature = "aws")]
     #[test]
     fn deserialize_mechanism_aws_msk() {
@@ -548,6 +562,24 @@ mod tests {
         let json = r#""KERBEROS""#;
         let result = serde_json::from_str::<SaslMechanism>(json);
         assert!(result.is_err());
+    }
+
+    /// Scenario (configuration and packaging: feature gates and dependency isolation): the
+    /// `AWS_MSK_IAM_OAUTHBEARER` mechanism string is deserialized in a build
+    /// that does NOT enable the `aws` feature.
+    /// Guarantees: without the `aws` feature the `AwsMskIamOauthbearer` variant
+    /// does not exist, so serde rejects the string -- AWS MSK IAM is
+    /// unreachable (and its optional AWS dependencies unlinked) unless the
+    /// operator explicitly builds with `aws`.
+    #[cfg(not(feature = "aws"))]
+    #[test]
+    fn deserialize_aws_msk_mechanism_rejected_without_aws_feature() {
+        let json = r#""AWS_MSK_IAM_OAUTHBEARER""#;
+        let result = serde_json::from_str::<SaslMechanism>(json);
+        assert!(
+            result.is_err(),
+            "AWS MSK mechanism must be unreachable without the aws feature"
+        );
     }
 
     #[test]
@@ -592,6 +624,11 @@ mod tests {
         assert!(auth.validate().is_ok());
     }
 
+    /// Scenario (configuration and packaging: feature gates): deserialize a full MSK auth block
+    /// (mechanism + `aws_msk` region) with the `aws` feature enabled.
+    /// Guarantees: the AWS-gated auth shape deserializes and validates, exposing
+    /// the region and no username/password, so MSK IAM config is fully wired
+    /// only in an `aws` build.
     #[cfg(feature = "aws")]
     #[test]
     fn deserialize_aws_msk_backward_compatible() {

@@ -5,7 +5,7 @@
 //! provides fake data to use for various fields in a OTLP signal
 //!
 
-use otap_df_pdata::{SpanID, TraceID};
+use otel_arrow_dfe_pdata::{SpanID, TraceID};
 use rand::RngExt;
 
 use std::time::{SystemTime, UNIX_EPOCH};

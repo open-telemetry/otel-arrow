@@ -8,7 +8,7 @@
 use crate::error::ValidationError;
 use crate::template::render_jinja;
 use minijinja::context;
-use otap_df_config::transport_headers_policy::TransportHeadersPolicy;
+use otel_arrow_dfe_config::transport_headers_policy::TransportHeadersPolicy;
 use serde_yaml::{Mapping, Value};
 use std::fs;
 
@@ -355,7 +355,7 @@ fn set_config_by_path(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_config::transport_headers_policy::*;
+    use otel_arrow_dfe_config::transport_headers_policy::*;
 
     fn sample_yaml() -> &'static str {
         r#"

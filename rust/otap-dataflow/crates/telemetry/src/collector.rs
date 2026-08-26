@@ -7,7 +7,7 @@ use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use otap_df_config::pipeline::telemetry::TelemetryConfig;
+use otel_arrow_dfe_config::pipeline::telemetry::TelemetryConfig;
 use tokio::sync::{RwLock, watch};
 use tokio_util::sync::CancellationToken;
 
@@ -217,7 +217,7 @@ impl InternalCollector {
 
 #[cfg(test)]
 mod tests {
-    use otap_df_config::settings::telemetry::logs::LogsConfig;
+    use otel_arrow_dfe_config::settings::telemetry::logs::LogsConfig;
 
     use super::*;
     use crate::attributes::{AttributeSetHandler, AttributeValue};
@@ -296,7 +296,7 @@ mod tests {
             self.values.iter_mut().for_each(MetricValue::reset);
         }
         fn needs_flush(&self) -> bool {
-            self.values.iter().any(|&v| !v.is_zero())
+            self.values.iter().any(|v| !v.is_zero())
         }
     }
 
@@ -415,7 +415,7 @@ mod tests {
         let mut collected = Vec::new();
         telemetry_registry.visit_current_metrics(|_desc, _attrs, iter| {
             for (field, value) in iter {
-                collected.push((field.name, value));
+                collected.push((field.name, value.clone()));
             }
         });
 
@@ -458,7 +458,7 @@ mod tests {
         let mut first = Vec::new();
         telemetry_registry.visit_metrics_and_reset(|_d, _a, iter| {
             for (f, v) in iter {
-                first.push((f.name, v));
+                first.push((f.name, v.clone()));
             }
         });
         assert_eq!(

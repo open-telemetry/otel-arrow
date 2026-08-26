@@ -10,7 +10,7 @@
 //! across snapshot commands, watch commands, bundles, diagnosis, and the TUI.
 
 use super::models::{EventFilters, LogFilters, MetricsFilters, NormalizedEvent};
-use otap_df_admin_api::telemetry;
+use otel_arrow_dfe_admin_api::telemetry;
 use std::collections::BTreeMap;
 
 /// Applies retained-log filters while preserving response cursor metadata.

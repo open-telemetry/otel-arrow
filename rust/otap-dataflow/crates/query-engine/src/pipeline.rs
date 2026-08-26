@@ -15,8 +15,8 @@ use datafusion::execution::context::SessionContext;
 use datafusion::physical_plan::common::collect;
 use datafusion::physical_plan::streaming::PartitionStream;
 use datafusion::physical_plan::{ExecutionPlan, execute_stream};
-use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_dfe_pdata::OtapArrowRecords;
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use std::sync::Arc;
 
 use crate::error::{Error, Result};
@@ -381,19 +381,24 @@ mod test {
     use data_engine_parser_abstractions::Parser;
     use datafusion::catalog::streaming::StreamingTable;
     use datafusion::logical_expr::{col, lit};
-    use otap_df_pdata::proto::OtlpProtoMessage;
-    use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-    use otap_df_pdata::proto::opentelemetry::logs::v1::{LogRecord, LogsData};
-    use otap_df_pdata::proto::opentelemetry::metrics::v1::MetricsData;
-    use otap_df_pdata::proto::opentelemetry::trace::v1::TracesData;
-    use otap_df_pdata::testing::round_trip::{otlp_to_otap, to_otap_logs};
-    use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
+    use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{LogRecord, LogsData};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
+        Gauge, Metric, MetricsData, Sum,
+    };
+    use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::{Span, TracesData};
+    use otel_arrow_dfe_pdata::testing::round_trip::{
+        otap_to_otlp, otlp_to_otap, to_otap_logs, to_otap_metrics, to_otap_traces,
+    };
+    use otel_arrow_dfe_pdata::{OtapPayload, OtlpProtoBytes};
+    use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
     use prost::Message;
 
     use crate::parser::default_parser_options;
 
     use super::*;
-    use otap_df_pdata::TryIntoWithOptions;
+    use otel_arrow_dfe_pdata::TryIntoWithOptions;
 
     /// helper function for converting [`OtapArrowRecords`] to [`LogsData`]
     pub fn otap_to_logs_data(otap_batch: OtapArrowRecords) -> LogsData {
@@ -537,5 +542,57 @@ mod test {
         let result2 = pipeline.execute(otap_batch2).await.unwrap();
         let result2_logs = result2.get(ArrowPayloadType::Logs).unwrap();
         assert_eq!(result2_logs, &input2_logs.slice(2, 1));
+    }
+
+    /// Scenario: Run a pipeline sourced from a concrete metric type over mixed inputs.
+    /// Guarantees: Only gauge metric rows are transformed; other metric types and other signals
+    /// pass through unchanged.
+    #[tokio::test]
+    async fn test_pipelines_selecting_concrete_metrics_type_skip_exec_only_on_selected_rows() {
+        let logs_batch = vec![
+            LogRecord::build().event_name("event1").finish(),
+            LogRecord::build().event_name("event2").finish(),
+        ];
+        let spans_batch = vec![Span::build().finish()];
+
+        let gauge_metric = Metric::build()
+            .name("gauge_metric")
+            .data_gauge(Gauge::default())
+            .finish();
+
+        let sum_metric = Metric::build()
+            .name("sum_metric")
+            .data_sum(Sum::default())
+            .finish();
+
+        let query = "gauges | set name =\"gauge_name_updated\"";
+        let parser_result = OplParser::parse(query).unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
+
+        let logs_input = to_otap_logs(logs_batch);
+        let result = pipeline.execute(logs_input.clone()).await.unwrap();
+        pretty_assertions::assert_eq!(result, logs_input);
+
+        let traces_input = to_otap_traces(spans_batch);
+        let result = pipeline.execute(traces_input.clone()).await.unwrap();
+        pretty_assertions::assert_eq!(result, traces_input);
+
+        let metrics_input = to_otap_metrics(vec![gauge_metric.clone(), sum_metric.clone()]);
+        let result = pipeline.execute(metrics_input).await.unwrap();
+        let OtlpProtoMessage::Metrics(metrics_result) = otap_to_otlp(&result) else {
+            panic!("invalid signal type result")
+        };
+        assert_eq!(metrics_result.resource_metrics.len(), 1);
+        assert_eq!(metrics_result.resource_metrics[0].scope_metrics.len(), 1);
+        pretty_assertions::assert_eq!(
+            metrics_result.resource_metrics[0].scope_metrics[0].metrics,
+            vec![
+                Metric::build()
+                    .name("gauge_name_updated")
+                    .data_gauge(Gauge::default())
+                    .finish(),
+                sum_metric.clone(),
+            ]
+        );
     }
 }

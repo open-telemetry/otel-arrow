@@ -6,7 +6,7 @@
 use chrono::{DateTime, FixedOffset, TimeZone, Utc};
 use data_engine_expressions::*;
 use data_engine_recordset::*;
-use otap_df_contrib_nodes::processors::recordset_kql_processor::otlp_bridge::*;
+use otel_arrow_dfe_contrib_nodes::processors::recordset_kql_processor::otlp_bridge::*;
 
 use crate::common::*;
 

@@ -21,34 +21,41 @@
 //!       environment: "production"
 //!       account: "my-account"
 //!       namespace: "my-namespace"
+//!       account_routing:
+//!         default_group: "my-account-group"
 //!       # ... additional config
 //! ```
 
+otel_arrow_dfe_telemetry::otel_component_scope!(
+    urn = GENEVA_EXPORTER_URN,
+    target = "microsoft.exporter.geneva",
+);
+
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::SignalType;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::ConsumerEffectHandlerExtension;
-use otap_df_engine::ExporterFactory;
-use otap_df_engine::config::ExporterConfig;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::NodeControlMsg;
-use otap_df_engine::control::{AckMsg, NackMsg};
-use otap_df_engine::error::Error;
-use otap_df_engine::exporter::ExporterWrapper;
-use otap_df_engine::local::exporter::{EffectHandler, Exporter};
-use otap_df_engine::message::{ExporterInbox, Message};
-use otap_df_engine::node::NodeId;
-use otap_df_engine::terminal_state::TerminalState;
-use otap_df_pdata::TryIntoWithOptions;
-use otap_df_pdata::otlp::OtlpProtoBytes;
-use otap_df_pdata::views::otap::OtapLogsView;
-use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
-use otap_df_pdata::{OtapArrowRecords, OtapPayload};
-use otap_df_telemetry::instrument::{Counter, Mmsc};
-use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet};
-use otap_df_telemetry::otel_info;
-use otap_df_telemetry_macros::metric_set;
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_engine::ConsumerEffectHandlerExtension;
+use otel_arrow_dfe_engine::ExporterFactory;
+use otel_arrow_dfe_engine::config::ExporterConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::control::NodeControlMsg;
+use otel_arrow_dfe_engine::control::{AckMsg, NackMsg};
+use otel_arrow_dfe_engine::error::Error;
+use otel_arrow_dfe_engine::exporter::ExporterWrapper;
+use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
+use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_pdata::TryIntoWithOptions;
+use otel_arrow_dfe_pdata::otlp::OtlpProtoBytes;
+use otel_arrow_dfe_pdata::views::otap::OtapLogsView;
+use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
+use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayload, PayloadData};
+use otel_arrow_dfe_telemetry::instrument::{Counter, Mmsc};
+use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet};
+use otel_arrow_dfe_telemetry_macros::metric_set;
 use serde::{Deserialize, Deserializer};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -57,7 +64,9 @@ use std::time::Instant;
 // Geneva uploader dependencies
 use futures::StreamExt;
 use geneva_uploader::AuthMethod;
-use geneva_uploader::client::{EncodedBatch, GenevaClient, GenevaClientConfig};
+use geneva_uploader::client::{
+    AccountRouting, EncodedBatch, GenevaClient, GenevaClientConfig, OboEventConfig, OboEventMap,
+};
 use geneva_uploader::{
     LogsEventNameMapping, LogsEventNameRoutingKey, SpanEventNameMapping, SpanEventNameRoutingKey,
 };
@@ -65,10 +74,17 @@ use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use prost::Message as ProstMessage;
 
 // Use crate-relative paths since we're now a module within otap
-use otap_df_otap::OTAP_EXPORTER_FACTORIES;
-use otap_df_otap::metrics::ExporterPDataExportMetrics;
-use otap_df_otap::pdata::OtapPdata;
-use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
+use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
+use otel_arrow_dfe_otap::metrics::ExporterExportMetrics;
+use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
+
+mod agent_fed_source;
+
+use agent_fed_source::AgentFedGenevaSource;
+use otel_arrow_dfe_engine::capability::ExtensionCapability;
+use otel_arrow_dfe_engine::capability::auth::agent_fed_credential_provider::AgentFedCredentialProvider as AgentFedCredentialProviderCap;
+use otel_arrow_dfe_engine::capability::registry::Capabilities;
 
 /// The URN for the Geneva exporter
 pub const GENEVA_EXPORTER_URN: &str = "urn:microsoft:exporter:geneva";
@@ -293,6 +309,29 @@ fn validate_events_map(
     Ok(())
 }
 
+/// Collect the destination event/table names a signal's routing can statically
+/// produce into `known`: every non-null mapping value, every source key whose
+/// mapping value is null (passthrough routes to the source value unchanged), and
+/// the explicit `default_event_name` when set. Used to flag OBO entries that can
+/// never match a reachable destination.
+fn collect_known_destinations(
+    default_event_name: Option<&str>,
+    events: Option<&std::collections::HashMap<String, Option<String>>>,
+    known: &mut std::collections::HashSet<String>,
+) {
+    if let Some(default_event_name) = default_event_name {
+        let _ = known.insert(default_event_name.to_owned());
+    }
+    if let Some(events) = events {
+        for (source, destination) in events {
+            let _ = match destination {
+                Some(destination) => known.insert(destination.clone()),
+                None => known.insert(source.clone()),
+            };
+        }
+    }
+}
+
 /// Deserializable wrapper for LogsEventNameMapping
 #[derive(Debug, Clone, Deserialize)]
 #[serde(try_from = "LogsEventNameMappingConfigRaw")]
@@ -497,11 +536,165 @@ pub struct TracesConfig {
     pub event_name_mapping: Option<SpansEventNameMappingConfig>,
 }
 
+/// OBO (On-Behalf-Of) configuration for the Geneva exporter.
+///
+/// OBO lets a single agent upload telemetry on behalf of multiple customer
+/// identities. The map is keyed by Geneva event/table name; a batch whose
+/// event name matches an entry is uploaded with that entry's customer identity
+/// and optional annotations recipe carried as GIG query parameters. Events not
+/// present in the map are uploaded without OBO. This mirrors the uploader's
+/// flat, per-event `OboEventMap` data model (a single map shared across logs
+/// and spans, keyed by event/table name).
+///
+/// Keys are the *destination* event/table name -- the name after
+/// `logs`/`spans` `event_name_mapping` has resolved it, not the pre-mapping
+/// source value. The uploader looks up OBO by the resolved destination name.
+/// For example, if `event_name_mapping` routes source `audit` to table
+/// `AuditLogs`, the OBO entry must be keyed `AuditLogs`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(try_from = "OboConfigRaw")]
+pub struct OboConfig {
+    /// Map of Geneva event/table name -> per-event OBO entry. Keys are the
+    /// destination table name (after `event_name_mapping` resolves it), not the
+    /// pre-mapping source value.
+    pub events: std::collections::HashMap<String, OboEventEntryConfig>,
+}
+
+/// A single OBO entry: the resolved customer identity and an optional
+/// annotations recipe.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OboEventEntryConfig {
+    /// Resolved OBO identity (the GIG `onbehalfid`). Must be non-empty.
+    pub identity: String,
+    /// Optional OBO annotations recipe (the GIG `onbehalfannotations`), for
+    /// example `<Config onBehalfFields="resourceId" />`. When present it must
+    /// be non-empty.
+    #[serde(default)]
+    pub annotations: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OboConfigRaw {
+    events: std::collections::HashMap<String, OboEventEntryConfig>,
+}
+
+impl TryFrom<OboConfigRaw> for OboConfig {
+    type Error = String;
+
+    fn try_from(raw: OboConfigRaw) -> Result<Self, Self::Error> {
+        if raw.events.is_empty() {
+            return Err("obo.events must be non-empty when OBO is configured".to_owned());
+        }
+        for (event_name, entry) in &raw.events {
+            if event_name.trim().is_empty() {
+                return Err("obo.events keys (event/table names) must not be blank".to_owned());
+            }
+            if entry.identity.trim().is_empty() {
+                return Err(format!(
+                    "obo.events entry for '{event_name}' must have a non-empty identity"
+                ));
+            }
+            if let Some(annotations) = &entry.annotations {
+                if annotations.trim().is_empty() {
+                    return Err(format!(
+                        "obo.events entry for '{event_name}' has an empty annotations value; \
+                         omit the field (or use null) instead of an empty string"
+                    ));
+                }
+            }
+        }
+        Ok(Self { events: raw.events })
+    }
+}
+
+impl From<OboConfig> for OboEventMap {
+    fn from(config: OboConfig) -> Self {
+        config
+            .events
+            .into_iter()
+            .map(|(event_name, entry)| {
+                (
+                    event_name,
+                    OboEventConfig {
+                        identity: entry.identity,
+                        annotations: entry.annotations,
+                    },
+                )
+            })
+            .collect()
+    }
+}
+
+/// Routes final Geneva event/table names to logical GCS account groups.
+///
+/// Event overrides are keyed by the destination event/table name after
+/// `event_name_mapping` has run. Events without an override use
+/// `default_group`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(try_from = "AccountRoutingConfigRaw")]
+pub struct AccountRoutingConfig {
+    /// Logical account group used when no event-specific override matches.
+    pub default_group: String,
+    /// Optional destination event/table name -> logical account group map.
+    #[serde(default)]
+    pub events: std::collections::HashMap<String, String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AccountRoutingConfigRaw {
+    default_group: String,
+    #[serde(default)]
+    events: std::collections::HashMap<String, String>,
+}
+
+impl TryFrom<AccountRoutingConfigRaw> for AccountRoutingConfig {
+    type Error = String;
+
+    fn try_from(raw: AccountRoutingConfigRaw) -> Result<Self, Self::Error> {
+        if raw.default_group.trim().is_empty() {
+            return Err("account_routing.default_group must not be empty".to_owned());
+        }
+        if raw.default_group.trim() != raw.default_group {
+            return Err(
+                "account_routing.default_group must not have surrounding whitespace".to_owned(),
+            );
+        }
+        for (event_name, account_group) in &raw.events {
+            if event_name.trim().is_empty() || account_group.trim().is_empty() {
+                return Err(
+                    "account_routing event/table names and account groups must not be empty"
+                        .to_owned(),
+                );
+            }
+            if event_name.trim() != event_name || account_group.trim() != account_group {
+                return Err(
+                    "account_routing event/table names and account groups must not have surrounding whitespace"
+                        .to_owned(),
+                );
+            }
+        }
+        Ok(Self {
+            default_group: raw.default_group,
+            events: raw.events,
+        })
+    }
+}
+
+impl From<AccountRoutingConfig> for AccountRouting {
+    fn from(config: AccountRoutingConfig) -> Self {
+        Self::new(config.default_group).with_event_groups(config.events)
+    }
+}
+
 /// Configuration for the Geneva Exporter
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    /// Geneva endpoint URL
+    /// Geneva config-service endpoint URL (required except for agent-fed auth)
+    #[serde(default)]
     pub endpoint: String,
     /// Environment (e.g., "production", "staging")
     pub environment: String,
@@ -509,7 +702,11 @@ pub struct Config {
     pub account: String,
     /// Geneva namespace
     pub namespace: String,
-    /// Azure region
+    /// Logical account-group routing used to select the physical moniker for
+    /// each final event/table name.
+    pub account_routing: AccountRoutingConfig,
+    /// Azure region (required except for agent-fed auth)
+    #[serde(default)]
     pub region: String,
     /// Config major version (required)
     pub config_major_version: u32,
@@ -527,6 +724,11 @@ pub struct Config {
     /// Span table configuration
     #[serde(default)]
     pub spans: Option<TracesConfig>,
+    /// Optional OBO (On-Behalf-Of) configuration for uploading telemetry on
+    /// behalf of multiple customer identities, keyed by the destination
+    /// event/table name (after `event_name_mapping` resolves it).
+    #[serde(default)]
+    pub obo: Option<OboConfig>,
     /// Maximum buffer size before forcing flush (default: 1000)
     /// Note: This field is currently reserved for future use and does not affect runtime behavior.
     #[serde(default = "default_buffer_size")]
@@ -545,6 +747,127 @@ const fn default_max_concurrent() -> usize {
 }
 
 impl Config {
+    /// Deserializes and validates one exporter configuration.
+    ///
+    /// Validation lives here rather than inside `Deserialize` so `Config` stays
+    /// a plain deserializable struct with a single field list. Every path that
+    /// turns user JSON into a `Config` must go through this function.
+    fn parse(config: &serde_json::Value) -> Result<Self, ConfigError> {
+        let parsed: Self = serde_json::from_value(config.clone()).map_err(|error| {
+            ConfigError::InvalidUserConfig {
+                error: error.to_string(),
+            }
+        })?;
+        parsed
+            .validate()
+            .map_err(|error| ConfigError::InvalidUserConfig { error })?;
+        Ok(parsed)
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if matches!(self.auth, AuthConfig::Certificate { .. })
+            && !cfg!(feature = "geneva-certificate-auth")
+        {
+            return Err(
+                "certificate authentication requires the 'geneva-certificate-auth' build feature"
+                    .to_owned(),
+            );
+        }
+        let is_agent_fed = matches!(self.auth, AuthConfig::AgentFed);
+        if !is_agent_fed {
+            if self.endpoint.trim().is_empty() {
+                return Err("endpoint is required unless auth.type is agentfed".to_owned());
+            }
+            if self.region.trim().is_empty() {
+                return Err("region is required unless auth.type is agentfed".to_owned());
+            }
+        }
+        self.warn_unmatched_obo_events();
+        Ok(())
+    }
+
+    /// Warn (non-fatally) about OBO entries that key on an event/table name no
+    /// statically-known destination can produce -- the common symptom of keying
+    /// OBO on the pre-mapping *source* value instead of the resolved
+    /// destination table name.
+    ///
+    /// The uploader looks up OBO by the destination event name (after
+    /// `event_name_mapping` resolves it), so an entry keyed on a source value or
+    /// a typo silently never applies. This is a warning rather than an error
+    /// because the set of reachable destinations is not fully static: a batch
+    /// can fall back to the uploader's literal default table name when
+    /// `default_event_name` is unset, and attribute-based routing derives
+    /// destinations from runtime values. We only warn when a key matches none of
+    /// the names we *can* enumerate.
+    fn warn_unmatched_obo_events(&self) {
+        for event_name in self.unmatched_obo_events() {
+            otel_warn!(
+                "geneva_exporter.obo.unmatched_event",
+                event_name = event_name.clone(),
+                message = "OBO is configured for an event/table name that no configured \
+                           routing destination or default_event_name produces; OBO keys must \
+                           be the destination table name (after event_name_mapping), not the \
+                           source value. This OBO entry may never apply."
+            );
+        }
+    }
+
+    /// Return the OBO event keys that cannot match any statically reachable
+    /// destination table name. A key is considered reachable if it is a
+    /// configured mapping destination, a passthrough source, an explicit
+    /// `default_event_name`, or, when the corresponding `default_event_name` is
+    /// unset, the uploader's literal default table name ("Log"/"Span").
+    /// Attribute-based routing can still produce destinations not listed here,
+    /// so this is best-effort typo detection.
+    fn unmatched_obo_events(&self) -> Vec<String> {
+        let Some(obo) = &self.obo else {
+            return Vec::new();
+        };
+
+        let mut known = std::collections::HashSet::new();
+
+        let logs_default = self
+            .logs
+            .as_ref()
+            .and_then(|l| l.default_event_name.as_deref());
+        let spans_default = self
+            .spans
+            .as_ref()
+            .and_then(|s| s.default_event_name.as_deref());
+
+        // When `default_event_name` is unset, the uploader falls back to its
+        // literal default table names ("Log" for logs, "Span" for spans), so
+        // OBO entries keyed on those are valid and must not warn. When the user
+        // overrides the default, that literal is never a reachable destination,
+        // so it must not be seeded (an OBO key on it is likely a typo).
+        if logs_default.is_none() {
+            let _ = known.insert("Log".to_owned());
+        }
+        if spans_default.is_none() {
+            let _ = known.insert("Span".to_owned());
+        }
+        collect_known_destinations(
+            logs_default,
+            self.logs
+                .as_ref()
+                .and_then(|l| l.event_name_mapping.as_ref().map(|m| &m.events)),
+            &mut known,
+        );
+        collect_known_destinations(
+            spans_default,
+            self.spans
+                .as_ref()
+                .and_then(|s| s.event_name_mapping.as_ref().map(|m| &m.events)),
+            &mut known,
+        );
+
+        obo.events
+            .keys()
+            .filter(|event_name| !known.contains(event_name.as_str()))
+            .cloned()
+            .collect()
+    }
+
     /// Build the `geneva-uploader` `GenevaClientConfig` from this exporter
     /// configuration.
     ///
@@ -556,35 +879,6 @@ impl Config {
     /// `GenevaClientConfig` conversion can be unit-tested without initializing
     /// a live `GenevaClient`.
     fn to_geneva_client_config(&self) -> GenevaClientConfig {
-        // Convert AuthConfig to AuthMethod
-        let auth_method = match &self.auth {
-            AuthConfig::Certificate { path, password } => AuthMethod::Certificate {
-                path: PathBuf::from(path),
-                password: password.clone(),
-            },
-            AuthConfig::SystemManagedIdentity { .. } => AuthMethod::SystemManagedIdentity,
-            AuthConfig::UserManagedIdentity { client_id, .. } => AuthMethod::UserManagedIdentity {
-                client_id: client_id.clone(),
-            },
-            AuthConfig::UserManagedIdentityByArmResourceId { resource_id, .. } => {
-                AuthMethod::UserManagedIdentityByResourceId {
-                    resource_id: resource_id.clone(),
-                }
-            }
-            AuthConfig::WorkloadIdentity { msi_resource } => AuthMethod::WorkloadIdentity {
-                resource: msi_resource.clone(),
-            },
-        };
-
-        // Get MSI resource if needed for managed identity
-        let msi_resource = match &self.auth {
-            AuthConfig::SystemManagedIdentity { msi_resource }
-            | AuthConfig::UserManagedIdentity { msi_resource, .. }
-            | AuthConfig::UserManagedIdentityByArmResourceId { msi_resource, .. }
-            | AuthConfig::WorkloadIdentity { msi_resource } => Some(msi_resource.clone()),
-            AuthConfig::Certificate { .. } => None,
-        };
-
         // Create LogsConfig and TracesConfig from the configuration
         let logs_config = self
             .logs
@@ -606,16 +900,17 @@ impl Config {
             environment: self.environment.clone(),
             account: self.account.clone(),
             namespace: self.namespace.clone(),
+            account_routing: self.account_routing.clone().into(),
             region: self.region.clone(),
             config_major_version: self.config_major_version,
-            auth_method,
+            auth_method: self.auth.uploader_auth_method(),
             tenant: self.tenant.clone(),
             role_name: self.role_name.clone(),
             role_instance: self.role_instance.clone(),
-            msi_resource,
+            msi_resource: self.auth.msi_resource(),
             logs: logs_config,
             spans: traces_config,
-            obo_event_map: None,
+            obo_event_map: self.obo.clone().map(Into::into),
         }
     }
 }
@@ -657,6 +952,48 @@ pub enum AuthConfig {
         /// MSI resource identifier
         msi_resource: String,
     },
+    /// Agent-fed credentials: the host agent supplies one atomic GIG token and
+    /// routing snapshot through `agent_fed_credential_provider`, so the
+    /// uploader skips the GCS config-service handshake. Carries no config
+    /// fields; the capability is selected through the node's `capabilities`
+    /// block.
+    AgentFed,
+}
+
+impl AuthConfig {
+    fn uploader_auth_method(&self) -> AuthMethod {
+        match self {
+            Self::Certificate { path, password } => AuthMethod::Certificate {
+                path: PathBuf::from(path),
+                password: password.clone(),
+            },
+            Self::SystemManagedIdentity { .. } => AuthMethod::SystemManagedIdentity,
+            Self::UserManagedIdentity { client_id, .. } => AuthMethod::UserManagedIdentity {
+                client_id: client_id.clone(),
+            },
+            Self::UserManagedIdentityByArmResourceId { resource_id, .. } => {
+                AuthMethod::UserManagedIdentityByResourceId {
+                    resource_id: resource_id.clone(),
+                }
+            }
+            Self::WorkloadIdentity { msi_resource } => AuthMethod::WorkloadIdentity {
+                resource: msi_resource.clone(),
+            },
+            // `with_agent_fed_source` ignores this field. The placeholder only
+            // satisfies the shared uploader configuration type.
+            Self::AgentFed => AuthMethod::SystemManagedIdentity,
+        }
+    }
+
+    fn msi_resource(&self) -> Option<String> {
+        match self {
+            Self::SystemManagedIdentity { msi_resource }
+            | Self::UserManagedIdentity { msi_resource, .. }
+            | Self::UserManagedIdentityByArmResourceId { msi_resource, .. }
+            | Self::WorkloadIdentity { msi_resource } => Some(msi_resource.clone()),
+            Self::Certificate { .. } | Self::AgentFed => None,
+        }
+    }
 }
 
 /// Geneva exporter metrics.
@@ -758,48 +1095,131 @@ struct ExporterMetrics {
 /// Geneva exporter that sends OTAP data to Geneva backend
 pub struct GenevaExporter {
     config: Config,
-    pdata_metrics: MeasurementMetricSet<ExporterPDataExportMetrics>,
+    pdata_metrics: MeasurementMetricSet<ExporterExportMetrics>,
     metrics: MetricSet<ExporterMetrics>,
     geneva_client: GenevaClient,
 }
 
+/// Validates the node-level bindings that the config-only factory validation
+/// hook cannot inspect. Called during exporter creation before the capability
+/// is consumed.
+fn validate_agent_fed_capability_binding(node_config: &NodeUserConfig) -> Result<(), ConfigError> {
+    let capability_name = AgentFedCredentialProviderCap::NAME;
+    node_config
+        .capabilities
+        .get(capability_name)
+        .map(|_| ())
+        .ok_or_else(|| ConfigError::InvalidUserConfig {
+            error: format!(
+                "agent-fed Geneva auth requires an '{capability_name}' capability binding"
+            ),
+        })
+}
+
+fn ensure_crypto_provider() -> Result<(), ConfigError> {
+    if otel_arrow_dfe_otap::crypto::is_crypto_provider_installed() {
+        return Ok(());
+    }
+
+    Err(ConfigError::InvalidUserConfig {
+        error: "Geneva exporter requires a rustls CryptoProvider, but none is installed. \
+                Build with exactly one of the crypto-* features \
+                (crypto-ring, crypto-aws-lc, crypto-openssl, crypto-symcrypt) and ensure \
+                otel_arrow_dfe_otap::crypto::install_crypto_provider() runs at startup."
+            .to_string(),
+    })
+}
+
+fn validate_geneva_client_prerequisites(
+    config: &Config,
+    node_config: &NodeUserConfig,
+    crypto_provider_check: impl FnOnce() -> Result<(), ConfigError>,
+) -> Result<(), ConfigError> {
+    if matches!(&config.auth, AuthConfig::AgentFed) {
+        validate_agent_fed_capability_binding(node_config)?;
+    }
+
+    // Both GCS and agent-fed uploads use the rustls-backed HTTP client.
+    crypto_provider_check()
+}
+
+fn resolve_agent_fed_source(
+    capabilities: &Capabilities,
+) -> Result<AgentFedGenevaSource, ConfigError> {
+    let credential_provider = capabilities
+        .require_shared::<AgentFedCredentialProviderCap>()
+        .map_err(|error| ConfigError::InvalidUserConfig {
+            error: format!(
+                "agent-fed Geneva auth requires the bound agent_fed_credential_provider \
+                 capability to provide a shared implementation; local-only registrations \
+                 are unsupported: {error}"
+            ),
+        })?;
+
+    Ok(AgentFedGenevaSource::new(credential_provider))
+}
+
+fn create_geneva_client(
+    config: &Config,
+    node_config: &NodeUserConfig,
+    capabilities: &Capabilities,
+) -> Result<GenevaClient, ConfigError> {
+    validate_geneva_client_prerequisites(config, node_config, ensure_crypto_provider)?;
+    let client_config = config.to_geneva_client_config();
+
+    match &config.auth {
+        AuthConfig::AgentFed => {
+            let source = resolve_agent_fed_source(capabilities)?;
+            GenevaClient::with_agent_fed_source(client_config, Arc::new(source)).map_err(|error| {
+                ConfigError::InvalidUserConfig {
+                    error: format!("Failed to initialize agent-fed Geneva client: {error}"),
+                }
+            })
+        }
+        AuthConfig::Certificate { .. }
+        | AuthConfig::SystemManagedIdentity { .. }
+        | AuthConfig::UserManagedIdentity { .. }
+        | AuthConfig::UserManagedIdentityByArmResourceId { .. }
+        | AuthConfig::WorkloadIdentity { .. } => {
+            GenevaClient::new(client_config).map_err(|error| ConfigError::InvalidUserConfig {
+                error: format!("Failed to initialize Geneva client: {error}"),
+            })
+        }
+    }
+}
+
 impl GenevaExporter {
-    /// Create a new Geneva exporter from configuration
+    /// Creates a Geneva exporter from configuration for legacy authentication modes.
+    ///
+    /// Agent-fed authentication must be constructed through the registered
+    /// factory so its capability binding can be resolved.
     pub fn from_config(
         pipeline_ctx: PipelineContext,
         config: &serde_json::Value,
-    ) -> Result<Self, otap_df_config::error::Error> {
-        let pdata_metrics = ExporterPDataExportMetrics::register(&pipeline_ctx);
+    ) -> Result<Self, ConfigError> {
+        let config = Config::parse(config)?;
+        let node_config = NodeUserConfig::new_exporter_config(GENEVA_EXPORTER_URN);
+        Self::from_parsed_config(pipeline_ctx, config, &node_config, &Capabilities::empty())
+    }
+
+    fn from_node_config(
+        pipeline_ctx: PipelineContext,
+        node_config: &NodeUserConfig,
+        capabilities: &Capabilities,
+    ) -> Result<Self, ConfigError> {
+        let config = Config::parse(&node_config.config)?;
+        Self::from_parsed_config(pipeline_ctx, config, node_config, capabilities)
+    }
+
+    fn from_parsed_config(
+        pipeline_ctx: PipelineContext,
+        config: Config,
+        node_config: &NodeUserConfig,
+        capabilities: &Capabilities,
+    ) -> Result<Self, ConfigError> {
+        let geneva_client = create_geneva_client(&config, node_config, capabilities)?;
+        let pdata_metrics = ExporterExportMetrics::register(&pipeline_ctx);
         let metrics = pipeline_ctx.register_metrics::<ExporterMetrics>();
-
-        let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
-            otap_df_config::error::Error::InvalidUserConfig {
-                error: e.to_string(),
-            }
-        })?;
-
-        let client_config = config.to_geneva_client_config();
-
-        // The Geneva exporter uses rustls for mTLS. If no process-wide crypto
-        // provider was installed at startup (i.e. the binary was built without
-        // any `crypto-*` feature), fail fast with an actionable error instead
-        // of surfacing an opaque rustls handshake failure at export time.
-        if !otap_df_otap::crypto::is_crypto_provider_installed() {
-            return Err(otap_df_config::error::Error::InvalidUserConfig {
-                error: "Geneva exporter requires a rustls CryptoProvider, but none is installed. \
-                        Build with exactly one of the crypto-* features \
-                        (crypto-ring, crypto-aws-lc, crypto-openssl, crypto-symcrypt) and ensure \
-                        otap_df_otap::crypto::install_crypto_provider() runs at startup."
-                    .to_string(),
-            });
-        }
-
-        // Initialize Geneva client
-        let geneva_client = GenevaClient::new(client_config).map_err(|e| {
-            otap_df_config::error::Error::InvalidUserConfig {
-                error: format!("Failed to initialize Geneva client: {}", e),
-            }
-        })?;
 
         Ok(Self {
             config,
@@ -976,9 +1396,9 @@ impl GenevaExporter {
         }
 
         // Handle based on payload type
-        match payload {
+        match payload.into_data() {
             // OTAP Arrow path: encode logs through LogsDataView without converting back to OTLP.
-            OtapPayload::OtapArrowRecords(otap_records) => {
+            PayloadData::OtapArrowRecords(otap_records) => {
                 match otap_records {
                     mut otap_records @ OtapArrowRecords::Logs(_) => {
                         otel_info!(
@@ -1026,7 +1446,7 @@ impl GenevaExporter {
                         );
 
                         let otlp_bytes: OtlpProtoBytes =
-                            OtapPayload::OtapArrowRecords(OtapArrowRecords::Traces(otap_records))
+                            OtapPayload::from(OtapArrowRecords::Traces(otap_records))
                                 .try_into_with_default()
                                 .map_err(|e| {
                                     self.metrics.conversion_errors.inc();
@@ -1075,7 +1495,7 @@ impl GenevaExporter {
             }
 
             // OTLP path: Direct OTLP bytes from receivers without OTAP conversion (e.g., OTLP receiver -> Geneva exporter without batch processor)
-            OtapPayload::OtlpBytes(otlp_bytes) => {
+            PayloadData::OtlpBytes(otlp_bytes) => {
                 match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(bytes) => {
                         otel_info!(
@@ -1153,11 +1573,20 @@ impl GenevaExporter {
     }
 }
 
+/// Validates the exporter configuration for the factory's config-only hook.
+///
+/// Routes through [`Config::parse`] so the hook applies exactly the validation
+/// the exporter applies at creation time.
+fn validate_geneva_config(config: &serde_json::Value) -> Result<(), ConfigError> {
+    Config::parse(config).map(|_| ())
+}
+
 /// Register Geneva exporter with the OTAP exporter factory
 ///
 /// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
 /// This macro is part of the `linkme` crate which is considered safe and well maintained.
 #[allow(unsafe_code)]
+#[otel_arrow_dfe_engine::component_inventory(category = Exporter)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static GENEVA_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: GENEVA_EXPORTER_URN,
@@ -1165,16 +1594,16 @@ pub static GENEVA_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
              exporter_config: &ExporterConfig,
-             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
+             capabilities: &Capabilities| {
         Ok(ExporterWrapper::local(
-            GenevaExporter::from_config(pipeline, &node_config.config)?,
+            GenevaExporter::from_node_config(pipeline, &node_config, capabilities)?,
             node,
             node_config,
             exporter_config,
         ))
     },
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    validate_config: otap_df_config::validation::validate_typed_config::<Config>,
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: validate_geneva_config,
 };
 
 #[async_trait(?Send)]
@@ -1184,15 +1613,30 @@ impl Exporter<OtapPdata> for GenevaExporter {
         mut msg_chan: ExporterInbox<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
-        otel_info!(
-            "geneva_exporter.start",
-            endpoint = self.config.endpoint,
-            namespace = self.config.namespace,
-            account = self.config.account,
-            role_name = self.config.role_name,
-            role_instance = self.config.role_instance,
-            message = "Geneva exporter starting"
-        );
+        match &self.config.auth {
+            AuthConfig::AgentFed => {
+                otel_info!(
+                    "geneva_exporter.start",
+                    endpoint_source = "agent_fed_credential_provider",
+                    namespace = self.config.namespace,
+                    account = self.config.account,
+                    role_name = self.config.role_name,
+                    role_instance = self.config.role_instance,
+                    message = "Geneva exporter starting"
+                );
+            }
+            _ => {
+                otel_info!(
+                    "geneva_exporter.start",
+                    endpoint = self.config.endpoint,
+                    namespace = self.config.namespace,
+                    account = self.config.account,
+                    role_name = self.config.role_name,
+                    role_instance = self.config.role_instance,
+                    message = "Geneva exporter starting"
+                );
+            }
+        }
 
         // Message loop
         loop {
@@ -1216,6 +1660,7 @@ impl Exporter<OtapPdata> for GenevaExporter {
                     _ = metrics_reporter.report(&mut self.metrics);
                 }
                 Message::PData(pdata) => {
+                    let export_start = Instant::now();
                     let (context, payload) = pdata.into_parts();
                     let signal_type = payload.signal_type();
 
@@ -1232,8 +1677,7 @@ impl Exporter<OtapPdata> for GenevaExporter {
                                     signal: signal_type,
                                     outcome: Outcome::Success,
                                 })
-                                .messages
-                                .inc();
+                                .record(export_start.elapsed());
                             effect_handler
                                 .notify_ack(AckMsg::new(OtapPdata::new(context, saved_payload)))
                                 .await?;
@@ -1244,8 +1688,7 @@ impl Exporter<OtapPdata> for GenevaExporter {
                                     signal: signal_type,
                                     outcome: Outcome::Failure,
                                 })
-                                .messages
-                                .inc();
+                                .record(export_start.elapsed());
                             otel_info!(
                                 "geneva_exporter.error",
                                 error = e,
@@ -1271,6 +1714,7 @@ impl Exporter<OtapPdata> for GenevaExporter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
     use serde_json;
 
     use arrow::array::{
@@ -1278,18 +1722,34 @@ mod tests {
         UInt8Array, UInt16Array, UInt32Array,
     };
     use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
-    use std::sync::Arc;
+    use std::sync::{Arc, RwLock};
 
     use bytes::Bytes;
-    use otap_df_engine::Interests;
-    use otap_df_engine::control::PipelineCompletionMsg;
-    use otap_df_engine::testing::exporter::{TestRuntime, create_exporter_from_factory};
-    use otap_df_otap::testing::{TestCallData, next_ack, next_nack};
-    use otap_df_pdata::otap::OtapArrowRecords;
-    use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-    use otap_df_pdata::schema::{FieldExt, consts};
-    use otap_df_pdata::views::otap::OtapLogsView;
-    use otap_df_pdata_views::views::logs::{LogsDataView, ResourceLogsView, ScopeLogsView};
+    use geneva_uploader::client::AgentFedCredentialSource;
+    use otel_arrow_dfe_engine::Interests;
+    use otel_arrow_dfe_engine::capability::auth::BearerToken;
+    use otel_arrow_dfe_engine::capability::auth::agent_fed_credential_provider::AgentFedCredentialSnapshot;
+    use otel_arrow_dfe_engine::capability::registry::CapabilityRegistry;
+    use otel_arrow_dfe_engine::capability::{
+        CapabilityError, ExtensionCapability, LocalInstanceFactory, SharedInstanceFactory,
+    };
+    use otel_arrow_dfe_engine::control::PipelineCompletionMsg;
+    use otel_arrow_dfe_engine::extension_capabilities;
+    use otel_arrow_dfe_engine::local::capability::auth::agent_fed_credential_provider::AgentFedCredentialProvider as LocalAgentFedCredentialProvider;
+    use otel_arrow_dfe_engine::shared::capability::auth::agent_fed_credential_provider::AgentFedCredentialProvider as SharedAgentFedCredentialProvider;
+    use otel_arrow_dfe_engine::testing::capability::resolve_bindings_for_test;
+    use otel_arrow_dfe_engine::testing::exporter::{
+        TestRuntime, create_exporter_from_factory, create_test_pipeline_context,
+    };
+    use otel_arrow_dfe_engine::testing::test_node;
+    use otel_arrow_dfe_otap::testing::{TestCallData, next_ack, next_nack};
+    use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+    use otel_arrow_dfe_pdata::schema::{FieldExt, consts};
+    use otel_arrow_dfe_pdata::views::otap::OtapLogsView;
+    use otel_arrow_dfe_pdata_views::views::logs::{LogsDataView, ResourceLogsView, ScopeLogsView};
+    use std::any::Any;
+    use std::collections::HashSet;
     use std::time::{Duration, Instant};
 
     fn plain_field(name: &str, data_type: DataType, nullable: bool) -> Field {
@@ -1419,6 +1879,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -1440,11 +1901,125 @@ mod tests {
         })
     }
 
+    fn agent_fed_test_config() -> serde_json::Value {
+        serde_json::json!({
+            "environment": "test",
+            "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
+            "namespace": "test-namespace",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "auth": {
+                "type": "agentfed"
+            },
+            "max_buffer_size": 1000,
+            "max_concurrent_uploads": 2
+        })
+    }
+
+    fn agent_fed_node_config(extension: Option<&str>) -> NodeUserConfig {
+        let mut node_config = NodeUserConfig::new_exporter_config(GENEVA_EXPORTER_URN);
+        node_config.config = agent_fed_test_config();
+        if let Some(extension) = extension {
+            let _ = node_config.capabilities.insert(
+                AgentFedCredentialProviderCap::NAME.into(),
+                extension.to_owned().into(),
+            );
+        }
+        node_config
+    }
+
+    #[derive(Clone)]
+    struct MockAgentExtension {
+        snapshot: Arc<RwLock<MockAgentSnapshot>>,
+    }
+
+    struct MockAgentSnapshot {
+        token: BearerToken,
+        attributes: Arc<serde_json::Map<String, serde_json::Value>>,
+    }
+
+    #[async_trait]
+    impl SharedAgentFedCredentialProvider for MockAgentExtension {
+        async fn get_credential(&self) -> Result<Arc<AgentFedCredentialSnapshot>, CapabilityError> {
+            let snapshot = self.snapshot.read().expect("snapshot read lock");
+            Ok(Arc::new(AgentFedCredentialSnapshot::new(
+                snapshot.token.clone(),
+                Arc::clone(&snapshot.attributes),
+            )))
+        }
+    }
+
+    #[derive(Clone)]
+    struct MockLocalAgentExtension;
+
+    #[async_trait(?Send)]
+    impl LocalAgentFedCredentialProvider for MockLocalAgentExtension {
+        async fn get_credential(&self) -> Result<Arc<AgentFedCredentialSnapshot>, CapabilityError> {
+            Ok(Arc::new(AgentFedCredentialSnapshot::new(
+                BearerToken::without_expiry("unused-token".to_owned()),
+                Arc::new(serde_json::Map::new()),
+            )))
+        }
+    }
+
+    fn resolved_agent_fed_capabilities(
+        node_config: &NodeUserConfig,
+    ) -> (Capabilities, Arc<RwLock<MockAgentSnapshot>>) {
+        let attributes = serde_json::json!({
+            "endpoint": "https://ep",
+            "moniker_map": { "test-account": "test-moniker" },
+        })
+        .as_object()
+        .cloned()
+        .expect("object");
+        let snapshot = Arc::new(RwLock::new(MockAgentSnapshot {
+            token: BearerToken::without_expiry("test-token".to_owned()),
+            attributes: Arc::new(attributes),
+        }));
+        let extension = MockAgentExtension {
+            snapshot: Arc::clone(&snapshot),
+        };
+        let extension_capabilities = extension_capabilities!(
+            shared: MockAgentExtension => [AgentFedCredentialProviderCap]
+        );
+        let instance_factory =
+            SharedInstanceFactory::new(move || Box::new(extension.clone()) as Box<dyn Any + Send>);
+        let mut registry = CapabilityRegistry::new();
+        (extension_capabilities.register_shared)("agent".into(), instance_factory, &mut registry)
+            .expect("register capabilities");
+        let known_extensions =
+            HashSet::<otel_arrow_dfe_config::ExtensionId>::from(["agent".into()]);
+        let capabilities =
+            resolve_bindings_for_test(&node_config.capabilities, &registry, &known_extensions)
+                .expect("resolve capabilities");
+        (capabilities, snapshot)
+    }
+
+    fn resolved_local_only_agent_fed_capabilities(node_config: &NodeUserConfig) -> Capabilities {
+        let extension_capabilities = extension_capabilities!(
+            local: MockLocalAgentExtension => [AgentFedCredentialProviderCap]
+        );
+        let instance_factory =
+            LocalInstanceFactory::new(|| Box::new(MockLocalAgentExtension) as Box<dyn Any>);
+        let mut registry = CapabilityRegistry::new();
+        (extension_capabilities.register_local)("agent".into(), instance_factory, &mut registry)
+            .expect("register local capabilities");
+        let known_extensions =
+            HashSet::<otel_arrow_dfe_config::ExtensionId>::from(["agent".into()]);
+        resolve_bindings_for_test(&node_config.capabilities, &registry, &known_extensions)
+            .expect("resolve local-only capabilities")
+    }
+
+    /// Scenario: The exporter receives an empty OTLP log payload with an ACK subscriber.
+    /// Guarantees: The exporter skips upload and returns an empty successful ACK.
     #[test]
     fn geneva_exporter_emits_ack_for_empty_payload() {
         // The Geneva uploader uses rustls (tls-rustls); reqwest needs a
         // process-wide crypto provider, which production installs at startup.
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let test_runtime = TestRuntime::new();
         let exporter = create_exporter_from_factory(&GENEVA_EXPORTER, test_config()).unwrap();
 
@@ -1469,7 +2044,8 @@ mod tests {
                 loop {
                     match pipeline_rx.recv().await.unwrap() {
                         PipelineCompletionMsg::DeliverAck { ack } => {
-                            let (node_id, ack) = next_ack(ack).expect("expected ack subscriber");
+                            let (node_id, mut ack) =
+                                next_ack(ack).expect("expected ack subscriber");
                             assert_eq!(node_id, 4242);
                             let got: TestCallData = ack.unwind.route.calldata.try_into().unwrap();
                             assert_eq!(TestCallData::default(), got);
@@ -1482,11 +2058,13 @@ mod tests {
             });
     }
 
+    /// Scenario: The exporter receives malformed non-empty OTLP log bytes.
+    /// Guarantees: Decode failure returns a NACK with the original subscriber route.
     #[test]
     fn geneva_exporter_emits_nack_for_decode_failure() {
         // The Geneva uploader uses rustls (tls-rustls); reqwest needs a
         // process-wide crypto provider, which production installs at startup.
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let test_runtime = TestRuntime::new();
         let exporter = create_exporter_from_factory(&GENEVA_EXPORTER, test_config()).unwrap();
 
@@ -1513,7 +2091,7 @@ mod tests {
                 loop {
                     match pipeline_rx.recv().await.unwrap() {
                         PipelineCompletionMsg::DeliverNack { nack } => {
-                            let (node_id, nack) =
+                            let (node_id, mut nack) =
                                 next_nack(nack).expect("expected nack subscriber");
                             assert_eq!(node_id, 777);
                             let got: TestCallData = nack.unwind.route.calldata.try_into().unwrap();
@@ -1532,6 +2110,8 @@ mod tests {
             });
     }
 
+    /// Scenario: The exporter receives a representative OTAP logs record batch.
+    /// Guarantees: The logs view exposes all records after transport ID decoding.
     #[test]
     fn test_geneva_exporter_creates_view_from_otap_records() {
         // This test verifies that the Geneva exporter can successfully create
@@ -1566,12 +2146,15 @@ mod tests {
     }
 
     // Configuration tests
+    /// Scenario: A complete certificate-auth configuration is deserialized.
+    /// Guarantees: Required fields, defaults, and auth data retain their values.
     #[test]
     fn test_config_deserialization() {
         let json = serde_json::json!({
             "endpoint": "https://geneva.example.com",
             "environment": "production",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "westus2",
             "config_major_version": 1,
@@ -1630,6 +2213,310 @@ mod tests {
         }
     }
 
+    /// Scenario: Certificate authentication is configured without its opt-in build feature.
+    /// Guarantees: Configuration validation rejects the unsupported authentication mode early.
+    #[cfg(not(feature = "geneva-certificate-auth"))]
+    #[test]
+    fn certificate_auth_requires_opt_in_feature() {
+        let config = serde_json::json!({
+            "endpoint": "https://geneva.example.com",
+            "environment": "production",
+            "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
+            "namespace": "test-namespace",
+            "region": "westus2",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let error = Config::parse(&config).expect_err("certificate auth should be disabled");
+        assert!(
+            error
+                .to_string()
+                .contains("requires the 'geneva-certificate-auth' build feature")
+        );
+    }
+
+    /// Scenario: Certificate authentication is configured with its opt-in build feature.
+    /// Guarantees: Configuration validation accepts the certificate authentication mode.
+    #[cfg(feature = "geneva-certificate-auth")]
+    #[test]
+    fn certificate_auth_is_accepted_when_feature_is_enabled() {
+        let config = serde_json::json!({
+            "endpoint": "https://geneva.example.com",
+            "environment": "production",
+            "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
+            "namespace": "test-namespace",
+            "region": "westus2",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let parsed = Config::parse(&config).expect("certificate auth should be enabled");
+        assert!(matches!(parsed.auth, AuthConfig::Certificate { .. }));
+    }
+
+    /// Scenario: Agent-fed configuration omits GCS-only endpoint and region fields.
+    /// Guarantees: The configuration remains valid and preserves the agent-fed mode.
+    #[test]
+    fn agent_fed_config_can_omit_gcs_endpoint_and_region() {
+        let config = Config::parse(&agent_fed_test_config()).expect("valid agent-fed config");
+        assert!(config.endpoint.is_empty());
+        assert!(config.region.is_empty());
+        assert!(matches!(config.auth, AuthConfig::AgentFed));
+    }
+
+    /// Scenario: Agent-fed authentication is configured with log and span table routing.
+    /// Guarantees: The uploader adapter preserves both routing sections in agent-fed mode.
+    #[test]
+    fn agent_fed_config_preserves_logs_and_spans_routing() {
+        let mut config = agent_fed_test_config();
+        config["logs"] = serde_json::json!({
+            "default_event_name": "AgentLogs",
+            "event_name_mapping": {
+                "routing_key": { "log_record_attribute": "log.kind" },
+                "events": { "audit": "AuditLogs" }
+            }
+        });
+        config["spans"] = serde_json::json!({
+            "default_event_name": "AgentSpans",
+            "event_name_mapping": {
+                "routing_key": { "span_attribute": "span.kind" },
+                "events": { "SERVER": "ServerSpans" }
+            }
+        });
+
+        let parsed = Config::parse(&config).expect("valid combined agent-fed config");
+        assert!(matches!(parsed.auth, AuthConfig::AgentFed));
+
+        let client_config = parsed.to_geneva_client_config();
+        assert!(client_config.endpoint.is_empty());
+        assert!(client_config.region.is_empty());
+        assert!(client_config.msi_resource.is_none());
+
+        let logs = client_config.logs.expect("logs config should be present");
+        assert_eq!(logs.default_event_name.as_deref(), Some("AgentLogs"));
+        let logs_mapping = logs
+            .event_name_mapping
+            .expect("logs mapping should be present");
+        assert!(matches!(
+            logs_mapping.routing_key,
+            LogsEventNameRoutingKey::LogRecordAttribute(ref key) if key == "log.kind"
+        ));
+        assert_eq!(
+            logs_mapping.events.get("audit"),
+            Some(&Some("AuditLogs".to_owned()))
+        );
+
+        let spans = client_config.spans.expect("spans config should be present");
+        assert_eq!(spans.default_event_name.as_deref(), Some("AgentSpans"));
+        let spans_mapping = spans
+            .event_name_mapping
+            .expect("spans mapping should be present");
+        assert!(matches!(
+            spans_mapping.routing_key,
+            SpanEventNameRoutingKey::SpanAttribute(ref key) if key == "span.kind"
+        ));
+        assert_eq!(
+            spans_mapping.events.get("SERVER"),
+            Some(&Some("ServerSpans".to_owned()))
+        );
+    }
+
+    /// Scenario: A non-agent-fed configuration omits endpoint or region.
+    /// Guarantees: Existing authentication modes continue to require both fields.
+    #[test]
+    fn non_agent_fed_config_requires_endpoint_and_region() {
+        let mut missing_endpoint = test_config();
+        let _ = missing_endpoint
+            .as_object_mut()
+            .expect("object")
+            .remove("endpoint");
+        let error = Config::parse(&missing_endpoint).expect_err("endpoint must be required");
+        assert!(error.to_string().contains("endpoint is required"));
+
+        let mut missing_region = test_config();
+        let _ = missing_region
+            .as_object_mut()
+            .expect("object")
+            .remove("region");
+        let error = Config::parse(&missing_region).expect_err("region must be required");
+        assert!(error.to_string().contains("region is required"));
+    }
+
+    /// Scenario: A configuration carries a field the exporter does not define.
+    /// Guarantees: Unknown configuration fields stay rejected after validation
+    /// moved out of the `Deserialize` implementation.
+    #[test]
+    fn unknown_config_fields_are_rejected() {
+        let mut config = test_config();
+        config["unexpected_field"] = serde_json::Value::Bool(true);
+
+        let error = Config::parse(&config).expect_err("unknown fields must be rejected");
+        assert!(error.to_string().contains("unexpected_field"));
+    }
+
+    /// Scenario: The required agent-fed credential-provider binding is absent.
+    /// Guarantees: Startup reports the missing combined capability.
+    #[test]
+    fn agent_fed_credential_provider_binding_is_required() {
+        let node_config = agent_fed_node_config(None);
+        let error = validate_agent_fed_capability_binding(&node_config)
+            .expect_err("credential-provider binding must be required");
+        assert!(error.to_string().contains("agent_fed_credential_provider"));
+
+        let node_config = agent_fed_node_config(Some("agent"));
+        validate_agent_fed_capability_binding(&node_config)
+            .expect("configured credential-provider binding must pass");
+    }
+
+    /// Scenario: The agent-fed capability binding is missing before TLS setup is checked.
+    /// Guarantees: Binding validation short-circuits without invoking the crypto check.
+    #[test]
+    fn agent_fed_binding_validation_precedes_crypto_check() {
+        let node_config = agent_fed_node_config(None);
+        let config = Config::parse(&node_config.config).expect("valid agent-fed config");
+        let error = validate_geneva_client_prerequisites(&config, &node_config, || {
+            panic!("crypto provider check must not run before binding validation")
+        })
+        .expect_err("missing credential-provider binding must fail");
+
+        assert!(error.to_string().contains("agent_fed_credential_provider"));
+    }
+
+    /// Scenario: The factory receives no agent-fed credential-provider binding.
+    /// Guarantees: Exporter creation fails with the missing capability error.
+    #[test]
+    fn agent_fed_factory_fails_closed_without_credential_provider() {
+        let exporter_config = ExporterConfig::new("test-exporter");
+
+        let missing_bindings = (GENEVA_EXPORTER.create)(
+            create_test_pipeline_context(),
+            test_node("test-exporter".to_owned()),
+            Arc::new(agent_fed_node_config(None)),
+            &exporter_config,
+            &Capabilities::empty(),
+        );
+        let error = match missing_bindings {
+            Ok(_) => panic!("missing bindings must fail exporter creation"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("agent_fed_credential_provider"));
+    }
+
+    /// Scenario: The config-only constructor receives agent-fed authentication.
+    /// Guarantees: Construction fails closed because no capability binding can be resolved.
+    #[test]
+    fn agent_fed_config_only_constructor_requires_factory_binding() {
+        let result =
+            GenevaExporter::from_config(create_test_pipeline_context(), &agent_fed_test_config());
+        let error = match result {
+            Ok(_) => panic!("config-only agent-fed construction must fail"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("agent_fed_credential_provider"));
+    }
+
+    /// Scenario: A node binds agent-fed credentials through a local-only extension.
+    /// Guarantees: Source creation rejects the binding and identifies the shared requirement.
+    #[test]
+    fn agent_fed_source_requires_shared_capability_registration() {
+        let node_config = agent_fed_node_config(Some("agent"));
+        validate_agent_fed_capability_binding(&node_config).expect("binding should be present");
+        let capabilities = resolved_local_only_agent_fed_capabilities(&node_config);
+        let error = resolve_agent_fed_source(&capabilities)
+            .expect_err("shared capability implementation must be required");
+
+        assert!(
+            error
+                .to_string()
+                .contains("local-only registrations are unsupported")
+        );
+    }
+
+    /// Scenario: Registry-created credential snapshots follow a rotating host snapshot.
+    /// Guarantees: Every result contains a coherent token and routing pair from one generation.
+    #[tokio::test]
+    async fn agent_fed_credential_provider_rotates_coherently() {
+        let node_config = agent_fed_node_config(Some("agent"));
+        let (capabilities, snapshot) = resolved_agent_fed_capabilities(&node_config);
+        let credential_provider = capabilities
+            .require_shared::<AgentFedCredentialProviderCap>()
+            .expect("agent-fed credential provider");
+        let source = AgentFedGenevaSource::new(credential_provider);
+
+        let initial = source.current().await.expect("initial credential");
+        assert_eq!(initial.expose_token(), "test-token");
+        assert_eq!(initial.endpoint, "https://ep/");
+        assert_eq!(
+            initial
+                .primary_monikers
+                .get("test-account")
+                .map(String::as_str),
+            Some("test-moniker")
+        );
+
+        let rotated_attributes = serde_json::json!({
+            "endpoint": "https://rotated-ep",
+            "moniker_map": { "test-account": "rotated-moniker" },
+        })
+        .as_object()
+        .cloned()
+        .expect("object");
+        {
+            let mut snapshot = snapshot.write().expect("snapshot write lock");
+            snapshot.token = BearerToken::without_expiry("rotated-token".to_owned());
+            snapshot.attributes = Arc::new(rotated_attributes);
+        }
+
+        let rotated = source.current().await.expect("rotated credential");
+        assert_eq!(rotated.expose_token(), "rotated-token");
+        assert_eq!(rotated.endpoint, "https://rotated-ep/");
+        assert_eq!(
+            rotated
+                .primary_monikers
+                .get("test-account")
+                .map(String::as_str),
+            Some("rotated-moniker")
+        );
+    }
+
+    /// Scenario: A valid binding resolves the combined capability from a shared extension.
+    /// Guarantees: The factory constructs an agent-fed exporter successfully.
+    #[test]
+    fn creates_agent_fed_exporter_with_bound_capabilities() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let node_config = agent_fed_node_config(Some("agent"));
+        let (capabilities, _snapshot) = resolved_agent_fed_capabilities(&node_config);
+        let exporter_config = ExporterConfig::new("test-exporter");
+        let result = (GENEVA_EXPORTER.create)(
+            create_test_pipeline_context(),
+            test_node("test-exporter".to_owned()),
+            Arc::new(node_config),
+            &exporter_config,
+            &capabilities,
+        );
+        assert!(result.is_ok(), "agent-fed exporter should initialize");
+    }
+
+    /// Scenario: Every supported authentication tag is deserialized.
+    /// Guarantees: Serde maps each public tag to the correct auth variant.
     #[test]
     fn test_auth_config_variants() {
         let cert_json = serde_json::json!({
@@ -1681,22 +2568,33 @@ mod tests {
         });
         let workload: AuthConfig = serde_json::from_value(workload_json).unwrap();
         assert!(matches!(workload, AuthConfig::WorkloadIdentity { .. }));
+
+        let agent_fed_json = serde_json::json!({
+            "type": "agentfed"
+        });
+        let agent_fed: AuthConfig = serde_json::from_value(agent_fed_json).unwrap();
+        assert!(matches!(agent_fed, AuthConfig::AgentFed));
     }
 
+    /// Scenario: Registration code reads the Geneva exporter URN constant.
+    /// Guarantees: The public component identifier remains stable.
     #[test]
     fn test_urn_constant() {
         assert_eq!(GENEVA_EXPORTER_URN, "urn:microsoft:exporter:geneva");
     }
 
+    /// Scenario: A legacy caller uses the config-only constructor with ARM resource-ID auth.
+    /// Guarantees: The original public constructor remains source-compatible and succeeds.
     #[test]
     fn create_exporter_with_user_managed_identity_by_arm_resource_id() {
         // The Geneva uploader uses rustls (tls-rustls); reqwest needs a
         // process-wide crypto provider, which production installs at startup.
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let config = serde_json::json!({
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -1717,7 +2615,7 @@ mod tests {
             "max_buffer_size": 1000,
             "max_concurrent_uploads": 2
         });
-        let exporter = create_exporter_from_factory(&GENEVA_EXPORTER, config);
+        let exporter = GenevaExporter::from_config(create_test_pipeline_context(), &config);
         assert!(
             exporter.is_ok(),
             "Exporter should initialise with UserManagedIdentityByArmResourceId auth"
@@ -1734,6 +2632,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -1785,6 +2684,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -1840,6 +2740,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -1890,6 +2791,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -1954,6 +2856,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -2008,6 +2911,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -2071,6 +2975,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -2118,6 +3023,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -2161,6 +3067,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -2205,6 +3112,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -2253,6 +3161,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -2306,6 +3215,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -2359,6 +3269,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -2471,6 +3382,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -2498,6 +3410,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -2537,6 +3450,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -2576,6 +3490,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -2618,6 +3533,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -2662,6 +3578,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -2706,6 +3623,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -2749,6 +3667,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -2795,6 +3714,7 @@ mod tests {
                 "endpoint": "https://localhost",
                 "environment": "test",
                 "account": "test-account",
+                "account_routing": { "default_group": "test-group" },
                 "namespace": "test-namespace",
                 "region": "test-region",
                 "config_major_version": 1,
@@ -2838,6 +3758,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -2874,6 +3795,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -2904,6 +3826,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -2949,6 +3872,10 @@ mod tests {
             "endpoint": "https://geneva.example",
             "environment": "prod-env",
             "account": "acct-1",
+            "account_routing": {
+                "default_group": "default-group",
+                "events": { "AuditLogs": "audit-group" }
+            },
             "namespace": "ns-1",
             "region": "westus2",
             "config_major_version": 3,
@@ -2977,6 +3904,15 @@ mod tests {
         });
 
         let parsed: Config = serde_json::from_value(config).expect("config should parse");
+        assert_eq!(parsed.account_routing.default_group, "default-group");
+        assert_eq!(
+            parsed
+                .account_routing
+                .events
+                .get("AuditLogs")
+                .map(String::as_str),
+            Some("audit-group")
+        );
         let client_config = parsed.to_geneva_client_config();
 
         // Scalar fields propagate unchanged.
@@ -3034,6 +3970,358 @@ mod tests {
         assert_eq!(spans_mapping.events.get("CLIENT"), Some(&None));
     }
 
+    /// Scenario: Account routing has a blank default group, event name, or mapped group.
+    /// Guarantees: Invalid logical routing is rejected while parsing user configuration.
+    #[test]
+    fn test_account_routing_rejects_blank_names() {
+        let mut blank_default = test_config();
+        blank_default["account_routing"]["default_group"] =
+            serde_json::Value::String("   ".to_owned());
+        let error = Config::parse(&blank_default).expect_err("blank default group must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("default_group must not be empty")
+        );
+
+        for (event_name, account_group) in [("", "group"), ("Event", " ")] {
+            let mut config = test_config();
+            config["account_routing"]["events"] = serde_json::json!({ event_name: account_group });
+            let error = Config::parse(&config).expect_err("blank routing name must fail");
+            assert!(error.to_string().contains("must not be empty"));
+        }
+    }
+
+    /// Scenario: Account routing identifiers contain leading or trailing whitespace.
+    /// Guarantees: Exact-match routing cannot accept identifiers that will miss valid groups.
+    #[test]
+    fn test_account_routing_rejects_surrounding_whitespace() {
+        for default_group in [" default-group", "default-group "] {
+            let mut config = test_config();
+            config["account_routing"]["default_group"] =
+                serde_json::Value::String(default_group.to_owned());
+            let error = Config::parse(&config)
+                .expect_err("default group with surrounding whitespace must fail");
+            assert!(error.to_string().contains("surrounding whitespace"));
+        }
+
+        for (event_name, account_group) in [
+            (" Event", "group"),
+            ("Event ", "group"),
+            ("Event", " group"),
+            ("Event", "group "),
+        ] {
+            let mut config = test_config();
+            config["account_routing"]["events"] = serde_json::json!({
+                event_name: account_group
+            });
+            let error = Config::parse(&config)
+                .expect_err("routing identifier with surrounding whitespace must fail");
+            assert!(error.to_string().contains("surrounding whitespace"));
+        }
+    }
+
+    /// Scenario: A `Config` with an `obo` block mapping two event/table names to
+    /// customer identities - one with an annotations recipe, one without - is
+    /// converted through `Config::to_geneva_client_config`.
+    /// Guarantees: The adapter populates `obo_event_map` with one entry per
+    /// configured event, preserving each identity and its optional annotations,
+    /// so OBO uploads are enabled for exactly the configured events and left off
+    /// (None) for everything else.
+    #[test]
+    fn test_config_to_geneva_client_config_with_obo() {
+        let config = serde_json::json!({
+            "endpoint": "https://geneva.example",
+            "environment": "prod-env",
+            "account": "acct-1",
+            "account_routing": { "default_group": "default-group" },
+            "namespace": "ns-1",
+            "region": "westus2",
+            "config_major_version": 3,
+            "tenant": "tenant-1",
+            "role_name": "role-1",
+            "role_instance": "instance-1",
+            "obo": {
+                "events": {
+                    "AuditLogs": {
+                        "identity": "Microsoft.AuditService",
+                        "annotations": "<Config onBehalfFields=\"resourceId\" />"
+                    },
+                    "RawLogs": {
+                        "identity": "Microsoft.RawService"
+                    }
+                }
+            },
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let parsed: Config = serde_json::from_value(config).expect("config should parse");
+        let client_config = parsed.to_geneva_client_config();
+
+        let obo = client_config
+            .obo_event_map
+            .expect("obo_event_map should be present");
+        assert_eq!(obo.len(), 2);
+
+        let audit = obo.get("AuditLogs").expect("AuditLogs entry present");
+        assert_eq!(audit.identity, "Microsoft.AuditService");
+        assert_eq!(
+            audit.annotations.as_deref(),
+            Some("<Config onBehalfFields=\"resourceId\" />")
+        );
+
+        let raw = obo.get("RawLogs").expect("RawLogs entry present");
+        assert_eq!(raw.identity, "Microsoft.RawService");
+        assert_eq!(raw.annotations, None);
+    }
+
+    /// Scenario: A `Config` with no `obo` block is converted through
+    /// `Config::to_geneva_client_config`.
+    /// Guarantees: `obo_event_map` stays `None`, so OBO remains opt-in and the
+    /// default configuration uploads without any customer identity.
+    #[test]
+    fn test_config_to_geneva_client_config_without_obo_is_none() {
+        let parsed: Config = serde_json::from_value(test_config()).expect("config should parse");
+        let client_config = parsed.to_geneva_client_config();
+        assert!(client_config.obo_event_map.is_none());
+    }
+
+    /// Scenario: An `obo` entry supplies an empty (whitespace-only) identity.
+    /// Guarantees: Deserialization fails up-front so `--validate` rejects an OBO
+    /// entry that could not identify a customer, instead of silently uploading
+    /// without OBO at pipeline startup.
+    #[test]
+    fn test_obo_rejects_empty_identity() {
+        let config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "environment": "test",
+            "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
+            "namespace": "test-namespace",
+            "region": "test-region",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "obo": {
+                "events": {
+                    "AuditLogs": { "identity": "   " }
+                }
+            },
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let result: Result<Config, _> = serde_json::from_value(config);
+        assert!(result.is_err(), "empty identity should be rejected");
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("non-empty identity"),
+            "error should explain identity must be non-empty"
+        );
+    }
+
+    /// Scenario: An `obo` block supplies an empty `events` map.
+    /// Guarantees: Deserialization fails rather than accepting an OBO config that
+    /// enables OBO for no events, keeping `--validate` in agreement with runtime.
+    #[test]
+    fn test_obo_rejects_empty_events() {
+        let config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "environment": "test",
+            "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
+            "namespace": "test-namespace",
+            "region": "test-region",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "obo": { "events": {} },
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let result: Result<Config, _> = serde_json::from_value(config);
+        assert!(result.is_err(), "empty events map should be rejected");
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("must be non-empty"),
+            "error should explain events must be non-empty"
+        );
+    }
+
+    /// Scenario: An `obo` entry maps an identity to an empty (whitespace-only)
+    /// annotations string.
+    /// Guarantees: Deserialization fails rather than silently treating the empty
+    /// annotations as "no recipe"; only omitting the field (or null) selects the
+    /// no-annotations form, so an ineffective config cannot look valid.
+    #[test]
+    fn test_obo_rejects_empty_annotations() {
+        let config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "environment": "test",
+            "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
+            "namespace": "test-namespace",
+            "region": "test-region",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "obo": {
+                "events": {
+                    "AuditLogs": { "identity": "Microsoft.AuditService", "annotations": "   " }
+                }
+            },
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let result: Result<Config, _> = serde_json::from_value(config);
+        assert!(result.is_err(), "empty annotations should be rejected");
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("empty annotations value"),
+            "error should explain empty annotations are rejected"
+        );
+    }
+
+    /// Scenario: OBO is keyed on the uploader's literal default table names
+    /// ("Log"/"Span") while `logs`/`spans` (and their `default_event_name`) are
+    /// omitted, so the destinations exist only via the uploader's fallback.
+    /// Guarantees: These keys are treated as reachable and produce no unmatched
+    /// warning, so valid configs relying on the literal defaults stay quiet.
+    #[test]
+    fn test_obo_literal_default_names_are_matched() {
+        let config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "environment": "test",
+            "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
+            "namespace": "test-namespace",
+            "region": "test-region",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "obo": {
+                "events": {
+                    "Log": { "identity": "Microsoft.LogService" },
+                    "Span": { "identity": "Microsoft.SpanService" }
+                }
+            },
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let config: Config = serde_json::from_value(config).expect("config should deserialize");
+        assert!(
+            config.unmatched_obo_events().is_empty(),
+            "OBO keyed on the literal default table names must not be flagged as unmatched"
+        );
+    }
+
+    /// Scenario: OBO is keyed on a name that neither a mapping destination nor a
+    /// `default_event_name` nor the literal defaults can produce.
+    /// Guarantees: The typo-catching path reports that key as unmatched so the
+    /// warning still fires for genuinely unreachable OBO entries.
+    #[test]
+    fn test_obo_unreachable_name_is_unmatched() {
+        let config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "environment": "test",
+            "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
+            "namespace": "test-namespace",
+            "region": "test-region",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "obo": {
+                "events": {
+                    "TypoTable": { "identity": "Microsoft.SomeService" }
+                }
+            },
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let config: Config = serde_json::from_value(config).expect("config should deserialize");
+        assert_eq!(
+            config.unmatched_obo_events(),
+            vec!["TypoTable".to_string()],
+            "an OBO key matching no reachable destination must be reported as unmatched"
+        );
+    }
+
+    /// Scenario: The user overrides logs `default_event_name` (e.g. "MyLog") and
+    /// keys OBO on the literal "Log", which the uploader would only produce when
+    /// no default is set.
+    /// Guarantees: The literal "Log" is not treated as reachable once the
+    /// default is overridden, so the typo-prone key is reported as unmatched
+    /// while the overridden default itself is accepted.
+    #[test]
+    fn test_obo_literal_default_not_matched_when_overridden() {
+        let config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "environment": "test",
+            "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
+            "namespace": "test-namespace",
+            "region": "test-region",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "logs": { "default_event_name": "MyLog" },
+            "obo": {
+                "events": {
+                    "Log": { "identity": "Microsoft.LogService" },
+                    "MyLog": { "identity": "Microsoft.MyLogService" }
+                }
+            },
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let config: Config = serde_json::from_value(config).expect("config should deserialize");
+        assert_eq!(
+            config.unmatched_obo_events(),
+            vec!["Log".to_string()],
+            "the literal default must not be reachable once default_event_name is overridden"
+        );
+    }
+
     /// Scenario: A logs `event_name_mapping` supplies an empty `events` map.
     /// Guarantees: Deserialization (the same path `--validate` exercises) fails
     /// up-front instead of being accepted here and later rejected inside
@@ -3044,6 +4332,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -3084,6 +4373,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -3126,6 +4416,7 @@ mod tests {
                 "endpoint": "https://localhost",
                 "environment": "test",
                 "account": "test-account",
+                "account_routing": { "default_group": "test-group" },
                 "namespace": "test-namespace",
                 "region": "test-region",
                 "config_major_version": 1,
@@ -3169,6 +4460,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -3205,6 +4497,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -3245,6 +4538,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,

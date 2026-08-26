@@ -192,6 +192,10 @@ mod tests {
 
     // -- resolve_security_protocol ---------------------------
 
+    /// Scenario (configuration and packaging: feature gates): AWS MSK IAM auth is combined with an
+    /// explicit TLS config, with the `aws` feature enabled.
+    /// Guarantees: the resolved security protocol is `SASL_SSL`, so the
+    /// AWS-gated mechanism integrates with the shared protocol resolution.
     #[cfg(feature = "aws")]
     #[test]
     fn protocol_tls_and_auth() {
@@ -209,6 +213,11 @@ mod tests {
         assert_eq!(resolve_security_protocol(Some(&tls), None), "SSL");
     }
 
+    /// Scenario (configuration and packaging: feature gates): AWS MSK IAM auth is configured with
+    /// no explicit TLS block, with the `aws` feature enabled.
+    /// Guarantees: the resolved protocol is still `SASL_SSL`, because MSK
+    /// enforces encrypted connections -- the AWS-gated path always upgrades to
+    /// SSL even without an explicit TLS config.
     #[cfg(feature = "aws")]
     #[test]
     fn protocol_aws_msk_without_tls() {
@@ -251,6 +260,11 @@ mod tests {
 
     // -- apply_sasl_config -----------------------------------
 
+    /// Scenario (configuration and packaging: feature gates): AWS MSK IAM auth is applied to a
+    /// client config with the `aws` feature enabled.
+    /// Guarantees: `sasl.mechanism` is set to `OAUTHBEARER` (the wire mechanism
+    /// MSK IAM uses) and no `debug` value is injected, so the AWS-gated
+    /// mechanism maps onto the correct librdkafka setting.
     #[cfg(feature = "aws")]
     #[test]
     fn sasl_config_sets_oauthbearer_for_aws_msk() {
@@ -320,6 +334,11 @@ mod tests {
 
     // -- build_aws_msk_context -------------------------------
 
+    /// Scenario (configuration and packaging: feature gates): AWS MSK IAM auth is passed to the
+    /// context builder with the `aws` feature enabled.
+    /// Guarantees: a MSK OAUTHBEARER client context is constructed, so the
+    /// AWS-gated token-refresh path is wired only when the `aws` feature and MSK
+    /// auth are both present.
     #[cfg(feature = "aws")]
     #[test]
     fn aws_msk_context_from_aws_auth() {
@@ -327,6 +346,10 @@ mod tests {
         assert!(build_aws_msk_context(Some(&auth)).is_some());
     }
 
+    /// Scenario (configuration and packaging: feature gates): a generic (non-MSK) SASL auth is
+    /// passed to the context builder.
+    /// Guarantees: no MSK context is created, so the AWS-gated path is not
+    /// triggered for non-MSK mechanisms.
     #[cfg(feature = "aws")]
     #[test]
     fn aws_msk_context_none_for_generic_sasl() {
@@ -334,6 +357,9 @@ mod tests {
         assert!(build_aws_msk_context(Some(&auth)).is_none());
     }
 
+    /// Scenario (configuration and packaging: feature gates): a PLAIN username/password SASL auth
+    /// is passed to the context builder.
+    /// Guarantees: no MSK context is created for a plaintext mechanism.
     #[cfg(feature = "aws")]
     #[test]
     fn aws_msk_context_none_for_plain_auth() {
@@ -341,18 +367,23 @@ mod tests {
         assert!(build_aws_msk_context(Some(&auth)).is_none());
     }
 
+    /// Scenario (configuration and packaging: feature gates): no auth is configured.
+    /// Guarantees: the context builder returns `None`, so the AWS-gated path is
+    /// never entered without auth.
     #[cfg(feature = "aws")]
     #[test]
     fn aws_msk_context_none_when_no_auth() {
         assert!(build_aws_msk_context(None).is_none());
     }
 
+    /// Scenario (configuration and packaging: feature gates): a misconfigured PLAIN auth carries a
+    /// stray `aws_msk` block.
+    /// Guarantees (defense-in-depth): the context builder still returns `None`
+    /// because the mechanism is not MSK, so an OAUTHBEARER context is never
+    /// created for a non-MSK mechanism even with an AWS block present.
     #[cfg(feature = "aws")]
     #[test]
     fn aws_msk_context_none_for_plain_with_aws_msk_block() {
-        // Defense-in-depth: even if a misconfigured SaslAuth has an aws_msk
-        // block with a non-MSK mechanism, the context builder must not create
-        // an OAUTHBEARER context.
         let json = r#"{
             "sasl": {
                 "mechanism": "PLAIN",

@@ -12,7 +12,7 @@ pub mod formatter;
 
 use crate::registry::EntityKey;
 use encoder::DirectFieldVisitor;
-use otap_df_pdata::otlp::common::{ProtoBuffer, StackProtoBuffer};
+use otel_arrow_dfe_pdata::otlp::common::{ProtoBuffer, StackProtoBuffer};
 use serde::Serialize;
 use serde::ser::Serializer;
 use smallvec::SmallVec;
@@ -48,7 +48,7 @@ pub struct LogRecord {
     pub callsite_id: Identifier,
 
     /// Pre-encoded body and attributes in OTLP bytes.  These bytes
-    /// can be interpreted using the otap_df_pdata::views::otlp::bytes::RawLogRecord
+    /// can be interpreted using the otel_arrow_dfe_pdata::views::otlp::bytes::RawLogRecord
     /// in practice and/or parsed by a crate::proto::opentelemetry::logs::v1::LogRecord
     /// message object for testing.
     pub body_attrs_bytes: bytes::Bytes,
@@ -132,7 +132,8 @@ impl SavedCallsite {
 
 /// A log record encoded on the stack, not yet converted to `Bytes`.
 ///
-/// Returned by [`__log_record_impl!`]. Callers choose how to consume it:
+/// Returned by the `__log_record_impl!` macro, which is an implementation
+/// detail hidden from these docs. Callers choose how to consume it:
 /// - [`as_view()`](Self::as_view) for zero-copy formatting (e.g., `raw_error!`)
 /// - [`into_record()`](Self::into_record) to produce an owned `LogRecord`
 ///   with reference-counted `Bytes` storage

@@ -328,13 +328,13 @@ impl<T: EnumerableValueSource<T>> ArrayValue for ArrayValueStorage<T> {
         Ok(self.values.get(index).map(|v| v as &dyn AsStaticValue))
     }
 
-    fn get_item_range(
-        &self,
+    fn get_item_range<'a>(
+        &'a self,
         range: ArrayRange,
-        item_callback: &mut dyn IndexValueCallback,
+        item_callback: &mut ArrayValueIteratorCallback<'a, '_>,
     ) -> bool {
         for (index, value) in range.get_slice(&self.values).iter().enumerate() {
-            if !item_callback.next(index, value.to_value()) {
+            if !(item_callback)(index, value.to_value()) {
                 return false;
             }
         }
@@ -400,10 +400,10 @@ impl<T: EnumerableValueSource<T>> ArrayValueMut for ArrayValueStorage<T> {
         ValueMutRemoveResult::Removed(old.into())
     }
 
-    fn retain(&mut self, item_callback: &mut dyn IndexValueMutCallback) {
+    fn retain(&mut self, item_callback: &mut ArrayValueMutIteratorCallback<'_>) {
         let mut index = 0;
         self.values.retain_mut(|v| {
-            let r = item_callback.next(index, v);
+            let r = (item_callback)(index, v);
             index += 1;
             r
         });
@@ -460,9 +460,9 @@ impl<T: EnumerableValueSource<T>> MapValue for MapValueStorage<T> {
         Ok(self.values.get(key).map(|v| v as &dyn AsStaticValue))
     }
 
-    fn get_items(&self, item_callback: &mut dyn KeyValueCallback) -> bool {
+    fn get_items<'a>(&'a self, item_callback: &mut MapValueIteratorCallback<'a, '_>) -> bool {
         for (key, value) in self.values.iter() {
-            if !item_callback.next(key, value.to_value()) {
+            if !(item_callback)(key, value.to_value()) {
                 return false;
             }
         }
@@ -515,8 +515,8 @@ impl<T: EnumerableValueSource<T>> MapValueMut for MapValueStorage<T> {
         }
     }
 
-    fn retain(&mut self, item_callback: &mut dyn KeyValueMutCallback) {
-        self.values.retain(|k, v| item_callback.next(k, v));
+    fn retain(&mut self, item_callback: &mut MapValueMutIteratorCallback<'_>) {
+        self.values.retain(|k, v| (item_callback)(k, v));
     }
 }
 

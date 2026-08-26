@@ -14,7 +14,7 @@ use crate::{
     proto::opentelemetry::arrow::v1::ArrowPayloadType,
 };
 use arrow::array::RecordBatch;
-use otap_df_config::SignalType;
+use otel_arrow_dfe_config::SignalType;
 
 use super::transform::{concatenate::concatenate, split};
 

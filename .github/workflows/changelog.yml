@@ -21,6 +21,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -32,12 +33,38 @@ jobs:
     runs-on: ubuntu-latest
     if: ${{ github.event_name == 'merge_group' }}
     steps:
-      - run: echo "Changelog validation passed on the pull request."
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Identify pull request in merge group
+        id: merge_group
+        env:
+          HEAD_REF: ${{ github.event.merge_group.head_ref }}
+        run: |
+          if [[ "$HEAD_REF" =~ /pr-([0-9]+)- ]]; then
+            echo "pr_number=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+          else
+            echo "Error: Could not identify the pull request from merge group ref: $HEAD_REF"
+            exit 1
+          fi
+      - name: Block merge during active release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./.github/workflows/scripts/check-release-freeze.sh "${{ steps.merge_group.outputs.pr_number }}"
+
+  changelog-bot-pull-request:
+    name: changelog
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'pull_request' && (github.actor == 'dependabot[bot]' || github.actor == 'renovate[bot]' || github.actor == 'otelbot-arrow[bot]') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Block merge during active release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./.github/workflows/scripts/check-release-freeze.sh "${{ github.event.pull_request.number }}"
 
   changelog-validation:
     name: changelog
     runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'pull_request' && github.actor != 'dependabot[bot]' && github.actor != 'renovate[bot]' && github.actor != 'otelbot' }}
+    if: ${{ github.event_name == 'pull_request' && github.actor != 'dependabot[bot]' && github.actor != 'renovate[bot]' && github.actor != 'otelbot-arrow[bot]' }}
     env:
       PR_HEAD: ${{ github.event.pull_request.head.sha }}
 
@@ -68,6 +95,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: ${{ steps.detect_bypass.outputs.skip == 'true' && '1' || '0' }}
+
+      - name: Block merge during active release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./.github/workflows/scripts/check-release-freeze.sh "${{ github.event.pull_request.number }}"
 
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         if: ${{ steps.detect_bypass.outputs.skip != 'true' }}

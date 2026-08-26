@@ -100,7 +100,7 @@ feature flag:
 
 ```toml
 [dependencies]
-otap-df-otap = { version = "...", features = ["resource-validator-processor"] }
+otel-arrow-dfe-otap = { version = "...", features = ["resource-validator-processor"] }
 ```
 
 ## Extensibility for Dynamic Auth Context

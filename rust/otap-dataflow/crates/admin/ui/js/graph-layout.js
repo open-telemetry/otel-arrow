@@ -1,6 +1,11 @@
 // Pure graph layout helpers.
 // Produces deterministic coordinates for nodes/lanes to minimize topology jitter
 // between refreshes and keep interaction hitboxes stable.
+import {
+  summarizeChannelReceiverMetrics,
+  summarizeChannelSenderMetrics,
+} from "./charts-controller.js";
+
 const DEFAULT_CONSTANTS = {
   NODE_WIDTH: 210,
   NODE_HEADER_HEIGHT: 38,
@@ -132,16 +137,6 @@ function layoutSinglePipelineGraph(nodes, edges, constants) {
 
   const nodeById = new Map(nodes.map((node) => [node.id, node]));
   const trafficTotals = new Map(nodes.map((node) => [node.id, { sent: 0, received: 0 }]));
-  const metricValue = (metrics, name) => {
-    if (!metrics) return 0;
-    for (const metric of metrics) {
-      if (metric.name === name && typeof metric.value === "number") {
-        return metric.value;
-      }
-    }
-    return 0;
-  };
-
   const lineIntersectsRect = (x1, y1, x2, y2, rect) => {
     const left = rect.x;
     const right = rect.x + rect.width;
@@ -183,8 +178,12 @@ function layoutSinglePipelineGraph(nodes, edges, constants) {
   const columnWidth = Math.min(210, Math.max(140, 44 + maxLabelChars * 6.8));
 
   edges.forEach((edge) => {
-    const sendCount = metricValue(edge.data.sender?.metrics, "send.count");
-    const recvCount = metricValue(edge.data.receiver?.metrics, "recv.count");
+    const sendCount = summarizeChannelSenderMetrics(
+      edge.data.sender?.metrics || []
+    ).send;
+    const recvCount = summarizeChannelReceiverMetrics(
+      edge.data.receiver?.metrics || []
+    ).recv;
     if (trafficTotals.has(edge.source)) {
       trafficTotals.get(edge.source).sent += sendCount;
     }

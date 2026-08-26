@@ -80,6 +80,7 @@ mod parse_tests {
                 ("\"hello\"", "hello"),
                 ("\"\"", ""),
                 ("\"hello world\"", "hello world"),
+                ("\"he\\\\llo\"", "he\\llo"),
                 ("\"he\\\"llo\"", "he\"llo"),
                 ("\"he\\nllo\"", "he\nllo"),
             ],

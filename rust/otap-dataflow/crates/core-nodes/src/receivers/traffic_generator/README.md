@@ -46,7 +46,8 @@ config:
   # Batch generation strategy: "fresh" or "pre_generated" (default: fresh).
   generation_strategy: pre_generated
 
-  # Enables generated pdata ACK/NACK interests (default: false).
+  # Enables generated pdata ACK/NACK interests and waits for outstanding
+  # completions during graceful drain (default: false).
   enable_ack_nack: false
 
   # Resource attributes rotated across batches (default: []).
@@ -135,6 +136,10 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | `receiver.traffic_generator.logs_produced` | `{log}` | Number of logs generated. |
 | `receiver.traffic_generator.spans_produced` | `{span}` | Number of spans generated. |
 | `receiver.traffic_generator.metrics_produced` | `{metric}` | Number of metrics generated. |
+| `receiver.traffic_generator.completion.pending` | `{batch}` | Number of subscribed batches waiting for Ack/Nack completion. |
+| `receiver.traffic_generator.completion.acks` | `{batch}` | Number of Ack completions received for generated batches. |
+| `receiver.traffic_generator.completion.nacks` | `{batch}` | Number of Nack completions received for generated batches. |
+| `receiver.traffic_generator.completion.drain.deadline_forced` | `{drain}` | Number of drains forced to finish with unresolved batches at the deadline. |
 | `receiver.traffic_generator.smooth.runs.started` | `{run}` | Number of smooth-mode production runs started. |
 | `receiver.traffic_generator.smooth.runs.completed` | `{run}` | Number of smooth-mode production runs that completed before the next run tick. |
 | `receiver.traffic_generator.smooth.runs.behind` | `{run}` | Number of smooth-mode production runs that still had work at the next run tick. |
@@ -155,6 +160,7 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | `traffic_generator.smooth_run_behind` | `warn` | Smooth-mode generation did not finish before the next run tick. |
 | `traffic_generator.open_run_behind` | `debug` | Open-loop generation remained behind schedule. |
 | `traffic_generator.drain_ingress` | `info` | Receiver ingress drain started. |
+| `traffic_generator.completion_drain.deadline_reached` | `warn` | Ack/Nack drain deadline expired with unresolved batches. |
 | `traffic_generator.shutdown` | `info` | Receiver shutdown completed. |
 | `traffic_generator.smooth_fallback_open` | `warn` | Smooth mode fell back to open-loop behavior. |
 

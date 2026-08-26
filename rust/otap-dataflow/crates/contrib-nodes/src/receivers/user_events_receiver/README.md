@@ -674,7 +674,7 @@ receiver, the debug processor, and the noop exporter:
 
 ```bash
 cargo build --features user_events-receiver
-cargo build -p otap-df-contrib-nodes \
+cargo build -p otel-arrow-dfe-contrib-nodes \
   --features user_events-receiver \
   --example user_events_tracefs_producer
 
@@ -684,12 +684,12 @@ sudo ./target/debug/df_engine \
 
 sudo taskset -c 0 \
   ./target/debug/examples/user_events_tracefs_producer \
-  otap_df_tracefs_demo 3 100
+  otel_arrow_dfe_tracefs_demo 3 100
 
 sudo cat /tmp/user_events_tracefs_debug.log
 ```
 
-Expected debug output includes `EventName: user_events:otap_df_tracefs_demo`,
+Expected debug output includes `EventName: user_events:otel_arrow_dfe_tracefs_demo`,
 `ci_answer: 0`, `ci_answer: 1`, `ci_answer: 2`, and
 `ci_message: hello-from-ci`.
 
@@ -701,7 +701,7 @@ and debug processor path:
 
 ```bash
 cargo build --features user_events-eventheader
-cargo build -p otap-df-contrib-nodes \
+cargo build -p otel-arrow-dfe-contrib-nodes \
   --features user_events-eventheader \
   --example user_events_eventheader_producer
 
@@ -711,13 +711,13 @@ sudo ./target/debug/df_engine \
 
 sudo taskset -c 0 \
   ./target/debug/examples/user_events_eventheader_producer \
-  otap_df_eventheader_demo 3 100
+  otel_arrow_dfe_eventheader_demo 3 100
 
 sudo cat /tmp/user_events_eventheader_debug.log
 ```
 
 Expected debug output includes
-`EventName: user_events:otap_df_eventheader_demo_L4K1`,
+`EventName: user_events:otel_arrow_dfe_eventheader_demo_L4K1`,
 `ci_answer: 0`, `ci_answer: 1`, `ci_answer: 2`, and
 `ci_message: hello-from-ci`.
 

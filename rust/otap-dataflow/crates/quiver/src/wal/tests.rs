@@ -106,6 +106,12 @@ impl RecordBundle for FixtureBundle {
                 batch: &slot.batch,
             })
     }
+
+    fn item_count(&self) -> u64 {
+        self.slots
+            .first()
+            .map_or(0, |slot| slot.batch.num_rows() as u64)
+    }
 }
 
 fn build_batch(values: &[i64]) -> RecordBatch {

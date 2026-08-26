@@ -7,11 +7,11 @@ use std::time::Instant;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use data_engine_kql_parser::{KqlParser, Parser};
-use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::proto::OtlpProtoMessage;
-use otap_df_pdata::testing::fixtures::logs_with_varying_attributes_and_properties;
-use otap_df_pdata::testing::round_trip::otlp_to_otap;
-use otap_df_query_engine::pipeline::Pipeline;
+use otel_arrow_dfe_pdata::OtapArrowRecords;
+use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
+use otel_arrow_dfe_pdata::testing::fixtures::logs_with_varying_attributes_and_properties;
+use otel_arrow_dfe_pdata::testing::round_trip::otlp_to_otap;
+use otel_arrow_dfe_query_engine::pipeline::Pipeline;
 use tokio::runtime::Runtime;
 
 fn generate_logs_batch(batch_size: usize) -> OtapArrowRecords {
@@ -121,11 +121,9 @@ fn bench_filter_pipelines(c: &mut Criterion) {
         &rt,
         &batch_sizes,
         "and_short_circuit",
-        // left expr of "and" should be false for all rows
-        //
-        // this is different from the case above in that the "and" here is currently something that
-        // won't get optimized into a Composite<AttributeFilterExec> so we can test the fast path
-        // in Composite<FilterExec>
+        // Cross-scope AND: the left side (root field) is false for all rows, so the
+        // JoinAndEval short-circuit should skip evaluation of the right side (attribute)
+        // and the join entirely.
         "logs | where severity_text == \"invalid value\" and attributes[\"code.line.number\"] == 2",
     );
 
@@ -134,11 +132,9 @@ fn bench_filter_pipelines(c: &mut Criterion) {
         &rt,
         &batch_sizes,
         "or_short_circuit",
-        // left expr of "or" should be true for all rows
-        //
-        // this is different from the case above in that the "and" here is currently something that
-        // won't get optimized into a Composite<AttributeFilterExec> so we can test the fast path
-        // in Composite<FilterExec>
+        // Cross-scope OR: the left side (attribute) is true for all rows, so the
+        // JoinAndEval short-circuit should skip evaluation of the right side and
+        // the join entirely.
         "logs | where attributes[\"code.line.number\"] >= 0 or not(attributes[\"some.attr\"] >= 0 and severity_text == \"WARN\")",
     );
 }

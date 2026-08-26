@@ -13,8 +13,8 @@ function createClassList() {
   };
 }
 
-// Verifies the "no selection" branch resets UI text, tears down chart state,
-// and clears legend visibility/content.
+// Scenario: The admin selection is cleared while a channel chart and legend are active.
+// Guarantees: The panel, chart state, legend, and node charts all return to their empty state.
 test('renderSelectionNone resets detail panel and clears chart', () => {
   const previousDocument = globalThis.document;
 
@@ -69,7 +69,6 @@ test('renderSelectionNone resets detail panel and clears chart', () => {
       renderAttributes: () => '',
       renderMetricTable: () => '',
       renderNodeMetricTable: () => '',
-      metricMap: () => ({}),
       calcRate: () => 0,
       buildNodeSummary: () => ({ inRate: 0, outRate: 0, errorRate: 0 }),
       escapeHtml: (value) => String(value),

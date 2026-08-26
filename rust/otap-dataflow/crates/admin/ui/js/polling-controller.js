@@ -5,11 +5,14 @@ import { fetchMetricsFromCandidates } from "./metrics-api.js";
 
 const DELTA_STATE_RETENTION_MS = 30 * 60 * 1000;
 const CHANNEL_SENDER_DELTA_METRICS = new Set([
+  "messages",
+  "failures",
   "send.count",
   "send.error_full",
   "send.error_closed",
 ]);
 const CHANNEL_RECEIVER_DELTA_METRICS = new Set([
+  "messages",
   "recv.count",
   "recv.error_empty",
   "recv.error_closed",
@@ -38,8 +41,11 @@ function normalizeAttributes(attrs) {
   return out;
 }
 
-function buildMetricSeriesKey(setName, attrs, metricName) {
-  const attrEntries = Object.entries(normalizeAttributes(attrs || {})).sort(([a], [b]) =>
+function buildMetricSeriesKey(setName, attrs, metricName, dataPointAttrs) {
+  const attrEntries = Object.entries({
+    ...normalizeAttributes(attrs || {}),
+    ...normalizeAttributes(dataPointAttrs || {}),
+  }).sort(([a], [b]) =>
     a.localeCompare(b)
   );
   return `${String(setName || "")}::${metricName}::${JSON.stringify(attrEntries)}`;
@@ -84,7 +90,7 @@ export function deriveClientDeltas(metricSets, state, nowTsMs) {
         return metric;
       }
 
-      const key = buildMetricSeriesKey(setName, attrs, metricName);
+      const key = buildMetricSeriesKey(setName, attrs, metricName, metric.attributes);
       const prev = prevBySeries.get(key);
       const current = metric.value;
       let delta = 0;

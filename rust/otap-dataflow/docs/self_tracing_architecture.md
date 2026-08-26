@@ -55,7 +55,7 @@ telemetry pitfalls, as follows:
 As a key design decision, the OTAP-Dataflow internal telemetry data
 path produces a partially encoded OTLP-bytes representation first.
 This is an intermediate format,
-`otap_df_telemetry::self_tracing::LogRecord`, which includes the
+`otel_arrow_dfe_telemetry::self_tracing::LogRecord`, which includes the
 timestamp, callsite metadata, and the OTLP bytes encoding of the body
 and attributes.
 
@@ -63,7 +63,7 @@ Because OTLP bytes is one of the builtin `OtapPayload` formats, it is
 simple to get from a slice of `LogRecord` to the `OtapPayload` we need
 to consume internal telemetry. To obtain the partial bytes encoding
 needed, we have a custom [Tokio `tracing` Event][TOKIOEVENT] handler
-based on `otap_df_pdata::otlp::common::ProtoBuffer`.
+based on `otel_arrow_dfe_pdata::otlp::common::ProtoBuffer`.
 
 [TOKIOEVENT]: https://docs.rs/tracing/latest/tracing/struct.Event.html
 
@@ -71,7 +71,7 @@ based on `otap_df_pdata::otlp::common::ProtoBuffer`.
 
 We support formatting events for direct printing to the console from
 OTLP bytes. For the dynamic encoding, these are consumed using
-`otap_df_pdata::views::logs::LogsDataView`, making the operation
+`otel_arrow_dfe_pdata::views::logs::LogsDataView`, making the operation
 zero-copy. We refer to this most-basic form of printing to the console
 as raw logging because it is a safe configuration that avoids feedback
 for internal logging.
@@ -79,7 +79,7 @@ for internal logging.
 Note: Raw logging is likely to introduce contention over the console.
 
 In cases where internal logging code is forced to handle its own
-errors, the `otap_df_telemetry::raw_error!` macro is meant for
+errors, the `otel_arrow_dfe_telemetry::raw_error!` macro is meant for
 emergency use, to report about failures to log.
 
 ## Logging provider modes

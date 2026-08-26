@@ -133,10 +133,10 @@
 
 use crate::context::PipelineContext;
 use cpu_time::ThreadTime;
-use otap_df_telemetry::instrument::{Counter, Gauge, ObserveCounter, ObserveUpDownCounter};
-use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::registry::TelemetryRegistryHandle;
-use otap_df_telemetry_macros::metric_set;
+use otel_arrow_dfe_telemetry::instrument::{Counter, Gauge, ObserveCounter, ObserveUpDownCounter};
+use otel_arrow_dfe_telemetry::metrics::MetricSet;
+use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+use otel_arrow_dfe_telemetry_macros::metric_set;
 use std::time::Instant;
 
 #[cfg(all(not(windows), feature = "jemalloc"))]
@@ -778,7 +778,7 @@ impl Drop for PipelineMetricsMonitor {
 mod jemalloc_tests {
     use super::*;
     use crate::context::ControllerContext;
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use std::hint::black_box;
     use std::time::{Duration, Instant};
 
@@ -786,7 +786,7 @@ mod jemalloc_tests {
     // tikv_jemalloc_ctl can read per-thread allocation counters.
     //
     // Run this test with:
-    // `cargo test -p otap-df-engine --lib --features jemalloc-testing pipeline_metrics_monitor_black_box_updates_jemalloc`
+    // `cargo test -p otel-arrow-dfe-engine --lib --features jemalloc-testing pipeline_metrics_monitor_black_box_updates_jemalloc`
     #[global_allocator]
     static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
@@ -853,14 +853,16 @@ mod jemalloc_tests {
     }
 }
 
-#[cfg(all(test, not(feature = "jemalloc-testing")))]
+#[cfg(all(test, any(windows, not(feature = "jemalloc"))))]
 mod non_jemalloc_tests {
     use super::*;
     use crate::context::ControllerContext;
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use std::hint::black_box;
     use std::time::{Duration, Instant};
 
+    /// Scenario: Pipeline metrics are sampled when jemalloc accounting is unavailable.
+    /// Guarantees: CPU and OS metrics update while all allocator metrics remain zero.
     #[test]
     fn pipeline_metrics_monitor_does_not_update_memory_without_jemalloc() {
         let telemetry_registry = TelemetryRegistryHandle::new();

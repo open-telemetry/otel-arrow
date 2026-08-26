@@ -420,7 +420,7 @@ pub fn execute_transform_expression<'a, TRecord: Record>(
                             let s: String = key.to_value().convert_to_string().into();
                             key_map.insert(s.into());
                         }
-                        target_map.retain(&mut KeyValueMutClosureCallback::new(|k, v| {
+                        target_map.retain(&mut |k, v| {
                             if key_map.contains(k) {
                                 return true;
                             }
@@ -436,7 +436,7 @@ pub fn execute_transform_expression<'a, TRecord: Record>(
                                 },
                             );
                             false
-                        }));
+                        });
                     }
                     None => {
                         execution_context.add_diagnostic_if_enabled(

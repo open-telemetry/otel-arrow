@@ -16,9 +16,9 @@ use crate::testing::dst::common::{
     setup_dst_runtime, yield_cycles,
 };
 use crate::testing::test_nodes;
-use otap_df_channel::mpsc;
-use otap_df_config::policy::TelemetryPolicy;
-use otap_df_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_channel::mpsc;
+use otel_arrow_dfe_config::policy::TelemetryPolicy;
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -186,11 +186,11 @@ async fn run_backpressure_interblock_seed(seed: u64) {
                                 Ok(()) => {
                                     let _ = receiver_state.borrow_mut().admitted.insert(msg_id);
                                 }
-                                Err(otap_df_channel::error::SendError::Full(pdata)) => {
+                                Err(otel_arrow_dfe_channel::error::SendError::Full(pdata)) => {
                                     receiver_state.borrow_mut().receiver_blocked_count += 1;
                                     pending = Some(pdata);
                                 }
-                                Err(otap_df_channel::error::SendError::Closed(_)) => break,
+                                Err(otel_arrow_dfe_channel::error::SendError::Closed(_)) => break,
                             }
                         }
                     }

@@ -25,12 +25,12 @@ impl AppState {
                 reason: "Scaling in the TUI requires an explicit pipeline resources.core_allocation policy.".to_string(),
             });
         };
-        match &resources.core_allocation {
-            CoreAllocation {
+        match resources.core_allocation.as_ref() {
+            Some(CoreAllocation {
                 strategy: CoreAllocationStrategy::CoreCount,
                 count: Some(count),
                 ..
-            } => {
+            }) => {
                 if *count > 0 {
                     Some(PipelineScaleSupport::Supported {
                         current_cores: *count,
@@ -43,30 +43,33 @@ impl AppState {
                     })
                 }
             }
-            CoreAllocation {
+            Some(CoreAllocation {
                 strategy: CoreAllocationStrategy::AllCores,
                 ..
-            } => Some(PipelineScaleSupport::Unsupported {
+            }) => Some(PipelineScaleSupport::Unsupported {
                 reason:
                     "Scaling in the TUI is disabled for all_cores allocations. Use a full reconfigure instead."
                         .to_string(),
             }),
-            CoreAllocation {
+            Some(CoreAllocation {
                 strategy: CoreAllocationStrategy::CoreSet,
                 ..
-            } => Some(PipelineScaleSupport::Unsupported {
+            }) => Some(PipelineScaleSupport::Unsupported {
                 reason:
                     "Scaling in the TUI is disabled for core_set allocations. Use a full reconfigure instead."
                         .to_string(),
             }),
-            CoreAllocation {
+            Some(CoreAllocation {
                 strategy: CoreAllocationStrategy::CoreCount,
                 count: None,
                 ..
-            } => Some(PipelineScaleSupport::Unsupported {
+            }) => Some(PipelineScaleSupport::Unsupported {
                 reason:
                     "Scaling in the TUI is disabled because the pipeline resources.core_allocation policy is invalid."
                         .to_string(),
+            }),
+            None => Some(PipelineScaleSupport::Unsupported {
+                reason: "Scaling in the TUI requires an explicit pipeline resources.core_allocation policy.".to_string(),
             }),
         }
     }

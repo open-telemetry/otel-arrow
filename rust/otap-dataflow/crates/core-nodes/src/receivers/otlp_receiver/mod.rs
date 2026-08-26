@@ -17,37 +17,44 @@
 //! Periodic telemetry snapshots partition request lifecycle, rejection, acknowledgement, and
 //! transport counters by bounded signal, protocol, outcome, and error-type attributes.
 
-use otap_df_otap::OTAP_RECEIVER_FACTORIES;
-use otap_df_otap::otap_grpc::otlp::server_new::{
+otel_arrow_dfe_telemetry::otel_component_scope!(
+    urn = OTLP_RECEIVER_URN,
+    target = "otel.receiver.otlp",
+);
+
+use otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES;
+use otel_arrow_dfe_otap::otap_grpc::otlp::server_new::{
     LogsServiceServer, MetricsServiceServer, OtlpServerSettings, RouteResponse, TraceServiceServer,
 };
-use otap_df_otap::pdata::OtapPdata;
-use otap_df_otap::tls_utils::{build_tls_acceptor, create_tls_stream};
+use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_otap::tls_utils::{build_tls_acceptor, create_tls_stream};
 #[cfg(test)]
-use otap_df_pdata::TryIntoWithOptions;
+use otel_arrow_dfe_pdata::TryIntoWithOptions;
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::ReceiverFactory;
-use otap_df_engine::clock;
-use otap_df_engine::config::ReceiverConfig;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
-use otap_df_engine::error::{Error, ReceiverErrorKind, format_error_sources};
-use otap_df_engine::memory_limiter::SharedReceiverAdmissionState;
-use otap_df_engine::node::NodeId;
-use otap_df_engine::receiver::ReceiverWrapper;
-use otap_df_engine::shared::receiver as shared;
-use otap_df_engine::terminal_state::TerminalState;
-use otap_df_otap::memory_pressure_layer::MemoryPressureLayer;
-use otap_df_otap::otap_grpc::common;
-use otap_df_otap::otap_grpc::common::AckRegistry;
-use otap_df_otap::otap_grpc::server_settings::GrpcServerSettings;
-use otap_df_otap::otlp_http::HttpServerSettings;
-use otap_df_otap::otlp_metrics::{OtlpProtocol, OtlpReceiverMetrics};
-use otap_df_otap::shared_concurrency::SharedConcurrencyLayer;
-use otap_df_telemetry::common_attributes::Outcome;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_engine::ReceiverFactory;
+use otel_arrow_dfe_engine::admission::{AdmissionDimension, SharedAdmissionGate};
+use otel_arrow_dfe_engine::clock;
+use otel_arrow_dfe_engine::config::ReceiverConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
+use otel_arrow_dfe_engine::error::{Error, ReceiverErrorKind, format_error_sources};
+use otel_arrow_dfe_engine::memory_limiter::SharedReceiverAdmissionState;
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
+use otel_arrow_dfe_engine::shared::receiver as shared;
+use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_otap::memory_pressure_layer::MemoryPressureLayer;
+use otel_arrow_dfe_otap::otap_grpc::common;
+use otel_arrow_dfe_otap::otap_grpc::common::AckRegistry;
+use otel_arrow_dfe_otap::otap_grpc::server_settings::GrpcServerSettings;
+use otel_arrow_dfe_otap::otlp_http::HttpServerSettings;
+use otel_arrow_dfe_otap::otlp_metrics::{OtlpProtocol, OtlpReceiverMetrics};
+use otel_arrow_dfe_otap::rate_limit_layer::RateLimitLayer;
+use otel_arrow_dfe_otap::shared_concurrency::SharedConcurrencyLayer;
+use otel_arrow_dfe_telemetry::common_attributes::Outcome;
 use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_json::Value;
@@ -184,6 +191,7 @@ pub struct OTLPReceiver {
     // Arc<Mutex<...>> so we can share metrics with the gRPC services which are `Send` due to
     // tonic requirements.
     metrics: Arc<Mutex<OtlpReceiverMetrics>>,
+    rate_limiter: Option<SharedAdmissionGate>,
     admission_state: SharedReceiverAdmissionState,
     // Global concurrency cap derived from downstream capacity. When both gRPC and HTTP are
     // enabled, this prevents combined ingress from exceeding what the pipeline can absorb.
@@ -192,26 +200,36 @@ pub struct OTLPReceiver {
 
 /// Declares the OTLP receiver as a shared receiver factory.
 #[allow(unsafe_code)]
+#[otel_arrow_dfe_engine::component_inventory(category = Receiver)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static OTLP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: OTLP_RECEIVER_URN,
-    create: |pipeline: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             receiver_config: &ReceiverConfig,
-             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
-        let mut receiver = OTLPReceiver::from_config(pipeline, &node_config.config)?;
-        receiver.tune_max_concurrent_requests(receiver_config.output_pdata_channel.capacity);
+    create:
+        |pipeline: PipelineContext,
+         node: NodeId,
+         node_config: Arc<NodeUserConfig>,
+         receiver_config: &ReceiverConfig,
+         _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
+            let admission = pipeline.admission().clone();
+            let mut receiver = OTLPReceiver::from_config(pipeline, &node_config.config)?;
+            receiver.rate_limiter = admission
+                .bind_shared(AdmissionDimension::Bytes, receiver.admission_state.clone())
+                .map_err(
+                    |error| otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                        error: error.to_string(),
+                    },
+                )?;
+            receiver.tune_max_concurrent_requests(receiver_config.output_pdata_channel.capacity);
 
-        Ok(ReceiverWrapper::shared(
-            receiver,
-            node,
-            node_config,
-            receiver_config,
-        ))
-    },
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    validate_config: otap_df_config::validation::validate_typed_config::<Config>,
+            Ok(ReceiverWrapper::shared(
+                receiver,
+                node,
+                node_config,
+                receiver_config,
+            ))
+        },
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<Config>,
 };
 
 impl OTLPReceiver {
@@ -223,16 +241,16 @@ impl OTLPReceiver {
     pub fn from_config(
         pipeline_ctx: PipelineContext,
         config: &Value,
-    ) -> Result<Self, otap_df_config::error::Error> {
+    ) -> Result<Self, otel_arrow_dfe_config::error::Error> {
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
-            otap_df_config::error::Error::InvalidUserConfig {
+            otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
             }
         })?;
 
         // Validate that at least one protocol is configured.
         if !config.protocols.is_valid() {
-            return Err(otap_df_config::error::Error::InvalidUserConfig {
+            return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: "At least one protocol (grpc or http) must be configured under 'protocols'"
                     .to_string(),
             });
@@ -248,7 +266,7 @@ impl OTLPReceiver {
                 let g_ip = grpc.listening_addr.ip();
                 let h_ip = http.listening_addr.ip();
                 if g_ip.is_unspecified() || h_ip.is_unspecified() || g_ip == h_ip {
-                    return Err(otap_df_config::error::Error::InvalidUserConfig {
+                    return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                         error: format!(
                             "gRPC and HTTP protocols have conflicting listening addresses ({} and {})",
                             grpc.listening_addr, http.listening_addr
@@ -267,6 +285,7 @@ impl OTLPReceiver {
             admission_state: SharedReceiverAdmissionState::from_process_state(
                 &pipeline_ctx.memory_pressure_state(),
             ),
+            rate_limiter: None,
             global_max_concurrent_requests: None,
         })
     }
@@ -281,7 +300,7 @@ impl OTLPReceiver {
             common::tune_max_concurrent_requests(grpc, downstream_capacity);
         }
         if let Some(http) = self.config.protocols.http.as_mut() {
-            otap_df_otap::otlp_http::tune_max_concurrent_requests(http, downstream_capacity);
+            otel_arrow_dfe_otap::otlp_http::tune_max_concurrent_requests(http, downstream_capacity);
         }
     }
 
@@ -320,13 +339,13 @@ impl OTLPReceiver {
         };
 
         let logs_slot = wait_for_result_any.then(|| {
-            otap_df_otap::otap_grpc::otlp::server_new::AckSlot::new(shared_ack_slot_capacity)
+            otel_arrow_dfe_otap::otap_grpc::otlp::server_new::AckSlot::new(shared_ack_slot_capacity)
         });
         let metrics_slot = wait_for_result_any.then(|| {
-            otap_df_otap::otap_grpc::otlp::server_new::AckSlot::new(shared_ack_slot_capacity)
+            otel_arrow_dfe_otap::otap_grpc::otlp::server_new::AckSlot::new(shared_ack_slot_capacity)
         });
         let traces_slot = wait_for_result_any.then(|| {
-            otap_df_otap::otap_grpc::otlp::server_new::AckSlot::new(shared_ack_slot_capacity)
+            otel_arrow_dfe_otap::otap_grpc::otlp::server_new::AckSlot::new(shared_ack_slot_capacity)
         });
 
         // Build gRPC service servers only if gRPC is enabled.
@@ -336,18 +355,21 @@ impl OTLPReceiver {
                     effect_handler.clone(),
                     settings,
                     self.metrics.clone(),
+                    self.rate_limiter.clone(),
                     grpc_wait.then(|| logs_slot.clone()).flatten(),
                 )),
                 Some(MetricsServiceServer::new(
                     effect_handler.clone(),
                     settings,
                     self.metrics.clone(),
+                    self.rate_limiter.clone(),
                     grpc_wait.then(|| metrics_slot.clone()).flatten(),
                 )),
                 Some(TraceServiceServer::new(
                     effect_handler.clone(),
                     settings,
                     self.metrics.clone(),
+                    self.rate_limiter.clone(),
                     grpc_wait.then(|| traces_slot.clone()).flatten(),
                 )),
             )
@@ -444,14 +466,14 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
         let both_enabled = self.config.protocols.has_both();
 
         if let Some(grpc) = &self.config.protocols.grpc {
-            otap_df_telemetry::otel_info!(
+            otel_info!(
                 "otlp.receiver.grpc.start",
                 message = "Starting OTLP gRPC receiver",
                 endpoint = %grpc.listening_addr
             );
         }
         if let Some(http) = &self.config.protocols.http {
-            otap_df_telemetry::otel_info!(
+            otel_info!(
                 "otlp.receiver.http.start",
                 message = "Starting OTLP HTTP receiver",
                 endpoint = %http.listening_addr
@@ -542,6 +564,10 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                             self.admission_state.clone(),
                             self.metrics.clone(),
                         ))
+                        .layer(RateLimitLayer::new(
+                            self.rate_limiter.clone(),
+                            self.metrics.clone(),
+                        ))
                         .layer(GlobalConcurrencyLimitLayer::new(grpc_max))
                         .layer(SharedConcurrencyLayer::new(global)),
                 )
@@ -550,6 +576,10 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                     ServiceBuilder::new()
                         .layer(MemoryPressureLayer::with_otlp_metrics(
                             self.admission_state.clone(),
+                            self.metrics.clone(),
+                        ))
+                        .layer(RateLimitLayer::new(
+                            self.rate_limiter.clone(),
                             self.metrics.clone(),
                         ))
                         .layer(GlobalConcurrencyLimitLayer::new(grpc_max)),
@@ -606,12 +636,13 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
         let http_shutdown = CancellationToken::new();
         let http_task: Option<HttpServerTask> =
             if let Some(http_config) = self.config.protocols.http.clone() {
-                Some(Box::pin(otap_df_otap::otlp_http::serve(
+                Some(Box::pin(otel_arrow_dfe_otap::otlp_http::serve(
                     effect_handler.clone(),
                     http_config,
                     ack_registry.clone(),
                     self.metrics.clone(),
                     self.admission_state.clone(),
+                    self.rate_limiter.clone(),
                     global_semaphore.clone(),
                     http_shutdown.clone(),
                 )))
@@ -716,7 +747,7 @@ impl OTLPReceiver {
                             match msg {
                                 NodeControlMsg::DrainIngress { deadline, reason } => {
                                     if draining_deadline.is_none() {
-                                        otap_df_telemetry::otel_info!("otlp.receiver.drain_ingress");
+                                        otel_info!("otlp.receiver.drain_ingress");
                                         // Latch the first drain request and close both
                                         // protocol listeners. We intentionally defer
                                         // ReceiverDrained until in-flight wait_for_result
@@ -729,7 +760,7 @@ impl OTLPReceiver {
                                     }
                                 }
                                 NodeControlMsg::Shutdown { deadline, reason } => {
-                                    otap_df_telemetry::otel_info!("otlp.receiver.shutdown");
+                                    otel_info!("otlp.receiver.shutdown");
                                     grpc_shutdown.cancel();
                                     http_shutdown.cancel();
                                     ack_registry.force_shutdown(&reason);
@@ -827,56 +858,73 @@ impl OTLPReceiver {
 mod tests {
     use super::*;
 
-    use otap_df_channel::error::RecvError;
-    use otap_df_config::node::NodeUserConfig;
-    use otap_df_config::transport_headers_policy::{
+    use otel_arrow_dfe_channel::error::RecvError;
+    use otel_arrow_dfe_config::SignalType;
+    use otel_arrow_dfe_config::node::NodeUserConfig;
+    use otel_arrow_dfe_config::policy::{
+        MemoryLimiterMode, RateLimitAggregation, RateLimitEnforcement, RateLimitPressure,
+        RateLimitUnit, RateLimiterPolicy, TokenBucketPolicy,
+    };
+    use otel_arrow_dfe_config::transport_headers_policy::{
         CaptureDefaults, CaptureRule, HeaderCapturePolicy,
     };
-    use otap_df_engine::Interests;
-    use otap_df_engine::MessageSourceSharedEffectHandlerExtension;
-    use otap_df_engine::ProducerEffectHandlerExtension;
-    use otap_df_engine::clock;
-    use otap_df_engine::context::ControllerContext;
-    use otap_df_engine::control::NackMsg;
-    use otap_df_engine::control::{
+    use otel_arrow_dfe_engine::Interests;
+    use otel_arrow_dfe_engine::MessageSourceSharedEffectHandlerExtension;
+    use otel_arrow_dfe_engine::ProducerEffectHandlerExtension;
+    use otel_arrow_dfe_engine::admission::{AdmissionBinder, AdmissionContext, AdmissionDecision};
+    use otel_arrow_dfe_engine::clock;
+    use otel_arrow_dfe_engine::context::ControllerContext;
+    use otel_arrow_dfe_engine::control::NackMsg;
+    use otel_arrow_dfe_engine::control::{
         AckMsg, NodeControlMsg, RuntimeControlMsg, runtime_ctrl_msg_channel,
     };
-    use otap_df_engine::receiver::ReceiverWrapper;
-    use otap_df_engine::shared::message::{SharedReceiver, SharedSender};
-    use otap_df_engine::shared::receiver as shared_receiver;
-    use otap_df_engine::testing::{
+    use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
+    use otel_arrow_dfe_engine::shared::message::{SharedReceiver, SharedSender};
+    use otel_arrow_dfe_engine::shared::receiver as shared_receiver;
+    use otel_arrow_dfe_engine::testing::{
         dst::{SimClock, dst_seeds},
         receiver::{NotSendValidateContext, TestContext, TestRuntime},
         test_node,
     };
-    use otap_df_otap::compression::CompressionMethod;
-    use otap_df_otap::otap_grpc::otlp::server_new::AckSlot;
-    use otap_df_otap::otlp_http::RpcStatus;
-    use otap_df_otap::testing::{next_ack, next_nack};
-    use otap_df_pdata::OtlpProtoBytes;
-    use otap_df_pdata::proto::opentelemetry::collector::logs::v1::logs_service_client::LogsServiceClient;
-    use otap_df_pdata::proto::opentelemetry::collector::logs::v1::{
+    use otel_arrow_dfe_otap::compression::CompressionMethod;
+    use otel_arrow_dfe_otap::otap_grpc::otlp::server_new::AckSlot;
+    use otel_arrow_dfe_otap::otlp_http::RpcStatus;
+    use otel_arrow_dfe_otap::testing::{next_ack, next_nack};
+    use otel_arrow_dfe_pdata::OtlpProtoBytes;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::logs_service_client::LogsServiceClient;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::{
         ExportLogsServiceRequest, ExportLogsServiceResponse,
     };
-    use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::metrics_service_client::MetricsServiceClient;
-    use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::{
+    use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::metrics_service_client::MetricsServiceClient;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::{
         ExportMetricsServiceRequest, ExportMetricsServiceResponse,
     };
-    use otap_df_pdata::proto::opentelemetry::collector::trace::v1::trace_service_client::TraceServiceClient;
-    use otap_df_pdata::proto::opentelemetry::collector::trace::v1::{
+    use otel_arrow_dfe_pdata::proto::opentelemetry::collector::trace::v1::trace_service_client::TraceServiceClient;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::collector::trace::v1::{
         ExportTraceServiceRequest, ExportTraceServiceResponse,
     };
-    use otap_df_pdata::proto::opentelemetry::common::v1::{InstrumentationScope, KeyValue};
-    use otap_df_pdata::proto::opentelemetry::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
-    use otap_df_pdata::proto::opentelemetry::metrics::v1::{ResourceMetrics, ScopeMetrics};
-    use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
-    use otap_df_pdata::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans};
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{InstrumentationScope, KeyValue};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{ResourceMetrics, ScopeMetrics};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans};
+    use otel_arrow_dfe_telemetry::common_attributes::ReceiverRejectionErrorType;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use prost::Message;
     use std::collections::HashMap;
     use std::net::SocketAddr;
     use std::pin::Pin;
     use std::time::{Duration, Instant};
+
+    fn shared_rate_gate(
+        policy: RateLimiterPolicy,
+        admission_state: SharedReceiverAdmissionState,
+    ) -> SharedAdmissionGate {
+        AdmissionBinder::configured("test", policy)
+            .bind_shared(AdmissionDimension::Bytes, admission_state)
+            .expect("bind test admission")
+            .expect("configured test admission")
+    }
     use tokio::time::timeout;
 
     use bytes::Bytes;
@@ -884,7 +932,7 @@ mod tests {
     use http_body_util::Full;
     use hyper::Method;
     use hyper::client::conn::http1;
-    use hyper::header::{CONTENT_ENCODING, CONTENT_TYPE, HOST};
+    use hyper::header::{CONTENT_ENCODING, CONTENT_TYPE, HOST, RETRY_AFTER};
     use hyper_util::rt::TokioIo;
     use tokio::net::TcpStream;
 
@@ -954,6 +1002,32 @@ mod tests {
         body: Vec<u8>,
     ) -> Result<(http::StatusCode, Bytes), Box<dyn std::error::Error + Send + Sync>> {
         post_otlp_http_with_encoding(addr, path, body, None).await
+    }
+
+    async fn post_otlp_http_response(
+        addr: SocketAddr,
+        path: &'static str,
+        body: Vec<u8>,
+    ) -> Result<(http::StatusCode, http::HeaderMap, Bytes), Box<dyn std::error::Error + Send + Sync>>
+    {
+        let stream = TcpStream::connect(addr).await?;
+        let (mut sender, conn) = http1::handshake(TokioIo::new(stream)).await?;
+        _ = tokio::spawn(async move {
+            let _ = conn.await;
+        });
+
+        let req = http::Request::builder()
+            .method(Method::POST)
+            .uri(path)
+            .header(HOST, "localhost")
+            .header(CONTENT_TYPE, "application/x-protobuf")
+            .body(Full::new(Bytes::from(body)))?;
+
+        let resp = sender.send_request(req).await?;
+        let status = resp.status();
+        let headers = resp.headers().clone();
+        let body = resp.into_body().collect().await?.to_bytes();
+        Ok((status, headers, body))
     }
 
     async fn send_http_request(
@@ -1036,7 +1110,7 @@ mod tests {
     async fn run_wait_for_result_dst_seed(seed: u64) {
         let sim_clock = SimClock::new();
         let _clock_guard = sim_clock.install();
-        let (rt, local_tasks) = otap_df_engine::testing::setup_test_runtime();
+        let (rt, local_tasks) = otel_arrow_dfe_engine::testing::setup_test_runtime();
 
         rt.block_on(local_tasks.run_until(async move {
             let scenario = seed % 4;
@@ -1054,12 +1128,13 @@ mod tests {
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
                 ),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
             };
             receiver.tune_max_concurrent_requests(16);
 
             let (runtime_ctrl_tx, mut runtime_ctrl_rx) = runtime_ctrl_msg_channel(16);
-            let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
+            let metrics_system = otel_arrow_dfe_telemetry::InternalTelemetrySystem::default();
             let metrics_reporter = metrics_system.reporter();
 
             let (output_tx, mut output_rx) = tokio::sync::mpsc::channel(16);
@@ -1851,7 +1926,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let grpc_addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
 
@@ -1867,6 +1942,7 @@ mod tests {
             OTLPReceiver {
                 config: test_config(addr),
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -1888,10 +1964,10 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let grpc_addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
 
-        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{grpc_addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -1913,6 +1989,7 @@ mod tests {
             OTLPReceiver {
                 config,
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -1987,7 +2064,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -2004,6 +2081,7 @@ mod tests {
             OTLPReceiver {
                 config,
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -2076,10 +2154,10 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
 
-        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -2102,6 +2180,7 @@ mod tests {
             OTLPReceiver {
                 config,
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -2128,7 +2207,10 @@ mod tests {
             }) as Pin<Box<dyn Future<Output = ()>>>
         };
 
-        _ = test_runtime.set_receiver(receiver).run_test(scenario);
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario)
+            .run_validation(|_| async {});
     }
 
     #[test]
@@ -2136,10 +2218,10 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
 
-        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -2163,6 +2245,7 @@ mod tests {
             OTLPReceiver {
                 config,
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -2198,7 +2281,10 @@ mod tests {
             }) as Pin<Box<dyn Future<Output = ()>>>
         };
 
-        _ = test_runtime.set_receiver(receiver).run_test(scenario);
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario)
+            .run_validation(|_| async {});
     }
 
     #[test]
@@ -2206,10 +2292,10 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
 
-        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -2233,6 +2319,7 @@ mod tests {
             OTLPReceiver {
                 config,
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -2295,10 +2382,10 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
 
-        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -2322,6 +2409,7 @@ mod tests {
             OTLPReceiver {
                 config,
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -2350,7 +2438,10 @@ mod tests {
             }) as Pin<Box<dyn Future<Output = ()>>>
         };
 
-        _ = test_runtime.set_receiver(receiver).run_test(scenario);
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario)
+            .run_validation(|_| async {});
     }
 
     #[test]
@@ -2358,10 +2449,10 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
 
-        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -2385,6 +2476,7 @@ mod tests {
             OTLPReceiver {
                 config,
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -2413,7 +2505,10 @@ mod tests {
             }) as Pin<Box<dyn Future<Output = ()>>>
         };
 
-        _ = test_runtime.set_receiver(receiver).run_test(scenario);
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario)
+            .run_validation(|_| async {});
     }
 
     #[test]
@@ -2421,10 +2516,10 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
 
-        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -2447,6 +2542,7 @@ mod tests {
             OTLPReceiver {
                 config,
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -2531,7 +2627,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let grpc_addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let grpc_listen: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
 
@@ -2549,6 +2645,7 @@ mod tests {
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
                 ),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
             },
             test_node(test_runtime.config().name.clone()),
@@ -2614,7 +2711,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -2631,6 +2728,7 @@ mod tests {
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
                 ),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
             },
             test_node(test_runtime.config().name.clone()),
@@ -2698,10 +2796,10 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
 
-        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -2725,6 +2823,7 @@ mod tests {
             OTLPReceiver {
                 config,
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -2777,10 +2876,10 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
 
-        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -2804,6 +2903,7 @@ mod tests {
             OTLPReceiver {
                 config,
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -2832,7 +2932,10 @@ mod tests {
             }) as Pin<Box<dyn Future<Output = ()>>>
         };
 
-        _ = test_runtime.set_receiver(receiver).run_test(scenario);
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario)
+            .run_validation(|_| async {});
     }
 
     #[test]
@@ -2840,10 +2943,10 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
 
-        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -2867,6 +2970,7 @@ mod tests {
             OTLPReceiver {
                 config,
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -2908,7 +3012,10 @@ mod tests {
             }) as Pin<Box<dyn Future<Output = ()>>>
         };
 
-        _ = test_runtime.set_receiver(receiver).run_test(scenario);
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario)
+            .run_validation(|_| async {});
     }
 
     #[test]
@@ -2916,7 +3023,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let grpc_addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
 
@@ -2931,6 +3038,7 @@ mod tests {
             OTLPReceiver {
                 config: test_config(addr),
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -2986,15 +3094,519 @@ mod tests {
             .run_validation_concurrent(nack_validation);
     }
 
+    fn run_otlp_grpc_rate_limit_rejection_test(oversized: bool) {
+        let test_runtime = TestRuntime::new();
+
+        let grpc_addr = "127.0.0.1";
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
+        let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
+        let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let memory_pressure_state = pipeline_ctx.memory_pressure_state();
+        memory_pressure_state
+            .set_level_for_tests(otel_arrow_dfe_engine::memory_limiter::MemoryPressureLevel::Soft);
+        memory_pressure_state.configure(
+            otel_arrow_dfe_engine::memory_limiter::MemoryPressureBehaviorConfig {
+                retry_after_secs: 7,
+                fail_readiness_on_hard: true,
+                mode: MemoryLimiterMode::Enforce,
+            },
+        );
+        let admission_state =
+            SharedReceiverAdmissionState::from_process_state(&memory_pressure_state);
+        let request_weight = create_logs_service_request().encoded_len() as u64;
+        assert!(request_weight > 1);
+        let burst = if oversized {
+            request_weight - 1
+        } else {
+            request_weight
+        };
+        let rate_limiter = shared_rate_gate(
+            RateLimiterPolicy {
+                enforcement: RateLimitEnforcement::Enforce,
+                aggregation: RateLimitAggregation::ReceiverInstance,
+                unit: RateLimitUnit::RequestBytes,
+                pressure: RateLimitPressure::Soft,
+                token_bucket: TokenBucketPolicy {
+                    allow: request_weight,
+                    interval: Duration::from_secs(1),
+                    burst: Some(burst),
+                },
+            },
+            admission_state.clone(),
+        );
+        if !oversized {
+            assert_eq!(
+                rate_limiter.admit(request_weight, AdmissionContext::EMPTY),
+                AdmissionDecision::Admit
+            );
+        }
+
+        let metrics = Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx)));
+        let scenario_metrics = metrics.clone();
+
+        let receiver = ReceiverWrapper::shared(
+            OTLPReceiver {
+                config: test_config(addr),
+                metrics,
+                rate_limiter: Some(rate_limiter),
+                global_max_concurrent_requests: None,
+                admission_state,
+            },
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let scenario = move |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                let mut logs_client = LogsServiceClient::connect(grpc_endpoint.clone())
+                    .await
+                    .expect("Failed to connect to server");
+
+                let status = logs_client
+                    .export(create_logs_service_request())
+                    .await
+                    .expect_err("rate limit should reject request");
+
+                assert_eq!(status.code(), tonic::Code::ResourceExhausted);
+                let (expected_message, expected_pushback) = if oversized {
+                    ("request exceeds rate limit burst", Some("-1"))
+                } else {
+                    ("rate limit", None)
+                };
+                assert_eq!(status.message(), expected_message);
+                assert_eq!(
+                    status
+                        .metadata()
+                        .get("grpc-retry-pushback-ms")
+                        .and_then(|value| value.to_str().ok()),
+                    expected_pushback
+                );
+
+                {
+                    let metrics = scenario_metrics.lock();
+                    assert_eq!(
+                        metrics
+                            .rejections_for(
+                                OtlpProtocol::Grpc,
+                                ReceiverRejectionErrorType::RateLimit,
+                            )
+                            .requests
+                            .get(),
+                        1
+                    );
+                    assert_eq!(
+                        metrics
+                            .requests_for(SignalType::Logs, OtlpProtocol::Grpc)
+                            .started
+                            .get(),
+                        0
+                    );
+                }
+
+                ctx.send_shutdown(Instant::now(), "Test complete")
+                    .await
+                    .expect("Failed to send shutdown");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario)
+            .run_validation(|mut ctx| async move {
+                assert!(matches!(ctx.recv().await, Err(RecvError::Closed)));
+            });
+    }
+
+    fn run_otlp_grpc_under_capacity_rate_limit_test(enforcement: RateLimitEnforcement) {
+        let test_runtime = TestRuntime::new();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
+        let grpc_endpoint = format!("http://127.0.0.1:{grpc_port}");
+        let grpc_listen: SocketAddr = format!("127.0.0.1:{grpc_port}").parse().unwrap();
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let memory_pressure_state = pipeline_ctx.memory_pressure_state();
+        memory_pressure_state
+            .set_level_for_tests(otel_arrow_dfe_engine::memory_limiter::MemoryPressureLevel::Soft);
+        let admission_state =
+            SharedReceiverAdmissionState::from_process_state(&memory_pressure_state);
+
+        let request = create_logs_service_request();
+        let request_weight = request.encoded_len() as u64;
+        let rate_limiter = shared_rate_gate(
+            RateLimiterPolicy {
+                enforcement,
+                aggregation: RateLimitAggregation::ReceiverInstance,
+                unit: RateLimitUnit::RequestBytes,
+                pressure: RateLimitPressure::Soft,
+                token_bucket: TokenBucketPolicy {
+                    allow: request_weight * 2,
+                    interval: Duration::from_secs(1),
+                    burst: Some(request_weight * 2),
+                },
+            },
+            admission_state.clone(),
+        );
+        let metrics = Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx)));
+        let scenario_metrics = metrics.clone();
+
+        let mut config = test_config(grpc_listen);
+        config
+            .protocols
+            .grpc
+            .as_mut()
+            .expect("gRPC should be configured")
+            .wait_for_result = false;
+        let receiver = ReceiverWrapper::shared(
+            OTLPReceiver {
+                config,
+                metrics,
+                rate_limiter: Some(rate_limiter),
+                global_max_concurrent_requests: None,
+                admission_state,
+            },
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let scenario = move |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                let mut logs_client = LogsServiceClient::connect(grpc_endpoint)
+                    .await
+                    .expect("Failed to connect to server");
+                let response = logs_client
+                    .export(create_logs_service_request())
+                    .await
+                    .expect("under-capacity request should be admitted")
+                    .into_inner();
+                assert_eq!(response, ExportLogsServiceResponse::default());
+
+                {
+                    let metrics = scenario_metrics.lock();
+                    let requests = metrics.requests_for(SignalType::Logs, OtlpProtocol::Grpc);
+                    assert_eq!(requests.started.get(), 1);
+                    assert_eq!(requests.payload_size.get(), request_weight);
+                    assert_eq!(
+                        metrics
+                            .rejections_for(
+                                OtlpProtocol::Grpc,
+                                ReceiverRejectionErrorType::RateLimit,
+                            )
+                            .requests
+                            .get(),
+                        0
+                    );
+                }
+
+                ctx.send_shutdown(Instant::now(), "Test complete")
+                    .await
+                    .expect("Failed to send shutdown");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        let validation = move |mut ctx: NotSendValidateContext<OtapPdata>| {
+            Box::pin(async move {
+                let pdata = timeout(Duration::from_secs(3), ctx.recv())
+                    .await
+                    .expect("Timed out waiting for admitted gRPC request")
+                    .expect("No admitted gRPC request received");
+                let proto: OtlpProtoBytes = pdata
+                    .payload()
+                    .try_into_with_default()
+                    .expect("can convert to OTLP bytes");
+                let mut expected = Vec::new();
+                request.encode(&mut expected).unwrap();
+                assert_eq!(proto.as_bytes(), expected.as_slice());
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario)
+            .run_validation(validation);
+    }
+
+    /// Scenario: an enforcing gRPC limiter has capacity while soft pressure is active.
+    /// Guarantees: the request follows the normal response, forwarding, and metrics path.
+    #[test]
+    fn test_otlp_grpc_enforce_under_capacity_is_transparent() {
+        run_otlp_grpc_under_capacity_rate_limit_test(RateLimitEnforcement::Enforce);
+    }
+
+    /// Scenario: an observe-only gRPC limiter has capacity while soft pressure is active.
+    /// Guarantees: the request follows the normal response, forwarding, and metrics path.
+    #[test]
+    fn test_otlp_grpc_observe_only_under_capacity_is_transparent() {
+        run_otlp_grpc_under_capacity_rate_limit_test(RateLimitEnforcement::ObserveOnly);
+    }
+
+    /// Scenario: an OTLP gRPC request reaches a saturated bucket before its weight is known.
+    /// Guarantees: the client receives a generic resource-exhausted response without
+    /// request-specific pushback, and the request is not admitted.
+    #[test]
+    fn test_otlp_grpc_transient_rate_limit_rejection() {
+        run_otlp_grpc_rate_limit_rejection_test(false);
+    }
+
+    /// Scenario: an OTLP gRPC request is larger than the configured burst.
+    /// Guarantees: the client receives non-retryable pushback and the request is not admitted.
+    #[test]
+    fn test_otlp_grpc_oversized_rate_limit_rejection() {
+        run_otlp_grpc_rate_limit_rejection_test(true);
+    }
+
+    fn run_otlp_http_under_capacity_rate_limit_test(enforcement: RateLimitEnforcement) {
+        let test_runtime = TestRuntime::new();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
+        let http_listen: SocketAddr = format!("127.0.0.1:{http_port}").parse().unwrap();
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let memory_pressure_state = pipeline_ctx.memory_pressure_state();
+        memory_pressure_state
+            .set_level_for_tests(otel_arrow_dfe_engine::memory_limiter::MemoryPressureLevel::Soft);
+        let admission_state =
+            SharedReceiverAdmissionState::from_process_state(&memory_pressure_state);
+
+        let request = create_logs_service_request();
+        let mut request_bytes = Vec::new();
+        request.encode(&mut request_bytes).unwrap();
+        let expected_request_bytes = request_bytes.clone();
+        let request_weight = request_bytes.len() as u64;
+        let rate_limiter = shared_rate_gate(
+            RateLimiterPolicy {
+                enforcement,
+                aggregation: RateLimitAggregation::ReceiverInstance,
+                unit: RateLimitUnit::RequestBytes,
+                pressure: RateLimitPressure::Soft,
+                token_bucket: TokenBucketPolicy {
+                    allow: request_weight * 2,
+                    interval: Duration::from_secs(1),
+                    burst: Some(request_weight * 2),
+                },
+            },
+            admission_state.clone(),
+        );
+        let metrics = Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx)));
+        let scenario_metrics = metrics.clone();
+
+        let mut config = test_config_http_only(http_listen);
+        config
+            .protocols
+            .http
+            .as_mut()
+            .expect("HTTP should be configured")
+            .wait_for_result = false;
+        let receiver = ReceiverWrapper::shared(
+            OTLPReceiver {
+                config,
+                metrics,
+                rate_limiter: Some(rate_limiter),
+                global_max_concurrent_requests: None,
+                admission_state,
+            },
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let scenario = move |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                let (status, body) = post_otlp_http(http_listen, "/v1/logs", request_bytes.clone())
+                    .await
+                    .expect("HTTP request should succeed");
+                assert_eq!(status, http::StatusCode::OK);
+                let mut expected_body = Vec::new();
+                ExportLogsServiceResponse::default()
+                    .encode(&mut expected_body)
+                    .unwrap();
+                assert_eq!(body.as_ref(), expected_body.as_slice());
+
+                {
+                    let metrics = scenario_metrics.lock();
+                    let requests = metrics.requests_for(SignalType::Logs, OtlpProtocol::Http);
+                    assert_eq!(requests.started.get(), 1);
+                    assert_eq!(requests.payload_size.get(), request_weight);
+                    assert_eq!(
+                        metrics
+                            .rejections_for(
+                                OtlpProtocol::Http,
+                                ReceiverRejectionErrorType::RateLimit,
+                            )
+                            .requests
+                            .get(),
+                        0
+                    );
+                }
+
+                ctx.send_shutdown(Instant::now(), "Test complete")
+                    .await
+                    .expect("Failed to send shutdown");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        let validation = move |mut ctx: NotSendValidateContext<OtapPdata>| {
+            Box::pin(async move {
+                let pdata = timeout(Duration::from_secs(3), ctx.recv())
+                    .await
+                    .expect("Timed out waiting for admitted HTTP request")
+                    .expect("No admitted HTTP request received");
+                let proto: OtlpProtoBytes = pdata
+                    .payload()
+                    .try_into_with_default()
+                    .expect("can convert to OTLP bytes");
+                assert_eq!(proto.as_bytes(), expected_request_bytes.as_slice());
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario)
+            .run_validation(validation);
+    }
+
+    /// Scenario: an enforcing HTTP limiter has capacity while soft pressure is active.
+    /// Guarantees: the request follows the normal response, forwarding, and metrics path.
+    #[test]
+    fn test_otlp_http_enforce_under_capacity_is_transparent() {
+        run_otlp_http_under_capacity_rate_limit_test(RateLimitEnforcement::Enforce);
+    }
+
+    /// Scenario: an observe-only HTTP limiter has capacity while soft pressure is active.
+    /// Guarantees: the request follows the normal response, forwarding, and metrics path.
+    #[test]
+    fn test_otlp_http_observe_only_under_capacity_is_transparent() {
+        run_otlp_http_under_capacity_rate_limit_test(RateLimitEnforcement::ObserveOnly);
+    }
+
+    /// Scenario: an OTLP HTTP request is larger than the configured rate-limit burst.
+    /// Guarantees: HTTP returns non-retryable 413 without forwarding or admission metrics.
+    #[test]
+    fn test_otlp_http_oversized_rate_limit_rejection() {
+        let test_runtime = TestRuntime::new();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
+        let http_listen: SocketAddr = format!("127.0.0.1:{http_port}").parse().unwrap();
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let memory_pressure_state = pipeline_ctx.memory_pressure_state();
+        memory_pressure_state
+            .set_level_for_tests(otel_arrow_dfe_engine::memory_limiter::MemoryPressureLevel::Soft);
+        let admission_state =
+            SharedReceiverAdmissionState::from_process_state(&memory_pressure_state);
+
+        let request = create_logs_service_request();
+        let mut request_bytes = Vec::new();
+        request.encode(&mut request_bytes).unwrap();
+        let request_weight = request_bytes.len() as u64;
+        assert!(request_weight > 1);
+        let rate_limiter = shared_rate_gate(
+            RateLimiterPolicy {
+                enforcement: RateLimitEnforcement::Enforce,
+                aggregation: RateLimitAggregation::ReceiverInstance,
+                unit: RateLimitUnit::RequestBytes,
+                pressure: RateLimitPressure::Soft,
+                token_bucket: TokenBucketPolicy {
+                    allow: request_weight,
+                    interval: Duration::from_secs(1),
+                    burst: Some(request_weight - 1),
+                },
+            },
+            admission_state.clone(),
+        );
+        let metrics = Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx)));
+        let scenario_metrics = metrics.clone();
+
+        let mut config = test_config_http_only(http_listen);
+        config
+            .protocols
+            .http
+            .as_mut()
+            .expect("HTTP should be configured")
+            .wait_for_result = false;
+        let receiver = ReceiverWrapper::shared(
+            OTLPReceiver {
+                config,
+                metrics,
+                rate_limiter: Some(rate_limiter),
+                global_max_concurrent_requests: None,
+                admission_state,
+            },
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let scenario = move |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                let (status, headers, _body) =
+                    post_otlp_http_response(http_listen, "/v1/logs", request_bytes)
+                        .await
+                        .expect("HTTP request should succeed");
+                assert_eq!(status, http::StatusCode::PAYLOAD_TOO_LARGE);
+                assert!(!headers.contains_key(RETRY_AFTER));
+
+                {
+                    let metrics = scenario_metrics.lock();
+                    assert_eq!(
+                        metrics
+                            .rejections_for(
+                                OtlpProtocol::Http,
+                                ReceiverRejectionErrorType::RateLimit,
+                            )
+                            .requests
+                            .get(),
+                        1
+                    );
+                    assert_eq!(
+                        metrics
+                            .requests_for(SignalType::Logs, OtlpProtocol::Http)
+                            .started
+                            .get(),
+                        0
+                    );
+                }
+
+                ctx.send_shutdown(Instant::now(), "Test complete")
+                    .await
+                    .expect("Failed to send shutdown");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario)
+            .run_validation(|mut ctx| async move {
+                assert!(matches!(ctx.recv().await, Err(RecvError::Closed)));
+            });
+    }
+
     #[test]
     fn test_otlp_http_receiver_nack() {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
 
-        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -3018,6 +3630,7 @@ mod tests {
             OTLPReceiver {
                 config,
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -3093,10 +3706,10 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let grpc_addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
 
-        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{grpc_addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -3118,6 +3731,7 @@ mod tests {
             OTLPReceiver {
                 config,
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -3174,10 +3788,10 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let grpc_addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
 
-        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{grpc_addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -3199,6 +3813,7 @@ mod tests {
             OTLPReceiver {
                 config,
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -3265,9 +3880,9 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
-        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -3288,6 +3903,7 @@ mod tests {
             OTLPReceiver {
                 config,
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -3312,7 +3928,10 @@ mod tests {
             }) as Pin<Box<dyn Future<Output = ()>>>
         };
 
-        _ = test_runtime.set_receiver(receiver).run_test(scenario);
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario)
+            .run_validation(|_| async {});
     }
 
     #[test]
@@ -3320,9 +3939,9 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
-        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -3343,6 +3962,7 @@ mod tests {
             OTLPReceiver {
                 config,
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -3367,7 +3987,10 @@ mod tests {
             }) as Pin<Box<dyn Future<Output = ()>>>
         };
 
-        _ = test_runtime.set_receiver(receiver).run_test(scenario);
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario)
+            .run_validation(|_| async {});
     }
 
     #[test]
@@ -3375,11 +3998,11 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let grpc_addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let grpc_listen: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
 
-        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{grpc_addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -3403,6 +4026,7 @@ mod tests {
             OTLPReceiver {
                 config,
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -3482,11 +4106,11 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{addr}:{grpc_port}");
         let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
 
-        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -3523,6 +4147,7 @@ mod tests {
             OTLPReceiver {
                 config,
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: Some(1),
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -3670,7 +4295,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let grpc_addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
 
@@ -3684,6 +4309,7 @@ mod tests {
             OTLPReceiver {
                 config: test_config(addr),
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -3782,7 +4408,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let grpc_addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
 
@@ -3796,6 +4422,7 @@ mod tests {
             OTLPReceiver {
                 config: test_config(addr),
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -3897,7 +4524,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let grpc_addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
 
@@ -3911,6 +4538,7 @@ mod tests {
             OTLPReceiver {
                 config: test_config(addr),
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -3993,9 +4621,9 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
-        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -4016,6 +4644,7 @@ mod tests {
             OTLPReceiver {
                 config,
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -4096,7 +4725,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -4109,6 +4738,7 @@ mod tests {
             OTLPReceiver {
                 config: test_config_http_only(http_listen),
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),

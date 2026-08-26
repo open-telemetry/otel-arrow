@@ -1,5 +1,5 @@
 [package]
-name = "otap-df-channel"
+name = "otel-arrow-dfe-channel"
 description = "Async channel implementations optimised for single-threaded async runtime"
 version.workspace = true
 authors.workspace = true

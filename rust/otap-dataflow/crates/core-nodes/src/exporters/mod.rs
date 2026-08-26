@@ -10,6 +10,9 @@ pub mod error_exporter;
 /// Console exporter.
 pub mod console_exporter;
 
+/// OTLP JSON file exporter.
+pub mod file_exporter;
+
 /// Topic exporter.
 pub mod topic_exporter;
 

@@ -267,7 +267,7 @@ pub enum Error {
 
     /// The http: provider's underlying HTTP client could not be constructed.
     #[error(
-        "Could not build HTTP client for http: config provider: {details}\n\nHint: Ensure a rustls crypto provider is installed (e.g. via `otap_df_otap::crypto::install_crypto_provider()` at startup)."
+        "Could not build HTTP client for http: config provider: {details}\n\nHint: Ensure a rustls crypto provider is installed (e.g. via `otel_arrow_dfe_otap::crypto::install_crypto_provider()` at startup)."
     )]
     #[diagnostic(code(data_plane::config_http_client_build_failed), url(docsrs))]
     ConfigHttpClientBuildFailed {

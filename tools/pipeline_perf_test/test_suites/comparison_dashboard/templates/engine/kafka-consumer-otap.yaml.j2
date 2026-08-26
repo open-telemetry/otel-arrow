@@ -1,0 +1,65 @@
+version: otel_dataflow/v1
+policies:
+  channel_capacity:
+    control:
+      node: 100
+      pipeline: 100
+    pdata: 100
+  resources:
+    core_allocation:
+      type: core_set
+      set:
+        - start: {{core_start}}
+          end: {{core_end}}
+engine:
+  telemetry:
+    logs:
+      level: info
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            # Benchmarked DFE Kafka receiver, OTAP encoding
+            # (receiver-isolation suites). Aligned consumer tuning injected
+            # from canonical kafka_consumer_* suite variables.
+            type: urn:otel:receiver:kafka
+            config:
+              brokers: "{{kafka_hostname}}:9092"
+              group_id: "{{ kafka_consumer_group_id | default('kafka-benchmark-consumer') }}"
+              client_id: "dfe-kafka-consumer"
+              auto_offset_reset: {{ kafka_consumer_auto_offset_reset | default("earliest") }}
+              commit:
+                mode: auto
+                interval_ms: {{ kafka_consumer_commit_interval_ms | default(1000) }}
+              session_timeout_ms: {{ kafka_consumer_session_timeout_ms | default(30000) }}
+              heartbeat_interval_ms: {{ kafka_consumer_heartbeat_interval_ms | default(3000) }}
+              min_fetch_bytes: {{ kafka_consumer_fetch_min_bytes | default(1) }}
+              max_fetch_bytes: {{ kafka_consumer_fetch_max_bytes | default(1048576) }}
+              max_fetch_wait_ms: {{ kafka_consumer_fetch_max_wait_ms | default(500) }}
+              max_partition_fetch_bytes: {{ kafka_consumer_max_partition_fetch_bytes | default(1048576) }}
+              isolation_level: {{ kafka_consumer_isolation_level | default("read_uncommitted") }}
+              logs:
+                topics:
+                  - "otel-logs-otap"
+                encoding: otap_proto
+              metrics:
+                topics:
+                  - "otel-metrics-otap"
+                encoding: otap_proto
+              traces:
+                topics:
+                  - "otel-spans-otap"
+                encoding: otap_proto
+          exporter:
+            type: urn:otel:exporter:otap
+            config:
+              grpc_endpoint: http://{{backend_hostname}}:1235
+              compression_method: {{ compression_method | default("none") }}
+              streams_per_signal: {{ otap_exporter_streams_per_signal | default(1) }}
+              arrow:
+                payload_compression: {{ payload_compression | default("none") }}
+        connections:
+          - from: receiver
+            to: exporter

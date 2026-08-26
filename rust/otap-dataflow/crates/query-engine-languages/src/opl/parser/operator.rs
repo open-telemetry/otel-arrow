@@ -65,7 +65,7 @@ pub(crate) fn parse_route_to_operator_call(
     if let Some(rule) = operator_call_rule.into_inner().next() {
         let rule_query_location = to_query_location(&rule);
         let dest = match rule.as_rule() {
-            Rule::string_literal => match parse_standard_string_literal(rule) {
+            Rule::string_literal => match parse_standard_string_literal(rule)? {
                 StaticScalarExpression::String(string) => string,
                 invalid_expr => {
                     return Err(ParserError::SyntaxError(
@@ -187,7 +187,7 @@ pub(crate) fn parse_rename_operator_call(
             )
         })?;
 
-        let source_key = match parse_standard_string_literal(source_key_rule) {
+        let source_key = match parse_standard_string_literal(source_key_rule)? {
             StaticScalarExpression::String(s) => s,
             other => {
                 return Err(ParserError::SyntaxError(
@@ -196,7 +196,7 @@ pub(crate) fn parse_rename_operator_call(
                 ));
             }
         };
-        let dest_key = match parse_standard_string_literal(dest_key_rule) {
+        let dest_key = match parse_standard_string_literal(dest_key_rule)? {
             StaticScalarExpression::String(s) => s,
             other => {
                 return Err(ParserError::SyntaxError(

@@ -4,7 +4,7 @@
 //! Shared table and field-formatting helpers for human rendering.
 
 use crate::style::{HumanStyle, terminal_safe};
-use otap_df_admin_api::{pipelines, telemetry};
+use otel_arrow_dfe_admin_api::{pipelines, telemetry};
 use std::collections::BTreeMap;
 
 /// Formats one label/value line for human output.
@@ -91,7 +91,7 @@ pub(super) fn metric_value_string(value: &telemetry::MetricValue) -> String {
     match value {
         telemetry::MetricValue::U64(value) => value.to_string(),
         telemetry::MetricValue::F64(value) => value.to_string(),
-        telemetry::MetricValue::Mmsc(value) => format!(
+        telemetry::MetricValue::Distribution(value) => format!(
             "min={} max={} sum={} count={}",
             value.min, value.max, value.sum, value.count
         ),

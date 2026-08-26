@@ -107,52 +107,52 @@ impl MapValue for LogRecord {
         })
     }
 
-    fn get_items(&self, item_callback: &mut dyn KeyValueCallback) -> bool {
+    fn get_items<'a>(&'a self, item_callback: &mut MapValueIteratorCallback<'a, '_>) -> bool {
         if let Some(v) = &self.timestamp {
-            if !item_callback.next("time_unix_nano", Value::DateTime(v)) {
+            if !(item_callback)("time_unix_nano", Value::DateTime(v)) {
                 return false;
             }
         }
         if let Some(v) = &self.observed_timestamp {
-            if !item_callback.next("observed_time_unix_nano", Value::DateTime(v)) {
+            if !(item_callback)("observed_time_unix_nano", Value::DateTime(v)) {
                 return false;
             }
         }
         if let Some(v) = &self.severity_number {
-            if !item_callback.next("severity_number", Value::Integer(v)) {
+            if !(item_callback)("severity_number", Value::Integer(v)) {
                 return false;
             }
         }
         if let Some(v) = &self.severity_text {
-            if !item_callback.next("severity_text", Value::String(v)) {
+            if !(item_callback)("severity_text", Value::String(v)) {
                 return false;
             }
         }
         if let Some(v) = &self.body {
-            if !item_callback.next("body", v.to_value()) {
+            if !(item_callback)("body", v.to_value()) {
                 return false;
             }
         }
-        if !item_callback.next("attributes", Value::Map(&self.attributes)) {
+        if !(item_callback)("attributes", Value::Map(&self.attributes)) {
             return false;
         }
         if let Some(v) = &self.flags {
-            if !item_callback.next("flags", Value::Integer(v)) {
+            if !(item_callback)("flags", Value::Integer(v)) {
                 return false;
             }
         }
         if let Some(v) = &self.trace_id {
-            if !item_callback.next("trace_id", Value::Array(v)) {
+            if !(item_callback)("trace_id", Value::Array(v)) {
                 return false;
             }
         }
         if let Some(v) = &self.span_id {
-            if !item_callback.next("span_id", Value::Array(v)) {
+            if !(item_callback)("span_id", Value::Array(v)) {
                 return false;
             }
         }
         if let Some(v) = &self.event_name {
-            if !item_callback.next("event_name", Value::String(v)) {
+            if !(item_callback)("event_name", Value::String(v)) {
                 return false;
             }
         }
@@ -402,52 +402,52 @@ impl MapValueMut for LogRecord {
         }
     }
 
-    fn retain(&mut self, item_callback: &mut dyn KeyValueMutCallback) {
+    fn retain(&mut self, item_callback: &mut MapValueMutIteratorCallback<'_>) {
         if let Some(v) = &mut self.timestamp {
-            if !item_callback.next("time_unix_nano", v) {
+            if !(item_callback)("time_unix_nano", v) {
                 self.timestamp = None;
             }
         }
         if let Some(v) = &mut self.observed_timestamp {
-            if !item_callback.next("observed_time_unix_nano", v) {
+            if !(item_callback)("observed_time_unix_nano", v) {
                 self.observed_timestamp = None;
             }
         }
         if let Some(v) = &mut self.severity_number {
-            if !item_callback.next("severity_number", v) {
+            if !(item_callback)("severity_number", v) {
                 self.severity_number = None;
             }
         }
         if let Some(v) = &mut self.severity_text {
-            if !item_callback.next("severity_text", v) {
+            if !(item_callback)("severity_text", v) {
                 self.severity_text = None;
             }
         }
         if let Some(v) = &mut self.body {
-            if !item_callback.next("body", v) {
+            if !(item_callback)("body", v) {
                 self.body = None;
             }
         }
-        if !item_callback.next("attributes", &mut self.attributes) {
+        if !(item_callback)("attributes", &mut self.attributes) {
             self.attributes = MapValueStorage::new(HashMap::new());
         }
         if let Some(v) = &mut self.flags {
-            if !item_callback.next("flags", v) {
+            if !(item_callback)("flags", v) {
                 self.flags = None;
             }
         }
         if let Some(v) = &mut self.trace_id {
-            if !item_callback.next("trace_id", v) {
+            if !(item_callback)("trace_id", v) {
                 self.trace_id = None;
             }
         }
         if let Some(v) = &mut self.span_id {
-            if !item_callback.next("span_id", v) {
+            if !(item_callback)("span_id", v) {
                 self.span_id = None;
             }
         }
         if let Some(v) = &mut self.event_name {
-            if !item_callback.next("event_name", v) {
+            if !(item_callback)("event_name", v) {
                 self.event_name = None;
             }
         }

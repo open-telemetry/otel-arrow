@@ -85,6 +85,17 @@ Exactly one of `protocol.tcp` or `protocol.udp` must be configured.
 `protocol.tcp.tls` enables secure TCP (RFC 5425). `batch.max_batch_duration_ms`
 defaults to `100`, and `batch.max_size` defaults to `100`.
 
+The receiver supports pressure-aware `messages` rate limiting when the
+engine-level memory limiter is configured. UDP counts one datagram as one
+message. TCP normally counts one newline-framed line as one message; if a line
+exceeds `MAX_MESSAGE_SIZE` and is emitted as multiple bounded-read fragments,
+each emitted fragment is counted separately. Over-limit UDP datagrams are
+dropped; over-limit TCP messages are dropped while the connection remains open.
+If an oversized TCP fragment is over limit, remaining fragments from that same
+oversized line are discarded through the newline.
+TCP rate-limit drops are silent because plain syslog TCP has no per-message
+acknowledgement or retry hint.
+
 ## Transport Protocols
 
 ### UDP
@@ -400,6 +411,29 @@ This batching strategy balances:
 - **Throughput**: Amortized overhead for high-volume streams
 - **Memory**: Bounded buffer size prevents unbounded growth
 
+### Pressure-aware rate admission
+
+Bind one named `messages` limiter at the receiver node with
+`rate_limiters: [name]`. Use `rate_limiters: []` to opt out of an inherited
+limiter.
+
+```yaml
+syslog:
+  type: receiver:syslog_cef
+  rate_limiters: [ingress]
+  config:
+    protocol:
+      udp:
+        listening_addr: "127.0.0.1:5140"
+```
+
+The limiter observes framed messages while memory is normal. Under configured
+pressure, `observe_only` reports `would_throttle` without dropping messages,
+while `enforce` drops over-limit messages. UDP has no rejection response; TCP
+keeps the connection open and emits at most one warning per connection. V1
+creates one bucket per receiver instance and does not provide scheduling
+fairness.
+
 ### Arrow Columnar Format
 
 The receiver converts syslog messages directly into Apache Arrow columnar
@@ -423,15 +457,19 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 | Metric | Unit | Description |
 | --- | --- | --- |
-| `receiver.syslog_cef.received_logs_forwarded` | `{item}` | Number of log records successfully forwarded downstream. |
-| `receiver.syslog_cef.received_logs_invalid` | `{item}` | Number of log records rejected because their payload is zero-length. |
-| `receiver.syslog_cef.received_logs_truncated` | `{item}` | Number of log records whose raw message exceeded `MAX_MESSAGE_SIZE` and were truncated before parsing. For TCP, truncation is detected precisely when a newline-delimited message exceeds the size limit. For UDP, it is a heuristic - a datagram that fills the entire receive buffer is assumed truncated, though a message exactly `MAX_MESSAGE_SIZE` bytes would also trigger this. |
-| `receiver.syslog_cef.received_logs_forward_failed` | `{item}` | Number of log records refused by downstream (backpressure/unavailable) |
-| `receiver.syslog_cef.received_logs_total` | `{item}` | Total number of log records observed at the socket before parsing. |
-| `receiver.syslog_cef.tcp_connections_active` | `{conn}` | Number of active TCP connections. |
-| `receiver.syslog_cef.tls_handshake_failures` | `{error}` | Number of TLS handshake failures. |
-| `receiver.syslog_cef.received_logs_rejected_memory_pressure` | `{item}` | Number of log records dropped due to process-wide memory pressure. |
-| `receiver.syslog_cef.tcp_connections_rejected_memory_pressure` | `{conn}` | Number of TCP connections rejected or closed due to process-wide memory pressure. |
+| `receiver.syslog_cef.received.items` | `{item}` | Number of log records observed at the socket before parsing. |
+| `receiver.syslog_cef.forwards.items` | `{item}` | Number of log records delivered to the pipeline send path, grouped by `outcome`. |
+| `receiver.syslog_cef.rejections.items` | `{item}` | Number of log records rejected before pipeline admission, grouped by bounded `error.type` and `protocol`. |
+| `receiver.syslog_cef.truncations.items` | `{item}` | Number of log records whose raw message exceeded `MAX_MESSAGE_SIZE` and were truncated before parsing. For TCP, truncation is detected precisely when a newline-delimited message exceeds the size limit. For UDP, it is a heuristic - a datagram that fills the entire receive buffer is assumed truncated. |
+| `receiver.syslog_cef.transport.errors` | `{error}` | Number of transport-level errors, grouped by `protocol` (e.g. TLS handshake failures). |
+| `receiver.syslog_cef.connections.active` | `{connection}` | Number of active TCP connections. |
+| `receiver.syslog_cef.connections.rejected` | `{connection}` | Number of TCP connections rejected or closed. |
+
+Rate-admission outcomes are reported by the engine metric set
+`admission.rate_limiter`. Its `refusals` counter uses the bounded attributes
+`dimension=messages` and `refusal=would_throttle|throttle|oversized`. The metric
+is scoped to the configured node entity, but tenant or request identities are
+never measurement attributes.
 
 ### Events
 
@@ -444,6 +482,7 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | `syslog_cef_receiver.tls.handshake.failed` | `warn` | TLS handshake failed and the connection was closed. |
 | `syslog_cef_receiver.arrow_records.build_failed` | `warn` | Arrow records could not be built from a parsed batch; the batch was dropped. |
 | `syslog_cef_receiver.memory_pressure.disconnect` | `warn` | A TCP connection was closed because process-wide memory pressure was active. |
+| `syslog_cef_receiver.rate_limit.drop` | `warn` | Emitted once per TCP connection when pressure-aware rate throttling first drops an over-limit message on that connection. |
 
 <!-- markdownlint-enable MD013 -->
 

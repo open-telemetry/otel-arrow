@@ -33,6 +33,14 @@
 //!
 //! ## Quick start
 //!
+//! A provider may be identified either by its GUID or by its name. Names are
+//! resolved to a GUID at startup: by default (when `kind` is omitted)
+//! manifest-based and classic (MOF) providers are looked up in the system
+//! provider database, and TraceLogging / `EventSource` providers fall back to
+//! the standard name-hash convention. Set `kind: manifest` to require a
+//! registered provider, or `kind: tracelogging` to derive the GUID from the
+//! name without any OS lookup.
+//!
 //! ```yaml
 //! etw:
 //!   type: receiver:etw
@@ -40,10 +48,20 @@
 //!     providers:
 //!       - guid: "d2387720-2907-5677-8625-c1bdc4155197"
 //!         level: verbose
+//!       - name: "Microsoft-Windows-Kernel-Process"
+//!         kind: manifest
+//!         level: information
+//!       - name: "My-Custom-EventSource"
+//!         kind: tracelogging
 //!     batching:
 //!       max_size: 100
 //!       max_duration: "100ms"
 //! ```
+
+otel_arrow_dfe_telemetry::otel_component_scope!(
+    urn = ETW_RECEIVER_URN,
+    target = "otel.receiver.etw",
+);
 
 mod arrow_records_encoder;
 mod session;
@@ -53,26 +71,25 @@ use session::EtwEventData;
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::ReceiverFactory;
-use otap_df_engine::config::ReceiverConfig;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::NodeControlMsg;
-use otap_df_engine::node::NodeId;
-use otap_df_engine::receiver::ReceiverWrapper;
-use otap_df_engine::terminal_state::TerminalState;
-use otap_df_engine::{
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_engine::ReceiverFactory;
+use otel_arrow_dfe_engine::config::ReceiverConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::control::NodeControlMsg;
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
+use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_engine::{
     MessageSourceLocalEffectHandlerExtension,
     effect_handler::TelemetryTimerCancelHandle,
     error::{Error, ReceiverErrorKind, format_error_sources},
     local::receiver as local,
 };
-use otap_df_otap::OTAP_RECEIVER_FACTORIES;
-use otap_df_otap::pdata::OtapPdata;
-use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::{otel_info, otel_warn};
-use otap_df_telemetry_macros::metric_set;
+use otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES;
+use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_telemetry::instrument::Counter;
+use otel_arrow_dfe_telemetry::metrics::MetricSet;
+use otel_arrow_dfe_telemetry_macros::metric_set;
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::time::{self, MissedTickBehavior};
@@ -119,6 +136,26 @@ enum TraceLevel {
     Verbose,
 }
 
+/// How a provider's `name` is resolved to a GUID.
+///
+/// This selects an *explicit* resolution strategy. Omit `kind` for automatic
+/// resolution: the OS-registered provider database is tried first
+/// (manifest-based or classic MOF), then the receiver falls back to the
+/// EventSource/TraceLogging name hash.
+///
+/// Ignored when a `guid` is supplied directly. See
+/// [`resolve_provider_guid`](session) for the resolution rules.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum ProviderKind {
+    /// Resolve strictly via the OS-registered provider database (manifest-based
+    /// or classic MOF). Fails if the name is not registered; never hashes.
+    Manifest,
+    /// Derive the GUID directly from the name using the EventSource/
+    /// TraceLogging hash convention, with no OS lookup.
+    Tracelogging,
+}
+
 /// Configuration for a single ETW provider to trace.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -132,6 +169,13 @@ struct ProviderConfig {
     /// Mutually exclusive with `name`.
     #[serde(default)]
     pub guid: Option<String>,
+
+    /// How a `name` is resolved to a GUID. Ignored when `guid` is set
+    /// (supplying `kind` together with `guid` is rejected at validation time).
+    /// Omit for automatic resolution (registered database first, then name
+    /// hash); set `manifest` or `tracelogging` to force a single strategy.
+    #[serde(default)]
+    pub kind: Option<ProviderKind>,
 
     /// Trace level filter. Defaults to `information`.
     #[serde(default)]
@@ -193,13 +237,14 @@ impl Config {
     ///
     /// * At least one provider must be specified.
     /// * Each provider must specify exactly one of `name` or `guid` (not both, not neither).
+    /// * A specified `name` or `guid` must not be empty or whitespace-only.
     ///
     /// # Errors
     ///
-    /// Returns [`otap_df_config::error::Error::InvalidUserConfig`] when a rule is violated.
-    fn validate(&self) -> Result<(), otap_df_config::error::Error> {
+    /// Returns [`otel_arrow_dfe_config::error::Error::InvalidUserConfig`] when a rule is violated.
+    fn validate(&self) -> Result<(), otel_arrow_dfe_config::error::Error> {
         if self.providers.is_empty() {
-            return Err(otap_df_config::error::Error::InvalidUserConfig {
+            return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: "at least one ETW provider must be configured".to_string(),
             });
         }
@@ -207,24 +252,59 @@ impl Config {
         for (i, provider) in self.providers.iter().enumerate() {
             match (&provider.name, &provider.guid) {
                 (Some(_), Some(_)) => {
-                    return Err(otap_df_config::error::Error::InvalidUserConfig {
+                    return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                         error: format!(
                             "provider[{i}]: 'name' and 'guid' are mutually exclusive - specify one, not both"
                         ),
                     });
                 }
                 (None, None) => {
-                    return Err(otap_df_config::error::Error::InvalidUserConfig {
+                    return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                         error: format!("provider[{i}]: either 'name' or 'guid' must be specified"),
                     });
                 }
                 _ => {} // Valid: exactly one of name or guid is specified.
             }
+
+            // A blank (empty or whitespace-only) identifier satisfies
+            // `is_some()` but carries no usable provider name/GUID. Reject it
+            // here rather than letting it fail later (a blank GUID errors at
+            // parse time; a blank name would hash to a bogus GUID on the
+            // automatic path).
+            if let Some(name) = &provider.name {
+                if name.trim().is_empty() {
+                    return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                        error: format!(
+                            "provider[{i}]: 'name' must not be empty or whitespace-only"
+                        ),
+                    });
+                }
+            }
+            if let Some(guid) = &provider.guid {
+                if guid.trim().is_empty() {
+                    return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                        error: format!(
+                            "provider[{i}]: 'guid' must not be empty or whitespace-only"
+                        ),
+                    });
+                }
+            }
+
+            // `kind` selects a name-resolution strategy and is meaningless for a
+            // GUID (which is used verbatim). Reject the combination rather than
+            // silently ignoring `kind`.
+            if provider.guid.is_some() && provider.kind.is_some() {
+                return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                    error: format!(
+                        "provider[{i}]: 'kind' applies to name-based providers only - remove 'kind' when specifying a 'guid'"
+                    ),
+                });
+            }
         }
 
         if let Some(ref batching) = self.batching {
             if batching.max_duration.is_zero() {
-                return Err(otap_df_config::error::Error::InvalidUserConfig {
+                return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                     error: "ETW receiver `batching.max_duration` must be greater than zero"
                         .to_string(),
                 });
@@ -276,9 +356,9 @@ impl EtwReceiver {
     fn from_config(
         pipeline: PipelineContext,
         config: &Value,
-    ) -> Result<Self, otap_df_config::error::Error> {
+    ) -> Result<Self, otel_arrow_dfe_config::error::Error> {
         let cfg: Config = serde_json::from_value(config.clone()).map_err(|e| {
-            otap_df_config::error::Error::InvalidUserConfig {
+            otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
             }
         })?;
@@ -296,7 +376,7 @@ impl EtwReceiver {
         // folds into its own metric set.
         let (event_rx, session_wide_metrics) =
             session::subscribe(&cfg, num_cores).map_err(|e| {
-                otap_df_config::error::Error::InvalidUserConfig {
+                otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                     error: format!("ETW session initialization failed: {e}"),
                 }
             })?;
@@ -747,23 +827,25 @@ impl EtwReceiver {
 
 /// Register the ETW receiver in the pipeline factory.
 #[allow(unsafe_code)]
+#[otel_arrow_dfe_engine::component_inventory(category = Receiver)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static ETW_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: ETW_RECEIVER_URN,
-    create: |pipeline: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             receiver_config: &ReceiverConfig,
-             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
-        Ok(ReceiverWrapper::local(
-            EtwReceiver::from_config(pipeline, &node_config.config)?,
-            node,
-            node_config,
-            receiver_config,
-        ))
-    },
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    validate_config: otap_df_config::validation::validate_typed_config::<Config>,
+    create:
+        |pipeline: PipelineContext,
+         node: NodeId,
+         node_config: Arc<NodeUserConfig>,
+         receiver_config: &ReceiverConfig,
+         _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
+            Ok(ReceiverWrapper::local(
+                EtwReceiver::from_config(pipeline, &node_config.config)?,
+                node,
+                node_config,
+                receiver_config,
+            ))
+        },
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<Config>,
 };
 
 // -- Receiver trait implementation --------------------------------------------
@@ -906,6 +988,7 @@ mod tests {
         ProviderConfig {
             name: None,
             guid: Some(guid.to_string()),
+            kind: None,
             level: TraceLevel::default(),
             keywords: None,
         }
@@ -915,6 +998,7 @@ mod tests {
         ProviderConfig {
             name: Some(name.to_string()),
             guid: None,
+            kind: None,
             level: TraceLevel::default(),
             keywords: None,
         }
@@ -954,11 +1038,86 @@ mod tests {
         );
     }
 
+    /// Scenario: A provider config supplies both a `guid` and a `kind`.
+    /// Guarantees: `Config::validate` rejects the config, so `kind` (a
+    /// name-resolution strategy) is never silently ignored when a GUID is used
+    /// verbatim.
+    #[test]
+    fn validate_rejects_kind_with_guid() {
+        // `kind` selects a name-resolution strategy; combining it with a GUID
+        // (used verbatim) is a config error rather than a silently ignored field.
+        let cfg = make_config(vec![ProviderConfig {
+            name: None,
+            guid: Some("22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716".to_string()),
+            kind: Some(ProviderKind::Manifest),
+            level: TraceLevel::default(),
+            keywords: None,
+        }]);
+        let err = cfg.validate().unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("'kind' applies to name-based providers only"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    /// Scenario: A name-based provider supplies an explicit `kind` and no
+    /// `guid`.
+    /// Guarantees: `Config::validate` accepts the config, so specifying a
+    /// resolution strategy for a named provider is a supported configuration.
+    #[test]
+    fn validate_accepts_name_with_explicit_kind() {
+        let cfg = make_config(vec![ProviderConfig {
+            name: Some("My-Custom-EventSource".to_string()),
+            guid: None,
+            kind: Some(ProviderKind::Tracelogging),
+            level: TraceLevel::default(),
+            keywords: None,
+        }]);
+        assert!(cfg.validate().is_ok());
+    }
+
+    /// Scenario: A provider specifies a `name` that is empty or contains only
+    /// whitespace.
+    /// Guarantees: `Config::validate` rejects the config, so a blank name never
+    /// reaches resolution where it would hash to a bogus GUID on the automatic
+    /// path.
+    #[test]
+    fn validate_rejects_blank_name() {
+        for blank in ["", "   ", "\t\n"] {
+            let cfg = make_config(vec![provider_with_name(blank)]);
+            let err = cfg.validate().unwrap_err();
+            let msg = err.to_string();
+            assert!(
+                msg.contains("'name' must not be empty or whitespace-only"),
+                "unexpected error for {blank:?}: {msg}"
+            );
+        }
+    }
+
+    /// Scenario: A provider specifies a `guid` that is empty or contains only
+    /// whitespace.
+    /// Guarantees: `Config::validate` rejects the config, so a blank GUID is
+    /// surfaced at validation time instead of failing later at GUID-parse time.
+    #[test]
+    fn validate_rejects_blank_guid() {
+        for blank in ["", "   ", "\t\n"] {
+            let cfg = make_config(vec![provider_with_guid(blank)]);
+            let err = cfg.validate().unwrap_err();
+            let msg = err.to_string();
+            assert!(
+                msg.contains("'guid' must not be empty or whitespace-only"),
+                "unexpected error for {blank:?}: {msg}"
+            );
+        }
+    }
+
     #[test]
     fn validate_rejects_both_name_and_guid() {
         let cfg = make_config(vec![ProviderConfig {
             name: Some("SomeProvider".to_string()),
             guid: Some("22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716".to_string()),
+            kind: None,
             level: TraceLevel::default(),
             keywords: None,
         }]);
@@ -975,6 +1134,7 @@ mod tests {
         let cfg = make_config(vec![ProviderConfig {
             name: None,
             guid: None,
+            kind: None,
             level: TraceLevel::default(),
             keywords: None,
         }]);
@@ -993,6 +1153,7 @@ mod tests {
             ProviderConfig {
                 name: None,
                 guid: None,
+                kind: None,
                 level: TraceLevel::default(),
                 keywords: None,
             },

@@ -39,8 +39,8 @@ Exception rule (traces):
 ## How to emit events in code
 
 All events MUST be emitted using the `otel_*` macros from the
-`otap_df_telemetry` crate. **Do not** use `tracing::info!`, `log::info!`, or
-`println!` directly. This rule is enforced by
+`otel_arrow_dfe_telemetry` crate. **Do not** use `tracing::info!`,
+`log::info!`, or `println!` directly. This rule is enforced by
 `scripts/check-direct-telemetry-macros.sh` (run in CI).
 
 **Why wrappers instead of raw `tracing` macros?**
@@ -49,11 +49,10 @@ All events MUST be emitted using the `otel_*` macros from the
   event name. Raw `tracing` macros do not require one, and their default name
   includes the file path and line number -- which is not durable and breaks
   filtering, alerting, and dashboards whenever code is moved or reformatted.
-- **Automatic `target`.** The wrappers set the tracing `target` field to the
-  crate name (`env!("CARGO_PKG_NAME")`) automatically. When exported via
-  OTLP, this becomes the `InstrumentationScope.name`. With raw `tracing`
-  macros the default target is the module path, which is an internal
-  implementation detail and can change without notice.
+- **Automatic `target`.** Registered components use
+  `<namespace>.<kind>.<name>`, derived from their registered URN; other code
+  uses the Cargo package name. When exported via OTLP, this becomes
+  `InstrumentationScope.name`.
 
 ### Available macros
 
@@ -64,13 +63,17 @@ All events MUST be emitted using the `otel_*` macros from the
 | `otel_warn!` | WARN |
 | `otel_error!` | ERROR |
 
+Registered components declare `otel_component_scope!` at their root module to
+apply the component target to the module subtree. See the
+[telemetry crate README](../../crates/telemetry/README.md#logging-macros).
+
 ### Basic usage
 
 The first argument is always the **event name** (a string literal). Optional
 key-value pairs follow as structured attributes.
 
 ```rust
-use otap_df_telemetry::otel_info;
+use otel_arrow_dfe_telemetry::otel_info;
 
 // Event name only (no attributes):
 otel_info!("pipeline.run.start");
@@ -101,7 +104,8 @@ otel_info!("pipeline.run.start");
 
 // Good -- message explains consequences beyond what the event name conveys:
 otel_warn!("core_affinity.set_failed",
-    message = "Failed to set core affinity for pipeline thread. Performance may be less predictable.",
+    message = "Failed to set core affinity for pipeline thread. \
+        Performance may be less predictable.",
 );
 ```
 

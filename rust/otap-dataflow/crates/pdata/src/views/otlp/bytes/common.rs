@@ -20,7 +20,7 @@ use crate::views::otlp::bytes::decode::{
     from_option_nonzero_range_to_primitive, read_dropped_count, read_fixed64, read_len_delim,
     read_varint, to_nonzero_range,
 };
-use otap_df_pdata_views::views::common::{
+use otel_arrow_dfe_pdata_views::views::common::{
     AnyValueView, AttributeView, InstrumentationScopeView, ValueType,
 };
 
@@ -62,14 +62,20 @@ impl<'a> RawKeyValue<'a> {
 
         let (tag, next_pos) = match read_varint(self.buf, pos) {
             Some((tag, next_pos)) => (tag, next_pos),
-            // invalid bytes in buffer
-            None => return,
+            // invalid bytes in buffer: mark parsing exhausted so callers stop looping
+            None => {
+                self.pos.set(self.buf.len());
+                return;
+            }
         };
 
         let (start, end) = match field_value_range(self.buf, wire_types::LEN, next_pos) {
             Some(range) => range,
-            // invalid bytes in buffer
-            None => return,
+            // invalid bytes in buffer: mark parsing exhausted so callers stop looping
+            None => {
+                self.pos.set(self.buf.len());
+                return;
+            }
         };
         self.pos.set(end);
 
@@ -255,11 +261,11 @@ impl AttributeView for RawKeyValue<'_> {
         Self: 'val;
 
     #[inline]
-    fn key(&self) -> otap_df_pdata_views::views::common::Str<'_> {
+    fn key(&self) -> otel_arrow_dfe_pdata_views::views::common::Str<'_> {
         loop {
             if let Some((start, end)) = from_option_nonzero_range_to_primitive(self.key_range.get())
             {
-                return &self.buf[start..end];
+                return self.buf.get(start..end).unwrap_or_default();
             } else if self.pos.get() >= self.buf.len() {
                 break;
             } else {
@@ -277,7 +283,7 @@ impl AttributeView for RawKeyValue<'_> {
             if let Some((start, end)) =
                 from_option_nonzero_range_to_primitive(self.value_range.get())
             {
-                let slice = &self.buf[start..end];
+                let slice = &self.buf.get(start..end)?;
                 return Some(RawAnyValue {
                     buf: slice,
                     value_offset: Cell::new(None),
@@ -341,7 +347,7 @@ impl<'a> AnyValueView<'a> for RawAnyValue<'a> {
     }
 
     #[inline]
-    fn as_string(&self) -> Option<otap_df_pdata_views::views::common::Str<'_>> {
+    fn as_string(&self) -> Option<otel_arrow_dfe_pdata_views::views::common::Str<'_>> {
         if self.value_type() == ValueType::String {
             // safety: this value should have been initialized in the call to self.value_type
             let value_offset = self
@@ -499,13 +505,13 @@ impl InstrumentationScopeView for RawInstrumentationScope<'_> {
         Self: 'att;
 
     #[inline]
-    fn name(&self) -> Option<otap_df_pdata_views::views::common::Str<'_>> {
+    fn name(&self) -> Option<otel_arrow_dfe_pdata_views::views::common::Str<'_>> {
         self.bytes_parser
             .advance_to_find_field(INSTRUMENTATION_SCOPE_NAME)
     }
 
     #[inline]
-    fn version(&self) -> Option<otap_df_pdata_views::views::common::Str<'_>> {
+    fn version(&self) -> Option<otel_arrow_dfe_pdata_views::views::common::Str<'_>> {
         self.bytes_parser
             .advance_to_find_field(INSTRUMENTATION_SCOPE_VERSION)
     }
@@ -525,5 +531,52 @@ impl InstrumentationScopeView for RawInstrumentationScope<'_> {
             INSTRUMENTATION_SCOPE_ATTRIBUTES,
             wire_types::LEN,
         ))
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use otel_arrow_dfe_config::ConversionOptions;
+    use otel_arrow_dfe_pdata_views::views::common::AttributeView;
+
+    use crate::{
+        otlp::{BoundedBuf, ProtoBuffer},
+        proto::consts::{
+            field_num::common::{KEY_VALUE_KEY, KEY_VALUE_VALUE},
+            wire_types,
+        },
+        views::otlp::bytes::common::RawKeyValue,
+    };
+
+    #[test]
+    fn test_kv_handles_invalid_key_range() {
+        let mut protobuf = ProtoBuffer::new(ConversionOptions::default());
+        protobuf
+            .encode_field_tag(KEY_VALUE_KEY, wire_types::LEN)
+            .unwrap();
+        // length is for some reason invalid - someone gave us a bad proto bytes
+        protobuf.encode_varint(5).unwrap();
+        protobuf.extend_from_slice("aaa".as_bytes()).unwrap();
+
+        let kv_view = RawKeyValue::new(protobuf.as_slice());
+        let key = kv_view.key();
+        assert!(key.is_empty());
+    }
+
+    #[test]
+    fn test_kv_handles_invalid_value_range() {
+        let mut protobuf = ProtoBuffer::new(ConversionOptions::default());
+        protobuf.encode_string(KEY_VALUE_KEY, "my-key").unwrap();
+
+        protobuf
+            .encode_field_tag(KEY_VALUE_VALUE, wire_types::LEN)
+            .unwrap();
+        // length is for some reason invalid - someone gave us bad proto bytes
+        protobuf.encode_varint(4).unwrap();
+        protobuf.extend_from_slice(&[0]).unwrap();
+
+        let kv_view = RawKeyValue::new(protobuf.as_slice());
+        let value = kv_view.value();
+        assert!(value.is_none());
     }
 }

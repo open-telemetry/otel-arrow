@@ -10,7 +10,7 @@ use crate::{
 use arrow::datatypes::DataType;
 use arrow::error::ArrowError;
 use num_enum::TryFromPrimitiveError;
-use otap_df_config::SignalType;
+use otel_arrow_dfe_config::SignalType;
 use std::num::TryFromIntError;
 
 /// Result type
@@ -55,6 +55,9 @@ pub enum Error {
         metric_type: u8,
         error: TryFromPrimitiveError<MetricType>,
     },
+
+    #[error("Cannot recognize metric type name: {metric_type_name}")]
+    UnrecognizedMetricTypeName { metric_type_name: String },
 
     #[error("Unable to handle empty metric type")]
     EmptyMetricType,
@@ -133,6 +136,9 @@ pub enum Error {
 
     #[error("Failed to batch OTAP data: {}", source)]
     Batching { source: ArrowError },
+
+    #[error("Failed to measure logical Arrow bytes: {}", source)]
+    LogicalArrowSize { source: ArrowError },
 
     #[error("Batch is empty")]
     EmptyBatch,

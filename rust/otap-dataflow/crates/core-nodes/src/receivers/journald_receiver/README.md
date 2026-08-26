@@ -138,7 +138,7 @@ config:
 | `identifiers` | list | `[]` | Exact `SYSLOG_IDENTIFIER` matches. An empty list installs no identifier filter. |
 | `priorities` | list | unset | Exact journald `PRIORITY` values to include. When unset, no priority filter is installed. |
 | `max_priority` | enum | unset | Shorthand for all priorities up to the selected level. Mutually exclusive with `priorities`. |
-| `start_at` | enum | `end` | `end` reads new entries only when no checkpoint exists; `beginning` reads existing entries. |
+| `start_at` | enum | `end` | `end` skips currently visible matching history when no checkpoint exists; see Limits for the head-recovery boundary risk. `beginning` reads existing entries. |
 | `batch.max_records` | integer | `1024` | Maximum log records per emitted batch. |
 | `batch.max_flush_period` | duration | `200ms` | Maximum time to hold a partial batch. |
 | `extraction.max_entry_bytes` | byte size | `1MiB` | Maximum copied bytes per journal entry. |
@@ -172,6 +172,7 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | Event | Severity | Description |
 | --- | --- | --- |
 | `journald_receiver.start` | `info` | Receiver started for the configured `source_id` and journal root path. |
+| `journald_receiver.start_at_end_head_recovery` | `warn` | `start_at: end` found no matching tail anchor and repositioned to the journal head. |
 | `journald_receiver.drain_ingress` | `info` | Receiver ingress drain started for the configured `source_id`. |
 | `journald_receiver.shutdown` | `info` | Receiver shutdown completed for the configured `source_id`. |
 
@@ -201,6 +202,12 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
   first implementation. Array coalescing is planned as a follow-up.
 - With `start_at: end`, a process crash before the first successful checkpoint
   can skip entries already read from journald but not yet durably committed.
+- With `start_at: end`, if no matching entry exists at startup, the receiver
+  repositions to the journal head so future matching appends remain followable.
+  A later journal invalidation (for example rotation, persistent-journal flush,
+  or a newly mounted journal root) can expose pre-startup matching history.
+  The receiver emits `journald_receiver.start_at_end_head_recovery` when this
+  fallback is taken. A durable boundary guard remains tracked in issue #3399.
 - Extraction limits are per entry and per field. There is no aggregate batch
   byte cap in v1, so tune `batch.max_records` and extraction limits for the
   expected host log volume and memory budget.

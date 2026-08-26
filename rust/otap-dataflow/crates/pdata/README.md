@@ -38,15 +38,15 @@ Rust reference implementation for the [OTel-Arrow Protocol
 
 ### OTAP records to OTLP bytes
 
-The OTAP Records type is `otap_df_pdata::otap::OtapArrowRecords`.
+The OTAP Records type is `otel_arrow_dfe_pdata::otap::OtapArrowRecords`.
 
 In the Logs signal, for example,
-`otap_df_pdata::otlp::logs::LogsProtoBytesEncoder` encodes OTLP
+`otel_arrow_dfe_pdata::otlp::logs::LogsProtoBytesEncoder` encodes OTLP
 bytes from OTAP records to a `&mut ProtoBuffer` output, likewise for
 `metrics::Metrics` and `traces::Traces`.
 
 In the OTAP-Dataflow engine, see
-`otap_df_otap::pdata::TryFrom<OtapArrowRecords>` for example, to
+`otel_arrow_dfe_otap::pdata::TryFrom<OtapArrowRecords>` for example, to
 translate from OTLP bytes into OTAP records.
 
 ### OTLP bytes to OTAP records
@@ -61,24 +61,24 @@ Attributes, and Resource Attributes.
 
 This translation into records is:
 
-1. `otap_df_pdata_views::otlp::bytes::logs::RawLogsData`: Construct a
+1. `otel_arrow_dfe_pdata_views::otlp::bytes::logs::RawLogsData`: Construct a
   view over the OTLP bytes for zero-copy traversal
-2. `otap_df_otap::encoder::encode_logs_otap_batch<T: LogsDataView>()`
+2. `otel_arrow_dfe_otap::encoder::encode_logs_otap_batch<T: LogsDataView>()`
   is a function to build OTAP records in a traversal
-3. `otap_df_pdata::encode::record::logs::LogsRecordBatchBuilder`
+3. `otel_arrow_dfe_pdata::encode::record::logs::LogsRecordBatchBuilder`
   is a OTel-Arrow builder which assembles Arrow arrays as the output of traversal.
 
 ### OTAP records to OTAP stream
 
 The OTAP stream data type is
-`otap_df_pdata::proto::opentelemetry::arrow::v1::BatchArrowRecords`.
+`otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::BatchArrowRecords`.
 
 To translate a stream of OTAP Records to `BatchArrowRecords`, use
-`otap_df_pdata::encode::producer::Producer`. The producer manages
+`otel_arrow_dfe_pdata::encode::producer::Producer`. The producer manages
 underlying `arrow::ipc::writer::StreamWriter` instances following the
 OTel-Arrow Phase 1 Golang reference implementation.
 
-Note that the `otap_df_pdata::otap::OtapArrowRecords` type supports
+Note that the `otel_arrow_dfe_pdata::otap::OtapArrowRecords` type supports
 both transport-optimized and memory-optimized representations, using
 Arrow metadata for the indicator.
 
@@ -88,20 +88,20 @@ basics](../../../../docs/otap_basics.md) documentation.
 ### OTAP stream to OTAP records
 
 To convert from `BatchArrowRecords` to `OtapArrowRecords`, use a
-`otap_df_pdata::decode::decoder::Consumer`. The consumer manages
+`otel_arrow_dfe_pdata::decode::decoder::Consumer`. The consumer manages
 underlying `arrow::ipc::reader::StreamReader` instances following the
 OTel-Arrow Phase 1 Golang reference implementation.
 
 After passing through an intermediate representation,
-`otap_df_pdata::decode::record_message::RecordMessage`, an assembly process
-`otap_df_pdata::otap::from_record_messages(Vec<RecordMessage>) -> T` yielding
+`otel_arrow_dfe_pdata::decode::record_message::RecordMessage`, an assembly process
+`otel_arrow_dfe_pdata::otap::from_record_messages(Vec<RecordMessage>) -> T` yielding
 `OtapArrowRecords` of the correct signal.
 
 ## Sub-Modules
 
 ### Schema
 
-The `otap_df_pdata::schema` module provides constants related to the
+The `otel_arrow_dfe_pdata::schema` module provides constants related to the
 OTAP records payload representation, defining the OpenTelemetry
 Protocol with Apache Arrow.
 
@@ -121,7 +121,7 @@ and in the ordinarily case no OTLP message objects are constructed.
 
 ### Proto
 
-The `otap_df_pdata::proto` module provides access to the original OTLP
+The `otel_arrow_dfe_pdata::proto` module provides access to the original OTLP
 and OTAP protocol message objects, for reference and testing.  This
 also exposes constants such as protocol tag numbers used for directly
 encoding and decoding OTLP bytes. These use the Prost and Tonic crates
@@ -135,14 +135,14 @@ objects are required.
 
 ### Testing
 
-The `otap_df_pdata::testing::equiv` module contains equivalence tests
+The `otel_arrow_dfe_pdata::testing::equiv` module contains equivalence tests
 for OTLP data. This compares two slices of `OtlpProtoMessage` to ensure
 that they contain equivalent data. This internally canonicalizes the
 two sets of messages and compares them with human-readable output.
 
 ### Views
 
-The `otap_df_pdata::views` provides view abstractions and utilities
+The `otel_arrow_dfe_pdata::views` provides view abstractions and utilities
 for working with OTLP pdata (protocol data) structures without
 constructing protocol message objects, enabling efficient translation
 to and from the OTAP records data format

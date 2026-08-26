@@ -3,16 +3,16 @@
 
 //! Shared OTLP receiver metric definitions.
 
-use otap_df_config::SignalType;
-use otap_df_engine::context::PipelineContext;
-use otap_df_telemetry::common_attributes::{
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_telemetry::common_attributes::{
     Outcome, ReceiverRejectionErrorType, SignalOutcomeAttributes,
 };
-use otap_df_telemetry::error::Error as TelemetryError;
-use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
-use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
+use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
+use otel_arrow_dfe_telemetry::instrument::Counter;
+use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 
 /// Transport protocol used to receive an OTLP request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
@@ -132,13 +132,13 @@ impl OtlpReceiverMetrics {
         &mut self,
         signal: SignalType,
         protocol: OtlpProtocol,
-        payload_bytes: u64,
+        payload_bytes: Option<u64>,
     ) {
         let requests = self
             .requests
             .with(OtlpRequestAttributes { signal, protocol });
         requests.started.inc();
-        if payload_bytes > 0 {
+        if let Some(payload_bytes) = payload_bytes.filter(|bytes| *bytes > 0) {
             requests.payload_size.add(payload_bytes);
         }
     }
@@ -240,8 +240,8 @@ impl OtlpReceiverMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_engine::context::ControllerContext;
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_engine::context::ControllerContext;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 
     fn new_test_metrics() -> OtlpReceiverMetrics {
         let registry = TelemetryRegistryHandle::new();
@@ -256,7 +256,7 @@ mod tests {
     #[test]
     fn receiver_metrics_are_partitioned_by_context() {
         let mut metrics = new_test_metrics();
-        metrics.record_request_admitted(SignalType::Logs, OtlpProtocol::Grpc, 42);
+        metrics.record_request_admitted(SignalType::Logs, OtlpProtocol::Grpc, Some(42));
         metrics.record_request_completed(SignalType::Logs, OtlpProtocol::Grpc);
         metrics.record_rejection(
             OtlpProtocol::Http,
@@ -301,7 +301,7 @@ mod tests {
     #[test]
     fn admitted_empty_request_still_records_started() {
         let mut metrics = new_test_metrics();
-        metrics.record_request_admitted(SignalType::Logs, OtlpProtocol::Http, 0);
+        metrics.record_request_admitted(SignalType::Logs, OtlpProtocol::Http, Some(0));
 
         let requests = metrics.requests_for(SignalType::Logs, OtlpProtocol::Http);
         assert_eq!(requests.started.get(), 1);
@@ -313,7 +313,7 @@ mod tests {
     #[test]
     fn terminal_snapshots_preserve_enum_attribute_values_once() {
         let mut metrics = new_test_metrics();
-        metrics.record_request_admitted(SignalType::Metrics, OtlpProtocol::Http, 0);
+        metrics.record_request_admitted(SignalType::Metrics, OtlpProtocol::Http, Some(0));
         metrics.record_rejection(
             OtlpProtocol::Grpc,
             ReceiverRejectionErrorType::MemoryPressure,

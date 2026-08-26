@@ -1,0 +1,25 @@
+# Configuration for the `cargo xtask component-inventory` scanner (RFC 0001).
+#
+# See docs/component-inventory.md for the full guide.
+
+# Directory names (matched by basename, at any depth under `crates/`) that the
+# scanner never descends into when looking for `#[component_inventory]`
+# annotations. Use this to exclude build tooling, test-only crates, and
+# generated/vendored trees that carry no shippable components.
+#
+# Every entry must correspond to a directory that exists somewhere under
+# `crates/`; the scanner errors on a stale entry so this list cannot silently
+# rot.
+skip_dirs = [
+    "tests",
+    "benches",
+    "examples",
+    "engine-macros",
+    "component-inventory-syntax",
+    "component-inventory",
+    "telemetry-macros",
+    "validation",
+    "otap-test-net",
+    "otap-test-tls-certs",
+    "quiver-e2e",
+]

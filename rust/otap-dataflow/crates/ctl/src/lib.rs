@@ -136,7 +136,7 @@ pub async fn run_with_terminal_and_diagnostics(
     };
 
     ensure_crypto_provider()?;
-    let client = otap_df_admin_api::AdminClient::builder()
+    let client = otel_arrow_dfe_admin_api::AdminClient::builder()
         .http(resolved.settings)
         .build()?;
 

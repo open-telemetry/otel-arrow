@@ -6,35 +6,41 @@
 //! This processor will partition incoming OTAP batches by the evaluated result of some expression
 //! and set the partition value in the outgoing batches metadata.
 
+otel_arrow_dfe_telemetry::otel_component_scope!(
+    urn = PARTITION_PROCESSOR_URN,
+    target = "otel.processor.partition",
+);
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::SignalType;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::config::ProcessorConfig;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
-use otap_df_engine::error::ProcessorErrorKind;
-use otap_df_engine::local::processor::{EffectHandler, Processor};
-use otap_df_engine::message::Message;
-use otap_df_engine::node::NodeId;
-use otap_df_engine::processor::ProcessorWrapper;
-use otap_df_engine::wiring_contract::WiringContract;
-use otap_df_engine::{
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_engine::config::ProcessorConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
+use otel_arrow_dfe_engine::error::ProcessorErrorKind;
+use otel_arrow_dfe_engine::local::processor::{EffectHandler, Processor};
+use otel_arrow_dfe_engine::message::Message;
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::processor::{FlowMetricHook, ProcessorWrapper};
+use otel_arrow_dfe_engine::wiring_contract::WiringContract;
+use otel_arrow_dfe_engine::{
     ConsumerEffectHandlerExtension, FlowMetricAccumulation, Interests,
     MessageSourceLocalEffectHandlerExtension, ProcessorFactory, ProducerEffectHandlerExtension,
 };
-use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
-use otap_df_otap::accessory::context::split_contexts::Contexts;
-use otap_df_otap::accessory::slots::Key;
-use otap_df_otap::pdata::{Context, OtapPdata};
-use otap_df_otap::transport_headers::{TransportHeader, ValueKind};
-use otap_df_pdata::{OtapArrowRecords, OtapPayload, TryIntoWithOptions};
-use otap_df_query_engine::parser::default_parser_options;
-use otap_df_query_engine::pipeline::partition::{PartitionValue, Partitioner};
-use otap_df_query_engine_languages::opl::parser::OplParser;
-use otap_df_telemetry::metrics::MetricSet;
+use otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES;
+use otel_arrow_dfe_otap::accessory::context::split_contexts::Contexts;
+use otel_arrow_dfe_otap::accessory::slots::Key;
+use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_otap::transport_headers::{TransportHeader, ValueKind};
+use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayload, TryIntoWithOptions};
+use otel_arrow_dfe_query_engine::parser::default_parser_options;
+use otel_arrow_dfe_query_engine::pipeline::partition::{PartitionValue, Partitioner};
+use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
+use otel_arrow_dfe_telemetry::common_attributes::{Outcome, OutcomeAttributes};
+use otel_arrow_dfe_telemetry::metrics::MeasurementMetricSet;
 use serde_json::Value;
 use slotmap::Key as _;
 
@@ -52,8 +58,8 @@ fn create_partition_processor(
     node_id: NodeId,
     user_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
-    _capabilities: &otap_df_engine::capability::registry::Capabilities,
-) -> Result<ProcessorWrapper<OtapPdata>, otap_df_config::error::Error> {
+    _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+) -> Result<ProcessorWrapper<OtapPdata>, otel_arrow_dfe_config::error::Error> {
     let processor = PartitionProcessor::from_config(&pipeline_ctx, &user_config.config)?;
     Ok(ProcessorWrapper::local(
         processor,
@@ -64,6 +70,7 @@ fn create_partition_processor(
 }
 
 /// Register partition processor
+#[otel_arrow_dfe_engine::component_inventory(category = Processor)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static PARTITION_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: PARTITION_PROCESSOR_URN,
@@ -71,7 +78,7 @@ pub static PARTITION_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorF
     wiring_contract: WiringContract::UNRESTRICTED,
     validate_config: |value| {
         let config: Config = serde_json::from_value(value.clone()).map_err(|e| {
-            otap_df_config::error::Error::InvalidUserConfig {
+            otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
             }
         })?;
@@ -82,12 +89,12 @@ pub static PARTITION_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorF
             PartitionByConfig::OplExpression(opl_expression) => {
                 let (expr, function_defs) =
                     OplParser::parse_expr_with_options(&opl_expression, default_parser_options())
-                        .map_err(|e| otap_df_config::error::Error::InvalidUserConfig {
+                        .map_err(|e| otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                         error: format!("Could not parse OPL Expression: {e:?}"),
                     })?;
 
                 let _ = Partitioner::try_new(expr, function_defs).map_err(|e| {
-                    otap_df_config::error::Error::InvalidUserConfig {
+                    otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                         error: format!("Could not plan partitioner from OPL expression: {e:?}"),
                     }
                 })?;
@@ -104,16 +111,16 @@ pub struct PartitionProcessor {
     partitioner: Partitioner,
     header_name: String,
     serialization_strategy: PartitionValueSerializeStrategy,
-    metrics: MetricSet<Metrics>,
+    metrics: MeasurementMetricSet<Metrics>,
 }
 
 impl PartitionProcessor {
     fn from_config(
         pipeline_ctx: &PipelineContext,
         config: &Value,
-    ) -> Result<Self, otap_df_config::error::Error> {
+    ) -> Result<Self, otel_arrow_dfe_config::error::Error> {
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
-            otap_df_config::error::Error::InvalidUserConfig {
+            otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: format!("Failed to parse PartitionProcessor config: {e}"),
             }
         })?;
@@ -122,12 +129,12 @@ impl PartitionProcessor {
             PartitionByConfig::OplExpression(opl_expression) => {
                 let (expr, function_defs) =
                     OplParser::parse_expr_with_options(&opl_expression, default_parser_options())
-                        .map_err(|e| otap_df_config::error::Error::InvalidUserConfig {
+                        .map_err(|e| otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                         error: format!("Could not parse OPL Expression: {e:?}"),
                     })?;
 
                 Partitioner::try_new(expr, function_defs).map_err(|e| {
-                    otap_df_config::error::Error::InvalidUserConfig {
+                    otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                         error: format!("Could not plan partitioner from OPL expression: {e:?}"),
                     }
                 })?
@@ -139,7 +146,7 @@ impl PartitionProcessor {
             contexts: Contexts::new(config.inbound_request_limit, config.outbound_request_limit),
             header_name: config.partition_header_name,
             serialization_strategy: config.header_serialization_strategy,
-            metrics: pipeline_ctx.register_metrics(),
+            metrics: Metrics::register(pipeline_ctx),
         })
     }
 
@@ -150,7 +157,7 @@ impl PartitionProcessor {
         outbound_key: Key,
         signal_type: SignalType,
         effect_handler: &mut EffectHandler<OtapPdata>,
-    ) -> Result<(), otap_df_engine::error::Error> {
+    ) -> Result<(), otel_arrow_dfe_engine::error::Error> {
         // clear the outbound context
         if let Some(inbound) = self.contexts.clear_outbound(outbound_key) {
             // if we're in this location, we've cleared the final outbound context for some inbound
@@ -174,14 +181,14 @@ impl Processor<OtapPdata> for PartitionProcessor {
         &mut self,
         message: Message<OtapPdata>,
         effect_handler: &mut EffectHandler<OtapPdata>,
-    ) -> Result<(), otap_df_engine::error::Error> {
+    ) -> Result<(), otel_arrow_dfe_engine::error::Error> {
         match message {
             Message::Control(control_message) => match control_message {
                 NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
                 } => {
-                    if let Err(e) = metrics_reporter.report(&mut self.metrics) {
-                        return Err(otap_df_engine::error::Error::InternalError {
+                    if let Err(e) = metrics_reporter.report_measurement(&mut self.metrics) {
+                        return Err(otel_arrow_dfe_engine::error::Error::InternalError {
                             message: e.to_string(),
                         });
                     }
@@ -211,7 +218,7 @@ impl Processor<OtapPdata> for PartitionProcessor {
                 NodeControlMsg::Config { .. }
                 | NodeControlMsg::TimerTick { .. }
                 | NodeControlMsg::Wakeup { .. }
-                | NodeControlMsg::DelayedData { .. }
+                | NodeControlMsg::ResumeData { .. }
                 | NodeControlMsg::MemoryPressureChanged { .. }
                 | NodeControlMsg::DrainIngress { .. }
                 | NodeControlMsg::Shutdown { .. } => {
@@ -234,12 +241,22 @@ impl Processor<OtapPdata> for PartitionProcessor {
 
                 let mut partitions = match self.partitioner.partition(otap_batch) {
                     Ok(partitions) => {
-                        self.metrics.partition_operations_succeeded.inc();
+                        self.metrics
+                            .with(OutcomeAttributes {
+                                outcome: Outcome::Success,
+                            })
+                            .operations
+                            .inc();
                         partitions
                     }
                     Err(e) => {
-                        self.metrics.partition_operations_failed.inc();
-                        return Err(otap_df_engine::error::Error::ProcessorError {
+                        self.metrics
+                            .with(OutcomeAttributes {
+                                outcome: Outcome::Failure,
+                            })
+                            .operations
+                            .inc();
+                        return Err(otel_arrow_dfe_engine::error::Error::ProcessorError {
                             processor: effect_handler.processor_id(),
                             kind: ProcessorErrorKind::Other,
                             error: format!("Error partitioning batch: {e}"),
@@ -251,9 +268,10 @@ impl Processor<OtapPdata> for PartitionProcessor {
                 match partitions.len() {
                     0 => {
                         // no partitions, just Ack the inbound
-                        let pdata =
+                        let mut pdata =
                             OtapPdata::new(inbound_context, OtapPayload::empty(signal_type));
 
+                        pdata.complete_processor_without_output(effect_handler);
                         effect_handler.notify_ack(AckMsg::new(pdata)).await?;
                     }
                     1 => {
@@ -274,10 +292,8 @@ impl Processor<OtapPdata> for PartitionProcessor {
                         ));
                         inbound_context.set_transport_headers(headers);
 
-                        let pdata = OtapPdata::new(
-                            inbound_context,
-                            OtapPayload::OtapArrowRecords(partition.batch),
-                        );
+                        let pdata =
+                            OtapPdata::new(inbound_context, OtapPayload::from(partition.batch));
                         effect_handler.send_message_with_source_node(pdata).await?;
                     }
                     _ => {
@@ -287,7 +303,7 @@ impl Processor<OtapPdata> for PartitionProcessor {
                         let inbound_ctx_key = self
                             .contexts
                             .insert_inbound(inbound_context.clone(), None)
-                            .ok_or_else(|| otap_df_engine::error::Error::ProcessorError {
+                            .ok_or_else(|| otel_arrow_dfe_engine::error::Error::ProcessorError {
                                 processor: effect_handler.processor_id(),
                                 kind: ProcessorErrorKind::Other,
                                 error: "inbound slots not available".into(),
@@ -318,7 +334,7 @@ impl Processor<OtapPdata> for PartitionProcessor {
                                     );
                                 }
 
-                                otap_df_engine::error::Error::ProcessorError {
+                                otel_arrow_dfe_engine::error::Error::ProcessorError {
                                     processor: effect_handler.processor_id(),
                                     kind: ProcessorErrorKind::Other,
                                     error: "outbound slots not available".into(),
@@ -327,20 +343,15 @@ impl Processor<OtapPdata> for PartitionProcessor {
                             })?;
 
                             // set the transport header
-                            let mut pdata_context = Context::default();
-                            let mut headers = inbound_context
-                                .transport_headers()
-                                .cloned()
-                                .unwrap_or_default();
+                            let mut pdata_context = inbound_context.clone_detached();
+                            let mut headers =
+                                pdata_context.take_transport_headers().unwrap_or_default();
                             headers.push(partition_value_to_transport_header(
                                 self.header_name.clone(),
                                 &self.serialization_strategy,
                                 partition.value,
                             ));
                             pdata_context.set_transport_headers(headers);
-                            if let Some(peer_addr) = inbound_context.peer_addr() {
-                                pdata_context.set_peer_addr(peer_addr);
-                            }
 
                             let outbound_batch_num_items = partition.batch.num_items();
                             let mut pdata = OtapPdata::new(pdata_context, partition.batch.into());
@@ -474,7 +485,7 @@ mod test {
 
     use super::*;
 
-    use otap_df_engine::{
+    use otel_arrow_dfe_engine::{
         capability::registry::Capabilities,
         context::ControllerContext,
         control::{
@@ -485,11 +496,11 @@ mod test {
             test_node,
         },
     };
-    use otap_df_otap::{
+    use otel_arrow_dfe_otap::{
         pdata::Context,
         testing::{TestCallData, next_ack, next_nack},
     };
-    use otap_df_pdata::{
+    use otel_arrow_dfe_pdata::{
         OtlpProtoBytes, TryFromWithOptions,
         otap::Logs,
         proto::{
@@ -502,12 +513,13 @@ mod test {
         },
         testing::round_trip::otlp_to_otap,
     };
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use prost::Message as _;
 
     fn create_processor_with_config(
         config: Value,
         runtime: &TestRuntime<OtapPdata>,
-    ) -> Result<ProcessorWrapper<OtapPdata>, otap_df_config::error::Error> {
+    ) -> Result<ProcessorWrapper<OtapPdata>, otel_arrow_dfe_config::error::Error> {
         let mut node_config = NodeUserConfig::new_processor_config(PARTITION_PROCESSOR_URN);
         node_config.config = config;
 
@@ -530,12 +542,36 @@ mod test {
         )
     }
 
+    fn partition_operation_counts(
+        telemetry_registry: &TelemetryRegistryHandle,
+    ) -> Vec<(String, u64)> {
+        let mut reported_operations = Vec::new();
+        telemetry_registry.visit_current_metrics_with_item_attrs(
+            |descriptor, _attributes, item_attributes, metrics| {
+                if descriptor.name == "processor.partition" {
+                    let outcome = item_attributes
+                        .iter()
+                        .find(|(key, _)| *key == "outcome")
+                        .map(|(_, value)| *value)
+                        .expect("partition operation outcome");
+                    for (field, value) in metrics {
+                        if field.name == "operations" {
+                            reported_operations.push((outcome.to_string(), value.to_u64_lossy()));
+                        }
+                    }
+                }
+            },
+            false,
+        );
+        reported_operations
+    }
+
     /// Helper to send an Ack for a given context
     async fn send_ack(
         ctx: &mut TestContext<OtapPdata>,
         context: Context,
         signal_type: SignalType,
-    ) -> Result<(), otap_df_engine::error::Error> {
+    ) -> Result<(), otel_arrow_dfe_engine::error::Error> {
         let ack = next_ack(AckMsg::new(OtapPdata::new(
             context,
             OtapPayload::empty(signal_type),
@@ -551,7 +587,7 @@ mod test {
         context: Context,
         signal_type: SignalType,
         reason: &str,
-    ) -> Result<(), otap_df_engine::error::Error> {
+    ) -> Result<(), otel_arrow_dfe_engine::error::Error> {
         let nack = next_nack(NackMsg::new(
             reason,
             OtapPdata::new(context, OtapPayload::empty(signal_type)),
@@ -716,9 +752,13 @@ mod test {
             .validate(|_ctx| async move {});
     }
 
+    /// Scenario: A valid log batch is partitioned into a single output batch.
+    /// Guarantees: The output is preserved and one successful partition operation is exported.
     #[test]
     fn test_single_partition() {
         let runtime = TestRuntime::<OtapPdata>::new();
+        let telemetry_registry = runtime.metrics_registry();
+        let metrics_reporter = runtime.metrics_reporter();
         let expression = "attributes[\"x\"]";
         let header_name = "partition-header";
         let processor = create_processor_with_config(
@@ -796,11 +836,91 @@ mod test {
                             )]
                         )]
                     }
-                )
+                );
+
+                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter,
+                }))
+                .await
+                .expect("collect partition metrics");
             })
-            .validate(|_ctx| async move {});
+            .validate(move |_ctx| async move {
+                telemetry_registry
+                    .flush_pending_metrics()
+                    .await
+                    .expect("flush pending partition metrics");
+
+                assert_eq!(
+                    partition_operation_counts(&telemetry_registry),
+                    vec![("success".to_string(), 1)]
+                );
+            });
     }
 
+    /// Scenario: A partition expression divides by zero while processing a PData message.
+    /// Guarantees: The processor returns an error and reports one failed partition operation.
+    #[test]
+    fn test_partition_error_reports_failure_outcome() {
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let telemetry_registry = runtime.metrics_registry();
+        let metrics_reporter = runtime.metrics_reporter();
+        let processor = create_processor_with_config(
+            serde_json::json!({
+                "partition_by": { "opl_expression": "severity_number / 0" },
+                "partition_header_name": "partition-header",
+            }),
+            &runtime,
+        )
+        .expect("create partition processor");
+
+        runtime
+            .set_processor(processor)
+            .run_test(move |mut ctx| async move {
+                let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
+                    resource_logs: vec![ResourceLogs::new(
+                        Resource::default(),
+                        vec![ScopeLogs::new(
+                            InstrumentationScope::default(),
+                            vec![
+                                LogRecord::build()
+                                    .event_name("event0")
+                                    .severity_number(1)
+                                    .finish(),
+                            ],
+                        )],
+                    )],
+                }));
+
+                let error = ctx
+                    .process(Message::PData(OtapPdata::new_default(otap_batch.into())))
+                    .await
+                    .expect_err("partition expression should fail at runtime");
+                assert!(
+                    error.to_string().contains("Error partitioning batch"),
+                    "unexpected partition error: {error}"
+                );
+
+                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter,
+                }))
+                .await
+                .expect("collect partition metrics");
+            })
+            .validate(move |_ctx| async move {
+                telemetry_registry
+                    .flush_pending_metrics()
+                    .await
+                    .expect("flush pending partition metrics");
+
+                assert_eq!(
+                    partition_operation_counts(&telemetry_registry),
+                    vec![("failure".to_string(), 1)]
+                );
+            });
+    }
+
+    /// Scenario: partitioning an empty subscribed batch produces no partitions.
+    /// Guarantees: the input is acknowledged without producing downstream pdata.
     #[test]
     fn test_empty_batch() {
         let runtime = TestRuntime::<OtapPdata>::new();
@@ -906,7 +1026,7 @@ mod test {
                 headers.push(TransportHeader::text("h1", "header1", "hello world"));
                 context.set_transport_headers(headers);
                 context.set_peer_addr("10.0.0.1:5005".parse().unwrap());
-                let mut pdata = OtapPdata::new(context, OtapPayload::OtapArrowRecords(otap_batch));
+                let mut pdata = OtapPdata::new(context, OtapPayload::from(otap_batch));
                 pdata.start_flow_metric();
                 pdata.add_flow_compute(8);
                 ctx.process(Message::PData(pdata))
@@ -958,7 +1078,7 @@ mod test {
                 let mut headers = context.take_transport_headers().unwrap_or_default();
                 headers.push(TransportHeader::text("h1", "header1", "hello world"));
                 context.set_transport_headers(headers);
-                let pdata = OtapPdata::new(context, OtapPayload::OtapArrowRecords(otap_batch));
+                let pdata = OtapPdata::new(context, OtapPayload::from(otap_batch));
                 ctx.process(Message::PData(pdata))
                     .await
                     .expect("no process error");

@@ -99,7 +99,7 @@ impl From<OwnedValue> for AnyValue {
                 if a.len() > 0 {
                     let mut byte_values = Vec::new();
 
-                    let is_bytes = a.get_items(&mut IndexValueClosureCallback::new(|_, v| {
+                    let is_bytes = a.get_items(&mut |_, v| {
                         if let Value::Integer(i) = v {
                             let v = i.get_value();
                             if v >= u8::MIN as i64 && v <= u8::MAX as i64 {
@@ -109,7 +109,7 @@ impl From<OwnedValue> for AnyValue {
                         }
 
                         false
-                    }));
+                    });
 
                     if is_bytes {
                         return AnyValue::Native(OtlpAnyValue::BytesValue(
@@ -225,13 +225,13 @@ impl ArrayValue for ByteArrayValueStorage {
         Ok(self.values.get(index).map(|v| v as &dyn AsStaticValue))
     }
 
-    fn get_item_range(
-        &self,
+    fn get_item_range<'a>(
+        &'a self,
         range: ArrayRange,
-        item_callback: &mut dyn IndexValueCallback,
+        item_callback: &mut ArrayValueIteratorCallback<'a, '_>,
     ) -> bool {
         for (index, value) in range.get_slice(&self.values).iter().enumerate() {
-            if !item_callback.next(index, Value::Integer(value)) {
+            if !(item_callback)(index, Value::Integer(value)) {
                 return false;
             }
         }
@@ -315,10 +315,10 @@ impl ArrayValueMut for ByteArrayValueStorage {
         )))
     }
 
-    fn retain(&mut self, item_callback: &mut dyn IndexValueMutCallback) {
+    fn retain(&mut self, item_callback: &mut ArrayValueMutIteratorCallback<'_>) {
         let mut index = 0;
         self.values.retain_mut(|v| {
-            let r = item_callback.next(index, v);
+            let r = (item_callback)(index, v);
             index += 1;
             r
         });

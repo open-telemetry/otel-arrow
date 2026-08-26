@@ -1,6 +1,0 @@
-change_type: breaking
-component: pipeline
-note: Replace Azure Monitor exporter completion, HTTP, state-mapping, and heartbeat metric series with bounded metric sets.
-issues: [3300]
-subtext: |
-  Migration: Update dashboards, alerts, and queries to use the `exporter.azure_monitor` metric sets, filtering on `signal`, `outcome`, `response`, and `mapping` instead of the removed Azure Monitor exporter metric names.

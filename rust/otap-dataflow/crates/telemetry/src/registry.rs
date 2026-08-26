@@ -617,7 +617,7 @@ mod tests {
         }
 
         fn needs_flush(&self) -> bool {
-            self.values.iter().any(|&v| !v.is_zero())
+            self.values.iter().any(|v| !v.is_zero())
         }
     }
 

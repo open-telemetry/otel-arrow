@@ -165,8 +165,8 @@ impl Capabilities {
 
     /// Resolve a **required** shared capability.
     ///
-    /// Returns `Box<dyn C::Shared>` -- the extension's shared
-    /// implementation produced for this node.
+    /// Returns `Box<dyn C::Shared>` -- the extension's `Send + Sync`
+    /// capability implementation produced for this node.
     ///
     /// # One-shot contract
     ///

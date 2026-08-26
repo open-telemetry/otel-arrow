@@ -105,14 +105,14 @@ pub fn parse_standard_double_literal<R: RuleType>(
 /// Handles basic escape sequences: \", \\, \n, \r, \t
 pub fn parse_standard_string_literal<R: RuleType>(
     string_literal_rule: Pair<R>,
-) -> StaticScalarExpression {
+) -> Result<StaticScalarExpression, ParserError> {
     let query_location = to_query_location(&string_literal_rule);
 
     let raw_string = string_literal_rule.as_str();
     let mut chars = raw_string.chars();
     let mut s = String::with_capacity(raw_string.len());
     let mut position = 1;
-    let mut last_char = '\0';
+    let mut parsing_escape_sequence = false;
 
     let mut c = chars.next();
     loop {
@@ -123,20 +123,32 @@ pub fn parse_standard_string_literal<R: RuleType>(
         let mut current_char = c.unwrap();
         let mut skip_push = false;
 
-        if position == 1 || current_char == '\\' {
+        if position == 1 {
             skip_push = true;
-        } else if last_char == '\\' {
+            parsing_escape_sequence = false;
+        } else if current_char == '\\' {
+            if !parsing_escape_sequence {
+                skip_push = true;
+                parsing_escape_sequence = true;
+            } else {
+                parsing_escape_sequence = false;
+            }
+        } else if parsing_escape_sequence {
+            parsing_escape_sequence = false;
             match current_char {
                 '"' => current_char = '"',
-                '\\' => current_char = '\\',
                 'n' => current_char = '\n',
                 'r' => current_char = '\r',
                 't' => current_char = '\t',
-                _ => panic!("Unexpected escape character"),
+                other => {
+                    return Err(ParserError::SyntaxError(
+                        query_location,
+                        format!("Unexpected escape sequence character '{other}'"),
+                    ));
+                }
             }
         }
 
-        last_char = current_char;
         position += 1;
 
         c = chars.next();
@@ -149,5 +161,8 @@ pub fn parse_standard_string_literal<R: RuleType>(
         }
     }
 
-    StaticScalarExpression::String(StringScalarExpression::new(query_location, s.as_str()))
+    Ok(StaticScalarExpression::String(StringScalarExpression::new(
+        query_location,
+        s.as_str(),
+    )))
 }

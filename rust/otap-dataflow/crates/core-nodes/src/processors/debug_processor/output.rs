@@ -10,13 +10,13 @@ use crate::processors::debug_processor::marshaler::ViewMarshaler;
 use crate::processors::debug_processor::normal_marshaler::NormalViewMarshaler;
 use crate::processors::debug_processor::sampling::Sampler;
 use async_trait::async_trait;
-use otap_df_config::PortName;
-use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
-use otap_df_engine::error::{Error, ProcessorErrorKind, format_error_sources};
-use otap_df_engine::local::processor as local;
-use otap_df_engine::node::NodeId;
-use otap_df_otap::pdata::OtapPdata;
-use otap_df_pdata::proto::{
+use otel_arrow_dfe_config::PortName;
+use otel_arrow_dfe_engine::MessageSourceLocalEffectHandlerExtension;
+use otel_arrow_dfe_engine::error::{Error, ProcessorErrorKind, format_error_sources};
+use otel_arrow_dfe_engine::local::processor as local;
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_pdata::proto::{
     OtlpProtoMessage,
     opentelemetry::{
         logs::v1::{LogsData, ResourceLogs, ScopeLogs},

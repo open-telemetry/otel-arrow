@@ -14,7 +14,7 @@ mod authz_decision;
 mod bearer_token;
 mod deny_reason;
 
-pub use authorized_identity::AuthorizedIdentity;
+pub use authorized_identity::{AuthorizedIdentity, ClaimValue};
 pub use authz_decision::AuthzDecision;
 pub use bearer_token::BearerToken;
 pub use deny_reason::DenyReason;

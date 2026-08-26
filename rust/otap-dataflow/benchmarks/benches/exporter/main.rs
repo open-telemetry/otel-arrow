@@ -7,12 +7,12 @@
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use fluke_hpack::Encoder;
-use otap_df_channel::mpsc;
-use otap_df_core_nodes::exporters::otap_exporter::{OTAP_EXPORTER_URN, OTAPExporter};
-use otap_df_core_nodes::exporters::perf_exporter::{
+use otel_arrow_dfe_channel::mpsc;
+use otel_arrow_dfe_core_nodes::exporters::otap_exporter::{OTAP_EXPORTER_URN, OTAPExporter};
+use otel_arrow_dfe_core_nodes::exporters::perf_exporter::{
     OTAP_PERF_EXPORTER_URN, PerfExporter, config::Config,
 };
-use otap_df_engine::{
+use otel_arrow_dfe_engine::{
     Interests,
     config::ExporterConfig,
     exporter::ExporterWrapper,
@@ -20,8 +20,8 @@ use otap_df_engine::{
     node::NodeWithPDataReceiver,
     testing::test_node,
 };
-use otap_df_otap::pdata::{Context, OtapPdata};
-use otap_df_pdata::{
+use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
+use otel_arrow_dfe_pdata::{
     Consumer,
     otap::{OtapArrowRecords, from_record_messages},
     proto::opentelemetry::arrow::v1::{
@@ -32,7 +32,7 @@ use otap_df_pdata::{
     },
 };
 
-use otap_df_pdata::proto::opentelemetry::collector::{
+use otel_arrow_dfe_pdata::proto::opentelemetry::collector::{
     logs::v1::{
         ExportLogsServiceRequest, ExportLogsServiceResponse,
         logs_service_server::{LogsService, LogsServiceServer},
@@ -58,13 +58,13 @@ use tonic::transport::Server;
 
 use tonic::{Request, Response, Status};
 
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::context::ControllerContext;
-use otap_df_engine::control::{
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_engine::context::ControllerContext;
+use otel_arrow_dfe_engine::control::{
     Controllable, NodeControlMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
 };
-use otap_df_otap::otlp_grpc::OTLPData;
-use otap_df_telemetry::InternalTelemetrySystem;
+use otel_arrow_dfe_otap::otlp_grpc::OTLPData;
+use otel_arrow_dfe_telemetry::InternalTelemetrySystem;
 use serde_json::json;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -298,7 +298,7 @@ fn bench_exporter(c: &mut Criterion) {
 
     // start grpc server to handle otap stream
     let grpc_addr = "127.0.0.1";
-    let otap_grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+    let otap_grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
     let otap_listening_addr: SocketAddr = format!("{grpc_addr}:{otap_grpc_port}")
         .parse()
         .expect("failed to parse otap address");
@@ -327,7 +327,7 @@ fn bench_exporter(c: &mut Criterion) {
     });
 
     // start grpc server to handle otlp requests
-    let otlp_grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+    let otlp_grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
     let otlp_listening_addr: SocketAddr = format!("{grpc_addr}:{otlp_grpc_port}")
         .parse()
         .expect("failed to parse OTLP address");

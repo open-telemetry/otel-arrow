@@ -10,10 +10,10 @@ use serde::Deserialize;
 #[serde(deny_unknown_fields)]
 pub struct Config {
     /// The base URI for where the parquet files should be written
-    pub storage: otap_df_otap::object_store::StorageType,
+    pub storage: otel_arrow_dfe_otap::object_store::StorageType,
 
     /// Optional object_store retry settings for cloud-backed storage.
-    pub retry: Option<otap_df_otap::object_store::RetryOptions>,
+    pub retry: Option<otel_arrow_dfe_otap::object_store::RetryOptions>,
 
     /// Configuration for how to compute partitions from the dataset
     pub partitioning_strategies: Option<Vec<PartitioningStrategy>>,
@@ -69,7 +69,7 @@ pub enum PartitioningStrategy {
 mod test {
     use serde_json::json;
 
-    use otap_df_otap::object_store::StorageType;
+    use otel_arrow_dfe_otap::object_store::StorageType;
 
     use super::*;
 

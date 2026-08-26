@@ -1,5 +1,5 @@
 [package]
-name = "otap-df-pdata-otlp-macros"
+name = "otel-arrow-dfe-pdata-otlp-macros"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
@@ -15,4 +15,4 @@ proc-macro = true
 syn = { workspace = true, features = ["full", "extra-traits"] }
 quote = { workspace = true }
 proc-macro2 = { workspace = true }
-otap-df-pdata-otlp-model = { workspace = true }
+otel-arrow-dfe-pdata-otlp-model = { workspace = true }

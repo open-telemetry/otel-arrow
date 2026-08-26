@@ -28,39 +28,42 @@
 //!    drained.
 
 use async_trait::async_trait;
-use otap_df_config::observed_state::{ObservedStateSettings, SendPolicy};
-use otap_df_config::pipeline::PipelineConfig;
-use otap_df_config::policy::{ChannelCapacityPolicy, TelemetryPolicy};
-use otap_df_config::{DeployedPipelineKey, PipelineGroupId, PipelineId};
-use otap_df_engine::ExporterFactory;
-use otap_df_engine::ExtensionFactory;
-use otap_df_engine::ReceiverFactory;
-use otap_df_engine::capability::registry::Capabilities;
-use otap_df_engine::config::{ExporterConfig, ExtensionConfig, ReceiverConfig};
-use otap_df_engine::context::{ControllerContext, ExtensionContext, PipelineContext};
-use otap_df_engine::control::{
+use otel_arrow_dfe_config::observed_state::{ObservedStateSettings, SendPolicy};
+use otel_arrow_dfe_config::pipeline::PipelineConfig;
+use otel_arrow_dfe_config::policy::{
+    ChannelCapacityPolicy, RateLimitAggregation, RateLimitEnforcement, RateLimitPressure,
+    RateLimitUnit, RateLimiterPolicy, TelemetryPolicy, TokenBucketPolicy,
+};
+use otel_arrow_dfe_config::{DeployedPipelineKey, PipelineGroupId, PipelineId};
+use otel_arrow_dfe_engine::ExporterFactory;
+use otel_arrow_dfe_engine::ExtensionFactory;
+use otel_arrow_dfe_engine::ReceiverFactory;
+use otel_arrow_dfe_engine::capability::registry::Capabilities;
+use otel_arrow_dfe_engine::config::{ExporterConfig, ExtensionConfig, ReceiverConfig};
+use otel_arrow_dfe_engine::context::{ControllerContext, ExtensionContext, PipelineContext};
+use otel_arrow_dfe_engine::control::{
     ExtensionControlMsg, RuntimeControlMsg, pipeline_completion_msg_channel,
     runtime_ctrl_msg_channel,
 };
-use otap_df_engine::error::Error as EngineError;
-use otap_df_engine::exporter::ExporterWrapper;
-use otap_df_engine::extension::{EffectHandler, ExtensionBundle, ExtensionWrapper};
-use otap_df_engine::local::exporter as local_exp;
-use otap_df_engine::local::processor as local_proc;
-use otap_df_engine::local::receiver as local_recv;
-use otap_df_engine::message::{ExporterInbox, Message};
-use otap_df_engine::processor::ProcessorWrapper;
-use otap_df_engine::receiver::ReceiverWrapper;
-use otap_df_engine::terminal_state::TerminalState;
-use otap_df_engine::testing::capability::no_op_stateful::LocalNoOpStateful;
-use otap_df_engine::testing::capability::no_op_stateful::NoOpStateful;
-use otap_df_engine::testing::capability::no_op_stateful::SharedNoOpStateful;
-use otap_df_engine::testing::capability::no_op_stateless::LocalNoOpStateless;
-use otap_df_engine::testing::capability::no_op_stateless::NoOpStateless;
-use otap_df_engine::testing::capability::no_op_stateless::SharedNoOpStateless;
-use otap_df_engine::{PipelineFactory, extension_capabilities};
-use otap_df_state::store::ObservedStateStore;
-use otap_df_telemetry::InternalTelemetrySystem;
+use otel_arrow_dfe_engine::error::Error as EngineError;
+use otel_arrow_dfe_engine::exporter::ExporterWrapper;
+use otel_arrow_dfe_engine::extension::{EffectHandler, ExtensionBundle, ExtensionWrapper};
+use otel_arrow_dfe_engine::local::exporter as local_exp;
+use otel_arrow_dfe_engine::local::processor as local_proc;
+use otel_arrow_dfe_engine::local::receiver as local_recv;
+use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
+use otel_arrow_dfe_engine::processor::ProcessorWrapper;
+use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
+use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_engine::testing::capability::no_op_stateful::LocalNoOpStateful;
+use otel_arrow_dfe_engine::testing::capability::no_op_stateful::NoOpStateful;
+use otel_arrow_dfe_engine::testing::capability::no_op_stateful::SharedNoOpStateful;
+use otel_arrow_dfe_engine::testing::capability::no_op_stateless::LocalNoOpStateless;
+use otel_arrow_dfe_engine::testing::capability::no_op_stateless::NoOpStateless;
+use otel_arrow_dfe_engine::testing::capability::no_op_stateless::SharedNoOpStateless;
+use otel_arrow_dfe_engine::{PipelineFactory, extension_capabilities};
+use otel_arrow_dfe_state::store::ObservedStateStore;
+use otel_arrow_dfe_telemetry::InternalTelemetrySystem;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -157,7 +160,7 @@ enum CallSequence {
     /// boxed handle. Captures the return value for shared-state tests.
     StatefulIncrement,
     /// `require_shared::<NoOpStateful>()`, then call `.increment()` on the
-    /// boxed shared handle (sync `&mut self` through the `Send` trait
+    /// boxed shared handle (sync `&mut self` through the `Send + Sync` trait
     /// variant). Captures the return value.
     SharedStatefulIncrement,
     /// `require_local::<NoOpStateful>()`; the create() body keeps the
@@ -269,7 +272,9 @@ impl local_recv::Receiver<()> for ProbeReceiver {
 
         loop {
             match ctrl.recv().await {
-                Ok(otap_df_engine::control::NodeControlMsg::Shutdown { .. }) | Err(_) => break,
+                Ok(otel_arrow_dfe_engine::control::NodeControlMsg::Shutdown { .. }) | Err(_) => {
+                    break;
+                }
                 Ok(_) => {}
             }
         }
@@ -282,11 +287,11 @@ impl local_recv::Receiver<()> for ProbeReceiver {
 
 fn probe_receiver_create(
     _pipeline_ctx: PipelineContext,
-    node: otap_df_engine::node::NodeId,
-    node_config: Arc<otap_df_config::node::NodeUserConfig>,
+    node: otel_arrow_dfe_engine::node::NodeId,
+    node_config: Arc<otel_arrow_dfe_config::node::NodeUserConfig>,
     receiver_config: &ReceiverConfig,
     capabilities: &Capabilities,
-) -> Result<ReceiverWrapper<()>, otap_df_config::error::Error> {
+) -> Result<ReceiverWrapper<()>, otel_arrow_dfe_config::error::Error> {
     let key = node_config
         .config
         .get("probe_key")
@@ -441,8 +446,8 @@ fn probe_receiver_create(
 const PROBE_RECEIVER_FACTORY: ReceiverFactory<()> = ReceiverFactory {
     name: PROBE_RECEIVER_URN,
     create: probe_receiver_create,
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    validate_config: otap_df_config::validation::no_config,
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otel_arrow_dfe_config::validation::no_config,
 };
 
 // ---------------------------------------------------------------------
@@ -459,8 +464,9 @@ impl local_exp::Exporter<()> for NoopExporter {
         _eh: local_exp::EffectHandler<()>,
     ) -> Result<TerminalState, EngineError> {
         loop {
-            if let Message::Control(otap_df_engine::control::NodeControlMsg::Shutdown { .. }) =
-                inbox.recv().await?
+            if let Message::Control(otel_arrow_dfe_engine::control::NodeControlMsg::Shutdown {
+                ..
+            }) = inbox.recv().await?
             {
                 break;
             }
@@ -471,11 +477,11 @@ impl local_exp::Exporter<()> for NoopExporter {
 
 fn noop_exporter_create(
     _pipeline_ctx: PipelineContext,
-    node: otap_df_engine::node::NodeId,
-    node_config: Arc<otap_df_config::node::NodeUserConfig>,
+    node: otel_arrow_dfe_engine::node::NodeId,
+    node_config: Arc<otel_arrow_dfe_config::node::NodeUserConfig>,
     exporter_config: &ExporterConfig,
     _capabilities: &Capabilities,
-) -> Result<ExporterWrapper<()>, otap_df_config::error::Error> {
+) -> Result<ExporterWrapper<()>, otel_arrow_dfe_config::error::Error> {
     Ok(ExporterWrapper::local(
         NoopExporter,
         node,
@@ -487,8 +493,8 @@ fn noop_exporter_create(
 const NOOP_EXPORTER_FACTORY: ExporterFactory<()> = ExporterFactory {
     name: NOOP_EXPORTER_URN,
     create: noop_exporter_create,
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    validate_config: otap_df_config::validation::no_config,
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otel_arrow_dfe_config::validation::no_config,
 };
 
 // ---------------------------------------------------------------------
@@ -562,10 +568,10 @@ impl LocalNoOpStateless for NoOpStatelessImplLocal {
 
 fn passive_extension_create(
     _ctx: &ExtensionContext,
-    name: otap_df_config::ExtensionId,
-    user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
+    name: otel_arrow_dfe_config::ExtensionId,
+    user_config: Arc<otel_arrow_dfe_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
-) -> Result<ExtensionBundle, otap_df_config::error::Error> {
+) -> Result<ExtensionBundle, otel_arrow_dfe_config::error::Error> {
     let bundle = ExtensionWrapper::builder(name, user_config, extension_config)
         .passive()
         .cloned()
@@ -585,7 +591,7 @@ const PASSIVE_EXTENSION_FACTORY: ExtensionFactory = ExtensionFactory {
         shared: NoOpStatelessImpl => [NoOpStateless]
     )),
     create: passive_extension_create,
-    validate_config: otap_df_config::validation::no_config,
+    validate_config: otel_arrow_dfe_config::validation::no_config,
 };
 
 // ---------------------------------------------------------------------
@@ -595,10 +601,10 @@ const PASSIVE_EXTENSION_FACTORY: ExtensionFactory = ExtensionFactory {
 
 fn dual_extension_create(
     _ctx: &ExtensionContext,
-    name: otap_df_config::ExtensionId,
-    user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
+    name: otel_arrow_dfe_config::ExtensionId,
+    user_config: Arc<otel_arrow_dfe_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
-) -> Result<ExtensionBundle, otap_df_config::error::Error> {
+) -> Result<ExtensionBundle, otel_arrow_dfe_config::error::Error> {
     let bundle = ExtensionWrapper::builder(name, user_config, extension_config)
         .passive()
         .cloned()
@@ -617,7 +623,7 @@ const DUAL_EXTENSION_FACTORY: ExtensionFactory = ExtensionFactory {
         (shared: NoOpStatelessImpl, local: NoOpStatelessImplLocal) => [NoOpStateless]
     )),
     create: dual_extension_create,
-    validate_config: otap_df_config::validation::no_config,
+    validate_config: otel_arrow_dfe_config::validation::no_config,
 };
 
 // ---------------------------------------------------------------------
@@ -648,10 +654,10 @@ impl SharedNoOpStateless for ActiveExtImpl {
 }
 
 #[async_trait]
-impl otap_df_engine::shared::extension::Extension for ActiveExtImpl {
+impl otel_arrow_dfe_engine::shared::extension::Extension for ActiveExtImpl {
     async fn start(
         self: Box<Self>,
-        mut ctrl: otap_df_engine::shared::extension::ControlChannel,
+        mut ctrl: otel_arrow_dfe_engine::shared::extension::ControlChannel,
         _eh: EffectHandler,
     ) -> Result<TerminalState, EngineError> {
         self.started.store(true, Ordering::SeqCst);
@@ -703,10 +709,10 @@ fn lookup_active_ext_probe(key: &str) -> ActiveExtProbe {
 
 fn active_extension_create(
     _ctx: &ExtensionContext,
-    name: otap_df_config::ExtensionId,
-    user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
+    name: otel_arrow_dfe_config::ExtensionId,
+    user_config: Arc<otel_arrow_dfe_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
-) -> Result<ExtensionBundle, otap_df_config::error::Error> {
+) -> Result<ExtensionBundle, otel_arrow_dfe_config::error::Error> {
     let key = user_config
         .config
         .get("probe_key")
@@ -734,7 +740,7 @@ const ACTIVE_EXTENSION_FACTORY: ExtensionFactory = ExtensionFactory {
         shared: ActiveExtImpl => [NoOpStateless]
     )),
     create: active_extension_create,
-    validate_config: otap_df_config::validation::no_config,
+    validate_config: otel_arrow_dfe_config::validation::no_config,
 };
 
 // ---------------------------------------------------------------------
@@ -772,10 +778,10 @@ impl SharedNoOpStateful for ActiveSharedCounterImpl {
 }
 
 #[async_trait]
-impl otap_df_engine::shared::extension::Extension for ActiveSharedCounterImpl {
+impl otel_arrow_dfe_engine::shared::extension::Extension for ActiveSharedCounterImpl {
     async fn start(
         self: Box<Self>,
-        mut ctrl: otap_df_engine::shared::extension::ControlChannel,
+        mut ctrl: otel_arrow_dfe_engine::shared::extension::ControlChannel,
         _eh: EffectHandler,
     ) -> Result<TerminalState, EngineError> {
         // Mutate shared state from inside the active task -- the canonical
@@ -799,10 +805,10 @@ const ACTIVE_SHARED_COUNTER_EXTENSION_URN: &str =
 
 fn active_shared_counter_extension_create(
     _ctx: &ExtensionContext,
-    name: otap_df_config::ExtensionId,
-    user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
+    name: otel_arrow_dfe_config::ExtensionId,
+    user_config: Arc<otel_arrow_dfe_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
-) -> Result<ExtensionBundle, otap_df_config::error::Error> {
+) -> Result<ExtensionBundle, otel_arrow_dfe_config::error::Error> {
     let key = user_config
         .config
         .get("probe_key")
@@ -834,7 +840,7 @@ const ACTIVE_SHARED_COUNTER_EXTENSION_FACTORY: ExtensionFactory = ExtensionFacto
         shared: ActiveSharedCounterImpl => [NoOpStateful]
     )),
     create: active_shared_counter_extension_create,
-    validate_config: otap_df_config::validation::no_config,
+    validate_config: otel_arrow_dfe_config::validation::no_config,
 };
 
 // ---------------------------------------------------------------------
@@ -861,10 +867,10 @@ impl SharedNoOpStateless for FailingExtImpl {
 }
 
 #[async_trait]
-impl otap_df_engine::shared::extension::Extension for FailingExtImpl {
+impl otel_arrow_dfe_engine::shared::extension::Extension for FailingExtImpl {
     async fn start(
         self: Box<Self>,
-        _ctrl: otap_df_engine::shared::extension::ControlChannel,
+        _ctrl: otel_arrow_dfe_engine::shared::extension::ControlChannel,
         _eh: EffectHandler,
     ) -> Result<TerminalState, EngineError> {
         Err(EngineError::InternalError {
@@ -875,10 +881,10 @@ impl otap_df_engine::shared::extension::Extension for FailingExtImpl {
 
 fn failing_extension_create(
     _ctx: &ExtensionContext,
-    name: otap_df_config::ExtensionId,
-    user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
+    name: otel_arrow_dfe_config::ExtensionId,
+    user_config: Arc<otel_arrow_dfe_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
-) -> Result<ExtensionBundle, otap_df_config::error::Error> {
+) -> Result<ExtensionBundle, otel_arrow_dfe_config::error::Error> {
     let bundle = ExtensionWrapper::builder(name, user_config, extension_config)
         .active()
         .shared::<FailingExtImpl>(FailingExtImpl)
@@ -895,7 +901,7 @@ const FAILING_EXTENSION_FACTORY: ExtensionFactory = ExtensionFactory {
         shared: FailingExtImpl => [NoOpStateless]
     )),
     create: failing_extension_create,
-    validate_config: otap_df_config::validation::no_config,
+    validate_config: otel_arrow_dfe_config::validation::no_config,
 };
 
 // ---------------------------------------------------------------------
@@ -924,10 +930,10 @@ impl SharedNoOpStateless for ImmediateOkExtImpl {
 }
 
 #[async_trait]
-impl otap_df_engine::shared::extension::Extension for ImmediateOkExtImpl {
+impl otel_arrow_dfe_engine::shared::extension::Extension for ImmediateOkExtImpl {
     async fn start(
         self: Box<Self>,
-        _ctrl: otap_df_engine::shared::extension::ControlChannel,
+        _ctrl: otel_arrow_dfe_engine::shared::extension::ControlChannel,
         _eh: EffectHandler,
     ) -> Result<TerminalState, EngineError> {
         Ok(TerminalState::default())
@@ -936,10 +942,10 @@ impl otap_df_engine::shared::extension::Extension for ImmediateOkExtImpl {
 
 fn immediate_ok_extension_create(
     _ctx: &ExtensionContext,
-    name: otap_df_config::ExtensionId,
-    user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
+    name: otel_arrow_dfe_config::ExtensionId,
+    user_config: Arc<otel_arrow_dfe_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
-) -> Result<ExtensionBundle, otap_df_config::error::Error> {
+) -> Result<ExtensionBundle, otel_arrow_dfe_config::error::Error> {
     let bundle = ExtensionWrapper::builder(name, user_config, extension_config)
         .active()
         .shared::<ImmediateOkExtImpl>(ImmediateOkExtImpl)
@@ -956,7 +962,7 @@ const IMMEDIATE_OK_EXTENSION_FACTORY: ExtensionFactory = ExtensionFactory {
         shared: ImmediateOkExtImpl => [NoOpStateless]
     )),
     create: immediate_ok_extension_create,
-    validate_config: otap_df_config::validation::no_config,
+    validate_config: otel_arrow_dfe_config::validation::no_config,
 };
 
 // ---------------------------------------------------------------------
@@ -986,10 +992,10 @@ impl SharedNoOpStateless for ShutdownRecordingExtImpl {
 }
 
 #[async_trait]
-impl otap_df_engine::shared::extension::Extension for ShutdownRecordingExtImpl {
+impl otel_arrow_dfe_engine::shared::extension::Extension for ShutdownRecordingExtImpl {
     async fn start(
         self: Box<Self>,
-        mut ctrl: otap_df_engine::shared::extension::ControlChannel,
+        mut ctrl: otel_arrow_dfe_engine::shared::extension::ControlChannel,
         _eh: EffectHandler,
     ) -> Result<TerminalState, EngineError> {
         loop {
@@ -1038,10 +1044,10 @@ fn lookup_shutdown_recording_probe(key: &str) -> ShutdownRecordingProbe {
 
 fn shutdown_recording_extension_create(
     _ctx: &ExtensionContext,
-    name: otap_df_config::ExtensionId,
-    user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
+    name: otel_arrow_dfe_config::ExtensionId,
+    user_config: Arc<otel_arrow_dfe_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
-) -> Result<ExtensionBundle, otap_df_config::error::Error> {
+) -> Result<ExtensionBundle, otel_arrow_dfe_config::error::Error> {
     let key = user_config
         .config
         .get("probe_key")
@@ -1067,7 +1073,7 @@ const SHUTDOWN_RECORDING_EXTENSION_FACTORY: ExtensionFactory = ExtensionFactory 
         shared: ShutdownRecordingExtImpl => [NoOpStateless]
     )),
     create: shutdown_recording_extension_create,
-    validate_config: otap_df_config::validation::no_config,
+    validate_config: otel_arrow_dfe_config::validation::no_config,
 };
 
 // ---------------------------------------------------------------------
@@ -1105,10 +1111,10 @@ impl LocalNoOpStateless for ActiveLocalExtImpl {
 }
 
 #[async_trait(?Send)]
-impl otap_df_engine::local::extension::Extension for ActiveLocalExtImpl {
+impl otel_arrow_dfe_engine::local::extension::Extension for ActiveLocalExtImpl {
     async fn start(
         self: Rc<Self>,
-        mut ctrl: otap_df_engine::local::extension::ControlChannel,
+        mut ctrl: otel_arrow_dfe_engine::local::extension::ControlChannel,
         _eh: EffectHandler,
     ) -> Result<TerminalState, EngineError> {
         self.started.store(true, Ordering::SeqCst);
@@ -1130,10 +1136,10 @@ const DUAL_ACTIVE_EXTENSION_URN: &str = "urn:test:extension:dual_active_extensio
 
 fn dual_active_extension_create(
     _ctx: &ExtensionContext,
-    name: otap_df_config::ExtensionId,
-    user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
+    name: otel_arrow_dfe_config::ExtensionId,
+    user_config: Arc<otel_arrow_dfe_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
-) -> Result<ExtensionBundle, otap_df_config::error::Error> {
+) -> Result<ExtensionBundle, otel_arrow_dfe_config::error::Error> {
     let local_key = user_config
         .config
         .get("local_probe_key")
@@ -1175,7 +1181,7 @@ const DUAL_ACTIVE_EXTENSION_FACTORY: ExtensionFactory = ExtensionFactory {
         (shared: ActiveExtImpl, local: ActiveLocalExtImpl) => [NoOpStateless]
     )),
     create: dual_active_extension_create,
-    validate_config: otap_df_config::validation::no_config,
+    validate_config: otel_arrow_dfe_config::validation::no_config,
 };
 
 // ---------------------------------------------------------------------
@@ -1189,10 +1195,10 @@ struct BackgroundExtImpl {
 }
 
 #[async_trait]
-impl otap_df_engine::shared::extension::Extension for BackgroundExtImpl {
+impl otel_arrow_dfe_engine::shared::extension::Extension for BackgroundExtImpl {
     async fn start(
         self: Box<Self>,
-        mut ctrl: otap_df_engine::shared::extension::ControlChannel,
+        mut ctrl: otel_arrow_dfe_engine::shared::extension::ControlChannel,
         _eh: EffectHandler,
     ) -> Result<TerminalState, EngineError> {
         self.started.store(true, Ordering::SeqCst);
@@ -1244,10 +1250,10 @@ fn lookup_background_probe(key: &str) -> BackgroundProbe {
 
 fn background_extension_create(
     _ctx: &ExtensionContext,
-    name: otap_df_config::ExtensionId,
-    user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
+    name: otel_arrow_dfe_config::ExtensionId,
+    user_config: Arc<otel_arrow_dfe_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
-) -> Result<ExtensionBundle, otap_df_config::error::Error> {
+) -> Result<ExtensionBundle, otel_arrow_dfe_config::error::Error> {
     let key = user_config
         .config
         .get("probe_key")
@@ -1275,7 +1281,7 @@ const BACKGROUND_EXTENSION_FACTORY: ExtensionFactory = ExtensionFactory {
     // pruning treats this bundle as "always kept".
     capabilities: None,
     create: background_extension_create,
-    validate_config: otap_df_config::validation::no_config,
+    validate_config: otel_arrow_dfe_config::validation::no_config,
 };
 
 // ---------------------------------------------------------------------
@@ -1364,10 +1370,10 @@ fn lookup_shared_counter_probe(key: &str) -> SharedCounterProbe {
 
 fn shared_counter_extension_create(
     _ctx: &ExtensionContext,
-    name: otap_df_config::ExtensionId,
-    user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
+    name: otel_arrow_dfe_config::ExtensionId,
+    user_config: Arc<otel_arrow_dfe_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
-) -> Result<ExtensionBundle, otap_df_config::error::Error> {
+) -> Result<ExtensionBundle, otel_arrow_dfe_config::error::Error> {
     let key = user_config
         .config
         .get("probe_key")
@@ -1398,14 +1404,14 @@ const SHARED_COUNTER_EXTENSION_FACTORY: ExtensionFactory = ExtensionFactory {
         local: SharedCounterImpl => [NoOpStateful]
     )),
     create: shared_counter_extension_create,
-    validate_config: otap_df_config::validation::no_config,
+    validate_config: otel_arrow_dfe_config::validation::no_config,
 };
 
 // ---------------------------------------------------------------------
 // Shared-counter extension (shared variant) -- same `SharedCounterImpl`
 // registered under `.passive().cloned().shared(...)` so tests can
 // exercise the `require_shared::<NoOpStateful>()` path (sync + async
-// `&mut self` on the `Send` shared trait variant).
+// `&mut self` on the `Send + Sync` shared trait variant).
 // ---------------------------------------------------------------------
 
 const SHARED_COUNTER_SHARED_EXTENSION_URN: &str =
@@ -1413,10 +1419,10 @@ const SHARED_COUNTER_SHARED_EXTENSION_URN: &str =
 
 fn shared_counter_shared_extension_create(
     _ctx: &ExtensionContext,
-    name: otap_df_config::ExtensionId,
-    user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
+    name: otel_arrow_dfe_config::ExtensionId,
+    user_config: Arc<otel_arrow_dfe_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
-) -> Result<ExtensionBundle, otap_df_config::error::Error> {
+) -> Result<ExtensionBundle, otel_arrow_dfe_config::error::Error> {
     let key = user_config
         .config
         .get("probe_key")
@@ -1443,7 +1449,7 @@ const SHARED_COUNTER_SHARED_EXTENSION_FACTORY: ExtensionFactory = ExtensionFacto
         shared: SharedCounterImpl => [NoOpStateful]
     )),
     create: shared_counter_shared_extension_create,
-    validate_config: otap_df_config::validation::no_config,
+    validate_config: otel_arrow_dfe_config::validation::no_config,
 };
 
 // ---------------------------------------------------------------------
@@ -1507,10 +1513,10 @@ fn lookup_constructed_probe(key: &str) -> ConstructedProbe {
 
 fn constructed_extension_create(
     _ctx: &ExtensionContext,
-    name: otap_df_config::ExtensionId,
-    user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
+    name: otel_arrow_dfe_config::ExtensionId,
+    user_config: Arc<otel_arrow_dfe_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
-) -> Result<ExtensionBundle, otap_df_config::error::Error> {
+) -> Result<ExtensionBundle, otel_arrow_dfe_config::error::Error> {
     let key = user_config
         .config
         .get("probe_key")
@@ -1542,7 +1548,7 @@ const CONSTRUCTED_EXTENSION_FACTORY: ExtensionFactory = ExtensionFactory {
         local: ConstructedNoOpImpl => [NoOpStateless]
     )),
     create: constructed_extension_create,
-    validate_config: otap_df_config::validation::no_config,
+    validate_config: otel_arrow_dfe_config::validation::no_config,
 };
 
 // ---------------------------------------------------------------------
@@ -1584,10 +1590,10 @@ const RC_COUNTER_EXTENSION_URN: &str = "urn:test:extension:rc_counter_extension"
 
 fn rc_counter_extension_create(
     _ctx: &ExtensionContext,
-    name: otap_df_config::ExtensionId,
-    user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
+    name: otel_arrow_dfe_config::ExtensionId,
+    user_config: Arc<otel_arrow_dfe_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
-) -> Result<ExtensionBundle, otap_df_config::error::Error> {
+) -> Result<ExtensionBundle, otel_arrow_dfe_config::error::Error> {
     // The prototype owns one `Rc<RefCell<u64>>`; `.passive().cloned()`
     // hands each consumer a shallow `Clone` of the prototype, and
     // `Rc::clone` keeps the inner `RefCell` shared across consumers.
@@ -1611,7 +1617,7 @@ const RC_COUNTER_EXTENSION_FACTORY: ExtensionFactory = ExtensionFactory {
         local: RcCounterImpl => [NoOpStateful]
     )),
     create: rc_counter_extension_create,
-    validate_config: otap_df_config::validation::no_config,
+    validate_config: otel_arrow_dfe_config::validation::no_config,
 };
 
 // ---------------------------------------------------------------------
@@ -1679,7 +1685,10 @@ impl local_proc::Processor<()> for ProbeProcessor {
                 *slot = Some(Instant::now());
             }
         }
-        if let Message::Control(otap_df_engine::control::NodeControlMsg::Shutdown { .. }) = msg {
+        if let Message::Control(otel_arrow_dfe_engine::control::NodeControlMsg::Shutdown {
+            ..
+        }) = msg
+        {
             if let Some(lc) = &self.lifecycle {
                 *lc.processor_end_at.lock() = Some(Instant::now());
             }
@@ -1690,11 +1699,11 @@ impl local_proc::Processor<()> for ProbeProcessor {
 
 fn probe_processor_create(
     _pipeline_ctx: PipelineContext,
-    node: otap_df_engine::node::NodeId,
-    node_config: Arc<otap_df_config::node::NodeUserConfig>,
-    processor_config: &otap_df_engine::config::ProcessorConfig,
+    node: otel_arrow_dfe_engine::node::NodeId,
+    node_config: Arc<otel_arrow_dfe_config::node::NodeUserConfig>,
+    processor_config: &otel_arrow_dfe_engine::config::ProcessorConfig,
     capabilities: &Capabilities,
-) -> Result<ProcessorWrapper<()>, otap_df_config::error::Error> {
+) -> Result<ProcessorWrapper<()>, otel_arrow_dfe_config::error::Error> {
     let probe_key = node_config.config.get("probe_key").and_then(|v| v.as_str());
     let lifecycle_key = node_config
         .config
@@ -1731,12 +1740,12 @@ fn probe_processor_create(
     ))
 }
 
-const PROBE_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<()> =
-    otap_df_engine::ProcessorFactory {
+const PROBE_PROCESSOR_FACTORY: otel_arrow_dfe_engine::ProcessorFactory<()> =
+    otel_arrow_dfe_engine::ProcessorFactory {
         name: PROBE_PROCESSOR_URN,
         create: probe_processor_create,
-        wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-        validate_config: otap_df_config::validation::no_config,
+        wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
+        validate_config: otel_arrow_dfe_config::validation::no_config,
     };
 
 // ---------------------------------------------------------------------
@@ -1759,8 +1768,9 @@ impl local_exp::Exporter<()> for ProbeExporter {
             *lc.exporter_start_at.lock() = Some(Instant::now());
         }
         loop {
-            if let Message::Control(otap_df_engine::control::NodeControlMsg::Shutdown { .. }) =
-                inbox.recv().await?
+            if let Message::Control(otel_arrow_dfe_engine::control::NodeControlMsg::Shutdown {
+                ..
+            }) = inbox.recv().await?
             {
                 break;
             }
@@ -1774,11 +1784,11 @@ impl local_exp::Exporter<()> for ProbeExporter {
 
 fn probe_exporter_create(
     _pipeline_ctx: PipelineContext,
-    node: otap_df_engine::node::NodeId,
-    node_config: Arc<otap_df_config::node::NodeUserConfig>,
+    node: otel_arrow_dfe_engine::node::NodeId,
+    node_config: Arc<otel_arrow_dfe_config::node::NodeUserConfig>,
     exporter_config: &ExporterConfig,
     capabilities: &Capabilities,
-) -> Result<ExporterWrapper<()>, otap_df_config::error::Error> {
+) -> Result<ExporterWrapper<()>, otel_arrow_dfe_config::error::Error> {
     let probe_key = node_config.config.get("probe_key").and_then(|v| v.as_str());
     let lifecycle_key = node_config
         .config
@@ -1816,8 +1826,8 @@ fn probe_exporter_create(
 const PROBE_EXPORTER_FACTORY: ExporterFactory<()> = ExporterFactory {
     name: PROBE_EXPORTER_URN,
     create: probe_exporter_create,
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    validate_config: otap_df_config::validation::no_config,
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otel_arrow_dfe_config::validation::no_config,
 };
 
 // ---------------------------------------------------------------------
@@ -1825,7 +1835,8 @@ const PROBE_EXPORTER_FACTORY: ExporterFactory<()> = ExporterFactory {
 // ---------------------------------------------------------------------
 
 const RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[PROBE_RECEIVER_FACTORY];
-const PROCESSOR_FACTORIES: &[otap_df_engine::ProcessorFactory<()>] = &[PROBE_PROCESSOR_FACTORY];
+const PROCESSOR_FACTORIES: &[otel_arrow_dfe_engine::ProcessorFactory<()>] =
+    &[PROBE_PROCESSOR_FACTORY];
 const EXPORTER_FACTORIES: &[ExporterFactory<()>] = &[NOOP_EXPORTER_FACTORY, PROBE_EXPORTER_FACTORY];
 const EXTENSION_FACTORIES: &[ExtensionFactory] = &[
     PASSIVE_EXTENSION_FACTORY,
@@ -1857,7 +1868,7 @@ static TEST_PIPELINE_FACTORY: PipelineFactory<()> = PipelineFactory::new(
 fn fresh_pipeline_env() -> (
     PipelineContext,
     InternalTelemetrySystem,
-    otap_df_telemetry::registry::EntityKey,
+    otel_arrow_dfe_telemetry::registry::EntityKey,
 ) {
     let telemetry_system = InternalTelemetrySystem::default();
     let registry = telemetry_system.registry();
@@ -1874,9 +1885,9 @@ fn fresh_pipeline_env() -> (
 }
 
 fn run_pipeline_with_shutdown_after(
-    runtime_pipeline: otap_df_engine::runtime_pipeline::RuntimePipeline<()>,
+    runtime_pipeline: otel_arrow_dfe_engine::runtime_pipeline::RuntimePipeline<()>,
     pipeline_ctx: PipelineContext,
-    pipeline_entity_key: otap_df_telemetry::registry::EntityKey,
+    pipeline_entity_key: otel_arrow_dfe_telemetry::registry::EntityKey,
     telemetry_system: InternalTelemetrySystem,
     shutdown_after: Duration,
 ) -> Result<Vec<()>, EngineError> {
@@ -1907,12 +1918,12 @@ fn run_pipeline_with_shutdown_after(
         });
     });
 
-    let _pipeline_entity_guard = otap_df_engine::entity_context::set_pipeline_entity_key(
+    let _pipeline_entity_guard = otel_arrow_dfe_engine::entity_context::set_pipeline_entity_key(
         pipeline_ctx.metrics_registry(),
         pipeline_entity_key,
     );
     let (_memory_pressure_tx, memory_pressure_rx) = tokio::sync::watch::channel(
-        otap_df_engine::memory_limiter::MemoryPressureChanged::initial(),
+        otel_arrow_dfe_engine::memory_limiter::MemoryPressureChanged::initial(),
     );
     runtime_pipeline.run_forever(
         pipeline_key,
@@ -1931,9 +1942,9 @@ fn run_pipeline_with_shutdown_after(
 fn build_test_runtime_pipeline(
     yaml: &str,
 ) -> (
-    otap_df_engine::runtime_pipeline::RuntimePipeline<()>,
+    otel_arrow_dfe_engine::runtime_pipeline::RuntimePipeline<()>,
     PipelineContext,
-    otap_df_telemetry::registry::EntityKey,
+    otel_arrow_dfe_telemetry::registry::EntityKey,
     InternalTelemetrySystem,
 ) {
     let config = PipelineConfig::from_yaml("test-group".into(), "test-pipeline".into(), yaml)
@@ -1946,10 +1957,142 @@ fn build_test_runtime_pipeline(
             ChannelCapacityPolicy::default(),
             TelemetryPolicy::default(),
             None,
+            std::collections::BTreeMap::new(),
+            None,
             None,
         )
         .expect("pipeline builds");
     (runtime_pipeline, pipeline_ctx, entity_key, telemetry_system)
+}
+
+fn build_test_pipeline_with_unconsumed_explicit_binding(
+    yaml: &str,
+) -> Result<otel_arrow_dfe_engine::runtime_pipeline::RuntimePipeline<()>, EngineError> {
+    let config = PipelineConfig::from_yaml("test-group".into(), "test-pipeline".into(), yaml)
+        .expect("yaml config parses + validates");
+    let (pipeline_ctx, _telemetry_system, _entity_key) = fresh_pipeline_env();
+    let policy = RateLimiterPolicy {
+        enforcement: RateLimitEnforcement::Enforce,
+        aggregation: RateLimitAggregation::ReceiverInstance,
+        unit: RateLimitUnit::RequestBytes,
+        pressure: RateLimitPressure::Soft,
+        token_bucket: TokenBucketPolicy {
+            allow: 10,
+            interval: Duration::from_secs(1),
+            burst: Some(10),
+        },
+    };
+    TEST_PIPELINE_FACTORY.build(
+        pipeline_ctx,
+        config,
+        ChannelCapacityPolicy::default(),
+        TelemetryPolicy::default(),
+        None,
+        std::collections::BTreeMap::from([("ingress".to_owned(), policy)]),
+        None,
+        None,
+    )
+}
+
+/// Scenario: a receiver explicitly binds a limiter but its factory never consumes it.
+/// Guarantees: the receiver construction path rejects the configuration at startup.
+#[test]
+fn explicit_receiver_admission_binding_must_be_consumed() {
+    let _probe = make_probe("admission-receiver", CallSequence::None);
+    let result = build_test_pipeline_with_unconsumed_explicit_binding(
+        r#"
+nodes:
+  receiver:
+    type: "urn:test:receiver:probe"
+    rate_limiters: [ingress]
+    config: { probe_key: admission-receiver }
+  exporter:
+    type: "urn:test:exporter:noop"
+    config: null
+connections:
+  - from: receiver
+    to: exporter
+"#,
+    );
+    let Err(error) = result else {
+        panic!("unconsumed receiver binding must fail");
+    };
+
+    assert!(
+        error
+            .to_string()
+            .contains("does not consume ingress admission"),
+        "unexpected error: {error}"
+    );
+}
+
+/// Scenario: a processor explicitly binds a limiter but its factory never consumes it.
+/// Guarantees: the processor construction path applies the same startup contract as a receiver.
+#[test]
+fn explicit_processor_admission_binding_must_be_consumed() {
+    let _probe = make_probe("admission-processor", CallSequence::None);
+    let result = build_test_pipeline_with_unconsumed_explicit_binding(
+        r#"
+nodes:
+  receiver:
+    type: "urn:test:receiver:probe"
+    config: { probe_key: admission-processor }
+  processor:
+    type: "urn:test:processor:probe"
+    rate_limiters: [ingress]
+    config: null
+  exporter:
+    type: "urn:test:exporter:noop"
+    config: null
+connections:
+  - from: receiver
+    to: processor
+  - from: processor
+    to: exporter
+"#,
+    );
+    let Err(error) = result else {
+        panic!("unconsumed processor binding must fail");
+    };
+
+    assert!(
+        error
+            .to_string()
+            .contains("does not consume ingress admission"),
+        "unexpected error: {error}"
+    );
+}
+
+/// Scenario: an exporter explicitly binds a limiter but its factory never consumes it.
+/// Guarantees: the exporter construction path applies the same startup contract as other nodes.
+#[test]
+fn explicit_exporter_admission_binding_must_be_consumed() {
+    let _probe = make_probe("admission-exporter", CallSequence::None);
+    let result = build_test_pipeline_with_unconsumed_explicit_binding(
+        r#"
+nodes:
+  receiver:
+    type: "urn:test:receiver:probe"
+    config: { probe_key: admission-exporter }
+  exporter:
+    type: "urn:test:exporter:noop"
+    rate_limiters: [ingress]
+    config: null
+connections:
+  - from: receiver
+    to: exporter
+"#,
+    );
+    let Err(error) = result else {
+        panic!("unconsumed exporter binding must fail");
+    };
+
+    assert!(
+        error
+            .to_string()
+            .contains("does not consume ingress admission"),
+        "unexpected error: {error}"
+    );
 }
 
 struct ReceiverProbeHandles {
@@ -3807,7 +3950,7 @@ connections:
 // ---------------------------------------------------------------------
 // Cross-node shared state via `Arc<AtomicU64>` on the SHARED trait
 // variant -- same idea as the existing local-Arc multi-node test, but
-// goes through the `require_shared` path with the `Send` trait
+// goes through the `require_shared` path with the `Send + Sync` trait
 // variant.
 // ---------------------------------------------------------------------
 
@@ -4007,10 +4150,10 @@ impl SharedNoOpStateless for ReadyGateExtImpl {
 }
 
 #[async_trait]
-impl otap_df_engine::shared::extension::Extension for ReadyGateExtImpl {
+impl otel_arrow_dfe_engine::shared::extension::Extension for ReadyGateExtImpl {
     async fn start(
         self: Box<Self>,
-        mut ctrl: otap_df_engine::shared::extension::ControlChannel,
+        mut ctrl: otel_arrow_dfe_engine::shared::extension::ControlChannel,
         eh: EffectHandler,
     ) -> Result<TerminalState, EngineError> {
         *self.start_at.lock() = Some(Instant::now());
@@ -4091,10 +4234,10 @@ fn make_ready_gate_probe(
 
 fn ready_gate_extension_create(
     _ctx: &ExtensionContext,
-    name: otap_df_config::ExtensionId,
-    user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
+    name: otel_arrow_dfe_config::ExtensionId,
+    user_config: Arc<otel_arrow_dfe_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
-) -> Result<ExtensionBundle, otap_df_config::error::Error> {
+) -> Result<ExtensionBundle, otel_arrow_dfe_config::error::Error> {
     let key = user_config
         .config
         .get("probe_key")
@@ -4135,17 +4278,17 @@ const READY_GATE_EXTENSION_FACTORY: ExtensionFactory = ExtensionFactory {
         shared: ReadyGateExtImpl => [NoOpStateless]
     )),
     create: ready_gate_extension_create,
-    validate_config: otap_df_config::validation::no_config,
+    validate_config: otel_arrow_dfe_config::validation::no_config,
 };
 
 const READY_GATE_BG_EXTENSION_URN: &str = "urn:test:extension:ready_gate_extension_bg";
 
 fn ready_gate_bg_extension_create(
     _ctx: &ExtensionContext,
-    name: otap_df_config::ExtensionId,
-    user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
+    name: otel_arrow_dfe_config::ExtensionId,
+    user_config: Arc<otel_arrow_dfe_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
-) -> Result<ExtensionBundle, otap_df_config::error::Error> {
+) -> Result<ExtensionBundle, otel_arrow_dfe_config::error::Error> {
     let key = user_config
         .config
         .get("probe_key")
@@ -4184,15 +4327,15 @@ const READY_GATE_BG_EXTENSION_FACTORY: ExtensionFactory = ExtensionFactory {
     documentation_url: "",
     capabilities: None,
     create: ready_gate_bg_extension_create,
-    validate_config: otap_df_config::validation::no_config,
+    validate_config: otel_arrow_dfe_config::validation::no_config,
 };
 
 fn build_runtime_pipeline_with_ready_gate(
     yaml: &str,
 ) -> (
-    otap_df_engine::runtime_pipeline::RuntimePipeline<()>,
+    otel_arrow_dfe_engine::runtime_pipeline::RuntimePipeline<()>,
     PipelineContext,
-    otap_df_telemetry::registry::EntityKey,
+    otel_arrow_dfe_telemetry::registry::EntityKey,
     InternalTelemetrySystem,
 ) {
     const EXT_FACTORIES_PLUS_GATE: &[ExtensionFactory] = &[
@@ -4228,6 +4371,8 @@ fn build_runtime_pipeline_with_ready_gate(
             config,
             ChannelCapacityPolicy::default(),
             TelemetryPolicy::default(),
+            None,
+            std::collections::BTreeMap::new(),
             None,
             None,
         )

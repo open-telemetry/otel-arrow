@@ -3,7 +3,11 @@
 
 use std::collections::HashMap;
 
-use data_engine_expressions::{DataExpression, PipelineFunction};
+use data_engine_expressions::{
+    BranchDataExpression, DataExpression, DataExpressionBranch, EqualToLogicalExpression,
+    GetRecordTypeScalarExpression, LogicalExpression, PipelineFunction, ScalarExpression,
+    StaticScalarExpression, StringScalarExpression,
+};
 use data_engine_parser_abstractions::{
     ParserError, ParserFunction, ParserScope, ParserState, to_query_location,
 };
@@ -111,13 +115,43 @@ pub(crate) fn parse_pipeline(
     rule: Pair<'_, Rule>,
     state: &mut ParserState,
 ) -> Result<(), ParserError> {
+    let pipeline_query_location = to_query_location(&rule);
+    let mut metric_concrete_type_condition = None;
+    let mut root_pipeline_builder = RootPipelineBuilder::new(state);
+    let mut inner_pipeline_builder = InnerPipelineBuilder::new(&mut root_pipeline_builder);
     for rule in rule.into_inner() {
         match rule.as_rule() {
             Rule::source => {
-                // ignore for now
+                let Some(source_rule) = rule.into_inner().next() else {
+                    continue;
+                };
+                let source_query_location = to_query_location(&source_rule);
+
+                // try to determine the type of metrics selected by this pipeline.
+                // for example, if the caller supplies a query like: "gauges | ... "
+                // we should only execute on metrics batches and only on the rows
+                // that contain gauges, ignoring other batches and non gauge rows
+                if matches!(source_rule.as_rule(), Rule::metric_type_source) {
+                    let metric_type_name = match source_rule.as_str() {
+                        "gauges" => "Gauge",
+                        "sums" => "Sum",
+                        "histograms" => "Histogram",
+                        "exponential_histograms" => "ExponentialHistogram",
+                        "summaries" => "Summary",
+                        _ => {
+                            return Err(ParserError::SyntaxNotSupported(
+                                source_query_location,
+                                format!("Unknown source identifier {:?}", source_rule.as_str()),
+                            ));
+                        }
+                    };
+
+                    metric_concrete_type_condition =
+                        Some((source_query_location, metric_type_name));
+                }
             }
             Rule::pipeline_stage => {
-                parse_pipeline_stage(rule, &mut RootPipelineBuilder::new(state))?
+                parse_pipeline_stage(rule, &mut inner_pipeline_builder)?;
             }
             invalid_rule => {
                 let query_location = to_query_location(&rule);
@@ -129,6 +163,38 @@ pub(crate) fn parse_pipeline(
             }
         }
     }
+
+    let (exprs, _) = inner_pipeline_builder.into_parts();
+
+    // if the source was some concrete metric type, create a single condition selecting the only
+    // rows containing this metric type. Effectively, this transforms the query into something like:
+    // signals | if (is <metric type name>) { <... pipeline ...> }
+    if let Some((source_query_location, metric_type_name)) = metric_concrete_type_condition {
+        let branch_expr = BranchDataExpression::new(pipeline_query_location.clone(), true)
+            .with_branch(DataExpressionBranch::new(
+                pipeline_query_location.clone(),
+                Some(LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                    source_query_location.clone(),
+                    ScalarExpression::GetRecordType(GetRecordTypeScalarExpression::new(
+                        source_query_location.clone(),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(
+                            source_query_location.clone(),
+                            metric_type_name,
+                        ),
+                    )),
+                    false,
+                ))),
+                exprs,
+            ));
+        root_pipeline_builder.push_data_expression(DataExpression::Branch(branch_expr));
+    } else {
+        exprs
+            .into_iter()
+            .for_each(|expr| root_pipeline_builder.push_data_expression(expr));
+    }
+
     Ok(())
 }
 

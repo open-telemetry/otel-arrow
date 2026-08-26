@@ -1,5 +1,5 @@
 [package]
-name = "otap-df-config"
+name = "otel-arrow-dfe-config"
 description = "Configuration model for OTAP pipeline"
 version.workspace = true
 authors.workspace = true
@@ -22,6 +22,7 @@ schemars = { workspace = true }
 byte-unit = { workspace = true }
 humantime-serde = { workspace = true }
 reqwest = { workspace = true, features = ["blocking"] }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [dev-dependencies]
 k8s-openapi = { workspace = true }

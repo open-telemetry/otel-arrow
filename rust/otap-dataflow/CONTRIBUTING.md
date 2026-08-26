@@ -28,6 +28,20 @@ the full check path, likely because many of the longest tests are concentrated
 in a few large integration-style binaries, so the extra runner orchestration did
 not offset the limited parallelism gains.
 
+## Rust toolchain
+
+Both Rust workspaces pin an exact toolchain version in `rust-toolchain.toml`
+rather than tracking the `stable` channel, so local checks and CI build with
+the same compiler and a new Rust release never breaks unrelated pull requests.
+The pin is a directory override, so run `cargo` from inside the workspace; it
+does not apply to commands invoked from elsewhere via `--manifest-path`.
+
+To move to a new toolchain, open a dedicated pull request that bumps `channel`
+in both `rust/otap-dataflow/rust-toolchain.toml` and
+`rust/experimental/query_engine/rust-toolchain.toml`, and include any lint or
+compile fixes the new version requires. `rustup` installs the pinned toolchain
+automatically on the next `cargo` invocation.
+
 ## Test documentation
 
 Document every test immediately above its declaration with Rust doc comments:
@@ -69,7 +83,7 @@ including allowed `component:` values and skip conditions.
 
 ## Telemetry and logging
 
-All internal logging MUST use the `otel_*` macros from `otap_df_telemetry`
+All internal logging MUST use the `otel_*` macros from `otel_arrow_dfe_telemetry`
 (not `tracing::info!` or `println!`). See the
 [Events Guide](docs/telemetry/events-guide.md) details.
 

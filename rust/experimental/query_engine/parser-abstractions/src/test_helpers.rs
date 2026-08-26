@@ -140,7 +140,7 @@ pub mod parse_test_helpers {
         for (input, expected) in inputs {
             let mut result = P::parse(parser_rule, input).unwrap();
             let pair = result.next().unwrap();
-            let expr = parse_standard_string_literal(pair);
+            let expr = parse_standard_string_literal(pair).unwrap();
 
             match expr {
                 StaticScalarExpression::String(v) => assert_eq!(*expected, v.get_value()),

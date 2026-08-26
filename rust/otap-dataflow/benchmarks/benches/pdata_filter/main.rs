@@ -8,15 +8,17 @@ use std::sync::Arc;
 
 use arrow::array::Array;
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
-use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::otap::filter::logs::{LogFilter, LogMatchProperties};
-use otap_df_pdata::otap::filter::{self, MatchType, build_uint16_id_filter};
-use otap_df_pdata::proto::OtlpProtoMessage;
-use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
-use otap_df_pdata::proto::opentelemetry::logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs};
-use otap_df_pdata::testing::fixtures::logs_with_varying_attributes_and_properties;
-use otap_df_pdata::testing::round_trip::otlp_to_otap;
+use otel_arrow_dfe_pdata::OtapArrowRecords;
+use otel_arrow_dfe_pdata::otap::filter::logs::{LogFilter, LogMatchProperties};
+use otel_arrow_dfe_pdata::otap::filter::{self, MatchType, build_uint16_id_filter};
+use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
+use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{
+    LogRecord, LogsData, ResourceLogs, ScopeLogs,
+};
+use otel_arrow_dfe_pdata::testing::fixtures::logs_with_varying_attributes_and_properties;
+use otel_arrow_dfe_pdata::testing::round_trip::otlp_to_otap;
 use roaring::RoaringBitmap;
 
 #[cfg(not(windows))]

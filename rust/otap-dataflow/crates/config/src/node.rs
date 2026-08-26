@@ -117,6 +117,13 @@ pub struct NodeUserConfig {
     )]
     pub capabilities: HashMap<CapabilityId, ExtensionId>,
 
+    /// Ordered names of rate limiters applied at this node's admission point.
+    ///
+    /// Omit this field or use an empty list to leave the node unbound. V1 accepts
+    /// at most one bound limiter until multi-limiter reservation semantics exist.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_limiters: Option<Vec<String>>,
+
     /// Entity configuration for the node.
     ///
     /// Currently, we support entity::extend::identity_attributes, for example:
@@ -178,8 +185,8 @@ pub struct NodePolicies {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NodeTelemetryPolicy {
-    /// Opt this node into per-signal produced/consumed item counts on its
-    /// `node.producer` / `node.consumer` metric sets.
+    /// Opt this node into per-signal input/output item counts on its
+    /// `node.input` / `node.output` metric sets.
     ///
     /// Off by default because counting items requires inspecting each batch,
     /// which is expensive for OTLP payloads. Only recorded when the resolved
@@ -187,6 +194,16 @@ pub struct NodeTelemetryPolicy {
     /// enables it for every node without this flag.
     #[serde(default)]
     pub item_counts: bool,
+
+    /// Opt this node into per-signal input/output logical payload size on its
+    /// `node.input` / `node.output` metric sets.
+    ///
+    /// Off by default because measuring OTAP payloads requires walking their
+    /// Arrow arrays and buffers. Only recorded when the resolved
+    /// `runtime_metrics` is `normal` or higher; `runtime_metrics: detailed`
+    /// enables it for every node without this flag.
+    #[serde(default)]
+    pub size: bool,
 }
 
 /// Node kinds
@@ -200,12 +217,9 @@ pub enum NodeKind {
     Processor,
     /// A sink of signals
     Exporter,
-
     // ToDo(LQ) : Add more node kinds as needed.
     // A connector between two pipelines
     // Connector,
-    /// A merged chain of consecutive processors (experimental).
-    ProcessorChain,
 }
 
 impl From<NodeKind> for Cow<'static, str> {
@@ -214,7 +228,6 @@ impl From<NodeKind> for Cow<'static, str> {
             NodeKind::Receiver => "receiver".into(),
             NodeKind::Processor => "processor".into(),
             NodeKind::Exporter => "exporter".into(),
-            NodeKind::ProcessorChain => "processor_chain".into(),
         }
     }
 }
@@ -234,6 +247,7 @@ impl NodeUserConfig {
             entity: None,
             config: Value::Null,
             capabilities: HashMap::new(),
+            rate_limiters: None,
             header_capture: None,
             header_propagation: None,
             policies: None,
@@ -254,6 +268,7 @@ impl NodeUserConfig {
             default_output: None,
             config: Value::Null,
             capabilities: HashMap::new(),
+            rate_limiters: None,
             header_capture: None,
             header_propagation: None,
             policies: None,
@@ -274,6 +289,7 @@ impl NodeUserConfig {
             default_output: None,
             config: Value::Null,
             capabilities: HashMap::new(),
+            rate_limiters: None,
             header_capture: None,
             header_propagation: None,
             policies: None,
@@ -291,6 +307,7 @@ impl NodeUserConfig {
             default_output: None,
             config: user_config,
             capabilities: HashMap::new(),
+            rate_limiters: None,
             header_capture: None,
             header_propagation: None,
             policies: None,
@@ -323,7 +340,6 @@ impl NodeUserConfig {
                     kind = match kind {
                         NodeKind::Processor => "processor",
                         NodeKind::Exporter => "exporter",
-                        NodeKind::ProcessorChain => "processor_chain",
                         NodeKind::Receiver => unreachable!(),
                     }
                 ),
@@ -338,7 +354,6 @@ impl NodeUserConfig {
                     kind = match kind {
                         NodeKind::Receiver => "receiver",
                         NodeKind::Processor => "processor",
-                        NodeKind::ProcessorChain => "processor_chain",
                         NodeKind::Exporter => unreachable!(),
                     }
                 ),
@@ -514,23 +529,25 @@ mod tests {
         assert!(cfg.outputs.is_empty());
     }
 
-    /// Scenario: a node config opts into item counts through its restricted policy block.
-    /// Guarantees: node telemetry configuration stays namespaced under `policies`.
+    /// Scenario: a node config opts into item counts and payload size through its restricted policy block.
+    /// Guarantees: node telemetry configuration stays namespaced under `policies` with independent measurement controls.
     #[test]
-    fn node_user_config_parses_item_count_policy() {
+    fn node_user_config_parses_measurement_policy() {
         let yaml = r#"
 type: "processor:batch"
 policies:
   telemetry:
     item_counts: true
+    size: true
 "#;
         let cfg: NodeUserConfig = serde_yaml::from_str(yaml).unwrap();
-        assert!(
-            cfg.policies
-                .as_ref()
-                .and_then(|policies| policies.telemetry.as_ref())
-                .is_some_and(|telemetry| telemetry.item_counts)
-        );
+        let telemetry = cfg
+            .policies
+            .as_ref()
+            .and_then(|policies| policies.telemetry.as_ref())
+            .expect("node telemetry policy");
+        assert!(telemetry.item_counts);
+        assert!(telemetry.size);
     }
 
     #[test]

@@ -40,13 +40,13 @@ use arrow::compute::{filter, take};
 use arrow::datatypes::{DataType, Field, Fields, Schema, UInt16Type};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::scalar::ScalarValue;
-use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::arrays::{
+use otel_arrow_dfe_pdata::OtapArrowRecords;
+use otel_arrow_dfe_pdata::arrays::{
     get_optional_array_from_struct_array_from_record_batch, get_required_struct_array,
 };
-use otap_df_pdata::otap::filter::IdBitmap;
-use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otap_df_pdata::schema::consts;
+use otel_arrow_dfe_pdata::otap::filter::IdBitmap;
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_dfe_pdata::schema::consts;
 
 use crate::error::{Error, Result};
 use crate::pipeline::expr::{DataScope, arg_column_name};
@@ -1600,7 +1600,7 @@ impl IdJoinLookup {
 mod test {
     use super::*;
     use arrow::array::Int64Array;
-    use otap_df_pdata::otap::Logs;
+    use otel_arrow_dfe_pdata::otap::Logs;
 
     fn empty_otap_batch() -> OtapArrowRecords {
         OtapArrowRecords::Logs(Logs::default())

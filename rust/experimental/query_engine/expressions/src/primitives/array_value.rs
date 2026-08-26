@@ -18,24 +18,29 @@ pub trait ArrayValue: Debug {
     // of support for this method
     fn get_static(&self, index: usize) -> Result<Option<&(dyn AsStaticValue + 'static)>, String>;
 
-    fn get_items(&self, item_callback: &mut dyn IndexValueCallback) -> bool {
+    fn get_items<'a>(&'a self, item_callback: &mut ArrayValueIteratorCallback<'a, '_>) -> bool {
         self.get_item_range((..).into(), item_callback)
     }
 
-    fn get_item_range(&self, range: ArrayRange, item_callback: &mut dyn IndexValueCallback)
-    -> bool;
+    fn get_item_range<'a>(
+        &'a self,
+        range: ArrayRange,
+        item_callback: &mut ArrayValueIteratorCallback<'a, '_>,
+    ) -> bool;
 
     fn to_string(&self) -> ValueString<'_> {
         let mut values = Vec::new();
 
-        self.get_items(&mut IndexValueClosureCallback::new(|_, value| {
+        self.get_items(&mut |_, value| {
             values.push(value.to_json_value());
             true
-        }));
+        });
 
         ValueString::Owned(serde_json::Value::Array(values).to_string())
     }
 }
+
+pub type ArrayValueIteratorCallback<'a, 'b> = dyn FnMut(usize, Value<'a>) -> bool + 'b;
 
 #[derive(Debug)]
 pub struct ArrayRange {
@@ -122,35 +127,6 @@ impl From<RangeInclusive<usize>> for ArrayRange {
     }
 }
 
-pub trait IndexValueCallback {
-    fn next(&mut self, index: usize, value: Value) -> bool;
-}
-
-pub struct IndexValueClosureCallback<F>
-where
-    F: FnMut(usize, Value) -> bool,
-{
-    callback: F,
-}
-
-impl<F> IndexValueClosureCallback<F>
-where
-    F: FnMut(usize, Value) -> bool,
-{
-    pub fn new(callback: F) -> IndexValueClosureCallback<F> {
-        Self { callback }
-    }
-}
-
-impl<F> IndexValueCallback for IndexValueClosureCallback<F>
-where
-    F: FnMut(usize, Value) -> bool,
-{
-    fn next(&mut self, index: usize, value: Value) -> bool {
-        (self.callback)(index, value)
-    }
-}
-
 pub(crate) fn equal_to(
     query_location: &QueryLocation,
     left: &dyn ArrayValue,
@@ -163,26 +139,23 @@ pub(crate) fn equal_to(
 
     let mut e = None;
 
-    let completed =
-        left.get_items(&mut IndexValueClosureCallback::new(
-            |index, left_value| match right.get(index) {
-                Some(right_value) => {
-                    let r = Value::are_values_equal(
-                        query_location,
-                        &left_value,
-                        &right_value.to_value(),
-                        case_insensitive,
-                    );
-                    if let Err(exp_e) = r {
-                        e = Some(exp_e);
-                        false
-                    } else {
-                        r.unwrap()
-                    }
-                }
-                None => false,
-            },
-        ));
+    let completed = left.get_items(&mut |index, left_value| match right.get(index) {
+        Some(right_value) => {
+            let r = Value::are_values_equal(
+                query_location,
+                &left_value,
+                &right_value.to_value(),
+                case_insensitive,
+            );
+            if let Err(exp_e) = r {
+                e = Some(exp_e);
+                false
+            } else {
+                r.unwrap()
+            }
+        }
+        None => false,
+    });
 
     if let Some(exp_e) = e {
         Err(exp_e)

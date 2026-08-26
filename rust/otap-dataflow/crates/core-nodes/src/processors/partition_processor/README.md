@@ -40,10 +40,12 @@ policy.
 
 ### `processor.partition`
 
-| Metric | Unit | Description |
-| --- | --- | --- |
-| `processor.partition.partition_operations_succeeded` | "{batch}" | Number of incoming batches that were successfully partitioned |
-| `processor.partition.partition_operations_failed` | "{batch}" | Number of incoming batches that failed to be partitioned |
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `processor.partition.operations` | `{operation}` | `outcome` | Number of partitioning operations attempted by this processor. |
+
+The bounded `outcome` attribute is `success` when the partition operation
+completes successfully and `failure` when it returns an error.
 
 ### Events
 

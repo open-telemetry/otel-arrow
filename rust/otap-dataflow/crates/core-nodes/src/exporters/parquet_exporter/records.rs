@@ -10,7 +10,7 @@
 //! schema (e.g. widening ID columns to `UInt32` for partition-unique IDs).
 
 use arrow::array::RecordBatch;
-use otap_df_pdata::{
+use otel_arrow_dfe_pdata::{
     otap::{
         Logs, Metrics, OtapArrowRecords, OtapBatchStore, Traces,
         raw_batch_store::{RawLogsStore, RawMetricsStore, RawTracesStore},

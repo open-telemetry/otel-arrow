@@ -9,12 +9,12 @@ use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 use opentelemetry_proto::tonic::common::v1::any_value::Value;
 use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue};
 use opentelemetry_proto::tonic::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
-use otap_df_contrib_nodes::processors::recordset_kql_processor::otlp_bridge::*;
+use otel_arrow_dfe_contrib_nodes::processors::recordset_kql_processor::otlp_bridge::*;
 use prost::Message;
 
 /// Generate a batch of synthetic log records with varying attributes and
 /// severity levels.  This is a self-contained replacement for the fixture that
-/// previously lived in `otap-df-pdata` so that the benchmark does not introduce
+/// previously lived in `otel-arrow-dfe-pdata` so that the benchmark does not introduce
 /// a cross-workspace dependency.
 fn generate_logs_batch(batch_size: usize) -> Vec<u8> {
     let severity_levels: [(i32, &str); 4] = [

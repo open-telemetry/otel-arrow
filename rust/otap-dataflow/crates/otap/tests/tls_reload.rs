@@ -5,9 +5,9 @@
 #![allow(unused_results)]
 
 mod tests {
-    use otap_df_config::tls::{TlsConfig, TlsServerConfig};
-    use otap_df_otap::tls_utils::build_reloadable_server_config;
-    use otap_test_tls_certs::write_ca_and_leaf_to_dir;
+    use otel_arrow_dfe_config::tls::{TlsConfig, TlsServerConfig};
+    use otel_arrow_dfe_otap::tls_utils::build_reloadable_server_config;
+    use otel_arrow_dfe_test_tls_certs::write_ca_and_leaf_to_dir;
     use rustls_pki_types::CertificateDer;
     use rustls_pki_types::pem::PemObject;
     use std::fs;
@@ -48,7 +48,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tls_reload_integration() {
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().unwrap();
         let path = temp_dir.path();
         let cert_path = path.join("server.crt");

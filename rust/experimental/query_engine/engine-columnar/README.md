@@ -7,10 +7,10 @@ data.
 
 ## Goals
 
-* Feature parity with the [RecordSet Engine](..\engine-recordset\README.md)
+* Feature parity with the [RecordSet Engine](../engine-recordset/README.md)
   (including summaries).
 
-## Should I use [OTAP Query Engine](..\..\..\otap-dataflow\crates\query-engine\README.md) or Columnar Query Engine?
+## Should I use [OTAP Query Engine](../../../otap-dataflow/crates/query-engine/README.md) or Columnar Query Engine?
 
 * Are your input records OTAP, OTLP, or something else?
 
@@ -36,7 +36,7 @@ data.
   purpose query engine, and then return OTLP or OTAP back to the caller.
 
   * [OTLP
-    Bridge](..\..\..\otap-dataflow\crates\contrib-nodes\src\processors\recordset_kql_processor\otlp_bridge)
+    Bridge](../../../otap-dataflow/crates/contrib-nodes/src/processors/recordset_kql_processor/otlp_bridge)
   * OTAP Bridge (coming soon)
 
   Note: All engines should be able to run an expression tree compiled from any

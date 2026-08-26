@@ -5,16 +5,18 @@
 
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use azure_core::credentials::{TokenCredential, TokenRequestOptions};
 use azure_identity::{
     DeveloperToolsCredential, DeveloperToolsCredentialOptions, ManagedIdentityCredential,
     ManagedIdentityCredentialOptions, UserAssignedId, WorkloadIdentityCredential,
     WorkloadIdentityCredentialOptions,
 };
-use otap_df_engine::capability::auth::BearerToken;
+use otel_arrow_dfe_engine::capability::auth::BearerToken;
 
 use super::config::{AuthMethod, Config};
 use super::error::Error;
+use crate::common::token_refresh::TokenSource;
 
 /// Wraps an Azure credential plus the scope it acquires tokens for.
 #[derive(Clone)]
@@ -28,7 +30,7 @@ impl Auth {
     pub fn new(config: &Config) -> Result<Self, Error> {
         // Azure credentials use a `reqwest`/`rustls` HTTP client, which requires
         // a process-wide crypto provider to be installed.
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let credential = create_credential(config)?;
         Ok(Self {
             credential,
@@ -36,9 +38,20 @@ impl Auth {
         })
     }
 
+    /// Builds an `Auth` from an already-constructed credential. Test-only.
+    #[cfg(test)]
+    pub(crate) fn from_credential(credential: Arc<dyn TokenCredential>, scope: String) -> Self {
+        Self { credential, scope }
+    }
+}
+
+#[async_trait]
+impl TokenSource for Auth {
+    type Error = Error;
+
     /// Acquires a single token (no retries) and converts it into a
     /// [`BearerToken`].
-    pub async fn get_token(&self) -> Result<BearerToken, Error> {
+    async fn fetch_token(&self) -> Result<BearerToken, Error> {
         let access = self
             .credential
             .get_token(&[&self.scope], Some(TokenRequestOptions::default()))
@@ -53,10 +66,8 @@ impl Auth {
         ))
     }
 
-    /// Builds an `Auth` from an already-constructed credential. Test-only.
-    #[cfg(test)]
-    pub(crate) fn from_credential(credential: Arc<dyn TokenCredential>, scope: String) -> Self {
-        Self { credential, scope }
+    fn log_refresh_failure(&self, error: &Error) {
+        otel_warn!("azure_identity_auth.token_refresh_failed", error = %error);
     }
 }
 

@@ -103,10 +103,15 @@ The mapping is signal-independent:
 
 Notes:
 
-- The engine auto-detects and injects process/host resource attributes
-  (`host.id`, `container.id`, `service.instance.id`) into the configured
-  `engine.telemetry.resource` map. Config-provided keys take precedence over
-  auto-detected values, and empty values are omitted.
+- Resource attributes are produced by the detectors listed in
+  `engine.telemetry.detectors` (default `service_instance`, `env`, `service_name`);
+  `host`, `os`, `process`, `container`, and `k8s` are opt-in, and an unrecognized
+  detector name fails engine startup. Precedence is explicitly configured
+  `engine.telemetry.resource` attributes > detectors > the build-info defaults for
+  `service.name`/`service.version`.
+- The opt-in `process` detector emits `process.command_args` (the full command
+  line), which can include secrets passed as arguments. Enable it only where
+  that is acceptable.
 - The **same** resolved resource map feeds every consumer: the native OTLP
   metric and log resource encoders and the admin `target_info` gauge - so
   resource identity is consistent across metrics, logs, and the admin

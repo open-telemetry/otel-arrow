@@ -11,11 +11,11 @@ use crate::pipeline_ctrl::{NodeMetricHandles, RuntimeCtrlMsgManager};
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::testing::setup_test_runtime;
 use crate::{Interests, ReceivedAtNode, Unwindable};
-use otap_df_config::observed_state::{ObservedStateSettings, SendPolicy};
-use otap_df_config::policy::TelemetryPolicy;
-use otap_df_config::{MetricLevel, PipelineGroupId, PipelineId};
-use otap_df_state::store::ObservedStateStore;
-use otap_df_telemetry::InternalTelemetrySystem;
+use otel_arrow_dfe_config::observed_state::{ObservedStateSettings, SendPolicy};
+use otel_arrow_dfe_config::policy::TelemetryPolicy;
+use otel_arrow_dfe_config::{MetricLevel, PipelineGroupId, PipelineId};
+use otel_arrow_dfe_state::store::ObservedStateStore;
+use otel_arrow_dfe_telemetry::InternalTelemetrySystem;
 use smallvec::smallvec;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -68,7 +68,7 @@ impl Unwindable for DstPData {
         self.frames.pop()
     }
 
-    fn signal(&self) -> Option<otap_df_config::SignalType> {
+    fn signal(&self) -> Option<otel_arrow_dfe_config::SignalType> {
         None
     }
 
@@ -88,6 +88,8 @@ pub(super) fn frame(node_id: usize, interests: Interests, tag: u64) -> Frame {
         },
         produced_items: 0,
         consumed_items: 0,
+        produced_size: 0,
+        consumed_size: 0,
     }
 }
 
@@ -132,6 +134,7 @@ pub(super) fn build_manager<PData>(
         core_id: 0,
         num_cores: 1,
         thread_id: 0,
+        numa_node_id: 0,
     };
     let pipeline_context = PipelineContext::new(controller_context, pipeline_context_params);
     let pipeline_entity_key = pipeline_context.register_pipeline_entity();
@@ -141,7 +144,7 @@ pub(super) fn build_manager<PData>(
         watch::channel(MemoryPressureChanged::initial());
 
     let manager = RuntimeCtrlMsgManager::new(
-        otap_df_config::DeployedPipelineKey {
+        otel_arrow_dfe_config::DeployedPipelineKey {
             pipeline_group_id,
             pipeline_id,
             core_id: 0,
@@ -160,6 +163,7 @@ pub(super) fn build_manager<PData>(
             tokio_metrics: false,
             flow_metrics: Vec::new(),
         },
+        Vec::new(),
         Vec::new(),
         empty_node_metric_handles(),
         crate::terminal_state::TerminalMetricsDeadline::default(),
