@@ -48,10 +48,30 @@ impl WriteJob {
 }
 
 /// Shared result for every original message represented by one ClickHouse insertion.
+///
+/// Writer lanes run on the exporter's local runtime, so `Rc` preserves one structured error and
+/// its source chain without rebuilding it for every message in a coalesced insertion.
 enum CompletionOutcome {
     Success,
-    RequestError(String),
-    ResponseError(String),
+    Failure(Rc<ClickhouseExporterError>),
+}
+
+impl CompletionOutcome {
+    fn request_error(source: clickhouse::error::Error) -> Self {
+        Self::Failure(Rc::new(ClickhouseExporterError::InsertRequestError {
+            source,
+        }))
+    }
+
+    fn response_error(source: clickhouse::error::Error) -> Self {
+        Self::Failure(Rc::new(ClickhouseExporterError::InsertResponseError {
+            source,
+        }))
+    }
+
+    fn lane_closed(lane: usize) -> Self {
+        Self::Failure(Rc::new(ClickhouseExporterError::WriterLaneClosed { lane }))
+    }
 }
 
 struct CompletedGroup {
@@ -71,28 +91,23 @@ impl CompletedGroup {
         Self::with_outcome(pending, CompletionOutcome::Success)
     }
 
-    fn request_error(pending: Vec<PendingWrite>, error: String) -> Self {
-        Self::with_outcome(pending, CompletionOutcome::RequestError(error))
+    fn request_error(pending: Vec<PendingWrite>, source: clickhouse::error::Error) -> Self {
+        Self::with_outcome(pending, CompletionOutcome::request_error(source))
     }
 
-    fn response_error(pending: Vec<PendingWrite>, error: String) -> Self {
-        Self::with_outcome(pending, CompletionOutcome::ResponseError(error))
+    fn response_error(pending: Vec<PendingWrite>, source: clickhouse::error::Error) -> Self {
+        Self::with_outcome(pending, CompletionOutcome::response_error(source))
+    }
+
+    fn lane_closed(pending: Vec<PendingWrite>, lane: usize) -> Self {
+        Self::with_outcome(pending, CompletionOutcome::lane_closed(lane))
     }
 
     fn next_completion(&mut self) -> Option<CompletedWrite> {
         let pending = self.pending.next()?;
         let result = match &self.outcome {
             CompletionOutcome::Success => Ok(pending.written_rows),
-            CompletionOutcome::RequestError(error) => {
-                Err(ClickhouseExporterError::InsertRequestError {
-                    error: error.clone(),
-                })
-            }
-            CompletionOutcome::ResponseError(error) => {
-                Err(ClickhouseExporterError::InsertResponseError {
-                    error: error.clone(),
-                })
-            }
+            CompletionOutcome::Failure(error) => Err(Rc::clone(error)),
         };
         Some(CompletedWrite {
             pdata: pending.pdata,
@@ -121,20 +136,24 @@ pub(super) enum DispatcherEvent {
     Completed(CompletedWrite),
 }
 
+/// Narrow test seam over an ArrowStream insertion.
+///
+/// Concrete client errors remain structured here; request/response classification happens where
+/// the operation is known instead of discarding the source chain at the trait boundary.
 #[async_trait(?Send)]
 pub(super) trait LaneInsert: Sized {
-    async fn write(&mut self, batch: &RecordBatch) -> Result<(), String>;
-    async fn end(self) -> Result<(), String>;
+    async fn write(&mut self, batch: &RecordBatch) -> Result<(), clickhouse::error::Error>;
+    async fn end(self) -> Result<(), clickhouse::error::Error>;
 }
 
 #[async_trait(?Send)]
 impl LaneInsert for ArrowInsert {
-    async fn write(&mut self, batch: &RecordBatch) -> Result<(), String> {
-        self.write(batch).await.map_err(|error| error.to_string())
+    async fn write(&mut self, batch: &RecordBatch) -> Result<(), clickhouse::error::Error> {
+        self.write(batch).await
     }
 
-    async fn end(self) -> Result<(), String> {
-        self.end().await.map_err(|error| error.to_string())
+    async fn end(self) -> Result<(), clickhouse::error::Error> {
+        self.end().await
     }
 }
 
@@ -142,7 +161,7 @@ pub(super) trait LaneWriter: Clone + 'static {
     type Insert: LaneInsert + 'static;
 
     fn destination_table(&self, payload_type: ArrowPayloadType) -> Option<&str>;
-    fn start_insert(&self, table_name: &str) -> Result<Self::Insert, String>;
+    fn start_insert(&self, table_name: &str) -> Result<Self::Insert, clickhouse::error::Error>;
 }
 
 impl LaneWriter for ClickHouseWriter {
@@ -152,9 +171,8 @@ impl LaneWriter for ClickHouseWriter {
         self.destination_table(payload_type)
     }
 
-    fn start_insert(&self, table_name: &str) -> Result<Self::Insert, String> {
+    fn start_insert(&self, table_name: &str) -> Result<Self::Insert, clickhouse::error::Error> {
         self.start_insert(table_name)
-            .map_err(|error| error.to_string())
     }
 }
 
@@ -289,12 +307,15 @@ async fn write_immediately<W: LaneWriter>(
         let result = async {
             let mut insert = writer
                 .start_insert(&table_name)
-                .map_err(CompletionOutcome::RequestError)?;
+                .map_err(CompletionOutcome::request_error)?;
             insert
                 .write(&batch)
                 .await
-                .map_err(CompletionOutcome::RequestError)?;
-            insert.end().await.map_err(CompletionOutcome::ResponseError)
+                .map_err(CompletionOutcome::request_error)?;
+            insert
+                .end()
+                .await
+                .map_err(CompletionOutcome::response_error)
         }
         .await;
 
@@ -328,20 +349,20 @@ enum LaneJob {
 }
 
 impl LaneJob {
-    fn fail(self, error: String) -> CompletedGroup {
+    fn fail(self, lane: usize) -> CompletedGroup {
         match self {
-            Self::Coalesced(insertion) => CompletedGroup::request_error(insertion.pending, error),
+            Self::Coalesced(insertion) => CompletedGroup::lane_closed(insertion.pending, lane),
             Self::Immediate {
                 pdata,
                 export_started_at,
                 ..
-            } => CompletedGroup::request_error(
+            } => CompletedGroup::lane_closed(
                 vec![PendingWrite {
                     pdata,
                     export_started_at,
                     written_rows: Vec::new(),
                 }],
-                error,
+                lane,
             ),
         }
     }
@@ -443,9 +464,7 @@ impl<W: LaneWriter> PersistentWritePool<W> {
                     break;
                 }
                 Err(mpsc::error::TrySendError::Closed(returned_job)) => {
-                    self.completed_groups.push_back(
-                        returned_job.fail(format!("ClickHouse writer lane {lane} is closed")),
-                    );
+                    self.completed_groups.push_back(returned_job.fail(lane));
                 }
             }
         }
@@ -672,7 +691,7 @@ impl WriteDispatcher {
                     CompletedWrite {
                         pdata,
                         export_started_at,
-                        result: writer.write_batches(&batches).await,
+                        result: writer.write_batches(&batches).await.map_err(Rc::new),
                     }
                 });
                 in_flight.push(write_future);
@@ -753,18 +772,20 @@ mod tests {
 
     #[async_trait(?Send)]
     impl LaneInsert for FakeInsert {
-        async fn write(&mut self, batch: &RecordBatch) -> Result<(), String> {
+        async fn write(&mut self, batch: &RecordBatch) -> Result<(), clickhouse::error::Error> {
             self.rows.push(batch.num_rows());
             Ok(())
         }
 
-        async fn end(self) -> Result<(), String> {
+        async fn end(self) -> Result<(), clickhouse::error::Error> {
             if self.state.borrow().stall_end {
                 futures::future::pending().await
             }
             let mut state = self.state.borrow_mut();
             if state.fail_end {
-                return Err("injected end failure".to_string());
+                return Err(clickhouse::error::Error::Custom(
+                    "injected end failure".to_string(),
+                ));
             }
             state.insertion_rows.push(self.rows);
             Ok(())
@@ -778,7 +799,10 @@ mod tests {
             (payload_type == ArrowPayloadType::Logs).then_some("logs")
         }
 
-        fn start_insert(&self, _table_name: &str) -> Result<Self::Insert, String> {
+        fn start_insert(
+            &self,
+            _table_name: &str,
+        ) -> Result<Self::Insert, clickhouse::error::Error> {
             self.state.borrow_mut().insertions_started += 1;
             Ok(FakeInsert {
                 state: Rc::clone(&self.state),
@@ -985,7 +1009,7 @@ mod tests {
     }
 
     /// Scenario: ClickHouse rejects the final response for an insertion containing two messages.
-    /// Guarantees: every message grouped into that insertion is reported as failed.
+    /// Guarantees: every grouped message shares the same structured ClickHouse failure.
     #[tokio::test(flavor = "current_thread")]
     async fn insertion_response_failure_is_reported_to_every_grouped_message() {
         LocalSet::new()
@@ -998,8 +1022,21 @@ mod tests {
                 submit(&mut pool, logs_job(2));
                 submit(&mut pool, logs_job(3));
 
-                assert!(next_completed(&mut pool).await.result.is_err());
-                assert!(next_completed(&mut pool).await.result.is_err());
+                let first_error = next_completed(&mut pool)
+                    .await
+                    .result
+                    .expect_err("the first message should fail");
+                let second_error = next_completed(&mut pool)
+                    .await
+                    .result
+                    .expect_err("the second message should fail");
+                assert!(Rc::ptr_eq(&first_error, &second_error));
+                assert!(matches!(
+                    first_error.as_ref(),
+                    ClickhouseExporterError::InsertResponseError {
+                        source: clickhouse::error::Error::Custom(message)
+                    } if message == "injected end failure"
+                ));
                 assert_eq!(writer.state.borrow().insertions_started, 1);
             })
             .await;

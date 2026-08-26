@@ -72,19 +72,17 @@ impl ClickHouseWriter {
         table_name: &str,
         batch: &RecordBatch,
     ) -> Result<(), ClickhouseExporterError> {
-        let mut insert = self.start_insert(table_name)?;
+        let mut insert = self
+            .start_insert(table_name)
+            .map_err(|source| ClickhouseExporterError::InsertRequestError { source })?;
         insert
             .write(batch)
             .await
-            .map_err(|e| ClickhouseExporterError::InsertRequestError {
-                error: format!("{e}"),
-            })?;
+            .map_err(|source| ClickhouseExporterError::InsertRequestError { source })?;
         insert
             .end()
             .await
-            .map_err(|e| ClickhouseExporterError::InsertResponseError {
-                error: format!("{e}"),
-            })?;
+            .map_err(|source| ClickhouseExporterError::InsertResponseError { source })?;
         otel_debug!(
             "clickhouse.exporter.batch.written",
             message = "Record batch successfully written.",
@@ -105,12 +103,8 @@ impl ClickHouseWriter {
     pub(super) fn start_insert(
         &self,
         table_name: &str,
-    ) -> Result<ArrowInsert, ClickhouseExporterError> {
-        self.client.insert_arrow(table_name).map_err(|e| {
-            ClickhouseExporterError::InsertRequestError {
-                error: format!("{e}"),
-            }
-        })
+    ) -> Result<ArrowInsert, clickhouse::error::Error> {
+        self.client.insert_arrow(table_name)
     }
 
     pub async fn write_batches(

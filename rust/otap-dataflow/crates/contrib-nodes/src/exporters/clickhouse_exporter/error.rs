@@ -16,11 +16,20 @@ pub enum ClickhouseExporterError {
     #[error("Table creation error: {error}")]
     TableCreationError { error: String },
 
-    #[error("Clickhouse data insertion request error: {error}")]
-    InsertRequestError { error: String },
+    #[error("Clickhouse data insertion request error: {source}")]
+    InsertRequestError {
+        #[source]
+        source: clickhouse::error::Error,
+    },
 
-    #[error("Clickhouse data insertion response error: {error}")]
-    InsertResponseError { error: String },
+    #[error("Clickhouse data insertion response error: {source}")]
+    InsertResponseError {
+        #[source]
+        source: clickhouse::error::Error,
+    },
+
+    #[error("Clickhouse data insertion request error: ClickHouse writer lane {lane} is closed")]
+    WriterLaneClosed { lane: usize },
 
     // Data processing errors
     #[error("Missing column: {name}")]
@@ -38,4 +47,25 @@ pub enum ClickhouseExporterError {
         expected: String,
         found: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error;
+
+    use super::ClickhouseExporterError;
+
+    /// Scenario: the ClickHouse client reports a timeout while completing an insertion.
+    /// Guarantees: the exporter error retains the concrete client error in its source chain.
+    #[test]
+    fn insertion_error_retains_clickhouse_source() {
+        let error = ClickhouseExporterError::InsertResponseError {
+            source: clickhouse::error::Error::TimedOut,
+        };
+
+        assert!(matches!(
+            error.source().and_then(|source| source.downcast_ref()),
+            Some(clickhouse::error::Error::TimedOut)
+        ));
+    }
 }

@@ -721,9 +721,13 @@ mod tests {
                 CompletedWrite {
                     pdata: subscribed_logs_pdata(),
                     export_started_at: Instant::now(),
-                    result: Err(error::ClickhouseExporterError::InsertResponseError {
-                        error: "temporary failure".to_owned(),
-                    }),
+                    result: Err(std::rc::Rc::new(
+                        error::ClickhouseExporterError::InsertResponseError {
+                            source: clickhouse::error::Error::Custom(
+                                "temporary failure".to_owned(),
+                            ),
+                        },
+                    )),
                 },
                 &effect_handler,
             )
@@ -731,7 +735,13 @@ mod tests {
             .expect("finalize failed write");
 
         match completion_rx.recv().await.expect("receive completion") {
-            PipelineCompletionMsg::DeliverNack { nack } => assert!(!nack.permanent),
+            PipelineCompletionMsg::DeliverNack { nack } => {
+                assert!(!nack.permanent);
+                assert_eq!(
+                    nack.reason,
+                    "Clickhouse data insertion response error: temporary failure"
+                );
+            }
             PipelineCompletionMsg::DeliverAck { .. } => panic!("expected retryable NACK"),
         }
     }
