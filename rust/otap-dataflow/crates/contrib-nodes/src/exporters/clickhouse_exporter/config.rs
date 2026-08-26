@@ -50,7 +50,9 @@ pub struct UserConfig {
     /// Maximum number of ClickHouse insert requests allowed to run concurrently.
     pub max_in_flight: Option<NonZeroUsize>,
 
-    /// Optional thresholds for grouping Arrow batches before assigning them to writer lanes.
+    /// Optional ClickHouse-aware batching after transformation and before writer-lane assignment.
+    /// Unlike the generic batch processor, it groups final table- and schema-compatible Arrow
+    /// batches into one insertion without rebuilding the telemetry payload.
     pub insert_batching: Option<InsertBatchingConfig>,
 
     #[serde(default)]
