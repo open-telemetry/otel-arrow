@@ -10,7 +10,8 @@
 //! Note 2: Other runtime-control messages coordinate shutdown and completion flow.
 
 use crate::channel_metrics::{
-    ConsumedItemMetrics, ConsumedMetrics, ProducedItemMetrics, ProducedMetrics,
+    NodeInputItemMetrics, NodeInputMetrics, NodeInputSizeMetrics, NodeOutputItemMetrics,
+    NodeOutputMetrics, NodeOutputSizeMetrics,
 };
 use crate::clock;
 use crate::completion_emission_metrics::CompletionEmissionMetricsHandle;
@@ -164,13 +165,17 @@ pub(crate) struct NodeMetricHandles {
     /// Registry handle for automatic unregistration on drop.
     pub(crate) registry: TelemetryRegistryHandle,
     /// Consumed-message metrics for the node's input channel.
-    pub(crate) input: Option<MeasurementMetricSet<ConsumedMetrics>>,
+    pub(crate) input: Option<MeasurementMetricSet<NodeInputMetrics>>,
     /// Optional consumed-item metrics for the node's input channel.
-    pub(crate) input_items: Option<MeasurementMetricSet<ConsumedItemMetrics>>,
+    pub(crate) input_items: Option<MeasurementMetricSet<NodeInputItemMetrics>>,
+    /// Optional consumed-size metrics for the node's input channel.
+    pub(crate) input_size: Option<MeasurementMetricSet<NodeInputSizeMetrics>>,
     /// Produced-message metrics indexed by output port.
-    pub(crate) outputs: Vec<MeasurementMetricSet<ProducedMetrics>>,
+    pub(crate) outputs: Vec<MeasurementMetricSet<NodeOutputMetrics>>,
     /// Optional produced-item metrics indexed by output port.
-    pub(crate) output_items: Vec<MeasurementMetricSet<ProducedItemMetrics>>,
+    pub(crate) output_items: Vec<MeasurementMetricSet<NodeOutputItemMetrics>>,
+    /// Optional produced-size metrics indexed by output port.
+    pub(crate) output_size: Vec<MeasurementMetricSet<NodeOutputSizeMetrics>>,
     /// Completion-emission metrics for completions routed by the node.
     pub(crate) completion_emission: Option<CompletionEmissionMetricsHandle>,
 }
@@ -187,11 +192,17 @@ pub(crate) fn report_node_metrics_with_handles(
         if let Some(input_items) = &mut handles.input_items {
             metrics_reporter.report_measurement(input_items)?;
         }
+        if let Some(input_size) = &mut handles.input_size {
+            metrics_reporter.report_measurement(input_size)?;
+        }
         for output in &mut handles.outputs {
             metrics_reporter.report_measurement(output)?;
         }
         for output_items in &mut handles.output_items {
             metrics_reporter.report_measurement(output_items)?;
+        }
+        for output_size in &mut handles.output_size {
+            metrics_reporter.report_measurement(output_size)?;
         }
         if let Some(completion_emission) = &handles.completion_emission {
             let mut completion_emission = completion_emission
@@ -216,11 +227,17 @@ pub(crate) fn snapshot_node_metrics_with_handles(
         if let Some(input_items) = &mut handles.input_items {
             snapshots.extend(input_items.terminal_snapshots());
         }
+        if let Some(input_size) = &mut handles.input_size {
+            snapshots.extend(input_size.terminal_snapshots());
+        }
         for output in &mut handles.outputs {
             snapshots.extend(output.terminal_snapshots());
         }
         for output_items in &mut handles.output_items {
             snapshots.extend(output_items.terminal_snapshots());
+        }
+        for output_size in &mut handles.output_size {
+            snapshots.extend(output_size.terminal_snapshots());
         }
         if let Some(completion_emission) = &handles.completion_emission
             && let Some(snapshot) = completion_emission
@@ -244,6 +261,11 @@ impl Drop for NodeMetricHandles {
                 .registry
                 .unregister_metric_set(input_items.metric_set_key());
         }
+        if let Some(input_size) = self.input_size.take() {
+            let _ = self
+                .registry
+                .unregister_metric_set(input_size.metric_set_key());
+        }
         for output in self.outputs.drain(..) {
             let _ = self.registry.unregister_metric_set(output.metric_set_key());
         }
@@ -251,6 +273,11 @@ impl Drop for NodeMetricHandles {
             let _ = self
                 .registry
                 .unregister_metric_set(output_items.metric_set_key());
+        }
+        for output_size in self.output_size.drain(..) {
+            let _ = self
+                .registry
+                .unregister_metric_set(output_size.metric_set_key());
         }
     }
 }
@@ -1022,6 +1049,8 @@ impl<PData> PipelineCompletionMsgDispatcher<PData> {
         signal: Option<SignalType>,
         produced_items: u32,
         consumed_items: u32,
+        produced_size: u64,
+        consumed_size: u64,
         outcome: RequestOutcome,
         now_ns: u64,
     ) {
@@ -1036,18 +1065,28 @@ impl<PData> PipelineCompletionMsgDispatcher<PData> {
                             RequestOutcome::Refused => Outcome::Refused,
                         };
                         let input = input.with(SignalOutcomeAttributes { signal, outcome });
-                        input.consumed_messages.inc();
+                        input.messages.inc();
                         if consumed_items > 0
                             && let Some(input_items) = &mut handles.input_items
                         {
                             input_items
                                 .with(SignalOutcomeAttributes { signal, outcome })
-                                .consumed_items
+                                .items
                                 .add(consumed_items as u64);
+                        }
+                        if consumed_size > 0
+                            && let Some(input_size) = &mut handles.input_size
+                        {
+                            input_size
+                                .with(SignalOutcomeAttributes { signal, outcome })
+                                .size
+                                .add(consumed_size);
                         }
                         if route.entry_time_ns > 0 && now_ns > 0 {
                             let duration_ns = now_ns.saturating_sub(route.entry_time_ns);
-                            input.consumed_duration_ns.record(duration_ns as f64);
+                            input
+                                .duration
+                                .record(Duration::from_nanos(duration_ns).as_secs_f64());
                         }
                     }
                 }
@@ -1062,21 +1101,31 @@ impl<PData> PipelineCompletionMsgDispatcher<PData> {
                             RequestOutcome::Refused => Outcome::Refused,
                         };
                         let output = output.with(SignalOutcomeAttributes { signal, outcome });
-                        output.produced_messages.inc();
+                        output.messages.inc();
                         if produced_items > 0
                             && let Some(output_items) = handles.output_items.get_mut(port)
                         {
                             output_items
                                 .with(SignalOutcomeAttributes { signal, outcome })
-                                .produced_items
+                                .items
                                 .add(produced_items as u64);
+                        }
+                        if produced_size > 0
+                            && let Some(output_size) = handles.output_size.get_mut(port)
+                        {
+                            output_size
+                                .with(SignalOutcomeAttributes { signal, outcome })
+                                .size
+                                .add(produced_size);
                         }
                         if !interests.contains(Interests::CONSUMER_METRICS)
                             && route.entry_time_ns > 0
                             && now_ns > 0
                         {
                             let duration_ns = now_ns.saturating_sub(route.entry_time_ns);
-                            output.produced_duration_ns.record(duration_ns as f64);
+                            output
+                                .duration
+                                .record(Duration::from_nanos(duration_ns).as_secs_f64());
                         }
                     }
                 }
@@ -1200,6 +1249,8 @@ impl<PData: Unwindable> PipelineCompletionMsgDispatcher<PData> {
                             signal,
                             frame.produced_items,
                             frame.consumed_items,
+                            frame.produced_size,
+                            frame.consumed_size,
                             outcome,
                             now_ns,
                         );
@@ -1298,7 +1349,7 @@ mod tests {
     use super::*;
     use crate::attributes::{ChannelImplementation, ChannelKind, ChannelMode, ChannelType};
     use crate::channel_metrics::{
-        ConsumedItemMetrics, ConsumedMetrics, ProducedItemMetrics, ProducedMetrics,
+        NodeInputItemMetrics, NodeInputMetrics, NodeOutputItemMetrics, NodeOutputMetrics,
     };
     use crate::context::{ControllerContext, PipelineContextParams};
     use crate::control::{AckMsg, Frame, NackMsg, RouteData, nanos_since_birth};
@@ -2800,12 +2851,16 @@ mod tests {
     enum MetricLabel {
         RecvProduced,
         RecvProducedItems,
+        RecvProducedSize,
         ProcConsumed,
         ProcConsumedItems,
+        ProcConsumedSize,
         ProcProduced,
         ProcProducedItems,
+        ProcProducedSize,
         ExpConsumed,
         ExpConsumedItems,
+        ExpConsumedSize,
     }
 
     /// Return value from setup_test_manager_with_metrics.
@@ -2898,21 +2953,29 @@ mod tests {
             ChannelImplementation::Internal,
         );
 
-        let recv_produced: MeasurementMetricSet<ProducedMetrics> =
+        let recv_produced: MeasurementMetricSet<NodeOutputMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(recv_out_key);
-        let recv_produced_items: MeasurementMetricSet<ProducedItemMetrics> =
+        let recv_produced_items: MeasurementMetricSet<NodeOutputItemMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(recv_out_key);
-        let proc_consumed: MeasurementMetricSet<ConsumedMetrics> =
+        let recv_produced_size: MeasurementMetricSet<NodeOutputSizeMetrics> =
+            registry.register_metric_set_with_measurement_attributes_for_entity(recv_out_key);
+        let proc_consumed: MeasurementMetricSet<NodeInputMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(proc_in_key);
-        let proc_consumed_items: MeasurementMetricSet<ConsumedItemMetrics> =
+        let proc_consumed_items: MeasurementMetricSet<NodeInputItemMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(proc_in_key);
-        let proc_produced: MeasurementMetricSet<ProducedMetrics> =
+        let proc_consumed_size: MeasurementMetricSet<NodeInputSizeMetrics> =
+            registry.register_metric_set_with_measurement_attributes_for_entity(proc_in_key);
+        let proc_produced: MeasurementMetricSet<NodeOutputMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(proc_out_key);
-        let proc_produced_items: MeasurementMetricSet<ProducedItemMetrics> =
+        let proc_produced_items: MeasurementMetricSet<NodeOutputItemMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(proc_out_key);
-        let exp_consumed: MeasurementMetricSet<ConsumedMetrics> =
+        let proc_produced_size: MeasurementMetricSet<NodeOutputSizeMetrics> =
+            registry.register_metric_set_with_measurement_attributes_for_entity(proc_out_key);
+        let exp_consumed: MeasurementMetricSet<NodeInputMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(exp_in_key);
-        let exp_consumed_items: MeasurementMetricSet<ConsumedItemMetrics> =
+        let exp_consumed_items: MeasurementMetricSet<NodeInputItemMetrics> =
+            registry.register_metric_set_with_measurement_attributes_for_entity(exp_in_key);
+        let exp_consumed_size: MeasurementMetricSet<NodeInputSizeMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(exp_in_key);
 
         // Save metric set keys for snapshot identification.
@@ -2922,20 +2985,36 @@ mod tests {
             recv_produced_items.metric_set_key(),
             MetricLabel::RecvProducedItems,
         );
+        let _ = key_labels.insert(
+            recv_produced_size.metric_set_key(),
+            MetricLabel::RecvProducedSize,
+        );
         let _ = key_labels.insert(proc_consumed.metric_set_key(), MetricLabel::ProcConsumed);
         let _ = key_labels.insert(
             proc_consumed_items.metric_set_key(),
             MetricLabel::ProcConsumedItems,
+        );
+        let _ = key_labels.insert(
+            proc_consumed_size.metric_set_key(),
+            MetricLabel::ProcConsumedSize,
         );
         let _ = key_labels.insert(proc_produced.metric_set_key(), MetricLabel::ProcProduced);
         let _ = key_labels.insert(
             proc_produced_items.metric_set_key(),
             MetricLabel::ProcProducedItems,
         );
+        let _ = key_labels.insert(
+            proc_produced_size.metric_set_key(),
+            MetricLabel::ProcProducedSize,
+        );
         let _ = key_labels.insert(exp_consumed.metric_set_key(), MetricLabel::ExpConsumed);
         let _ = key_labels.insert(
             exp_consumed_items.metric_set_key(),
             MetricLabel::ExpConsumedItems,
+        );
+        let _ = key_labels.insert(
+            exp_consumed_size.metric_set_key(),
+            MetricLabel::ExpConsumedSize,
         );
 
         let mut node_metric_handles: Vec<Option<NodeMetricHandles>> = Vec::new();
@@ -2947,24 +3026,30 @@ mod tests {
             registry: registry.clone(),
             input: None,
             input_items: None,
+            input_size: None,
             outputs: vec![recv_produced],
             output_items: vec![recv_produced_items],
+            output_size: vec![recv_produced_size],
             completion_emission: None,
         });
         node_metric_handles[nodes[1].index] = Some(NodeMetricHandles {
             registry: registry.clone(),
             input: Some(proc_consumed),
             input_items: Some(proc_consumed_items),
+            input_size: Some(proc_consumed_size),
             outputs: vec![proc_produced],
             output_items: vec![proc_produced_items],
+            output_size: vec![proc_produced_size],
             completion_emission: None,
         });
         node_metric_handles[nodes[2].index] = Some(NodeMetricHandles {
             registry: registry.clone(),
             input: Some(exp_consumed),
             input_items: Some(exp_consumed_items),
+            input_size: Some(exp_consumed_size),
             outputs: Vec::new(),
             output_items: Vec::new(),
+            output_size: Vec::new(),
             completion_emission: None,
         });
 
@@ -3065,6 +3150,37 @@ mod tests {
         }
     }
 
+    /// Extract a normal-tier histogram summary from a MetricValue.
+    fn assert_dist_is_normal_histogram(
+        values: &[MetricValue],
+        index: usize,
+        msg: &str,
+    ) -> (u64, f64, f64, f64) {
+        match &values[index] {
+            MetricValue::Distribution(distribution) => {
+                assert_eq!(
+                    distribution.tier_name(),
+                    "normal",
+                    "{msg}: expected a normal-tier histogram"
+                );
+                distribution.summary()
+            }
+            other => panic!("{msg}: expected a distribution, got {other:?}"),
+        }
+    }
+
+    /// Assert that a normal-tier histogram contains one expected duration in seconds.
+    fn assert_duration_seconds(values: &[MetricValue], index: usize, expected: f64, msg: &str) {
+        let (count, sum, min, max) = assert_dist_is_normal_histogram(values, index, msg);
+        assert_eq!(count, 1, "{msg}: expected one duration observation");
+        for (name, actual) in [("sum", sum), ("min", min), ("max", max)] {
+            assert!(
+                (actual - expected).abs() < f64::EPSILON,
+                "{msg}: expected {name}={expected}, got {actual}"
+            );
+        }
+    }
+
     // ConsumedMetrics field indices (defined by #[metric_set] field order):
     const CONSUMER_DURATION: usize = 0;
     const CONSUMER_REQUESTS: usize = 1;
@@ -3073,6 +3189,8 @@ mod tests {
     const PRODUCER_REQUESTS: usize = 1;
     // Item metric set field index:
     const ITEMS: usize = 0;
+    // Size metric set field index:
+    const SIZE: usize = 0;
 
     const RUNTIME_DRAIN_ACTIVE: usize = 0;
     const RUNTIME_DRAIN_PENDING_RECEIVERS: usize = 1;
@@ -3467,6 +3585,8 @@ mod tests {
             },
             produced_items: 10,
             consumed_items: 0,
+            produced_size: 100,
+            consumed_size: 0,
         });
 
         // Node 1 (processor): consumer + producer metrics + acks/nacks
@@ -3489,6 +3609,8 @@ mod tests {
             },
             produced_items: 7,
             consumed_items: 10,
+            produced_size: 70,
+            consumed_size: 100,
         });
 
         // Node 2 (exporter): consumer metrics only (no acks subscription -- terminal node)
@@ -3507,6 +3629,8 @@ mod tests {
             },
             produced_items: 0,
             consumed_items: 7,
+            produced_size: 0,
+            consumed_size: 70,
         });
 
         pdata
@@ -3536,6 +3660,8 @@ mod tests {
             },
             produced_items: 10,
             consumed_items: 0,
+            produced_size: 100,
+            consumed_size: 0,
         });
 
         // Node 1 (processor): consumer + producer metrics, no ACKS/NACKS.
@@ -3556,6 +3682,8 @@ mod tests {
             },
             produced_items: 7,
             consumed_items: 10,
+            produced_size: 70,
+            consumed_size: 100,
         });
 
         // Node 2 (exporter): consumer metrics only.
@@ -3574,6 +3702,8 @@ mod tests {
             },
             produced_items: 0,
             consumed_items: 7,
+            produced_size: 0,
+            consumed_size: 70,
         });
 
         pdata
@@ -3725,87 +3855,109 @@ mod tests {
         assert_u64(proc_p, PRODUCER_REQUESTS, 1, "Processor produced requests");
     }
 
-    /// Verify that consumed_duration_ns, an Mmsc histogram, is recorded
-    /// when entry_time_ns > 0 and return_time_ns > 0.
+    /// Scenario: An acknowledgement unwinds frames with valid entry and return timestamps.
+    /// Guarantees: Consumed durations are recorded as normal-tier histograms in seconds.
     #[tokio::test]
     async fn test_ack_lifecycle_duration_histogram() {
+        const ENTRY_TIME_NS: u64 = 1_000_000_000;
+        const RETURN_TIME_NS: u64 = 1_250_000_000;
+        const EXPECTED_DURATION_SECONDS: f64 = 0.25;
+
         let harness = setup_test_manager_with_metrics();
         let snapshots = run_and_collect(harness, |nodes| {
-            let pdata = build_3node_pdata(nodes, true);
+            let mut pdata = build_3node_pdata(nodes, true);
+            for frame in &mut pdata.frames {
+                if frame.route.entry_time_ns > 0 {
+                    frame.route.entry_time_ns = ENTRY_TIME_NS;
+                }
+            }
             let mut ack = AckMsg::new(pdata);
-            ack.unwind.return_time_ns = nanos_since_birth();
+            ack.unwind.return_time_ns = RETURN_TIME_NS;
             vec![PipelineCompletionMsg::DeliverAck { ack }]
         })
         .await;
 
-        // Exporter consumed duration: 1 observation, min > 0
         let exp = &snapshots[&MetricLabel::ExpConsumed];
-        let snap = assert_dist_is_mmsc(exp, CONSUMER_DURATION, "Exporter duration");
-        assert_eq!(snap.count, 1, "Exporter should have 1 duration observation");
-        assert!(snap.min > 0.0, "Duration min should be > 0");
-        assert!(snap.max >= snap.min, "Duration max >= min");
-
-        // Processor consumed duration: 1 observation, min > 0
-        let proc_c = &snapshots[&MetricLabel::ProcConsumed];
-        let snap = assert_dist_is_mmsc(proc_c, CONSUMER_DURATION, "Processor consumed duration");
-        assert_eq!(
-            snap.count, 1,
-            "Processor should have 1 consumed duration observation"
+        assert_duration_seconds(
+            exp,
+            CONSUMER_DURATION,
+            EXPECTED_DURATION_SECONDS,
+            "Exporter consumed duration",
         );
-        assert!(snap.min > 0.0, "Processor consumed duration should be > 0");
+
+        let proc_c = &snapshots[&MetricLabel::ProcConsumed];
+        assert_duration_seconds(
+            proc_c,
+            CONSUMER_DURATION,
+            EXPECTED_DURATION_SECONDS,
+            "Processor consumed duration",
+        );
 
         // Processor produced duration: should be 0 observations because the
-        // processor frame has CONSUMER_METRICS, so produced_duration_ns is
+        // processor frame has CONSUMER_METRICS, so produced duration is
         // suppressed.
         let proc_p = &snapshots[&MetricLabel::ProcProduced];
-        let snap = assert_dist_is_mmsc(proc_p, PRODUCER_DURATION, "Processor produced duration");
+        let (count, _, _, _) = assert_dist_is_normal_histogram(
+            proc_p,
+            PRODUCER_DURATION,
+            "Processor produced duration",
+        );
         assert_eq!(
-            snap.count, 0,
+            count, 0,
             "Processor should have 0 produced duration observations (suppressed by CONSUMER_METRICS)"
         );
     }
 
-    /// Verify that produced_duration_ns is recorded for producer-only frames
-    /// (receiver) but NOT for frames that also have CONSUMER_METRICS (processor).
-    /// Uses a no-subscriber pipeline so all frames are popped in a single unwind.
+    /// Scenario: An acknowledgement unwinds receiver-only and processor frames.
+    /// Guarantees: Produced duration is recorded only when no consumed duration owns the frame.
     #[tokio::test]
     async fn test_ack_lifecycle_produced_duration_histogram() {
+        const ENTRY_TIME_NS: u64 = 1_000_000_000;
+        const RETURN_TIME_NS: u64 = 1_250_000_000;
+        const EXPECTED_DURATION_SECONDS: f64 = 0.25;
+
         let harness = setup_test_manager_with_metrics();
         let snapshots = run_and_collect(harness, |nodes| {
-            let pdata = build_3node_pdata_no_subscribers(nodes, true);
+            let mut pdata = build_3node_pdata_no_subscribers(nodes, true);
+            for frame in &mut pdata.frames {
+                frame.route.entry_time_ns = ENTRY_TIME_NS;
+            }
             let mut ack = AckMsg::new(pdata);
-            ack.unwind.return_time_ns = nanos_since_birth();
+            ack.unwind.return_time_ns = RETURN_TIME_NS;
             vec![PipelineCompletionMsg::DeliverAck { ack }]
         })
         .await;
 
-        // Receiver produced duration: 1 observation, min > 0
         let recv_p = &snapshots[&MetricLabel::RecvProduced];
-        let snap = assert_dist_is_mmsc(recv_p, PRODUCER_DURATION, "Receiver produced duration");
-        assert_eq!(
-            snap.count, 1,
-            "Receiver should have 1 produced duration observation"
-        );
-        assert!(snap.min > 0.0, "Receiver produced duration should be > 0");
-        assert!(
-            snap.max >= snap.min,
-            "Receiver produced duration max >= min"
+        assert_duration_seconds(
+            recv_p,
+            PRODUCER_DURATION,
+            EXPECTED_DURATION_SECONDS,
+            "Receiver produced duration",
         );
 
         // Processor produced duration: 0 observations
         // (merged frame has CONSUMER_METRICS -> produced_duration suppressed)
         let proc_p = &snapshots[&MetricLabel::ProcProduced];
-        let snap = assert_dist_is_mmsc(proc_p, PRODUCER_DURATION, "Processor produced duration");
+        let (count, _, _, _) = assert_dist_is_normal_histogram(
+            proc_p,
+            PRODUCER_DURATION,
+            "Processor produced duration",
+        );
         assert_eq!(
-            snap.count, 0,
+            count, 0,
             "Processor should have 0 produced duration observations"
         );
 
         // Processor consumed duration: 1 observation (still works)
         let proc_c = &snapshots[&MetricLabel::ProcConsumed];
-        let snap = assert_dist_is_mmsc(proc_c, CONSUMER_DURATION, "Processor consumed duration");
+        let (count, _, _, _) = assert_dist_is_normal_histogram(
+            proc_c,
+            CONSUMER_DURATION,
+            "Processor consumed duration",
+        );
         assert_eq!(
-            snap.count, 1,
+            count, 1,
             "Processor should have 1 consumed duration observation"
         );
     }
@@ -3836,6 +3988,31 @@ mod tests {
         // Exporter consumed 7 log records.
         let exp = &snapshots[&MetricLabel::ExpConsumedItems];
         assert_u64(exp, ITEMS, 7, "Exporter consumed logs");
+    }
+
+    /// Scenario: a logs batch flows through receiver, processor, and exporter nodes.
+    /// Guarantees: each node reports its produced or consumed logical payload size in the `signal=logs` bucket.
+    #[tokio::test]
+    async fn test_per_signal_payload_size() {
+        let harness = setup_test_manager_with_metrics();
+        let snapshots = run_and_collect(harness, |nodes| {
+            let pdata = build_3node_pdata_no_subscribers(nodes, false);
+            vec![PipelineCompletionMsg::DeliverAck {
+                ack: AckMsg::new(pdata),
+            }]
+        })
+        .await;
+
+        let recv_p = &snapshots[&MetricLabel::RecvProducedSize];
+        assert_u64(recv_p, SIZE, 100, "Receiver produced size");
+
+        let proc_c = &snapshots[&MetricLabel::ProcConsumedSize];
+        assert_u64(proc_c, SIZE, 100, "Processor consumed size");
+        let proc_p = &snapshots[&MetricLabel::ProcProducedSize];
+        assert_u64(proc_p, SIZE, 70, "Processor produced size");
+
+        let exp = &snapshots[&MetricLabel::ExpConsumedSize];
+        assert_u64(exp, SIZE, 70, "Exporter consumed size");
     }
 
     /// Scenario: request metrics are enabled while per-signal item counting is not.
@@ -3874,6 +4051,42 @@ mod tests {
         );
     }
 
+    /// Scenario: request metrics are enabled while logical payload sizing is not.
+    /// Guarantees: request series are emitted but no zero-valued size series are reported.
+    #[tokio::test]
+    async fn node_metrics_omit_size_without_optin() {
+        let harness = setup_test_manager_with_metrics();
+        for handles in harness
+            .node_metric_handles
+            .borrow_mut()
+            .iter_mut()
+            .flatten()
+        {
+            let _ = handles.input_size.take();
+            handles.output_size.clear();
+        }
+
+        let snapshots = run_and_collect(harness, |nodes| {
+            let pdata = build_3node_pdata_no_subscribers(nodes, false);
+            vec![PipelineCompletionMsg::DeliverAck {
+                ack: AckMsg::new(pdata),
+            }]
+        })
+        .await;
+
+        assert!(
+            snapshots.contains_key(&MetricLabel::RecvProduced),
+            "Request metrics should remain enabled"
+        );
+        assert!(
+            !snapshots.contains_key(&MetricLabel::RecvProducedSize)
+                && !snapshots.contains_key(&MetricLabel::ProcConsumedSize)
+                && !snapshots.contains_key(&MetricLabel::ProcProducedSize)
+                && !snapshots.contains_key(&MetricLabel::ExpConsumedSize),
+            "Size metrics should be absent when payload sizing is disabled"
+        );
+    }
+
     /// Scenario: one processor records successful logs and failed traces.
     /// Guarantees: produced and consumed request and item snapshots retain distinct `signal` and `outcome` datapoint attributes.
     #[test]
@@ -3901,6 +4114,8 @@ mod tests {
             Some(SignalType::Logs),
             4,
             5,
+            0,
+            0,
             RequestOutcome::Success,
             0,
         );
@@ -3911,6 +4126,8 @@ mod tests {
             Some(SignalType::Traces),
             6,
             7,
+            0,
+            0,
             RequestOutcome::Failure,
             0,
         );
@@ -4050,7 +4267,8 @@ mod tests {
         assert_u64(&produced_traces, ITEMS, 6, "traces failure produced items");
     }
 
-    /// Verify that produced_duration_ns is NOT recorded when entry_time_ns is 0.
+    /// Scenario: A producer-only frame has no entry timestamp.
+    /// Guarantees: No produced duration observation is recorded.
     #[tokio::test]
     async fn test_produced_duration_not_recorded_without_timestamp() {
         let harness = setup_test_manager_with_metrics();
@@ -4064,14 +4282,19 @@ mod tests {
 
         // Receiver produced duration: 0 observations (no timestamp)
         let recv_p = &snapshots[&MetricLabel::RecvProduced];
-        let snap = assert_dist_is_mmsc(recv_p, PRODUCER_DURATION, "Receiver produced duration");
+        let (count, _, _, _) = assert_dist_is_normal_histogram(
+            recv_p,
+            PRODUCER_DURATION,
+            "Receiver produced duration",
+        );
         assert_eq!(
-            snap.count, 0,
+            count, 0,
             "No produced duration should be recorded when entry_time_ns == 0"
         );
     }
 
-    /// Verify that when entry_time_ns is 0 (or return_time_ns is 0), no duration histogram is recorded.
+    /// Scenario: An acknowledgement unwinds frames without entry timestamps.
+    /// Guarantees: No consumed duration observations are recorded.
     #[tokio::test]
     async fn test_ack_lifecycle_no_duration_without_timestamp() {
         let harness = setup_test_manager_with_metrics();
@@ -4084,16 +4307,18 @@ mod tests {
         .await;
 
         let exp = &snapshots[&MetricLabel::ExpConsumed];
-        let snap = assert_dist_is_mmsc(exp, CONSUMER_DURATION, "Exporter duration");
+        let (count, _, _, _) =
+            assert_dist_is_normal_histogram(exp, CONSUMER_DURATION, "Exporter duration");
         assert_eq!(
-            snap.count, 0,
+            count, 0,
             "No duration should be recorded when entry_time_ns == 0"
         );
 
         let proc_c = &snapshots[&MetricLabel::ProcConsumed];
-        let snap = assert_dist_is_mmsc(proc_c, CONSUMER_DURATION, "Processor duration");
+        let (count, _, _, _) =
+            assert_dist_is_normal_histogram(proc_c, CONSUMER_DURATION, "Processor duration");
         assert_eq!(
-            snap.count, 0,
+            count, 0,
             "No duration should be recorded when entry_time_ns == 0"
         );
     }
@@ -4204,6 +4429,8 @@ mod tests {
                 },
                 produced_items: 0,
                 consumed_items: 0,
+                produced_size: 0,
+                consumed_size: 0,
             });
             let mut ack2 = AckMsg::new(pdata_recv_only);
             ack2.unwind.return_time_ns = nanos_since_birth();
@@ -4218,14 +4445,19 @@ mod tests {
         // From pass 1: exporter and processor consumer metrics are recorded.
         let exp = &snapshots[&MetricLabel::ExpConsumed];
         assert_u64(exp, CONSUMER_REQUESTS, 1, "Exporter consumed requests");
-        let snap = assert_dist_is_mmsc(exp, CONSUMER_DURATION, "Exporter consumed duration");
-        assert_eq!(snap.count, 1, "Exporter should have 1 consumed duration");
-        assert!(snap.min > 0.0, "Exporter consumed duration > 0");
+        let (count, _, min, _) =
+            assert_dist_is_normal_histogram(exp, CONSUMER_DURATION, "Exporter consumed duration");
+        assert_eq!(count, 1, "Exporter should have 1 consumed duration");
+        assert!(min > 0.0, "Exporter consumed duration > 0");
 
         let proc_c = &snapshots[&MetricLabel::ProcConsumed];
         assert_u64(proc_c, CONSUMER_REQUESTS, 1, "Processor consumed requests");
-        let snap = assert_dist_is_mmsc(proc_c, CONSUMER_DURATION, "Processor consumed duration");
-        assert_eq!(snap.count, 1, "Processor should have 1 consumed duration");
+        let (count, _, _, _) = assert_dist_is_normal_histogram(
+            proc_c,
+            CONSUMER_DURATION,
+            "Processor consumed duration",
+        );
+        assert_eq!(count, 1, "Processor should have 1 consumed duration");
 
         // From pass 1: processor produced counter recorded.
         let proc_p = &snapshots[&MetricLabel::ProcProduced];
@@ -4234,12 +4466,16 @@ mod tests {
         // From pass 2: receiver produced counter AND duration recorded.
         let recv_p = &snapshots[&MetricLabel::RecvProduced];
         assert_u64(recv_p, PRODUCER_REQUESTS, 1, "Receiver produced requests");
-        let snap = assert_dist_is_mmsc(recv_p, PRODUCER_DURATION, "Receiver produced duration");
+        let (count, _, min, _) = assert_dist_is_normal_histogram(
+            recv_p,
+            PRODUCER_DURATION,
+            "Receiver produced duration",
+        );
         assert_eq!(
-            snap.count, 1,
+            count, 1,
             "Receiver should have 1 produced duration observation from two-pass unwind"
         );
-        assert!(snap.min > 0.0, "Receiver produced duration should be > 0");
+        assert!(min > 0.0, "Receiver produced duration should be > 0");
     }
 
     // Shutdown of a receiver+processor pipeline should first stop ingress, then
@@ -5864,6 +6100,8 @@ mod tests {
                 },
                 produced_items: 0,
                 consumed_items: 0,
+                produced_size: 0,
+                consumed_size: 0,
             });
             pdata
         }
@@ -5996,6 +6234,8 @@ mod tests {
                 },
                 produced_items: 0,
                 consumed_items: 0,
+                produced_size: 0,
+                consumed_size: 0,
             });
             pdata
         }
@@ -6133,6 +6373,8 @@ mod tests {
                 },
                 produced_items: 0,
                 consumed_items: 0,
+                produced_size: 0,
+                consumed_size: 0,
             });
             pdata
         }

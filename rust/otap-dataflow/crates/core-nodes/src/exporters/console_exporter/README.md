@@ -254,7 +254,7 @@ when the metric set is registered; `signal` and `error.type` are bounded
 per-measurement attributes.
 
 Console output remains best effort. The exporter ACKs a message after the
-attempt even when `outcome="failure"`, so `node.consumer.consumed.messages`
+attempt even when `outcome="failure"`, so `node.input.messages`
 describes pipeline completion while `exporter.exports.messages` describes
 the actual console export result.
 

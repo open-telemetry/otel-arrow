@@ -24,6 +24,7 @@ use otel_arrow_dfe_engine::control::{
     AckMsg, CallData, Frame, NackMsg, RouteData, nanos_since_birth,
 };
 use otel_arrow_dfe_engine::error::{Error, TypedError};
+use otel_arrow_dfe_engine::flow_metrics::FlowMetricInterests;
 use otel_arrow_dfe_engine::processor::{FlowMetricEffectHandler, FlowMetricHook};
 use otel_arrow_dfe_engine::{
     ConsumerEffectHandlerExtension, FlowMetricAccumulation, Interests,
@@ -123,6 +124,8 @@ impl Context {
             },
             produced_items: 0,
             consumed_items: 0,
+            produced_size: 0,
+            consumed_size: 0,
         });
     }
 
@@ -232,6 +235,8 @@ impl Context {
             route: RouteData::default(),
             produced_items: 0,
             consumed_items: 0,
+            produced_size: 0,
+            consumed_size: 0,
         });
     }
 
@@ -287,6 +292,8 @@ impl Context {
             },
             produced_items: 0,
             consumed_items: 0,
+            produced_size: 0,
+            consumed_size: 0,
         });
     }
 
@@ -316,6 +323,22 @@ impl Context {
         self.capture_signal(signal);
         if let Some(top) = self.stack.last_mut() {
             top.consumed_items = items;
+        }
+    }
+
+    /// Record the logical payload size produced by the current node at send
+    /// time onto the top frame.
+    pub(crate) fn stamp_produced_size(&mut self, size: u64) {
+        if let Some(top) = self.stack.last_mut() {
+            top.produced_size = size;
+        }
+    }
+
+    /// Record the logical payload size consumed by the current node at receive
+    /// time onto the top frame.
+    pub(crate) fn stamp_consumed_size(&mut self, size: u64) {
+        if let Some(top) = self.stack.last_mut() {
+            top.consumed_size = size;
         }
     }
 
@@ -361,6 +384,8 @@ impl Context {
             },
             produced_items: 0,
             consumed_items: 0,
+            produced_size: 0,
+            consumed_size: 0,
         });
     }
 
@@ -778,6 +803,13 @@ impl OtapPdata {
                 let signal = self.signal_type();
                 self.context.stamp_produced_items(items, signal);
             }
+            if node_interests.contains(Interests::PRODUCED_CONSUMED_SIZE)
+                && node_interests.contains(Interests::PRODUCER_METRICS)
+                && let Some(size) = self.num_bytes()
+            {
+                self.context
+                    .stamp_produced_size(u64::try_from(size).unwrap_or(u64::MAX));
+            }
         }
     }
 
@@ -911,9 +943,14 @@ impl_consumer_ext!(otel_arrow_dfe_engine::shared::exporter::EffectHandler<OtapPd
 /// Forward-path flow_metric accumulation for non-overlapping ranges.
 /// Invoked by local and shared processor handlers (via `FlowMetricHook`);
 /// receivers and exporters do not measure flow_metrics.
-fn flow_accumulate<H: FlowMetricEffectHandler>(handler: &H, data: &mut OtapPdata) {
+fn flow_accumulate<H: FlowMetricEffectHandler>(
+    handler: &H,
+    data: &mut OtapPdata,
+    emitted_output: bool,
+) {
     let is_start = handler.is_flow_start();
     let is_end = handler.is_flow_end();
+    let interests = handler.flow_metric_interests();
     if !is_start && !is_end && !data.has_active_flow_metric() {
         return;
     }
@@ -925,7 +962,12 @@ fn flow_accumulate<H: FlowMetricEffectHandler>(handler: &H, data: &mut OtapPdata
     data.add_flow_compute(delta_ns);
     if is_end {
         if let Some(total) = data.take_flow_compute() {
-            handler.record_flow_duration(data.signal_type(), total);
+            if interests.contains(FlowMetricInterests::COMPUTE_DURATION) {
+                handler.record_flow_duration(data.signal_type(), total);
+            }
+        }
+        if emitted_output && interests.contains(FlowMetricInterests::OUTPUT_MESSAGES) {
+            handler.record_flow_output_message(data.signal_type());
         }
         // num_items() is only called at flow_metric boundaries to keep
         // overhead off the per-node hot path. At the end node this
@@ -933,13 +975,25 @@ fn flow_accumulate<H: FlowMetricEffectHandler>(handler: &H, data: &mut OtapPdata
         // the flow_metric range. The hook records every traversal,
         // including zero-item batches, although a zero-delta counter is
         // omitted from exported snapshots.
-        handler.record_flow_produced_items(data.signal_type(), data.num_items() as u64);
+        if emitted_output && interests.contains(FlowMetricInterests::OUTPUT_ITEMS) {
+            handler.record_flow_output_items(data.signal_type(), data.num_items() as u64);
+        }
+        if emitted_output
+            && interests.contains(FlowMetricInterests::OUTPUT_SIZE)
+            && let Some(size) = data.num_bytes()
+        {
+            handler.record_flow_output_size(data.signal_type(), size as u64);
+        }
     }
 }
 
 impl FlowMetricHook for OtapPdata {
     fn before_processor_send<H: FlowMetricEffectHandler>(&mut self, handler: &H) {
-        flow_accumulate(handler, self);
+        flow_accumulate(handler, self, true);
+    }
+
+    fn complete_processor_without_output<H: FlowMetricEffectHandler>(&mut self, handler: &H) {
+        flow_accumulate(handler, self, false);
     }
 
     /// At the flow_metric start node, count items *entering* the range --
@@ -950,7 +1004,18 @@ impl FlowMetricHook for OtapPdata {
     /// counter is omitted from exported snapshots.
     fn after_processor_receive<H: FlowMetricEffectHandler>(&mut self, handler: &H) {
         if handler.is_flow_start() {
-            handler.record_flow_consumed_items(self.signal_type(), self.num_items() as u64);
+            let interests = handler.flow_metric_interests();
+            if interests.contains(FlowMetricInterests::INPUT_MESSAGES) {
+                handler.record_flow_input_message(self.signal_type());
+            }
+            if interests.contains(FlowMetricInterests::INPUT_ITEMS) {
+                handler.record_flow_input_items(self.signal_type(), self.num_items() as u64);
+            }
+            if interests.contains(FlowMetricInterests::INPUT_SIZE)
+                && let Some(size) = self.num_bytes()
+            {
+                handler.record_flow_input_size(self.signal_type(), size as u64);
+            }
         }
     }
 }
@@ -1069,6 +1134,13 @@ impl otel_arrow_dfe_engine::ReceivedAtNode for OtapPdata {
             let signal = self.signal_type();
             self.context.stamp_consumed_items(items, signal);
         }
+        if node_interests.contains(Interests::PRODUCED_CONSUMED_SIZE)
+            && node_interests.contains(Interests::CONSUMER_METRICS)
+            && let Some(size) = self.num_bytes()
+        {
+            self.context
+                .stamp_consumed_size(u64::try_from(size).unwrap_or(u64::MAX));
+        }
     }
 }
 
@@ -1117,11 +1189,16 @@ mod test {
     struct FakeFlowMetricHandler {
         is_start: bool,
         is_end: bool,
+        metrics_enabled: bool,
         elapsed_ns: u64,
         stop_total: Cell<u64>,
         stop_total_calls: Cell<u32>,
+        input_messages: Cell<u32>,
+        input_size: Cell<u64>,
         start_signals: Cell<u64>,
         start_signals_calls: Cell<u32>,
+        output_messages: Cell<u32>,
+        output_size: Cell<u64>,
         stop_signals: Cell<u64>,
         stop_signals_calls: Cell<u32>,
     }
@@ -1131,11 +1208,16 @@ mod test {
             Self {
                 is_start: true,
                 is_end: false,
+                metrics_enabled: true,
                 elapsed_ns,
                 stop_total: Cell::new(0),
                 stop_total_calls: Cell::new(0),
+                input_messages: Cell::new(0),
+                input_size: Cell::new(0),
                 start_signals: Cell::new(0),
                 start_signals_calls: Cell::new(0),
+                output_messages: Cell::new(0),
+                output_size: Cell::new(0),
                 stop_signals: Cell::new(0),
                 stop_signals_calls: Cell::new(0),
             }
@@ -1145,11 +1227,16 @@ mod test {
             Self {
                 is_start: false,
                 is_end: true,
+                metrics_enabled: true,
                 elapsed_ns,
                 stop_total: Cell::new(0),
                 stop_total_calls: Cell::new(0),
+                input_messages: Cell::new(0),
+                input_size: Cell::new(0),
                 start_signals: Cell::new(0),
                 start_signals_calls: Cell::new(0),
+                output_messages: Cell::new(0),
+                output_size: Cell::new(0),
                 stop_signals: Cell::new(0),
                 stop_signals_calls: Cell::new(0),
             }
@@ -1169,21 +1256,45 @@ mod test {
             self.elapsed_ns
         }
 
+        fn flow_metric_interests(&self) -> FlowMetricInterests {
+            if self.metrics_enabled {
+                FlowMetricInterests::all()
+            } else {
+                FlowMetricInterests::empty()
+            }
+        }
+
         fn record_flow_duration(&self, _signal: SignalType, total: u64) {
             self.stop_total.set(total);
             self.stop_total_calls.set(self.stop_total_calls.get() + 1);
         }
 
-        fn record_flow_consumed_items(&self, _signal: SignalType, items: u64) {
+        fn record_flow_input_items(&self, _signal: SignalType, items: u64) {
             self.start_signals.set(items);
             self.start_signals_calls
                 .set(self.start_signals_calls.get() + 1);
         }
 
-        fn record_flow_produced_items(&self, _signal: SignalType, items: u64) {
+        fn record_flow_output_items(&self, _signal: SignalType, items: u64) {
             self.stop_signals.set(items);
             self.stop_signals_calls
                 .set(self.stop_signals_calls.get() + 1);
+        }
+
+        fn record_flow_input_message(&self, _signal: SignalType) {
+            self.input_messages.set(self.input_messages.get() + 1);
+        }
+
+        fn record_flow_input_size(&self, _signal: SignalType, size: u64) {
+            self.input_size.set(size);
+        }
+
+        fn record_flow_output_message(&self, _signal: SignalType) {
+            self.output_messages.set(self.output_messages.get() + 1);
+        }
+
+        fn record_flow_output_size(&self, _signal: SignalType, size: u64) {
+            self.output_size.set(size);
         }
     }
 
@@ -1193,6 +1304,7 @@ mod test {
     fn flow_hooks_record_start_and_end_signal_counts() {
         let mut pdata = create_test_pdata();
         let signals = pdata.num_items() as u64;
+        let size = pdata.num_bytes().expect("test pdata should have a size") as u64;
         assert!(signals > 0, "test pdata must contain signal items");
 
         let start_handler = FakeFlowMetricHandler::start(5);
@@ -1200,13 +1312,19 @@ mod test {
         pdata.after_processor_receive(&start_handler);
         // The send hook still drives compute-duration accumulation.
         pdata.before_processor_send(&start_handler);
+        assert_eq!(start_handler.input_messages.get(), 1);
         assert_eq!(start_handler.start_signals.get(), signals);
+        assert_eq!(start_handler.input_size.get(), size);
+        assert_eq!(start_handler.output_messages.get(), 0);
         assert_eq!(start_handler.stop_signals.get(), 0);
 
         let end_handler = FakeFlowMetricHandler::end(7);
         pdata.after_processor_receive(&end_handler);
         pdata.before_processor_send(&end_handler);
+        assert_eq!(end_handler.input_messages.get(), 0);
+        assert_eq!(end_handler.output_messages.get(), 1);
         assert_eq!(end_handler.stop_signals.get(), signals);
+        assert_eq!(end_handler.output_size.get(), size);
         assert!(end_handler.stop_total.get() > 0);
     }
 
@@ -1224,6 +1342,7 @@ mod test {
         let start_handler = FakeFlowMetricHandler::start(5);
         pdata.after_processor_receive(&start_handler);
         pdata.before_processor_send(&start_handler);
+        assert_eq!(start_handler.input_messages.get(), 1);
         assert_eq!(start_handler.start_signals_calls.get(), 1);
         assert_eq!(start_handler.start_signals.get(), 0);
         assert_eq!(start_handler.stop_signals_calls.get(), 0);
@@ -1233,17 +1352,40 @@ mod test {
         let end_handler = FakeFlowMetricHandler::end(7);
         pdata.after_processor_receive(&end_handler);
         pdata.before_processor_send(&end_handler);
+        assert_eq!(end_handler.output_messages.get(), 1);
         assert_eq!(
             end_handler.stop_total_calls.get(),
             end_handler.stop_signals_calls.get(),
-            "compute.duration and produced.items hooks must run together"
+            "compute.duration and output.items hooks must run together"
         );
         assert_eq!(end_handler.stop_signals.get(), 0);
         assert!(end_handler.stop_total.get() > 0);
     }
 
+    #[test]
+    fn flow_hooks_skip_disabled_measurements() {
+        let mut pdata = create_test_pdata();
+        let mut start_handler = FakeFlowMetricHandler::start(5);
+        start_handler.metrics_enabled = false;
+        pdata.after_processor_receive(&start_handler);
+        pdata.before_processor_send(&start_handler);
+        assert_eq!(start_handler.input_messages.get(), 0);
+        assert_eq!(start_handler.start_signals_calls.get(), 0);
+        assert_eq!(start_handler.input_size.get(), 0);
+
+        let mut end_handler = FakeFlowMetricHandler::end(7);
+        end_handler.metrics_enabled = false;
+        pdata.after_processor_receive(&end_handler);
+        pdata.before_processor_send(&end_handler);
+        assert_eq!(end_handler.stop_total_calls.get(), 0);
+        assert_eq!(end_handler.output_messages.get(), 0);
+        assert_eq!(end_handler.stop_signals_calls.get(), 0);
+        assert_eq!(end_handler.output_size.get(), 0);
+    }
+
     /// Scenario: a processor consumes an active zero-item flow message without forwarding it.
-    /// Guarantees: no-output completion records end-node duration and produced zero items.
+    /// Guarantees: no-output completion records end-node duration without
+    /// recording output messages, items, or size.
     #[test]
     fn flow_hook_completes_without_output() {
         let mut pdata = create_empty_test_pdata();
@@ -1253,8 +1395,10 @@ mod test {
         pdata.complete_processor_without_output(&end_handler);
 
         assert_eq!(end_handler.stop_total_calls.get(), 1);
-        assert_eq!(end_handler.stop_signals_calls.get(), 1);
+        assert_eq!(end_handler.output_messages.get(), 0);
+        assert_eq!(end_handler.stop_signals_calls.get(), 0);
         assert_eq!(end_handler.stop_signals.get(), 0);
+        assert_eq!(end_handler.output_size.get(), 0);
         assert!(end_handler.stop_total.get() > 0);
         assert!(!pdata.has_active_flow_metric());
     }
@@ -1820,6 +1964,37 @@ mod test {
         assert_eq!(pdata4.context.signal(), None);
     }
 
+    /// Scenario: a node opts into consumed payload size at the normal runtime metric level.
+    /// Guarantees: the receive frame captures size only when both consumer metrics and size measurement are enabled.
+    #[test]
+    fn test_received_at_node_stamps_consumed_size() {
+        use otel_arrow_dfe_engine::ReceivedAtNode;
+
+        let mut pdata = create_test_pdata();
+        let size =
+            u64::try_from(pdata.num_bytes().expect("test payload size")).expect("size fits u64");
+        assert!(size > 0);
+        pdata.received_at_node(
+            42,
+            Interests::CONSUMER_METRICS | Interests::PRODUCED_CONSUMED_SIZE,
+        );
+        let frame = pdata.context.frames().last().expect("consumer frame");
+        assert_eq!(frame.consumed_size, size);
+
+        let mut pdata_no_optin = create_test_pdata();
+        pdata_no_optin.received_at_node(43, Interests::CONSUMER_METRICS);
+        let frame_no_optin = pdata_no_optin
+            .context
+            .frames()
+            .last()
+            .expect("consumer frame");
+        assert_eq!(frame_no_optin.consumed_size, 0);
+
+        let mut pdata_without_metrics = create_test_pdata();
+        pdata_without_metrics.received_at_node(44, Interests::PRODUCED_CONSUMED_SIZE);
+        assert!(pdata_without_metrics.context.frames().is_empty());
+    }
+
     /// Scenario: a source records normal-level produced messages without item-count opt-in.
     /// Guarantees: the real pdata retains its signal for message metric attribution without parsing item counts.
     #[test]
@@ -1867,6 +2042,43 @@ mod test {
         let frame3 = pdata3.context.frames().last().expect("source frame");
         assert_eq!(frame3.produced_items, 0);
         assert_eq!(pdata3.context.signal(), None);
+    }
+
+    /// Scenario: a source opts into produced payload size at the normal runtime metric level.
+    /// Guarantees: the source frame captures size only when both producer metrics and size measurement are enabled.
+    #[test]
+    fn test_prepare_source_send_stamps_produced_size() {
+        let mut pdata = create_test_pdata();
+        let size =
+            u64::try_from(pdata.num_bytes().expect("test payload size")).expect("size fits u64");
+        assert!(size > 0);
+        pdata.prepare_source_send(
+            Interests::PRODUCER_METRICS | Interests::PRODUCED_CONSUMED_SIZE,
+            5,
+        );
+        let frame = pdata.context.frames().last().expect("source frame");
+        assert_eq!(frame.produced_size, size);
+
+        let mut pdata_no_optin = create_test_pdata();
+        pdata_no_optin.prepare_source_send(Interests::PRODUCER_METRICS, 6);
+        let frame_no_optin = pdata_no_optin
+            .context
+            .frames()
+            .last()
+            .expect("source frame");
+        assert_eq!(frame_no_optin.produced_size, 0);
+
+        let mut pdata_without_metrics = create_test_pdata();
+        pdata_without_metrics.prepare_source_send(
+            Interests::SOURCE_TAGGING | Interests::PRODUCED_CONSUMED_SIZE,
+            7,
+        );
+        let frame_without_metrics = pdata_without_metrics
+            .context
+            .frames()
+            .last()
+            .expect("source tagging frame");
+        assert_eq!(frame_without_metrics.produced_size, 0);
     }
 
     #[test]

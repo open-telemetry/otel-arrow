@@ -91,33 +91,25 @@ Demonstrates metric-name filtering:
 - Generates synthetic metrics -> filter processor by metric name -> debug processor
   -> noop exporter
 
-### `trafficgen-per-signal-metrics-demo.yaml`
+### `trafficgen-input-output-metrics.yaml`
 
-Demonstrates the opt-in per-signal produced/consumed item counts a node can
-emit:
+Compares universal node and flow input/output message, item, and logical
+payload size metrics:
 
-- Generates a mix of logs, metrics and traces -> log-sampling processor -> noop
-  exporter
-- Only opted-in nodes report `node.producer.produced.items` and
-  `node.consumer.consumed.items`, each split by the `signal` datapoint attribute;
-  nodes that are not opted in omit these metrics
-  (per-node `policies.telemetry.item_counts: true`, or globally via
-  `runtime_metrics: detailed`); recording requires `runtime_metrics: normal` or
-  higher.
-- View metrics at:
-  `http://127.0.0.1:8080/api/v1/telemetry/metrics?format=json`
-
-### `trafficgen-flow-metrics-demo.yaml`
-
-Demonstrates a flow range with multiple drop decision nodes:
-
-- Generates synthetic logs -> sampling, filtering, transform, and recordset KQL
-  processors -> noop exporter
-- Routes metrics-only internal telemetry through an explicit observability pipeline;
-  filters to native flow metric instrument names, and prints them with the detailed
-  debug processor
-- The debug processor displays the bounded `signal` datapoint attribute, while the
-  admin metrics endpoint displays flow scope attributes
+- Runs three pipelines: a mixed-signal sampling flow with detailed metrics, the
+  same topology with per-node opt-ins, and a deterministic drop-all filter that
+  ACKs without sending
+- `runtime_metrics: detailed` enables item and size measurements for every
+  node; the second pipeline demonstrates per-node `item_counts: true` and
+  `size: true` opt-ins at the normal level.
+- The `full` pipeline compares a sampler's `node.input` / `node.output`
+  terminal outcomes with `flow.input` / `flow.output` forward-path
+  measurements for the same processor range.
+- The internal observability pipeline prints the node and flow metrics
+  together at normal verbosity.
+- The `no_output` pipeline demonstrates that the filter's `node.output.*`,
+  its `flow.output.*`, and the noop exporter's `node.input.*` are absent while
+  flow input, compute, and dropped metrics are present.
 
 ### `trafficgen-transform-debug-noop.yaml`
 

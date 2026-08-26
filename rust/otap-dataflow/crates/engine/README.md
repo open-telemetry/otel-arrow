@@ -664,7 +664,7 @@ The `policies.telemetry.runtime_metrics` level now gates three related
 observability surfaces:
 
 - channel endpoint transport metrics
-- per-node produced/consumed outcome metrics
+- per-node input/output outcome metrics
 - shared pipeline-scoped control-plane metrics
 
 For the shared control plane, the engine exports two pipeline metric families:
