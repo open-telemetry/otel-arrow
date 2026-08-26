@@ -34,7 +34,7 @@ use otel_arrow_dfe_engine::{
     local::processor::{EffectHandler, Processor},
     message::Message,
     node::NodeId,
-    processor::{ProcessorRuntimeRequirements, ProcessorWrapper},
+    processor::{FlowMetricHook, ProcessorRuntimeRequirements, ProcessorWrapper},
 };
 use otel_arrow_dfe_otap::{
     OTAP_PROCESSOR_FACTORIES,
@@ -43,7 +43,8 @@ use otel_arrow_dfe_otap::{
 };
 use otel_arrow_dfe_pdata::TryIntoWithOptions;
 use otel_arrow_dfe_pdata::{
-    OtapArrowRecords, OtapPayload, PayloadData, otap::transform::sanitize::sanitize_otap_batch,
+    OtapArrowRecords, OtapPayload, OtapPayloadHelpers, PayloadData,
+    otap::transform::sanitize::sanitize_otap_batch,
 };
 use otel_arrow_dfe_query_engine::{
     parser::default_parser_options,
@@ -291,23 +292,61 @@ impl TransformProcessor {
 
         if self.sanitize_results {
             sanitize_otap_batch(&mut default_otap_batch);
+            for (_, routed_batch) in &mut router_impl.routed {
+                sanitize_otap_batch(routed_batch);
+            }
         }
 
-        // TODO - there's probably some optimization we can make below where if there's only one
-        // non-empty batch to be output, we don't need to change any contexts or subscriptions
+        // Empty outputs carry no telemetry and must not become downstream work.
+        router_impl
+            .routed
+            .retain(|(_, routed_batch)| !routed_batch.is_empty());
+        let default_has_data = !default_otap_batch.is_empty();
 
         if router_impl.routed.is_empty() {
-            // there were no other record batches that were maybe split off this batch to be
-            // routed somewhere else, so we don't need to juggle any inbound/outbound contexts
-            // and we can just handle the batch normally.
-            let pdata = OtapPdata::new(inbound_context, default_otap_batch.into());
-            effect_handler
-                .send_message_with_source_node(pdata)
-                .await
-                .map_err(|error| {
-                    TransformOperationError::new(TransformErrorType::OutputSend, error.into())
-                })?;
+            let mut pdata = OtapPdata::new(inbound_context, default_otap_batch.into());
+            if default_has_data {
+                effect_handler
+                    .send_message_with_source_node(pdata)
+                    .await
+                    .map_err(|error| {
+                        TransformOperationError::new(TransformErrorType::OutputSend, error.into())
+                    })?;
+            } else {
+                pdata.complete_processor_without_output(effect_handler);
+                effect_handler
+                    .notify_ack(AckMsg::new(pdata))
+                    .await
+                    .map_err(|error| {
+                        TransformOperationError::new(TransformErrorType::OutputSend, error)
+                    })?;
+            }
             return Ok(());
+        }
+
+        // Resolve every route before emitting anything or allocating completion state.
+        let mut routed_outputs = Vec::with_capacity(router_impl.routed.len());
+        for (route_name, otap_batch) in router_impl.routed.drain(..) {
+            let port_name = effect_handler
+                .connected_ports()
+                .iter()
+                .find(|p| p.as_ref() == route_name.as_str())
+                .ok_or_else(|| {
+                    TransformOperationError::new(
+                        TransformErrorType::RouteNotConfigured,
+                        EngineError::ProcessorError {
+                            processor: effect_handler.processor_id(),
+                            kind: ProcessorErrorKind::Transport,
+                            error: "Routing error: ".into(),
+                            source_detail: format!(
+                                "output port name {} not configured",
+                                route_name
+                            ),
+                        },
+                    )
+                })?
+                .clone();
+            routed_outputs.push((port_name, otap_batch));
         }
 
         // Must be built before the context is moved into the slot map below. Holds no
@@ -330,91 +369,24 @@ impl TransformProcessor {
                     },
                 )
             })?;
+        let mut has_registered_outbound = false;
 
-        // send the output of the pipeline to the default output port while juggling the context for
-        // the output of the pipeline. We need to do this b/c we'll be emitting this batch, plus
-        // any routed batches, and we don't want to Ack the inbound context until we receive Acks
-        // from all downstream batches (including this result)
-        let mut pdata = OtapPdata::new(outbound_context.clone(), default_otap_batch.into());
-        let outbound_key = self
-            .contexts
-            .insert_outbound(inbound_ctx_key)
-            .ok_or_else(|| {
-                // if we can't emit the default batch, we won't be able to route any of the
-                // routed batches, so clear them to ensure they're not stuck in the router's
-                // buffer
-                router_impl.routed.clear();
-
-                // clear the inbound slot we allocated above as we haven't emitted anything
-                // that would eventually get Ack/Nack'd to clear it later
-                self.contexts.clear_inbound(inbound_ctx_key);
-
-                TransformOperationError::new(
-                    TransformErrorType::OutboundCapacity,
-                    EngineError::ProcessorError {
-                        processor: effect_handler.processor_id(),
-                        kind: ProcessorErrorKind::Other,
-                        error: "outbound slots not available".into(),
-                        source_detail: "".into(),
-                    },
-                )
-            })?;
-        if !outbound_key.is_null() {
-            effect_handler.subscribe_to(
-                Interests::NACKS | Interests::ACKS,
-                outbound_key.into(),
-                &mut pdata,
-            );
-        }
-        effect_handler
-            .send_message_with_source_node(pdata)
-            .await
-            .map_err(|error| {
-                TransformOperationError::new(TransformErrorType::OutputSend, error.into())
-            })?;
-
-        // handle any batches that need to be forwarded to a specific output port thanks to invocation
-        // of a "route_to" operator call
-        for (route_name, mut otap_batch) in router_impl.routed.drain(..) {
-            // Find the port name that matches the route name.
-            let port_name = effect_handler
-                .connected_ports()
-                .iter()
-                .find(|p| p.as_ref() == route_name.as_str())
-                .ok_or_else(|| {
-                    TransformOperationError::new(
-                        TransformErrorType::RouteNotConfigured,
-                        EngineError::ProcessorError {
-                            processor: effect_handler.processor_id(),
-                            kind: ProcessorErrorKind::Transport,
-                            error: "Routing error: ".into(),
-                            source_detail: format!(
-                                "output port name {} not configured",
-                                route_name
-                            ),
-                        },
-                    )
-                })?
-                .clone();
-
-            if self.sanitize_results {
-                sanitize_otap_batch(&mut otap_batch);
-            }
-
-            // setup the pdata with the new outbound context
-            let payload = OtapPayload::from(otap_batch);
-            let mut pdata = OtapPdata::new(outbound_context.clone(), payload);
+        // Track the default output only when it contains data. Routed outputs still share
+        // the inbound context, so their ACK/NACKs determine completion when this is empty.
+        if default_has_data {
+            let mut pdata = OtapPdata::new(outbound_context.clone(), default_otap_batch.into());
             let outbound_key = self
                 .contexts
                 .insert_outbound(inbound_ctx_key)
                 .ok_or_else(|| {
-                    // the message could not be routed b/c there wasn't room for its context in
-                    // the outbound slot map. set error on the inbound key to ensure we eventually
-                    // nack the inbound request
-                    self.contexts.set_failed_inbound(
-                        inbound_ctx_key,
-                        "outbound slots were not available".into(),
-                    );
+                    // if we can't emit the default batch, we won't be able to route any of the
+                    // routed batches, so clear them to ensure they're not stuck in the router's
+                    // buffer
+                    router_impl.routed.clear();
+
+                    // clear the inbound slot we allocated above as we haven't emitted anything
+                    // that would eventually get Ack/Nack'd to clear it later
+                    self.contexts.clear_inbound(inbound_ctx_key);
 
                     TransformOperationError::new(
                         TransformErrorType::OutboundCapacity,
@@ -426,6 +398,54 @@ impl TransformProcessor {
                         },
                     )
                 })?;
+            has_registered_outbound = true;
+            if !outbound_key.is_null() {
+                effect_handler.subscribe_to(
+                    Interests::NACKS | Interests::ACKS,
+                    outbound_key.into(),
+                    &mut pdata,
+                );
+            }
+            effect_handler
+                .send_message_with_source_node(pdata)
+                .await
+                .map_err(|error| {
+                    TransformOperationError::new(TransformErrorType::OutputSend, error.into())
+                })?;
+        }
+
+        // handle any batches that need to be forwarded to a specific output port thanks to invocation
+        // of a "route_to" operator call
+        for (port_name, otap_batch) in routed_outputs {
+            // setup the pdata with the new outbound context
+            let payload = OtapPayload::from(otap_batch);
+            let mut pdata = OtapPdata::new(outbound_context.clone(), payload);
+            let outbound_key = self
+                .contexts
+                .insert_outbound(inbound_ctx_key)
+                .ok_or_else(|| {
+                    if has_registered_outbound {
+                        // Earlier outputs will eventually complete this inbound context.
+                        self.contexts.set_failed_inbound(
+                            inbound_ctx_key,
+                            "outbound slots were not available".into(),
+                        );
+                    } else {
+                        // No output can complete an inbound context with a zero count.
+                        self.contexts.clear_inbound(inbound_ctx_key);
+                    }
+
+                    TransformOperationError::new(
+                        TransformErrorType::OutboundCapacity,
+                        EngineError::ProcessorError {
+                            processor: effect_handler.processor_id(),
+                            kind: ProcessorErrorKind::Other,
+                            error: "outbound slots not available".into(),
+                            source_detail: "".into(),
+                        },
+                    )
+                })?;
+            has_registered_outbound = true;
             if !outbound_key.is_null() {
                 effect_handler.subscribe_to(
                     Interests::NACKS | Interests::ACKS,
@@ -724,7 +744,6 @@ mod test {
     };
     use otel_arrow_dfe_pdata::{
         TryFromWithOptions,
-        otap::Logs,
         proto::{
             OtlpProtoMessage,
             opentelemetry::{
@@ -1037,6 +1056,40 @@ mod test {
                 assert!(points.iter().all(|point| point.field != "msgs.transformed"
                     && point.field != "msgs.transform.failed"));
             });
+    }
+
+    #[test]
+    fn test_fully_filtered_transform_completes_without_output() {
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let processor =
+            try_create_with_opl_query("logs | where false", &runtime).expect("created processor");
+
+        runtime
+            .set_processor(processor)
+            .run_test(|mut ctx| async move {
+                let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(1);
+                ctx.set_pipeline_completion_sender(completion_tx);
+
+                let input = to_otap_logs(vec![LogRecord::build().event_name("filtered").finish()]);
+                let pdata = create_pdata_with_subscriber(input, Interests::ACKS, 1, 999);
+
+                ctx.process(Message::PData(pdata))
+                    .await
+                    .expect("no process error");
+                assert!(
+                    ctx.drain_pdata().await.is_empty(),
+                    "fully filtered transform output must not be forwarded"
+                );
+
+                match completion_rx.recv().await.expect("upstream completion") {
+                    PipelineCompletionMsg::DeliverAck { mut ack } => {
+                        assert_eq!(ack.accepted.num_items(), 0);
+                        assert_eq!(ack.accepted.signal_type(), SignalType::Logs);
+                    }
+                    other => panic!("expected DeliverAck, got {other:?}"),
+                }
+            })
+            .validate(|_ctx| async move {});
     }
 
     /// Scenario: An OPL query assigns an integer to a string field and fails during execution.
@@ -1577,18 +1630,10 @@ mod test {
                     .await
                     .expect("no process error");
 
-                let out = ctx
-                    .drain_pdata()
-                    .await
-                    .into_iter()
-                    .map(OtapPdata::payload)
-                    .map(OtapArrowRecords::try_from_with_default)
-                    .map(Result::unwrap);
-                let result = out.into_iter().next().expect("one result");
-
-                // expect we got an empty batch:
-                assert_eq!(result, OtapArrowRecords::Logs(Logs::default()));
-                // TODO when we support Ack/Nack here assert on the context of this message
+                assert!(
+                    ctx.drain_pdata().await.is_empty(),
+                    "empty default output must not be forwarded"
+                );
 
                 let mut routed = Vec::new();
                 while let Ok(msg) = test_port_rx.try_recv() {
@@ -1605,6 +1650,52 @@ mod test {
                 // TODO when we support Ack/Nack here assert on routed context
             })
             .validate(|_ctx| async move {})
+    }
+
+    #[test]
+    fn test_only_routed_output_controls_inbound_ack() {
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let mut processor = try_create_with_opl_query("logs | route_to \"test_port\"", &runtime)
+            .expect("created processor");
+        let test_port_rx = set_pdata_sender("test_port", &mut processor);
+
+        runtime
+            .set_processor(processor)
+            .run_test(|mut ctx| async move {
+                let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
+                let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(1);
+                ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
+                ctx.set_pipeline_completion_sender(completion_tx);
+
+                let input = to_otap_logs(vec![LogRecord::build().severity_text("ERROR").finish()]);
+                let pdata = create_pdata_with_subscriber(input, Interests::ACKS, 1, 999);
+
+                ctx.process(Message::PData(pdata))
+                    .await
+                    .expect("no process error");
+                assert!(
+                    ctx.drain_pdata().await.is_empty(),
+                    "empty default output must not be forwarded"
+                );
+
+                let (routed_context, _) = test_port_rx
+                    .recv()
+                    .await
+                    .expect("non-empty routed output")
+                    .into_parts();
+                send_ack(&mut ctx, routed_context, SignalType::Logs)
+                    .await
+                    .expect("ack routed output");
+
+                match completion_rx.recv().await.expect("upstream completion") {
+                    PipelineCompletionMsg::DeliverAck { ack } => {
+                        let (node_id, _) = next_ack(ack).expect("expected upstream subscriber");
+                        assert_eq!(node_id, 999);
+                    }
+                    other => panic!("expected DeliverAck, got {other:?}"),
+                }
+            })
+            .validate(|_ctx| async move {});
     }
 
     #[test]
@@ -1873,15 +1964,10 @@ mod test {
                     .await
                     .expect("no process error");
 
-                let mut out = ctx.drain_pdata().await.into_iter().collect::<Vec<_>>();
-                assert_eq!(out.len(), 1);
-                let default_out: OtapArrowRecords = out
-                    .pop()
-                    .unwrap()
-                    .payload()
-                    .try_into_with_default()
-                    .unwrap();
-                assert_eq!(default_out, OtapArrowRecords::Logs(Logs::default()));
+                assert!(
+                    ctx.drain_pdata().await.is_empty(),
+                    "empty default output must not be forwarded"
+                );
 
                 // assert on what came out of the error out port
                 let mut routed = Vec::new();
