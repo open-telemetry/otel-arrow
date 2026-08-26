@@ -1,0 +1,5 @@
+change_type: enhancement
+component: pipeline
+note: "Migrate the Syslog CEF receiver to shared receiver lifecycle metrics."
+issues: [3822]
+subtext: "Use receiver.received messages, payload.size, and duration with signal and outcome dimensions. Protocol-specific rejection, truncation, transport, and connection diagnostics remain available."

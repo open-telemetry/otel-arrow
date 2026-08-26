@@ -453,12 +453,27 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 ### Metric Sets
 
-#### `receiver.syslog_cef`
+#### Shared Receiver Metrics
+
+Each UDP datagram or emitted TCP frame records one shared receiver observation
+when receiver-local handling terminates. TCP payload size excludes the newline
+delimiter. Duration starts when the classified payload is available and ends at
+pipeline handoff, rejection, or failure, including time spent in a batch.
 
 | Metric | Unit | Description |
 | --- | --- | --- |
-| `receiver.syslog_cef.received.items` | `{item}` | Number of log records observed at the socket before parsing. |
-| `receiver.syslog_cef.forwards.items` | `{item}` | Number of log records delivered to the pipeline send path, grouped by `outcome`. |
+| `receiver.received.messages` | `{message}` | Number of classified external messages, grouped by `signal=logs` and terminal `outcome`. |
+| `receiver.received.payload.size` | `By` | Encoded application payload bytes visible before parsing, grouped by `signal=logs` and terminal `outcome`. |
+| `receiver.received.duration` | `s` | Receiver-local handling duration per external message, grouped by `signal=logs` and terminal `outcome`. |
+
+`outcome=success` means pipeline handoff completed, `outcome=refused` means
+validation, admission, capacity, shutdown, or pipeline handoff rejected the
+message, and `outcome=failure` means receiver-local processing failed.
+
+#### Component Diagnostics
+
+| Metric | Unit | Description |
+| --- | --- | --- |
 | `receiver.syslog_cef.rejections.items` | `{item}` | Number of log records rejected before pipeline admission, grouped by bounded `error.type` and `protocol`. |
 | `receiver.syslog_cef.truncations.items` | `{item}` | Number of log records whose raw message exceeded `MAX_MESSAGE_SIZE` and were truncated before parsing. For TCP, truncation is detected precisely when a newline-delimited message exceeds the size limit. For UDP, it is a heuristic - a datagram that fills the entire receive buffer is assumed truncated. |
 | `receiver.syslog_cef.transport.errors` | `{error}` | Number of transport-level errors, grouped by `protocol` (e.g. TLS handshake failures). |
