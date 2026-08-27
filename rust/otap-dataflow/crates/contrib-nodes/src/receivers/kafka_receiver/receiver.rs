@@ -923,14 +923,35 @@ impl KafkaReceiver {
                                 nack_msg.refused.signal_type(),
                                 Outcome::Refused,
                             );
-                            // Treat nack as ack (advance past failed message).
-                            // TODO: future work -- retry logic, DLQ
                             if manual_commit && !nack_msg.unwind.route.calldata.is_empty() {
-                                self.handle_offset_feedback(
-                                    &nack_msg.unwind.route.calldata,
-                                    consumer.as_ref(),
-                                    &receiver_id,
-                                );
+                                if nack_msg.permanent {
+                                    // Permanent (terminal) Nack: the message
+                                    // cannot be delivered. Advance past the
+                                    // failed message just like an Ack so the
+                                    // offset does not stall.
+                                    self.handle_offset_feedback(
+                                        &nack_msg.unwind.route.calldata,
+                                        consumer.as_ref(),
+                                        &receiver_id,
+                                    );
+                                } else {
+                                    // Non-permanent (transient) Nack: resend the
+                                    // refused message so a downstream retry can
+                                    // succeed. The offset stays in-flight
+                                    // (uncommitted) until a terminal outcome
+                                    // (Ack or permanent Nack) arrives.
+                                    let calldata =
+                                        nack_msg.unwind.route.calldata.clone();
+                                    let mut refused = *nack_msg.refused;
+                                    effect_handler.subscribe_to(
+                                        Interests::ACKS_OR_NACKS
+                                            | Interests::RETURN_DATA,
+                                        calldata,
+                                        &mut refused,
+                                    );
+                                    effect_handler.send_message(refused).await?;
+                                }
+    
                             }
                         },
                         Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
@@ -1073,12 +1094,15 @@ impl KafkaReceiver {
                                         self.offset_tracker
                                             .track(&topic, partition, offset, generation);
                                         // Subscribe so Ack/Nack carries
-                                        // offset identity (and generation) back to us
+                                        // offset identity (and generation) back to us.
+                                        // RETURN_DATA retains the refused payload on
+                                        // unwind so a non-permanent Nack can be
+                                        // resent intact (see the Nack handler below).
                                         let calldata = encode_calldata(
                                             topic_id, partition, offset, generation,
                                         );
                                         effect_handler.subscribe_to(
-                                            Interests::ACKS_OR_NACKS,
+                                            Interests::ACKS_OR_NACKS | Interests::RETURN_DATA,
                                             calldata,
                                             &mut otap_data,
                                         );
@@ -3073,15 +3097,15 @@ mod tests {
         .await;
     }
 
-    /// Scenario (offset guarantees): two records are consumed from one partition;
-    /// the first is terminated with a transient (non-permanent) Nack and the
-    /// second with a permanent Nack.
-    /// Guarantees: the receiver treats every Nack as terminal regardless of the
-    /// `permanent` flag -- both advance the committed offset identically -- which
-    /// confirms transient-retry is delegated out-of-process to `processor:retry`
-    /// and the receiver never itself retries a nacked record.
+    /// Scenario (offset guarantees): two records are consumed from one partition
+    /// and each is terminated with a permanent (terminal) Nack.
+    /// Guarantees: a permanent Nack is treated as terminal -- it advances the
+    /// committed offset past the failed message exactly like an Ack -- so a
+    /// message that a downstream stage has permanently refused never stalls the
+    /// partition. (Non-permanent Nacks are resent instead; see
+    /// `transient_nack_resends_message_and_holds_offset`.)
     #[tokio::test]
-    async fn transient_and_permanent_nack_both_advance_offset() {
+    async fn permanent_nacks_advance_offset() {
         const TOPIC: &str = "offset-nack-parity-traces";
         const RECORDS: usize = 2;
         let group = "offset-nack-parity-group";
@@ -3118,10 +3142,10 @@ mod tests {
                     let _ = by_offset.insert(offset, pdata);
                 }
 
-                // Offset 0 gets a transient Nack; offset 1 gets a permanent Nack.
-                // Both must advance the watermark identically.
-                receiver.nack_transient(
-                    "transient failure",
+                // Both offsets get a permanent Nack; both must advance the
+                // watermark, lowest-offset-first.
+                receiver.nack_permanent(
+                    "permanent failure",
                     by_offset.remove(&0).expect("offset 0 delivered"),
                 );
                 receiver.nack_permanent(
@@ -3139,8 +3163,140 @@ mod tests {
                     .await;
                 assert!(
                     advanced,
-                    "both a transient and a permanent Nack must advance the \
-                     committed offset to the full count {RECORDS}, got {:?}",
+                    "permanent Nacks must advance the committed offset to the \
+                     full count {RECORDS}, got {:?}",
+                    committed_offset(&brokers, group, TOPIC, 0)
+                        .expect("kafka-test: committed-offset probe failed"),
+                );
+
+                receiver.shutdown(Duration::from_secs(5));
+                receiver.await_stopped().await;
+            },
+        )
+        .await;
+    }
+
+    /// Scenario (transient retry): a single record is consumed, then refused with
+    /// a non-permanent (transient) Nack while its offset is still in-flight.
+    /// Guarantees: the receiver resends the refused record downstream via the
+    /// effect handler (a second delivery carries the same offset identity), and
+    /// the committed offset stays uncommitted while only transient Nacks are
+    /// issued -- proving the receiver retries a transient failure and holds the
+    /// offset until a terminal outcome arrives.
+    #[tokio::test]
+    async fn transient_nack_resends_message_and_holds_offset() {
+        const TOPIC: &str = "offset-transient-nack-resend-traces";
+        let group = "offset-transient-nack-resend-group";
+        with_cluster(
+            KafkaTestCluster::builder().topic(TOPIC),
+            |cluster| async move {
+                let producer = cluster.producer().build();
+                let req = create_traces_with_spans();
+                let mut bytes = vec![];
+                req.encode(&mut bytes).expect("encode");
+
+                producer
+                    .send_full(SendRecord::new(TOPIC, &bytes).key(b"rec-0"))
+                    .await
+                    .expect("send record");
+
+                let cfg = manual_traces_config_no_timer(cluster.bootstrap_servers(), group, TOPIC);
+                let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+
+                // First delivery: capture the offset identity, then refuse it
+                // transiently.
+                let first = receiver.recv_pdata().await;
+                let first_route = first
+                    .source_route()
+                    .expect("delivered pdata carries source calldata");
+                let (_t0, _p0, first_offset, _g0) = decode_calldata(&first_route.calldata);
+                assert_eq!(first_offset, 0, "first delivery must be offset 0");
+
+                receiver.nack_transient("transient failure", first);
+
+                // The receiver must resend the refused record: a second delivery
+                // arrives carrying the same offset identity, and it still has a
+                // payload (RETURN_DATA retention across the unwind).
+                let mut resent = receiver.recv_pdata().await;
+                let resent_route = resent
+                    .source_route()
+                    .expect("resent pdata carries source calldata");
+                let (_t1, _p1, resent_offset, _g1) = decode_calldata(&resent_route.calldata);
+                assert_eq!(
+                    resent_offset, first_offset,
+                    "resent record must carry the same offset identity as the \
+                     original transiently-nacked record",
+                );
+                assert!(
+                    resent.num_items() > 0,
+                    "resent record must retain its payload for the retry",
+                );
+
+                // While only transient Nacks have been issued, the offset must
+                // stay uncommitted (held in-flight).
+                let brokers = cluster.bootstrap_servers().to_string();
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                let committed_in_flight = committed_offset(&brokers, group, TOPIC, 0)
+                    .expect("kafka-test: committed-offset probe failed");
+                assert!(
+                    committed_in_flight.is_none_or(|o| o < 1),
+                    "offset must stay uncommitted while only transient Nacks are \
+                     issued (retry in progress), got {committed_in_flight:?}",
+                );
+
+                receiver.shutdown(Duration::from_secs(5));
+                receiver.await_stopped().await;
+            },
+        )
+        .await;
+    }
+
+    /// Scenario (transient then terminal): a record is refused transiently
+    /// (resent), then the resent copy is refused permanently.
+    /// Guarantees: a transient Nack resends and holds the offset, and once a
+    /// terminal permanent Nack follows for the resent copy the committed offset
+    /// finally advances past the record -- proving a retried record still reaches
+    /// a terminal outcome and unblocks the partition.
+    #[tokio::test]
+    async fn transient_then_permanent_nack_advances_after_resend() {
+        const TOPIC: &str = "offset-transient-then-permanent-traces";
+        let group = "offset-transient-then-permanent-group";
+        with_cluster(
+            KafkaTestCluster::builder().topic(TOPIC),
+            |cluster| async move {
+                let producer = cluster.producer().build();
+                let req = create_traces_with_spans();
+                let mut bytes = vec![];
+                req.encode(&mut bytes).expect("encode");
+
+                producer
+                    .send_full(SendRecord::new(TOPIC, &bytes).key(b"rec-0"))
+                    .await
+                    .expect("send record");
+
+                let cfg = manual_traces_config_no_timer(cluster.bootstrap_servers(), group, TOPIC);
+                let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+
+                // Transient Nack -> resend.
+                let first = receiver.recv_pdata().await;
+                receiver.nack_transient("transient failure", first);
+
+                // Terminal permanent Nack on the resent copy -> advance offset.
+                let resent = receiver.recv_pdata().await;
+                receiver.nack_permanent("retries exhausted", resent);
+
+                let brokers = cluster.bootstrap_servers().to_string();
+                let advanced =
+                    poll_until(Duration::from_secs(5), Duration::from_millis(250), || {
+                        committed_offset(&brokers, group, TOPIC, 0)
+                            .expect("kafka-test: committed-offset probe failed")
+                            .is_some_and(|o| o >= 1)
+                    })
+                    .await;
+                assert!(
+                    advanced,
+                    "a permanent Nack following a transient resend must advance \
+                     the committed offset past the record, got {:?}",
                     committed_offset(&brokers, group, TOPIC, 0)
                         .expect("kafka-test: committed-offset probe failed"),
                 );

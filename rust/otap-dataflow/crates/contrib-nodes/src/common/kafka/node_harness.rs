@@ -682,10 +682,9 @@ mod receiver_harness {
         /// Negatively-acknowledges a consumed `pdata` with a transient
         /// (non-permanent) nack, folding `next_nack` + `NackMsg::new` +
         /// control-channel send. Mirrors [`nack_permanent`](Self::nack_permanent)
-        /// but leaves `permanent = false`; used to prove the receiver treats a
-        /// transient nack as terminal (advances past the message) identically to
-        /// a permanent nack, since transient retry is delegated to a downstream
-        /// `processor:retry` node.
+        /// but leaves `permanent = false`; used to prove the receiver resends the
+        /// refused message (via the effect handler) and holds the offset
+        /// in-flight until a terminal outcome (Ack or permanent Nack) arrives.
         pub(crate) fn nack_transient(&self, reason: impl Into<String>, pdata: OtapPdata) {
             if let Some((_node_id, nack)) = next_nack(NackMsg::new(reason.into(), pdata)) {
                 self.control_tx

@@ -451,11 +451,16 @@ impl RetryProcessor {
 
     async fn terminate_nack(
         &mut self,
-        nack: NackMsg<OtapPdata>,
+        mut nack: NackMsg<OtapPdata>,
         signal: SignalType,
         reason: RetryTerminationReason,
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
+        // The processor will not retry this request further, so stamp the NACK
+        // permanent. This tells upstream sources (e.g. the Kafka receiver) that
+        // retries are exhausted and they should advance past the message rather
+        // than resend it. Marking an already-permanent NACK is idempotent.
+        nack.permanent = true;
         // Count only after the terminal NACK is handed back to the engine.
         effect_handler.notify_nack(nack).await?;
         self.metrics.record_message_terminated(signal, reason);
@@ -569,8 +574,11 @@ impl RetryProcessor {
                 Ok(())
             }
             Err(refused) => {
+                // The local scheduler refused to accept the requeue, so this
+                // request will not be retried. Return a permanent NACK so the
+                // source advances past the message instead of resending it.
                 effect_handler
-                    .notify_nack(NackMsg::new("cannot requeue", refused))
+                    .notify_nack(NackMsg::new_permanent("cannot requeue", refused))
                     .await?;
                 Ok(())
             }
@@ -1113,8 +1121,12 @@ mod test {
                 .await
                 {
                     PipelineCompletionMsg::DeliverNack { nack } => {
-                        let (node_id, _) = next_nack(nack).expect("expected nack subscriber");
+                        let (node_id, nack) = next_nack(nack).expect("expected nack subscriber");
                         assert_eq!(node_id, 4444);
+                        assert!(
+                            nack.permanent,
+                            "a terminal nack (invalid state, no more retries) must be permanent"
+                        );
                     }
                     other => panic!("expected terminal nack, got {other:?}"),
                 }
@@ -1193,6 +1205,10 @@ mod test {
                             nack.reason.contains("retry lost payload"),
                             "unexpected reason: {}",
                             nack.reason
+                        );
+                        assert!(
+                            nack.permanent,
+                            "a terminal nack (missing payload, no more retries) must be permanent"
                         );
                         let calldata: TestCallData =
                             nack.unwind.route.calldata.try_into().expect("my calldata");
@@ -1415,6 +1431,11 @@ mod test {
                                 .contains(outcome_failure.as_deref().expect("expecting nack"))
                         );
                         assert_eq!(node_id, 4444);
+                        assert!(
+                            nack.permanent,
+                            "a terminal nack (retries exhausted or permanent refusal) \
+                             must be permanent"
+                        );
 
                         let nackdata: TestCallData =
                             nack.unwind.route.calldata.try_into().expect("my calldata");
