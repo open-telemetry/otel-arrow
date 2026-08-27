@@ -38,6 +38,38 @@ impl Capabilities {
         }
     }
 
+    fn missing_entry_error<C: crate::capability::ExtensionCapability>(
+        &self,
+        requested_execution_model: &'static str,
+    ) -> Error {
+        let id = TypeId::of::<C>();
+        let extension = self
+            .local
+            .get(&id)
+            .map(|entry| &entry.extension_id)
+            .or_else(|| self.shared.get(&id).map(|entry| &entry.extension_id));
+        if let Some(extension) = extension {
+            let available_execution_model =
+                match (self.local.contains_key(&id), self.shared.contains_key(&id)) {
+                    (true, false) => "local",
+                    (false, true) => "shared",
+                    (true, true) => "local and shared",
+                    (false, false) => "none",
+                };
+            Error::CapabilityExecutionModelMismatch {
+                capability: C::name().to_owned(),
+                extension: extension.clone(),
+                requested_execution_model,
+                available_execution_model,
+            }
+        } else {
+            Error::CapabilityNotBound {
+                capability: C::name().to_owned(),
+                execution_model: requested_execution_model,
+            }
+        }
+    }
+
     /// Resolve a **required** local capability.
     ///
     /// Returns `Box<dyn C::Local>` -- a fresh local trait object minted
@@ -139,10 +171,7 @@ impl Capabilities {
         let entry = self
             .shared
             .get(&id)
-            .ok_or_else(|| Error::CapabilityNotBound {
-                capability: C::name().to_owned(),
-                execution_model: "local",
-            })?;
+            .ok_or_else(|| self.missing_entry_error::<C>("local"))?;
         let produce = entry
             .produce
             .take()
@@ -193,10 +222,7 @@ impl Capabilities {
         let entry = self
             .shared
             .get(&id)
-            .ok_or_else(|| Error::CapabilityNotBound {
-                capability: C::name().to_owned(),
-                execution_model: "shared",
-            })?;
+            .ok_or_else(|| self.missing_entry_error::<C>("shared"))?;
         let produce = entry
             .produce
             .take()
@@ -236,8 +262,10 @@ impl Capabilities {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::CapabilityAlreadyConsumed`] if the capability
-    /// was already claimed on this node.
+    /// - Returns [`Error::CapabilityAlreadyConsumed`] if the capability was
+    ///   already claimed on this node.
+    /// - Returns [`Error::CapabilityExecutionModelMismatch`] if a binding was
+    ///   declared but the extension cannot satisfy the local execution model.
     ///
     /// # Panics
     ///
@@ -246,8 +274,7 @@ impl Capabilities {
         &self,
     ) -> Result<Option<Box<C::Local>>, Error> {
         let id = TypeId::of::<C>();
-        // Available either as a native local entry or as a
-        // SharedAsLocal fallback through the shared entry.
+        // A shared entry can satisfy a local request through SharedAsLocal.
         if !self.local.contains_key(&id) && !self.shared.contains_key(&id) {
             return Ok(None);
         }
@@ -265,8 +292,10 @@ impl Capabilities {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::CapabilityAlreadyConsumed`] if the capability
-    /// was already claimed on this node.
+    /// - Returns [`Error::CapabilityAlreadyConsumed`] if the capability was
+    ///   already claimed on this node.
+    /// - Returns [`Error::CapabilityExecutionModelMismatch`] if a binding was
+    ///   declared but the extension cannot satisfy the shared execution model.
     ///
     /// # Panics
     ///
@@ -275,7 +304,7 @@ impl Capabilities {
         &self,
     ) -> Result<Option<Box<C::Shared>>, Error> {
         let id = TypeId::of::<C>();
-        if !self.shared.contains_key(&id) {
+        if !self.local.contains_key(&id) && !self.shared.contains_key(&id) {
             return Ok(None);
         }
         self.require_shared::<C>().map(Some)
