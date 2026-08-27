@@ -18,20 +18,19 @@ use crate::{
 pub struct Inbound {
     /// the pdata context for the inbound batch
     pub context: Context,
-    
+
     /// the payload for the inbound batch
     pub payload: Option<OtapPayload>,
-    
+
     /// error that may have been produced via processing for some outbound batch
     pub error_reason: Option<String>,
 
     num_outbound: usize,
-    
+
     /// Whether all the downstream batches resulted in errors which were transient.
     /// If so, we could emit a Nack for the inbound batch that is transient, otherwise
     /// if there are any errors we must emit a permanent Nack.
     pub outbound_all_transient_errors: bool,
-
 }
 
 struct Outbound {
@@ -89,7 +88,7 @@ impl Contexts {
             num_outbound: 0,
             payload,
             error_reason,
-            
+
             // initialize to true, can be set to false if/when there are any outbound batch results
             // that are not a non-permanent Nack
             outbound_all_transient_errors: true,
@@ -182,7 +181,7 @@ impl Contexts {
                 inbound.outbound_all_transient_errors = value
             }
         }
-    }    
+    }
 }
 
 #[cfg(test)]
@@ -232,9 +231,11 @@ mod test {
             "outbound key should not be null when there are subscribers"
         );
 
-        let (inbound_ctx, error_reason) = contexts.clear_outbound(outbound_key).unwrap();
-        assert_eq!(original_context, inbound_ctx);
-        assert_eq!(error_reason, None);
+        let inbound = contexts.clear_outbound(outbound_key).unwrap();
+        assert_eq!(inbound.context, original_context);
+        assert_eq!(inbound.error_reason, None);
+        assert!(inbound.outbound_all_transient_errors);
+        assert!(inbound.payload.is_none());
     }
 
     #[test]
@@ -280,9 +281,11 @@ mod test {
         assert!(contexts.clear_outbound(outbound_key2).is_none());
         assert!(contexts.clear_outbound(outbound_key1).is_none());
 
-        let (inbound_ctx, error_reason) = contexts.clear_outbound(outbound_key3).unwrap();
-        assert_eq!(original_context, inbound_ctx);
-        assert_eq!(error_reason, None);
+        let inbound = contexts.clear_outbound(outbound_key3).unwrap();
+        assert_eq!(inbound.context, original_context);
+        assert_eq!(inbound.error_reason, None);
+        assert!(inbound.outbound_all_transient_errors);
+        assert!(inbound.payload.is_none());
     }
 
     #[test]
@@ -316,9 +319,9 @@ mod test {
         // Clear outbound and check error is returned
         let result = contexts.clear_outbound(outbound_key);
         assert!(result.is_some());
-        let (_, error_reason) = result.unwrap();
-        assert!(error_reason.is_some());
-        assert_eq!(error_reason.unwrap(), error_msg);
+        let inbound = result.unwrap();
+        assert!(inbound.error_reason.is_some());
+        assert_eq!(inbound.error_reason.unwrap(), error_msg);
     }
 
     #[test]
@@ -351,9 +354,9 @@ mod test {
         // Clear the outbound and verify error is returned
         let result = contexts.clear_outbound(outbound_key);
         assert!(result.is_some());
-        let (_, error_reason) = result.unwrap();
-        assert!(error_reason.is_some());
-        assert_eq!(error_reason.unwrap(), error_msg);
+        let inbound = result.unwrap();
+        assert!(inbound.error_reason.is_some());
+        assert_eq!(inbound.error_reason.unwrap(), error_msg);
     }
 
     #[test]
@@ -381,10 +384,10 @@ mod test {
         // When clearing the last outbound, the first error should be returned
         let result = contexts.clear_outbound(outbound_key3);
         assert!(result.is_some());
-        let (_, error_reason) = result.unwrap();
-        assert!(error_reason.is_some());
+        let inbound = result.unwrap();
+        assert!(inbound.error_reason.is_some());
         assert_eq!(
-            error_reason.unwrap(),
+            inbound.error_reason.unwrap(),
             error_msg1,
             "First error should be preserved"
         );
@@ -408,9 +411,9 @@ mod test {
         assert!(!inbound_key.is_null());
 
         let outbound_key = contexts.insert_outbound(inbound_key).unwrap();
-        let (completed_context, error) = contexts.clear_outbound(outbound_key).unwrap();
-        assert_eq!(completed_context, original_context);
-        assert!(error.is_none());
+        let inbound = contexts.clear_outbound(outbound_key).unwrap();
+        assert_eq!(inbound.context, original_context);
+        assert!(inbound.error_reason.is_none());
     }
 
     #[test]
@@ -463,10 +466,10 @@ mod test {
         // Clear outbound and verify the original inbound error is preserved
         let result = contexts.clear_outbound(outbound_key);
         assert!(result.is_some());
-        let (_, error_reason) = result.unwrap();
-        assert!(error_reason.is_some());
+        let inbound = result.unwrap();
+        assert!(inbound.error_reason.is_some());
         assert_eq!(
-            error_reason.unwrap(),
+            inbound.error_reason.unwrap(),
             inbound_error,
             "Original inbound error should be preserved"
         );

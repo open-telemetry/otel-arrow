@@ -882,7 +882,7 @@ mod test {
             .await
     }
 
-    /// Helper to send a Nack for a given context
+    /// Helper to send a non-permanent Nack for a given context
     async fn send_nack(
         ctx: &mut TestContext<OtapPdata>,
         context: Context,
@@ -890,6 +890,23 @@ mod test {
         reason: &str,
     ) -> Result<(), EngineError> {
         let nack = next_nack(NackMsg::new(
+            reason,
+            OtapPdata::new(context, OtapPayload::empty(signal_type)),
+        ));
+        let (_, nack) = nack.unwrap();
+        ctx.process(Message::Control(NodeControlMsg::Nack(nack)))
+            .await
+    }
+
+    /// Helper to send a permanent Nack for a given context
+    #[allow(dead_code)]
+    async fn send_permanent_nack(
+        ctx: &mut TestContext<OtapPdata>,
+        context: Context,
+        signal_type: SignalType,
+        reason: &str,
+    ) -> Result<(), EngineError> {
+        let nack = next_nack(NackMsg::new_permanent(
             reason,
             OtapPdata::new(context, OtapPayload::empty(signal_type)),
         ));
@@ -3416,5 +3433,92 @@ mod test {
                 );
             })
             .validate(|_ctx| async move {})
+    }
+
+    /// Scenario: A routed transform splits into a default output and a routed output, and both
+    /// downstream consumers respond with non-permanent (transient) nacks.
+    /// Guarantees: The upstream inbound batch receives a non-permanent nack, indicating the
+    /// failure is retryable since all downstream failures were transient.
+    #[test]
+    fn test_nack_permanence_all_transient_nacks() {
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let query = r#"logs
+            | if (severity_text == "ERROR") {
+                route_to "error_port"
+            }
+            "#;
+        let mut processor = try_create_with_opl_query(query, &runtime).expect("created processor");
+        let error_port_rx = set_pdata_sender("error_port", &mut processor);
+
+        runtime
+            .set_processor(processor)
+            .run_test(|mut ctx| async move {
+                let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
+                let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(10);
+                ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
+                ctx.set_pipeline_completion_sender(completion_tx);
+
+                let log_records = create_log_records(&["ERROR", "INFO"]);
+                let input = to_otap_logs(log_records);
+
+                let upstream_node_id = 999;
+                let pdata = create_pdata_with_subscriber(
+                    input,
+                    Interests::ACKS | Interests::NACKS,
+                    1,
+                    upstream_node_id,
+                );
+
+                ctx.process(Message::PData(pdata))
+                    .await
+                    .expect("no process error");
+
+                // collect outbound contexts from both outputs
+                let (outbound_ctx_default, _) = ctx.drain_pdata().await.pop().unwrap().into_parts();
+                let (outbound_ctx_routed, _) = error_port_rx.recv().await.unwrap().into_parts();
+
+                // both downstream consumers respond with transient (non-permanent) nacks
+                send_nack(
+                    &mut ctx,
+                    outbound_ctx_default,
+                    SignalType::Logs,
+                    "transient error on default",
+                )
+                .await
+                .unwrap();
+                assert!(
+                    completion_rx.is_empty(),
+                    "upstream must not complete until all outbound batches are resolved"
+                );
+
+                send_nack(
+                    &mut ctx,
+                    outbound_ctx_routed,
+                    SignalType::Logs,
+                    "transient error on routed",
+                )
+                .await
+                .unwrap();
+
+                // the upstream inbound batch should now receive a non-permanent nack
+                let completion = completion_rx.recv().await.unwrap();
+                match completion {
+                    PipelineCompletionMsg::DeliverNack { nack } => {
+                        let (node_id, nack) =
+                            next_nack(nack).expect("expected upstream nack subscriber");
+                        assert_eq!(node_id, upstream_node_id);
+                        assert!(
+                            !nack.permanent,
+                            "nack should be non-permanent when all downstream errors are transient"
+                        );
+                        // first error wins
+                        assert_eq!(nack.reason, "transient error on default");
+                    }
+                    other => {
+                        panic!("expected DeliverNack, got {other:?}")
+                    }
+                };
+            })
+            .validate(|_ctx| async move {});
     }
 }
