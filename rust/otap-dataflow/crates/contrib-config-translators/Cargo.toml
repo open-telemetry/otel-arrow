@@ -12,6 +12,9 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[[bin]]
+name = "config-translator"
+path = "src/cli.rs"
 
 [dependencies]
 otel-arrow-dfe-config = { workspace = true }
