@@ -406,8 +406,9 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                 let max_batch_duration = self.config.max_batch_duration();
                 let max_batch_size = self.config.max_batch_size();
 
-                // This watch channel stays core-local and wakes blocked connection reads when
-                // the receiver must terminate, while retaining the state for newly polled tasks.
+                // Wake blocked connection reads so each buffered message records its terminal
+                // receiver.received outcome before terminal telemetry snapshots are captured.
+                // The watch channel stays core-local and retains the shutdown state.
                 let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
                 let flush_on_shutdown = Rc::new(Cell::new(false));
                 // Counter to track active connection tasks for graceful shutdown
@@ -2466,7 +2467,9 @@ mod telemetry_tests {
     ) -> u64 {
         let mut total = 0;
         for s in snaps {
-            if s.descriptor().name != "receiver.received" {
+            if s.descriptor().name != "receiver.received"
+                || s.measurement_attribute_value("signal") != Some("logs")
+            {
                 continue;
             }
             if let Some(idx) = s

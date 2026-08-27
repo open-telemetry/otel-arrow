@@ -18,7 +18,7 @@ diagnostics.
 | `receiver.received.payload.size` | Counter | `By` | Encoded payload bytes visible before parsing, excluding the TCP newline delimiter. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 | `receiver.received.duration` | Histogram | `s` | Time from classified payload observation through handoff, refusal, or failure, including batch buffering. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 | `receiver.syslog_cef.rejections.items` | Counter | `{item}` | Rejected messages grouped by bounded `protocol` and `error.type`. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
-| `receiver.syslog_cef.truncations.items` | Counter | `{item}` | Payloads that reached the configured receive limit. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
+| `receiver.syslog_cef.truncations.items` | Counter | `{item}` | Payloads that reached the fixed `MAX_MESSAGE_SIZE` receive limit. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 | `receiver.syslog_cef.transport.errors` | Counter | `{error}` | Transport-level errors grouped by `protocol`. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 | `receiver.syslog_cef.connections.active` | UpDownCounter | `{connection}` | Currently active TCP connections. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 | `receiver.syslog_cef.connections.rejected` | Counter | `{connection}` | TCP connections rejected or closed under admission pressure. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
