@@ -727,7 +727,7 @@ enum ServiceRequestError {
     },
 
     #[error(
-        "HTTP status client error ({status}) for url ({url}){}",
+        "HTTP status error ({status}) for url ({url}){}",
         format_error_body(body)
     )]
     HttpStatus {
@@ -756,6 +756,7 @@ impl ServiceRequestError {
                     OtlpHttpExporterErrorType::Transport
                 }
             }
+            Self::HttpStatus { status, .. } => OtlpHttpExporterErrorType::from_status(*status),
             Self::DecodeError(_) => OtlpHttpExporterErrorType::ResponseDecode,
             Self::BodyTooLarge { .. } => OtlpHttpExporterErrorType::ResponseTooLarge,
         }
@@ -880,7 +881,10 @@ async fn query_result_to_service_response(
         let url = resp.url().to_string();
         let body = match collect_body(resp, max_response_body_len).await {
             Ok(body) => error_body_summary(&body),
-            Err(_) => "<response body too large to capture>".to_string(),
+            Err(ServiceRequestError::BodyTooLarge { .. }) => {
+                "<response body too large to capture>".to_string()
+            }
+            Err(err) => format!("<failed to read response body: {err}>"),
         };
         return Err(ServiceRequestError::HttpStatus { status, url, body });
     }
@@ -1246,7 +1250,7 @@ mod test {
     /// run an http server that returns error for any request
     ///
     /// if `status_err` is Some, server will return this status code with an error body
-    /// if `status_err` is false, server will return 200 status code with body that
+    /// if `status_err` is None, server will return 200 status code with body that
     /// indicates only a partial success
     fn run_error_server(
         tokio_rt: &Runtime,
@@ -2607,7 +2611,7 @@ mod test {
     /// decodable `RpcStatus` message surfaces its human-readable message and code.
     #[test]
     fn test_handles_non_200_response_body_variants() {
-        // Wire-compatible stand-in for `otap_df_otap::otlp_http::RpcStatus`: same field
+        // Wire-compatible stand-in for `otel_arrow_dfe_otap::otlp_http::RpcStatus`: same field
         // numbers/types for `code` (tag 1) and `message` (tag 2), which is all this test
         // needs to produce bytes the exporter's real `RpcStatus::decode` understands. The
         // real type's `details` field is private to its crate and irrelevant here (proto3
@@ -2649,7 +2653,7 @@ mod test {
         ];
 
         for (error_body, expected_fragment) in test_cases {
-            let port = otap_df_test_net::pick_unused_loopback_tcp_port();
+            let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
             let endpoint_addr = format!("127.0.0.1:{}", port);
             let endpoint = format!("http://{endpoint_addr}");
 
@@ -2663,7 +2667,7 @@ mod test {
 
             let (logs_batch, _, _) = gen_batches_for_each_signal_type();
 
-            let pdatas = vec![OtapPdata::new_default(OtapPayload::OtapArrowRecords(
+            let pdatas = vec![OtapPdata::new_default(OtapPayload::from_otap(
                 otlp_to_otap(&OtlpProtoMessage::Logs(logs_batch.clone())),
             ))];
             let pdatas = subscribe_pdatas(pdatas, false);
