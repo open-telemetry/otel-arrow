@@ -107,7 +107,7 @@ jobs:
           # Replace the workspace/root package versions and same-release
           # dependency constraints in the workspace manifest.
           CURRENT_VERSION=$(sed -n 's/^version = "\([0-9]\+\.[0-9]\+\.[0-9]\+\)"/\1/p' rust/otap-dataflow/Cargo.toml | head -1)
-          CURRENT_VERSION_PATTERN=${CURRENT_VERSION//./\\.}
+          CURRENT_VERSION_PATTERN=$(printf '%s' "${CURRENT_VERSION}" | sed 's/\./\\./g')
           sed -i "s/${CURRENT_VERSION_PATTERN}/${{ inputs.version }}/g" rust/otap-dataflow/Cargo.toml
           echo "Updated rust/otap-dataflow/Cargo.toml to ${{ inputs.version }}"
 
