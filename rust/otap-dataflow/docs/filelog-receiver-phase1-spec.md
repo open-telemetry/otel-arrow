@@ -38,6 +38,7 @@ convention.
 | Clean resume | Durable framing state in which the next complete source unit begins a new logical record. |
 | Applied progress | An Ack-authorized transaction successfully appended to the WAL and applied atomically to the live checkpoint state; it may be newer than the durable frontier. |
 | Committed offset | The source-byte offset in live applied checkpoint state; it becomes crash-durable only when covered by the durable frontier. |
+| Committed-frontier guard | A bounded SHA-256 digest over raw source bytes immediately preceding committed progress, persisted atomically with that progress and used to detect likely locator reuse or in-place replacement on recovery. |
 | Complete inventory | A reconciliation result that can prove both presence and absence and can establish fingerprint multiplicity over its bounded population. |
 | Continuation | Durable split-fragment state containing only the original record start and next fragment index. |
 | Downstream Ack | The matching aggregate completion that authorizes, but does not itself apply or sync, one retained batch's progress transaction. |
@@ -218,7 +219,7 @@ receivers:
 | `framing.max_line_bytes` | `1MiB` | Nonzero physical-line body bound |
 | `framing.max_record_bytes` | `1MiB` | Nonzero logical-record body bound |
 | `framing.max_log_size_behavior` | `split` | `split` or `truncate` |
-| `framing.force_flush_period` | `500ms` | Zero disables idle partial flush |
+| `framing.force_flush_period` | `500ms` | Zero disables idle partial flush; a nonzero value can split a slowly written record after an EOF-idle interval |
 | `framing.multiline.regex_profile` | `re2-v1` | The sole Phase 1 executable profile |
 | `framing.multiline.line_start_pattern` | `null` | Optional start boundary |
 | `framing.multiline.line_end_pattern` | `null` | Optional end boundary |
@@ -231,12 +232,12 @@ receivers:
 | `batch.max_bytes` | `8MiB` | Nonzero logical batch-size bound |
 | `batch.max_flush_period` | `1s` | Nonzero first-record batch deadline |
 | `rotation.rotate_wait` | `5s` | Nonzero post-EOF inactivity interval |
-| `rotation.on_truncate` | `fail` | `fail` or `read_new` |
+| `rotation.on_truncate` | `fail` | `fail` durably quarantines; `read_new` accepts an explicit reported gap and continues at epoch-reset offset zero |
 | `checkpoint.id` | Derived logical receiver key | Optional stable namespace name of 1 to 255 ASCII bytes; set explicitly to preserve continuity across logical-key renames |
 | `checkpoint.sync_interval` | `0s` | Zero syncs every Ack transaction before release; nonzero batches filesystem sync after release |
 | `checkpoint.compact_after_bytes` | `64MiB` | Nonzero WAL compaction threshold |
 | `checkpoint.compact_after_transactions` | `10000` | Nonzero transaction threshold |
-| `checkpoint.retention` | `7d` | Zero retains eligible inactive records indefinitely |
+| `checkpoint.retention` | `7d` | Zero retains eligible inactive records indefinitely; removal loses durable association, so later re-admission follows ordinary `start_at` |
 | `checkpoint.ownership_timeout` | `30s` | Nonzero bounded ownership wait |
 | `checkpoint.max_consecutive_failures` | `5` | Nonzero store-failure budget |
 | `retry.max_attempts` | `8` | Nonzero total sends, including the first |
@@ -382,8 +383,11 @@ The following relationships are enforced:
     component.
 46. Both configured framing bounds plus worst-case enabled attributes fit within
     `batch.max_bytes`.
-47. Identity reconciliation, framer, reader, carry-over, and checkpoint recovery admission models
-    are representable with checked arithmetic and remain within their fixed ceilings.
+47. Identity reconciliation, framer, reader, carry-over, and checkpoint recovery
+    admission models are representable with checked arithmetic. Each model for
+    which the conformance specification defines a provisional ceiling remains
+    within that named ceiling; models without one are not compared against an
+    invented limit.
 
 Separately, engine topology validation rejects a filelog path that requires
 Ack-gated progress across broadcast subscribers unless it provides automatic
@@ -409,7 +413,7 @@ an Arrow allocation or wire-size measurement.
 The checkpoint stores a versioned compatibility digest covering identity evidence and
 all inputs that affect record boundaries or deterministic replay. A mismatch against
 resumable state is stored framing-profile incompatibility: it fails closed for
-the affected file and requires audited reset/removal or a separately designed
+the affected file and requires audited removal or a separately designed
 versioned migration. It is never routed through
 `identity.on_recovery_mismatch`, never creates a new identity automatically,
 and never applies `skip_to_end` because configuration changed.
@@ -478,6 +482,12 @@ need not be persisted or cryptographically random, and is exactly `base_ns`
 when jitter is zero. Jitter reduces synchronized scans; it does not create a
 latency guarantee. An explicit startup pass and a bounded reconciliation
 request may run earlier, but neither permits overlapping traversals.
+
+Traversal retains bounded state and checks cancellation between directory
+entries, but Phase 1 does not promise a bounded full-pass duration or bounded
+fairness between include roots. Large-tree and multi-root discovery latency is
+measured before production qualification. Resumable time-sliced traversal is a
+future optimization unless that evidence shows it is required.
 
 ### Symlinks, reparse points, hardlinks, and cycles
 
@@ -674,6 +684,7 @@ A complete pass produces one ordered transition stream:
 | --- | --- | --- |
 | Observed | Eligible stable locator is not retained or active | Present candidate to identity resolution |
 | Updated | Retained locator remains eligible but path or mutable metadata changed | Update bounded advisory evidence |
+| Path rebound | An original matched path changes from locator A to locator B while A remains live or eligible under another name | Preserve A independently and present B as A's move/create replacement at offset zero |
 | Excluded | Active locator now matches an exclusion | Stop reads, resolve existing deltas, then revoke without changing durable progress or lifecycle |
 | Disappeared | Complete pass proves locator no longer has an eligible name | Enter rotation/removal handling |
 
@@ -689,7 +700,7 @@ and makes the pass incomplete. Reappearance after finalization is a fresh observ
 Exclusion is not disappearance or rotation. After the
 [unresolved-delta invariant](#universal-unresolved-delta-ordering) is satisfied,
 the receiver closes the descriptor and releases the runtime lease, but the
-checkpoint record remains `Active` with identical epoch, offset, framing state,
+checkpoint record remains `Active` with identical epoch, offset, guard, framing state,
 identity evidence, and lifecycle. If the same exact locator becomes included
 again, it reconnects that state after ordinary validation; `start_at` does not
 apply. Exclusion alone never writes `RotatedFinalized` or removes state.
@@ -712,8 +723,8 @@ for the discovery thread to join.
 | File epoch | Guards progress against stream reset | Not distributed fencing |
 
 `file_id` is created from operating-system randomness, checked against the loaded
-table, and durably registered before reading. It never changes because a path changes,
-a fingerprint grows, or a runtime locator is refreshed.
+table, and durably registered before reading. It never changes because a path changes
+or a fingerprint grows; a different runtime locator requires a different `file_id`.
 
 Advisory paths retain a bounded native representation. Unix uses native bytes;
 Windows uses explicit UTF-16LE code-unit bytes. When the complete native path
@@ -727,7 +738,7 @@ Only records eligible under this table participate in candidate matching:
 
 | Durable lifecycle | Candidate eligibility |
 | --- | --- |
-| `Active` | May reconnect only through the same exact runtime locator after fingerprint-prefix, size, offset, and framing-profile validation |
+| `Active` | May reconnect only through the same exact runtime locator after fingerprint-prefix, committed-frontier guard, size, offset, and framing-profile validation |
 | `Quarantined` | May reconnect only through the exact immutable quarantine locator and remains `Quarantined`; no progress or quarantine transfers to a replacement |
 | `RotatedFinalized` | Never eligible for a live candidate; locator or inode reuse creates a new logical identity |
 
@@ -748,7 +759,8 @@ Identity resolution uses this order:
    framing-profile compatibility. Incompatibility blocks that file as described
    below; it never creates another identity.
 4. A framing-compatible exact-locator `Active` record reconnects only when its
-   fingerprint prefix validates and `committed_offset <= current_size`.
+   fingerprint prefix and committed-frontier guard validate and
+   `committed_offset <= current_size`.
 5. Any changed locator, including one with byte-identical fingerprint evidence,
    is a new file and receives a new `file_id`. If fingerprint or path evidence
    associates it with an old durable record but cannot prove exact-locator
@@ -770,6 +782,31 @@ equality never merges independent live streams.
 Fingerprint evidence for a growing file may extend under the same `file_id`. An update
 replaces only matching evidence. It never rekeys progress or changes lifecycle state.
 
+### Committed-frontier continuity guard
+
+Every durable record stores the checkpoint-format-defined guard for its
+`committed_offset`. For a nonzero offset, the guard covers the final
+`min(committed_offset, COMMITTED_FRONTIER_GUARD_WINDOW_BYTES)` raw source bytes
+immediately preceding that offset. Offset zero uses the format-defined empty
+guard. Registration at `start_at: end` reads the required preceding window from
+the same validated handle before persisting the initial anchor.
+
+Each progress transaction updates offset, committed-frontier guard, and framing
+resume atomically. The runtime derives the guard from source bytes already owned
+by the reader; it does not reread mutable path content after Ack. A zero-delta
+finalization preserves the existing guard. Reset-to-beginning and truncate
+reset install the empty guard; reset-to-end supplies the validated current-EOF
+guard.
+
+Recovery validates the guard from the reopened handle before seeking past the
+guarded frontier. Failure to read the window or a digest mismatch is exact-locator
+identity-evidence mismatch and follows `identity.on_recovery_mismatch` without
+inheriting progress. The guard materially reduces same-locator reuse and
+in-place replacement ambiguity but cannot distinguish a byte-identical
+replacement that reproduces all checked evidence. Phase 1 states that residual
+ambiguity rather than claiming that native locators or hashes are permanent
+identity.
+
 ### Ambiguity and mismatch
 
 The following conditions never inherit an old offset:
@@ -777,6 +814,7 @@ The following conditions never inherit an old offset:
 - the candidate has a changed runtime locator, even with an equal full
   fingerprint;
 - an exact-locator fingerprint prefix fails;
+- an exact-locator committed-frontier guard fails or cannot be read;
 - committed progress exceeds current size;
 - exact-locator identity evidence changed while it was observed; or
 - a native locator appears reused after a `RotatedFinalized` record.
@@ -810,7 +848,7 @@ Stored framing-profile incompatibility is not an identity mismatch. A
 recognized record whose stored profile version or digest is incompatible with
 the selected configuration fails closed for that file. It remains blocked
 without changing `file_id`, epoch, offset, or framing state and requires either
-audited administrative removal/reset followed by registration or a separately
+audited administrative removal followed by registration or a separately
 designed versioned migration. It never automatically creates a new identity or
 applies `skip_to_end` merely because framing configuration changed. Namespace
 corruption remains receiver-wide rather than a per-file profile failure.
@@ -821,10 +859,12 @@ corruption remains receiver-wide rather than a per-file profile failure.
 recoverable durable relationship. It does not apply to exact-locator recovery
 or to a replacement recognized as part of move/create rotation.
 
-For `beginning`, registration stores offset zero and clean framing state.
+For `beginning`, registration stores offset zero, the empty
+committed-frontier guard, and clean framing state.
 
-For `end`, the receiver obtains EOF from the validated opened handle and durably stores
-that offset as the initial anchor. Bytes before the anchor are intentionally excluded
+For `end`, the receiver obtains EOF and the required preceding guard window from
+the validated opened handle and durably stores that offset and guard as the
+initial anchor. Bytes before the anchor are intentionally excluded
 and need no downstream Ack. Bytes appended after the anchor use normal Ack-gated
 progress. Because discovery is periodic, bytes written before the file's first
 successful observation are also before this anchor. This is the intentional
@@ -962,17 +1002,20 @@ Eviction is a handshake:
 
 1. Stop scheduling the victim.
 2. Ensure it owns no outstanding read turn.
-3. Preserve applied checkpoint progress and any separately owned carry-over
+3. Require that the victim owns no unresolved delta in the open batch,
+   retained batch, or carry-over record. If every potential victim owns such a
+   delta, seal and resolve the open batch before reclaiming a slot.
+4. Preserve applied checkpoint progress and any separately owned carry-over
    record state.
-4. Discard decoder, physical-line, multiline, provisional record, and other speculative
+5. Discard decoder, physical-line, multiline, provisional record, and other speculative
    state derived after applied progress.
-5. Rewind its in-memory frontier to applied progress.
-6. Close the descriptor.
-7. Keep its runtime lease.
-8. Make the slot available.
+6. Rewind its in-memory frontier to applied progress.
+7. Close the descriptor.
+8. Keep its runtime lease.
+9. Make the slot available.
 
 Reopen obtains a new handle, validates it as a regular file, validates the exact
-locator and fingerprint evidence, seeks to the latest live applied progress, and
+locator, fingerprint, and committed-frontier evidence, seeks to the latest live applied progress, and
 reconstructs all later state from source bytes. Restart recovery validates the
 authoritative snapshot, replays every complete valid WAL transaction present, and seeks
 to the resulting recovered progress. The filesystem-synced durable frontier is only
@@ -1020,7 +1063,8 @@ The carry-over owns:
 - exact body and frame source ranges;
 - `file_id` and file epoch;
 - the complete post-frame decoder/framer resume state; and
-- the required progress delta with its expected and resulting offsets.
+- the required progress delta with its expected/resulting offsets and resulting
+  committed-frontier guard.
 
 Its logical projected size is at most `batch.max_bytes`, and its body and
 metadata obey the ordinary record bounds, so it always fits an empty next
@@ -1142,7 +1186,7 @@ must satisfy the
 terminal emission or quarantine is applied. An emitted preserve or replacement
 result advances only after matching aggregate Ack, atomic WAL application, and
 the configured sync policy. A decode-fail quarantine preserves the last applied
-offset and framing resume, records bounded terminal evidence, and is synced
+offset, committed-frontier guard, and framing resume, records bounded terminal evidence, and is synced
 before the descriptor and lease are released.
 
 Silent discard, silent commit, representing terminal emission as ordinary
@@ -1591,10 +1635,10 @@ sequence is:
    administrative reset/removal, epoch change, or another interpretation
    change.
 
-A retryable Nack leaves the old-state delta unresolved and therefore blocks the
-transition. Permanent Nack or retry exhaustion under `fail` terminates the
-receiver without applying the transition. `drop_and_continue` resolves the old
-delta only after its explicit-loss progress transaction is applied.
+An aggregate Nack leaves the old-state delta unresolved while bounded retry
+remains and therefore blocks the transition. Retry exhaustion under `fail`
+terminates the receiver without applying the transition. `drop_and_continue`
+resolves the old delta only after its explicit-loss progress transaction is applied.
 
 An old-attempt or old-epoch completion is stale only after that attempt already
 reached a terminal outcome and the guarded transition completed. The receiver
@@ -1720,9 +1764,10 @@ not guaranteed. A structurally complete corrupted transaction still fails closed
 Delayed sync never permits recovery beyond validated Ack-authorized progress or
 skipping unacknowledged source data.
 
-### Retryable Nack
+### Nack retry
 
-Retryable Nack classes schedule bounded exponential backoff:
+Phase 1 treats every aggregate downstream Nack uniformly. It schedules bounded
+exponential backoff until `retry.max_attempts` is exhausted:
 
 ```text
 delay(attempt) = min(initial_backoff * 2^(attempt - 1), max_backoff)
@@ -1744,10 +1789,9 @@ In a broadcast topology, this resend can duplicate delivery at a required
 subscriber that Acked the prior attempt before another subscriber caused the
 aggregate Nack.
 
-### Permanent Nack and retry exhaustion
+### Retry exhaustion and local terminal outcomes
 
-Permanent Nack, closed route, node shutdown completion, and exhausted retry budget apply
-`on_nack`:
+Retry exhaustion applies `on_nack`:
 
 | Policy | Result |
 | --- | --- |
@@ -1760,14 +1804,22 @@ operator-visible event.
 Drain or direct Shutdown interrupts retry backoff. Uncommitted progress remains
 unchanged.
 
+Typed local outcomes that occur before an accepted publication, including
+`NoRoute`, do not fabricate a downstream Nack or Ack. They keep the retained
+batch unchanged and follow their explicit engine lifecycle/error contract.
+Direct Shutdown and drain are lifecycle commands, not Nack classes. Free-form
+diagnostic text never selects retry or terminal policy. A future distinction
+between retryable and permanent downstream Nacks requires a stable typed
+engine outcome and an exhaustive mapping before it can change Phase 1 behavior.
+
 ### Receiver-wide coupling
 
 One receiver-wide batch intentionally creates:
 
 - Ack-latency coupling across files;
 - no source reads while completion is pending;
-- receiver-wide backoff on retryable Nack;
-- receiver-wide terminal failure on default permanent-Nack policy;
+- receiver-wide backoff on aggregate Nack;
+- receiver-wide terminal failure on default retry-exhaustion policy;
 - checkpoint transaction coupling across unrelated files; and
 - receiver-wide drain delay.
 
@@ -1800,9 +1852,9 @@ conflicting, impossible, unknown, or overflowing transitions fail closed.
 
 | Operation | Preconditions | Effect and timing |
 | --- | --- | --- |
-| `register_file` | `file_id` absent, or exactly identical idempotent replay | Create active identity, initial offset, clean resume, evidence, and metadata; durable before read |
-| `update_progress` | Active; expected offset and epoch match | Atomically append and apply Acked offset and framing resume; may finalize rotation; sync follows policy |
-| `reset_after_truncate` | Active; expected epoch matches; `read_new` selected | Increment epoch, reset offset and framing; sync before reading replacement stream |
+| `register_file` | `file_id` absent, or exactly identical Active idempotent replay | Create active identity, initial offset, guard, clean resume, evidence, and metadata; durable before read |
+| `update_progress` | Active; expected offset and epoch match | Atomically append and apply Acked offset, committed-frontier guard, and framing resume; may finalize rotation; sync follows policy |
+| `reset_after_truncate` | Active; expected epoch matches; `read_new` selected | Increment epoch, reset offset, guard, and framing; sync before reading replacement stream |
 | `update_fingerprint` | Active; expected evidence and epoch match | Extend/replace guarded evidence without changing identity or progress |
 | `update_metadata` | Active or quarantined | Update allowed advisory fields; quarantine evidence remains immutable |
 | `quarantine_file` | Active at expected epoch, or identical idempotent replay | Enter durable quarantine; sync before reporting durable state |
@@ -1815,20 +1867,24 @@ Registration contains the initial identity evidence, initial offset, epoch, comp
 framing profile, clean resume, active lifecycle state, and bounded advisory metadata.
 
 Newly generated IDs are checked for collision. A conflicting existing ID fails closed.
-A reconciliation batch may register multiple new identities in one atomic transaction,
-but none is read until the complete registration transaction is durable.
+A reconciliation batch may register multiple new identities, but registration
+is chunked into format-bounded non-progress transactions. Each chunk contains
+at most `WAL_MAX_NON_PROGRESS_OPS_PER_TX` operations and fits
+`WAL_MAX_TX_BODY_BYTES`. A file becomes readable only after the complete chunk
+containing its registration is durable. Files in an earlier durable chunk need
+not wait for a later chunk, because registration requires no atomicity across
+otherwise independent new identities.
 
 Registration is fully preflighted and encoded before append. Candidate evidence
 that cannot satisfy a documented bound is rejected before constructing the
 transaction. A codec/invariant failure or partial append changes no live table,
 makes no candidate readable, and enters the receiver-level checkpoint-store
-failure path. A multi-file registration transaction never exposes a successful
-prefix.
+failure path. One registration chunk never exposes a successful prefix.
 
 ### Progress
 
-Progress is monotonic within one file epoch. Offset and framing resume advance
-atomically. An ordinary Ack cannot change file epoch. A finalizing progress update may
+Progress is monotonic within one file epoch. Offset, committed-frontier guard,
+and framing resume advance atomically. An ordinary Ack cannot change file epoch. A finalizing progress update may
 transition Active to Rotated finalized only after all included source progress is Acked.
 Applied progress controls live reading. Crash recovery starts from the authoritative
 snapshot and replays every complete valid WAL transaction present in sequence. The
@@ -1839,7 +1895,8 @@ valid prefix that survived.
 
 `reset_after_truncate` is the only non-administrative operation that increments file
 epoch. It records observed truncation and explicit `read_new` intent, resets to source
-offset zero with clean resume, and is synced before replacement bytes are read.
+offset zero with the empty committed-frontier guard and clean resume, and is synced
+before replacement bytes are read.
 
 After the unresolved-delta invariant made every prior-epoch current attempt
 terminal, later duplicate/superseded deltas fail their epoch guard and cannot
@@ -1847,12 +1904,15 @@ advance the new stream.
 
 ### Fingerprint and metadata updates
 
-Fingerprint growth changes matching evidence only. The expected old evidence must
-match. Evidence cannot shrink or conflict silently.
+Fingerprint growth changes initial matching evidence only. The expected old
+evidence must match. Evidence cannot shrink or conflict silently. Progress
+correctness does not depend on a separately timed fingerprint-growth operation;
+the committed-frontier guard changes atomically with progress.
 
-Active metadata may update locator, path, and last-seen time. Quarantined metadata may
-update bounded advisory path and last-seen time only. Its locator and failure evidence
-remain immutable.
+Active and quarantined metadata may update bounded advisory path and last-seen
+time only. A runtime locator is immutable checkpoint evidence for the lifetime
+of one `file_id`; a different locator requires a new identity. Quarantine
+evidence remains immutable.
 
 ### Quarantine and administrative recovery
 
@@ -1866,8 +1926,8 @@ reason, locator, observed-size, and time evidence before accepting an action.
 
 | Action | Effect |
 | --- | --- |
-| `reset_to_beginning` | Increment epoch, offset zero, clean resume, Active |
-| `reset_to_end` | Validate current same-locator stream EOF, increment epoch, store that offset, clean resume, Active |
+| `reset_to_beginning` | Increment epoch, offset zero, empty committed-frontier guard, clean resume, Active |
+| `reset_to_end` | Validate current same-locator stream EOF and preceding guard window, increment epoch, store that offset and guard, clean resume, Active |
 | `keep_failed` | Append only the audited decision; preserve every operational field and all quarantine evidence bit-for-bit |
 
 A configuration change is not an administrative action.
@@ -1888,9 +1948,10 @@ namespace, `file_id`, expected lifecycle, and epoch, and record the required
 audit reason.
 
 Normal receiver configuration never releases quarantine or rewrites incompatible
-framing state. An incompatible profile requires a separately reviewed versioned
-migration, or audited administrative removal/reset followed by explicitly
-selected registration semantics. It never falls through to
+framing state. An incompatible Active profile requires a separately reviewed
+versioned migration, or audited administrative removal followed by explicitly
+selected registration semantics. `reset_quarantined_file` does not apply to an
+Active incompatible record. It never falls through to
 `identity.on_recovery_mismatch`.
 
 This administrative mechanism is a Phase 1 release requirement for any build
@@ -1936,10 +1997,26 @@ interrupted-first-publication state; every other authority gap fails closed.
 No source is registered or read before snapshot, WAL, and `CURRENT` publication
 and required syncs complete.
 
-Compaction constructs one complete new authoritative generation before publishing it.
-The previously authoritative generation remains recoverable until publication
-completes. Cleanup cannot make an incomplete generation authoritative and is resumable
-after interruption.
+Compaction allocates `new_generation = current_generation + 1` with checked
+arithmetic; overflow fails before writing and generation numbers are never
+reused. For generation G it uses only
+`offsets-G.snapshot.compact.tmp`, `offsets-G.wal.compact.tmp`, and
+`CURRENT.compact.tmp` as temporary names. It writes, validates, syncs, and
+closes the complete new snapshot and fresh WAL before renaming the two
+generation files to their final names and syncing the directory. It then writes
+and syncs a complete replacement `CURRENT`, atomically replaces the marker,
+and performs the platform-required directory sync. The previously
+authoritative generation remains complete and recoverable until publication of
+`CURRENT` is durable.
+
+After a crash, a valid `CURRENT` therefore names either the complete old or
+complete new generation. Complete or partial generation artifacts not named by
+`CURRENT` are abandoned, never authoritative, and never reused. Cleanup
+recognizes only bounded version-1 generation and temporary names, rereads and
+validates `CURRENT` under exclusive ownership before deletion, never deletes
+the named generation, and is idempotent after interruption. Ambiguous authority
+or an invalid `CURRENT` fails closed rather than selecting by generation number
+or modification time.
 
 Recognized generations and temporary artifacts are bounded. A store with pending
 retired-generation cleanup does not start another compaction until cleanup succeeds.
@@ -1979,6 +2056,14 @@ unknown checkpoint format/envelope version fails the namespace closed. A stored
 framing-profile incompatibility fails only the affected file unless corruption
 prevents trustworthy record boundaries.
 
+Fail-closed namespace recovery does not authorize automatic salvage. Production
+qualification requires a supported exclusive procedure that can inspect and
+validate bounded artifacts, preserve an evidence backup, and deliberately
+reset the complete namespace with explicit replay or `start_at` consequences.
+Repointing `CURRENT` to an older generation is not a Phase 1 recovery operation;
+it requires separate review because it can roll progress back and duplicate
+previously delivered data.
+
 ### Checkpoint trust boundary
 
 `engine.state_dir` and the checkpoint namespace are trusted host-local state. The
@@ -2016,11 +2101,14 @@ The receiver:
 Same-filesystem or same-volume rename continuity comes from the locator. Cross-device or
 cross-volume copy/unlink is a new identity.
 
-Recognition requires one ordered reconciliation transition in which the
-original matched path stops naming A while A remains in rotation handling and
-the same path names B. Bytes written to B between its creation and this first
-reconciliation are read from offset zero. A B first observed after A is already
-finalized is an unrelated new file and follows ordinary `start_at`.
+Recognition follows the original matched-path binding rather than requiring A
+to disappear from every included name. One ordered reconciliation transition
+observes that path P stopped naming A and now names B. A may remain independently
+eligible under another path such as `app.log.1`; it retains its identity and
+reader while B is registered at offset zero. Bytes written to B between its
+creation and this first reconciliation are read from offset zero. A B first
+observed after A is already finalized, with no retained binding evidence, is an
+unrelated new file and follows ordinary `start_at`.
 
 ### Late writes and finalization
 
@@ -2061,8 +2149,8 @@ The ordering around non-Ack outcomes is:
 - an open batch containing this identity is sealed and resolved before
   finalization;
 - a retained batch or carry-over keeps the identity and descriptor pinned;
-- retryable Nack retains the same batch and cannot finalize;
-- permanent Nack or retry exhaustion under `fail` leaves the identity
+- aggregate Nack retains the same batch while bounded retry remains and cannot finalize;
+- retry exhaustion under `fail` leaves the identity
   unfinalized and terminates the receiver;
 - `drop_and_continue` may finalize only after its explicit-loss progress
   transaction is atomically applied and synced;
@@ -2088,6 +2176,12 @@ uses bounded environmental backoff. Phase 1 defines no implicit
 deadline-triggered loss policy: `rotate_wait`, drain timeout, or capacity
 pressure cannot close a pinned handle and convert unresolved source bytes into
 noncapture. A future configured loss policy would require separate review.
+
+The receiver reports pinned-handle count, oldest pinned age, and a distinct
+high-severity saturation reason so operators can distinguish rotation capture
+pressure from ordinary open-descriptor saturation. Deployment guidance sizes
+`max_open_files` for simultaneously active readers plus expected concurrent
+rotations.
 
 ### POSIX move/create
 
@@ -2133,8 +2227,9 @@ The receiver stops old-stream reads and satisfies the
 [unresolved-delta invariant](#universal-unresolved-delta-ordering). Only after
 every prior old-epoch delta reaches its terminal policy and authorized progress
 is applied does it persist and sync quarantine for the exact `file_id`. A
-retryable Nack delays quarantine; permanent Nack under `fail` terminates the
-receiver without changing lifecycle. A crash may make source bytes destroyed
+aggregate Nack delays quarantine while bounded retry remains; retry exhaustion
+under `fail` terminates the receiver without changing lifecycle. A crash may
+make source bytes destroyed
 by truncation unreconstructable, but no transition deliberately invalidates the
 current retained batch.
 
@@ -2174,8 +2269,10 @@ When downstream send blocks:
 - unread bytes remain in source files; and
 - no hidden unbounded queue absorbs overload.
 
-A closed route is terminal or follows explicit permanent-Nack policy. It is not retried
-forever.
+A closed route produces a typed non-success. Closure of a required subscriber
+for an accepted attempt produces aggregate Nack and bounded retry; failure
+before accepted publication follows the explicit engine route-error contract.
+Neither path is retried forever.
 
 ### Lifecycle states
 
@@ -2300,18 +2397,18 @@ evidence, not merely an OS error number:
 | D17 terminal frame under `preserve_raw` or `replace` | Record | Emit with terminal-unterminated evidence; advance only after matching aggregate Ack |
 | D17 terminal malformed input under `on_decode_error: fail` | File | Durable quarantine without advancing over the malformed source unit |
 | Deterministic identity or recovery mismatch under `identity.on_recovery_mismatch: fail` | File | Durable quarantine |
-| Stored framing-profile version or digest incompatible with selected configuration | File | Fail closed without new identity or `skip_to_end`; require audited reset/removal or separately designed migration |
+| Stored framing-profile version or digest incompatible with selected configuration | File | Fail closed without new identity or `skip_to_end`; require audited removal or separately designed migration |
 | Another per-file integrity failure | File | Quarantine only if an explicit normative rule in this specification names it; otherwise fail or retry in its documented domain |
 | Ambiguous identity under a non-fail mismatch policy | File | New identity and configured initial anchor; never inherit uncertain progress |
 | Runtime lease timeout | File | Do not start a duplicate reader |
-| Retryable Nack | Receiver-wide batch | Retain and retry within delivery bounds |
-| Permanent Nack or exhaustion | Receiver | Apply `on_nack`; default terminal |
+| Aggregate downstream Nack | Receiver-wide batch | Retain and retry uniformly within delivery bounds |
+| Retry exhaustion | Receiver | Apply `on_nack`; default terminal |
 | Checkpoint append/sync/compaction failure, including checkpoint-side `ENOSPC` | Receiver | Bounded consecutive store failures, then terminal; never per-file quarantine |
 | Structurally complete checkpoint CRC failure, namespace mismatch, impossible transition, or other checkpoint/namespace corruption | Receiver startup or receiver | Fail closed; never quarantine one file and never recover an automatic WAL prefix |
 | Namespace lock timeout | Receiver startup | Terminal without reading |
 | Lease-registry integrity failure | Receiver | Fail closed |
 | Worker failure | Receiver | Terminal; do not invent progress |
-| Downstream closure | Receiver | Terminal or explicit permanent-Nack policy |
+| Downstream closure | Receiver-wide batch or receiver lifecycle | Aggregate Nack with bounded retry after accepted publication, or typed route error before acceptance; never Ack |
 
 Environmental retries use one bounded state entry per affected locator,
 traversal root, or receiver-global descriptor condition:

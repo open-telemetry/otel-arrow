@@ -180,7 +180,7 @@ unbounded event queue or log flood.
 | `body_bytes_emitted` | Logical body bytes emitted |
 | `batches_emitted` | Initial batch sends |
 | `batches_acked` | Matching terminal Acks |
-| `batches_nacked` | Matching Nacks by bounded class |
+| `batches_nacked` | Matching aggregate downstream Nacks |
 | `batches_resent` | Retry sends |
 | `retry_attempts` | Resend attempts |
 | `retry_exhausted` | Retained batches exhausting budget |
@@ -209,6 +209,9 @@ unbounded event queue or log flood.
 | `descriptor_evictions` | Completed resident-handle evictions |
 | `descriptor_reopen_failures` | Revalidation/reopen failures by reason |
 | `descriptor_budget_warnings` | Startup descriptor-budget warnings by bounded result |
+| `pinned_rotated_handles` | Current pinned rotated-handle count |
+| `pinned_rotated_oldest_age` | Age of the oldest pinned rotated handle |
+| `pinned_rotation_saturation` | Resident-handle saturation attributable to pinned rotation capture |
 | `carry_over_records` | Records retained across one prior in-flight batch because final projected size did not fit |
 | `eof_reprobes` | Scheduled EOF source probes |
 | `environmental_reprobes` | Bounded transient retries by operation and error class |
@@ -234,6 +237,8 @@ unbounded event queue or log flood.
 | `framing_profile_incompatible` | Per-file stored profile version/digest mismatch |
 | `advisory_path_truncated` | Native advisory paths represented by bounded suffix and full-path digest |
 | `quarantine_resets` | Administrative action by bounded action |
+| `checkpoint_records_removed` | Durable records removed by bounded lifecycle/reason, including retention expiry |
+| `namespace_resets` | Explicit whole-namespace reset attempts by bounded result |
 | `tracked_capacity_saturation` | Time or events at tracked-file capacity |
 | `open_capacity_saturation` | Time or events at resident-handle capacity |
 
@@ -252,6 +257,7 @@ Rate-limited operator-visible events cover:
 - incomplete reconciliation and its reason;
 - candidate overflow and prolonged admission stall;
 - descriptor-budget incompatibility and environmental open/reprobe backoff;
+- pinned rotated-handle saturation and oldest pinned age;
 - discovery traversal/evidence failure;
 - exclusion revocation;
 - identity ambiguity, mismatch, and reset policy;
@@ -275,7 +281,8 @@ Rate-limited operator-visible events cover:
 - quarantine administration unavailable in an initial delivery;
 - checkpoint append, sync, recovery, corruption, compaction, publication, and cleanup
   failures;
-- retry, permanent Nack, exhaustion, and explicit drop;
+- explicit namespace inspection, evidence backup, and whole-namespace reset;
+- aggregate-Nack retry, exhaustion, and explicit drop;
 - zero or unsafe required Ack membership;
 - stale completion;
 - drain timeout and forced shutdown; and
@@ -306,8 +313,9 @@ while their semantic and format definitions remain normative from version 1.
 | Configuration | Record plus attributes equals batch bound | Accepted |
 | Configuration | Record plus attributes exceeds batch bound | Rejected |
 | Configuration | `max_tracked_files > u32::MAX` | Rejected |
-| Configuration | Memory formula equals ceiling | Accepted if representable |
-| Configuration | Formula exceeds/overflows ceiling | Rejected with actionable knobs |
+| Configuration | Identity-reconciliation or checkpoint-recovery formula equals its named provisional ceiling | Accepted if representable |
+| Configuration | A formula exceeds its named provisional ceiling or any admission arithmetic overflows | Rejected with actionable knobs |
+| Configuration | Framer, reader, batch, or carry-over formula has no named provisional ceiling | Checked and reported; no invented per-model limit |
 | Discovery | New growing file | Admitted without waiting for close |
 | Discovery | Exclude overlaps include | Excluded |
 | Discovery | Lexical alias maps to excluded target | Excluded |
@@ -324,6 +332,7 @@ while their semantic and format definitions remain normative from version 1.
 | Discovery | Full tracked table with reconnect | Candidate reaches identity matching |
 | Discovery | Full tracked table with new file | Bounded deferral |
 | Discovery | Cancellation during large tree | Observed between bounded units |
+| Discovery | Very large first root before later roots | Bounded state and cancellation; full-pass/root latency measured, with no Phase 1 finite-latency claim |
 | Discovery | Kernel-blocked operation | Async task does not synchronously forever-join |
 | Discovery | Old unrelated candidate exactly at age threshold | Eligible |
 | Discovery | Old unrelated candidate beyond age threshold | Present but not admitted; no checkpoint record |
@@ -333,7 +342,10 @@ while their semantic and format definitions remain normative from version 1.
 | Identity | Two live equal fingerprints | Distinct `file_id`s |
 | Identity | Short or full equal fingerprint at changed locator | New identity; mismatch policy chooses anchor; no progress transfer |
 | Identity | Copied file on another device/volume with equal fingerprint | New identity; default beginning permits duplicates rather than skipping copied bytes |
-| Identity | Exact locator and valid prefix | Recovery permitted |
+| Identity | Exact locator, valid prefix, and valid committed-frontier guard | Recovery permitted |
+| Identity | Exact locator and valid prefix but frontier-guard mismatch or unreadable window | No old offset inheritance; recovery mismatch policy applies |
+| Identity | Reused Active locator with common prefix but different bytes at prior frontier | Guard rejects inheritance |
+| Identity | Byte-identical replacement reproduces locator and all checked evidence | Explicit residual ambiguity; no stronger identity claim |
 | Identity | Exact locator and mismatched prefix | Atomic superseded-record removal/new registration; no old offset inheritance or duplicate Active locator claim |
 | Identity | Committed offset beyond size | No old offset inheritance |
 | Identity | Growing evidence | Same `file_id`, evidence extends |
@@ -353,7 +365,8 @@ while their semantic and format definitions remain normative from version 1.
 | Reader | Hot and cold ready files | Round-robin bounded turns |
 | Reader | Many EOF files | Deadline reprobe, no busy loop |
 | Reader | Turn hits source-byte bound | Stops and yields |
-| Reader | Descriptor eviction with partial state | Discard and rewind to applied progress |
+| Reader | Descriptor eviction with partial state and no unresolved delta | Discard and rewind to applied progress |
+| Reader | Every eviction candidate owns an open/retained/carry-over delta | Seal/resolve before descriptor reuse; no overlapping reread |
 | Reader | Reopen same identity | Exact revalidation and deterministic reread |
 | Reader | Reopen mismatch | No read under old identity |
 | Reader | Removed resident identity | Descriptor pinned through finalization |
@@ -423,11 +436,15 @@ while their semantic and format definitions remain normative from version 1.
 | Transition ordering | Truncation with retained old epoch | Current attempt remains valid until terminal; reset follows progress |
 | Transition ordering | Exclusion with existing delta | Resolve delta, then revoke while preserving `Active` checkpoint state |
 | Transition ordering | Administrative action while receiver owns delta | Exclusive tool cannot proceed until receiver releases ownership with no delta |
-| Nack | Retryable | Same retained batch, bounded backoff, no reread |
-| Nack | Permanent default | Terminal without progress |
+| Nack | Any aggregate downstream Nack before attempt exhaustion | Same retained batch, bounded backoff, no reread |
 | Nack | `drop_and_continue` | Explicit loss and durable atomic advance |
-| Nack | Exhaustion | Configured terminal policy |
+| Nack | Exhaustion | Configured `on_nack` policy |
+| Nack | Free-form diagnostic text changes | No control-flow change; text is diagnostic only |
+| Nack | Typed local `NoRoute` before accepted publication | No Ack/progress; retained batch follows explicit engine error contract |
 | Checkpoint | Crash before registration sync | File was never eligible to read |
+| Checkpoint | More new identities than one non-progress transaction permits | Registration split into independently durable bounded chunks; each file reads only after its chunk is durable |
+| Checkpoint | Non-progress transaction exceeds 256 operations or 16 MiB body | Rejected before allocation/application and split by the writer |
+| Checkpoint | Transaction mixes `update_progress` with another operation class | Fail closed; progress and non-progress transactions are separate |
 | Checkpoint | Crash after send before Ack | Reconstruct and duplicate if bytes survive |
 | Checkpoint | Crash after Ack before delayed sync | Duplicate window only |
 | Checkpoint | Torn final transaction | Only exact format-defined tail discarded |
@@ -448,6 +465,9 @@ while their semantic and format definitions remain normative from version 1.
 | Checkpoint | WAL append result is ambiguous | Accept complete valid expected sequence, repair exact torn suffix, otherwise fail |
 | Checkpoint | WAL append succeeds and sync fails | Validate transaction and retry sync without duplicate append |
 | Checkpoint | Compaction fault before publication | Previous generation authoritative |
+| Checkpoint | Compaction crash during `CURRENT` replacement | Valid marker names complete old or complete new generation; never partial authority |
+| Checkpoint | Abandoned unnamed generation after crash | Never authoritative or reused; bounded idempotent cleanup |
+| Checkpoint | Generation increment overflow | Fails before writing or wrapping |
 | Checkpoint | Cleanup interruption | Resumable, bounded artifacts |
 | Checkpoint | Cleanup sees current generation among retired candidates | Files named by `CURRENT` are retained |
 | Checkpoint | Retention age without runtime absence | Not removed |
@@ -458,7 +478,13 @@ while their semantic and format definitions remain normative from version 1.
 | Checkpoint | Build can quarantine but has no administration mechanism | Phase 1 conformance rejected |
 | Checkpoint | `keep_failed` exact stored resume/epoch/offset | Audit operation appended; operational state byte-identical |
 | Checkpoint | `keep_failed` attempts resume/epoch/offset change | Fail closed with no state change |
+| Checkpoint | `register_file` replay against Quarantined or RotatedFinalized record | Fail closed; idempotency requires identical Active epoch-1 state |
+| Checkpoint | `update_metadata` attempts locator mutation | Unencodable in v1; changed locator requires new identity |
+| Checkpoint | Reserved quarantine reason `0x0004` | Decoder accepts opaque value; version-1 encoder never emits it |
+| Checkpoint | Unix 5,000-byte advisory path vector | Digest covers all bytes as `UnixBytes`; stored path is the final 4,096-byte suffix |
+| Checkpoint | Namespace corruption administration | Exclusive inspect/backup/reset procedure reports replay or `start_at` consequences; no automatic salvage |
 | Rotation | POSIX rename/create | Old and replacement read independently |
+| Rotation | Broad include matches `app.log` and renamed `app.log.1` | Path rebound still recognizes new `app.log` as offset-zero replacement while old locator remains active |
 | Rotation | Replacement receives bytes before first reconciliation | Recognized replacement starts at zero regardless of `start_at` |
 | Rotation | POSIX unlink with resident descriptor | Old reads through wait/finalization |
 | Rotation | Windows compatible rename/delete-pending | Old handle continues |
@@ -468,11 +494,12 @@ while their semantic and format definitions remain normative from version 1.
 | Rotation | Final record remains in open or retained batch | Descriptor stays pinned; no finalizing transaction yet |
 | Rotation | Matching Ack reaches final source frontier | Ack transaction may finalize; sync precedes descriptor release |
 | Rotation | Zero-delta finalization | Permitted only after all finalization preconditions; sync precedes release |
-| Rotation | Retryable Nack | Batch and descriptor retained; no finalization |
-| Rotation | Permanent Nack under `fail` | Receiver terminal; identity remains unfinalized |
+| Rotation | Aggregate Nack while retry remains | Batch and descriptor retained; no finalization |
+| Rotation | Retry exhaustion under `fail` | Receiver terminal; identity remains unfinalized |
 | Rotation | `drop_and_continue` final delta | Explicit-loss transaction applies and syncs before finalization/release |
 | Rotation | Drain with unresolved rotated source | No finalization; drain reports failure/timeout without progress |
 | Rotation | Pinned descriptors consume all open slots | Bounded backpressure/admission refusal; no deadline-based noncapture |
+| Rotation | Pinned descriptors saturate open slots | Distinct high-severity reason, count, and oldest age identify rotation pressure |
 | Rotation | D17 pending terminal bytes under preserve/replace | Marked terminal emission resolves before `RotatedFinalized` |
 | Rotation | D17 malformed terminal bytes under decode-fail | Quarantine transition, never `RotatedFinalized` |
 | Truncation | Size below committed offset | Detected |
@@ -494,6 +521,7 @@ while their semantic and format definitions remain normative from version 1.
 | Failure | Store failure | Receiver-wide bounded retry then terminal |
 | Telemetry | Many unique paths/file IDs | No metric-cardinality growth |
 | Telemetry | Repeated identical failure | Event sampling/rate limit bounds output |
+| Retention | Removed state later returns with `start_at: end` | Existing contents may be intentionally excluded; prior removal and loss of association are diagnosable without claiming same-source proof |
 | Platform | Unix directory-sync fault | Publication guarantee validated |
 | Platform | Unix link following enabled/disabled | Follow policy selects open primitive; handle must be regular |
 | Platform | Windows reparse following enabled/disabled | `OPEN_REPARSE_POINT` only on non-following path; handle must be regular |
@@ -588,8 +616,11 @@ does not create an empty final fragment.
 ### Example 13: Descriptor eviction
 
 A reader has committed offset 100 and speculative decoded state through 140. Its
-descriptor is evicted. The speculative state is discarded and the logical reader
-rewinds to 100. Reopen validates identity and rereads source bytes from 100.
+descriptor owns no open, retained, or carry-over delta and is evicted. The
+speculative state is discarded and the logical reader rewinds to 100. Reopen
+validates identity and rereads source bytes from 100. If `[100, 140)` were
+represented by an unresolved batch delta, the reader would not be an eviction
+victim; the batch would seal and resolve before descriptor reuse.
 
 ### Example 14: Equal fingerprints
 
@@ -620,7 +651,9 @@ be selected. No finite admission deadline is promised.
 `app.log` locator A is renamed to `app.log.1`; a new `app.log` locator B appears.
 Resident A remains pinned and is read through EOF plus `rotate_wait`. B receives its own
 identity at offset zero and never inherits A's offset, even when
-`start_at: end` is configured.
+`start_at: end` is configured. This remains true with include `app.log*`: the
+matched-path binding for `app.log` rebounds from A to B even though A remains
+eligible under `app.log.1`.
 
 ### Example 19: Evicted rotation
 
@@ -646,7 +679,7 @@ cannot advance epoch 8.
 
 ### Example 22: Retry without reread
 
-Batch 10 attempt 1 receives retryable Nack. The receiver waits bounded backoff and sends
+Batch 10 attempt 1 receives aggregate Nack. The receiver waits bounded backoff and sends
 the retained batch as attempt 2. It does not reopen or reread any file. A late Ack for
 attempt 1 is ignored.
 
@@ -789,3 +822,23 @@ is created at `app.log` and receives bytes before the next reconciliation.
 That ordered transition recognizes B as the replacement. B receives a new
 `file_id`, clean framing, and offset zero even though `start_at: end` is
 configured, so the pre-reconciliation replacement bytes remain eligible.
+
+### Example 37: Active locator reuse rejected at the committed frontier
+
+File A has locator `(dev 8, ino 42)`, a common 1,000-byte prefix, and committed
+offset 1 MiB. While the receiver is stopped, A is deleted and the locator is
+reused by file B with the same prefix. B is large enough to pass the offset
+check, but its 64 raw bytes immediately preceding 1 MiB differ. The
+committed-frontier guard fails, so B does not inherit A's offset and the default
+recovery-mismatch policy begins the new identity at zero. A byte-identical B
+that reproduced every checked byte remains the explicitly documented residual
+ambiguity.
+
+### Example 38: Registration spans bounded transactions
+
+A startup reconciliation identifies more new files than one non-progress
+transaction can encode. The receiver preflights ordered chunks, each containing
+at most `WAL_MAX_NON_PROGRESS_OPS_PER_TX` operations and fitting
+`WAL_MAX_TX_BODY_BYTES`. Files in chunk 1 become readable only after chunk 1 is
+durable. A failure while appending chunk 2 exposes no prefix of chunk 2 and does
+not invalidate chunk 1.
