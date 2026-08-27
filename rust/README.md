@@ -27,13 +27,12 @@ also supports passing through OTLP bytes as literal data, with
 
 ## Experimental
 
-Here, find our experimental projects. As part of the OTel-Arrow Phase
-2 project scope ([project-phases](../docs/project-phases.md)), we are
-developing transform and filter capabilities based around the OTAP
-records representation.
+Here, find our experimental projects. They include general-purpose data-engine
+capabilities as well as integrations developed for the OTel-Arrow Phase 2
+project scope ([project-phases](../docs/project-phases.md)).
 
-- [Query engine: reference implementation for the abstraction
-  layer](./experimental/query_engine/README.md)
+- [Data engine: expression, parsing, and evaluation
+  primitives](./experimental/data_engine/README.md)
 - [Parquet query examples: querying OTel-Arrow data in Parquet
   files using DataFusion](./parquet-query-examples/README.md)
 
