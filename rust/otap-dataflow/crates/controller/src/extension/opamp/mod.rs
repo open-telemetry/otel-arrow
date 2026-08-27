@@ -20,6 +20,7 @@
 //! See [config] for more configuration options.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
@@ -29,13 +30,12 @@ use otel_arrow_dfe_admin::{
     ControlPlaneError, EngineConfigReconcileRequest, EngineConfigReconcileState,
     EngineConfigReconcileStatus,
 };
-use otel_arrow_dfe_config::engine::OtelDataflowSpec;
-use otel_arrow_dfe_state::phase::PipelinePhase;
+
 use prost::Message as _;
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{Connector, MaybeTlsStream, WebSocketStream};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -51,19 +51,23 @@ use crate::extension::opamp::proto::opamp::v1::{
     EffectiveConfig, KeyValue, OpAmpConnectionSettings, RemoteConfigStatus, RemoteConfigStatuses,
     ServerErrorResponseType, ServerToAgent, ServerToAgentFlags,
 };
+use crate::extension::opamp::tls::create_client_config;
 use crate::extension::opamp::util::ExponentialBackoff;
 use crate::{
     CONTROLLER_EXTENSION_FACTORIES, ControllerExtensionContext, ControllerExtensionError,
     ControllerExtensionFactory, ControllerExtensionTaskFactory,
 };
 use otel_arrow_dfe_config::PipelineKey;
+use otel_arrow_dfe_config::engine::OtelDataflowSpec;
 use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_state::phase::PipelinePhase;
 use otel_arrow_dfe_state::pipeline_status::PipelineStatus;
 
 pub mod config;
 pub mod consts;
 pub mod error;
 pub mod proto;
+mod tls;
 mod util;
 
 const CONTROL_EXTENSION_URN: &str = "urn:otel:extension:opamp";
@@ -300,6 +304,20 @@ async fn connect_websocket(
                     .await?;
             }
         }
+    }
+}
+
+async fn connector(config: &Config) -> Connector {
+    match &config.tls {
+        Some(tls_client_config) => {
+            // TODO initialize this elsewhere
+            let connector = create_client_config(tls_client_config)
+                .await
+                .unwrap()
+                .unwrap();
+            Connector::Rustls(Arc::new(connector))
+        }
+        None => Connector::Plain,
     }
 }
 

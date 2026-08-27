@@ -6,6 +6,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use otel_arrow_dfe_config::tls::TlsClientConfig;
 use serde::de::{self, Unexpected};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use url::Url;
@@ -70,6 +71,10 @@ pub struct Config {
     /// may omit the key and simply send an empty string.
     #[serde(default)]
     pub remote_config_key: String,
+
+    /// Client-side TLS/mTLS configuration.
+    #[serde(default)]
+    pub tls: Option<TlsClientConfig>,
 }
 
 impl Config {
@@ -88,7 +93,7 @@ impl Config {
 
         match parsed_endpoint.scheme() {
             "ws" => {
-                // this is are acceptable schemes.
+                // this is an acceptable scheme.
             }
 
             "http" => {

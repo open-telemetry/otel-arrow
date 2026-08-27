@@ -1074,6 +1074,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "axum-server"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1df331683d982a0b9492b38127151e6453639cd34926eb9c07d4cd8c6d22bfc"
+dependencies = [
+ "arc-swap",
+ "bytes",
+ "either",
+ "fs-err",
+ "http 1.5.0",
+ "http-body 1.1.0",
+ "hyper",
+ "hyper-util",
+ "pin-project-lite",
+ "rustls",
+ "rustls-pki-types",
+ "tokio",
+ "tokio-rustls",
+ "tower-service",
+]
+
+[[package]]
+name = "axum-server-mtls"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "707ccfa06510d6d917df83a007b15833ec6d70cb455eada463d7667c9914c084"
+dependencies = [
+ "axum-server",
+ "http 1.5.0",
+ "rustls",
+ "rustls-pki-types",
+ "tokio",
+ "tokio-rustls",
+ "tower-service",
+ "x509-parser",
+]
+
+[[package]]
 name = "azure_core"
 version = "0.29.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3851,6 +3889,16 @@ checksum = "e076045bb43dac435333ed5f04caf35c7463631d0dae2deb2638d94dd0a5b872"
 dependencies = [
  "lazy_static",
  "num",
+]
+
+[[package]]
+name = "fs-err"
+version = "3.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b91aa448ca50d7e79433bdf3ee8d99215430d2ec02ade5aefab2a073a1822e8a"
+dependencies = [
+ "autocfg",
+ "tokio",
 ]
 
 [[package]]
@@ -7417,6 +7465,8 @@ version = "0.54.1"
 dependencies = [
  "async-trait",
  "axum",
+ "axum-server",
+ "axum-server-mtls",
  "bytes",
  "chrono",
  "core_affinity",
@@ -7427,11 +7477,13 @@ dependencies = [
  "otel-arrow-dfe-admin",
  "otel-arrow-dfe-config",
  "otel-arrow-dfe-engine",
+ "otel-arrow-dfe-otap",
  "otel-arrow-dfe-state",
  "otel-arrow-dfe-telemetry",
  "otel-arrow-dfe-telemetry-macros",
  "otel-arrow-dfe-test-net",
  "prost 0.14.4",
+ "rustls",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -10848,7 +10900,11 @@ checksum = "8f72a05e828585856dacd553fba484c242c46e391fb0e58917c942ee9202915c"
 dependencies = [
  "futures-util",
  "log",
+ "rustls",
+ "rustls-native-certs",
+ "rustls-pki-types",
  "tokio",
+ "tokio-rustls",
  "tungstenite",
 ]
 
@@ -11167,6 +11223,8 @@ dependencies = [
  "httparse",
  "log",
  "rand 0.9.5",
+ "rustls",
+ "rustls-pki-types",
  "sha1 0.10.7",
  "thiserror 2.0.20",
 ]

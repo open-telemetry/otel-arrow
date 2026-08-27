@@ -6,6 +6,7 @@
 use std::{
     borrow::Cow,
     collections::{HashMap, VecDeque},
+    net::SocketAddr,
     sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -20,6 +21,7 @@ use axum::{
     routing::any,
     serve,
 };
+use axum_server::tls_rustls::RustlsConfig;
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use otel_arrow_dfe_admin::{
@@ -30,9 +32,10 @@ use otel_arrow_dfe_config::{
     engine::{EngineConfig, OtelDataflowSpec},
     pipeline_group::PipelineGroupConfig,
     policy::Policies,
+    tls::TlsServerConfig,
 };
 use prost::Message as _;
-use tokio::{net::TcpListener, sync::RwLock};
+use tokio::{fs::File, io::AsyncReadExt, net::TcpListener, sync::RwLock};
 use tokio_util::sync::CancellationToken;
 
 use crate::extension::opamp::proto::opamp::v1::{
@@ -200,6 +203,9 @@ pub(crate) struct MockWebSocketServer {
 
     /// state of the server
     state: ServerState,
+
+    /// configuration of server TLS
+    tls_config: Option<TlsServerConfig>,
 }
 
 impl MockWebSocketServer {
@@ -207,6 +213,19 @@ impl MockWebSocketServer {
         Self {
             port,
             state: ServerState::new(Arc::new(RwLock::new(responses.into_iter().collect()))),
+            tls_config: None,
+        }
+    }
+
+    pub fn new_tls(
+        port: u16,
+        responses: Vec<Option<ServerToAgent>>,
+        tls_server_config: TlsServerConfig,
+    ) -> Self {
+        Self {
+            port,
+            state: ServerState::new(Arc::new(RwLock::new(responses.into_iter().collect()))),
+            tls_config: Some(tls_server_config),
         }
     }
 
@@ -221,13 +240,50 @@ impl MockWebSocketServer {
             .route("/v1/opamp", any(request_handler))
             .with_state(state);
 
-        let bind_addr = format!("127.0.0.1:{}", self.port);
-        let listener = TcpListener::bind(&bind_addr).await.unwrap();
+        let mut server_tls_config = None;
+        if let Some(tls_config) = self.tls_config.as_ref() {
+            if tls_config.config.cert_file.is_some() || tls_config.config.cert_pem.is_some() {
+                let cert_pem = if let Some(cert_file) = &tls_config.config.cert_file {
+                    let mut pem_bytes = Vec::new();
+                    let mut file = File::open(cert_file).await.unwrap();
+                    _ = file.read_to_end(&mut pem_bytes).await.unwrap();
+                    pem_bytes
+                } else if let Some(cert_pem) = &tls_config.config.cert_pem {
+                    cert_pem.as_bytes().to_vec()
+                } else {
+                    unreachable!("cert defined")
+                };
 
-        serve(listener, app)
-            .with_graceful_shutdown(cancellation_token.cancelled_owned())
-            .await
-            .unwrap();
+                let key_pem = if let Some(key_file) = &tls_config.config.key_file {
+                    let mut pem_bytes = Vec::new();
+                    let mut file = File::open(key_file).await.unwrap();
+                    _ = file.read_to_end(&mut pem_bytes).await.unwrap();
+                    pem_bytes
+                } else if let Some(key_pem) = &tls_config.config.key_pem {
+                    key_pem.as_bytes().to_vec()
+                } else {
+                    panic!("invalid tls cert config server cert supplied but no key configured")
+                };
+
+                server_tls_config = Some(RustlsConfig::from_pem(cert_pem, key_pem).await.unwrap())
+            }
+        }
+
+        if let Some(server_tls_config) = server_tls_config {
+            let socket_addr = SocketAddr::from(([127, 0, 0, 1], self.port));
+            axum_server::bind_rustls(socket_addr, server_tls_config)
+                .serve(app.into_make_service())
+                .await
+                .unwrap()
+        } else {
+            let bind_addr = format!("127.0.0.1:{}", self.port);
+            let listener = TcpListener::bind(&bind_addr).await.unwrap();
+
+            serve(listener, app)
+                .with_graceful_shutdown(cancellation_token.cancelled_owned())
+                .await
+                .unwrap();
+        }
     }
 }
 
