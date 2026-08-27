@@ -6,7 +6,7 @@
 
 - Type: `receiver:user_events` (`urn:otel:receiver:user_events`)
 - Feature gate: `user_events-receiver`; `event_header` decoding requires `user_events-eventheader`
-- Stability: Experimental
+- Stability: experimental
 
 ## Overview
 

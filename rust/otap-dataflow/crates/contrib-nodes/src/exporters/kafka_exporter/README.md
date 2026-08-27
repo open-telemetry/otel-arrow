@@ -6,7 +6,7 @@
 
 - Type: `exporter:kafka` (`urn:otel:exporter:kafka`)
 - Feature gate: `kafka-exporter` (also enabled by `contrib-exporters`)
-- Stability: Experimental (pending performance optimization)
+- Stability: experimental
 
 ## Overview
 
@@ -716,6 +716,7 @@ metric attributes, which keeps cardinality bounded for dynamic tenant routing.
 
 ## Limits
 
+- This exporter is functional but still pending performance optimization.
 - AWS MSK IAM authentication (`AWS_MSK_IAM_OAUTHBEARER`) requires the `aws`
   feature to be enabled at build time.
 - `producer_config` entries that conflict with built-in fields are silently

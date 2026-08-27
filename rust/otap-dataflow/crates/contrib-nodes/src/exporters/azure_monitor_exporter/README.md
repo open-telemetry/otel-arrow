@@ -4,7 +4,7 @@
 
 - Type: `urn:microsoft:exporter:azure_monitor`
 - Feature gate: `azure-monitor-exporter`
-- Stability: Alpha; supports logs only
+- Stability: alpha
 
 ## Overview
 

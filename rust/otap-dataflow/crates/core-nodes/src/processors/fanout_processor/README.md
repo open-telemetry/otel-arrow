@@ -6,7 +6,7 @@
 
 - Type: `processor:fanout` (`urn:otel:processor:fanout`)
 - Feature gate: Default
-- Stability: Experimental
+- Stability: experimental
 
 ## Overview
 

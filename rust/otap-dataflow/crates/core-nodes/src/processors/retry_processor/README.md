@@ -6,7 +6,7 @@
 
 - Type: `processor:retry` (`urn:otel:processor:retry`)
 - Feature gate: Default
-- Stability: Experimental
+- Stability: experimental
 
 ## Overview
 

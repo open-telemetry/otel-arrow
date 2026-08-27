@@ -6,7 +6,7 @@
 
 - Type: `exporter:perf` (`urn:otel:exporter:perf`)
 - Feature gate: Default
-- Stability: Experimental
+- Stability: experimental
 
 ## Overview
 

@@ -6,7 +6,7 @@
 
 - Type: `receiver:topic` (`urn:otel:receiver:topic`)
 - Feature gate: Default
-- Stability: Experimental
+- Stability: experimental
 
 ## Overview
 
