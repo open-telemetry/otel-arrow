@@ -2639,53 +2639,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4583a4551df46e2792f82ceeac45e850d2e2d5debba0b91f102385cda5b11f06"
 
 [[package]]
-name = "data_engine_expressions"
-version = "0.1.0"
-dependencies = [
- "caseless",
- "chrono",
- "regex",
- "serde_json",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "data_engine_kql_parser"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "data_engine_expressions",
- "data_engine_parser_abstractions",
- "pest",
- "pest_derive",
- "regex",
-]
-
-[[package]]
-name = "data_engine_parser_abstractions"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "data_engine_expressions",
- "pest",
- "pest_derive",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "data_engine_recordset"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "data_engine_expressions",
- "hex",
- "regex",
- "serde_json",
- "sha2 0.11.0",
- "thiserror 2.0.20",
-]
-
-[[package]]
 name = "datafusion"
 version = "53.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7224,6 +7177,53 @@ dependencies = [
 ]
 
 [[package]]
+name = "otel-arrow-contrib-data-engine-expressions"
+version = "0.1.0"
+dependencies = [
+ "caseless",
+ "chrono",
+ "regex",
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "otel-arrow-contrib-data-engine-kql-parser"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "otel-arrow-contrib-data-engine-expressions",
+ "otel-arrow-contrib-data-engine-parser-abstractions",
+ "pest",
+ "pest_derive",
+ "regex",
+]
+
+[[package]]
+name = "otel-arrow-contrib-data-engine-parser-abstractions"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "otel-arrow-contrib-data-engine-expressions",
+ "pest",
+ "pest_derive",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "otel-arrow-contrib-data-engine-recordset"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "hex",
+ "otel-arrow-contrib-data-engine-expressions",
+ "regex",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "otel-arrow-dfe"
 version = "0.52.0"
 dependencies = [
@@ -7408,9 +7408,6 @@ dependencies = [
  "clickhouse-ext-arrow",
  "core_affinity",
  "criterion",
- "data_engine_expressions",
- "data_engine_kql_parser",
- "data_engine_recordset",
  "eventheader_dynamic",
  "flate2",
  "futures",
@@ -7426,6 +7423,9 @@ dependencies = [
  "linkme",
  "one_collect",
  "opentelemetry-proto",
+ "otel-arrow-contrib-data-engine-expressions",
+ "otel-arrow-contrib-data-engine-kql-parser",
+ "otel-arrow-contrib-data-engine-recordset",
  "otel-arrow-dfe-channel",
  "otel-arrow-dfe-config",
  "otel-arrow-dfe-engine",
@@ -7526,8 +7526,6 @@ dependencies = [
  "bytes",
  "chrono",
  "criterion",
- "data_engine_expressions",
- "data_engine_kql_parser",
  "flate2",
  "fluke-hpack",
  "flume",
@@ -7544,6 +7542,8 @@ dependencies = [
  "linkme",
  "nix 0.31.3",
  "object_store",
+ "otel-arrow-contrib-data-engine-expressions",
+ "otel-arrow-contrib-data-engine-kql-parser",
  "otel-arrow-dfe-channel",
  "otel-arrow-dfe-config",
  "otel-arrow-dfe-engine",
@@ -7810,12 +7810,12 @@ dependencies = [
  "arrow",
  "async-trait",
  "criterion",
- "data_engine_expressions",
- "data_engine_kql_parser",
- "data_engine_parser_abstractions",
  "datafusion",
  "futures-core",
  "memchr",
+ "otel-arrow-contrib-data-engine-expressions",
+ "otel-arrow-contrib-data-engine-kql-parser",
+ "otel-arrow-contrib-data-engine-parser-abstractions",
  "otel-arrow-dfe-config",
  "otel-arrow-dfe-pdata",
  "otel-arrow-dfe-query-engine-languages",
@@ -7837,9 +7837,9 @@ version = "0.52.0"
 dependencies = [
  "chrono",
  "chrono-tz",
- "data_engine_expressions",
- "data_engine_parser_abstractions",
  "iso8601",
+ "otel-arrow-contrib-data-engine-expressions",
+ "otel-arrow-contrib-data-engine-parser-abstractions",
  "pest",
  "pest_derive",
  "pretty_assertions",
@@ -7853,7 +7853,7 @@ dependencies = [
  "arrow",
  "axum",
  "base64 0.23.1",
- "data_engine_parser_abstractions",
+ "otel-arrow-contrib-data-engine-parser-abstractions",
  "otel-arrow-dfe-pdata",
  "otel-arrow-dfe-query-engine",
  "otel-arrow-dfe-query-engine-languages",
