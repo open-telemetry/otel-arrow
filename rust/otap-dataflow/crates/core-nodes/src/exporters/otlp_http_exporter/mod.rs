@@ -1200,11 +1200,34 @@ mod test {
         endpoint_addr: &str,
         status_err: Option<u16>,
     ) -> CancellationToken {
+        run_error_server_with_body(
+            tokio_rt,
+            endpoint_addr,
+            status_err,
+            Bytes::from_static(b"test backend rejected payload"),
+        )
+    }
+
+    /// Same as [`run_error_server`] but with a caller-supplied error response body, so
+    /// tests can exercise a valid `RpcStatus` payload, plain text, an empty body, or
+    /// invalid UTF-8 bytes.
+    fn run_error_server_with_body(
+        tokio_rt: &Runtime,
+        endpoint_addr: &str,
+        status_err: Option<u16>,
+        error_body: Bytes,
+    ) -> CancellationToken {
         let server_cancellation_token = CancellationToken::new();
         let server_cancellation_token2 = server_cancellation_token.clone();
         let endpoint_addr = endpoint_addr.to_string();
         _ = tokio_rt.spawn(async move {
-            serve_errors(endpoint_addr, server_cancellation_token, status_err).await
+            serve_errors(
+                endpoint_addr,
+                server_cancellation_token,
+                status_err,
+                error_body,
+            )
+            .await
         });
 
         server_cancellation_token2
@@ -1214,6 +1237,7 @@ mod test {
         endpoint_addr: String,
         shutdown_token: CancellationToken,
         status_err: Option<u16>,
+        error_body: Bytes,
     ) {
         let listener = tokio::net::TcpListener::bind(endpoint_addr).await.unwrap();
         let tracker = TaskTracker::new();
@@ -1223,14 +1247,17 @@ mod test {
                 accept_result = listener.accept() => {
                     let (stream, peer_addr) = accept_result.unwrap();
                     let shutdown_token = shutdown_token.clone();
+                    let error_body = error_body.clone();
                     drop(tracker.spawn(async move {
                         let io = TokioIo::new(stream);
-                        let conn = http1::Builder::new().serve_connection(io, service_fn(|req| async move {
+                        let conn = http1::Builder::new().serve_connection(io, service_fn(move |req| {
+                            let error_body = error_body.clone();
+                            async move {
                             if let Some(status) = status_err {
 
                                 Ok::<_, hyper::Error>(Response::builder()
                                     .status(status)
-                                    .body(Full::new(Bytes::from("test backend rejected payload")))
+                                    .body(Full::new(error_body.clone()))
                                     .unwrap())
                             } else {
                                 let mut body = Vec::new();
@@ -1272,6 +1299,7 @@ mod test {
                                     .body(Full::new(Bytes::from(body)))
                                     .unwrap())
                             }
+                        }
                         }));
                         let mut conn = std::pin::pin!(conn);
 
@@ -2567,6 +2595,133 @@ mod test {
 
         for (status, retryable) in test_cases {
             run_error_status_code_test(status, retryable);
+        }
+    }
+
+    /// Scenario: A non-2xx HTTP response body is a valid `RpcStatus` protobuf message,
+    /// plain text, empty, or invalid UTF-8.
+    /// Guarantees: the response body is read exactly once (no double-consume), the
+    /// NACK reason is deterministic and never panics regardless of body shape, and a
+    /// decodable `RpcStatus` message surfaces its human-readable message and code.
+    #[test]
+    fn test_handles_non_200_response_body_variants() {
+        // Wire-compatible stand-in for `otap_df_otap::otlp_http::RpcStatus`: same field
+        // numbers/types for `code` (tag 1) and `message` (tag 2), which is all this test
+        // needs to produce bytes the exporter's real `RpcStatus::decode` understands. The
+        // real type's `details` field is private to its crate and irrelevant here (proto3
+        // repeated fields default to empty when absent from the wire).
+        #[derive(Clone, PartialEq, ::prost::Message)]
+        struct TestRpcStatus {
+            #[prost(int32, tag = "1")]
+            code: i32,
+            #[prost(string, tag = "2")]
+            message: String,
+        }
+
+        let rpc_status_body = {
+            let status = TestRpcStatus {
+                code: 3,
+                message: "invalid resource attribute".to_string(),
+            };
+            let mut buf = Vec::new();
+            status.encode(&mut buf).unwrap();
+            Bytes::from(buf)
+        };
+
+        let test_cases: [(Bytes, Option<&str>); 4] = [
+            // A valid RpcStatus body surfaces its decoded message and code.
+            (
+                rpc_status_body,
+                Some("invalid resource attribute (RPC code 3)"),
+            ),
+            // Plain (non-protobuf) text is passed through verbatim.
+            (
+                Bytes::from_static(b"plain text rejection reason"),
+                Some("plain text rejection reason"),
+            ),
+            // An empty body must not panic and yields no appended detail.
+            (Bytes::new(), None),
+            // Invalid UTF-8 (and not a valid RpcStatus) must not panic; it falls back
+            // to a lossy string conversion.
+            (Bytes::from_static(&[0xff, 0xfe, 0xfd]), None),
+        ];
+
+        for (error_body, expected_fragment) in test_cases {
+            let port = otap_df_test_net::pick_unused_loopback_tcp_port();
+            let endpoint_addr = format!("127.0.0.1:{}", port);
+            let endpoint = format!("http://{endpoint_addr}");
+
+            let config = default_test_config(endpoint);
+
+            let tokio_rt = Runtime::new().unwrap();
+            let test_runtime = TestRuntime::<OtapPdata>::new();
+            let (_, exporter) = setup_exporter(&test_runtime, config);
+            let server_cancellation_token =
+                run_error_server_with_body(&tokio_rt, &endpoint_addr, Some(400), error_body);
+
+            let (logs_batch, _, _) = gen_batches_for_each_signal_type();
+
+            let pdatas = vec![OtapPdata::new_default(OtapPayload::OtapArrowRecords(
+                otlp_to_otap(&OtlpProtoMessage::Logs(logs_batch.clone())),
+            ))];
+            let pdatas = subscribe_pdatas(pdatas, false);
+
+            test_runtime
+                .set_exporter(exporter)
+                .run_test(|ctx| {
+                    Box::pin(async move {
+                        for pdata in pdatas {
+                            ctx.send_pdata(pdata).await.unwrap();
+                        }
+
+                        ctx.send_shutdown(
+                            Instant::now() + Duration::from_millis(200),
+                            "test complete",
+                        )
+                        .await
+                        .unwrap();
+                    })
+                })
+                .run_validation(|mut ctx, result| {
+                    Box::pin(async move {
+                        result.unwrap();
+
+                        server_cancellation_token.cancel();
+
+                        let mut pipeline_completion_rx =
+                            ctx.take_pipeline_completion_receiver().unwrap();
+                        let msg = pipeline_completion_rx
+                            .recv()
+                            .await
+                            .expect("expected a pipeline completion message");
+
+                        match msg {
+                            PipelineCompletionMsg::DeliverNack { nack } => {
+                                assert!(
+                                    nack.reason.contains("HTTP status")
+                                        && nack.reason.contains("400"),
+                                    "unexpected error message in Nack: {}",
+                                    nack.reason
+                                );
+                                assert!(
+                                    nack.permanent,
+                                    "400 must be a permanent (non-retryable) failure"
+                                );
+                                if let Some(expected_fragment) = expected_fragment {
+                                    assert!(
+                                        nack.reason.contains(expected_fragment),
+                                        "Nack reason `{}` did not contain expected fragment `{}`",
+                                        nack.reason,
+                                        expected_fragment
+                                    );
+                                }
+                            }
+                            PipelineCompletionMsg::DeliverAck { .. } => {
+                                panic!("unexpected Ack message")
+                            }
+                        }
+                    })
+                });
         }
     }
 
