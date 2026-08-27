@@ -217,7 +217,8 @@ unbounded event queue or log flood.
 | `files_discovered` | Stable candidate observations |
 | `files_tracked` | Current durable tracked population |
 | `files_open` | Current resident tail handles |
-| `files_quarantined` | Current and entered quarantine by bounded reason |
+| `files_quarantined` | Current durable quarantined population |
+| `quarantine_entries` | Cumulative transitions into quarantine by bounded reason |
 | `identity_resets` | New identity due to mismatch/ambiguity |
 | `runtime_lease_wait` | Time waiting for local locator ownership |
 | `local_locator_conflicts` | Rejected duplicate local ownership by bounded result |
@@ -323,6 +324,8 @@ while their semantic and format definitions remain normative from version 1.
 | Configuration | Reconciliation jitter outside `0..=25` or jitter arithmetic overflow | Rejected |
 | Configuration | EOF reprobe interval outside `10ms..=1h` | Rejected |
 | Configuration | Either interval causing clock overflow | Rejected before startup |
+| Configuration | Nonzero checkpoint sync interval with unrepresentable duration or deadline | Rejected before startup |
+| Configuration | Checkpoint retention outside zero or representable positive `u64` nanoseconds | Rejected before startup |
 | Configuration | Nonzero `force_flush_period >= rotation.rotate_wait` | Rejected before startup |
 | Configuration | Both multiline patterns | Rejected |
 | Configuration | Unsupported regex construct/profile | Rejected |
@@ -330,7 +333,16 @@ while their semantic and format definitions remain normative from version 1.
 | Configuration | Framing bound below encoding minimum | Rejected |
 | Configuration | Record plus attributes equals batch bound | Accepted |
 | Configuration | Record plus attributes exceeds batch bound | Rejected |
+| Configuration | `ignored_header_bytes` equals `u32::MAX` and its fingerprint range is representable | Accepted |
+| Configuration | `ignored_header_bytes` exceeds `u32::MAX` | Rejected |
 | Configuration | `max_tracked_files > u32::MAX` | Rejected |
+| Configuration | Pending candidates, open files, or read bytes per turn is zero | Rejected |
+| Configuration | `max_open_files == max_tracked_files` | Accepted |
+| Configuration | `max_open_files > max_tracked_files` | Rejected |
+| Configuration | `batch.max_records` equals 1 or 65,535 | Accepted |
+| Configuration | `batch.max_records` is zero or exceeds 65,535 | Rejected |
+| Configuration | `batch.max_bytes` equals the target `usize` representability bound | Accepted if every dependent size formula is representable |
+| Configuration | `batch.max_bytes` exceeds target `usize` or dependent size arithmetic overflows | Rejected |
 | Configuration | Identity-reconciliation or checkpoint-recovery formula equals its named provisional ceiling | Accepted if representable |
 | Configuration | A formula exceeds its named provisional ceiling or any admission arithmetic overflows | Rejected with actionable knobs |
 | Configuration | Framer, reader, batch, or carry-over formula has no named provisional ceiling | Checked and reported; no invented per-model limit |
@@ -430,6 +442,7 @@ while their semantic and format definitions remain normative from version 1.
 | Framing | Truncate tail malformed under decode `fail` | Same-record prefix not emitted; quarantine before malformed unit |
 | Framing | EOF then new byte before deadline | Deadline canceled before framing |
 | Framing | True idle EOF deadline | Timeout record and clean resume after Ack |
+| Framing | EOF first observed after `last_relevant_activity + force_flush_period` | Pending frame is immediately eligible; EOF observation does not add another period |
 | Framing | Idle deadline with incomplete UTF-8/UTF-16/BOM under preserve_raw | Complete pending source range emitted byte-for-byte |
 | Framing | Idle deadline with incomplete UTF-8/UTF-16/BOM under replace | Decoded prefix plus one exact-range replacement |
 | Framing | Idle deadline with incomplete unit under fail | Earlier records resolve, then quarantine without malformed-unit progress |

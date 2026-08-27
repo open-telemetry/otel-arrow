@@ -1157,8 +1157,10 @@ registration transaction is all-or-nothing.
   `(reason_code, observed_size, quarantine_epoch, quarantine_time_unix_nano)`
   as immutable quarantine evidence. `committed_offset`,
   `committed_frontier_guard`, `fingerprint`, and `framing_resume` are left
-  exactly as they were at the moment of
-  quarantine.
+  exactly as they were at the moment of quarantine.
+  `last_seen_time_unix_nano` is also preserved; quarantine time is recorded
+  only in `quarantine_time_unix_nano` and is not a successful source
+  observation.
 
 ### `reset_quarantined_file`
 

@@ -361,30 +361,39 @@ The following relationships are enforced:
     `u64` milliseconds, and is strictly less than `rotation.rotate_wait`.
 30. `ignore_older_than` is zero or representable as positive `i128`
     nanoseconds.
-31. `limits.max_tracked_files` is in `1..=u32::MAX`; pending candidates, open
+31. `checkpoint.sync_interval` is zero or resolves exactly to a positive
+    duration representable by the runtime clock; every nonzero next-sync
+    deadline is representable with checked arithmetic.
+32. `checkpoint.retention` is zero or representable as positive `u64`
+    nanoseconds; retention-age subtraction and comparison use checked
+    arithmetic.
+33. `limits.max_tracked_files` is in `1..=u32::MAX`; pending candidates, open
     files, and read bytes per turn are nonzero.
-32. `limits.max_open_files <= limits.max_tracked_files`.
-33. Candidate-population and aggregate reader-count sums fit `usize`.
-34. `batch.max_records` is in `1..=65535`.
-35. `batch.max_bytes` fits `usize`.
-36. The hard distinct-file progress-delta limit is 4,096 and the maximum
+34. `limits.max_open_files <= limits.max_tracked_files`.
+35. Candidate-population and aggregate reader-count sums fit `usize`.
+36. `batch.max_records` is in `1..=65535`.
+37. `batch.max_bytes` fits `usize`.
+38. The hard distinct-file progress-delta limit is 4,096 and the maximum
     Ack/drop transaction size derived from it is representable.
-37. `batch.max_flush_period`, `rotation.rotate_wait`, `retry.initial_backoff`,
+39. `batch.max_flush_period`, `rotation.rotate_wait`, `retry.initial_backoff`,
     `checkpoint.ownership_timeout`, and `drain_timeout` are nonzero.
-38. `retry.max_attempts` is nonzero.
-39. `retry.max_backoff >= retry.initial_backoff`.
-40. Both checkpoint compaction thresholds and the consecutive-failure budget are
+40. `retry.max_attempts` is nonzero.
+41. `retry.max_backoff >= retry.initial_backoff`.
+42. Both checkpoint compaction thresholds and the consecutive-failure budget are
     nonzero.
-41. Every UTF-8 input to the derived checkpoint-ID recipe has a length representable
+43. Every UTF-8 input to the derived checkpoint-ID recipe has a length representable
     as `u32`.
-42. `checkpoint.id` is nonempty after defaulting.
-43. `checkpoint.id` is neither `.` nor `..`.
-44. `checkpoint.id` contains only ASCII alphanumerics, `_`, `-`, and `.`.
-45. Its ASCII byte length is at most 255, and those exact bytes are its namespace path
+44. `checkpoint.id` is nonempty after defaulting.
+45. `checkpoint.id` is neither `.` nor `..`.
+46. `checkpoint.id` contains only ASCII alphanumerics, `_`, `-`, and `.`.
+47. Its ASCII byte length is at most 255, and those exact bytes are its namespace path
     component.
-46. Both configured framing bounds plus worst-case enabled attributes fit within
-    `batch.max_bytes`.
-47. Identity reconciliation, framer, reader, carry-over, and checkpoint recovery
+48. The maximum logical size of any single emitted record permitted by the
+    framing configuration, including its worst-case enabled attributes and
+    conservative fixed record overhead, is representable and does not exceed
+    `batch.max_bytes`. Framing bounds are evaluated according to the framing
+    state machine; they are not added together.
+49. Identity reconciliation, framer, reader, carry-over, and checkpoint recovery
     admission models are representable with checked arithmetic. Each model for
     which the conformance specification defines a provisional ceiling remains
     within that named ceiling; models without one are not compared against an
@@ -1387,7 +1396,7 @@ End-pattern mode begins buffering with the first physical line.
 - Constructs unsupported by the selected linear-time engine are rejected.
 - Program and cache bounds are enforced at compile time.
 
-The agent compiles defensively as well. A defensive mismatch fails the affected data
+The receiver compiles defensively as well. A defensive mismatch fails the affected data
 source. It never silently falls back to different regex semantics.
 
 ### Physical-line and logical-record bounds
@@ -1550,7 +1559,10 @@ representation and telemetry rules to the discarded tail.
 
 A nonzero deadline is armed only after a source read observes EOF while a nonempty
 partial record is pending. It is measured from the most recent relevant physical-line
-or source activity.
+or source activity: `deadline = last_relevant_activity + force_flush_period`,
+using checked clock arithmetic. EOF observation arms that already-derived
+deadline; it does not add another full period. If the deadline has already
+elapsed when EOF is first observed, the pending frame is immediately eligible.
 
 When a later read observes any new source byte:
 
