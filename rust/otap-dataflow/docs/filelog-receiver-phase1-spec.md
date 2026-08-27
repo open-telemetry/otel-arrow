@@ -40,7 +40,7 @@ convention.
 | Committed offset | The source-byte offset in live applied checkpoint state; it becomes crash-durable only when covered by the durable frontier. |
 | Committed-frontier guard | A bounded SHA-256 digest over raw source bytes immediately preceding committed progress, persisted atomically with that progress and used to detect likely locator reuse or in-place replacement on recovery. |
 | Complete inventory | A reconciliation result that can prove both presence and absence and can establish fingerprint multiplicity over its bounded population. |
-| Continuation | Durable split-fragment state containing only the original record start and next fragment index. |
+| Continuation | Durable split-fragment state containing the original record start, termination evidence, and next fragment index. |
 | Downstream Ack | The matching aggregate completion that authorizes, but does not itself apply or sync, one retained batch's progress transaction. |
 | Durable frontier | The latest applied checkpoint progress guaranteed to survive by a successful required filesystem sync; recovery may also replay a later complete valid WAL prefix that survived. |
 | Distinguished matched-path binding | The one deterministic bounded path binding retained for an identity and used to recognize replacement at that path; additional aliases do not expand durable state. |
@@ -235,7 +235,7 @@ receivers:
 | `rotation.rotate_wait` | `5s` | Nonzero post-EOF inactivity interval |
 | `rotation.on_truncate` | `fail` | `fail` durably quarantines; `read_new` accepts an explicit reported gap and continues at epoch-reset offset zero |
 | `checkpoint.id` | Derived logical receiver key | Optional stable namespace name of 1 to 255 ASCII bytes; set explicitly to preserve continuity across logical-key renames |
-| `checkpoint.sync_interval` | `0s` | Zero syncs every Ack transaction before release; nonzero batches filesystem sync after release |
+| `checkpoint.sync_interval` | `0s` | Zero syncs every Ack transaction before release; nonzero permits duplicate replay and, after storage/power failure, possible fail-closed recovery of a damaged unsynced WAL region |
 | `checkpoint.compact_after_bytes` | `64MiB` | Nonzero WAL compaction threshold |
 | `checkpoint.compact_after_transactions` | `10000` | Nonzero transaction threshold |
 | `checkpoint.retention` | `7d` | Zero retains eligible inactive records indefinitely; removal loses durable association, so later re-admission follows ordinary `start_at` |
@@ -524,12 +524,28 @@ full-path digest, and stored suffix. The prior binding remains unchanged until
 the pass computes path-rebound transitions. An incomplete pass never replaces
 it from partial evidence.
 
-If the binding is unavailable or cannot be compared, the affected replacement
-decision is incomplete. A candidate that would otherwise use `start_at: end`
-under that unresolved binding instead receives a new identity at offset zero,
-preferring possible duplicate ingestion to prefix exclusion. The binding is
-reconstructed after restart from the durable `AdvisoryPath`; no separate or
-unbounded alias map is persisted.
+If an existing tracked predecessor has a binding that is unavailable or cannot
+be compared, only candidates evaluated as possible replacements for that
+predecessor use the duplicate-biased fallback: a candidate requiring a new
+identity starts at offset zero rather than applying `start_at: end`. A genuine
+first-admission candidate with no tracked predecessor always follows configured
+`start_at`. The binding is reconstructed after restart from the durable
+`AdvisoryPath`; no separate or unbounded alias map is persisted.
+
+One complete pass orders binding work as follows:
+
+1. Freeze every prior distinguished binding for transition evaluation.
+2. Build current path-to-locator observations incrementally.
+3. Detect every prior binding that no longer names its locator and compute all
+   resulting path-rebound transitions through normal identity resolution.
+4. Only after those transitions are consistent, select a new deterministic
+   binding for each identity whose prior binding was invalidated.
+
+If a proposed new binding was another tracked identity's prior binding, that
+other rebound is resolved in step 3 before either binding changes. Conflicting,
+unstable, or non-unique path observations make the affected inventory
+incomplete and preserve prior durable bindings rather than assigning one path
+to two identities.
 
 `follow_symlinks` controls symbolic-link and reparse-point traversal, not
 hardlinks. A hardlink is another eligible name for the same opened file and is
@@ -660,6 +676,7 @@ populations to transfer progress across locators.
 | --- | --- |
 | Traversal stack and ancestor locators | Incremental state bounded by `max_recursion_depth` |
 | Current directory entry and match state | One bounded traversal unit |
+| Discovery directory handles | One, independent of recursion depth |
 | Candidate transition batch | At most `max_open_files` observed/updated transitions plus bounded tracked removals |
 | Discovery event channel | One bounded batch |
 | Pending candidates | `max_pending_candidates` |
@@ -672,6 +689,14 @@ populations to transfer progress across locators.
 The scanner never materializes the full filesystem match set. It keeps generation
 markers only for bounded tracked identities and retained pending candidates, while
 visiting other matches incrementally.
+
+Traversal holds at most one directory descriptor or enumeration handle at a
+time, independent of `max_recursion_depth`. Before descending or yielding, it
+closes the current directory and retains only bounded path, ancestor-locator,
+and resumption evidence. Reopen validates the directory locator and resumes
+without treating skipped or unstable enumeration as complete; inability to
+resume unambiguously makes the pass incomplete. Phase 1 never retains one open
+directory handle per recursion level.
 
 ### Admission and fairness
 
@@ -725,6 +750,14 @@ checkpoint record remains `Active` with identical epoch, offset, guard, framing 
 identity evidence, and lifecycle. If the same exact locator becomes included
 again, it reconnects that state after ordinary validation; `start_at` does not
 apply. Exclusion alone never writes `RotatedFinalized` or removes state.
+
+An excluded file that remains present is still complete-inventory presence
+evidence for retention. Its `Active` record is not an ordinary retention
+candidate, so re-inclusion reconnects existing progress rather than applying
+`start_at`. Such excluded records continue consuming `max_tracked_files`.
+Removing one requires explicit audited administration with documented
+replay/skip consequences; exclusion never silently converts into checkpoint
+expiry.
 
 Cancellation is checked between bounded directory entries, path resolutions, evidence
 observations, and channel handoff waits. A filesystem operation already blocked in the
@@ -834,6 +867,11 @@ reproduces the checked locator, prefix, size bound, and frontier window while
 changing unchecked bytes between the sampled regions. Phase 1 states that residual
 ambiguity rather than claiming that native locators or hashes are permanent
 identity.
+
+For an empty file at offset zero, both prefix evidence and the frontier window
+are empty, so recovery initially reduces to exact-locator equality. This cannot
+skip source bytes because committed progress is zero. After content is Acked,
+the atomic frontier guard supplies nonempty continuity evidence.
 
 ### Ambiguity and mismatch
 
@@ -979,6 +1017,7 @@ The receiver-local descriptor budget is:
 ```text
 filelog_fd_budget =
   limits.max_open_files
+  + 1 discovery traversal directory
   + 1 transient candidate probe
   + 8 checkpoint/namespace descriptors
 ```
@@ -1036,16 +1075,17 @@ Eviction is a handshake:
    delta, seal and resolve the open batch before reclaiming a slot.
 4. Preserve applied checkpoint progress and any separately owned carry-over
    record state.
-5. Discard decoder, physical-line, multiline, provisional record, and other speculative
-   state derived after applied progress.
-6. Rewind its in-memory frontier to applied progress.
+5. Discard decoder, physical-line, multiline, provisional record, speculative
+   rolling guard bytes, and every other state derived after applied progress.
+6. Rewind its in-memory frontier and rolling guard to applied progress.
 7. Close the descriptor.
 8. Keep its runtime lease.
 9. Make the slot available.
 
 Reopen obtains a new handle, validates it as a regular file, validates the exact
-locator, fingerprint, and committed-frontier evidence, seeks to the latest live applied progress, and
-reconstructs all later state from source bytes. Restart recovery validates the
+locator, fingerprint, and committed-frontier evidence, retains the validated
+raw guard window as the rolling-window seed, seeks to the latest live applied
+progress, and reconstructs all later state from source bytes. Restart recovery validates the
 authoritative snapshot, replays every complete valid WAL transaction present, and seeks
 to the resulting recovered progress. The filesystem-synced durable frontier is only
 the guaranteed recovery floor.
@@ -1101,7 +1141,8 @@ batch. A second carry-over cannot be created: source reading stops when the
 first is retained.
 
 The current open batch seals and becomes the retained batch. State after its
-last included delta is rewound as usual, except that the carry-over and its
+last included delta, including speculative rolling guard bytes, is rewound to
+that delta's resulting frontier and guard, except that the carry-over and its
 post-frame state remain separately owned. After the retained batch reaches its
 terminal Ack/Nack or explicit-loss outcome and applicable checkpoint progress
 is applied, the carry-over seeds the next open batch before any source read.
@@ -1398,13 +1439,55 @@ The durable continuation contains only:
 
 ```text
 record_start_offset
+record_end_offset
 next_fragment_index
 ```
 
-It contains no hidden line count, regex state, buffered body, BOM probe, or decoder
-partial unit. A nonfinal fragment records a continuation only after its batch is Acked
-and its transaction is appended and applied. The continuation becomes crash-durable
-when covered by filesystem sync.
+`record_end_offset` is either the exact deterministic bound-terminated frame
+boundary already established before the fragment becomes emit-ready, or zero
+for an oversized physical line whose remaining deterministic boundary is the
+next decoded/raw LF and is still being found through bounded scanning. Zero is
+only this termination-mode sentinel; a continuation always has positive
+committed progress. The state contains no hidden line count, regex state,
+buffered body, BOM probe, or decoder partial unit. A nonfinal fragment records a
+continuation only after its batch is Acked and its transaction is appended and
+applied. The continuation becomes crash-durable when covered by filesystem sync.
+
+### Split-continuation restart
+
+Recovery of `FramingResume::Continuation` validates:
+
+```text
+record_start_offset < committed_offset
+record_end_offset == 0 || committed_offset < record_end_offset
+next_fragment_index >= 1
+```
+
+It then:
+
+1. validates and retains the committed-frontier guard window;
+2. seeks the source to `committed_offset`, never `record_start_offset`;
+3. enters continuation scanning rather than ordinary newline or multiline
+   framing;
+4. uses the stored fragment ID origin and `next_fragment_index` and either
+   emits safe-unit-bounded fragments through the nonzero `record_end_offset`,
+   or, when it is zero, continues the oversized-physical-line scan until the
+   next decoded/raw LF;
+5. suppresses fresh start-pattern, end-pattern, line-count, and record-boundary
+   decisions until the stored exact end or scan-to-LF boundary;
+6. marks only the fragment ending at that boundary as `is_last`;
+7. advances the fragment index and continuation atomically after each nonfinal
+   fragment Ack; and
+8. installs `Clean` resume only after the final fragment's matching Ack and
+   checkpoint application.
+
+The committed prefix is neither reread nor re-emitted. For a nonzero stored end,
+a current source size below `record_end_offset` is detected truncation and
+follows `rotation.on_truncate` before any continuation byte is emitted. For the
+zero scan-to-LF mode, temporary EOF remains pending and cannot fabricate a final
+fragment. An environmental inability to read follows bounded reprobe. A
+source-unit or framing inconsistency with available bytes fails closed for that
+identity rather than inventing a different fragment sequence.
 
 The fragment ID is stable across retry and restart and is derived from the durable
 identity, file epoch, and record start. It is the lowercase 64-character hexadecimal
@@ -1592,15 +1675,23 @@ The open batch seals before adding a record that would exceed:
 - the OTAP `u16` log-record ID space.
 
 `batch.max_records` has a hard maximum of 65,535. Record IDs never wrap.
+The effective distinct-file limit for one configured batch is:
+
+```text
+min(batch.max_records, MAX_DISTINCT_FILE_DELTAS_PER_BATCH)
+```
+
+At defaults, `batch.max_records = 1024` binds first. The separate 4,096-delta
+guard remains required for configurations permitting more than 4,096 records.
 
 The first record arms the batch deadline. Later records do not extend it. A sparse
 nonempty batch flushes when the deadline expires.
 
 Progress deltas for multiple records from one file coalesce only when contiguous,
 monotonic, and in the same file epoch. A gap, overlap, regression, or epoch change is
-terminal rather than silently merged. Before selecting a source turn for a
-4,097th distinct `file_id`, the current open batch seals. No source byte for
-that file is read until the retained batch resolves.
+terminal rather than silently merged. When `batch.max_records > 4096`, before
+selecting a source turn for a 4,097th distinct `file_id`, the current open batch
+seals. No source byte for that file is read until the retained batch resolves.
 
 An Ack or `drop_and_continue` transaction contains exactly one
 `update_progress` operation per distinct-file delta and no unrelated operation.
@@ -1783,6 +1874,9 @@ With a nonzero interval:
   frontier;
 - the worker drives the next-sync deadline even while every source is idle;
 - the interval may widen the crash-duplicate window;
+- the unsynced WAL region has no guaranteed persistence or write-ordering
+  outcome and can recover as an allowed missing/torn suffix or as complete
+  mid-WAL corruption that fails the namespace closed;
 - ordered later sync covers all previously applied progress; and
 - drain syncs all outstanding applied progress before releasing namespace ownership.
 
@@ -1792,6 +1886,14 @@ later complete, valid, Ack-authorized WAL prefix that survived even though its s
 not guaranteed. A structurally complete corrupted transaction still fails closed.
 Delayed sync never permits recovery beyond validated Ack-authorized progress or
 skipping unacknowledged source data.
+
+The ordinary expected consequence of delayed sync is duplicate replay. It is
+not the only permitted crash consequence: storage or power failure can expose
+zeroed, reordered, or corrupt bytes before a later surviving transaction. Such
+non-tail damage follows D16 and requires the supported namespace
+inspection/backup/reset procedure; it is never softened into automatic prefix
+recovery. Operators requiring the strongest available checkpoint crash
+durability keep the default `sync_interval: 0s`.
 
 ### Nack retry
 
@@ -1804,6 +1906,16 @@ delay(attempt) = min(initial_backoff * 2^(attempt - 1), max_backoff)
 
 Every multiplication and deadline addition is checked. The delay never wraps or
 becomes a zero-delay unbounded loop.
+
+With the proposed defaults, seven waits before exhaustion are approximately
+`100ms + 200ms + 400ms + 800ms + 1.6s + 3.2s + 5s = 11.3s`, excluding send,
+timeout, and scheduling time. This horizon applies to aggregate Nack and
+pre-publication `NoRoute`. Default `on_nack: fail` then terminates without
+progress. A supervisor restart can reconstruct and resend from checkpoint and
+surviving source bytes, producing duplicates when an earlier attempt reached
+some downstream subscribers; a persistent outage or route misconfiguration can
+therefore produce a restart loop. Phase 1 does not claim that termination is
+indefinite backpressure.
 
 After the delay:
 
@@ -1832,6 +1944,11 @@ operator-visible event.
 
 Drain or direct Shutdown interrupts retry backoff. Uncommitted progress remains
 unchanged.
+
+The default `drain_timeout: 10s` is shorter than the maximum default retry
+horizon. Drain interruption does not wait out the remaining retry schedule; if
+the retained batch cannot reach its terminal policy within the drain budget,
+drain times out with progress unchanged.
 
 Typed local outcomes that occur before an accepted publication, including
 `NoRoute`, do not fabricate a downstream Nack or Ack. The failed send consumes
@@ -2016,6 +2133,10 @@ it has been absent for the retention interval from:
 - the carry-over record; and
 - rotation-finalization state.
 
+An excluded-but-present source fails the first absence condition and is not
+eligible. Exclusion is configuration policy, not proof that the source ceased
+to exist.
+
 Quarantined records are never ordinary retention candidates. A large forward wall-clock
 jump can make old inactive records age-eligible; the runtime-vetted absence checks still
 apply. Returning after removal can cause duplicate ingestion or `start_at: end`
@@ -2049,9 +2170,11 @@ After a crash, a valid `CURRENT` therefore names either the complete old or
 complete new generation. Complete or partial generation artifacts not named by
 `CURRENT` are abandoned and never authoritative. Before another compaction,
 cleanup recognizes only the exact temporary and final artifacts for the one
-proposed `current_generation + 1`, rereads and validates `CURRENT` under
-exclusive ownership, removes those abandoned artifacts, and syncs the
-directory. The unpublished number may then be proposed again. Cleanup never
+proposed `current_generation + 1`: its snapshot/WAL final names,
+`offsets-G.snapshot.compact.tmp`, `offsets-G.wal.compact.tmp`, and the
+generation-independent `CURRENT.compact.tmp`. Cleanup rereads and validates
+`CURRENT` under exclusive ownership, removes those abandoned artifacts, and
+syncs the directory. The unpublished number may then be proposed again. Cleanup never
 deletes the generation named by `CURRENT`, is idempotent after interruption,
 and completes before exclusive creation for the next attempt. Ambiguous
 authority or an invalid `CURRENT` fails closed rather than selecting by
@@ -2389,7 +2512,9 @@ On `DrainIngress` while downstream remains live:
 11. Complete an already-eligible rotation finalization only under the full
     finalization preconditions; drain does not shorten `rotate_wait` or invoke
     permanent EOF for an ordinary live reader.
-12. Rewind uncommitted in-memory tails to durable progress for cleanup.
+12. Discard speculative rolling guard bytes and rewind every uncommitted
+    in-memory tail to durable progress for cleanup. Any later reopen/recovery
+    reseeds the rolling window from the validated durable guard range.
 13. Close descriptors that have no unresolved rotated source.
 14. Release runtime leases.
 15. Release namespace ownership.

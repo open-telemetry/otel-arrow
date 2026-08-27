@@ -539,14 +539,24 @@ The interval values above are reviewable initial defaults, not latency
 guarantees. Full reconciliation and EOF tail reprobe are independently
 validated and scheduled.
 
-The defaults also encode deliberate tradeoffs. `framing.force_flush_period:
-500ms` can split a very slowly written line after an EOF-idle interval.
+Some defaults are omitted from the short YAML above and are defined by the
+complete configuration contract. They also encode deliberate tradeoffs.
+`framing.force_flush_period: 500ms` can split a very slowly written line after an EOF-idle interval.
 `rotation.on_truncate: fail` preserves the no-silent-skip posture by requiring
 administration after detected truncation; operators that knowingly prefer
 continued collection with an explicit gap select `read_new`.
 `checkpoint.retention: 7d` bounds inactive durable state, but after removal a
 returning source is unrelated and can have existing contents intentionally
 excluded by `start_at: end`.
+Pinned rotated handles can occupy every open-file slot and pause descriptor
+admission for new/live files until finalization succeeds or capacity is raised;
+Phase 1 does not hide that condition behind a deadline-triggered loss policy.
+The default eight-attempt delivery policy contributes about 11.3 seconds of
+scheduled backoff before `on_nack: fail` terminates the receiver; the same
+budget applies to pre-publication `NoRoute`. Supervisor restart can duplicate
+previously delivered records, and a persistent outage can create a restart
+loop. These are defaults discussed for community review, not an indefinite
+backpressure guarantee.
 
 For a required broadcast path, the engine topology--not the receiver
 block--must also provide semantics equivalent to:
@@ -626,8 +636,9 @@ through offset 200, then appends and applies that progress without syncing it.
 After a crash, recovery may stop at 100 if the later WAL suffix is absent or an
 allowed torn tail, causing replay from 100, or may replay through 200 if the
 complete valid transaction survived. It cannot recover progress beyond a
-validated Ack-authorized transaction. Duplicate delivery is possible; skipping
-unacknowledged source data is not.
+validated Ack-authorized transaction. Unsynced storage can also expose
+non-tail damage that fails the namespace closed and requires explicit recovery.
+Duplicate delivery is possible; skipping unacknowledged source data is not.
 
 ## Alternatives considered
 

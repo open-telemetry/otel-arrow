@@ -91,7 +91,7 @@ One open or retained receiver-wide batch is bounded by:
 
 - `batch.max_records`;
 - `batch.max_bytes` under the shared logical-size function;
-- 4,096 distinct file deltas and the
+- `min(batch.max_records, 4096)` distinct file deltas and the
   [checkpoint-format-defined](filelog-checkpoint-format.md#maximum-encoded-lengths-summary)
   `MAX_PROGRESS_TX_FRAME_BYTES`;
 - one first-record deadline;
@@ -147,6 +147,14 @@ The combined recovery model also must not exceed 1 GiB. Recovery validates decla
 counts and lengths before allocation, drops the snapshot input buffer before loading
 the WAL, and decodes/applies one transaction at a time.
 
+The 16 MiB transaction cap contributes up to four transaction buffers, roughly
+64 MiB, to the conservative WAL phase. A rejection identifies whether the
+snapshot artifact, WAL artifact, snapshot phase, WAL phase, or checked
+arithmetic failed and reports the contributing configured values. Actionable
+knobs are `checkpoint.compact_after_bytes`, `limits.max_tracked_files`, and
+`identity.fingerprint_bytes`; the format transaction cap itself is fixed and is
+not presented as a configurable remedy.
+
 The maximum size written by a store is compatible with the maximum size the same
 configuration reads. An append or compaction that would exceed the bound is refused
 before in-memory authoritative state advances.
@@ -159,6 +167,12 @@ coherent admission decision without double-counting shared terms.
 
 Phase 1 requires this integrated model and representative measurement before claiming
 a complete per-instance RSS ceiling.
+
+Until representative measurements replace a provisional coefficient or
+ceiling, startup uses the conservative value and prefers rejection to an
+unsupported memory claim. Every rejection identifies the failing formula, its
+computed value and ceiling, and the contributing configuration knobs rather
+than reporting a generic invalid configuration.
 
 ## Telemetry and health events
 
@@ -332,7 +346,8 @@ while their semantic and format definitions remain normative from version 1.
 | Discovery | One locator has many matched aliases | One deterministic distinguished binding retained; aliases do not grow durable state |
 | Discovery | A lexically smaller alias appears while the distinguished binding still names the locator | Existing binding remains stable; no false rebound |
 | Discovery | Distinguished binding is truncated | Kind, full length, digest, and suffix preserve bounded path comparison |
-| Discovery | Distinguished binding unavailable or incomparable | Affected replacement decision incomplete; possible replacement does not use `start_at: end` |
+| Discovery | Distinguished binding unavailable or incomparable for a tracked predecessor | Only its possible new replacement uses offset-zero fallback; unrelated first admission still follows `start_at` |
+| Discovery | Rebound invalidates A's binding and A's new minimum was another identity's prior binding | Freeze and resolve all prior rebounds before reselection; conflict makes inventory incomplete without dual assignment |
 | Discovery | Traversal error | No false removal |
 | Discovery | Evidence changes between probes | Incomplete; no unsafe inheritance |
 | Discovery | Candidate overflow | Bounded state and later varying opportunity |
@@ -340,6 +355,8 @@ while their semantic and format definitions remain normative from version 1.
 | Discovery | Full tracked table with reconnect | Candidate reaches identity matching |
 | Discovery | Full tracked table with new file | Bounded deferral |
 | Discovery | Cancellation during large tree | Observed between bounded units |
+| Discovery | Traversal reaches maximum recursion depth | At most one directory handle resident; bounded path/locator stack only |
+| Discovery | Directory reopen cannot resume unambiguously | Pass incomplete; no false absence or removal |
 | Discovery | Very large first root before later roots | Bounded state and cancellation; full-pass/root latency measured, with no Phase 1 finite-latency claim |
 | Discovery | Kernel-blocked operation | Async task does not synchronously forever-join |
 | Discovery | Old unrelated candidate exactly at age threshold | Eligible |
@@ -374,6 +391,7 @@ while their semantic and format definitions remain normative from version 1.
 | Reader | Many EOF files | Deadline reprobe, no busy loop |
 | Reader | Turn hits source-byte bound | Stops and yields |
 | Reader | Descriptor eviction with partial state and no unresolved delta | Discard and rewind to applied progress |
+| Reader | Evict mid-record, reopen, then advance fewer than 64 bytes | Rolling guard reseeded from validated applied window; next digest covers correct mixed old/new trailing bytes |
 | Reader | Every eviction candidate owns an open/retained/carry-over delta | Seal/resolve before descriptor reuse; no overlapping reread |
 | Reader | Reopen same identity | Exact revalidation and deterministic reread |
 | Reader | Reopen mismatch | No read under old identity |
@@ -401,6 +419,12 @@ while their semantic and format definitions remain normative from version 1.
 | Framing | Oversize physical line after multiline buffer | Earlier buffer emits first |
 | Framing | Multiline overflow trigger | Deterministic boundary at trigger-line LF |
 | Framing | Split crosses Ack boundary | Durable continuation reproduces next fragment |
+| Framing | Restart mid-split oversize physical line with `record_end_offset == 0` | Seek committed offset; suppress fresh framing; bounded-scan and fragment through next decoded/raw LF |
+| Framing | Scan-to-LF continuation reaches temporary EOF | Remains pending; no fabricated final fragment |
+| Framing | Restart mid-split start-pattern multiline | Existing sequence continues without requiring another start match; stored end determines `is_last` |
+| Framing | Restart mid-split end-pattern multiline | Existing sequence continues without re-evaluating end pattern; stored end determines `is_last` |
+| Framing | Restart continuation committed inside a physical line | Safe-unit fragments continue from committed offset without rereading the prefix |
+| Framing | Continuation source shorter than stored record end | Detect truncation and apply configured truncate policy before emitting; no fabricated fragment |
 | Framing | Resume continuation at empty EOF | No fabricated fragment |
 | Framing | Truncate malformed discarded tail | Malformation counted |
 | Framing | Truncate tail malformed under decode `fail` | Same-record prefix not emitted; quarantine before malformed unit |
@@ -425,8 +449,8 @@ while their semantic and format definitions remain normative from version 1.
 | Batch | Final projected size crosses byte bound after framing | Exact bounded record retained as sole carry-over; no reread |
 | Batch | Multiple records same file | Contiguous delta coalesces |
 | Batch | Delta gap or epoch mismatch | Rejected |
-| Batch | 4,096 distinct file deltas | One atomic progress transaction remains encodable |
-| Batch | Scheduler selects a 4,097th distinct file | Current batch seals before any source read for that file |
+| Batch | Configuration permits 4,096 records and batch reaches 4,096 distinct file deltas | One atomic progress transaction remains encodable |
+| Batch | Configuration permits more than 4,096 records and scheduler selects a 4,097th distinct file | Current batch seals before any source read for that file |
 | Batch | Copytruncate occurs while prior batch waits | Already-framed carry-over remains exact and seeds next batch without source reread |
 | Batch | Direct shutdown with carry-over | Memory released without progress; restart depends on surviving source |
 | Ack | Matching current attempt | Atomic durable delta application |
@@ -443,10 +467,14 @@ while their semantic and format definitions remain normative from version 1.
 | Transition ordering | Decode-fail quarantine with existing file delta | Stop, seal, resolve old-state delta, apply progress, then quarantine |
 | Transition ordering | Truncation with retained old epoch | Current attempt remains valid until terminal; reset follows progress |
 | Transition ordering | Exclusion with existing delta | Resolve delta, then revoke while preserving `Active` checkpoint state |
+| Transition ordering | Excluded source remains present beyond retention interval | Active state retained and consumes tracked capacity; ordinary retention cannot remove it |
+| Transition ordering | Previously excluded exact locator becomes included again | Existing progress reconnects; `start_at` does not reapply |
 | Transition ordering | Administrative action while receiver owns delta | Exclusive tool cannot proceed until receiver releases ownership with no delta |
 | Nack | Any aggregate downstream Nack before attempt exhaustion | Same retained batch, bounded backoff, no reread |
 | Nack | `drop_and_continue` | Explicit loss and durable atomic advance |
 | Nack | Exhaustion | Configured `on_nack` policy |
+| Nack | Proposed default retry schedule | Approximately 11.3 seconds of scheduled backoff before exhaustion, excluding send/timeout time |
+| Nack | Supervisor restarts after default `fail` during persistent outage | Checkpoint/source reconstruction can duplicate; repeated failure can restart-loop without progress |
 | Nack | Free-form diagnostic text changes | No control-flow change; text is diagnostic only |
 | Nack | Typed local `NoRoute` before accepted publication | Consumes attempt, retains exact batch, uses bounded backoff, then applies `on_nack` at exhaustion; no fabricated Ack |
 | Checkpoint | Crash before registration sync | File was never eligible to read |
@@ -454,7 +482,8 @@ while their semantic and format definitions remain normative from version 1.
 | Checkpoint | Non-progress transaction exceeds 256 operations or 16 MiB body | Rejected before allocation/application and split by the writer |
 | Checkpoint | Transaction mixes `update_progress` with another operation class | Fail closed; progress and non-progress transactions are separate |
 | Checkpoint | Crash after send before Ack | Reconstruct and duplicate if bytes survive |
-| Checkpoint | Crash after Ack before delayed sync | Duplicate window only |
+| Checkpoint | Crash after Ack before delayed sync with missing or allowed torn suffix | Duplicate replay; no skipped unacknowledged bytes |
+| Checkpoint | Power/storage failure exposes non-tail damage inside an unsynced WAL region | Namespace fails closed; supported inspect/backup/reset procedure required, never automatic prefix salvage |
 | Checkpoint | Torn final transaction | Only exact format-defined tail discarded |
 | Checkpoint | Incomplete fixed transaction header | Torn tail |
 | Checkpoint | Valid fixed header with incomplete body | Torn tail |
@@ -463,6 +492,7 @@ while their semantic and format definitions remain normative from version 1.
 | Checkpoint | Corruption before tail | Fail closed |
 | Checkpoint | Unknown version/operation | Fail closed |
 | Checkpoint | Snapshot unreachable lifecycle/epoch/resume/path state | `InvalidSnapshotState` before WAL replay |
+| Checkpoint | Continuation start is not below committed, or nonzero end is not above committed | Fail closed before replay or progress application |
 | Checkpoint | Snapshot or WAL namespace digest differs from selected ID or its peer | Distinct namespace-mismatch error before applying records |
 | Checkpoint | Valid `CURRENT` names missing generation file | Distinct missing-authoritative-generation error; no fallback |
 | Checkpoint | Valid `CURRENT` names unreadable or incomplete authoritative generation | Distinct fail-closed recovery error; no fallback |
@@ -521,6 +551,7 @@ while their semantic and format definitions remain normative from version 1.
 | Truncation | `read_new` | Durable epoch reset before new read |
 | Backpressure | Downstream full | Reads pause; memory stays bounded |
 | Backpressure | Drain arrives during blocked send | Control interrupts send |
+| Lifecycle | Drain rewinds speculative source state | Speculative rolling guard discarded; restart/reopen reseeds at durable frontier |
 | Lifecycle | Normal drain | Ack/persist/sync/release/notify |
 | Lifecycle | Drain timeout with unacked batch | No progress; replay possible |
 | Lifecycle | Clean drain receives no Shutdown | Cleanup still completes |
@@ -621,9 +652,12 @@ the old prefix separately at 500 ms.
 
 ### Example 12: Continuation at idle EOF
 
-A nonfinal fragment was Acked with continuation index 2. After restart, the file is
-still exactly at the committed source boundary and EOF. The receiver emits nothing. It
-does not create an empty final fragment.
+A nonfinal fragment was Acked with continuation index 2 and a stored
+`record_end_offset` beyond the committed frontier. After restart, the file is
+still exactly at the committed source boundary and EOF, shorter than the stored
+end. The receiver emits nothing and enters the configured detectable-truncation
+policy; it does not create an empty final fragment or reinterpret the tail as a
+fresh record.
 
 ### Example 13: Descriptor eviction
 
@@ -638,7 +672,9 @@ victim; the batch would seal and resolve before descriptor reuse.
 
 Two live empty files have distinct locators and equal zero-length provisional
 fingerprints. They receive different `file_id`s. Neither inherits an old record through
-fingerprint-only matching.
+fingerprint-only matching. Recovery of one empty file at committed offset zero
+initially relies on exact-locator equality, but cannot skip bytes because the
+stored offset is zero; later Acked content installs nonempty frontier evidence.
 
 ### Example 15: Incomplete discovery
 
@@ -700,7 +736,8 @@ attempt 1 is ignored.
 
 ### Example 23: Atomic distinct-delta bound
 
-An open batch already carries deltas for 4,096 distinct files. A record from a
+With `batch.max_records` configured above 4,096, an open batch already carries
+deltas for 4,096 distinct files. A record from a
 4,097th file is ready. Distinct-delta preflight seals the existing batch
 before a source turn or buffered framing resumes, so no record from the
 4,097th file is framed or discarded. The existing batch remains one atomic

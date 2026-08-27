@@ -388,8 +388,9 @@ following before WAL replay:
   registration emits version 1, while an unrecognized nonzero stored version
   is preserved and blocked as per-file framing incompatibility rather than
   snapshot corruption;
-- `FramingResume::Continuation` has `next_fragment_index >= 1` and
-  `record_start_offset < committed_offset`;
+- `FramingResume::Continuation` has `next_fragment_index >= 1`,
+  `record_start_offset < committed_offset`, and either
+  `record_end_offset == 0` or `committed_offset < record_end_offset`;
 - `Active` has no quarantine evidence;
 - `RotatedFinalized` has `FramingResume::Clean` and no quarantine evidence;
 - `Quarantined` has evidence, `reason_code != 0`,
@@ -458,7 +459,8 @@ kind : u8
   requires this case to be defined and tested rather than silently
   substituting a fallback identity; `Unspecified` is that explicit,
   normalized representation. Version-1 reachable snapshot and registration
-  state rejects it; a candidate without a required locator is not read.
+  state rejects it; a version-1 encoder MUST NOT emit it in a snapshot or
+  `register_file`, and a candidate without a required locator is not read.
 - **`PosixDevIno`** normalizes POSIX `(st_dev, st_ino)`. Both `dev` and `ino`
   are widened to `u64` regardless of the native platform's underlying
   integer width (`dev_t`/`ino_t` sizes vary by OS and architecture); a
@@ -590,17 +592,22 @@ kind : u8
 | `kind` | Name | Additional fields | Total encoded size |
 | --- | --- | --- | --- |
 | `0x00` | `Clean` | none | 1 byte |
-| `0x01` | `Continuation` | `record_start_offset: u64` BE, `next_fragment_index: u32` BE | 13 bytes |
+| `0x01` | `Continuation` | `record_start_offset: u64` BE, `record_end_offset: u64` BE, `next_fragment_index: u32` BE | 21 bytes |
 | `0x02`..`0xFF` | reserved | -- | decode fails closed |
 
 `Clean` is the common durable resume state: the next complete source unit
 starts a new logical record. `Continuation` is the split-record durable resume
-state: the original record's start offset and the next fragment index to emit,
-both of which are required to reconstruct
+state: the original record's start, its termination evidence, and the next
+fragment index to emit, which are required to reconstruct
 the fragment identifier and fragment index defined by the
 [Phase 1 split contract](filelog-receiver-phase1-spec.md#split-behavior)
 deterministically after restart. `kind` is structural; `0x02`..`0xFF` fail
 decoding closed.
+
+For `Continuation`, `record_end_offset == 0` is the scan-to-next-physical-LF
+termination mode used by an oversized physical line whose LF was not known when
+an earlier bounded fragment committed. A nonzero value is the exact already-known
+deterministic end. No other sentinel meaning is defined.
 
 ## Lifecycle state discriminant
 
@@ -908,8 +915,8 @@ file-path convention alone.
 | `ADVISORY_PATH_STORED_MAX_BYTES` | `4096` | `AdvisoryPath.stored_path_bytes` |
 | `AUDIT_REASON_MAX_BYTES` | `1024` | `audit_reason_bytes` |
 | `NAMESPACE_ID_MAX_BYTES` | `255` | `namespace_id_bytes` |
-| `SNAPSHOT_MAX_RECORD_PAYLOAD_BYTES` | `69846` | Quarantined record with maximum guard, locator, continuation, fingerprint, and advisory path |
-| `SNAPSHOT_MAX_RECORD_FRAME_BYTES` | `69854` | Length + maximum snapshot payload + CRC |
+| `SNAPSHOT_MAX_RECORD_PAYLOAD_BYTES` | `69854` | Quarantined record with maximum guard, locator, continuation, fingerprint, and advisory path |
+| `SNAPSHOT_MAX_RECORD_FRAME_BYTES` | `69862` | Length + maximum snapshot payload + CRC |
 | `WAL_MAX_OPS_PER_TX` | `4096` | `op_count` per transaction |
 | `WAL_MAX_NON_PROGRESS_OPS_PER_TX` | `256` | operation count for registration, metadata, fingerprint, reset, quarantine, and removal transactions |
 | `TX_HEADER_BYTES` | `36` | Fixed transaction envelope header |
@@ -920,10 +927,10 @@ file-path convention alone.
 | `REGISTER_FILE_MAX_OP_PAYLOAD_BYTES` | `69812` | Maximum `register_file` payload with guard and required `Clean` resume |
 | `WAL_MAX_TX_BODY_BYTES` | `16777216` | Hard 16 MiB body cap for every transaction class |
 | `WAL_MAX_TX_FRAME_BYTES` | `16777256` | 36-byte header + maximum body + frame CRC |
-| `UPDATE_PROGRESS_MAX_OP_PAYLOAD_BYTES` | `93` | Maximum `update_progress` payload with guard and `Continuation` resume |
-| `UPDATE_PROGRESS_MAX_OP_FRAME_BYTES` | `101` | Length + maximum payload + CRC |
-| `MAX_PROGRESS_TX_BODY_BYTES` | `413696` | 4,096 maximum progress operation frames |
-| `MAX_PROGRESS_TX_FRAME_BYTES` | `413736` | 36-byte header + maximum progress body + frame CRC |
+| `UPDATE_PROGRESS_MAX_OP_PAYLOAD_BYTES` | `101` | Maximum `update_progress` payload with guard and `Continuation` resume |
+| `UPDATE_PROGRESS_MAX_OP_FRAME_BYTES` | `109` | Length + maximum payload + CRC |
+| `MAX_PROGRESS_TX_BODY_BYTES` | `446464` | 4,096 maximum progress operation frames |
+| `MAX_PROGRESS_TX_FRAME_BYTES` | `446504` | 36-byte header + maximum progress body + frame CRC |
 | framing-profile pattern | `4096` | canonical serialization pattern bytes (see below) |
 
 The Phase 1 behavioral contract reserves zero non-progress operations in an
@@ -934,17 +941,17 @@ exactly `WAL_MAX_OPS_PER_TX = 4096`. The maximum values above derive as:
 update_progress payload =
   1 op_code + 16 file_id + 8 expected_offset + 4 epoch
   + 8 new_offset + 34 CommittedFrontierGuard
-  + 13 maximum FramingResume
+  + 21 maximum FramingResume
   + 8 last_seen + 1 finalize
-  = 93 bytes
+  = 101 bytes
 
 maximum progress transaction body =
-  4096 * (4 + 93 + 4)
-  = 413696 bytes
+  4096 * (4 + 101 + 4)
+  = 446464 bytes
 
 maximum progress transaction frame =
-  36 header + 413696 body + 4 frame CRC
-  = 413736 bytes
+  36 header + 446464 body + 4 frame CRC
+  = 446504 bytes
 
 maximum operation payload =
   update_fingerprint fixed fields + two 65535-byte fingerprints
@@ -952,8 +959,8 @@ maximum operation payload =
 
 maximum snapshot record payload =
   maximum fixed/quarantine fields + 65535 fingerprint
-  + 34 guard + 25 locator + 13 resume + (44 + 4096) advisory path
-  = 69846 bytes
+  + 34 guard + 25 locator + 21 resume + (44 + 4096) advisory path
+  = 69854 bytes
 
 maximum register_file payload =
   op code + maximum Active registration fields + 34-byte guard
@@ -1063,6 +1070,10 @@ registration transaction is all-or-nothing.
 - `new_committed_frontier_guard.window_len` MUST equal
   `min(new_committed_offset, COMMITTED_FRONTIER_GUARD_WINDOW_BYTES)`. For a
   zero-delta update it MUST equal the stored guard bit-for-bit.
+- When `new_framing_resume` is `Continuation`, it MUST satisfy
+  `record_start_offset < new_committed_offset`, `next_fragment_index >= 1`,
+  and either `record_end_offset == 0` or
+  `new_committed_offset < record_end_offset`.
 - `new_committed_offset`, `new_committed_frontier_guard`, and
   `new_framing_resume` are applied atomically: all are updated together or the
   whole operation is rejected; there is no partially-applied state.
@@ -1393,6 +1404,9 @@ framing_profile_digest = 1c3159dd242ae99f29b6aace2f40c9d16192db416810456c5975ba8
 
 Both are normative conformance vectors. A change to either value without a
 `framing_profile_version` bump is a specification regression.
+The format remains unfrozen only under the explicit pre-release rule near this
+document's [Compatibility](#filelog-receiver-checkpoint-format-version-1)
+declaration; after first release, the cross-version policy is mandatory.
 
 ## Unknown version, discriminator, operation, and extension behavior (summary)
 
