@@ -185,8 +185,8 @@ pub struct NodePolicies {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NodeTelemetryPolicy {
-    /// Opt this node into per-signal produced/consumed item counts on its
-    /// `node.producer` / `node.consumer` metric sets.
+    /// Opt this node into per-signal input/output item counts on its
+    /// `node.input` / `node.output` metric sets.
     ///
     /// Off by default because counting items requires inspecting each batch,
     /// which is expensive for OTLP payloads. Only recorded when the resolved
@@ -195,8 +195,8 @@ pub struct NodeTelemetryPolicy {
     #[serde(default)]
     pub item_counts: bool,
 
-    /// Opt this node into per-signal produced/consumed logical payload size on
-    /// its `node.producer` / `node.consumer` metric sets.
+    /// Opt this node into per-signal input/output logical payload size on its
+    /// `node.input` / `node.output` metric sets.
     ///
     /// Off by default because measuring OTAP payloads requires walking their
     /// Arrow arrays and buffers. Only recorded when the resolved

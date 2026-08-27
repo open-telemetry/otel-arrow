@@ -371,7 +371,7 @@ impl AzureMonitorExporter {
                 msg_id = msg_id
             );
             effect_handler
-                .notify_nack(NackMsg::new(
+                .notify_nack(NackMsg::new_permanent(
                     "No valid log entries produced",
                     OtapPdata::new(context, payload),
                 ))
@@ -681,11 +681,14 @@ mod tests {
     use otel_arrow_dfe_engine::capability::auth::BearerToken;
     use otel_arrow_dfe_engine::capability::auth::bearer_token_provider::TokenStream;
     use otel_arrow_dfe_engine::context::{ControllerContext, PipelineContext};
+    use otel_arrow_dfe_engine::control::{PipelineCompletionMsg, pipeline_completion_msg_channel};
     use otel_arrow_dfe_engine::local::exporter::EffectHandler;
     use otel_arrow_dfe_engine::local::message::LocalReceiver;
     use otel_arrow_dfe_engine::message::Receiver;
     use otel_arrow_dfe_engine::node::NodeId;
+    use otel_arrow_dfe_engine::testing::test_node;
     use otel_arrow_dfe_otap::pdata::Context;
+    use otel_arrow_dfe_otap::testing::TestCallData;
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
     use rand::{RngExt, SeedableRng, rngs::SmallRng};
@@ -774,6 +777,18 @@ mod tests {
             },
             reporter,
         )
+    }
+
+    fn completion_harness() -> (
+        EffectHandler<OtapPdata>,
+        otel_arrow_dfe_engine::control::PipelineCompletionMsgReceiver<OtapPdata>,
+    ) {
+        let (_, reporter) = MetricsReporter::create_new_and_receiver(10);
+        let mut effect_handler =
+            EffectHandler::new(test_node("azure-monitor-completion-test"), reporter);
+        let (completion_tx, completion_rx) = pipeline_completion_msg_channel(1);
+        effect_handler.set_pipeline_completion_msg_sender(completion_tx);
+        (effect_handler, completion_rx)
     }
 
     /// Build an exporter whose client pool targets `endpoint`, as `start` would.
@@ -1047,23 +1062,30 @@ mod tests {
         assert!(exporter.state.msg_to_data.is_empty());
     }
 
-    /// Scenario: a logs message arrives once a bearer token is cached, carrying
-    /// no convertible log records.
-    /// Guarantees: it is admitted for processing rather than refused for auth
-    /// reasons, and is then released instead of being retained by the exporter.
+    /// Scenario: an empty logs batch arrives once a bearer token is cached.
+    /// Guarantees: the exporter permanently NACKs the batch so it cannot enter
+    /// a downstream retry loop.
     #[tokio::test]
-    async fn logs_are_admitted_once_a_bearer_token_is_cached() {
+    async fn empty_logs_batch_is_permanently_nacked() {
         let mut exporter = exporter_targeting("http://localhost".to_string()).await;
         let mut auth = auth_with_cached_token().await;
+        let (effect_handler, mut completion_rx) = completion_harness();
 
         let mut msg_id = 0;
         exporter
             .handle_message(
-                &test_effect_handler(),
-                Ok(Message::PData(OtapPdata::new(
-                    Context::default(),
-                    OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into(),
-                ))),
+                &effect_handler,
+                Ok(Message::PData(
+                    OtapPdata::new(
+                        Context::default(),
+                        OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into(),
+                    )
+                    .test_subscribe_to(
+                        Interests::NACKS,
+                        TestCallData::default().into(),
+                        42,
+                    ),
+                )),
                 &mut msg_id,
                 &mut auth,
             )
@@ -1072,6 +1094,13 @@ mod tests {
 
         assert_eq!(msg_id, 1, "admitted pdata consumes a message id");
         assert!(exporter.state.msg_to_data.is_empty());
+        match completion_rx.recv().await.expect("receive completion") {
+            PipelineCompletionMsg::DeliverNack { nack } => {
+                assert!(nack.permanent);
+                assert_eq!(nack.reason, "No valid log entries produced");
+            }
+            PipelineCompletionMsg::DeliverAck { .. } => panic!("expected permanent NACK"),
+        }
     }
 
     /// Scenario: buffered log entries are flushed by shutdown while a bearer

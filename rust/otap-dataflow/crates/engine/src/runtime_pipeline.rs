@@ -7,8 +7,8 @@ use crate::Interests;
 use crate::ReceivedAtNode;
 use crate::Unwindable;
 use crate::channel_metrics::{
-    ChannelMetricsHandle, ConsumedItemMetrics, ConsumedMetrics, ConsumedSizeMetrics,
-    ProducedItemMetrics, ProducedMetrics, ProducedSizeMetrics,
+    ChannelMetricsHandle, NodeInputItemMetrics, NodeInputMetrics, NodeInputSizeMetrics,
+    NodeOutputItemMetrics, NodeOutputMetrics, NodeOutputSizeMetrics,
 };
 use crate::completion_emission_metrics::{
     CompletionEmissionMetricsHandle, make_completion_emission_metrics,
@@ -23,8 +23,9 @@ use crate::entity_context::{
 };
 use crate::error::{Error, TypedError};
 use crate::flow_metrics::{
-    FlowConsumedItemsMetrics, FlowDroppedItemsMetrics, FlowDurationMetrics,
-    FlowProducedItemsMetrics, build_flow_metric_state,
+    FlowDroppedItemsMetrics, FlowDurationMetrics, FlowInputItemsMetrics, FlowInputMessageMetrics,
+    FlowInputSizeMetrics, FlowOutputItemsMetrics, FlowOutputMessageMetrics, FlowOutputSizeMetrics,
+    build_flow_metric_state,
 };
 use crate::memory_limiter::MemoryPressureChanged;
 use crate::node::{Node, NodeDefs, NodeId, NodeType, NodeWithPDataReceiver, NodeWithPDataSender};
@@ -63,7 +64,7 @@ const EXTENSION_MONITOR_COLLECT_TELEMETRY_INTERVAL: Duration = Duration::from_se
 fn make_produced_metrics(
     telemetry_handle: &Option<NodeTelemetryHandle>,
     pipeline_context: &PipelineContext,
-) -> Vec<MeasurementMetricSet<ProducedMetrics>> {
+) -> Vec<MeasurementMetricSet<NodeOutputMetrics>> {
     telemetry_handle
         .as_ref()
         .map(|h| {
@@ -71,7 +72,7 @@ fn make_produced_metrics(
             keys.sort_by(|a, b| a.0.cmp(&b.0));
             keys.iter()
                 .map(|(_, key)| {
-                    ProducedMetrics::register(
+                    NodeOutputMetrics::register(
                         &pipeline_context.metric_set_registrar_for_entity(*key),
                     )
                 })
@@ -84,7 +85,7 @@ fn make_produced_metrics(
 fn make_produced_item_metrics(
     telemetry_handle: &Option<NodeTelemetryHandle>,
     pipeline_context: &PipelineContext,
-) -> Vec<MeasurementMetricSet<ProducedItemMetrics>> {
+) -> Vec<MeasurementMetricSet<NodeOutputItemMetrics>> {
     telemetry_handle
         .as_ref()
         .map(|h| {
@@ -92,7 +93,7 @@ fn make_produced_item_metrics(
             keys.sort_by(|a, b| a.0.cmp(&b.0));
             keys.iter()
                 .map(|(_, key)| {
-                    ProducedItemMetrics::register(
+                    NodeOutputItemMetrics::register(
                         &pipeline_context.metric_set_registrar_for_entity(*key),
                     )
                 })
@@ -102,10 +103,10 @@ fn make_produced_item_metrics(
 }
 
 /// Build optional produced-size metric sets indexed by sorted output port name.
-fn make_produced_size_metrics(
+fn make_output_size_metrics(
     telemetry_handle: &Option<NodeTelemetryHandle>,
     pipeline_context: &PipelineContext,
-) -> Vec<MeasurementMetricSet<ProducedSizeMetrics>> {
+) -> Vec<MeasurementMetricSet<NodeOutputSizeMetrics>> {
     telemetry_handle
         .as_ref()
         .map(|h| {
@@ -113,7 +114,7 @@ fn make_produced_size_metrics(
             keys.sort_by(|a, b| a.0.cmp(&b.0));
             keys.iter()
                 .map(|(_, key)| {
-                    ProducedSizeMetrics::register(
+                    NodeOutputSizeMetrics::register(
                         &pipeline_context.metric_set_registrar_for_entity(*key),
                     )
                 })
@@ -147,29 +148,29 @@ fn make_node_metric_handles(
             .as_ref()
             .and_then(|h| h.input_channel_key())
             .map(|key| {
-                ConsumedMetrics::register(&pipeline_context.metric_set_registrar_for_entity(key))
+                NodeInputMetrics::register(&pipeline_context.metric_set_registrar_for_entity(key))
             })
     } else {
         None
     };
-    let consumed_size = if size_enabled && consumer_metrics_enabled {
+    let input_size = if size_enabled && consumer_metrics_enabled {
         telemetry_handle
             .as_ref()
             .and_then(|h| h.input_channel_key())
             .map(|key| {
-                ConsumedSizeMetrics::register(
+                NodeInputSizeMetrics::register(
                     &pipeline_context.metric_set_registrar_for_entity(key),
                 )
             })
     } else {
         None
     };
-    let consumed_items = if item_counts_enabled && consumer_metrics_enabled {
+    let input_items = if item_counts_enabled && consumer_metrics_enabled {
         telemetry_handle
             .as_ref()
             .and_then(|h| h.input_channel_key())
             .map(|key| {
-                ConsumedItemMetrics::register(
+                NodeInputItemMetrics::register(
                     &pipeline_context.metric_set_registrar_for_entity(key),
                 )
             })
@@ -181,24 +182,24 @@ fn make_node_metric_handles(
     } else {
         Vec::new()
     };
-    let produced_items = if item_counts_enabled && producer_metrics_enabled {
+    let output_items = if item_counts_enabled && producer_metrics_enabled {
         make_produced_item_metrics(telemetry_handle, pipeline_context)
     } else {
         Vec::new()
     };
-    let produced_size = if size_enabled && producer_metrics_enabled {
-        make_produced_size_metrics(telemetry_handle, pipeline_context)
+    let output_size = if size_enabled && producer_metrics_enabled {
+        make_output_size_metrics(telemetry_handle, pipeline_context)
     } else {
         Vec::new()
     };
     NodeMetricHandles {
         registry: pipeline_context.metrics_registry(),
         input: consumed,
-        input_items: consumed_items,
-        input_size: consumed_size,
+        input_items,
+        input_size,
         outputs: produced,
-        output_items: produced_items,
-        output_size: produced_size,
+        output_items,
+        output_size,
         completion_emission,
     }
 }
@@ -695,23 +696,46 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             let final_metrics_reporter = metrics_reporter.clone();
             let processor_terminal_metrics_deadline = terminal_metrics_deadline.clone();
             // Extract flow metric roles for this processor node.
+            // Compute pipeline-wide flags before moving metric sets into handlers.
+            let flow_active = flow_metric_state.is_active();
+            let flow_needs_timing = flow_metric_state.needs_timing();
             let flow_is_start = flow_metric_state.start_nodes.contains_key(&node_id.index);
             let flow_is_end = flow_metric_state.end_nodes.contains_key(&node_id.index);
-            let flow_consumed_items_metric: Option<MeasurementMetricSet<FlowConsumedItemsMetrics>> =
+            let flow_input_message_metric: Option<MeasurementMetricSet<FlowInputMessageMetrics>> =
                 flow_metric_state
                     .start_nodes
                     .get(&node_id.index)
-                    .and_then(|&id| flow_metric_state.consumed_items_metrics[id].take());
+                    .and_then(|&id| flow_metric_state.input_message_metrics[id].take());
+            let flow_input_items_metric: Option<MeasurementMetricSet<FlowInputItemsMetrics>> =
+                flow_metric_state
+                    .start_nodes
+                    .get(&node_id.index)
+                    .and_then(|&id| flow_metric_state.input_items_metrics[id].take());
+            let flow_input_size_metric: Option<MeasurementMetricSet<FlowInputSizeMetrics>> =
+                flow_metric_state
+                    .start_nodes
+                    .get(&node_id.index)
+                    .and_then(|&id| flow_metric_state.input_size_metrics[id].take());
             let flow_duration_metric: Option<MeasurementMetricSet<FlowDurationMetrics>> =
                 flow_metric_state
                     .end_nodes
                     .get(&node_id.index)
                     .and_then(|&id| flow_metric_state.duration_metrics[id].take());
-            let flow_produced_items_metric: Option<MeasurementMetricSet<FlowProducedItemsMetrics>> =
+            let flow_output_items_metric: Option<MeasurementMetricSet<FlowOutputItemsMetrics>> =
                 flow_metric_state
                     .end_nodes
                     .get(&node_id.index)
-                    .and_then(|&id| flow_metric_state.produced_items_metrics[id].take());
+                    .and_then(|&id| flow_metric_state.output_items_metrics[id].take());
+            let flow_output_message_metric: Option<MeasurementMetricSet<FlowOutputMessageMetrics>> =
+                flow_metric_state
+                    .end_nodes
+                    .get(&node_id.index)
+                    .and_then(|&id| flow_metric_state.output_message_metrics[id].take());
+            let flow_output_size_metric: Option<MeasurementMetricSet<FlowOutputSizeMetrics>> =
+                flow_metric_state
+                    .end_nodes
+                    .get(&node_id.index)
+                    .and_then(|&id| flow_metric_state.output_size_metrics[id].take());
             // Register per-node drop decision metric set when this
             // processor declares the drop capability and lies within a
             // flow that enables dropped. Each decision node gets its own
@@ -729,8 +753,6 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                     &pipeline_context.metric_set_registrar_for_entity(entity_key),
                 ));
             }
-            let flow_active = flow_metric_state.is_active();
-            let flow_needs_timing = flow_metric_state.needs_timing();
             let fut = async move {
                 let result = processor
                     .start_with_completion_metrics(
@@ -741,9 +763,13 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                         completion_emission_metrics,
                         flow_is_start,
                         flow_is_end,
-                        flow_consumed_items_metric,
+                        flow_input_message_metric,
+                        flow_input_items_metric,
+                        flow_input_size_metric,
                         flow_duration_metric,
-                        flow_produced_items_metric,
+                        flow_output_items_metric,
+                        flow_output_message_metric,
+                        flow_output_size_metric,
                         flow_dropped_items_metric,
                         flow_active,
                         flow_needs_timing,
