@@ -457,8 +457,8 @@ All engine metrics are registered under the `engine` metric-set.
 | `admission.rate_limiter.refusals` | Any participating component | Admission attempts refused, oversized, or admitted in observe-only mode, partitioned by bounded `dimension` and `refusal` attributes |
 | `receiver.otap.rejections.streams{error.type="memory_pressure"}` | OTAP gRPC | Streaming RPCs rejected due to memory pressure |
 | `receiver.otap.rejections.batches{error.type="memory_pressure"}` | OTAP gRPC | Batches rejected due to memory pressure after stream admission |
-| `receiver.syslog_cef.tcp_connections_rejected_memory_pressure` | Syslog / CEF TCP | Connections rejected or closed |
-| `receiver.syslog_cef.received_logs_rejected_memory_pressure` | Syslog / CEF | Log records dropped under pressure |
+| `receiver.syslog_cef.connections.rejected` | Syslog / CEF TCP | Connections rejected or closed |
+| `receiver.syslog_cef.rejections.items{error.type="memory_pressure"}` | Syslog / CEF | Log records dropped under pressure |
 <!-- markdownlint-enable MD013 -->
 
 ### Structured log events

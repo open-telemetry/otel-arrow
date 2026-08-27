@@ -465,28 +465,26 @@ impl ExprPlanner {
                         eval: LeafEval::new_df_expr(left_expr.or(right_expr), downcast_dicts)?,
                     })
                 } else {
-                    let mut align_children_to_root = false;
+                    let left_scope = left.effective_value_scope()?;
+                    let right_scope = right.effective_value_scope()?;
+
+                    // If both sides are AttributesAll with the same ID, the most
+                    // performant path is a bitmap OR over parent_ids.
                     if let (
                         DataScope::AttributesAll(left_attrs_id),
                         DataScope::AttributesAll(right_attrs_id),
-                    ) = (
-                        left.effective_value_scope()?.as_ref(),
-                        right.effective_value_scope()?.as_ref(),
-                    ) {
+                    ) = (left_scope.as_ref(), right_scope.as_ref())
+                    {
                         if left_attrs_id == right_attrs_id {
-                            // most performant way to "or" the results of the children exprs
-                            // is to create a bitmap of the parent_ids passing each side then
-                            // combine the bitmaps
                             return Ok(ScopedExpr::BitmapOr(Box::new(left), Box::new(right)));
-                        } else {
-                            // here we're "or"ing the results of filters on attributes, but the
-                            // parent_id columns represent different IDs, so we can't "or" the
-                            // bitmaps. We set `align_children_to_root` because it's just the most
-                            // performant way to line up the results of the filters on each side in
-                            // join eval
-                            align_children_to_root = true;
                         }
                     }
+
+                    // When either side is attribute-scoped, align children to root
+                    // so that root rows without the attribute get null (not dropped
+                    // by an inner join).
+                    let align_children_to_root =
+                        left_scope.attrs_id().is_some() || right_scope.attrs_id().is_some();
 
                     Ok(ScopedExpr::JoinAndEval {
                         children: vec![left, right],

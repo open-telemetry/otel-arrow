@@ -12,6 +12,7 @@ rust-version.workspace = true
 anyhow = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 syn = { workspace = true }
 # `span-locations` gives us `Span::start().line` for informational file:line in
 # the inventory output (line is not part of the baseline diff).
