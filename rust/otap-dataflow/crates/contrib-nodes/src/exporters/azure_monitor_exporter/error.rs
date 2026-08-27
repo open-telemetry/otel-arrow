@@ -364,7 +364,10 @@ mod tests {
             body: "hello from the teapot".to_string(),
         };
         // Note: http crate canonical_reason() returns "I'm a teapot" (lowercase)
-        assert_eq!(error.to_string(), "Unexpected status (418 I'm a teapot): hello from the teapot");
+        assert_eq!(
+            error.to_string(),
+            "Unexpected status (418 I'm a teapot): hello from the teapot"
+        );
     }
 
     // ==================== Export Error Tests ====================
