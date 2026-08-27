@@ -20,6 +20,8 @@ pub const SUM: u32 = 1 << 2;
 pub const COUNT: u32 = 1 << 4;
 /// Sampling type flag for histogram data.
 pub const HISTOGRAM: u32 = 1 << 5;
+/// Sampling type flag for HyperLogLog sketch data.
+pub const HYPER_LOG_LOG_SKETCH: u32 = 1 << 6;
 /// Sampling type flag for raw data.
 pub const IS_RAW_DATA: u32 = 1 << 15;
 /// Sampling type flag for exemplar data.
@@ -183,6 +185,44 @@ pub enum EncodeError {
         /// Required field name.
         field: &'static str,
     },
+    /// A sampling flag is not supported by this encoder.
+    #[error("sampling flag {flag:#x} is not supported")]
+    UnsupportedSamplingFlag {
+        /// Unsupported sampling flag.
+        flag: u32,
+    },
+    /// A sampling flag requires another sampling flag.
+    #[error("sampling flag {flag:#x} requires sampling flag {required_flag:#x}")]
+    MissingRequiredSamplingFlag {
+        /// Sampling flag with the requirement.
+        flag: u32,
+        /// Required companion sampling flag.
+        required_flag: u32,
+    },
+    /// A sampling type omits flags required for every metric.
+    #[error("sampling type {sampling_type:#x} must include flags {required_flags:#x}")]
+    MissingRequiredSamplingFlags {
+        /// Supplied sampling type.
+        sampling_type: u32,
+        /// Required sampling flags.
+        required_flags: u32,
+    },
+    /// A selected double value is not supported by ME.
+    #[error("{field} double value with bits {bits:#018x} is not supported")]
+    InvalidDoubleValue {
+        /// Metric value field name.
+        field: &'static str,
+        /// IEEE 754 bit representation.
+        bits: u64,
+    },
+    /// A histogram body is incompatible with the metric sampling type.
+    #[error("{histogram} histogram is incompatible with sampling type {sampling_type:#x}")]
+    IncompatibleHistogram {
+        /// Histogram body type.
+        histogram: &'static str,
+        /// Normalized sampling type.
+        sampling_type: u32,
+    },
     /// A fixed-width protocol length cannot represent the encoded body.
     #[error("{field} length {length} exceeds protocol maximum {maximum}")]
     LengthOverflow {
@@ -221,5 +261,105 @@ pub enum EncodeError {
         current_time_bucket: u64,
         /// Metric time bucket.
         metric_time_bucket: i64,
+    },
+    /// A metric timestamp predates the .NET epoch used by the protocol.
+    #[error("metric time bucket {0} predates the .NET epoch")]
+    NegativeTimeBucket(i64),
+    /// A dimension value contains a NUL character rejected by ME.
+    #[error("metric {metric_index} dimension {dimension_index} value contains NUL")]
+    InvalidDimensionValue {
+        /// Metric index within the packet.
+        metric_index: usize,
+        /// Dimension index within the metric.
+        dimension_index: usize,
+    },
+    /// A metric exceeds the Geneva dimension limit.
+    #[error("metric {metric_index} contains {count} dimensions, exceeding maximum {maximum}")]
+    DimensionCountOverflow {
+        /// Metric index within the packet.
+        metric_index: usize,
+        /// Supplied dimension count.
+        count: usize,
+        /// Maximum supported dimension count.
+        maximum: usize,
+    },
+    /// A packet or metric timestamp cannot be reconstructed as ME ticks.
+    #[error(
+        "{field} time bucket {time_bucket} with {milliseconds} milliseconds exceeds ME tick range"
+    )]
+    TimestampOutOfRange {
+        /// Timestamp field name.
+        field: &'static str,
+        /// Whole-second bucket since the .NET epoch.
+        time_bucket: u64,
+        /// Additional millisecond component.
+        milliseconds: u32,
+    },
+    /// A string exceeds an ME ingestion limit.
+    #[error("{field} length {length} exceeds ME maximum {maximum}")]
+    StringLengthOverflow {
+        /// String field name.
+        field: &'static str,
+        /// Supplied UTF-16 code-unit count.
+        length: usize,
+        /// Maximum supported UTF-16 code-unit count.
+        maximum: usize,
+    },
+    /// Encoded length arithmetic overflowed.
+    #[error("{field} encoded length exceeds platform range")]
+    LengthCalculationOverflow {
+        /// Encoded field name.
+        field: &'static str,
+    },
+    /// An exponential histogram scale is outside ME's supported range.
+    #[error("exponential histogram scale {scale} is outside supported range {minimum}..={maximum}")]
+    ExponentialHistogramScaleOutOfRange {
+        /// Supplied histogram scale.
+        scale: i8,
+        /// Minimum supported scale.
+        minimum: i8,
+        /// Maximum supported scale.
+        maximum: i8,
+    },
+    /// An exponential histogram range exceeds the Geneva backend bucket limit.
+    #[error(
+        "exponential histogram {range} range contains {count} buckets, exceeding backend maximum {maximum}"
+    )]
+    ExponentialHistogramBucketCountOverflow {
+        /// Histogram range name.
+        range: &'static str,
+        /// Number of serialized non-zero buckets.
+        count: usize,
+        /// Maximum supported buckets per range.
+        maximum: usize,
+    },
+    /// An exponential histogram bucket total overflowed widened arithmetic.
+    #[error("exponential histogram bucket total exceeds unsigned 128-bit range")]
+    ExponentialHistogramBucketTotalOverflow,
+    /// An exponential histogram scalar count differs from its bucket total.
+    #[error("exponential histogram count {count} does not match bucket total {bucket_count}")]
+    ExponentialHistogramCountMismatch {
+        /// Metric scalar count.
+        count: u64,
+        /// Sum of zero, positive, and negative bucket counts.
+        bucket_count: u128,
+    },
+    /// The difference between exponential histogram bucket counts is not ME-compatible.
+    #[error(
+        "difference between exponential histogram bucket counts {previous_count} and {count} cannot be encoded as an ME-compatible signed 64-bit value"
+    )]
+    ExponentialHistogramCountDeltaOverflow {
+        /// Previous non-zero bucket count.
+        previous_count: u64,
+        /// Current non-zero bucket count.
+        count: u64,
+    },
+    /// A histogram delta cannot be represented by its signed 32-bit protocol field.
+    #[error("{field} delta {delta} exceeds signed 32-bit range")]
+    HistogramDeltaOverflow {
+        /// Histogram field name.
+        field: &'static str,
+        /// Calculated delta.
+        delta: i64,
     },
 }

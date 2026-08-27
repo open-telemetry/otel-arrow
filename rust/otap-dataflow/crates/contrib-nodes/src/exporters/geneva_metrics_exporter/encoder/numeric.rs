@@ -46,18 +46,11 @@ mod tests {
     use super::super::writer::Writer;
     use super::*;
 
-    /// Scenario: Double metrics contain integral, fractional, and non-finite values.
-    /// Guarantees: Only finite integral doubles use the compact signed base-128 representation.
+    /// Scenario: Double metrics contain integral and fractional finite values.
+    /// Guarantees: Only integral doubles use the compact signed base-128 representation.
     #[test]
     fn selects_compact_storage_only_for_integral_doubles() {
-        for (value, stored_as_long) in [
-            (-42.0, true),
-            (42.0, true),
-            (42.5, false),
-            (f64::NAN, false),
-            (f64::INFINITY, false),
-            (f64::NEG_INFINITY, false),
-        ] {
+        for (value, stored_as_long) in [(-42.0, true), (42.0, true), (42.5, false)] {
             let metric = standard_metric(double_values(value, 1), SUM | COUNT);
             let mut writer = Writer::default();
             write_metric(&mut writer, &metric).expect("metric should encode");

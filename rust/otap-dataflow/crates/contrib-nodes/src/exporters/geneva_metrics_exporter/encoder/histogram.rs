@@ -6,6 +6,10 @@
 use super::model::*;
 use super::writer::Writer;
 
+const MIN_EXPONENTIAL_HISTOGRAM_SCALE: i8 = -11;
+const MAX_EXPONENTIAL_HISTOGRAM_SCALE: i8 = 20;
+const MAX_EXPONENTIAL_HISTOGRAM_BUCKETS_PER_RANGE: usize = 1_280;
+
 pub(super) fn write_histogram(
     writer: &mut Writer,
     histogram: &MetricHistogram,
@@ -31,7 +35,11 @@ fn write_raw_histogram(writer: &mut Writer, buckets: &[(u64, u32)]) -> Result<()
     for &(key, count) in buckets {
         if let Some((previous_key, previous_count)) = previous {
             writer.write_unsigned_base128(key.wrapping_sub(previous_key));
-            writer.write_signed_base128(i64::from(count) - i64::from(previous_count));
+            let count_delta = i64::from(count) - i64::from(previous_count);
+            writer.write_signed_base128(checked_i32_delta(
+                "raw histogram bucket count",
+                count_delta,
+            )?);
         } else {
             writer.write_unsigned_base128(key);
             writer.write_unsigned_base128(count as u64);
@@ -52,7 +60,11 @@ fn write_explicit_histogram(
     for &(boundary, count) in buckets {
         writer.write_f64(boundary);
         if let Some(previous_count) = previous_count {
-            writer.write_signed_base128(i64::from(count) - i64::from(previous_count));
+            let count_delta = i64::from(count) - i64::from(previous_count);
+            writer.write_signed_base128(checked_i32_delta(
+                "explicit histogram bucket count",
+                count_delta,
+            )?);
         } else {
             writer.write_unsigned_base128(count as u64);
         }
@@ -72,11 +84,14 @@ fn write_exponential_histogram(
     histogram: &ExponentialHistogram,
     cumulative: bool,
 ) -> Result<(), EncodeError> {
-    let prefix_position = writer.reserve(size_of::<u32>());
-    writer.write_u8(histogram.scale as u8);
-    let mut distribution = 0;
-    if histogram.zero_count > 0 {
-        distribution |= EXPONENTIAL_ZERO_RANGE;
+    if !(MIN_EXPONENTIAL_HISTOGRAM_SCALE..=MAX_EXPONENTIAL_HISTOGRAM_SCALE)
+        .contains(&histogram.scale)
+    {
+        return Err(EncodeError::ExponentialHistogramScaleOutOfRange {
+            scale: histogram.scale,
+            minimum: MIN_EXPONENTIAL_HISTOGRAM_SCALE,
+            maximum: MAX_EXPONENTIAL_HISTOGRAM_SCALE,
+        });
     }
     let negative_count = histogram
         .negative
@@ -88,6 +103,15 @@ fn write_exponential_histogram(
         .iter()
         .filter(|(_, count)| *count != 0)
         .count();
+    validate_exponential_bucket_count("negative", negative_count)?;
+    validate_exponential_bucket_count("positive", positive_count)?;
+
+    let prefix_position = writer.reserve(size_of::<u32>());
+    writer.write_u8(histogram.scale as u8);
+    let mut distribution = 0;
+    if histogram.zero_count > 0 {
+        distribution |= EXPONENTIAL_ZERO_RANGE;
+    }
     if negative_count != 0 {
         distribution |= EXPONENTIAL_NEGATIVE_RANGE;
     }
@@ -106,8 +130,8 @@ fn write_exponential_histogram(
         writer.write_unsigned_base128(positive_count as u64);
     }
 
-    write_exponential_buckets(writer, histogram.negative.iter().rev().copied());
-    write_exponential_buckets(writer, histogram.positive.iter().copied());
+    write_exponential_buckets(writer, histogram.negative.iter().rev().copied())?;
+    write_exponential_buckets(writer, histogram.positive.iter().copied())?;
 
     let format = HISTOGRAM_FORMAT_EXPONENTIAL
         | if cumulative {
@@ -118,18 +142,51 @@ fn write_exponential_histogram(
     finish_histogram_prefix(writer, prefix_position, format)
 }
 
-fn write_exponential_buckets(writer: &mut Writer, buckets: impl Iterator<Item = (i32, u64)>) {
+fn validate_exponential_bucket_count(range: &'static str, count: usize) -> Result<(), EncodeError> {
+    if count > MAX_EXPONENTIAL_HISTOGRAM_BUCKETS_PER_RANGE {
+        return Err(EncodeError::ExponentialHistogramBucketCountOverflow {
+            range,
+            count,
+            maximum: MAX_EXPONENTIAL_HISTOGRAM_BUCKETS_PER_RANGE,
+        });
+    }
+    Ok(())
+}
+
+fn write_exponential_buckets(
+    writer: &mut Writer,
+    buckets: impl Iterator<Item = (i32, u64)>,
+) -> Result<(), EncodeError> {
     let mut previous = None;
     for (exponent, count) in buckets.filter(|(_, count)| *count != 0) {
         if let Some((previous_exponent, previous_count)) = previous {
-            writer.write_signed_base128(i64::from(exponent - previous_exponent));
-            writer.write_signed_base128(count.wrapping_sub(previous_count) as i64);
+            let exponent_delta = i64::from(exponent) - i64::from(previous_exponent);
+            writer.write_signed_base128(checked_i32_delta(
+                "exponential histogram bucket exponent",
+                exponent_delta,
+            )?);
+            let count_delta = i128::from(count) - i128::from(previous_count);
+            let count_delta = i64::try_from(count_delta)
+                .ok()
+                .filter(|delta| *delta != i64::MIN)
+                .ok_or(EncodeError::ExponentialHistogramCountDeltaOverflow {
+                    previous_count,
+                    count,
+                })?;
+            writer.write_signed_base128(count_delta);
         } else {
             writer.write_signed_base128(i64::from(exponent));
             writer.write_unsigned_base128(count);
         }
         previous = Some((exponent, count));
     }
+    Ok(())
+}
+
+fn checked_i32_delta(field: &'static str, delta: i64) -> Result<i64, EncodeError> {
+    i32::try_from(delta)
+        .map(i64::from)
+        .map_err(|_| EncodeError::HistogramDeltaOverflow { field, delta })
 }
 
 fn finish_histogram_prefix(
@@ -180,6 +237,26 @@ mod tests {
         );
     }
 
+    /// Scenario: Consecutive raw histogram bucket counts differ by more than a signed 32-bit value.
+    /// Guarantees: Encoding rejects the count delta instead of emitting a value the Geneva reader truncates.
+    #[test]
+    fn rejects_raw_histogram_count_delta_outside_i32_range() {
+        let mut writer = Writer::default();
+        let delta = i64::from(u32::MAX);
+
+        assert_eq!(
+            write_histogram(
+                &mut writer,
+                &MetricHistogram::Raw(vec![(0, 0), (1, u32::MAX)]),
+                0,
+            ),
+            Err(EncodeError::HistogramDeltaOverflow {
+                field: "raw histogram bucket count",
+                delta,
+            })
+        );
+    }
+
     /// Scenario: A cumulative explicit histogram contains multiple double boundaries and a decreasing count.
     /// Guarantees: The prefix carries double and cumulative flags while later counts use signed deltas.
     #[test]
@@ -202,6 +279,26 @@ mod tests {
         expected.extend_from_slice(&2.5_f64.to_le_bytes());
         expected.push(0x43); // Count delta -3.
         assert_eq!(writer.finish(), expected);
+    }
+
+    /// Scenario: Consecutive explicit histogram bucket counts differ by more than a signed 32-bit value.
+    /// Guarantees: Encoding rejects the count delta instead of emitting a value the Geneva reader truncates.
+    #[test]
+    fn rejects_explicit_histogram_count_delta_outside_i32_range() {
+        let mut writer = Writer::default();
+        let delta = i64::from(u32::MAX);
+
+        assert_eq!(
+            write_histogram(
+                &mut writer,
+                &MetricHistogram::Explicit(vec![(0.0, 0), (1.0, u32::MAX)]),
+                0,
+            ),
+            Err(EncodeError::HistogramDeltaOverflow {
+                field: "explicit histogram bucket count",
+                delta,
+            })
+        );
     }
 
     /// Scenario: A cumulative exponential histogram has zero, negative, positive, and empty sparse buckets.
@@ -235,6 +332,148 @@ mod tests {
                 0x01, 0x03, // First positive exponent 1 and count 3.
                 0x03, 0x05, // Positive exponent delta 3 and count delta 5.
             ]
+        );
+    }
+
+    /// Scenario: Exponential histogram scales sit at and immediately outside ME's supported boundaries.
+    /// Guarantees: Scales -11 and 20 encode, while -12 and 21 fail before writing histogram bytes.
+    #[test]
+    fn validates_exponential_histogram_scale_boundaries() {
+        for scale in [
+            MIN_EXPONENTIAL_HISTOGRAM_SCALE,
+            MAX_EXPONENTIAL_HISTOGRAM_SCALE,
+        ] {
+            let mut writer = Writer::default();
+            write_histogram(
+                &mut writer,
+                &MetricHistogram::Exponential(ExponentialHistogram {
+                    scale,
+                    zero_count: 0,
+                    negative: Vec::new(),
+                    positive: Vec::new(),
+                }),
+                METRIC_TYPE_DELTA_EXPONENTIAL_HISTOGRAM,
+            )
+            .expect("boundary scale should encode");
+        }
+
+        for scale in [
+            MIN_EXPONENTIAL_HISTOGRAM_SCALE - 1,
+            MAX_EXPONENTIAL_HISTOGRAM_SCALE + 1,
+        ] {
+            let mut writer = Writer::default();
+            assert_eq!(
+                write_histogram(
+                    &mut writer,
+                    &MetricHistogram::Exponential(ExponentialHistogram {
+                        scale,
+                        zero_count: 0,
+                        negative: Vec::new(),
+                        positive: Vec::new(),
+                    }),
+                    METRIC_TYPE_DELTA_EXPONENTIAL_HISTOGRAM,
+                ),
+                Err(EncodeError::ExponentialHistogramScaleOutOfRange {
+                    scale,
+                    minimum: MIN_EXPONENTIAL_HISTOGRAM_SCALE,
+                    maximum: MAX_EXPONENTIAL_HISTOGRAM_SCALE,
+                })
+            );
+            assert!(writer.bytes().is_empty());
+        }
+    }
+
+    /// Scenario: Positive and negative exponential ranges contain 1,280 or 1,281 non-zero buckets.
+    /// Guarantees: Each range accepts the backend maximum and rejects one additional bucket before writing.
+    #[test]
+    fn validates_exponential_histogram_bucket_count_boundaries() {
+        for negative in [false, true] {
+            let range = if negative { "negative" } else { "positive" };
+            for (count, should_encode) in [
+                (MAX_EXPONENTIAL_HISTOGRAM_BUCKETS_PER_RANGE, true),
+                (MAX_EXPONENTIAL_HISTOGRAM_BUCKETS_PER_RANGE + 1, false),
+            ] {
+                let buckets = (0..count as i32)
+                    .map(|exponent| (exponent, 1))
+                    .collect::<Vec<_>>();
+                let histogram = ExponentialHistogram {
+                    scale: 0,
+                    zero_count: 0,
+                    negative: if negative {
+                        buckets.clone()
+                    } else {
+                        Vec::new()
+                    },
+                    positive: if negative { Vec::new() } else { buckets },
+                };
+                let mut writer = Writer::default();
+                let result = write_histogram(
+                    &mut writer,
+                    &MetricHistogram::Exponential(histogram),
+                    METRIC_TYPE_DELTA_EXPONENTIAL_HISTOGRAM,
+                );
+
+                if should_encode {
+                    result.expect("backend bucket limit should encode");
+                } else {
+                    assert_eq!(
+                        result,
+                        Err(EncodeError::ExponentialHistogramBucketCountOverflow {
+                            range,
+                            count,
+                            maximum: MAX_EXPONENTIAL_HISTOGRAM_BUCKETS_PER_RANGE,
+                        })
+                    );
+                    assert!(writer.bytes().is_empty());
+                }
+            }
+        }
+    }
+
+    /// Scenario: Consecutive exponential histogram buckets span the complete i32 exponent range.
+    /// Guarantees: Encoding rejects the exponent delta instead of overflowing or exceeding the protocol field.
+    #[test]
+    fn rejects_exponential_histogram_exponent_delta_outside_i32_range() {
+        let mut writer = Writer::default();
+        let delta = i64::from(i32::MAX) - i64::from(i32::MIN);
+
+        assert_eq!(
+            write_exponential_buckets(&mut writer, [(i32::MIN, 1), (i32::MAX, 2)].into_iter()),
+            Err(EncodeError::HistogramDeltaOverflow {
+                field: "exponential histogram bucket exponent",
+                delta,
+            })
+        );
+    }
+
+    /// Scenario: Consecutive exponential histogram bucket counts have a negative delta below i64::MIN.
+    /// Guarantees: Encoding returns a precise error instead of wrapping the unrepresentable count delta.
+    #[test]
+    fn rejects_exponential_histogram_count_delta_below_i64_range() {
+        let mut writer = Writer::default();
+
+        assert_eq!(
+            write_exponential_buckets(&mut writer, [(0, u64::MAX), (1, 1)].into_iter()),
+            Err(EncodeError::ExponentialHistogramCountDeltaOverflow {
+                previous_count: u64::MAX,
+                count: 1,
+            })
+        );
+    }
+
+    /// Scenario: Consecutive exponential histogram bucket counts have a delta of exactly i64::MIN.
+    /// Guarantees: Encoding rejects the endpoint that ME's sign-magnitude writer cannot represent.
+    #[test]
+    fn rejects_exponential_histogram_count_delta_at_i64_min() {
+        let mut writer = Writer::default();
+        let previous_count = (1_u64 << 63) + 1;
+
+        assert_eq!(
+            write_exponential_buckets(&mut writer, [(0, previous_count), (1, 1)].into_iter()),
+            Err(EncodeError::ExponentialHistogramCountDeltaOverflow {
+                previous_count,
+                count: 1,
+            })
         );
     }
 
