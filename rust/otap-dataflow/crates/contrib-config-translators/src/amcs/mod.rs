@@ -24,7 +24,9 @@
 //! | Module | Responsibility |
 //! |---|---|
 //! | [`schema`] | Serde model of the AMCS JSON payload |
+//! | [`listener`] | OTLP listener discovery from the environment and Agent Settings |
 
+pub mod listener;
 pub mod schema;
 
 /// The dialect name reported by the AMCS translator.
