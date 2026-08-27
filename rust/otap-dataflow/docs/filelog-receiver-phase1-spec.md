@@ -1988,7 +1988,7 @@ are encoded, framed, checksummed, published, and replayed as bytes.
 | --- | --- |
 | Absent | No durable record exists |
 | Active | Identity can be reconciled and read |
-| Rotated finalized | Old identity completed its rotation-finalization policy |
+| `RotatedFinalized` | Old identity completed its rotation-finalization policy |
 | Quarantined | Reading is blocked until explicit administration |
 
 Framing-profile incompatibility is a fail-closed runtime condition on the
@@ -2036,7 +2036,7 @@ failure path. One registration chunk never exposes a successful prefix.
 
 Progress is monotonic within one file epoch. Offset, committed-frontier guard,
 and framing resume advance atomically. An ordinary Ack cannot change file epoch. A finalizing progress update may
-transition Active to Rotated finalized only after all included source progress is Acked.
+transition `Active` to `RotatedFinalized` only after all included source progress is Acked.
 Applied progress controls live reading. Crash recovery starts from the authoritative
 snapshot and replays every complete valid WAL transaction present in sequence. The
 filesystem-synced durable frontier is the guaranteed replay floor, not a cap on a later

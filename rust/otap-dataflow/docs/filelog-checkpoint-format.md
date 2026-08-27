@@ -199,9 +199,10 @@ A decoder MUST reject: a length other than exactly 24 bytes, an unrecognized
 `magic`, a `format_version` other than `1` (unsupported-version error, see
 [Cross-version and migration behavior](#cross-version-and-migration-behavior)),
 a nonzero `flags` value (v1 defines no flag bits), or a CRC-32C mismatch. All
-of these are corruption/fail-closed conditions; there is no torn-tail
-leniency for `CURRENT` because it is written and synced as a single small
-atomic replacement, never appended to.
+of these conditions fail closed. An unsupported `format_version` remains
+distinct from corruption. There is no torn-tail leniency for `CURRENT`
+because it is written and synced as a single small atomic replacement, never
+appended to.
 
 ## Authoritative-generation recovery errors
 
@@ -1141,13 +1142,14 @@ registration transaction is all-or-nothing.
   a different locator fails replay closed.
 - `reason_code` MUST be nonzero; zero is structurally parseable but is an
   unreachable apply-time value.
-- Idempotency: if the stored record is already `Quarantined` and its
-  `(quarantine_epoch, reason_code, locator, observed_size,
-  quarantine_time_unix_nano)` are all bit-for-bit identical to this
-  operation's fields, replay succeeds as a no-op (a benign replay of an
-  already-durable quarantine, matching "replaying an identical quarantine is
-  idempotent"). If the stored record is `Quarantined` with **any** differing
-  field, replay fails closed ("conflicting data fails closed"). Any other
+- Idempotency: if the stored record is already `Quarantined`, the stored
+  `file_epoch == expected_file_epoch == quarantine_epoch`, and its
+  `(reason_code, locator, observed_size, quarantine_time_unix_nano)` are all
+  bit-for-bit identical to this operation's fields, replay succeeds as a
+  no-op (a benign replay of an already-durable quarantine, matching
+  "replaying an identical quarantine is idempotent"). If the stored record is
+  `Quarantined` with **any** differing field, replay fails closed
+  ("conflicting data fails closed"). Any other
   state (absent, `RotatedFinalized`, or `Active` at a different epoch) fails
   replay closed.
 - Effect (ordinary case): transitions `lifecycle_state` to `Quarantined`,
@@ -1180,9 +1182,11 @@ registration transaction is all-or-nothing.
 - `action == reset_to_end` (`0x02`): `resulting_epoch` MUST equal
   `expected_quarantine_epoch + 1` (checked addition); `resulting_offset` is
   accepted as given (the codec has no independent way to verify the
-  replacement stream's actual EOF); `new_committed_frontier_guard.window_len`
-  MUST match `resulting_offset`, while supplying the correct digest is a Phase
-  1 runtime responsibility.
+  replacement stream's actual EOF);
+  `new_committed_frontier_guard.window_len` MUST equal
+  `min(resulting_offset, COMMITTED_FRONTIER_GUARD_WINDOW_BYTES)`, and its
+  digest MUST cover exactly that final raw-source window. Supplying the
+  correct offset and digest is a Phase 1 runtime responsibility.
 - For either reset action: `new_framing_resume` MUST be `Clean`. Effect:
   `lifecycle_state` transitions to `Active`, `file_epoch = resulting_epoch`,
   `committed_offset = resulting_offset`, `committed_frontier_guard =

@@ -322,7 +322,7 @@ while their semantic and format definitions remain normative from version 1.
 | Configuration | Reconciliation interval outside `100ms..=24h` | Rejected |
 | Configuration | Reconciliation jitter outside `0..=25` or jitter arithmetic overflow | Rejected |
 | Configuration | EOF reprobe interval outside `10ms..=1h` | Rejected |
-| Configuration | Either interval causing clock overflow | Rejected or terminal before wrapped deadline |
+| Configuration | Either interval causing clock overflow | Rejected before startup |
 | Configuration | Nonzero `force_flush_period >= rotation.rotate_wait` | Rejected before startup |
 | Configuration | Both multiline patterns | Rejected |
 | Configuration | Unsupported regex construct/profile | Rejected |
