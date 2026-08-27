@@ -5596,6 +5596,78 @@ mod tests {
         );
     }
 
+    /// Scenario: An expired segment finalized after the subscriber's last progress flush.
+    /// Guarantees: Startup recovery counts the unrecorded segment as logical loss while excluding the persisted ACKed segment.
+    #[tokio::test]
+    async fn startup_expiry_reconciles_segment_finalized_after_progress_flush() {
+        let dir = tempdir().expect("tempdir");
+        let sub_id = SubscriberId::new("test-sub").expect("valid id");
+        let segment_config = SegmentConfig {
+            target_size_bytes: NonZeroU64::new(100).unwrap(),
+            ..Default::default()
+        };
+
+        {
+            let config = QuiverConfig::builder()
+                .data_dir(dir.path())
+                .segment(segment_config.clone())
+                .build()
+                .expect("config");
+            let engine = QuiverEngine::open(config, test_budget())
+                .await
+                .expect("engine");
+
+            engine
+                .register_subscriber(sub_id.clone())
+                .expect("register");
+            engine.activate_subscriber(&sub_id).expect("activate");
+
+            engine
+                .ingest(&DummyBundle::with_rows(25).with_byte_count(100))
+                .await
+                .expect("ingest persisted bundle");
+            engine.flush().await.expect("flush persisted segment");
+
+            let handle = engine
+                .poll_next_bundle(&sub_id)
+                .expect("poll")
+                .expect("persisted bundle");
+            handle.ack();
+            assert_eq!(
+                engine.flush_progress().await.expect("flush progress"),
+                1,
+                "ACKed progress should be persisted"
+            );
+
+            engine
+                .ingest(&DummyBundle::with_rows(75).with_byte_count(300))
+                .await
+                .expect("ingest unrecorded bundle");
+            engine.flush().await.expect("flush unrecorded segment");
+        }
+
+        backdate_segment_files(dir.path(), Duration::from_secs(1));
+
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(segment_config)
+            .retention(RetentionConfig {
+                max_age: Some(Duration::from_millis(10)),
+            })
+            .build()
+            .expect("config");
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine");
+
+        let expired = engine.retention_loss_snapshot().expired;
+        assert_eq!(
+            (expired.bundles, expired.items, expired.bytes),
+            (1, 75, 300),
+            "only the segment finalized after the progress snapshot should be lost"
+        );
+    }
+
     /// Test that next_segment_seq is monotonic even when all segments are deleted.
     ///
     /// If scan_existing_with_max_age deletes ALL segments, the sequence counter

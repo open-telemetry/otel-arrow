@@ -177,12 +177,26 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
         // Scan for existing progress files
         if config.data_dir.exists() {
             let subscriber_ids = scan_progress_files(&config.data_dir)?;
+            let available_segments = if subscriber_ids.is_empty() {
+                Vec::new()
+            } else {
+                segment_provider
+                    .available_segments()
+                    .into_iter()
+                    .map(|segment_seq| {
+                        segment_provider
+                            .bundle_count(segment_seq)
+                            .map(|bundle_count| (segment_seq, bundle_count))
+                    })
+                    .collect::<Result<Vec<_>>>()?
+            };
 
             for sub_id in subscriber_ids {
                 let path = progress_file_path(&config.data_dir, &sub_id);
                 match read_progress_file(&path) {
-                    Ok((_oldest_incomplete, entries)) => {
+                    Ok((oldest_incomplete, entries)) => {
                         let mut state = SubscriberState::new(sub_id.clone());
+                        let highest_persisted = entries.iter().map(|entry| entry.seg_seq).max();
 
                         // Restore segment progress from entries
                         for entry in entries {
@@ -194,6 +208,26 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
                                         BundleRef::new(entry.seg_seq, BundleIndex::new(bundle_idx));
                                     let _ = state.record_outcome(bundle_ref, AckOutcome::Acked);
                                 }
+                            }
+                        }
+
+                        // Segments may finalize after the last progress flush. Restore
+                        // those as unresolved before startup retention runs. Missing
+                        // segments below the persisted boundary were already completed.
+                        for &(segment_seq, bundle_count) in &available_segments {
+                            if state.segments().contains_key(&segment_seq) {
+                                continue;
+                            }
+
+                            // Zero also represents a real segment. Persisted entries
+                            // define the covered range when the boundary is ambiguous.
+                            let completed_before_snapshot = if oldest_incomplete.raw() == 0 {
+                                highest_persisted.is_some_and(|highest| segment_seq <= highest)
+                            } else {
+                                segment_seq < oldest_incomplete
+                            };
+                            if !completed_before_snapshot {
+                                state.add_segment(segment_seq, bundle_count);
                             }
                         }
 
@@ -1087,6 +1121,7 @@ mod tests {
     use std::sync::Mutex;
     use tempfile::tempdir;
 
+    use crate::subscriber::progress::SegmentProgressEntry;
     use crate::subscriber::types::BundleIndex;
 
     /// Per-segment metadata stored in the mock.
@@ -1371,6 +1406,81 @@ mod tests {
             assert_eq!(handle.bundle_ref().bundle_index, BundleIndex::new(1));
             handle.ack();
         }
+    }
+
+    /// Scenario: A segment finalizes after a subscriber's last progress snapshot.
+    /// Guarantees: Recovery tracks the later segment as unresolved without restoring completed segments below the persisted boundary.
+    #[tokio::test]
+    async fn recovery_reconciles_segments_missing_from_progress_snapshot() {
+        let dir = tempdir().unwrap();
+        let config = RegistryConfig::new(dir.path());
+        let provider = Arc::new(MockSegmentProvider::new());
+        provider.add_segment(1, 1);
+        provider.add_segment(2, 1);
+        provider.add_segment(3, 2);
+
+        let id = SubscriberId::new("test-sub").unwrap();
+        let persisted = SegmentProgressEntry::new(SegmentSeq::new(2), 1);
+        write_progress_file(
+            dir.path(),
+            &id,
+            SegmentSeq::new(2),
+            std::slice::from_ref(&persisted),
+        )
+        .await
+        .unwrap();
+
+        let registry = SubscriberRegistry::open(config, provider).unwrap();
+        let progress = registry.pending_segment_progress(&id).unwrap();
+
+        assert!(
+            !progress.contains_key(&SegmentSeq::new(1)),
+            "segments below the persisted boundary were already completed"
+        );
+        assert_eq!(
+            progress[&SegmentSeq::new(2)].bundle_count(),
+            1,
+            "persisted progress should be restored"
+        );
+        assert_eq!(
+            progress[&SegmentSeq::new(3)].resolved_count(),
+            0,
+            "segments absent beyond the persisted snapshot should be unresolved"
+        );
+        assert_eq!(progress[&SegmentSeq::new(3)].bundle_count(), 2);
+    }
+
+    /// Scenario: Segment zero is genuinely incomplete in a persisted progress snapshot.
+    /// Guarantees: Recovery preserves segment zero and treats only later unrecorded segments as unresolved.
+    #[tokio::test]
+    async fn recovery_reconciles_with_real_segment_zero_boundary() {
+        let dir = tempdir().unwrap();
+        let config = RegistryConfig::new(dir.path());
+        let provider = Arc::new(MockSegmentProvider::new());
+        provider.add_segment(0, 1);
+        provider.add_segment(1, 1);
+        provider.add_segment(2, 2);
+
+        let id = SubscriberId::new("test-sub").unwrap();
+        let segment_zero = SegmentProgressEntry::new(SegmentSeq::new(0), 1);
+        let mut segment_one = SegmentProgressEntry::new(SegmentSeq::new(1), 1);
+        segment_one.mark_acked(0);
+        write_progress_file(
+            dir.path(),
+            &id,
+            SegmentSeq::new(0),
+            &[segment_zero, segment_one],
+        )
+        .await
+        .unwrap();
+
+        let registry = SubscriberRegistry::open(config, provider).unwrap();
+        let progress = registry.pending_segment_progress(&id).unwrap();
+
+        assert_eq!(progress[&SegmentSeq::new(0)].resolved_count(), 0);
+        assert_eq!(progress[&SegmentSeq::new(1)].resolved_count(), 1);
+        assert_eq!(progress[&SegmentSeq::new(2)].resolved_count(), 0);
+        assert_eq!(progress[&SegmentSeq::new(2)].bundle_count(), 2);
     }
 
     #[tokio::test]
