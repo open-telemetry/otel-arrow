@@ -1,7 +1,108 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Optional pre-lane coalescing and concurrent ClickHouse insertion writers.
+//! Dispatches transformed Arrow batches to ClickHouse with bounded concurrency and optional
+//! exporter-local batching.
+//!
+//! # Role in the exporter
+//!
+//! Transformation happens before this module. Each submitted message therefore carries the
+//! original `OtapPdata`, used later for ACK/NACK delivery, plus zero or more ClickHouse-compatible
+//! `RecordBatch`es. This module owns insertion scheduling and completion tracking; the caller owns
+//! transformation, telemetry accounting, and delivery of the final ACK or NACK.
+//!
+//! Exporter-local batching is deliberately specialized. It combines final ClickHouse
+//! `RecordBatch`es so several small upstream messages can share one ArrowStream insertion without
+//! decoding, rebuilding, or changing those messages. It complements the generic batch processor,
+//! which operates earlier in the pipeline and cannot reason about destination tables, Arrow
+//! schemas, or ClickHouse insertion overhead.
+//!
+//! # Dispatch modes
+//!
+//! `WriteDispatcher` selects one of two modes:
+//!
+//! - Without `insert_batching`, `InFlightWrites` runs one ordinary `write_batches` future per
+//!   message. `max_in_flight` bounds the number of concurrently polled message writes. This is the
+//!   legacy behavior and opens a separate insertion for each mapped batch.
+//! - With `insert_batching`, `PersistentWritePool` first coalesces compatible batches and then
+//!   dispatches closed insertion groups across `max_in_flight` long-lived lane tasks.
+//!
+//! The lane tasks are persistent, but ClickHouse insertions are not kept open while batches
+//! accumulate. Coalescing happens in memory before lane assignment. Each lane job opens an
+//! `ArrowInsert`, writes one or more complete `RecordBatch`es into that ArrowStream, awaits
+//! `end()`, and only then accepts another job. This keeps threshold waiting out of the lanes and
+//! leaves every available lane ready for ClickHouse I/O.
+//!
+//! ```text
+//! insert_batching disabled:
+//!
+//!   transformed message -> bounded write future -> ClickHouse -> one completion
+//!
+//! insert_batching enabled:
+//!
+//!   transformed messages
+//!           |
+//!           v
+//!   PendingInsertion (one table and schema)
+//!           | row, byte, time, or compatibility boundary
+//!           v
+//!      waiting LaneJob queue
+//!           |
+//!       +---+---+------------+
+//!       v       v            v
+//!     lane 0  lane 1  ...  lane N
+//!       +-------+------------+
+//!               |
+//!               v
+//!      one aggregate LaneCompletion
+//!               |
+//!               v
+//!      one CompletedWrite per original message
+//! ```
+//!
+//! # Coalescing rules
+//!
+//! A `PendingInsertion` can contain batches only when their destination table and Arrow schema are
+//! identical. It is dispatched when its configured row, estimated in-memory byte, or elapsed-time
+//! threshold is reached. Thresholds are checked after appending a complete batch: they never split
+//! a batch, reject rows, or limit the accepted payload. A table or schema change closes the current
+//! group before the incompatible batch is considered.
+//!
+//! Only messages with exactly one mapped batch participate in coalescing. A message with no mapped
+//! batch completes immediately. A message with batches for multiple tables first closes the pending
+//! group, then runs as one immediate lane job so its original message still has one completion.
+//!
+//! # Lane scheduling and backpressure
+//!
+//! Each lane is a local task with a single-slot job channel. `available_lanes` records which tasks
+//! may receive work, while `waiting_jobs` holds closed groups until a lane is free. Once that queue
+//! is non-empty, the pool reports itself at capacity so normal pdata admission pauses while control
+//! messages and write completions continue to make progress.
+//!
+//! A lane sends exactly one `LaneCompletion` per job through a channel bounded by the lane count.
+//! When the dispatcher accepts it, the lane is made available and queued ClickHouse work is
+//! scheduled before individual message completions are expanded. This prevents ACK/NACK fan-out
+//! from leaving an otherwise idle lane unused.
+//!
+//! # Completion and error semantics
+//!
+//! Every accepted pdata message produces exactly one `CompletedWrite`. A coalesced insertion keeps
+//! the original pdata and row count for each member in `PendingWrite`; all members receive the same
+//! insertion outcome. Structured insertion failures are shared with `Rc` because the entire path
+//! runs on the exporter's local runtime. Start/write failures are classified as request errors,
+//! while `end()` failures are response errors, and the ClickHouse client source chain is retained.
+//!
+//! `CompletedGroup` expands an aggregate lane result incrementally and rotates partially drained
+//! groups through the completion queue. The dispatcher yields after a bounded number of individual
+//! completions. Together with the bounded lane-completion channel, this prevents a large coalesced
+//! insertion from monopolizing the local runtime or creating an unbounded completion burst.
+//!
+//! # Shutdown
+//!
+//! Shutdown first flushes any partial `PendingInsertion`, then drains accepted work until the
+//! caller's deadline. `outstanding` counts original pdata messages rather than lane jobs, so a
+//! deadline reports how many delivery outcomes remain unresolved. Dropping the pool aborts its
+//! local lane tasks after draining finishes or the deadline expires.
 
 use std::collections::{HashMap, VecDeque};
 use std::num::NonZeroUsize;
