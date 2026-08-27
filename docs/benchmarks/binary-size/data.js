@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787795725585,
+  "lastUpdate": 1787839204797,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -24283,6 +24283,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 102.1,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "drewrelmas@gmail.com",
+            "name": "Drew Relmas",
+            "username": "drewrelmas"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7a316bb6b38215259ca1a06559da12ce20df990b",
+          "message": "fix(transform_processor): Complete fully filtered transform inputs without emitting empty PData (#3893)\n\n# Change summary\n\n- complete fully filtered transform inputs without emitting empty PData\n- suppress empty default and routed outputs after sanitization\n- preserve upstream ACK/NACK completion when only routed outputs contain\ndata\n\nThe transform processor can emit a default output plus named outputs\ncreated by `route_to`. This change forwards only outputs containing\nsemantic telemetry. If all outputs are empty, it completes and ACKs the\ninput locally. If only named outputs contain data, it omits the empty\ndefault output and lets those named outputs control upstream completion\nthrough the existing split-context tracking.\n\n| Default output | Named outputs | Behavior |\n|---|---|---|\n| Non-empty | None | Forward the default output directly |\n| Empty | None | Complete locally and ACK |\n| Non-empty | Non-empty | Forward and track every non-empty output |\n| Empty | Non-empty | Omit the default output; named outputs control\ncompletion |\n| Any | Empty named outputs | Suppress the empty named outputs |\n\n## Related issue\n\n* Fixes #3891 \n* Note, this is a targeted fix for this instance, but worth larger\ndiscussion to see if we should introduce an invariant to handle future\ncases.\n\n## Validation\n\nUnit tests\n\n## User-facing changes\n\nThe `transform_processor` no longer forwards empty batches to downstream\ncomponents.\n\n---------\n\nCo-authored-by: albertlockett <a.lockett@f5.com>",
+          "timestamp": "2026-08-27T13:06:06Z",
+          "tree_id": "3b80adb2f7de1869b2fa2692e761d0557affdb6e",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/7a316bb6b38215259ca1a06559da12ce20df990b"
+        },
+        "date": 1787839189976,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 82.89,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.66,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.02,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 70.38,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.56,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.5,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 114.67,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 102.16,
             "unit": "MB"
           }
         ]
