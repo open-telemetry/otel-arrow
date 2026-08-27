@@ -162,9 +162,8 @@ impl PartitionProcessor {
         if let Some(inbound) = self.contexts.clear_outbound(outbound_key) {
             // if we're in this location, we've cleared the final outbound context for some inbound
             // batch, which means we can now Ack or Nack the inbound context
-            let (context, error_reason) = inbound;
-            let pdata = OtapPdata::new(context, OtapPayload::empty(signal_type));
-            if let Some(error) = error_reason {
+            let pdata = OtapPdata::new(inbound.context, OtapPayload::empty(signal_type));
+            if let Some(error) = inbound.error_reason {
                 effect_handler.notify_nack(NackMsg::new(error, pdata)).await
             } else {
                 effect_handler.notify_ack(AckMsg::new(pdata)).await
@@ -302,7 +301,7 @@ impl Processor<OtapPdata> for PartitionProcessor {
                         // create context key for inbound batch
                         let inbound_ctx_key = self
                             .contexts
-                            .insert_inbound(inbound_context.clone(), None)
+                            .insert_inbound(inbound_context.clone(), None, None)
                             .ok_or_else(|| otel_arrow_dfe_engine::error::Error::ProcessorError {
                                 processor: effect_handler.processor_id(),
                                 kind: ProcessorErrorKind::Other,

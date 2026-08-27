@@ -253,6 +253,7 @@ impl TransformProcessor {
     /// while managing subscriptions and context
     async fn handle_exec_result(
         &mut self,
+        inbound_payload: Option<OtapPayload>,
         inbound_context: Context,
         signal: SignalType,
         pipeline_result: Result<OtapArrowRecords, TransformOperationError>,
@@ -364,7 +365,7 @@ impl TransformProcessor {
         // all routed outbound batches have been Ack/Nack'd
         let inbound_ctx_key = self
             .contexts
-            .insert_inbound(inbound_context, None)
+            .insert_inbound(inbound_context, inbound_payload, None)
             .ok_or_else(|| {
                 TransformOperationError::new(
                     TransformErrorType::InboundCapacity,
@@ -487,10 +488,16 @@ impl TransformProcessor {
         if let Some(inbound) = self.contexts.clear_outbound(outbound_key) {
             // if here, we have cleared the final outbound context for some inbound batch,
             // which means we can now Ack or Nack the inbound context
-            let (context, error_reason) = inbound;
-            let pdata = OtapPdata::new(context, OtapPayload::empty(signal_type));
-            if let Some(error) = error_reason {
-                effect_handler.notify_nack(NackMsg::new(error, pdata)).await
+            let payload = inbound.payload.unwrap_or(OtapPayload::empty(signal_type));
+            let pdata = OtapPdata::new(inbound.context, payload);
+            if let Some(error) = inbound.error_reason {
+                let nack_msg = if inbound.outbound_all_transient_errors {
+                    // this constructor creates a non-permanent Nack
+                    NackMsg::new(error, pdata)
+                } else {
+                    NackMsg::new_permanent(error, pdata)
+                };
+                effect_handler.notify_nack(nack_msg).await
             } else {
                 effect_handler.notify_ack(AckMsg::new(pdata)).await
             }
@@ -554,8 +561,11 @@ impl Processor<OtapPdata> for TransformProcessor {
                     }
                 }
                 NodeControlMsg::Ack(ack_message) => {
+                    let outbound_key: Key = ack_message.unwind.route.calldata.try_into()?;
+                    self.contexts
+                        .set_outbound_all_transient_errors(outbound_key, false);
                     self.handle_ack_nack_inbound(
-                        ack_message.unwind.route.calldata.try_into()?,
+                        outbound_key,
                         ack_message.accepted.signal_type(),
                         effect_handler,
                     )
@@ -565,6 +575,10 @@ impl Processor<OtapPdata> for TransformProcessor {
                     let outbound_key: Key = nack_message.unwind.route.calldata.try_into()?;
                     self.contexts
                         .set_failed_outbound(outbound_key, nack_message.reason);
+                    if nack_message.permanent {
+                        self.contexts
+                            .set_outbound_all_transient_errors(outbound_key, false);
+                    }
                     self.handle_ack_nack_inbound(
                         outbound_key,
                         nack_message.refused.signal_type(),
@@ -578,6 +592,7 @@ impl Processor<OtapPdata> for TransformProcessor {
             },
             Message::PData(pdata) => {
                 let (context, payload) = pdata.into_parts();
+                let inbound_payload = context.may_return_payload().then_some(payload.clone());
                 let pdata_signal_type = payload.signal_type();
                 let mut payload = Some(payload);
                 let mut transformed = false;
@@ -691,6 +706,7 @@ impl Processor<OtapPdata> for TransformProcessor {
                     let counters = self.execution_state.counters();
                     match self
                         .handle_exec_result(
+                            inbound_payload,
                             context,
                             pdata_signal_type,
                             result,

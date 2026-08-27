@@ -5,6 +5,7 @@
 //! produced by processors that may split the incoming batch into
 //! multiple outbound batches
 
+use otel_arrow_dfe_pdata::OtapPayload;
 use slotmap::Key as _;
 use std::num::NonZeroUsize;
 
@@ -13,10 +14,24 @@ use crate::{
     pdata::Context,
 };
 
-struct Inbound {
-    context: Context,
-    error_reason: Option<String>,
+/// Context for inbound batch
+pub struct Inbound {
+    /// the pdata context for the inbound batch
+    pub context: Context,
+    
+    /// the payload for the inbound batch
+    pub payload: Option<OtapPayload>,
+    
+    /// error that may have been produced via processing for some outbound batch
+    pub error_reason: Option<String>,
+
     num_outbound: usize,
+    
+    /// Whether all the downstream batches resulted in errors which were transient.
+    /// If so, we could emit a Nack for the inbound batch that is transient, otherwise
+    /// if there are any errors we must emit a permanent Nack.
+    pub outbound_all_transient_errors: bool,
+
 }
 
 struct Outbound {
@@ -61,6 +76,7 @@ impl Contexts {
     pub fn insert_inbound(
         &mut self,
         context: Context,
+        payload: Option<OtapPayload>,
         error_reason: Option<String>,
     ) -> Option<Key> {
         if !context.needs_completion_tracking() {
@@ -71,7 +87,12 @@ impl Contexts {
         let inbound = Inbound {
             context,
             num_outbound: 0,
+            payload,
             error_reason,
+            
+            // initialize to true, can be set to false if/when there are any outbound batch results
+            // that are not a non-permanent Nack
+            outbound_all_transient_errors: true,
         };
 
         self.inbound.allocate(|| (inbound, ())).map(|(key, _)| key)
@@ -132,7 +153,7 @@ impl Contexts {
     /// Returns `Some((context, error_reason))` if the inbound slot is now empty. This would mean that
     /// all outbound batches for this inbound slot have been processed and the
     /// inbound batch can be completed.
-    pub fn clear_outbound(&mut self, outbound_key: Key) -> Option<(Context, Option<String>)> {
+    pub fn clear_outbound(&mut self, outbound_key: Key) -> Option<Inbound> {
         let inbound_key = {
             let outbound = self.outbound.take(outbound_key)?;
             outbound.inbound_key
@@ -146,11 +167,22 @@ impl Contexts {
 
         if num_outbound == 0 {
             let inbound = self.inbound.take(inbound_key)?;
-            Some((inbound.context, inbound.error_reason))
+            Some(inbound)
         } else {
             None
         }
     }
+
+    /// Set the value of `outbound_all_transient_errors` on the inbound context associated with
+    /// this outbound key. This should be set to `false` when any outbound succeeds (is ACk'd) or
+    /// is Nack'd with a permanent error.
+    pub fn set_outbound_all_transient_errors(&mut self, outbound_key: Key, value: bool) {
+        if let Some(inbound_key) = self.outbound.get(outbound_key).map(|o| o.inbound_key) {
+            if let Some(inbound) = self.inbound.get_mut(inbound_key) {
+                inbound.outbound_all_transient_errors = value
+            }
+        }
+    }    
 }
 
 #[cfg(test)]
@@ -187,7 +219,7 @@ mod test {
         let mut contexts = new_contexts();
         let original_context = create_context_with_subscribers();
         let inbound_key = contexts
-            .insert_inbound(original_context.clone(), None)
+            .insert_inbound(original_context.clone(), None, None)
             .unwrap();
         assert!(
             !inbound_key.is_null(),
@@ -210,7 +242,7 @@ mod test {
         let mut contexts = new_contexts();
         let original_context = create_context_without_subscribers();
         let key = contexts
-            .insert_inbound(original_context.clone(), None)
+            .insert_inbound(original_context.clone(), None, None)
             .unwrap();
         assert!(
             key.is_null(),
@@ -232,7 +264,7 @@ mod test {
         // Insert an inbound
         let original_context = create_context_with_subscribers();
         let inbound_key = contexts
-            .insert_inbound(original_context.clone(), None)
+            .insert_inbound(original_context.clone(), None, None)
             .unwrap();
 
         // Insert multiple outbounds
@@ -261,7 +293,7 @@ mod test {
         let invalid_key = {
             let mut temp_contexts = new_contexts();
             let ctx = create_context_with_subscribers();
-            let inbound_key = temp_contexts.insert_inbound(ctx, None).unwrap();
+            let inbound_key = temp_contexts.insert_inbound(ctx, None, None).unwrap();
             temp_contexts.insert_outbound(inbound_key).unwrap()
         };
 
@@ -277,7 +309,7 @@ mod test {
         let context = create_context_with_subscribers();
         let error_msg = "pipeline processing failed".to_string();
         let inbound_key = contexts
-            .insert_inbound(context, Some(error_msg.clone()))
+            .insert_inbound(context, None, Some(error_msg.clone()))
             .unwrap();
         let outbound_key = contexts.insert_outbound(inbound_key).unwrap();
 
@@ -293,7 +325,7 @@ mod test {
     fn test_double_clear_same_outbound() {
         let mut contexts = new_contexts();
         let context = create_context_with_subscribers();
-        let inbound_key = contexts.insert_inbound(context, None).unwrap();
+        let inbound_key = contexts.insert_inbound(context, None, None).unwrap();
         let outbound_key = contexts.insert_outbound(inbound_key).unwrap();
 
         // First clear should succeed
@@ -309,7 +341,7 @@ mod test {
     fn test_set_failed_single_outbound() {
         let mut contexts = new_contexts();
         let context = create_context_with_subscribers();
-        let inbound_key = contexts.insert_inbound(context, None).unwrap();
+        let inbound_key = contexts.insert_inbound(context, None, None).unwrap();
         let outbound_key = contexts.insert_outbound(inbound_key).unwrap();
 
         // Set the outbound as failed
@@ -328,7 +360,7 @@ mod test {
     fn test_set_failed_multiple_outbounds_first_error_wins() {
         let mut contexts = new_contexts();
         let context = create_context_with_subscribers();
-        let inbound_key = contexts.insert_inbound(context, None).unwrap();
+        let inbound_key = contexts.insert_inbound(context, None, None).unwrap();
 
         let outbound_key1 = contexts.insert_outbound(inbound_key).unwrap();
         let outbound_key2 = contexts.insert_outbound(inbound_key).unwrap();
@@ -371,7 +403,7 @@ mod test {
         let (original_context, _) = pdata.into_parts();
 
         let inbound_key = contexts
-            .insert_inbound(original_context.clone(), None)
+            .insert_inbound(original_context.clone(), None, None)
             .unwrap();
         assert!(!inbound_key.is_null());
 
@@ -389,7 +421,7 @@ mod test {
         let invalid_key = {
             let mut temp_contexts = new_contexts();
             let ctx = create_context_with_subscribers();
-            let inbound_key = temp_contexts.insert_inbound(ctx, None).unwrap();
+            let inbound_key = temp_contexts.insert_inbound(ctx, None, None).unwrap();
             temp_contexts.insert_outbound(inbound_key).unwrap()
         };
 
@@ -403,7 +435,7 @@ mod test {
 
         // Create a context without subscribers (results in null key)
         let context = create_context_without_subscribers();
-        let inbound_key = contexts.insert_inbound(context, None).unwrap();
+        let inbound_key = contexts.insert_inbound(context, None, None).unwrap();
         let outbound_key = contexts.insert_outbound(inbound_key).unwrap();
 
         assert!(outbound_key.is_null());
@@ -420,7 +452,7 @@ mod test {
         // Insert inbound with an initial error
         let inbound_error = "initial inbound error".to_string();
         let inbound_key = contexts
-            .insert_inbound(context, Some(inbound_error.clone()))
+            .insert_inbound(context, None, Some(inbound_error.clone()))
             .unwrap();
         let outbound_key = contexts.insert_outbound(inbound_key).unwrap();
 
@@ -444,7 +476,7 @@ mod test {
     fn test_clear_outbound_removes_outbound_from_slotmap() {
         let mut contexts = new_contexts();
         let context = create_context_with_subscribers();
-        let inbound_key = contexts.insert_inbound(context, None).unwrap();
+        let inbound_key = contexts.insert_inbound(context, None, None).unwrap();
 
         // Create two outbounds
         let outbound_key1 = contexts.insert_outbound(inbound_key).unwrap();
