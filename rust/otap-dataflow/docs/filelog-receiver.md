@@ -137,7 +137,7 @@ reading implementation detail first.
 | Progress | Applies progress only after matching aggregate Ack; releases after atomic WAL application and syncs the durable frontier according to policy |
 | Crash recovery | Reconstructs uncommitted records only when valid checkpoint state and corresponding source bytes survive |
 | Ordering | Preserves ordering within each file; defines no cross-file ordering |
-| Rotation | Supports move/create; recognized replacement starts at zero; copytruncate remains best-effort |
+| Rotation | Supports move/create; a recognized replacement needing a new identity starts at zero, while its own existing durable state wins; copytruncate remains best-effort |
 | Delivery semantics | At least once after emission; retry or crash can produce duplicates |
 | Durability | Does not spool emitted OTAP batches to disk |
 | Resource behavior | Uses fixed workers, bounded state, bounded work turns, and backpressure |
@@ -414,11 +414,13 @@ implementation:
 - Durable progress is keyed by opaque `file_id`. Only a validated exact runtime
   locator, initial fingerprint, and committed-frontier continuity guard can
   reconnect ordinary progress. Evidence never transfers progress across
-  locators, and byte-identical replacement remains an explicitly unavoidable
-  residual ambiguity rather than a claim of permanent native identity.
-- Move/create recognition follows the binding of an original matched path from
-  its old locator to its replacement locator. The old locator may remain
-  independently eligible under another matched name.
+  locators. A replacement indistinguishable under the checked locator, prefix,
+  size bound, and frontier window remains an explicitly unavoidable residual
+  ambiguity rather than a claim of permanent native identity.
+- Move/create recognition follows one deterministic bounded distinguished
+  matched-path binding from its old locator to its replacement locator. The
+  old locator may remain independently eligible under another matched name;
+  the replacement target's own existing lifecycle state still wins.
 - Incomplete discovery cannot prove absence, uniqueness, replacement, or
   eligibility for destructive cleanup.
 - The checkpoint namespace lock and process-local locator leases prevent only
@@ -453,6 +455,8 @@ implementation:
 - Every aggregate Nack is retried within the Phase 1 attempt budget; exhaustion
   applies `on_nack`. More specific retryability requires a future typed engine
   outcome rather than interpretation of diagnostic text.
+- A typed pre-publication `NoRoute` consumes that same bounded attempt/backoff
+  budget and applies `on_nack` at exhaustion without fabricating Ack or progress.
 - No lifecycle, epoch, identity, reset, quarantine, revocation, or finalization
   transition can overtake an unresolved delta for the affected file.
 - The applied frontier, filesystem-synced durable frontier, and replay frontier
@@ -462,7 +466,8 @@ implementation:
 ### Rotation, recovery, and operations
 
 - Move/create keeps the old identity and replacement independent. A recognized
-  replacement begins at offset zero. Copytruncate remains detect-and-report
+  replacement needing a new identity begins at offset zero; its own exact-locator
+  durable state wins when present. Copytruncate remains detect-and-report
   best effort because its destructive interval cannot be closed portably.
 - Restart recovery requires valid checkpoint state and surviving source bytes.
   The checkpoint is not a durable telemetry spool.

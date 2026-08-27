@@ -43,6 +43,7 @@ convention.
 | Continuation | Durable split-fragment state containing only the original record start and next fragment index. |
 | Downstream Ack | The matching aggregate completion that authorizes, but does not itself apply or sync, one retained batch's progress transaction. |
 | Durable frontier | The latest applied checkpoint progress guaranteed to survive by a successful required filesystem sync; recovery may also replay a later complete valid WAL prefix that survived. |
+| Distinguished matched-path binding | The one deterministic bounded path binding retained for an identity and used to recognize replacement at that path; additional aliases do not expand durable state. |
 | EOF reprobe | A scheduled handle read for an already admitted reader at temporary EOF; it does not traverse directories or reconcile discovery. |
 | Exact locator | The platform runtime locator obtained from an opened file handle. |
 | File epoch | A monotonic generation of one `file_id` stream. A truncate reset or administrative reset increments it. |
@@ -511,6 +512,25 @@ Overlapping globs, hardlinks, aliases, and rename-visible paths that resolve to 
 live runtime locator produce one candidate identity. Path is updated as advisory
 metadata. Equal fingerprints do not deduplicate distinct locators.
 
+Each `Active` identity retains exactly one distinguished matched-path binding,
+bounded by `max_tracked_files` and represented by its existing `AdvisoryPath`.
+At initial selection, or after the prior binding no longer names the locator,
+the scanner selects the deterministic minimum of `(path_kind, complete native
+path bytes)` among simultaneously eligible paths while visiting entries
+incrementally; it does not retain every alias. An existing binding remains
+stable while it is eligible and still names the locator. A
+truncated `AdvisoryPath` preserves the binding through kind, complete length,
+full-path digest, and stored suffix. The prior binding remains unchanged until
+the pass computes path-rebound transitions. An incomplete pass never replaces
+it from partial evidence.
+
+If the binding is unavailable or cannot be compared, the affected replacement
+decision is incomplete. A candidate that would otherwise use `start_at: end`
+under that unresolved binding instead receives a new identity at offset zero,
+preferring possible duplicate ingestion to prefix exclusion. The binding is
+reconstructed after restart from the durable `AdvisoryPath`; no separate or
+unbounded alias map is persisted.
+
 `follow_symlinks` controls symbolic-link and reparse-point traversal, not
 hardlinks. A hardlink is another eligible name for the same opened file and is
 deduplicated by runtime locator. Whether an untrusted principal can create a
@@ -644,6 +664,7 @@ populations to transfer progress across locators.
 | Discovery event channel | One bounded batch |
 | Pending candidates | `max_pending_candidates` |
 | Candidate identity-resolution batch | At most `max_open_files` |
+| Distinguished matched-path bindings | One per durable tracked identity; additional aliases visited incrementally |
 | Durable tracked identities | `max_tracked_files` |
 | Resident tail handles | `max_open_files` |
 | Transient discovery probes | One beyond the resident-handle pool |
@@ -684,7 +705,7 @@ A complete pass produces one ordered transition stream:
 | --- | --- | --- |
 | Observed | Eligible stable locator is not retained or active | Present candidate to identity resolution |
 | Updated | Retained locator remains eligible but path or mutable metadata changed | Update bounded advisory evidence |
-| Path rebound | An original matched path changes from locator A to locator B while A remains live or eligible under another name | Preserve A independently and present B as A's move/create replacement at offset zero |
+| Path rebound | A distinguished matched path changes from locator A to locator B while A remains live or eligible under another name | Preserve A independently and present B to normal identity resolution with recognized-replacement context |
 | Excluded | Active locator now matches an exclusion | Stop reads, resolve existing deltas, then revoke without changing durable progress or lifecycle |
 | Disappeared | Complete pass proves locator no longer has an eligible name | Enter rotation/removal handling |
 
@@ -719,7 +740,7 @@ for the discovery thread to join.
 | `file_id` | Opaque durable checkpoint key and future partition input | Not derived from path, locator, fingerprint, CPU, or generation |
 | Runtime locator | Open-reader key, discovery dedup key, and runtime-lease key | Not permanent identity |
 | Fingerprint | Validation evidence for one exact-locator recovery and ambiguity diagnostics | Not identity or continuity proof across locators |
-| Advisory path | Bounded diagnostics and recovery context; reversible only when not truncated | Not identity |
+| Advisory path | Bounded diagnostics, distinguished matched-path binding, and recovery context | Not file identity or authority to transfer progress |
 | File epoch | Guards progress against stream reset | Not distributed fencing |
 
 `file_id` is created from operating-system randomness, checked against the loaded
@@ -798,12 +819,19 @@ finalization preserves the existing guard. Reset-to-beginning and truncate
 reset install the empty guard; reset-to-end supplies the validated current-EOF
 guard.
 
+Registration, reopen, and recovery retain the validated trailing window as the
+seed of one rolling 64-byte raw-source window. Each later source read updates
+that bounded window before the associated delta can become emit-ready. This
+allows an advance shorter than 64 bytes to combine newly read bytes with the
+required pre-resume bytes without rereading mutable path content after Ack.
+
 Recovery validates the guard from the reopened handle before seeking past the
 guarded frontier. Failure to read the window or a digest mismatch is exact-locator
 identity-evidence mismatch and follows `identity.on_recovery_mismatch` without
 inheriting progress. The guard materially reduces same-locator reuse and
-in-place replacement ambiguity but cannot distinguish a byte-identical
-replacement that reproduces all checked evidence. Phase 1 states that residual
+in-place replacement ambiguity but cannot distinguish a replacement that
+reproduces the checked locator, prefix, size bound, and frontier window while
+changing unchecked bytes between the sampled regions. Phase 1 states that residual
 ambiguity rather than claiming that native locators or hashes are permanent
 identity.
 
@@ -876,11 +904,12 @@ require existing bytes select `beginning`.
 Recovered durable state always wins over `start_at`.
 
 A move/create replacement recognized while the prior locator remains in
-rotation handling is registered at offset zero with clean framing, regardless
-of `start_at`. Bytes written between replacement creation and first
-reconciliation are therefore included. Skipping bytes already present in every
-rotation replacement would require a separately named explicit-loss policy;
-Phase 1 defines none.
+rotation handling follows its own exact-locator durable state when one exists.
+Only a replacement requiring a new identity is registered at offset zero with
+clean framing, regardless of `start_at`. Bytes written between replacement
+creation and first reconciliation are therefore included for that new identity.
+Skipping bytes already present in every new rotation replacement would require
+a separately named explicit-loss policy; Phase 1 defines none.
 
 ### Quarantine reconnection
 
@@ -1805,8 +1834,13 @@ Drain or direct Shutdown interrupts retry backoff. Uncommitted progress remains
 unchanged.
 
 Typed local outcomes that occur before an accepted publication, including
-`NoRoute`, do not fabricate a downstream Nack or Ack. They keep the retained
-batch unchanged and follow their explicit engine lifecycle/error contract.
+`NoRoute`, do not fabricate a downstream Nack or Ack. The failed send consumes
+the current delivery attempt, keeps the retained batch byte-identical, records
+that no publication was accepted, and uses the same checked exponential
+backoff before the next attempt. When `retry.max_attempts` is exhausted,
+`on_nack` applies exactly as for aggregate-Nack exhaustion; under the default
+`fail` policy no progress advances. A later retry subscribes before sending in
+the ordinary order.
 Direct Shutdown and drain are lifecycle commands, not Nack classes. Free-form
 diagnostic text never selects retry or terminal policy. A future distinction
 between retryable and permanent downstream Nacks requires a stable typed
@@ -1997,26 +2031,31 @@ interrupted-first-publication state; every other authority gap fails closed.
 No source is registered or read before snapshot, WAL, and `CURRENT` publication
 and required syncs complete.
 
-Compaction allocates `new_generation = current_generation + 1` with checked
-arithmetic; overflow fails before writing and generation numbers are never
-reused. For generation G it uses only
+Compaction proposes `new_generation = current_generation + 1` with checked
+arithmetic; overflow fails before writing. A generation becomes assigned only
+when a durable `CURRENT` publishes it. A successfully published generation is
+never reused. For proposed generation G, compaction uses only
 `offsets-G.snapshot.compact.tmp`, `offsets-G.wal.compact.tmp`, and
 `CURRENT.compact.tmp` as temporary names. It writes, validates, syncs, and
 closes the complete new snapshot and fresh WAL before renaming the two
-generation files to their final names and syncing the directory. It then writes
-and syncs a complete replacement `CURRENT`, atomically replaces the marker,
-and performs the platform-required directory sync. The previously
+generation files to their final names with exclusive/no-replace semantics and
+syncing the directory. It then writes and syncs a complete replacement
+`CURRENT`, atomically replaces the marker, and performs the platform-required
+directory sync. The previously
 authoritative generation remains complete and recoverable until publication of
 `CURRENT` is durable.
 
 After a crash, a valid `CURRENT` therefore names either the complete old or
 complete new generation. Complete or partial generation artifacts not named by
-`CURRENT` are abandoned, never authoritative, and never reused. Cleanup
-recognizes only bounded version-1 generation and temporary names, rereads and
-validates `CURRENT` under exclusive ownership before deletion, never deletes
-the named generation, and is idempotent after interruption. Ambiguous authority
-or an invalid `CURRENT` fails closed rather than selecting by generation number
-or modification time.
+`CURRENT` are abandoned and never authoritative. Before another compaction,
+cleanup recognizes only the exact temporary and final artifacts for the one
+proposed `current_generation + 1`, rereads and validates `CURRENT` under
+exclusive ownership, removes those abandoned artifacts, and syncs the
+directory. The unpublished number may then be proposed again. Cleanup never
+deletes the generation named by `CURRENT`, is idempotent after interruption,
+and completes before exclusive creation for the next attempt. Ambiguous
+authority or an invalid `CURRENT` fails closed rather than selecting by
+generation number or modification time.
 
 Recognized generations and temporary artifacts are bounded. A store with pending
 retired-generation cleanup does not start another compaction until cleanup succeeds.
@@ -2101,14 +2140,18 @@ The receiver:
 Same-filesystem or same-volume rename continuity comes from the locator. Cross-device or
 cross-volume copy/unlink is a new identity.
 
-Recognition follows the original matched-path binding rather than requiring A
-to disappear from every included name. One ordered reconciliation transition
-observes that path P stopped naming A and now names B. A may remain independently
-eligible under another path such as `app.log.1`; it retains its identity and
-reader while B is registered at offset zero. Bytes written to B between its
-creation and this first reconciliation are read from offset zero. A B first
-observed after A is already finalized, with no retained binding evidence, is an
-unrelated new file and follows ordinary `start_at`.
+Recognition follows A's distinguished matched-path binding rather than
+requiring A to disappear from every included name. One ordered reconciliation
+transition observes that path P stopped naming A and now names B. A may remain
+independently eligible under another path such as `app.log.1`; it retains its
+identity and reader. The rebound supplies replacement context to B's normal
+matching hierarchy: an exact-locator `Quarantined` B remains quarantined, an
+exact-locator `Active` B resumes its own state, and only B requiring a new
+identity is registered at offset zero. B never inherits A's offset. Bytes
+written to a newly registered B between creation and first reconciliation are
+therefore read from offset zero. A B first observed after A is already
+finalized, with no retained binding evidence, is an unrelated new file and
+follows ordinary `start_at`.
 
 ### Late writes and finalization
 
@@ -2271,8 +2314,9 @@ When downstream send blocks:
 
 A closed route produces a typed non-success. Closure of a required subscriber
 for an accepted attempt produces aggregate Nack and bounded retry; failure
-before accepted publication follows the explicit engine route-error contract.
-Neither path is retried forever.
+before accepted publication, including `NoRoute`, consumes the same bounded
+attempt/backoff budget and then applies `on_nack`. Neither path is retried
+forever or advances progress without the explicitly configured loss policy.
 
 ### Lifecycle states
 
@@ -2408,7 +2452,7 @@ evidence, not merely an OS error number:
 | Namespace lock timeout | Receiver startup | Terminal without reading |
 | Lease-registry integrity failure | Receiver | Fail closed |
 | Worker failure | Receiver | Terminal; do not invent progress |
-| Downstream closure | Receiver-wide batch or receiver lifecycle | Aggregate Nack with bounded retry after accepted publication, or typed route error before acceptance; never Ack |
+| Downstream closure or pre-publication `NoRoute` | Receiver-wide batch or receiver lifecycle | Aggregate Nack after accepted publication, or typed route error before acceptance; both consume bounded attempts and apply `on_nack` at exhaustion, never Ack |
 
 Environmental retries use one bounded state entry per affected locator,
 traversal root, or receiver-global descriptor condition:

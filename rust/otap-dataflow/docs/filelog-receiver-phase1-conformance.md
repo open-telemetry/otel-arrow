@@ -35,7 +35,7 @@ open_candidate_amplification =
 
 checkpoint_record_state =
   max_tracked_files *
-  (fingerprint_bytes + P + 384)
+  (fingerprint_bytes + P + 34 + 384)
 
 discovery_tracked_state =
   max_tracked_files * 1024
@@ -49,8 +49,9 @@ identity_reconciliation =
 
 `identity_reconciliation` must not exceed 1 GiB.
 
-The coefficients cover simultaneously owned bounded inventories, fingerprint and path
-payload copies, update preflight, encoded transaction staging, applied-record scratch,
+The explicit 34-byte term is the committed-frontier guard. The coefficients
+cover simultaneously owned bounded inventories, fingerprint and path payload
+copies, update preflight, encoded transaction staging, applied-record scratch,
 maps, vectors, locators, allocation metadata, and removal-heavy event state.
 
 ### Framer payload
@@ -121,9 +122,12 @@ The store derives:
 - maximum transaction bytes; and
 - maximum snapshot-record bytes.
 
-The derived maximum transaction bytes must be at least the
+The derived maximum transaction-byte value is the
 [checkpoint-format](filelog-checkpoint-format.md#maximum-encoded-lengths-summary)
-`MAX_PROGRESS_TX_FRAME_BYTES` so every valid maximum-size Ack/drop progress
+`WAL_MAX_TX_FRAME_BYTES` hard cap. It therefore covers both the 4,096-operation
+progress class and the at-most-256-operation non-progress class, including any
+transaction that stops earlier at the 16 MiB body bound. It is necessarily at
+least `MAX_PROGRESS_TX_FRAME_BYTES`, so every valid maximum-size Ack/drop
 transaction is encodable and recoverable.
 
 Each artifact is bounded by a fixed 1 GiB ceiling. The conservative recovery working
@@ -325,6 +329,10 @@ while their semantic and format definitions remain normative from version 1.
 | Discovery | Path target substituted between check and open | Opened handle fails policy/type/identity validation; not admitted |
 | Discovery | Symlink directory cycle | Bounded, incomplete pass |
 | Discovery | Hardlink/overlapping glob | One locator candidate/reader |
+| Discovery | One locator has many matched aliases | One deterministic distinguished binding retained; aliases do not grow durable state |
+| Discovery | A lexically smaller alias appears while the distinguished binding still names the locator | Existing binding remains stable; no false rebound |
+| Discovery | Distinguished binding is truncated | Kind, full length, digest, and suffix preserve bounded path comparison |
+| Discovery | Distinguished binding unavailable or incomparable | Affected replacement decision incomplete; possible replacement does not use `start_at: end` |
 | Discovery | Traversal error | No false removal |
 | Discovery | Evidence changes between probes | Incomplete; no unsafe inheritance |
 | Discovery | Candidate overflow | Bounded state and later varying opportunity |
@@ -345,7 +353,7 @@ while their semantic and format definitions remain normative from version 1.
 | Identity | Exact locator, valid prefix, and valid committed-frontier guard | Recovery permitted |
 | Identity | Exact locator and valid prefix but frontier-guard mismatch or unreadable window | No old offset inheritance; recovery mismatch policy applies |
 | Identity | Reused Active locator with common prefix but different bytes at prior frontier | Guard rejects inheritance |
-| Identity | Byte-identical replacement reproduces locator and all checked evidence | Explicit residual ambiguity; no stronger identity claim |
+| Identity | Replacement matches locator, prefix, size bound, and frontier window but changes unchecked middle bytes | Explicit residual ambiguity; no stronger identity claim |
 | Identity | Exact locator and mismatched prefix | Atomic superseded-record removal/new registration; no old offset inheritance or duplicate Active locator claim |
 | Identity | Committed offset beyond size | No old offset inheritance |
 | Identity | Growing evidence | Same `file_id`, evidence extends |
@@ -440,7 +448,7 @@ while their semantic and format definitions remain normative from version 1.
 | Nack | `drop_and_continue` | Explicit loss and durable atomic advance |
 | Nack | Exhaustion | Configured `on_nack` policy |
 | Nack | Free-form diagnostic text changes | No control-flow change; text is diagnostic only |
-| Nack | Typed local `NoRoute` before accepted publication | No Ack/progress; retained batch follows explicit engine error contract |
+| Nack | Typed local `NoRoute` before accepted publication | Consumes attempt, retains exact batch, uses bounded backoff, then applies `on_nack` at exhaustion; no fabricated Ack |
 | Checkpoint | Crash before registration sync | File was never eligible to read |
 | Checkpoint | More new identities than one non-progress transaction permits | Registration split into independently durable bounded chunks; each file reads only after its chunk is durable |
 | Checkpoint | Non-progress transaction exceeds 256 operations or 16 MiB body | Rejected before allocation/application and split by the writer |
@@ -466,7 +474,9 @@ while their semantic and format definitions remain normative from version 1.
 | Checkpoint | WAL append succeeds and sync fails | Validate transaction and retry sync without duplicate append |
 | Checkpoint | Compaction fault before publication | Previous generation authoritative |
 | Checkpoint | Compaction crash during `CURRENT` replacement | Valid marker names complete old or complete new generation; never partial authority |
-| Checkpoint | Abandoned unnamed generation after crash | Never authoritative or reused; bounded idempotent cleanup |
+| Checkpoint | Abandoned unpublished `G+1` generation after crash | Never authoritative; exact artifacts removed and directory-synced before the number is proposed again |
+| Checkpoint | New compaction collides with an uncleared proposed-generation artifact | Exclusive/no-replace creation fails; cleanup must complete before retry |
+| Checkpoint | Previously published generation number proposed again | Rejected; published generations are never reused |
 | Checkpoint | Generation increment overflow | Fails before writing or wrapping |
 | Checkpoint | Cleanup interruption | Resumable, bounded artifacts |
 | Checkpoint | Cleanup sees current generation among retired candidates | Files named by `CURRENT` are retained |
@@ -484,7 +494,9 @@ while their semantic and format definitions remain normative from version 1.
 | Checkpoint | Unix 5,000-byte advisory path vector | Digest covers all bytes as `UnixBytes`; stored path is the final 4,096-byte suffix |
 | Checkpoint | Namespace corruption administration | Exclusive inspect/backup/reset procedure reports replay or `start_at` consequences; no automatic salvage |
 | Rotation | POSIX rename/create | Old and replacement read independently |
-| Rotation | Broad include matches `app.log` and renamed `app.log.1` | Path rebound still recognizes new `app.log` as offset-zero replacement while old locator remains active |
+| Rotation | Broad include matches `app.log` and renamed `app.log.1` | Path rebound supplies replacement context while old locator remains active; a new B starts at zero |
+| Rotation | Path-rebound target B already has exact-locator Active state | B resumes its own state; no reset to zero and no inheritance from A |
+| Rotation | Path-rebound target B matches exact-locator Quarantined state | B remains quarantined; no reset or inheritance from A |
 | Rotation | Replacement receives bytes before first reconciliation | Recognized replacement starts at zero regardless of `start_at` |
 | Rotation | POSIX unlink with resident descriptor | Old reads through wait/finalization |
 | Rotation | Windows compatible rename/delete-pending | Old handle continues |
@@ -653,7 +665,10 @@ Resident A remains pinned and is read through EOF plus `rotate_wait`. B receives
 identity at offset zero and never inherits A's offset, even when
 `start_at: end` is configured. This remains true with include `app.log*`: the
 matched-path binding for `app.log` rebounds from A to B even though A remains
-eligible under `app.log.1`.
+eligible under `app.log.1`. Replacement context does not override B's own
+durable lifecycle: an existing Active B resumes its progress, and an existing
+Quarantined B remains blocked. Offset zero applies only when B needs a new
+identity.
 
 ### Example 19: Evicted rotation
 
@@ -830,9 +845,10 @@ offset 1 MiB. While the receiver is stopped, A is deleted and the locator is
 reused by file B with the same prefix. B is large enough to pass the offset
 check, but its 64 raw bytes immediately preceding 1 MiB differ. The
 committed-frontier guard fails, so B does not inherit A's offset and the default
-recovery-mismatch policy begins the new identity at zero. A byte-identical B
-that reproduced every checked byte remains the explicitly documented residual
-ambiguity.
+recovery-mismatch policy begins the new identity at zero. If B instead matches
+the checked prefix and frontier window but changes bytes only in the unchecked
+middle, the replacement remains the explicitly documented residual ambiguity;
+it need not be byte-identical.
 
 ### Example 38: Registration spans bounded transactions
 

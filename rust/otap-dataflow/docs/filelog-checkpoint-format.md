@@ -33,6 +33,9 @@ prior format to migrate from. A conforming implementation MUST reject any
 other `format_version` value in any header (snapshot, WAL, or `CURRENT`
 marker) as an unsupported-version error, distinct from corruption. See
 [Cross-version and migration behavior](#cross-version-and-migration-behavior).
+Version 1 remains unfrozen while this proposal has no released conforming
+implementation. After the first release freezes v1, every incompatible layout
+or semantic change follows the version-bump policy below.
 
 This document never describes serializing a native Rust, C, or operating
 system structure directly (for example `stat`, `FILE_ID_INFO`, or a Rust
@@ -107,8 +110,10 @@ the behavioral compaction state machine. They are never authoritative.
   namespace path component; version 1 performs no escaping or percent-encoding.
 - `<generation>` is the ASCII decimal rendering of a `u64` generation number
   with no leading zeros (`0`, `1`, `2`, ... `18446744073709551615`). A
-  generation number is assigned once, at compaction time, and is never
-  reused; the pair of files `offsets-<generation>.snapshot` and
+  generation number becomes assigned when a durable `CURRENT` first publishes
+  it and is never reused after publication; an unpublished proposal may be
+  reused only after its exact abandoned artifacts are removed and the
+  directory is synced under exclusive ownership. The pair of files `offsets-<generation>.snapshot` and
   `offsets-<generation>.wal` sharing a generation number are always read and
   written together.
 - `CURRENT` is a small fixed-width binary marker (not free-form text) that
@@ -135,8 +140,8 @@ The behavioral
 [compaction state machine](filelog-receiver-phase1-spec.md#publication-compaction-cleanup-and-recovery)
 owns publication ordering and crash outcomes. In particular, a valid
 post-crash `CURRENT` names either the complete old or complete new generation;
-unnamed generation artifacts are never authoritative or reused, and generation
-overflow fails before wrap.
+unnamed generation artifacts are never authoritative, a published generation
+is never reused, and generation overflow fails before wrap.
 
 ## Namespace digest
 
@@ -503,7 +508,8 @@ Offset zero requires `window_len == 0` and the digest of the domain prefix plus
 zero encoded as `u16` BE. A decoder validates length consistency against the
 stored offset. Recovery obtains the same raw range from the validated handle
 and compares the digest before inheriting progress. The digest is matching
-evidence, not authentication or proof against a byte-identical replacement.
+evidence, not authentication or proof against a replacement that reproduces
+the checked locator, prefix, size bound, and frontier window.
 
 Normative vectors:
 
