@@ -55,11 +55,8 @@ The design is split into four normative layers:
 | [Filelog Receiver Phase 1 Conformance Specification](filelog-receiver-phase1-conformance.md) | Resource models, telemetry semantics, validation cases, and normative examples |
 | [Filelog Receiver Checkpoint Format](filelog-checkpoint-format.md) | Exact durable byte format and replay representation |
 
-Recommended review order is to approve the architecture decisions first,
-review the behavioral specification by subsystem, review the checkpoint format
-with storage and crash-consistency reviewers, and use the conformance
-specification as the final implementation-readiness gate. All four contracts
-remain required before an implementation can claim Phase 1 conformance.
+These four documents form one normative contract set. An implementation can
+claim Phase 1 conformance only when it satisfies all four.
 
 The lower-level specifications refine the architecture and cannot contradict it.
 A conflict is a design defect that must be surfaced and resolved deliberately;
