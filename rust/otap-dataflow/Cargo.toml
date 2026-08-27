@@ -56,25 +56,25 @@ tikv-jemallocator = { workspace = true, optional = true }
 
 [workspace.dependencies]
 otel-arrow-dfe-admin-api = { path = "crates/admin-api" }
-otel-arrow-dfe-admin-types = { path = "crates/admin-types" }
-otel-arrow-dfe-pdata-otlp-macros = { path = "./crates/pdata/src/otlp/macros"}
-otel-arrow-dfe-pdata-otlp-model = { path = "./crates/pdata/src/otlp/model"}
-otel-arrow-dfe-config = { path = "crates/config" }
+otel-arrow-dfe-admin-types = { version = "0.52.0", path = "crates/admin-types" }
+otel-arrow-dfe-pdata-otlp-macros = { version = "0.52.0", path = "./crates/pdata/src/otlp/macros"}
+otel-arrow-dfe-pdata-otlp-model = { version = "0.52.0", path = "./crates/pdata/src/otlp/model"}
+otel-arrow-dfe-config = { version = "0.52.0", path = "crates/config" }
 otel-arrow-dfe-contrib-extensions = { path = "crates/contrib-extensions" }
 otel-arrow-dfe-contrib-nodes = { path = "crates/contrib-nodes" }
 otel-arrow-dfe-control-channel = { path = "crates/control-channel" }
 otel-arrow-dfe-controller = { path = "crates/controller" }
 otel-arrow-dfe-core-nodes = { path = "crates/core-nodes" }
 otel-arrow-dfe-engine = { path = "crates/engine" }
-otel-arrow-dfe-expohisto = { path = "crates/expohisto" }
+otel-arrow-dfe-expohisto = { version = "0.52.0", path = "crates/expohisto" }
 otel-arrow-dfe-otap = { path = "crates/otap" }
 otel-arrow-dfe-wasm-host = { path = "crates/wasm-host" }
 otel-arrow-dfe-test-tls-certs = { path = "crates/otap-test-tls-certs" }
 otel-arrow-dfe-test-net = { path = "crates/otap-test-net" }
-otel-arrow-dfe-pdata = { path = "crates/pdata" }
-otel-arrow-dfe-pdata-views = { path = "crates/pdata-views" }
+otel-arrow-dfe-pdata = { version = "0.52.0", path = "crates/pdata" }
+otel-arrow-dfe-pdata-views = { version = "0.52.0", path = "crates/pdata-views" }
 otel-arrow-dfe-telemetry = { path = "crates/telemetry" }
-otel-arrow-dfe-quiver = { path = "crates/quiver" }
+otel-arrow-dfe-quiver = { version = "0.52.0", path = "crates/quiver" }
 data_engine_expressions = { path = "../experimental/query_engine/expressions" }
 data_engine_kql_parser = { path = "../experimental/query_engine/kql-parser" }
 data_engine_parser_abstractions = { path = "../experimental/query_engine/parser-abstractions"}
@@ -194,6 +194,7 @@ rustls-openssl = "0.3"
 rustls-symcrypt = "0.2.2"
 schemars = { version = "1.0.0" }
 secrecy = { version = "0.10.3", features = ["serde"] }
+semver = "1"
 serde = { version = "1.0.228", features = ["derive", "rc"] }
 serde_cbor = "0.11.2"
 serde_json = { version = "1.0.149" }
@@ -276,13 +277,13 @@ include_dir = "0.7.4"
 mime_guess = "2.0.5"
 minijinja = "2"
 otel-arrow-dfe-admin = { path = 'crates/admin' }
-otel-arrow-dfe-channel = { path = 'crates/channel' }
-otel-arrow-dfe-engine-macros = { path = 'crates/engine-macros' }
-otel-arrow-dfe-component-inventory-syntax = { path = 'crates/component-inventory-syntax' }
+otel-arrow-dfe-channel = { version = "0.52.0", path = 'crates/channel' }
+otel-arrow-dfe-engine-macros = { version = "0.52.0", path = 'crates/engine-macros' }
+otel-arrow-dfe-component-inventory-syntax = { version = "0.52.0", path = 'crates/component-inventory-syntax' }
 otel-arrow-dfe-query-engine-languages = { path = 'crates/query-engine-languages' }
 otel-arrow-dfe-query-engine = { path = 'crates/query-engine' }
 otel-arrow-dfe-state = { path = 'crates/state' }
-otel-arrow-dfe-telemetry-macros = { path = 'crates/telemetry-macros' }
+otel-arrow-dfe-telemetry-macros = { version = "0.52.0", path = 'crates/telemetry-macros' }
 prost-build = "0.14"
 ratatui = "0.30"
 testcontainers = "0.27"

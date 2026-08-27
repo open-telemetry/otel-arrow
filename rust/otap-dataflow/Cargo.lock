@@ -12718,6 +12718,7 @@ dependencies = [
  "otel-arrow-dfe-pdata-otlp-model",
  "proc-macro2",
  "prost-build 0.14.4",
+ "semver",
  "serde",
  "serde_json",
  "sha2 0.11.0",

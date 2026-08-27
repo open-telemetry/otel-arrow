@@ -437,7 +437,7 @@ jobs:
       - name: Run cargo xtask for ${{ matrix.folder }}
         run: cargo xtask structure-check
         working-directory: ./rust/${{ matrix.folder }}
-      - name: Validate crates.io publish pilot
+      - name: Validate crates.io publish plan
         run: cargo xtask crates-publish check
         working-directory: ./rust/${{ matrix.folder }}
       - name: Check telemetry macro usage
