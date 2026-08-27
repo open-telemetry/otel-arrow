@@ -1,0 +1,143 @@
+load_tables:
+  clickhouse_validation:
+    path: results/otelcol_clickhouse/validation.csv
+    format: csv
+
+queries:
+  - name: Calculate observation window
+    sql: |
+      CREATE TABLE observation_window AS
+      WITH event_times AS (
+        SELECT
+          "attributes.test.name" AS test_name,
+          name AS event_name,
+          TO_TIMESTAMP(timestamp / 1000000000.0) AS timestamp
+        FROM events
+        WHERE name IN ('observation_start', 'observation_stop')
+      )
+      SELECT
+        start.test_name,
+        start.timestamp AS start_ts,
+        stop.timestamp AS stop_ts
+      FROM metadata_row
+      JOIN event_times start
+        ON metadata_row."test.name" = start.test_name
+      JOIN event_times stop ON start.test_name = stop.test_name
+      WHERE start.event_name = 'observation_start'
+        AND stop.event_name = 'observation_stop'
+        AND start.timestamp < stop.timestamp;
+
+  - name: Calculate component resources
+    sql: |
+      CREATE TABLE component_resources AS
+      SELECT
+        "metric_attributes.component_name" AS component_name,
+        metric_name,
+        AVG(value) AS avg_value,
+        MAX(value) AS max_value
+      FROM metrics
+      CROSS JOIN observation_window
+      WHERE metric_name IN ('container.cpu.usage', 'container.memory.usage')
+        AND timestamp BETWEEN start_ts AND stop_ts
+      GROUP BY "metric_attributes.component_name", metric_name;
+
+  - name: Calculate generated throughput
+    sql: |
+      CREATE TABLE generated_throughput AS
+      WITH filtered AS (
+        SELECT
+          timestamp,
+          COALESCE("metric_attributes.otel_scope_core_id", 'N/A') AS core_id,
+          value
+        FROM metrics
+        CROSS JOIN observation_window
+        WHERE metric_name = 'logs_produced'
+          AND "metric_attributes.component_name" = 'load-generator'
+          AND timestamp BETWEEN start_ts AND stop_ts
+      ),
+      samples AS (
+        SELECT
+          timestamp,
+          core_id,
+          value,
+          LAG(value) OVER (PARTITION BY core_id ORDER BY timestamp) AS previous_value,
+          LAG(timestamp) OVER (PARTITION BY core_id ORDER BY timestamp) AS previous_timestamp
+        FROM filtered
+      ),
+      series_rates AS (
+        SELECT
+          core_id,
+          SUM(value - previous_value) /
+            NULLIF(SUM(EXTRACT(EPOCH FROM timestamp - previous_timestamp)), 0)
+            AS rows_per_second
+        FROM samples
+        WHERE value >= previous_value
+        GROUP BY core_id
+      )
+      SELECT SUM(rows_per_second) AS rows_per_second
+      FROM series_rates;
+
+  - name: Calculate ClickHouse throughput
+    sql: |
+      CREATE TABLE clickhouse_throughput AS
+      SELECT
+        rows_after - rows_before AS rows_written,
+        observation_seconds,
+        (rows_after - rows_before) / observation_seconds AS rows_per_second
+      FROM clickhouse_validation;
+
+  - name: Create benchmark data
+    sql: |
+      CREATE TABLE gh_actions_benchmark AS
+      SELECT
+        'log_rows_written_rate' AS name,
+        'rows/sec' AS unit,
+        rows_per_second AS value,
+        metadata_row."test.suite" || '/' || metadata_row."test.name" ||
+          ' - ClickHouse rows written' AS extra
+      FROM clickhouse_throughput
+      CROSS JOIN metadata_row
+
+      UNION ALL
+
+      SELECT
+        'logs_produced_rate',
+        'rows/sec',
+        rows_per_second,
+        metadata_row."test.suite" || '/' || metadata_row."test.name" ||
+          ' - logs produced'
+      FROM generated_throughput
+      CROSS JOIN metadata_row
+
+      UNION ALL
+
+      SELECT
+        component_name || '_cpu_percentage_normalized_avg',
+        '%',
+        avg_value * 100 /
+          CASE WHEN component_name = 'clickhouse' THEN 4 ELSE 1 END,
+        metadata_row."test.suite" || '/' || metadata_row."test.name" ||
+          ' - ' || component_name || ' CPU'
+      FROM component_resources
+      CROSS JOIN metadata_row
+      WHERE metric_name = 'container.cpu.usage'
+        AND component_name IN ('go-collector', 'clickhouse')
+
+      UNION ALL
+
+      SELECT
+        component_name || '_ram_mib_max',
+        'MiB',
+        max_value / 1024 / 1024,
+        metadata_row."test.suite" || '/' || metadata_row."test.name" ||
+          ' - ' || component_name || ' RAM'
+      FROM component_resources
+      CROSS JOIN metadata_row
+      WHERE metric_name = 'container.memory.usage'
+        AND component_name IN ('go-collector', 'clickhouse');
+
+result_tables:
+  - name: generated_throughput
+  - name: clickhouse_throughput
+  - name: component_resources
+  - name: gh_actions_benchmark

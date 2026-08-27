@@ -3,7 +3,7 @@
 
 #![allow(missing_docs)]
 
-use otap_df_config::tls::TlsConfig;
+use otel_arrow_dfe_config::tls::TlsConfig;
 use std::time::Duration;
 
 #[test]

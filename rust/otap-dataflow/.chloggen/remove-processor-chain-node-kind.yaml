@@ -1,6 +1,0 @@
-change_type: enhancement
-component: engine
-note: Remove the unimplemented `processor_chain` node kind, which the engine never supported and always rejected at build time.
-issues: [2556]
-subtext: |
-  No configuration change is required: `processor_chain` was never a valid node type URN, so no pipeline could declare one. Node kinds remain `receiver`, `processor`, and `exporter`.

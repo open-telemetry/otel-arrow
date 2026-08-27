@@ -4,7 +4,7 @@
 //! Internal log tap with bounded in-memory retention.
 
 use crate::event::LogEvent;
-use otap_df_config::settings::telemetry::logs::InternalLogTapConfig;
+use otel_arrow_dfe_config::settings::telemetry::logs::InternalLogTapConfig;
 use parking_lot::RwLock;
 use std::collections::VecDeque;
 use std::mem::size_of;
@@ -264,8 +264,8 @@ mod tests {
     use crate::event::{ObservedEvent, ObservedEventReporter};
     use crate::self_tracing::LogContext;
     use crate::tracing_init::{ProviderSetup, TracingSetup};
-    use otap_df_config::observed_state::SendPolicy;
-    use otap_df_config::settings::telemetry::logs::LogLevel;
+    use otel_arrow_dfe_config::observed_state::SendPolicy;
+    use otel_arrow_dfe_config::settings::telemetry::logs::LogLevel;
 
     fn level(s: &str) -> LogLevel {
         serde_yaml::from_str(&format!("\"{s}\"")).unwrap()

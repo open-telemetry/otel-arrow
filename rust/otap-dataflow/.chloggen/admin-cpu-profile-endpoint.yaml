@@ -1,6 +1,0 @@
-change_type: enhancement
-component: engine
-note: >-
-  Add CPU profiling endpoint at `/api/v1/debug/pprof/profile` that collects
-  a CPU profile in pprof format.
-issues: [3692]

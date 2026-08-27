@@ -1,0 +1,167 @@
+steps:
+  - name: Deploy ClickHouse
+    action:
+      component_action:
+        phase: deploy
+        target: clickhouse
+    hooks:
+      run:
+        pre:
+          - run_command:
+              command: >-
+                mkdir -p results/otelcol_clickhouse &&
+                rm -f results/otelcol_clickhouse/validation.csv
+                results/otelcol_clickhouse/rows-before
+        post:
+          - ready_check_http:
+              url: http://localhost:8123/ping
+              method: GET
+              expected_status_code: 200
+
+  - name: Deploy Collector
+    action:
+      component_action:
+        phase: deploy
+        target: go-collector
+    hooks:
+      run:
+        post:
+          - ready_check_http:
+              url: http://localhost:8086/metrics
+              method: GET
+              expected_status_code: 200
+
+  - name: Deploy Load Generator
+    action:
+      component_action:
+        phase: deploy
+        target: load-generator
+    hooks:
+      run:
+        pre:
+          - render_template:
+              template_path: ./test_suites/integration/templates/configs/loadgen/config.yaml.j2
+              output_path: ./test_suites/integration/configs/loadgen/config.rendered.yaml
+              variables:
+                engine_hostname: go-collector
+                loadgen_exporter_type: otlp
+                exporter_extra_config:
+                  max_in_flight: 256
+                max_batch_size: 8192
+                signals_per_second: {{signals_per_second | default(100000)}}
+                metric_weight: 0
+                trace_weight: 0
+                log_weight: 100
+        post:
+          - ready_check_http:
+              url: http://localhost:8085/api/v1/telemetry/metrics?reset=false
+              method: GET
+              expected_status_code: 200
+
+  - name: Monitor All
+    action:
+      multi_component_action:
+        phase: start_monitoring
+        targets:
+          - clickhouse
+          - load-generator
+          - go-collector
+
+  - name: Warm Up
+    action:
+      wait:
+        delay_seconds: 10
+
+  - name: Observe Load
+    action:
+      wait:
+        delay_seconds: 60
+    hooks:
+      run:
+        pre:
+          - run_command:
+              command: >-
+                curl --fail --silent --show-error --user default:test
+                --data-binary 'SELECT count() FROM otelcol_comparison.otel_logs'
+                http://localhost:8123 >
+                results/otelcol_clickhouse/rows-before &&
+                date +%s.%N > results/otelcol_clickhouse/count-start
+          - record_event:
+              name: observation_start
+        post:
+          - record_event:
+              name: observation_stop
+          - run_command:
+              command: >-
+                before=$(cat results/otelcol_clickhouse/rows-before) &&
+                counts=$(curl --fail --silent --show-error --user default:test
+                --data-binary "SELECT count(),
+                countIf(LogAttributes['benchmark.transform'] = 'applied')
+                FROM otelcol_comparison.otel_logs FORMAT TabSeparated"
+                http://localhost:8123) &&
+                end=$(date +%s.%N) &&
+                after=$(printf '%s' "${counts}" | cut -f1) &&
+                transformed=$(printf '%s' "${counts}" | cut -f2) &&
+                start=$(cat results/otelcol_clickhouse/count-start) &&
+                seconds=$(awk -v start="${start}" -v end="${end}" 'BEGIN { print end - start }') &&
+                test "${after}" -gt "${before}" && test "${transformed}" -eq "${after}" &&
+                printf 'rows_before,rows_after,observation_seconds\n%s,%s,%s\n'
+                "${before}" "${after}" "${seconds}" >
+                results/otelcol_clickhouse/validation.csv
+
+  - name: Stop Load Generator
+    action:
+      no_op: {}
+    hooks:
+      run:
+        pre:
+          - send_http_request:
+              url: http://localhost:8085/api/v1/groups/shutdown?wait=true&timeout_secs={{drain_timeout_secs | default(60)}}
+              method: POST
+              headers:
+                "Content-Type": "application/json"
+              timeout: {{drain_timeout_secs | default(60) | int + 5}}
+              raise_for_status: false
+              on_error:
+                continue: true
+
+  - name: Stop Monitoring
+    action:
+      multi_component_action:
+        phase: stop_monitoring
+        targets:
+          - clickhouse
+          - load-generator
+          - go-collector
+
+  - name: Destroy All
+    action:
+      multi_component_action:
+        phase: destroy
+        targets:
+          - load-generator
+          - go-collector
+          - clickhouse
+
+  - name: Run Report
+    action:
+      wait:
+        delay_seconds: 0
+    hooks:
+      run:
+        post:
+          - print_container_logs: {}
+          - sql_report:
+              name: OTel Collector ClickHouse Report
+              report_config_file: ./test_suites/integration/configs/otelcol_clickhouse_report_logs.yaml
+              output:
+                - format:
+                    template: {}
+                  destination:
+                    console: {}
+                - format:
+                    template:
+                      path: ./test_suites/integration/templates/reports/gh-action-sqlreport.j2
+                  destination:
+                    file:
+                      directory: results/otelcol_clickhouse/gh-actions-benchmark

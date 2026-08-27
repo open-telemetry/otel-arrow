@@ -1,0 +1,71 @@
+version: otel_dataflow/v1
+policies:
+  channel_capacity:
+    control:
+      pipeline: {{ default_pipeline_ctrl_msg_channel_size | default(100) }}
+      node: {{ default_node_ctrl_msg_channel_size | default(100) }}
+    pdata: {{ default_pdata_channel_size | default(100) }}
+  resources:
+    core_allocation:
+      type: core_set
+      set:
+        - start: {{core_start}}
+          end: {{core_end}}
+
+engine: {}
+
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:otel:receiver:traffic_generator"
+            config:
+              data_source: {{ data_source | default("semantic_conventions") }}
+              generation_strategy: {{ generation_strategy | default("pre_generated") }}
+              traffic_config:
+                production_mode: {{ production_mode | default("smooth") }}
+                max_batch_size: {{ loadgen_max_batch_size | default(1000) }}
+                signals_per_second: {{ (signals_per_second | default(100000)) }}
+                metric_weight: {{ metric_weight | default(0) }}
+                trace_weight: {{ trace_weight | default(0) }}
+                log_weight: {{ log_weight | default(100) }}
+{%- if num_log_attributes is defined %}
+                num_log_attributes: {{ num_log_attributes }}
+{%- endif %}
+{%- if num_metric_attributes is defined %}
+                num_metric_attributes: {{ num_metric_attributes }}
+{%- endif %}
+
+          exporter:
+            # Fixed DFE reference producer (OTAP encoding) for
+            # receiver-isolation suites. Aligned Kafka producer tuning is
+            # injected from the canonical kafka_producer_* suite variables.
+            type: urn:otel:exporter:kafka
+            config:
+              brokers: "{{kafka_hostname}}:9092"
+              client_id: "dfe-kafka-loadgen"
+              required_acks: {{ kafka_producer_acks | default("one") }}
+{%- if kafka_producer_compression is defined and kafka_producer_compression != "none" %}
+              compression: {{ kafka_producer_compression }}
+{%- endif %}
+              linger_ms: {{ kafka_producer_linger_ms | default(5) }}
+              max_message_bytes: {{ kafka_producer_max_message_bytes | default(1000000) }}
+              partitioning_strategy: {{ kafka_producer_partitioner | default("consistent_random") }}
+              producer_config:
+                batch.num.messages: "{{ kafka_producer_batch_num_messages | default(10000) }}"
+                queue.buffering.max.messages: "{{ kafka_producer_queue_buffering_max_messages | default(100000) }}"
+              logs:
+                topic: "otel-logs-otap"
+                encoding: otap_proto
+              metrics:
+                topic: "otel-metrics-otap"
+                encoding: otap_proto
+              traces:
+                topic: "otel-spans-otap"
+                encoding: otap_proto
+
+        connections:
+          - from: receiver
+            to: exporter

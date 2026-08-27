@@ -13,16 +13,16 @@ use arrow::array::{
 };
 use arrow::datatypes::{DataType, Field, Schema, UInt16Type};
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use otap_df_core_nodes::receivers::traffic_generator::config::{Config, TrafficConfig};
-use otap_df_core_nodes::receivers::traffic_generator::semconv_signal::semconv_otlp_logs;
-use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::otap::transform::materialize_parent_id_for_attributes;
-use otap_df_pdata::otlp::attributes::AttributeValueType;
-use otap_df_pdata::proto::OtlpProtoMessage;
-use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otap_df_pdata::proto::opentelemetry::logs::v1::LogsData;
-use otap_df_pdata::schema::consts;
-use otap_df_pdata::testing::round_trip::otlp_to_otap;
+use otel_arrow_dfe_core_nodes::receivers::traffic_generator::config::{Config, TrafficConfig};
+use otel_arrow_dfe_core_nodes::receivers::traffic_generator::semconv_signal::semconv_otlp_logs;
+use otel_arrow_dfe_pdata::OtapArrowRecords;
+use otel_arrow_dfe_pdata::otap::transform::materialize_parent_id_for_attributes;
+use otel_arrow_dfe_pdata::otlp::attributes::AttributeValueType;
+use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogsData;
+use otel_arrow_dfe_pdata::schema::consts;
+use otel_arrow_dfe_pdata::testing::round_trip::otlp_to_otap;
 use prost::Message;
 use weaver_common::vdir::VirtualDirectoryPath;
 

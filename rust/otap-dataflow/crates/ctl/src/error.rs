@@ -9,7 +9,7 @@
 //! human text or JSON error envelopes.
 
 use crate::args::ErrorFormat;
-use otap_df_admin_api::operations::OperationErrorKind;
+use otel_arrow_dfe_admin_api::operations::OperationErrorKind;
 use serde::Serialize;
 use std::io::{self, Write};
 use thiserror::Error;
@@ -31,7 +31,7 @@ pub enum CliError {
     Io(#[from] io::Error),
 
     #[error(transparent)]
-    Admin(#[from] otap_df_admin_api::Error),
+    Admin(#[from] otel_arrow_dfe_admin_api::Error),
 }
 
 impl CliError {
@@ -153,9 +153,9 @@ fn write_json_line<T: Serialize>(writer: &mut dyn Write, value: &T) -> io::Resul
     writeln!(writer)
 }
 
-fn map_admin_error(error: &otap_df_admin_api::Error) -> u8 {
+fn map_admin_error(error: &otel_arrow_dfe_admin_api::Error) -> u8 {
     match error {
-        otap_df_admin_api::Error::AdminOperation { error, .. } => match error.kind {
+        otel_arrow_dfe_admin_api::Error::AdminOperation { error, .. } => match error.kind {
             OperationErrorKind::GroupNotFound
             | OperationErrorKind::PipelineNotFound
             | OperationErrorKind::RolloutNotFound
@@ -167,9 +167,9 @@ fn map_admin_error(error: &otap_df_admin_api::Error) -> u8 {
     }
 }
 
-fn admin_error_kind(error: &otap_df_admin_api::Error) -> &'static str {
+fn admin_error_kind(error: &otel_arrow_dfe_admin_api::Error) -> &'static str {
     match error {
-        otap_df_admin_api::Error::AdminOperation { error, .. } => match error.kind {
+        otel_arrow_dfe_admin_api::Error::AdminOperation { error, .. } => match error.kind {
             OperationErrorKind::GroupNotFound
             | OperationErrorKind::PipelineNotFound
             | OperationErrorKind::RolloutNotFound
@@ -178,11 +178,11 @@ fn admin_error_kind(error: &otap_df_admin_api::Error) -> &'static str {
             OperationErrorKind::InvalidRequest => "invalid_request",
             OperationErrorKind::Internal => "internal",
         },
-        otap_df_admin_api::Error::ClientConfig { .. } => "client_config",
-        otap_df_admin_api::Error::Transport { .. } => "transport",
-        otap_df_admin_api::Error::Decode { .. } => "decode",
-        otap_df_admin_api::Error::RemoteStatus { .. } => "remote_status",
-        otap_df_admin_api::Error::Endpoint(_) => "endpoint",
+        otel_arrow_dfe_admin_api::Error::ClientConfig { .. } => "client_config",
+        otel_arrow_dfe_admin_api::Error::Transport { .. } => "transport",
+        otel_arrow_dfe_admin_api::Error::Decode { .. } => "decode",
+        otel_arrow_dfe_admin_api::Error::RemoteStatus { .. } => "remote_status",
+        otel_arrow_dfe_admin_api::Error::Endpoint(_) => "endpoint",
     }
 }
 

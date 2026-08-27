@@ -26,19 +26,19 @@
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::config::ExporterConfig;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
-use otap_df_engine::error::Error;
-use otap_df_engine::exporter::ExporterWrapper;
-use otap_df_engine::local::exporter::{EffectHandler, Exporter};
-use otap_df_engine::message::{ExporterInbox, Message};
-use otap_df_engine::node::NodeId;
-use otap_df_engine::terminal_state::TerminalState;
-use otap_df_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
-use otap_df_otap::OTAP_EXPORTER_FACTORIES;
-use otap_df_otap::pdata::OtapPdata;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_engine::config::ExporterConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
+use otel_arrow_dfe_engine::error::Error;
+use otel_arrow_dfe_engine::exporter::ExporterWrapper;
+use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
+use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
+use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
+use otel_arrow_dfe_otap::pdata::OtapPdata;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -182,35 +182,36 @@ struct FlakyExporter {
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 static FLAKY_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: FLAKY_EXPORTER_URN,
-    create: |_pipeline: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             exporter_config: &ExporterConfig,
-             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
-        // Look up state by ID from node config
-        let flaky_id = node_config.config.get("flaky_id").and_then(|v| v.as_str());
-        let (counter, should_ack, nack_count, permanent_nack, permanent_nack_count, auto_ack) =
-            flaky_id
-                .and_then(get_state)
-                .map(|(c, a, n, p, pc, aa)| {
-                    (Some(c), Some(a), Some(n), Some(p), Some(pc), Some(aa))
-                })
-                .unwrap_or((None, None, None, None, None, None));
-        Ok(ExporterWrapper::local(
-            FlakyExporter {
-                counter,
-                should_ack,
-                nack_count,
-                permanent_nack,
-                permanent_nack_count,
-                auto_ack_after_nacks: auto_ack,
-            },
-            node,
-            node_config,
-            exporter_config,
-        ))
-    },
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    create:
+        |_pipeline: PipelineContext,
+         node: NodeId,
+         node_config: Arc<NodeUserConfig>,
+         exporter_config: &ExporterConfig,
+         _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
+            // Look up state by ID from node config
+            let flaky_id = node_config.config.get("flaky_id").and_then(|v| v.as_str());
+            let (counter, should_ack, nack_count, permanent_nack, permanent_nack_count, auto_ack) =
+                flaky_id
+                    .and_then(get_state)
+                    .map(|(c, a, n, p, pc, aa)| {
+                        (Some(c), Some(a), Some(n), Some(p), Some(pc), Some(aa))
+                    })
+                    .unwrap_or((None, None, None, None, None, None));
+            Ok(ExporterWrapper::local(
+                FlakyExporter {
+                    counter,
+                    should_ack,
+                    nack_count,
+                    permanent_nack,
+                    permanent_nack_count,
+                    auto_ack_after_nacks: auto_ack,
+                },
+                node,
+                node_config,
+                exporter_config,
+            ))
+        },
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: |_| Ok(()),
 };
 
@@ -226,7 +227,7 @@ impl Exporter<OtapPdata> for FlakyExporter {
                 Message::Control(NodeControlMsg::Shutdown { .. }) => {
                     break;
                 }
-                Message::PData(data) => {
+                Message::PData(mut data) => {
                     let should_ack = self
                         .should_ack
                         .as_ref()

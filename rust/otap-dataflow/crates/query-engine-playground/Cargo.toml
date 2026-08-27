@@ -1,5 +1,5 @@
 [package]
-name = "otap-df-query-engine-playground"
+name = "otel-arrow-dfe-query-engine-playground"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true
@@ -22,9 +22,9 @@ serde = { workspace = true }
 tokio = { workspace = true }
 
 data_engine_parser_abstractions = { workspace = true }
-otap-df-pdata = { workspace = true, features = ["testing"] }
-otap-df-query-engine = { workspace = true }
-otap-df-query-engine-languages = { workspace = true }
+otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
+otel-arrow-dfe-query-engine = { workspace = true }
+otel-arrow-dfe-query-engine-languages = { workspace = true }
 
 [lints]
 workspace = true

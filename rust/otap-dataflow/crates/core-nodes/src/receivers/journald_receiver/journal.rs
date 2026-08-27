@@ -322,6 +322,9 @@ mod fresh_start_tests {
         }
     }
 
+    /// Scenario: a fresh `start_at: beginning` start is positioned.
+    /// Guarantees: only `seek_head` is issued (no tail/previous stepping), so
+    /// iteration begins at the oldest retained entry.
     #[test]
     fn beginning_seeks_head_only() {
         let mut seek = RecordingSeek::default();
@@ -332,6 +335,10 @@ mod fresh_start_tests {
         assert_eq!(seek.calls, ["seek_head"]);
     }
 
+    /// Scenario: a fresh `start_at: end` start on a journal that already has
+    /// entries (`previous` returns 1).
+    /// Guarantees: the read head is anchored with `seek_tail` + `previous` and
+    /// never `seek_head`, so existing historical records are not replayed.
     #[test]
     fn end_with_existing_entries_anchors_with_previous() {
         // previous() finds the last existing entry (rc = 1): tail + previous and
@@ -347,6 +354,11 @@ mod fresh_start_tests {
         assert_eq!(seek.calls, ["seek_tail", "previous"]);
     }
 
+    /// Scenario: a fresh `start_at: end` start on an empty journal where
+    /// `previous` returns 0 (nothing to anchor on).
+    /// Guarantees: the read head is unparked with a recovery `seek_head`, so the
+    /// later `next`/`wait` loop still advances onto newly appended entries
+    /// instead of stalling forever.
     #[test]
     fn end_on_empty_journal_repositions_to_head() {
         // Regression guard for the empty/no-match permanent stall: previous()
@@ -600,6 +612,11 @@ mod fresh_start_tests {
         assert_eq!(journal.calls, ["next"]);
     }
 
+    /// Scenario: a fresh `start_at: end` start where `sd_journal_previous`
+    /// fails after the tail seek.
+    /// Guarantees: the negative return is surfaced as a
+    /// `("sd_journal_previous", rc)` error rather than being treated as an empty
+    /// journal.
     #[test]
     fn end_propagates_previous_error() {
         let mut seek = RecordingSeek {
@@ -611,6 +628,10 @@ mod fresh_start_tests {
         assert_eq!(seek.calls, ["seek_tail", "previous"]);
     }
 
+    /// Scenario: a fresh `start_at: end` start where `sd_journal_seek_tail`
+    /// fails.
+    /// Guarantees: the error is propagated immediately and no `previous` step is
+    /// attempted after a failed tail seek.
     #[test]
     fn end_propagates_seek_tail_error_without_stepping() {
         let mut seek = RecordingSeek {
@@ -622,6 +643,10 @@ mod fresh_start_tests {
         assert_eq!(seek.calls, ["seek_tail"]);
     }
 
+    /// Scenario: a fresh `start_at: end` start on an empty journal where the
+    /// recovery `sd_journal_seek_head` fails.
+    /// Guarantees: the failure is surfaced as a `seek_head` error, distinct from
+    /// `seek_tail`/`previous` failures.
     #[test]
     fn end_propagates_seek_head_recovery_error() {
         // On the empty path (previous() == 0) a failing recovery seek_head()
@@ -636,6 +661,10 @@ mod fresh_start_tests {
         assert_eq!(seek.calls, ["seek_tail", "previous", "seek_head"]);
     }
 
+    /// Scenario: a fresh `start_at: beginning` start where
+    /// `sd_journal_seek_head` fails.
+    /// Guarantees: the negative return is surfaced as a
+    /// `("sd_journal_seek_head", rc)` error.
     #[test]
     fn beginning_propagates_seek_head_error() {
         let mut seek = RecordingSeek {
@@ -1307,6 +1336,10 @@ mod imp {
             assert_eq!(duration_to_usec(Duration::MAX), u64::MAX - 1);
         }
 
+        /// Scenario: preflight runs against a journal whose parent directory is
+        /// not traversable (permission bits removed).
+        /// Guarantees: it reports a `JournalAccess` error instead of silently
+        /// succeeding or misreporting a missing directory.
         #[test]
         fn preflight_reports_access_when_journal_parent_is_not_traversable() {
             let temp = tempfile::tempdir().expect("tempdir");
@@ -1328,6 +1361,10 @@ mod imp {
             assert!(matches!(result, Err(JournalError::JournalAccess { .. })));
         }
 
+        /// Scenario: preflight summarizes access for the default root when the
+        /// expected journal directories are absent.
+        /// Guarantees: it reports `JournalDirectoriesMissing` rather than a
+        /// generic access error.
         #[test]
         fn preflight_reports_missing_directories_for_default_root() {
             let result =

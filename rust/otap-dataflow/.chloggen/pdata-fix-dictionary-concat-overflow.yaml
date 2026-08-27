@@ -1,5 +1,0 @@
-change_type: bug_fix
-component: pdata
-note: Prevent dictionary key overflow from panicking during OTAP batch concatenation.
-issues: [3566]
-subtext:

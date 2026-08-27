@@ -2,9 +2,9 @@
 
 `dfctl` is the command-line client for the OTAP Dataflow Engine admin API.
 
-It is built on top of the public Rust SDK `otap-df-admin-api`, but end users
+It is built on top of the public Rust SDK `otel-arrow-dfe-admin-api`, but end users
 should think in terms of the installed `dfctl` command. The Rust package name
-for this crate remains `otap-df-ctl`.
+for this crate remains `otel-arrow-dfe-ctl`.
 
 ## Design Goals
 
@@ -34,7 +34,7 @@ For security and privacy behavior, see
 - In this repo, build the CLI with:
 
 ```bash
-cargo build -p otap-df-ctl --bin dfctl
+cargo build -p otel-arrow-dfe-ctl --bin dfctl
 ```
 
 Common local setup:

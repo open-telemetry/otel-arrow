@@ -4,6 +4,7 @@
 //! Unit tests for the extension module (wrapper + builder + control channel).
 
 use super::wrapper::{EffectHandler, ExtensionWrapper};
+use crate::attributes::{ChannelImplementation, ChannelMode};
 use crate::channel_metrics::ChannelMetricsRegistry;
 use crate::config::ExtensionConfig;
 use crate::control::ExtensionControlMsg;
@@ -15,9 +16,9 @@ use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::terminal_state::TerminalState;
 use crate::testing::CtrlMsgCounters;
 use async_trait::async_trait;
-use otap_df_config::ExtensionId;
-use otap_df_config::extension::ExtensionUserConfig;
-use otap_df_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_config::ExtensionId;
+use otel_arrow_dfe_config::extension::ExtensionUserConfig;
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use serde_json::Value;
 use shared_ext::Extension as SharedExtension;
 use std::sync::Arc;
@@ -657,7 +658,7 @@ fn test_extension_attribute_set_carries_pipeline_scope() {
     use crate::attributes::{
         ExtensionAttributeSet, ExtensionScopeAttributeSet, PipelineAttributeSet,
     };
-    use otap_df_telemetry::attributes::AttributeSetHandler;
+    use otel_arrow_dfe_telemetry::attributes::AttributeSetHandler;
 
     let attrs = ExtensionAttributeSet {
         extension_id: "ext1".into(),
@@ -696,13 +697,15 @@ fn test_extension_attribute_set_carries_pipeline_scope() {
     );
 }
 
+/// Scenario: An extension control channel is represented by its scoped entity attributes.
+/// Guarantees: Typed mode and implementation values serialize while invariant fields stay absent.
 #[test]
 fn test_extension_channel_attribute_set_shape() {
     use crate::attributes::{
         ExtensionAttributeSet, ExtensionChannelAttributeSet, ExtensionScopeAttributeSet,
         PipelineAttributeSet,
     };
-    use otap_df_telemetry::attributes::AttributeSetHandler;
+    use otel_arrow_dfe_telemetry::attributes::AttributeSetHandler;
 
     let attrs = ExtensionChannelAttributeSet {
         channel_id: "ext1:control".into(),
@@ -715,26 +718,35 @@ fn test_extension_channel_attribute_set_shape() {
                 ..PipelineAttributeSet::default()
             }),
         },
-        channel_mode: "local".into(),
-        channel_impl: "internal".into(),
+        channel_mode: ChannelMode::Local,
+        channel_impl: ChannelImplementation::Internal,
     };
     assert_eq!(attrs.schema_name(), "extension.channel.attrs");
-    let keys: Vec<&'static str> = attrs.iter_attributes().map(|(k, _)| k).collect();
+    let attr_map: std::collections::HashMap<&'static str, String> = attrs
+        .iter_attributes()
+        .map(|(key, value)| (key, value.to_string_value()))
+        .collect();
     // Invariants (channel.kind, channel.type) and node-only fields (node.port)
     // must not be present.
-    assert!(keys.contains(&"channel.id"));
-    assert!(keys.contains(&"extension.id"));
-    assert!(keys.contains(&"channel.mode"));
-    assert!(keys.contains(&"channel.impl"));
-    assert!(!keys.contains(&"channel.kind"));
-    assert!(!keys.contains(&"channel.type"));
-    assert!(!keys.contains(&"node.port"));
-    assert!(keys.contains(&"scope.kind"));
-    assert!(keys.contains(&"pipeline.id"));
-    assert!(keys.contains(&"pipeline.group.id"));
+    assert!(attr_map.contains_key("channel.id"));
+    assert!(attr_map.contains_key("extension.id"));
+    assert_eq!(
+        attr_map.get("channel.mode").map(String::as_str),
+        Some("local")
+    );
+    assert_eq!(
+        attr_map.get("channel.impl").map(String::as_str),
+        Some("internal")
+    );
+    assert!(!attr_map.contains_key("channel.kind"));
+    assert!(!attr_map.contains_key("channel.type"));
+    assert!(!attr_map.contains_key("node.port"));
+    assert!(attr_map.contains_key("scope.kind"));
+    assert!(attr_map.contains_key("pipeline.id"));
+    assert!(attr_map.contains_key("pipeline.group.id"));
     assert!(
-        !keys.contains(&"scope.id"),
-        "scope.id was replaced by typed composed pipeline attributes; got keys: {keys:?}"
+        !attr_map.contains_key("scope.id"),
+        "scope.id was replaced by typed composed pipeline attributes; got: {attr_map:?}"
     );
 }
 
@@ -755,6 +767,8 @@ fn test_register_extension_entity_unregister_roundtrip() {
     assert_eq!(registry.entity_count(), before);
 }
 
+/// Scenario: An extension control channel entity is registered in a pipeline scope.
+/// Guarantees: Typed channel attributes preserve the extension channel schema and lifecycle.
 #[test]
 fn test_register_extension_channel_entity_carries_extension_scope() {
     let (ctx, registry) = crate::testing::test_extension_ctx();
@@ -762,8 +776,8 @@ fn test_register_extension_channel_entity_carries_extension_scope() {
         "ext1".into(),
         crate::extension::wrapper::ExtensionVariant::Shared,
         "ext1:control".into(),
-        "shared",
-        "tokio",
+        ChannelMode::Shared,
+        ChannelImplementation::Tokio,
     );
     let schema = registry
         .visit_entity(key, |attrs| attrs.schema_name())
@@ -867,16 +881,17 @@ fn test_wire_telemetry_disabled_still_registers_channel_entity() {
 
 // When the host's monitor dispatches `CollectTelemetry { metrics_reporter }`,
 // the extension must publish its internal metrics via the supplied reporter.
-#[otap_df_telemetry_macros::metric_set(name = "test.extension.internal")]
+#[otel_arrow_dfe_telemetry_macros::metric_set(name = "test.extension.internal")]
 #[derive(Debug, Default, Clone)]
 struct TestExtensionInternalMetrics {
     #[metric(unit = "{tick}")]
-    collect_invocations: otap_df_telemetry::instrument::Counter<u64>,
+    collect_invocations: otel_arrow_dfe_telemetry::instrument::Counter<u64>,
 }
 
 struct TelemetryReportingLocalExt {
-    metrics:
-        std::cell::RefCell<otap_df_telemetry::metrics::MetricSet<TestExtensionInternalMetrics>>,
+    metrics: std::cell::RefCell<
+        otel_arrow_dfe_telemetry::metrics::MetricSet<TestExtensionInternalMetrics>,
+    >,
     started: std::cell::Cell<bool>,
 }
 
@@ -918,7 +933,7 @@ impl crate::local::extension::Extension for TelemetryReportingLocalExt {
 
 #[test]
 fn active_extension_reports_internal_metrics_on_collect_telemetry() {
-    use otap_df_telemetry::reporter::MetricsReporter;
+    use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 
     let (rt, ls) = crate::testing::setup_test_runtime();
     rt.block_on(ls.run_until(async {
@@ -978,7 +993,7 @@ fn active_extension_reports_internal_metrics_on_collect_telemetry() {
             .get_metrics()
             .iter()
             .map(|v| match v {
-                otap_df_telemetry::metrics::MetricValue::U64(n) => *n,
+                otel_arrow_dfe_telemetry::metrics::MetricValue::U64(n) => *n,
                 _ => 0,
             })
             .sum();
@@ -1003,7 +1018,7 @@ fn active_extension_reports_internal_metrics_on_collect_telemetry() {
 fn two_active_extensions_report_isolated_internal_metrics() {
     // Two active extensions sharing one MetricsReporter must publish
     // under distinct `MetricSetKey`s with no value bleed.
-    use otap_df_telemetry::reporter::MetricsReporter;
+    use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 
     let (rt, ls) = crate::testing::setup_test_runtime();
     rt.block_on(ls.run_until(async {
@@ -1109,7 +1124,7 @@ fn two_active_extensions_report_isolated_internal_metrics() {
                         .get_metrics()
                         .iter()
                         .map(|m| match m {
-                            otap_df_telemetry::metrics::MetricValue::U64(n) => *n,
+                            otel_arrow_dfe_telemetry::metrics::MetricValue::U64(n) => *n,
                             _ => 0,
                         })
                         .sum();
@@ -1166,7 +1181,7 @@ fn pipeline_ctx_in_controller(
 #[test]
 fn extension_entity_isolated_across_pipelines() {
     use crate::extension::wrapper::ExtensionVariant;
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 
     let registry = TelemetryRegistryHandle::new();
     let controller = crate::context::ControllerContext::new(registry.clone());
@@ -1190,7 +1205,7 @@ fn extension_entity_isolated_across_pipelines() {
 #[test]
 fn extension_entity_isolated_across_cores() {
     use crate::extension::wrapper::ExtensionVariant;
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 
     let registry = TelemetryRegistryHandle::new();
     let controller = crate::context::ControllerContext::new(registry.clone());
@@ -1216,7 +1231,7 @@ fn extension_entity_isolated_across_cores() {
 #[test]
 fn extension_entity_isolated_across_pipeline_groups() {
     use crate::extension::wrapper::ExtensionVariant;
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 
     let registry = TelemetryRegistryHandle::new();
     let controller = crate::context::ControllerContext::new(registry.clone());
@@ -1237,10 +1252,12 @@ fn extension_entity_isolated_across_pipeline_groups() {
     );
 }
 
+/// Scenario: Matching extension control channels are registered in two different pipelines.
+/// Guarantees: Typed channel attributes do not collapse entities across pipeline scopes.
 #[test]
 fn extension_channel_entity_isolated_across_pipelines() {
     use crate::extension::wrapper::ExtensionVariant;
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 
     let registry = TelemetryRegistryHandle::new();
     let controller = crate::context::ControllerContext::new(registry.clone());
@@ -1254,8 +1271,8 @@ fn extension_channel_entity_isolated_across_pipelines() {
             "same_ext".into(),
             ExtensionVariant::Shared,
             "same_ext:control".into(),
-            "shared",
-            "tokio",
+            ChannelMode::Shared,
+            ChannelImplementation::Tokio,
         );
     let chan_b = pipe_b
         .extension_context()
@@ -1263,8 +1280,8 @@ fn extension_channel_entity_isolated_across_pipelines() {
             "same_ext".into(),
             ExtensionVariant::Shared,
             "same_ext:control".into(),
-            "shared",
-            "tokio",
+            ChannelMode::Shared,
+            ChannelImplementation::Tokio,
         );
 
     assert_ne!(
@@ -1276,7 +1293,7 @@ fn extension_channel_entity_isolated_across_pipelines() {
 #[test]
 fn extension_attribute_set_carries_pipeline_scope_from_pipeline_context() {
     use crate::extension::wrapper::ExtensionVariant;
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 
     let registry = TelemetryRegistryHandle::new();
     let controller = crate::context::ControllerContext::new(registry.clone());
@@ -1371,11 +1388,11 @@ fn two_pipelines_publish_isolated_internal_metrics_through_shared_reporter() {
     // and report through ONE shared `MetricsReporter`. Isolation must
     // be enforced by per-entity `MetricSetKey`s with no value bleed.
     use crate::extension::wrapper::ExtensionVariant;
-    use otap_df_telemetry::reporter::MetricsReporter;
+    use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 
     let (rt, ls) = crate::testing::setup_test_runtime();
     rt.block_on(ls.run_until(async {
-        let registry = otap_df_telemetry::registry::TelemetryRegistryHandle::new();
+        let registry = otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new();
         let controller = crate::context::ControllerContext::new(registry.clone());
 
         // Two pipelines, distinct ids, distinct logical cores. These
@@ -1471,7 +1488,7 @@ fn two_pipelines_publish_isolated_internal_metrics_through_shared_reporter() {
                         .get_metrics()
                         .iter()
                         .map(|m| match m {
-                            otap_df_telemetry::metrics::MetricValue::U64(n) => *n,
+                            otel_arrow_dfe_telemetry::metrics::MetricValue::U64(n) => *n,
                             _ => 0,
                         })
                         .sum();
@@ -1522,7 +1539,7 @@ fn panicking_collect_telemetry_handler_does_not_contaminate_neighbour() {
     // neighbour must continue publishing its own snapshots through the
     // shared reporter without skew.
     use crate::extension::wrapper::ExtensionVariant;
-    use otap_df_telemetry::reporter::MetricsReporter;
+    use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 
     let (rt, ls) = crate::testing::setup_test_runtime();
     rt.block_on(ls.run_until(async {
@@ -1621,7 +1638,7 @@ fn panicking_collect_telemetry_handler_does_not_contaminate_neighbour() {
                             .get_metrics()
                             .iter()
                             .map(|m| match m {
-                                otap_df_telemetry::metrics::MetricValue::U64(n) => *n,
+                                otel_arrow_dfe_telemetry::metrics::MetricValue::U64(n) => *n,
                                 _ => 0,
                             })
                             .sum::<u64>();
@@ -1662,7 +1679,7 @@ fn snapshot_consumed_after_extension_drop_retains_identity() {
     // still be consumable with its key/values intact -- snapshots are
     // value types, not references into the registry.
     use crate::extension::wrapper::ExtensionVariant;
-    use otap_df_telemetry::reporter::MetricsReporter;
+    use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 
     let (rt, ls) = crate::testing::setup_test_runtime();
     rt.block_on(ls.run_until(async {
@@ -1720,7 +1737,7 @@ fn snapshot_consumed_after_extension_drop_retains_identity() {
             .get_metrics()
             .iter()
             .map(|m| match m {
-                otap_df_telemetry::metrics::MetricValue::U64(n) => *n,
+                otel_arrow_dfe_telemetry::metrics::MetricValue::U64(n) => *n,
                 _ => 0,
             })
             .sum();
@@ -1785,7 +1802,7 @@ async fn shutdown_preempts_queued_collect_telemetry_on_control_channel() {
     use crate::control::ShutdownPayload;
     use crate::extension::wrapper::ControlChannel;
     use crate::local::message::LocalReceiver;
-    use otap_df_channel::mpsc;
+    use otel_arrow_dfe_channel::mpsc;
 
     let (tx, rx) = mpsc::Channel::<ExtensionControlMsg>::new(8);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<ShutdownPayload>();

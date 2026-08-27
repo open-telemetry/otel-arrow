@@ -6,19 +6,19 @@
 //! This crate benchmarks OTLP.
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use otap_df_pdata::otlp::ProtoBuffer;
-use otap_df_pdata::otlp::ProtoBytesEncoder;
-use otap_df_pdata::otlp::logs::LogsProtoBytesEncoder;
-use otap_df_pdata::proto::OtlpProtoMessage;
-use otap_df_pdata::testing::round_trip::otlp_to_otap;
+use otel_arrow_dfe_pdata::otlp::ProtoBuffer;
+use otel_arrow_dfe_pdata::otlp::ProtoBytesEncoder;
+use otel_arrow_dfe_pdata::otlp::logs::LogsProtoBytesEncoder;
+use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
+use otel_arrow_dfe_pdata::testing::round_trip::otlp_to_otap;
 use prost::Message;
 use prost::bytes::BytesMut;
 
-use otap_df_pdata::OtapPayload;
-use otap_df_pdata::OtlpProtoBytes;
-use otap_df_pdata::proto::opentelemetry::common::v1::*;
-use otap_df_pdata::proto::opentelemetry::logs::v1::*;
-use otap_df_pdata::proto::opentelemetry::resource::v1::*;
+use otel_arrow_dfe_pdata::OtapPayload;
+use otel_arrow_dfe_pdata::OtlpProtoBytes;
+use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::*;
+use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::*;
+use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::*;
 
 #[cfg(not(windows))]
 use tikv_jemallocator::Jemalloc;

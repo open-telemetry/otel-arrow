@@ -35,7 +35,7 @@ engine:
     logs:
       # `debug` so that DEBUG-level events such as
       # `otlp.exporter.grpc.receive` are captured in addition to the
-      # WARN-level `tls.handshake.failed` and `otlp.exporter.http.export_error`.
+      # WARN-level `tls.handshake.failed` and `otlp.exporter.grpc.export_error`.
       # The internal_telemetry provider is `noop` so this does not feed back.
       level: "debug"
       providers:
@@ -83,7 +83,7 @@ groups:
               protocol:
                 tcp:
                   listening_addr: "127.0.0.1:14514"
-          # Drives `otlp.exporter.http.export_error` (per failed export)
+          # Drives `otlp.exporter.grpc.export_error` (per failed export)
           # AND `otlp.exporter.grpc.receive` (per batch pulled from the
           # exporter's inbox) by feeding synthetic traffic into an OTLP
           # exporter pointed at an unbound port.

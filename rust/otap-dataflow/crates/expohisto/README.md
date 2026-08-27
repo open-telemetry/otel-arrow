@@ -1,4 +1,4 @@
-# otap-df-expohisto
+# otel-arrow-dfe-expohisto
 
 An OpenTelemetry exponential histogram aggregator.
 
@@ -20,7 +20,7 @@ This data structure incorporates an exact lookup table.
 ## Usage
 
 ```rust
-use otap_df_expohisto::HistogramNN;
+use otel_arrow_dfe_expohisto::HistogramNN;
 
 let mut hist: HistogramNN<16> = HistogramNN::new();
 hist.update(1.5).unwrap();

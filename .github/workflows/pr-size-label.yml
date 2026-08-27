@@ -19,17 +19,17 @@ jobs:
       - uses: codelytv/pr-size-labeler@095a41fca88b8764fd9e008ad269bcdb82bb38b9 # v1.10.4
         with:
           xs_label: 'size/XS'
-          xs_max_size: '9'
+          xs_max_size: '10'
           s_label: 'size/S'
-          s_max_size: '29'
+          s_max_size: '30'
           m_label: 'size/M'
-          m_max_size: '99'
+          m_max_size: '250'
           l_label: 'size/L'
-          l_max_size: '499'
+          l_max_size: '1250'
           xl_label: 'size/XL'
           fail_if_xl: 'false'
           message_if_xl: >
-            **This PR is `size/XL` (500+ changed lines).** Large PRs are
+            **This PR is `size/XL` (1,250+ changed lines).** Large PRs are
             harder to review thoroughly and more likely to introduce subtle
             bugs.
 

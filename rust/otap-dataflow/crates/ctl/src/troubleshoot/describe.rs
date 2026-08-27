@@ -13,7 +13,7 @@ use super::models::{
     GroupShutdownWatchPipeline, GroupShutdownWatchSnapshot, GroupsDescribeReport, GroupsSummary,
     NormalizedEvent, NormalizedEventKind, PipelineDescribeReport,
 };
-use otap_df_admin_api::{groups, pipelines};
+use otel_arrow_dfe_admin_api::{groups, pipelines};
 use serde_json::Value;
 use std::time::SystemTime;
 

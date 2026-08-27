@@ -15,8 +15,8 @@ use arrow::datatypes::{
 use wasmtime::component::{Resource, ResourceTable};
 
 use crate::bindings::otel::otap_dataflow_plugin::otel_kernels::{self, AttrScope};
-use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::otap::filter::{IdBitmapPool, filter_otap_batch};
+use otel_arrow_dfe_pdata::OtapArrowRecords;
+use otel_arrow_dfe_pdata::otap::filter::{IdBitmapPool, filter_otap_batch};
 
 /// Host-owned data behind a host-managed `pdata` resource handle.
 ///
@@ -259,11 +259,11 @@ mod tests {
     use super::*;
     use arrow::array::{Array, DictionaryArray, RecordBatch, StringArray, UInt16Array};
     use arrow::datatypes::{Field, Schema, UInt8Type};
-    use otap_df_pdata::otap::Logs;
-    use otap_df_pdata::proto::OtlpProtoMessage;
-    use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
-    use otap_df_pdata::proto::opentelemetry::logs::v1::LogRecord;
-    use otap_df_pdata::testing::round_trip::{otap_to_otlp, to_otap_logs};
+    use otel_arrow_dfe_pdata::otap::Logs;
+    use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogRecord;
+    use otel_arrow_dfe_pdata::testing::round_trip::{otap_to_otlp, to_otap_logs};
     use std::sync::Arc;
 
     fn batch_with_severity(values: &[&str]) -> OtapArrowRecords {
@@ -283,7 +283,7 @@ mod tests {
         .unwrap();
         let mut otap = OtapArrowRecords::Logs(Logs::default());
         otap.set(
-            otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType::Logs,
+            otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType::Logs,
             record_batch,
         )
         .expect("set logs root batch");
@@ -348,7 +348,7 @@ mod tests {
         let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(dict)]).unwrap();
         let mut otap = OtapArrowRecords::Logs(Logs::default());
         otap.set(
-            otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType::Logs,
+            otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType::Logs,
             batch,
         )
         .expect("set logs root batch");
@@ -376,7 +376,7 @@ mod tests {
         let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(dict)]).unwrap();
         let mut otap = OtapArrowRecords::Logs(Logs::default());
         otap.set(
-            otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType::Logs,
+            otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType::Logs,
             batch,
         )
         .expect("set logs root batch");
@@ -430,7 +430,7 @@ mod tests {
                 })
                 .map(|value| {
                     match value.value.as_ref().expect("typed attribute value") {
-                otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(
+                otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(
                     s,
                 ) => s.clone(),
                 other => panic!("expected string attribute value, got {other:?}"),

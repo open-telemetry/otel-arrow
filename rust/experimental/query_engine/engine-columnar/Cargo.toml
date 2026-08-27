@@ -7,3 +7,16 @@ license.workspace = true
 publish.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+
+[dependencies]
+ahash = { workspace = true }
+arrow = { workspace = true }
+chrono = { workspace = true }
+half = { workspace = true }
+indexmap = { workspace = true }
+regex = { workspace = true }
+roaring = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+data_engine_expressions = { path = "../expressions" }

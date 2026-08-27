@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::{
-    borrow::Borrow,
     fmt,
     fmt::{Debug, Display, Write},
 };
@@ -12,8 +11,8 @@ use regex::{Regex, RegexBuilder};
 use serde_json::json;
 
 use crate::{
-    ArrayValue, ExpressionError, IndexValueClosureCallback, KeyValueClosureCallback, MapValue,
-    QueryLocation, ValueType, array_value, date_utils, map_value,
+    ArrayValue, ExpressionError, MapValue, QueryLocation, ValueType, array_value, date_utils,
+    map_value,
 };
 
 #[derive(Debug, Clone)]
@@ -43,6 +42,17 @@ impl<'a> Value<'a> {
             Value::Regex(r) => r.to_string(),
             Value::String(s) => ValueString::Ref(s.get_value()),
             Value::TimeSpan(t) => t.to_string(),
+        }
+    }
+
+    pub fn convert_to_regex(&self) -> Result<ValueRegex<'a>, regex::Error> {
+        match self {
+            Value::Regex(r) => Ok(ValueRegex::Ref(r.get_value())),
+            v => {
+                let s = v.convert_to_string();
+
+                Ok(ValueRegex::Owned(Regex::new(s.as_ref())?))
+            }
         }
     }
 }
@@ -147,25 +157,6 @@ impl Value<'_> {
         }
     }
 
-    pub fn convert_to_regex<F>(&self, mut action: F) -> Result<(), regex::Error>
-    where
-        F: FnMut(&Regex),
-    {
-        match self {
-            Value::Regex(r) => {
-                (action)(r.get_value());
-                Ok(())
-            }
-            v => {
-                let s = v.convert_to_string();
-
-                action(&Regex::new(s.as_ref())?);
-
-                Ok(())
-            }
-        }
-    }
-
     pub fn convert_to_timespan(&self) -> Option<TimeDelta> {
         match self {
             Value::TimeSpan(t) => Some(t.get_value()),
@@ -184,10 +175,10 @@ impl Value<'_> {
             Value::Array(a) => {
                 let mut values = Vec::new();
 
-                a.get_items(&mut IndexValueClosureCallback::new(|_, value| {
+                a.get_items(&mut |_, value| {
                     values.push(value.to_json_value());
                     true
-                }));
+                });
 
                 serde_json::Value::Array(values)
             }
@@ -198,10 +189,10 @@ impl Value<'_> {
             Value::Map(m) => {
                 let mut values = serde_json::Map::new();
 
-                m.get_items(&mut KeyValueClosureCallback::new(|key, value| {
+                m.get_items(&mut |key, value| {
                     values.insert(key.into(), value.to_json_value());
                     true
-                }));
+                });
 
                 serde_json::Value::Object(values)
             }
@@ -472,7 +463,7 @@ impl Value<'_> {
         match haystack {
             Value::Array(array) => {
                 let mut found = false;
-                array.get_items(&mut IndexValueClosureCallback::new(|_, item_value| {
+                array.get_items(&mut |_, item_value| {
                     match Self::are_values_equal(
                         query_location,
                         &item_value,
@@ -489,7 +480,7 @@ impl Value<'_> {
                         }
                         Err(_) => true, // Continue iteration on error
                     }
-                }));
+                });
                 Ok(found)
             }
             Value::String(string_val) => {
@@ -522,25 +513,14 @@ impl Value<'_> {
         haystack: &Value,
         pattern: &Value,
     ) -> Result<bool, ExpressionError> {
-        let mut result = None;
+        let r = pattern.convert_to_regex().map_err(|e| {
+            ExpressionError::ParseError(
+                query_location.clone(),
+                format!("Failed to parse Regex from pattern: {e}"),
+            )
+        })?;
 
-        pattern
-            .convert_to_regex(|r: &Regex| {
-                result = Some(r.is_match(haystack.convert_to_string().as_ref()));
-            })
-            .map_err(|e| {
-                ExpressionError::ParseError(
-                    query_location.clone(),
-                    format!("Failed to parse Regex from pattern: {e}"),
-                )
-            })?;
-
-        match result {
-            Some(b) => Ok(b),
-            None => panic!(
-                "Encountered a Value type which does not correctly implement convert_to_regex"
-            ),
-        }
+        Ok(r.as_ref().is_match(haystack.convert_to_string().as_ref()))
     }
 
     pub fn capture(
@@ -549,58 +529,46 @@ impl Value<'_> {
         pattern: &Value,
         capture_group: &Value,
     ) -> Result<Option<core::ops::Range<usize>>, ExpressionError> {
-        let mut result = None;
+        let r = pattern.convert_to_regex().map_err(|e| {
+            ExpressionError::ParseError(
+                query_location.clone(),
+                format!("Failed to parse Regex from pattern: {e}"),
+            )
+        })?;
 
-        pattern
-            .convert_to_regex(|r: &Regex| {
-                result = match capture_group {
-                    Value::String(name) => match r.captures(haystack.get_value()) {
-                        Some(c) => match c.name(name.get_value()) {
-                            Some(m) => Some(Ok(Some(m.range()))),
-                            None => Some(Ok(None)),
-                        },
-                        None => Some(Ok(None)),
-                    },
-                    Value::Integer(index) => {
-                        let i = index.get_value();
+        match capture_group {
+            Value::String(name) => match r.as_ref().captures(haystack.get_value()) {
+                Some(c) => match c.name(name.get_value()) {
+                    Some(m) => Ok(Some(m.range())),
+                    None => Ok(None),
+                },
+                None => Ok(None),
+            },
+            Value::Integer(index) => {
+                let i = index.get_value();
 
-                        if i < 0 {
-                            Some(Err(ExpressionError::ValidationFailure(
-                                query_location.clone(),
-                                "Capture group index cannot be a negative value".into(),
-                            )))
-                        } else {
-                            match r.captures(haystack.get_value()) {
-                                Some(c) => match c.get(i as usize) {
-                                    Some(m) => Some(Ok(Some(m.range()))),
-                                    None => Some(Ok(None)),
-                                },
-                                None => Some(Ok(None)),
-                            }
-                        }
-                    }
-                    v => Some(Err(ExpressionError::ValidationFailure(
+                if i < 0 {
+                    Err(ExpressionError::ValidationFailure(
                         query_location.clone(),
-                        format!(
-                            "Value of '{:?}' type cannot be used to resolve a capture group",
-                            v.get_value_type()
-                        ),
-                    ))),
+                        "Capture group index cannot be a negative value".into(),
+                    ))
+                } else {
+                    match r.as_ref().captures(haystack.get_value()) {
+                        Some(c) => match c.get(i as usize) {
+                            Some(m) => Ok(Some(m.range())),
+                            None => Ok(None),
+                        },
+                        None => Ok(None),
+                    }
                 }
-            })
-            .map_err(|e| {
-                ExpressionError::ParseError(
-                    query_location.clone(),
-                    format!("Failed to parse Regex from pattern: {e}"),
-                )
-            })?;
-
-        match result {
-            Some(Ok(r)) => Ok(r),
-            Some(Err(e)) => Err(e),
-            None => panic!(
-                "Encountered a Value type which does not correctly implement convert_to_string"
-            ),
+            }
+            v => Err(ExpressionError::ValidationFailure(
+                query_location.clone(),
+                format!(
+                    "Value of '{}' type cannot be used to resolve a capture group",
+                    v.get_value_type()
+                ),
+            )),
         }
     }
 
@@ -1095,6 +1063,35 @@ impl From<ValueString<'_>> for String {
     }
 }
 
+pub enum ValueRegex<'a> {
+    Ref(&'a Regex),
+    Owned(Regex),
+}
+
+impl AsRef<Regex> for ValueRegex<'_> {
+    fn as_ref(&self) -> &Regex {
+        match self {
+            ValueRegex::Ref(r) => r,
+            ValueRegex::Owned(r) => r,
+        }
+    }
+}
+
+impl From<Regex> for ValueRegex<'_> {
+    fn from(value: Regex) -> Self {
+        ValueRegex::Owned(value)
+    }
+}
+
+impl From<ValueRegex<'_>> for Regex {
+    fn from(val: ValueRegex<'_>) -> Self {
+        match val {
+            ValueRegex::Ref(r) => r.clone(),
+            ValueRegex::Owned(o) => o,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum NumericValue {
     Integer(i64),
@@ -1252,9 +1249,9 @@ pub trait RegexValue: Debug {
     }
 }
 
-impl<T: Borrow<Regex> + Debug> RegexValue for T {
+impl<T: AsRef<Regex> + Debug> RegexValue for T {
     fn get_value(&self) -> &Regex {
-        self.borrow()
+        self.as_ref()
     }
 }
 
@@ -1756,6 +1753,42 @@ mod tests {
             )),
             "[1]",
         );
+    }
+
+    #[test]
+    pub fn test_convert_to_regex() {
+        let run_test_success = |value: Value, expected: &str| {
+            assert_eq!(
+                expected,
+                value
+                    .convert_to_regex()
+                    .expect("has regex")
+                    .as_ref()
+                    .as_str()
+            )
+        };
+
+        run_test_success(
+            Value::Regex(&RegexScalarExpression::new(
+                QueryLocation::new_fake(),
+                Regex::new(".*").expect("valid regex"),
+            )),
+            ".*",
+        );
+
+        run_test_success(
+            Value::String(&StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                ".*",
+            )),
+            ".*",
+        );
+
+        assert!(
+            Value::String(&StringScalarExpression::new(QueryLocation::new_fake(), "(",))
+                .convert_to_regex()
+                .is_err()
+        )
     }
 
     #[test]

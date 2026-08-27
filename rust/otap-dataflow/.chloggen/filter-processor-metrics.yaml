@@ -1,6 +1,0 @@
-change_type: breaking
-component: pipeline
-note: "Migrate filter_processor metrics to use enum attributes."
-issues: [3530]
-subtext: |
-  Migration: The `signals_consumed` and `signals_filtered` metrics for `filter_processor` have been removed. Use the `dropped.items` metric and engine-level consumed metrics instead.

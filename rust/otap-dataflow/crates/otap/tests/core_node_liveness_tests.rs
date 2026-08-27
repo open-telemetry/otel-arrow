@@ -12,21 +12,21 @@ mod common;
 
 use common::counting_exporter::{self, COUNTING_EXPORTER_URN};
 use common::flaky_exporter::{self, FLAKY_EXPORTER_URN};
-use otap_df_config::observed_state::{ObservedStateSettings, SendPolicy};
-use otap_df_config::pipeline::{PipelineConfig, PipelineConfigBuilder, PipelineType};
-use otap_df_config::policy::{ChannelCapacityPolicy, TelemetryPolicy};
-use otap_df_config::{DeployedPipelineKey, PipelineGroupId, PipelineId};
-use otap_df_core_nodes::processors::batch_processor::OTAP_BATCH_PROCESSOR_URN;
-use otap_df_core_nodes::processors::retry_processor::RETRY_PROCESSOR_URN;
-use otap_df_core_nodes::receivers::traffic_generator::TRAFFIC_GENERATOR_RECEIVER_URN;
-use otap_df_engine::context::ControllerContext;
-use otap_df_engine::control::{
+use otel_arrow_dfe_config::observed_state::{ObservedStateSettings, SendPolicy};
+use otel_arrow_dfe_config::pipeline::{PipelineConfig, PipelineConfigBuilder, PipelineType};
+use otel_arrow_dfe_config::policy::{ChannelCapacityPolicy, TelemetryPolicy};
+use otel_arrow_dfe_config::{DeployedPipelineKey, PipelineGroupId, PipelineId};
+use otel_arrow_dfe_core_nodes::processors::batch_processor::OTAP_BATCH_PROCESSOR_URN;
+use otel_arrow_dfe_core_nodes::processors::retry_processor::RETRY_PROCESSOR_URN;
+use otel_arrow_dfe_core_nodes::receivers::traffic_generator::TRAFFIC_GENERATOR_RECEIVER_URN;
+use otel_arrow_dfe_engine::context::ControllerContext;
+use otel_arrow_dfe_engine::control::{
     RuntimeControlMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
 };
-use otap_df_engine::entity_context::set_pipeline_entity_key;
-use otap_df_otap::OTAP_PIPELINE_FACTORY;
-use otap_df_state::store::ObservedStateStore;
-use otap_df_telemetry::InternalTelemetrySystem;
+use otel_arrow_dfe_engine::entity_context::set_pipeline_entity_key;
+use otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY;
+use otel_arrow_dfe_state::store::ObservedStateStore;
+use otel_arrow_dfe_telemetry::InternalTelemetrySystem;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -263,7 +263,7 @@ fn run_pipeline_with_condition<F>(
         let _pipeline_entity_guard =
             set_pipeline_entity_key(pipeline_ctx.metrics_registry(), pipeline_entity_key);
         let (_memory_pressure_tx, memory_pressure_rx) = tokio::sync::watch::channel(
-            otap_df_engine::memory_limiter::MemoryPressureChanged::initial(),
+            otel_arrow_dfe_engine::memory_limiter::MemoryPressureChanged::initial(),
         );
         runtime_pipeline.run_forever(
             pipeline_key,
@@ -305,7 +305,7 @@ impl BatchMetricsSnapshot {
 }
 
 fn capture_batch_metrics(
-    registry: &otap_df_telemetry::registry::TelemetryRegistryHandle,
+    registry: &otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle,
 ) -> BatchMetricsSnapshot {
     let mut snapshot = BatchMetricsSnapshot::default();
     registry.visit_current_metrics_with_item_attrs(
@@ -318,7 +318,7 @@ fn capture_batch_metrics(
                     .unwrap_or_default();
 
                 for (field, value) in iter {
-                    if let otap_df_telemetry::metrics::MetricValue::Distribution(_) = value {
+                    if let otel_arrow_dfe_telemetry::metrics::MetricValue::Distribution(_) = value {
                         continue;
                     }
 
@@ -422,7 +422,7 @@ where
         let _pipeline_entity_guard =
             set_pipeline_entity_key(pipeline_ctx.metrics_registry(), pipeline_entity_key);
         let (_memory_pressure_tx, memory_pressure_rx) = tokio::sync::watch::channel(
-            otap_df_engine::memory_limiter::MemoryPressureChanged::initial(),
+            otel_arrow_dfe_engine::memory_limiter::MemoryPressureChanged::initial(),
         );
         runtime_pipeline.run_forever(
             pipeline_key,

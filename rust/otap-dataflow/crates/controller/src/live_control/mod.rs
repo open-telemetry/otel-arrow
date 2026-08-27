@@ -16,17 +16,18 @@
 
 use super::*;
 use chrono::Utc;
-use otap_df_admin::{
+use otel_arrow_dfe_admin::{
     ConfigChangeAction, ConfigChangeStatus, ControlPlane, ControlPlaneError,
     EngineConfigReconcileRequest, EngineConfigReconcileState, EngineConfigReconcileStatus,
     GroupDeleteStatus, PipelineDeleteStatus, PipelineDetails,
     PipelineRolloutState as ApiPipelineRolloutState,
-    PipelineRolloutSummary as ApiPipelineRolloutSummary, ReconfigureRequest, RolloutCoreStatus,
-    RolloutStatus, ShutdownCoreStatus, ShutdownStatus,
+    PipelineRolloutSummary as ApiPipelineRolloutSummary, PipelineShutdownInitiator,
+    ReconfigureRequest, RolloutCoreStatus, RolloutStatus, ShutdownCoreStatus, ShutdownStatus,
 };
-use otap_df_state::conditions::ConditionStatus;
-use otap_df_state::phase::PipelinePhase;
-use otap_df_state::pipeline_status::{PipelineRolloutState, PipelineRolloutSummary};
+use otel_arrow_dfe_engine::topology::NumaTopology;
+use otel_arrow_dfe_state::conditions::ConditionStatus;
+use otel_arrow_dfe_state::phase::PipelinePhase;
+use otel_arrow_dfe_state::pipeline_status::{PipelineRolloutState, PipelineRolloutSummary};
 use std::any::Any;
 use std::backtrace::Backtrace;
 use std::collections::VecDeque;
@@ -44,11 +45,12 @@ mod state;
 use self::state::TERMINAL_OPERATION_RETENTION_TTL;
 use self::state::{
     ActiveRuntimeCoreState, CandidateRolloutPlan, CandidateShutdownPlan, ControllerRuntimeState,
-    LogicalPipelineRecord, PipelineOperationKind, PipelineOperationReservationState, RolloutAction,
-    RolloutCoreProgress, RolloutExecutionError, RolloutLifecycleState, RolloutRecord,
-    RuntimeInstanceLifecycle, RuntimeInstanceRecord, RuntimeRecoveryState, ShutdownCoreProgress,
-    ShutdownLifecycleState, ShutdownRecord, TERMINAL_ROLLOUT_RETENTION_LIMIT,
-    TERMINAL_SHUTDOWN_RETENTION_LIMIT, TopicRuntimeProfile, is_expired, timestamp_now,
+    LivePipelinePlacement, LogicalPipelineRecord, PipelineOperationKind,
+    PipelineOperationReservationState, RolloutAction, RolloutCoreProgress, RolloutExecutionError,
+    RolloutLifecycleState, RolloutRecord, RuntimeInstanceLifecycle, RuntimeInstanceRecord,
+    RuntimeRecoveryState, ShutdownCoreProgress, ShutdownLifecycleState, ShutdownRecord,
+    TERMINAL_ROLLOUT_RETENTION_LIMIT, TERMINAL_SHUTDOWN_RETENTION_LIMIT, TopicRuntimeProfile,
+    is_expired, timestamp_now,
 };
 pub(crate) use self::state::{PanicReport, RuntimeInstanceError, RuntimeInstanceExit};
 
@@ -77,6 +79,8 @@ pub(super) struct ControllerRuntime<PData: 'static + Clone + Send + Sync + std::
     declared_topics: DeclaredTopics<PData>,
     /// Controller-wide core ids available for policy-based allocation.
     available_core_ids: Vec<CoreId>,
+    /// Controller-owned topology snapshot used for live rollout placement metadata.
+    topology: NumaTopology,
     /// Tracing setup cloned into launched runtime threads.
     engine_tracing_setup: TracingSetup,
     /// Applies reconciled log-level directives to every tracing setup.
@@ -85,8 +89,6 @@ pub(super) struct ControllerRuntime<PData: 'static + Clone + Send + Sync + std::
     telemetry_reporting_interval: Duration,
     /// Memory-pressure signal fanout shared with pipeline runtimes.
     memory_pressure_tx: tokio::sync::watch::Sender<MemoryPressureChanged>,
-    /// Main controller thread unparked when recovery becomes fatal.
-    controller_thread: thread::Thread,
     /// All mutable live-control state protected by a single mutex.
     state: Mutex<ControllerRuntimeState>,
     /// Wakes global shutdown waiters when runtime instance liveness changes.
@@ -127,6 +129,7 @@ impl<
         metrics_reporter: MetricsReporter,
         declared_topics: DeclaredTopics<PData>,
         available_core_ids: Vec<CoreId>,
+        topology: NumaTopology,
         engine_tracing_setup: TracingSetup,
         log_filter_handle: RuntimeLogFilterHandle,
         telemetry_reporting_interval: Duration,
@@ -142,13 +145,14 @@ impl<
             metrics_reporter,
             declared_topics,
             available_core_ids,
+            topology,
             engine_tracing_setup,
             log_filter_handle,
             telemetry_reporting_interval,
             memory_pressure_tx,
-            controller_thread: thread::current(),
             state: Mutex::new(ControllerRuntimeState {
                 live_config,
+                config_revision: 0,
                 logical_pipelines: HashMap::new(),
                 runtime_instances: HashMap::new(),
                 runtime_recoveries: HashMap::new(),
@@ -167,10 +171,12 @@ impl<
                 next_reconcile_id: 0,
                 next_rollout_id: 0,
                 next_shutdown_id: 0,
+                next_placement_generation: 1,
                 next_thread_id: 1,
                 next_recovery_id: 0,
                 next_pipeline_operation_reservation_id: 0,
                 first_error: None,
+                instance_wait_released: false,
                 global_shutdown_requested: false,
                 global_shutdown_coordinators: 0,
             }),
@@ -182,16 +188,17 @@ impl<
     pub(super) fn register_committed_pipeline(
         &self,
         resolved: ResolvedPipelineConfig,
+        placement: PipelinePlacement,
         generation: u64,
     ) {
         let pipeline_key = PipelineKey::new(
             resolved.pipeline_group_id.clone(),
             resolved.pipeline_id.clone(),
         );
-        if let Ok(active_cores) = self.assigned_cores_for_resolved(&resolved) {
-            self.observed_state_store
-                .set_pipeline_active_cores(pipeline_key.clone(), active_cores);
-        }
+        self.observed_state_store.set_pipeline_active_cores(
+            pipeline_key.clone(),
+            placement.cores.iter().map(|core| core.core_id.id),
+        );
         self.observed_state_store
             .set_pipeline_active_generation(pipeline_key.clone(), generation);
 
@@ -207,6 +214,8 @@ impl<
             LogicalPipelineRecord {
                 resolved,
                 active_generation: generation,
+                placement,
+                placement_generation: 0,
             },
         );
     }
@@ -476,9 +485,14 @@ impl<
         pipeline_group_id: &str,
         pipeline_id: &str,
         timeout_secs: u64,
+        initiator: PipelineShutdownInitiator,
     ) -> Result<ShutdownStatus, ControlPlaneError> {
-        self.runtime
-            .request_shutdown_pipeline(pipeline_group_id, pipeline_id, timeout_secs)
+        self.runtime.request_shutdown_pipeline_with_initiator(
+            pipeline_group_id,
+            pipeline_id,
+            timeout_secs,
+            initiator,
+        )
     }
 
     fn reconfigure_pipeline(

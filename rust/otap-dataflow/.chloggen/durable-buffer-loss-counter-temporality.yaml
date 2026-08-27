@@ -1,6 +1,0 @@
-change_type: breaking
-component: pipeline
-note: Consolidate durable buffer retention loss as delta counters under one metric family.
-issues: [3397]
-subtext: |
-  Migration: Rename `item_loss.items{signal,reason}` to `loss.items{signal,reason}`. Sum across signal to replace former aggregate item queries.

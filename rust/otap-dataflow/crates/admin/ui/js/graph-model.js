@@ -98,19 +98,26 @@ export function buildGraph(
         channels.set(scopedChannelId, channel);
       }
       const role = set.name === "channel.sender" ? "sender" : "receiver";
-      const endpoint = {
-        nodeId: scopedNodeId || "unknown",
-        displayNodeId: nodeId || scopedNodeId || "unknown",
-        pipelineKey: pipelineKey || "",
-        attrs,
-        metrics: set.metrics || [],
-        port: resolvedPort,
-      };
-      if (role === "sender") {
-        channel.senders.push(endpoint);
-      } else {
-        channel.receivers.push(endpoint);
+      const endpoints = role === "sender" ? channel.senders : channel.receivers;
+      const endpointNodeId = scopedNodeId || "unknown";
+      let endpoint = endpoints.find(
+        (candidate) =>
+          candidate.nodeId === endpointNodeId &&
+          candidate.port === resolvedPort &&
+          candidate.pipelineKey === (pipelineKey || "")
+      );
+      if (!endpoint) {
+        endpoint = {
+          nodeId: endpointNodeId,
+          displayNodeId: nodeId || scopedNodeId || "unknown",
+          pipelineKey: pipelineKey || "",
+          attrs,
+          metrics: [],
+          port: resolvedPort,
+        };
+        endpoints.push(endpoint);
       }
+      endpoint.metrics.push(...(set.metrics || []));
       if (endpoint.nodeId) channelNodes.add(endpoint.nodeId);
       continue;
     }

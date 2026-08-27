@@ -21,19 +21,19 @@ ingestion -> WAL -> segment finalization -> subscriber consumption -> cleanup.
 
 ```bash
 # Basic test (10 seconds default, TUI enabled)
-cargo run -p otap-df-quiver-e2e --release
+cargo run -p otel-arrow-dfe-quiver-e2e --release
 
 # With text output (no TUI)
-cargo run -p otap-df-quiver-e2e --release -- --duration 10s --no-tui
+cargo run -p otel-arrow-dfe-quiver-e2e --release -- --duration 10s --no-tui
 
 # Longer test with TUI dashboard
-cargo run -p otap-df-quiver-e2e --release -- --duration 60s
+cargo run -p otel-arrow-dfe-quiver-e2e --release -- --duration 60s
 
 # High-throughput mode (no WAL)
-cargo run -p otap-df-quiver-e2e --release -- --duration 30s --no-wal --no-tui
+cargo run -p otel-arrow-dfe-quiver-e2e --release -- --duration 30s --no-wal --no-tui
 
 # Custom configuration
-cargo run -p otap-df-quiver-e2e --release -- \
+cargo run -p otel-arrow-dfe-quiver-e2e --release -- \
     --duration 5m \
     --bundles 100 \
     --rows-per-bundle 1000 \

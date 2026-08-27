@@ -7,11 +7,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
-use otap_df_config::error::Error as ConfigError;
-use otap_df_engine::shared::capability::auth::bearer_token_provider::BearerTokenProvider as SharedBearerTokenProvider;
-use otap_df_telemetry::registry::TelemetryRegistryHandle;
-use otap_df_telemetry::testing::EmptyAttributes;
-use otap_test_tls_certs::{ExtendedKeyUsage, generate_ca};
+use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_engine::shared::capability::auth::bearer_token_provider::BearerTokenProvider as SharedBearerTokenProvider;
+use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+use otel_arrow_dfe_telemetry::testing::EmptyAttributes;
+use otel_arrow_dfe_test_tls_certs::{ExtendedKeyUsage, generate_ca};
 use rustls_pki_types::pem::PemObject;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -122,7 +122,7 @@ struct TlsTokenServer {
 /// minimal hand-rolled HTTP/1.1 responder over `tokio-rustls` that replies to
 /// any request with a canned token response.
 async fn start_tls_token_server(access_token: &'static str) -> TlsTokenServer {
-    otap_df_otap::crypto::ensure_crypto_provider();
+    otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
 
     let ca = generate_ca("oauth2 client auth test CA");
     let ca_pem = ca.cert_pem.clone();
@@ -278,18 +278,29 @@ fn file_forms_satisfy_credential_requirements() {
     assert!(cfg.client_secret_file.is_some());
 }
 
-// Scenario: A config sets `expiry_buffer` to zero.
-// Guarantees: Validation rejects it, preventing a refresh schedule with no lead time.
+// Scenario: A config sets `expiry_buffer` at or below the fixed usability margin, so the
+// background refresh would be scheduled only once the cached token is already unusable.
+// Guarantees: Validation rejects it, so the extension can never be configured into a stall on
+// every token cycle; a buffer just above the margin stays accepted.
 #[test]
-fn zero_expiry_buffer_is_rejected() {
-    let err = config_from_json(serde_json::json!({
-        "token_url": "https://idp.example.com/token",
-        "client_id": "id",
-        "client_secret": "s",
-        "expiry_buffer": "0s",
-    }))
-    .expect_err("zero expiry_buffer must be rejected");
-    assert!(matches!(err, ConfigError::InvalidUserConfig { .. }));
+fn expiry_buffer_within_usability_margin_is_rejected() {
+    let base = |buffer: &str| {
+        serde_json::json!({
+            "token_url": "https://idp.example.com/token",
+            "client_id": "id",
+            "client_secret": "s",
+            "expiry_buffer": buffer,
+        })
+    };
+
+    for buffer in ["0s", "10s", "30s"] {
+        let err = config_from_json(base(buffer))
+            .expect_err("expiry_buffer within the usability margin must be rejected");
+        assert!(matches!(err, ConfigError::InvalidUserConfig { .. }));
+    }
+
+    let cfg = config_from_json(base("31s")).expect("expiry_buffer above the margin is valid");
+    assert_eq!(cfg.expiry_buffer, Duration::from_secs(31));
 }
 
 // Scenario: A config sets `timeout` or `connect_timeout` to zero.
@@ -490,8 +501,8 @@ fn factory_is_registered_with_capability() {
 /// Invokes the factory's `create` hook with `config` against a throwaway
 /// extension context, mirroring how the engine wires the extension.
 fn create_bundle(config: serde_json::Value) -> Result<ExtensionBundle, ConfigError> {
-    let (ext_ctx, _registry) = otap_df_engine::testing::test_extension_ctx();
-    let name: otap_df_config::ExtensionId = "oauth2-client-auth".into();
+    let (ext_ctx, _registry) = otel_arrow_dfe_engine::testing::test_extension_ctx();
+    let name: otel_arrow_dfe_config::ExtensionId = "oauth2-client-auth".into();
     let user_config = Arc::new(ExtensionUserConfig::new(
         OAUTH2_CLIENT_AUTH_URN.into(),
         config,
@@ -810,7 +821,7 @@ fn metrics_tracker_records_snapshots_and_reports() {
     );
 
     let (rx, mut reporter) =
-        otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(4);
+        otel_arrow_dfe_telemetry::reporter::MetricsReporter::create_new_and_receiver(4);
     tracker.report(&mut reporter).expect("report succeeds");
     assert!(
         rx.try_recv().is_ok(),

@@ -36,11 +36,11 @@
 
 use crate::memory_limiter::MemoryPressureState;
 use cpu_time::ProcessTime;
-use otap_df_telemetry::instrument::{Gauge, ObserveUpDownCounter};
-use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::registry::{EntityKey, TelemetryRegistryHandle};
-use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry_macros::metric_set;
+use otel_arrow_dfe_telemetry::instrument::{Gauge, ObserveUpDownCounter};
+use otel_arrow_dfe_telemetry::metrics::MetricSet;
+use otel_arrow_dfe_telemetry::registry::{EntityKey, TelemetryRegistryHandle};
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_telemetry_macros::metric_set;
 use std::time::Instant;
 
 /// Engine-wide metrics emitted once per engine instance.
@@ -160,7 +160,7 @@ impl EngineMetricsMonitor {
     ///
     /// Returns an error only if the metrics channel is permanently closed.
     /// A full channel is silently tolerated (non-blocking, try-send semantics).
-    pub fn report(&mut self) -> Result<(), otap_df_telemetry::error::Error> {
+    pub fn report(&mut self) -> Result<(), otel_arrow_dfe_telemetry::error::Error> {
         self.reporter.report(&mut self.metrics)
     }
 
@@ -172,7 +172,7 @@ impl EngineMetricsMonitor {
     pub async fn finish_reporting_until(
         &mut self,
         deadline: Instant,
-    ) -> Result<(), otap_df_telemetry::error::Error> {
+    ) -> Result<(), otel_arrow_dfe_telemetry::error::Error> {
         self.update();
         let _ = self
             .reporter
@@ -201,7 +201,7 @@ impl Drop for EngineMetricsMonitor {
 mod tests {
     use super::*;
     use crate::context::ControllerContext;
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 
     #[test]
     fn engine_metrics_reports_nonzero_rss() {
@@ -277,7 +277,7 @@ mod tests {
         state.configure(crate::memory_limiter::MemoryPressureBehaviorConfig {
             retry_after_secs: 1,
             fail_readiness_on_hard: true,
-            mode: otap_df_config::policy::MemoryLimiterMode::Enforce,
+            mode: otel_arrow_dfe_config::policy::MemoryLimiterMode::Enforce,
         });
         state.set_sample_for_tests(
             crate::memory_limiter::MemoryPressureLevel::Soft,

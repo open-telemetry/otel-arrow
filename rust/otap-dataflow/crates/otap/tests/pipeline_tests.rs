@@ -8,26 +8,26 @@
 //! pipeline until a graceful shutdown, and then confirms that all related entities
 //! and metric sets are unregistered to avoid registry leaks.
 
-use otap_df_config::observed_state::{ObservedStateSettings, SendPolicy};
-use otap_df_config::pipeline::{
+use otel_arrow_dfe_config::observed_state::{ObservedStateSettings, SendPolicy};
+use otel_arrow_dfe_config::pipeline::{
     DispatchPolicy, PipelineConfig, PipelineConfigBuilder, PipelineType,
 };
-use otap_df_config::policy::{ChannelCapacityPolicy, MetricLevel, TelemetryPolicy};
-use otap_df_config::{DeployedPipelineKey, PipelineGroupId, PipelineId};
-use otap_df_core_nodes::exporters::noop_exporter::NOOP_EXPORTER_URN;
-use otap_df_core_nodes::receivers::otlp_receiver::OTLP_RECEIVER_URN;
-use otap_df_core_nodes::receivers::traffic_generator::TRAFFIC_GENERATOR_RECEIVER_URN;
-use otap_df_core_nodes::receivers::traffic_generator::config::{
+use otel_arrow_dfe_config::policy::{ChannelCapacityPolicy, MetricLevel, TelemetryPolicy};
+use otel_arrow_dfe_config::{DeployedPipelineKey, PipelineGroupId, PipelineId};
+use otel_arrow_dfe_core_nodes::exporters::noop_exporter::NOOP_EXPORTER_URN;
+use otel_arrow_dfe_core_nodes::receivers::otlp_receiver::OTLP_RECEIVER_URN;
+use otel_arrow_dfe_core_nodes::receivers::traffic_generator::TRAFFIC_GENERATOR_RECEIVER_URN;
+use otel_arrow_dfe_core_nodes::receivers::traffic_generator::config::{
     Config as TrafficGeneratorConfig, DataSource, TrafficConfig,
 };
-use otap_df_engine::context::ControllerContext;
-use otap_df_engine::control::{
+use otel_arrow_dfe_engine::context::ControllerContext;
+use otel_arrow_dfe_engine::control::{
     RuntimeControlMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
 };
-use otap_df_engine::entity_context::set_pipeline_entity_key;
-use otap_df_otap::OTAP_PIPELINE_FACTORY;
-use otap_df_state::store::ObservedStateStore;
-use otap_df_telemetry::InternalTelemetrySystem;
+use otel_arrow_dfe_engine::entity_context::set_pipeline_entity_key;
+use otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY;
+use otel_arrow_dfe_state::store::ObservedStateStore;
+use otel_arrow_dfe_telemetry::InternalTelemetrySystem;
 use serde_json::{json, to_value};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -109,7 +109,7 @@ fn test_telemetry_registries_cleanup() {
         let _pipeline_entity_guard =
             set_pipeline_entity_key(pipeline_ctx.metrics_registry(), pipeline_entity_key);
         let (_memory_pressure_tx, memory_pressure_rx) = tokio::sync::watch::channel(
-            otap_df_engine::memory_limiter::MemoryPressureChanged::initial(),
+            otel_arrow_dfe_engine::memory_limiter::MemoryPressureChanged::initial(),
         );
         runtime_pipeline.run_forever(
             pipeline_key,

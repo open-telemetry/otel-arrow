@@ -1,5 +1,5 @@
 [package]
-name = "otap-df-contrib-nodes"
+name = "otel-arrow-dfe-contrib-nodes"
 description = "OTAP Contrib nodes"
 version.workspace = true
 authors.workspace = true
@@ -14,14 +14,14 @@ workspace = true
 
 [dependencies]
 # Workspace crates (likely used by most/all features)
-otap-df-channel = { workspace = true }
-otap-df-config = { workspace = true }
-otap-df-engine = { workspace = true }
-otap-df-otap = { workspace = true }
-otap-df-pdata = { workspace = true }
-otap-df-pdata-views = { workspace = true }
-otap-df-telemetry = { workspace = true }
-otap-df-telemetry-macros = { workspace = true }
+otel-arrow-dfe-channel = { workspace = true }
+otel-arrow-dfe-config = { workspace = true }
+otel-arrow-dfe-engine = { workspace = true }
+otel-arrow-dfe-otap = { workspace = true }
+otel-arrow-dfe-pdata = { workspace = true }
+otel-arrow-dfe-pdata-views = { workspace = true }
+otel-arrow-dfe-telemetry = { workspace = true }
+otel-arrow-dfe-telemetry-macros = { workspace = true }
 
 arrow.workspace = true
 async-trait.workspace = true
@@ -103,6 +103,7 @@ kafka-exporter = [
     "dep:futures-util",
     "dep:xxhash-rust",
     "dep:hex",
+    "dep:regex",
 ]
 aws = [
     "dep:aws-config",
@@ -144,10 +145,15 @@ clickhouse-exporter = [
     "dep:itoa",
     "dep:ryu",
 ]
+clickhouse-exporter-bench = ["clickhouse-exporter"]
 geneva-exporter = [
     "dep:geneva-uploader",
     "dep:opentelemetry-proto",
     "dep:url",
+]
+geneva-certificate-auth = [
+    "geneva-exporter",
+    "geneva-uploader/certificate-auth",
 ]
 azure-monitor-exporter = [
     "dep:opentelemetry-proto",
@@ -190,11 +196,11 @@ data_engine_expressions.workspace = true
 data_engine_recordset.workspace = true
 humantime.workspace = true
 core_affinity.workspace = true
-otap-df-channel = { workspace = true }
+otel-arrow-dfe-channel = { workspace = true }
 opentelemetry-proto.workspace = true
-otap-df-engine = { workspace = true, features = ["test-utils"] }
-otap-df-otap = { workspace = true, features = ["test-utils"] }
-otap-df-pdata = { workspace = true, features = ["testing"] }
+otel-arrow-dfe-engine = { workspace = true, features = ["test-utils"] }
+otel-arrow-dfe-otap = { workspace = true, features = ["test-utils"] }
+otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
 pretty_assertions.workspace = true
 rand.workspace = true
 serde_yaml.workspace = true
@@ -215,6 +221,12 @@ name = "azure_monitor_transformer"
 path = "benches/exporters/azure_monitor_exporter/transformer.rs"
 harness = false
 required-features = ["azure-monitor-exporter"]
+
+[[bench]]
+name = "clickhouse_logs_transformer"
+path = "benches/exporters/clickhouse_exporter/logs_transformer.rs"
+harness = false
+required-features = ["clickhouse-exporter-bench"]
 
 [[bench]]
 name = "azure_monitor_gzip_batcher"

@@ -1,5 +1,5 @@
 [package]
-name = "otap-df-config"
+name = "otel-arrow-dfe-config"
 description = "Configuration model for OTAP pipeline"
 version.workspace = true
 authors.workspace = true

@@ -85,7 +85,7 @@ mod writer;
 
 pub use error::SegmentError;
 pub use open_segment::{OpenSegment, OpenSegmentBundleSummary};
-pub use reader::{ReconstructedBundle, SegmentReader};
+pub use reader::{ReconstructedBundle, SegmentLossSummary, SegmentReader};
 pub use stream_accumulator::StreamAccumulator;
 pub use types::{
     ChunkIndex, ManifestEntry, SegmentSeq, SlotChunkRef, StreamId, StreamKey, StreamMetadata,

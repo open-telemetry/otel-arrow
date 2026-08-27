@@ -1,5 +1,5 @@
 [package]
-name = "otap-df-otap"
+name = "otel-arrow-dfe-otap"
 description = "OTAP nodes"
 version.workspace = true
 authors.workspace = true
@@ -34,13 +34,13 @@ parking_lot = { workspace = true }
 base64 = { workspace = true }
 cfg-if.workspace = true
 
-otap-df-engine = { workspace = true }
-otap-df-engine-macros = { workspace = true }
-otap-df-channel = { workspace = true }
-otap-df-config = { workspace = true }
-otap-df-pdata = { workspace = true, features = ["testing"] }
-otap-df-telemetry = { workspace = true }
-otap-df-telemetry-macros = { workspace = true }
+otel-arrow-dfe-engine = { workspace = true }
+otel-arrow-dfe-engine-macros = { workspace = true }
+otel-arrow-dfe-channel = { workspace = true }
+otel-arrow-dfe-config = { workspace = true }
+otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
+otel-arrow-dfe-telemetry = { workspace = true }
+otel-arrow-dfe-telemetry-macros = { workspace = true }
 
 tower-service.workspace = true
 serde.workspace = true
@@ -71,7 +71,7 @@ notify.workspace = true
 rustls-openssl = { workspace = true, optional = true }
 
 # Quiver persistence engine (durable buffer processor)
-quiver = { workspace = true }
+otel-arrow-dfe-quiver = { workspace = true }
 
 # Optional dev-tools dep used only by integration tests gated on the
 # `integration-tests` feature. Declaring it here (rather than as a dev-dep)
@@ -83,12 +83,12 @@ weaver_common = { workspace = true, optional = true }
 rustls-symcrypt = { workspace = true, optional = true }
 
 [features]
-test-utils = ["rustls/ring", "otap-df-pdata/testing"]
+test-utils = ["rustls/ring", "otel-arrow-dfe-pdata/testing"]
 # Integration tests that depend on the traffic_generator receiver and the
 # `weaver_common` crate (used to load semconv schemas). Gating these behind
 # an opt-in feature lets builds that don't need them avoid pulling weaver,
 # gix, reqwest, native-tls and (on Linux) openssl-sys into the dep graph.
-integration-tests = ["dep:weaver_common", "otap-df-core-nodes/dev-tools"]
+integration-tests = ["dep:weaver_common", "otel-arrow-dfe-core-nodes/dev-tools"]
 crypto-ring = ["rustls/ring", "tokio-rustls/ring"]
 crypto-aws-lc = ["rustls/aws_lc_rs", "tokio-rustls/aws-lc-rs"]
 crypto-openssl = ["dep:rustls-openssl", "tonic/tls-native-roots"]
@@ -97,7 +97,7 @@ azure = ["object_store/azure", "object_store/cloud", "dep:azure_identity", "dep:
 aws = ["object_store/aws", "object_store/cloud"]
 
 [dev-dependencies]
-otap-df-test-net.workspace = true
+otel-arrow-dfe-test-net.workspace = true
 pretty_assertions.workspace = true
 tempfile.workspace = true
 tokio-util.workspace = true
@@ -106,12 +106,12 @@ rustls = { workspace = true, features = ["ring"] }
 tokio-rustls.workspace = true
 rustls-pki-types.workspace = true
 tokio-stream.workspace = true
-otap-df-contrib-nodes = { workspace = true }
-otap-df-core-nodes = { workspace = true }
-otap-test-tls-certs.workspace = true
-otap-df-engine = { workspace = true, features = ["test-utils"] }
-otap-df-pdata = { workspace = true, features = ["testing"] }
-otap-df-state = { workspace = true }
+otel-arrow-dfe-contrib-nodes = { workspace = true }
+otel-arrow-dfe-core-nodes = { workspace = true }
+otel-arrow-dfe-test-tls-certs.workspace = true
+otel-arrow-dfe-engine = { workspace = true, features = ["test-utils"] }
+otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
+otel-arrow-dfe-state = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["fmt", "std", "env-filter"] }
 wiremock = { workspace = true }
 

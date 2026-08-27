@@ -17,9 +17,9 @@
 use crate::attributes::{ExtensionScopeAttributeSet, PipelineAttributeSet};
 use crate::context::{ControllerContext, ExtensionContext, PipelineContext};
 use crate::control::NodeControlMsg;
-use otap_df_channel::mpsc;
-use otap_df_config::node::NodeKind;
-use otap_df_telemetry::registry::TelemetryRegistryHandle;
+use otel_arrow_dfe_channel::mpsc;
+use otel_arrow_dfe_config::node::NodeKind;
+use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;

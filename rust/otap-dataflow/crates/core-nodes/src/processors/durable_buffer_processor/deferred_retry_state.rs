@@ -29,11 +29,11 @@
 //! - durable buffer retry scheduling does not depend on having one engine
 //!   wakeup slot per deferred bundle
 
-use otap_df_engine::WakeupError;
-use otap_df_engine::control::{WakeupRevision, WakeupSlot};
-use otap_df_engine::local::processor::EffectHandler;
-use otap_df_otap::pdata::OtapPdata;
-use quiver::subscriber::BundleRef;
+use otel_arrow_dfe_engine::WakeupError;
+use otel_arrow_dfe_engine::control::{WakeupRevision, WakeupSlot};
+use otel_arrow_dfe_engine::local::processor::EffectHandler;
+use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_quiver::subscriber::BundleRef;
 use std::collections::{BTreeSet, HashMap};
 use std::time::{Duration, Instant};
 
@@ -335,8 +335,8 @@ impl DeferredRetryState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use quiver::segment::SegmentSeq;
-    use quiver::subscriber::BundleIndex;
+    use otel_arrow_dfe_quiver::segment::SegmentSeq;
+    use otel_arrow_dfe_quiver::subscriber::BundleIndex;
     use std::time::Duration;
 
     /// Scenario: one deferred retry is currently the earliest retry, and the

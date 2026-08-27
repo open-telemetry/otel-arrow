@@ -7,9 +7,9 @@ use async_trait::async_trait;
 use datafusion::config::ConfigOptions;
 use datafusion::execution::TaskContext;
 use datafusion::execution::context::SessionContext;
-use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::otap::transform::{AttributesTransform, apply_attribute_transform};
-use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_dfe_pdata::OtapArrowRecords;
+use otel_arrow_dfe_pdata::otap::transform::{AttributesTransform, apply_attribute_transform};
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use std::sync::Arc;
 
 use crate::error::Result;
@@ -61,7 +61,7 @@ impl PipelineStage for AttributeTransformPipelineStage {
 #[cfg(test)]
 mod test {
     use data_engine_kql_parser::{KqlParser, Parser};
-    use otap_df_pdata::{
+    use otel_arrow_dfe_pdata::{
         OtapArrowRecords,
         otap::Logs,
         proto::{
@@ -75,7 +75,7 @@ mod test {
         },
         testing::round_trip::{otlp_to_otap, to_logs_data},
     };
-    use otap_df_query_engine_languages::opl::parser::OplParser;
+    use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
 
     use crate::pipeline::{Pipeline, test::exec_logs_pipeline};
 

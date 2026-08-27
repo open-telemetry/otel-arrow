@@ -8,13 +8,17 @@
 use arrow::util::pretty::print_batches;
 
 use data_engine_kql_parser::{KqlParser, Parser};
-use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, KeyValue};
-use otap_df_pdata::proto::opentelemetry::logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs};
-use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
-use otap_df_pdata::testing::round_trip::otlp_to_otap;
-use otap_df_query_engine::error::Result;
-use otap_df_query_engine::pipeline::Pipeline;
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{
+    AnyValue, InstrumentationScope, KeyValue,
+};
+use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{
+    LogRecord, LogsData, ResourceLogs, ScopeLogs,
+};
+use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
+use otel_arrow_dfe_pdata::testing::round_trip::otlp_to_otap;
+use otel_arrow_dfe_query_engine::error::Result;
+use otel_arrow_dfe_query_engine::pipeline::Pipeline;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -46,7 +50,9 @@ async fn main() -> Result<()> {
     let pipeline_expr = KqlParser::parse(query).expect("parses").pipeline;
     let mut pipeline = Pipeline::new(pipeline_expr);
 
-    let otap_batch = otlp_to_otap(&otap_df_pdata::proto::OtlpProtoMessage::Logs(logs.clone()));
+    let otap_batch = otlp_to_otap(&otel_arrow_dfe_pdata::proto::OtlpProtoMessage::Logs(
+        logs.clone(),
+    ));
     let result = pipeline.execute(otap_batch).await?;
 
     let otap_logs = result.get(ArrowPayloadType::Logs).expect("logs in result");
@@ -58,7 +64,9 @@ async fn main() -> Result<()> {
     let pipeline_expr = KqlParser::parse(query).expect("parses").pipeline;
     let mut pipeline = Pipeline::new(pipeline_expr);
 
-    let otap_batch = otlp_to_otap(&otap_df_pdata::proto::OtlpProtoMessage::Logs(logs.clone()));
+    let otap_batch = otlp_to_otap(&otel_arrow_dfe_pdata::proto::OtlpProtoMessage::Logs(
+        logs.clone(),
+    ));
     let result = pipeline.execute(otap_batch).await?;
 
     let otap_logs = result.get(ArrowPayloadType::Logs).expect("logs in result");

@@ -1,5 +1,0 @@
-change_type: bug_fix
-component: pipeline
-note: "WASM processor filtering now preserves OTAP parent-child batch relationships instead of filtering only the root batch."
-issues: [3478]
-subtext: "Adds minimal CollectTelemetry metrics for guest process calls, errors, and drop decisions in the experimental wasm_processor."

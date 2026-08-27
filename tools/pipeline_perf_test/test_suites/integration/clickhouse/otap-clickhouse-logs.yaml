@@ -1,0 +1,89 @@
+name: ClickHouse OTAP Logs
+components:
+  load-generator:
+    deployment:
+      docker:
+        image: df_engine:latest
+        network: testbed
+        ports:
+          - "8085:8080"
+        volumes:
+          - 'test_suites/integration/configs/loadgen/config.rendered.yaml:/home/nonroot/config.yaml:ro'
+        command:
+          - "--config"
+          - "./config.yaml"
+          - "--core-id-range"
+          - "2-2"
+          - "--http-admin-bind"
+          - "0.0.0.0:8080"
+    monitoring:
+      docker_component:
+        allocated_cores: 1
+      prometheus:
+        endpoint: http://localhost:8085/api/v1/telemetry/metrics?format=prometheus&reset=false
+
+  df-engine:
+    deployment:
+      docker:
+        image: df_engine:latest
+        network: testbed
+        ports:
+          - "8086:8080"
+        volumes:
+          - 'test_suites/integration/configs/engine/config.rendered.yaml:/home/nonroot/config.yaml:ro'
+        command:
+          - "--config"
+          - "./config.yaml"
+          - "--core-id-range"
+          - "3-3"
+          - "--http-admin-bind"
+          - "0.0.0.0:8080"
+    monitoring:
+      docker_component:
+        allocated_cores: 1
+      prometheus:
+        endpoint: http://localhost:8086/api/v1/telemetry/metrics?format=prometheus&reset=false
+
+  clickhouse:
+    deployment:
+      docker:
+        image: clickhouse/clickhouse-server:26.3.17.56@sha256:422be85ae7344058369cdd366ac0efea9daa8428b55c9cf50258e83a7d12fcb3
+        network: testbed
+        cpuset_cpus: "4-7"
+        ports:
+          - "8123:8123"
+        environment:
+          CLICKHOUSE_PASSWORD: test
+    monitoring:
+      docker_component:
+        allocated_cores: 4
+
+tests:
+  - name: OTAP-IN-BATCHED-100K
+    from_template:
+      path: test_suites/integration/templates/test_steps/df-loadgen-clickhouse-steps-docker.yaml
+      variables:
+        engine_config_template: test_suites/integration/templates/configs/engine/clickhouse/otap-batch-clickhouse-logs.yaml.j2
+        clickhouse_database: protocol_otap_100k
+        clickhouse_async_insert: false
+        loadgen_exporter_type: otap
+        max_batch_size: 8192
+        signals_per_second: 100000
+        observation_interval: 60
+        validation_file: OTAP-IN-BATCHED-100K.csv
+        result_dir: clickhouse
+  - name: OTLP-IN-BATCHED-100K
+    from_template:
+      path: test_suites/integration/templates/test_steps/df-loadgen-clickhouse-steps-docker.yaml
+      variables:
+        engine_config_template: test_suites/integration/templates/configs/engine/clickhouse/otlp-batch-clickhouse-logs.yaml.j2
+        clickhouse_database: protocol_otlp_100k
+        clickhouse_async_insert: false
+        loadgen_exporter_type: otlp
+        exporter_extra_config:
+          max_in_flight: 256
+        max_batch_size: 8192
+        signals_per_second: 100000
+        observation_interval: 60
+        validation_file: OTLP-IN-BATCHED-100K.csv
+        result_dir: clickhouse

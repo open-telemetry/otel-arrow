@@ -48,7 +48,7 @@ Use the smallest layer that gives a trustworthy answer:
 - Representative real-node progress through a runtime pipeline: use a small
   pipeline liveness / integration test.
 - End-to-end semantic equivalence, signal-drop checks, protocol wiring, or
-  attribute/batch validation: use `otap-df-validation`.
+  attribute/batch validation: use `otel-arrow-dfe-validation`.
 - High-volume, backpressure, saturation, or idle-state behavior where the main
   question is performance or regression tracking: use the continuous or nightly
   benchmark suites.
@@ -89,7 +89,7 @@ In practice, these layers complement each other:
 
 The current layers have intentional boundaries:
 
-- `otap-df-validation` is currently output/capture-oriented. It is the main
+- `otel-arrow-dfe-validation` is currently output/capture-oriented. It is the main
   end-to-end correctness layer, but it is not yet the main liveness oracle.
 - DST is intentionally scoped. It does not yet cover every topic-based,
   cross-pipeline, or fatal-process-failure scenario.
@@ -109,19 +109,19 @@ Representative commands:
 
 ```bash
 # Target a fast local unit or harness test in one crate.
-cargo test -p otap-df-engine local::processor::tests::
+cargo test -p otel-arrow-dfe-engine local::processor::tests::
 
 # Replay one deterministic simulation run.
-DST_SEED=17 cargo test -p otap-df-engine dst -- --nocapture
+DST_SEED=17 cargo test -p otel-arrow-dfe-engine dst -- --nocapture
 
 # Run a larger DST sweep.
-DST_SEEDS=25 cargo test -p otap-df-engine dst
+DST_SEEDS=25 cargo test -p otel-arrow-dfe-engine dst
 
 # Run the small runtime-wired liveness scenarios.
-cargo test -p otap-df-otap core_node_liveness_tests -- --nocapture
+cargo test -p otel-arrow-dfe-otap core_node_liveness_tests -- --nocapture
 
 # Run validation-framework tests or a specific scenario test.
-cargo test -p otap-df-validation -- --nocapture
+cargo test -p otel-arrow-dfe-validation -- --nocapture
 
 # Final repo-wide verification before merging.
 cargo xtask check

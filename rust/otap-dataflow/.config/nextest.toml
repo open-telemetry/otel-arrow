@@ -22,7 +22,7 @@ path = "junit.xml"
 # retries = 5
 #
 # [[profile.ci.overrides]]
-# filter = "package(otap-df-network)"  # all tests in a crate
+# filter = "package(otel-arrow-dfe-network)"  # all tests in a crate
 # retries = 5
 #
 # [[profile.ci.overrides]]

@@ -7,18 +7,18 @@
 #![allow(missing_docs)]
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use otap_df_channel::mpsc;
-use otap_df_control_channel::{
+use otel_arrow_dfe_channel::mpsc;
+use otel_arrow_dfe_control_channel::{
     AckMsg as ControlAwareAckMsg, CompletionMsg as ControlAwareCompletionMsg, ControlChannelConfig,
     ControlCmd, NackMsg as ControlAwareNackMsg, NodeControlEvent, NodeControlReceiver,
     NodeControlSender, node_channel,
 };
-use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
-use otap_df_engine::local::message::{LocalReceiver as CurrentLocalReceiver, LocalSender};
-use otap_df_engine::shared::message::{
+use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
+use otel_arrow_dfe_engine::local::message::{LocalReceiver as CurrentLocalReceiver, LocalSender};
+use otel_arrow_dfe_engine::shared::message::{
     SharedReceiver as CurrentSharedReceiver, SharedSender as CurrentSharedSender,
 };
-use otap_df_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use std::future::{Future, poll_fn};
 use std::hint::black_box;
 use std::pin::Pin;
@@ -141,7 +141,7 @@ async fn consume_current_local(
             NodeControlMsg::DrainIngress { .. }
             | NodeControlMsg::MemoryPressureChanged { .. }
             | NodeControlMsg::Shutdown { .. }
-            | NodeControlMsg::DelayedData { .. }
+            | NodeControlMsg::ResumeData { .. }
             | NodeControlMsg::Wakeup { .. } => {
                 panic!("unexpected message in benchmark current local receiver");
             }
@@ -206,7 +206,7 @@ async fn consume_current_shared(
             NodeControlMsg::DrainIngress { .. }
             | NodeControlMsg::MemoryPressureChanged { .. }
             | NodeControlMsg::Shutdown { .. }
-            | NodeControlMsg::DelayedData { .. }
+            | NodeControlMsg::ResumeData { .. }
             | NodeControlMsg::Wakeup { .. } => {
                 panic!("unexpected message in benchmark current shared receiver");
             }

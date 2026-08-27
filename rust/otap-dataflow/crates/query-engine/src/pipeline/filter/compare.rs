@@ -12,8 +12,8 @@ use arrow::error::ArrowError;
 use arrow::{array::BooleanArray, buffer::BooleanBuffer};
 use datafusion::logical_expr::{ColumnarValue, Operator};
 use datafusion::scalar::ScalarValue;
-use otap_df_pdata::otlp::attributes::AttributeValueType;
-use otap_df_pdata::schema::consts;
+use otel_arrow_dfe_pdata::otlp::attributes::AttributeValueType;
+use otel_arrow_dfe_pdata::schema::consts;
 
 use crate::error::{Error, Result};
 use crate::pipeline::project::anyval::{
@@ -632,7 +632,7 @@ mod test {
         datatypes::Field,
     };
     use datafusion::scalar::ScalarValue;
-    use otap_df_pdata::{otlp::attributes::AttributeValueType, schema::consts};
+    use otel_arrow_dfe_pdata::{otlp::attributes::AttributeValueType, schema::consts};
 
     // helper function for testing when the operation is commutative
     fn test_commutative(

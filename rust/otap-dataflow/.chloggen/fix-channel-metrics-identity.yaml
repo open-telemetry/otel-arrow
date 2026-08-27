@@ -1,5 +1,0 @@
-change_type: bug_fix
-component: engine
-note: Include configured custom identity attributes in channel node metrics.
-issues: [3645]
-subtext: Ensures that metrics like `produced.items` properly carry the identity attributes defined in `entity.extend.identity_attributes`, bringing them to parity with standard node metrics.

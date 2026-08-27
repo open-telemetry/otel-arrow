@@ -88,7 +88,7 @@ fn bench_compare(c: &mut Criterion) {
     // Benchmark local mpsc channel
     let _ = group.bench_function(BenchmarkId::new("local_mpsc", MSG_COUNT), |b| {
         b.to_async(&rt).iter(|| async {
-            let (tx, rx) = otap_df_channel::mpsc::Channel::new(CHANNEL_SIZE);
+            let (tx, rx) = otel_arrow_dfe_channel::mpsc::Channel::new(CHANNEL_SIZE);
             let pdata = Rc::new("test".to_string());
 
             let local = LocalSet::new();

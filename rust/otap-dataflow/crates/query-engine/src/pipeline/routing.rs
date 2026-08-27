@@ -15,8 +15,8 @@ use async_trait::async_trait;
 use datafusion::config::ConfigOptions;
 use datafusion::execution::TaskContext;
 use datafusion::execution::context::SessionContext;
-use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_dfe_pdata::OtapArrowRecords;
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
 use crate::error::{Error, Result};
 use crate::pipeline::PipelineStage;
@@ -111,9 +111,9 @@ mod test {
         DataExpression, OutputDataExpression, OutputExpression, PipelineExpressionBuilder,
         QueryLocation, StringScalarExpression,
     };
-    use otap_df_pdata::otap::Logs;
-    use otap_df_pdata::proto::opentelemetry::logs::v1::LogRecord;
-    use otap_df_pdata::testing::round_trip::to_otap_logs;
+    use otel_arrow_dfe_pdata::otap::Logs;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogRecord;
+    use otel_arrow_dfe_pdata::testing::round_trip::to_otap_logs;
 
     use crate::pipeline::Pipeline;
 

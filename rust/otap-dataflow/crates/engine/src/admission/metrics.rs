@@ -29,11 +29,11 @@
 
 use crate::admission::AdmissionDimension;
 use crate::context::PipelineContext;
-use otap_df_telemetry::error::Error as TelemetryError;
-use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
-use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
+use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
+use otel_arrow_dfe_telemetry::instrument::Counter;
+use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 

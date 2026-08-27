@@ -788,10 +788,18 @@ pub struct FlowBounds {
 pub enum FlowMetric {
     /// Aggregate processor compute duration across the flow.
     ComputeDuration,
-    /// Item count consumed at the start of the flow.
-    ConsumedItems,
-    /// Item count produced at the end of the flow.
-    ProducedItems,
+    /// Message count entering the start of the flow.
+    InputMessages,
+    /// Item count entering the start of the flow.
+    InputItems,
+    /// Logical payload size entering the start of the flow.
+    InputSize,
+    /// Message count leaving the end of the flow.
+    OutputMessages,
+    /// Item count leaving the end of the flow.
+    OutputItems,
+    /// Logical payload size leaving the end of the flow.
+    OutputSize,
     /// Item count a decision node chose to drop.
     DroppedItems,
 }
@@ -969,7 +977,10 @@ pub struct CoreAllocation {
     pub strategy: CoreAllocationStrategy,
 
     /// Number of cores to use (only valid when strategy is "core_count").
-    /// If 0, uses all available cores.
+    /// If 0, uses all unreserved visible cores. `core_count` placement is
+    /// controller-selected and exclusive across pipelines using `core_count` or
+    /// `core_set`; it fails when enough unreserved visible cores are not
+    /// available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub count: Option<usize>,
 
@@ -982,13 +993,14 @@ pub struct CoreAllocation {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum CoreAllocationStrategy {
-    /// Use all available CPU cores.
+    /// Use all available CPU cores. This strategy is shared and does not reserve
+    /// cores away from other pipelines.
     #[default]
     AllCores,
-    /// Use a specific number of CPU cores (starting from core 0).
-    /// If the requested number exceeds available cores, use all available cores.
+    /// Use a controller-selected number of CPU cores exclusively.
+    /// If the requested number exceeds available cores, configuration validation fails.
     CoreCount,
-    /// Defines a set of CPU cores should be allocated for pipeline execution.
+    /// Defines an explicit set of CPU cores for pipeline execution.
     CoreSet,
 }
 
@@ -1783,8 +1795,12 @@ hard_limit: 2 GiB
         let flow = &policy.flow_metrics[0];
         assert!(flow.metrics.is_none());
         assert!(flow.has(super::FlowMetric::ComputeDuration));
-        assert!(flow.has(super::FlowMetric::ConsumedItems));
-        assert!(flow.has(super::FlowMetric::ProducedItems));
+        assert!(flow.has(super::FlowMetric::InputMessages));
+        assert!(flow.has(super::FlowMetric::InputItems));
+        assert!(flow.has(super::FlowMetric::InputSize));
+        assert!(flow.has(super::FlowMetric::OutputMessages));
+        assert!(flow.has(super::FlowMetric::OutputItems));
+        assert!(flow.has(super::FlowMetric::OutputSize));
         assert!(flow.has(super::FlowMetric::DroppedItems));
     }
 
@@ -1799,8 +1815,12 @@ hard_limit: 2 GiB
         let policy: super::TelemetryPolicy = serde_yaml::from_str(yaml).expect("parse");
         let flow = &policy.flow_metrics[0];
         assert!(flow.has(super::FlowMetric::ComputeDuration));
-        assert!(!flow.has(super::FlowMetric::ConsumedItems));
-        assert!(!flow.has(super::FlowMetric::ProducedItems));
+        assert!(!flow.has(super::FlowMetric::InputMessages));
+        assert!(!flow.has(super::FlowMetric::InputItems));
+        assert!(!flow.has(super::FlowMetric::InputSize));
+        assert!(!flow.has(super::FlowMetric::OutputMessages));
+        assert!(!flow.has(super::FlowMetric::OutputItems));
+        assert!(!flow.has(super::FlowMetric::OutputSize));
         assert!(!flow.has(super::FlowMetric::DroppedItems));
     }
 

@@ -1,4 +1,0 @@
-change_type: bug_fix
-component: query-engine
-note: Prevent scalar predicate results from terminating attribute filters.
-issues: [3605]

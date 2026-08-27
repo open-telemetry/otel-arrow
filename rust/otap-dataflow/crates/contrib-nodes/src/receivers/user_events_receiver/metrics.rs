@@ -3,8 +3,8 @@
 
 //! Metrics for the Linux user_events receiver.
 
-use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry_macros::metric_set;
+use otel_arrow_dfe_telemetry::instrument::Counter;
+use otel_arrow_dfe_telemetry_macros::metric_set;
 
 /// Internal telemetry for the Linux user_events receiver.
 #[metric_set(name = "receiver.user_events")]
