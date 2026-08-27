@@ -19,4 +19,4 @@ issues: [3826]
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
 subtext: |
-  Requests permanently rejected by the pipeline (for example by the resource validator processor) are no longer reported as retryable. Transient failures still map to 503 / UNAVAILABLE and permanent server-side failures to 500 / INTERNAL.
+  Applies only when the OTLP receiver is configured with wait_for_result: true (default false); otherwise it responds before the pipeline NACK is seen. Transient failures still map to 503 / UNAVAILABLE and permanent server-side failures to 500 / INTERNAL.
