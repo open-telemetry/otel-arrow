@@ -603,6 +603,8 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
             let authorization_layer = authorizer
                 .clone()
                 .map(|authorizer| AuthorizationLayer::new(authorizer, self.metrics.clone()));
+            // ServiceBuilder runs layers in insertion order, so admission limits
+            // remain outside authorization and reject saturated requests first.
             let server_layers = ServiceBuilder::new()
                 .layer(limit_layer)
                 .option_layer(authorization_layer);
