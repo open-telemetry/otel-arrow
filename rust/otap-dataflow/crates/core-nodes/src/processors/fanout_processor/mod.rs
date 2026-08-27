@@ -33,7 +33,7 @@ use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_engine::config::ProcessorConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_engine::control::{
-    AckMsg, CallData, Context8u8, NackMsg, NodeControlMsg, UnwindData,
+    AckMsg, CallData, Context8u8, NackCause, NackMsg, NodeControlMsg, UnwindData,
 };
 use otel_arrow_dfe_engine::error::{Error, TypedError};
 use otel_arrow_dfe_engine::local::processor::{EffectHandler, Processor};
@@ -618,6 +618,10 @@ impl FanoutProcessor {
         dest_index: usize,
         reason: String,
         is_timeout: bool,
+        // Classification for the terminal upstream NACK: a propagated downstream
+        // NACK carries its own permanence/cause; a fanout timeout stays transient.
+        permanent: bool,
+        cause: NackCause,
     ) -> Option<NackMsg<OtapPdata>> {
         let inflight = self.inflight.get_mut(&request_id)?;
         // Mark as TimedOut for timeouts, Nacked for explicit nacks.
@@ -655,8 +659,8 @@ impl FanoutProcessor {
             reason,
             unwind: UnwindData::default(),
             refused: Box::new(inflight.original_pdata.clone()),
-            permanent: false, // Timeout is retriable
-            cause: otel_arrow_dfe_engine::control::NackCause::Unspecified,
+            permanent,
+            cause,
         })
     }
 
@@ -708,7 +712,9 @@ impl FanoutProcessor {
                 req,
                 idx,
                 format!("fanout: timeout on {}", self.config.destinations[idx].port),
-                true, // is_timeout
+                true,  // is_timeout
+                false, // timeouts are retriable
+                NackCause::Unspecified,
             ) {
                 Some(nack) => {
                     // Ignore non-primary timeouts when awaiting primary only.
@@ -885,9 +891,14 @@ impl FanoutProcessor {
             return Ok(());
         }
 
-        if let Some(nackmsg) =
-            self.handle_failure(request_id, dest_index, nack.reason.clone(), false)
-        {
+        if let Some(nackmsg) = self.handle_failure(
+            request_id,
+            dest_index,
+            nack.reason.clone(),
+            false,
+            nack.permanent,
+            nack.cause,
+        ) {
             let _ = self.inflight.remove(&request_id);
             effect_handler.notify_nack(nackmsg).await?;
             return Ok(());
@@ -1815,6 +1826,58 @@ mod tests {
         }
         assert_eq!(delivered_ack, 0, "should not ack upstream");
         assert_eq!(delivered_nack, 1, "should nack upstream immediately");
+    }
+
+    /// Scenario: a permanent, `Refused` downstream NACK propagates through the
+    /// fanout full path (no fallback) to the upstream subscriber.
+    /// Guarantees: the upstream NACK preserves `permanent` and `cause` so the
+    /// receiver can still map it to a client error, while fanout timeouts stay
+    /// transient.
+    #[tokio::test]
+    async fn nack_permanence_and_cause_are_preserved_upstream() {
+        let mut h = build_harness(
+            json!([
+                make_dest("p1", true, None, None),
+                make_dest("p2", false, None, None)
+            ]),
+            "parallel",
+            "all",
+        );
+        h.fanout
+            .process(Message::PData(make_pdata()), &mut h.effect)
+            .await
+            .expect("process ok");
+
+        let mut p1 = drain(h.outputs.get_mut("p1").expect("p1"));
+        let _p2 = drain(h.outputs.get_mut("p2").expect("p2"));
+        assert_eq!(p1.len(), 1);
+
+        // Permanent, client-caused refusal from p1 (no fallback -> fail-fast).
+        let mut nack =
+            NackMsg::new_permanent_with_cause("p1 refused", p1.pop().unwrap(), NackCause::Refused);
+        nack.unwind.route = nack.refused.source_route().unwrap();
+        h.fanout
+            .process(Message::Control(NodeControlMsg::Nack(nack)), &mut h.effect)
+            .await
+            .expect("nack ok");
+
+        let mut upstream_nacks = Vec::new();
+        while let Ok(Ok(msg)) =
+            tokio::time::timeout(Duration::from_millis(50), h.pipeline_completion_rx.recv()).await
+        {
+            if let PipelineCompletionMsg::DeliverNack { nack } = msg {
+                upstream_nacks.push(nack);
+            }
+        }
+
+        assert_eq!(upstream_nacks.len(), 1, "should nack upstream once");
+        let upstream = &upstream_nacks[0];
+        assert!(upstream.permanent, "propagated NACK must remain permanent");
+        assert_eq!(
+            upstream.cause,
+            NackCause::Refused,
+            "propagated NACK must preserve the downstream cause"
+        );
     }
 
     #[tokio::test]
