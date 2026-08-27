@@ -7238,6 +7238,7 @@ dependencies = [
  "otel-arrow-dfe-core-nodes",
  "otel-arrow-dfe-engine",
  "otel-arrow-dfe-otap",
+ "otel-arrow-dfe-telemetry",
  "otel-arrow-dfe-wasm-host",
  "tikv-jemallocator",
 ]

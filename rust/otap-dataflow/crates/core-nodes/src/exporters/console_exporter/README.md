@@ -13,11 +13,70 @@
 The console exporter prints logs and metrics to standard output. It supports a
 human-readable hierarchical `pretty` format for interactive inspection and a
 newline-delimited, logs-only `record_json` format for structured logging
-pipelines. It ACKs each message after attempting to write the formatted view.
+pipelines.
 
 This node is intended for local inspection, demos, and debugging pipelines. It
 is not a production exporter, durable export path, or stable machine-readable
 storage path.
+
+## Acknowledgment Semantics
+
+Each payload is formatted into one complete frame and handed to the engine's
+process-wide console writer. The exporter ACKs the message once that handoff
+attempt resolves, including when the handoff fails.
+
+An ACK therefore means only "the handoff attempt finished". The attempt may have
+failed, and even a successful one does not mean the bytes reached the terminal,
+were consumed by a downstream logging agent, were persisted, or were delivered
+durably.
+
+## Console Output Serialization
+
+Console exporters can run concurrently on multiple engine cores, but stdout and
+stderr are shared by the entire process. To prevent output from different cores
+from being interleaved, cooperating engine writers use a process-wide output
+service.
+
+```text
+producer -->   bounded queue -->  dedicated writer
+complete frame  -->  stdout queue  ------>  lock stdout, write, flush
+complete frame  -->  stderr queue  ------>  lock stderr, write, flush
+```
+
+Each producer formats a complete frame before submitting it. A frame may contain
+one pretty-printed payload or several newline-terminated `record_json` records.
+The writer holds the stream lock while writing the entire frame, so another
+producer cannot insert bytes into it. Ordering is preserved for each producer,
+but output from different cores is not globally ordered.
+
+The queues bound both the number of frames and the number of bytes waiting to be
+written, because a frame owns its payload and payloads vary in size. Console
+exporters wait when either limit is reached, applying backpressure to the
+pipeline. Internal diagnostics use a best-effort path instead: they are dropped
+when the stderr queue is full so logging cannot stall an engine core. By default
+stdout holds up to 1024 frames or 64 MiB, and stderr up to 256 frames or 16 MiB.
+A frame larger than the whole byte budget is rejected rather than queued, since
+draining could never make room for it.
+
+Human-readable engine diagnostics always go to stderr. When the accepted
+configuration contains a `record_json` console exporter, stdout is reserved for
+structured records and any pretty console exporter also writes to stderr. The
+standard engine binary applies this policy before starting its pipelines.
+Applications embedding `Controller` directly must call
+`claim_structured_stdout` on the validated configuration before starting it.
+Any process that did not preclaim stdout rejects a `record_json` exporter,
+including one with no console exporter configured, so live control cannot
+introduce the first `record_json` exporter into such a process.
+
+At the end of an engine run, the controller waits up to five seconds for
+accepted frames to be written and flushed. The process-wide writer threads
+remain available for later runs in the same process. On final process shutdown,
+the engine attempts to drain and join them. Writer failures and incomplete
+drains are reported with the number of frames still pending.
+
+Only output submitted through this service receives the frame-integrity
+guarantee. Direct file-descriptor writes, child-process output, standalone
+binaries, and the debug processor's console fallback remain outside it.
 
 ## Getting Started
 
