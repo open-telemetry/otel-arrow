@@ -111,10 +111,11 @@ impl BearerToken {
     /// Creates a token from a valid bearer `Authorization` header value, with
     /// no expiry.
     ///
-    /// The scheme is matched case-insensitively and must be followed by a
-    /// non-empty token containing no whitespace. Returns `None` for a missing
-    /// scheme, a non-bearer scheme, or a malformed token. A caller that already
-    /// has the bare token should use [`without_expiry`](Self::without_expiry).
+    /// The scheme is matched case-insensitively and must be followed by one or
+    /// more ASCII spaces and a valid RFC 6750 `b64token`. Returns `None` for a
+    /// missing scheme, a non-bearer scheme, or a malformed token. A caller that
+    /// already has the bare token should use
+    /// [`without_expiry`](Self::without_expiry).
     #[must_use]
     pub fn from_header_value(header_value: &str) -> Option<Self> {
         let token = extract_bearer_token(header_value)?;
@@ -141,13 +142,33 @@ impl BearerToken {
 /// Extracts a non-empty token from a case-insensitive bearer authorization
 /// header.
 fn extract_bearer_token(header_value: &str) -> Option<&str> {
-    let trimmed = header_value.trim();
-    let (scheme, rest) = trimmed.split_once(char::is_whitespace)?;
+    let trimmed = header_value.trim_matches([' ', '\t']);
+    let (scheme, rest) = trimmed.split_once(' ')?;
     if !scheme.eq_ignore_ascii_case("Bearer") {
         return None;
     }
-    let token = rest.trim();
-    (!token.is_empty() && !token.chars().any(char::is_whitespace)).then_some(token)
+    let token = rest.trim_matches(' ');
+    is_valid_b64token(token).then_some(token)
+}
+
+fn is_valid_b64token(token: &str) -> bool {
+    let mut saw_token_byte = false;
+    let mut saw_padding = false;
+
+    for byte in token.bytes() {
+        if byte == b'=' {
+            saw_padding = true;
+        } else if saw_padding
+            || !(byte.is_ascii_alphanumeric()
+                || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'+' | b'/'))
+        {
+            return false;
+        } else {
+            saw_token_byte = true;
+        }
+    }
+
+    saw_token_byte
 }
 
 /// Converts an absolute wall-clock expiry to a monotonic [`Instant`] offset from
@@ -362,26 +383,50 @@ mod tests {
         assert!(BearerToken::from_header_value("Bearer   ").is_none());
     }
 
-    /// Scenario: parse header values whose scheme/token separator is a tab or
-    /// multiple spaces rather than a single ASCII space.
-    /// Guarantees: any whitespace run is accepted as the separator, yielding the
-    /// bare token.
+    /// Scenario: parse a header value with multiple ASCII spaces between the
+    /// scheme and token.
+    /// Guarantees: the RFC 6750 `1*SP` separator accepts more than one space.
     #[test]
-    fn from_header_value_accepts_any_whitespace_separator() {
-        // The separator may be any whitespace (tab, multiple spaces, a mix), not
-        // just a single ASCII space.
-        assert_eq!(
-            BearerToken::from_header_value("Bearer\teyJ.abc.sig")
-                .expect("tab is a valid scheme separator")
-                .expose_token(),
-            "eyJ.abc.sig"
-        );
+    fn from_header_value_accepts_multiple_spaces() {
         assert_eq!(
             BearerToken::from_header_value("Bearer  eyJ.abc.sig")
                 .expect("valid bearer header")
                 .expose_token(),
             "eyJ.abc.sig"
         );
+    }
+
+    /// Scenario: parse a header value with a tab between the scheme and token.
+    /// Guarantees: a tab is rejected because RFC 6750 requires one or more
+    /// ASCII spaces between `Bearer` and the credential.
+    #[test]
+    fn from_header_value_rejects_tab_separator() {
+        assert!(BearerToken::from_header_value("Bearer\teyJ.abc.sig").is_none());
+    }
+
+    /// Scenario: parse bearer credentials containing every RFC 6750 `b64token`
+    /// symbol and optional trailing padding.
+    /// Guarantees: valid bearer-token characters and trailing `=` padding are
+    /// accepted without changing the credential.
+    #[test]
+    fn from_header_value_accepts_b64token_characters() {
+        let token = "AZaz09-._~+/==";
+        assert_eq!(
+            BearerToken::from_header_value(&format!("Bearer {token}"))
+                .expect("valid b64token")
+                .expose_token(),
+            token
+        );
+    }
+
+    /// Scenario: parse bearer credentials containing punctuation outside the
+    /// RFC 6750 `b64token` grammar or padding followed by more token bytes.
+    /// Guarantees: malformed bearer credentials are rejected before reaching
+    /// an authorizer.
+    #[test]
+    fn from_header_value_rejects_invalid_b64token_characters() {
+        assert!(BearerToken::from_header_value("Bearer abc:def").is_none());
+        assert!(BearerToken::from_header_value("Bearer abc=def").is_none());
     }
 
     /// Scenario: parse a header value containing two `Bearer ` prefixes (e.g.

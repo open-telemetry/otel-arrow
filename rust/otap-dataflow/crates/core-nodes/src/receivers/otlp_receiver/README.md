@@ -174,7 +174,9 @@ never measurement attributes. Protocol-specific enforced rejections remain in
 Attribute values are bounded: `signal` is `traces`, `metrics`, or `logs`;
 `protocol` is `grpc` or `http`; `outcome` is `success`, `failure`, or
 `refused`; and `error.type` is `memory_pressure`, `concurrency_limit`,
-`rate_limit`, `payload_too_large`, `invalid_request`, or `internal`.
+`rate_limit`, `authentication`, `permission_denied`,
+`authorization_unavailable`, `payload_too_large`, `invalid_request`, or
+`internal`.
 
 ### Events
 

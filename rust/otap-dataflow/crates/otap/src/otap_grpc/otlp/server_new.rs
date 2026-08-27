@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::task::Poll;
 
 use crate::accessory::slots::{Key as SlotKey, State as SlotsState};
+use crate::bearer_authorization::{AuthorizationRejection, authorize_bearer};
 use crate::otlp_metrics::{OtlpProtocol, OtlpReceiverMetrics};
 use crate::pdata::{Context, OtapPdata};
 use crate::rate_limit_layer::{
@@ -28,7 +29,7 @@ use http::{Request, Response};
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_config::transport_headers::TransportHeaders;
 use otel_arrow_dfe_engine::admission::{AdmissionContext, AdmissionDecision, SharedAdmissionGate};
-use otel_arrow_dfe_engine::capability::auth::{AuthzDecision, BearerToken, DenyReason};
+use otel_arrow_dfe_engine::capability::auth::AuthorizedIdentity;
 use otel_arrow_dfe_engine::control::{CallData, NackMsg};
 use otel_arrow_dfe_engine::shared::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer;
 use otel_arrow_dfe_engine::shared::receiver::EffectHandler;
@@ -55,10 +56,6 @@ use tonic::{Code, Status};
 use tower::{Layer, Service};
 
 use crate::otap_grpc::common::peer_addr_from_extensions;
-
-const UNAUTHENTICATED_MESSAGE: &str = "unauthenticated";
-const PERMISSION_DENIED_MESSAGE: &str = "permission denied";
-const AUTHORIZATION_UNAVAILABLE_MESSAGE: &str = "authorization unavailable";
 
 /// Tracks outstanding request subscriptions for a single signal so ACK/NACK responses can be routed
 /// back to the waiting caller. When `wait_for_result` is disabled the receiver skips creating this
@@ -573,61 +570,22 @@ async fn authorize_request(
     authorizer: &dyn BearerTokenAuthorizer,
     metrics: &Arc<Mutex<OtlpReceiverMetrics>>,
     headers: &http::HeaderMap,
-) -> Result<(), Box<Response<Body>>> {
-    let Some(header) = headers
-        .get(http::header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-    else {
-        metrics.lock().record_rejection(
-            OtlpProtocol::Grpc,
-            ReceiverRejectionErrorType::Authorization,
-        );
-        return Err(Box::new(
-            Status::unauthenticated(UNAUTHENTICATED_MESSAGE).into_http(),
-        ));
-    };
+) -> Result<AuthorizedIdentity, AuthorizationRejection> {
+    let result = authorize_bearer(authorizer, headers).await;
+    if let Err(rejection) = &result {
+        metrics
+            .lock()
+            .record_rejection(OtlpProtocol::Grpc, (*rejection).error_type());
+    }
+    result
+}
 
-    let Some(credential) = BearerToken::from_header_value(header) else {
-        metrics.lock().record_rejection(
-            OtlpProtocol::Grpc,
-            ReceiverRejectionErrorType::Authorization,
-        );
-        return Err(Box::new(
-            Status::unauthenticated(UNAUTHENTICATED_MESSAGE).into_http(),
-        ));
-    };
-    let status = match authorizer.authorize(&credential).await {
-        Ok(AuthzDecision::Allow { .. }) => return Ok(()),
-        Ok(AuthzDecision::Deny {
-            reason: DenyReason::MissingCredential | DenyReason::InvalidCredential,
-            ..
-        }) => Status::unauthenticated(UNAUTHENTICATED_MESSAGE),
-        Ok(AuthzDecision::Deny {
-            reason: DenyReason::NotPermitted,
-            ..
-        }) => Status::permission_denied(PERMISSION_DENIED_MESSAGE),
-        // `DenyReason` is `#[non_exhaustive]`, so a variant added upstream lands here.
-        // This is still a definitive deny, so it must map to a non-retryable status:
-        // answering UNAVAILABLE would make OTLP exporters retry a permanent denial forever.
-        Ok(AuthzDecision::Deny { reason, .. }) => {
-            otel_arrow_dfe_telemetry::otel_warn!("receiver.authz.unknown_deny_reason", reason = ?reason);
-            Status::permission_denied(PERMISSION_DENIED_MESSAGE)
-        }
-        // No decision was reached, which is a server-side fault rather than a verdict.
-        Err(error) => {
-            otel_arrow_dfe_telemetry::otel_warn!(
-                "receiver.authz.undetermined",
-                error = error.to_string()
-            );
-            Status::unavailable(AUTHORIZATION_UNAVAILABLE_MESSAGE)
-        }
-    };
-
-    metrics.lock().record_rejection(
-        OtlpProtocol::Grpc,
-        ReceiverRejectionErrorType::Authorization,
-    );
-    Err(Box::new(status.into_http()))
+fn authorization_status(rejection: AuthorizationRejection) -> Status {
+    match rejection {
+        AuthorizationRejection::Unauthenticated => Status::unauthenticated(rejection.message()),
+        AuthorizationRejection::PermissionDenied => Status::permission_denied(rejection.message()),
+        AuthorizationRejection::Unavailable => Status::unavailable(rejection.message()),
+    }
 }
 
 /// Applies bearer authorization before a gRPC request reaches an OTLP service.
@@ -694,11 +652,11 @@ where
         let metrics = self.metrics.clone();
 
         Box::pin(async move {
-            if let Err(response) =
-                authorize_request(authorizer.as_ref(), &metrics, req.headers()).await
-            {
-                return Ok(*response);
-            }
+            let _authorized_identity =
+                match authorize_request(authorizer.as_ref(), &metrics, req.headers()).await {
+                    Ok(identity) => identity,
+                    Err(rejection) => return Ok(authorization_status(rejection).into_http()),
+                };
             inner.call(req).await
         })
     }
@@ -943,6 +901,7 @@ impl NamedService for TraceServiceServer {
 mod tests {
     use super::*;
     use otel_arrow_dfe_engine::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer as BearerTokenAuthorizerCapability;
+    use otel_arrow_dfe_engine::capability::auth::{AuthzDecision, BearerToken, DenyReason};
     use otel_arrow_dfe_engine::capability::{CapabilityError, CapabilityErrorSource};
     use otel_arrow_dfe_engine::control::runtime_ctrl_msg_channel;
     use otel_arrow_dfe_engine::shared::message::SharedSender;
@@ -1008,7 +967,7 @@ mod tests {
         let response = authorize_request(&authorizer, &metrics, &headers)
             .await
             .expect_err("missing credential must be rejected");
-        assert_eq!(response.headers()["grpc-status"], "16");
+        assert_eq!(authorization_status(response).code(), Code::Unauthenticated);
 
         _ = headers.insert(
             http::header::AUTHORIZATION,
@@ -1017,7 +976,21 @@ mod tests {
         let response = authorize_request(&authorizer, &metrics, &headers)
             .await
             .expect_err("non-bearer credential must be rejected");
-        assert_eq!(response.headers()["grpc-status"], "16");
+        assert_eq!(authorization_status(response).code(), Code::Unauthenticated);
+
+        _ = headers.remove(http::header::AUTHORIZATION);
+        _ = headers.append(
+            http::header::AUTHORIZATION,
+            http::HeaderValue::from_static("Bearer allowed"),
+        );
+        _ = headers.append(
+            http::header::AUTHORIZATION,
+            http::HeaderValue::from_static("Bearer allowed"),
+        );
+        let response = authorize_request(&authorizer, &metrics, &headers)
+            .await
+            .expect_err("duplicate credentials must be rejected");
+        assert_eq!(authorization_status(response).code(), Code::Unauthenticated);
 
         _ = headers.insert(
             http::header::AUTHORIZATION,
@@ -1036,7 +1009,7 @@ mod tests {
         let response = authorize_request(&authorizer, &metrics, &headers)
             .await
             .expect_err("invalid credential must be rejected");
-        assert_eq!(response.headers()["grpc-status"], "16");
+        assert_eq!(authorization_status(response).code(), Code::Unauthenticated);
 
         _ = headers.insert(
             http::header::AUTHORIZATION,
@@ -1045,7 +1018,32 @@ mod tests {
         let response = authorize_request(&authorizer, &metrics, &headers)
             .await
             .expect_err("policy-denied credential must be rejected");
-        assert_eq!(response.headers()["grpc-status"], "7");
+        assert_eq!(
+            authorization_status(response).code(),
+            Code::PermissionDenied
+        );
+
+        let metrics = metrics.lock();
+        assert_eq!(
+            metrics
+                .rejections_for(
+                    OtlpProtocol::Grpc,
+                    ReceiverRejectionErrorType::Authentication,
+                )
+                .requests
+                .get(),
+            4
+        );
+        assert_eq!(
+            metrics
+                .rejections_for(
+                    OtlpProtocol::Grpc,
+                    ReceiverRejectionErrorType::PermissionDenied,
+                )
+                .requests
+                .get(),
+            1
+        );
     }
 
     /// Scenario: gRPC authorization is attempted while the authorizer cannot
@@ -1066,7 +1064,18 @@ mod tests {
         let response = authorize_request(&authorizer, &metrics, &headers)
             .await
             .expect_err("an undetermined decision must not admit the request");
-        assert_eq!(response.headers()["grpc-status"], "14");
+        assert_eq!(authorization_status(response).code(), Code::Unavailable);
+        assert_eq!(
+            metrics
+                .lock()
+                .rejections_for(
+                    OtlpProtocol::Grpc,
+                    ReceiverRejectionErrorType::AuthorizationUnavailable,
+                )
+                .requests
+                .get(),
+            1
+        );
     }
 
     fn new_test_service(

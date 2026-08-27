@@ -11,13 +11,13 @@
 //! The receiver keeps request payloads in their serialized protobuf form and forwards them into
 //! the pipeline as `OtapPdata`, matching the OTLP/gRPC receiver's lazy-decoding strategy.
 
+use crate::bearer_authorization::{AuthorizationRejection, authorize_bearer};
 use crate::otap_grpc::common::AckRegistry;
 use crate::otap_grpc::otlp::server_new::AckSlot;
 use crate::otlp_metrics::{OtlpProtocol, OtlpReceiverMetrics};
 use crate::pdata::{Context, OtapPdata};
 use crate::socket_options;
 use otel_arrow_dfe_engine::admission::{AdmissionContext, AdmissionDecision, SharedAdmissionGate};
-use otel_arrow_dfe_engine::capability::auth::{AuthzDecision, BearerToken, DenyReason};
 use otel_arrow_dfe_engine::shared::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer;
 
 use bytes::Bytes;
@@ -45,7 +45,6 @@ use prost::Message;
 use prost_types::Any;
 use serde::Deserialize;
 use std::convert::Infallible;
-use std::future::{Future, Ready, ready};
 use std::net::SocketAddr;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -61,10 +60,6 @@ pub mod client_settings;
 
 /// OTLP protobuf content type
 pub const PROTOBUF_CONTENT_TYPE: &str = "application/x-protobuf";
-
-const UNAUTHENTICATED_MESSAGE: &str = "unauthenticated";
-const PERMISSION_DENIED_MESSAGE: &str = "permission denied";
-const AUTHORIZATION_UNAVAILABLE_MESSAGE: &str = "authorization unavailable";
 
 /// Settings for the OTLP/HTTP server.
 #[derive(Debug, Deserialize, Clone)]
@@ -327,7 +322,8 @@ fn service_unavailable() -> Response<Full<Bytes>> {
 }
 
 fn unauthenticated() -> Response<Full<Bytes>> {
-    let mut response = rpc_status_response(StatusCode::UNAUTHORIZED, 16, UNAUTHENTICATED_MESSAGE);
+    let rejection = AuthorizationRejection::Unauthenticated;
+    let mut response = rpc_status_response(StatusCode::UNAUTHORIZED, 16, rejection.message());
     _ = response.headers_mut().insert(
         http::header::WWW_AUTHENTICATE,
         HeaderValue::from_static("Bearer"),
@@ -336,56 +332,20 @@ fn unauthenticated() -> Response<Full<Bytes>> {
 }
 
 fn permission_denied() -> Response<Full<Bytes>> {
-    rpc_status_response(StatusCode::FORBIDDEN, 7, PERMISSION_DENIED_MESSAGE)
+    let rejection = AuthorizationRejection::PermissionDenied;
+    rpc_status_response(StatusCode::FORBIDDEN, 7, rejection.message())
 }
 
 fn authorization_unavailable() -> Response<Full<Bytes>> {
-    rpc_status_response(
-        StatusCode::SERVICE_UNAVAILABLE,
-        14,
-        AUTHORIZATION_UNAVAILABLE_MESSAGE,
-    )
+    let rejection = AuthorizationRejection::Unavailable;
+    rpc_status_response(StatusCode::SERVICE_UNAVAILABLE, 14, rejection.message())
 }
 
-async fn authorize_request(
-    authorizer: &dyn BearerTokenAuthorizer,
-    headers: &http::HeaderMap,
-) -> Result<(), Box<Response<Full<Bytes>>>> {
-    let Some(header) = headers
-        .get(http::header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-    else {
-        return Err(Box::new(unauthenticated()));
-    };
-
-    let Some(credential) = BearerToken::from_header_value(header) else {
-        return Err(Box::new(unauthenticated()));
-    };
-    match authorizer.authorize(&credential).await {
-        Ok(AuthzDecision::Allow { .. }) => Ok(()),
-        Ok(AuthzDecision::Deny {
-            reason: DenyReason::MissingCredential | DenyReason::InvalidCredential,
-            ..
-        }) => Err(Box::new(unauthenticated())),
-        Ok(AuthzDecision::Deny {
-            reason: DenyReason::NotPermitted,
-            ..
-        }) => Err(Box::new(permission_denied())),
-        // `DenyReason` is `#[non_exhaustive]`, so a variant added upstream lands here.
-        // This is still a definitive deny, so it must map to a non-retryable status:
-        // answering 503 would make OTLP exporters retry a permanent denial forever.
-        Ok(AuthzDecision::Deny { reason, .. }) => {
-            otel_arrow_dfe_telemetry::otel_warn!("receiver.authz.unknown_deny_reason", reason = ?reason);
-            Err(Box::new(permission_denied()))
-        }
-        // No decision was reached, which is a server-side fault rather than a verdict.
-        Err(error) => {
-            otel_arrow_dfe_telemetry::otel_warn!(
-                "receiver.authz.undetermined",
-                error = error.to_string()
-            );
-            Err(Box::new(authorization_unavailable()))
-        }
+fn authorization_rejection_response(rejection: AuthorizationRejection) -> Response<Full<Bytes>> {
+    match rejection {
+        AuthorizationRejection::Unauthenticated => unauthenticated(),
+        AuthorizationRejection::PermissionDenied => permission_denied(),
+        AuthorizationRejection::Unavailable => authorization_unavailable(),
     }
 }
 
@@ -619,38 +579,8 @@ fn read_to_end_limited<R: std::io::Read>(
     Ok(out)
 }
 
-trait HttpAuthorization: Clone + Send + Sync + 'static {
-    type Future<'a>: Future<Output = Result<(), Box<Response<Full<Bytes>>>>> + Send + 'a
-    where
-        Self: 'a;
-
-    fn authorize<'a>(&'a self, headers: &'a http::HeaderMap) -> Self::Future<'a>;
-}
-
-#[derive(Clone, Copy)]
-struct NoAuthorization;
-
-impl HttpAuthorization for NoAuthorization {
-    type Future<'a> = Ready<Result<(), Box<Response<Full<Bytes>>>>>;
-
-    fn authorize<'a>(&'a self, _headers: &'a http::HeaderMap) -> Self::Future<'a> {
-        ready(Ok(()))
-    }
-}
-
 #[derive(Clone)]
-struct BearerAuthorization(Arc<dyn BearerTokenAuthorizer>);
-
-impl HttpAuthorization for BearerAuthorization {
-    type Future<'a> = futures::future::BoxFuture<'a, Result<(), Box<Response<Full<Bytes>>>>>;
-
-    fn authorize<'a>(&'a self, headers: &'a http::HeaderMap) -> Self::Future<'a> {
-        Box::pin(authorize_request(self.0.as_ref(), headers))
-    }
-}
-
-#[derive(Clone)]
-struct HttpHandler<A> {
+struct HttpHandler {
     effect_handler: EffectHandler<OtapPdata>,
     ack_registry: AckRegistry,
     metrics: Arc<Mutex<OtlpReceiverMetrics>>,
@@ -666,10 +596,10 @@ struct HttpHandler<A> {
     /// to every `OtapPdata` produced from the connection so downstream
     /// processors can read it via `OtapPdata::peer_addr()`.
     peer_addr: SocketAddr,
-    authorization: A,
+    authorizer: Option<Arc<dyn BearerTokenAuthorizer>>,
 }
 
-impl<A: HttpAuthorization> HttpHandler<A> {
+impl HttpHandler {
     fn record_rejection(&self, error_type: ReceiverRejectionErrorType) {
         self.metrics
             .lock()
@@ -809,10 +739,17 @@ impl<A: HttpAuthorization> HttpHandler<A> {
                 return Err(rate_limit_saturated());
             }
 
-            if let Err(response) = self.authorization.authorize(req.headers()).await {
-                self.record_rejection(ReceiverRejectionErrorType::Authorization);
-                return Err(*response);
-            }
+            let _authorized_identity = if let Some(authorizer) = &self.authorizer {
+                match authorize_bearer(authorizer.as_ref(), req.headers()).await {
+                    Ok(identity) => Some(identity),
+                    Err(rejection) => {
+                        self.record_rejection(rejection.error_type());
+                        return Err(authorization_rejection_response(rejection));
+                    }
+                }
+            } else {
+                None
+            };
 
             let max_len = self.settings.max_request_body_size as usize;
 
@@ -1047,6 +984,7 @@ impl Drop for SlotGuard {
 ///
 /// The HTTP server always enforces its own `settings.max_concurrent_requests` as a
 /// protocol-local limit.
+#[allow(clippy::too_many_arguments)]
 pub async fn serve(
     effect_handler: EffectHandler<OtapPdata>,
     settings: HttpServerSettings,
@@ -1056,50 +994,6 @@ pub async fn serve(
     rate_limiter: Option<SharedAdmissionGate>,
     global_semaphore: Option<Arc<Semaphore>>,
     authorizer: Option<Arc<dyn BearerTokenAuthorizer>>,
-    shutdown: CancellationToken,
-) -> std::io::Result<()> {
-    match authorizer {
-        Some(authorizer) => {
-            serve_with_authorization(
-                effect_handler,
-                settings,
-                ack_registry,
-                metrics,
-                admission_state,
-                rate_limiter,
-                global_semaphore,
-                BearerAuthorization(authorizer),
-                shutdown,
-            )
-            .await
-        }
-        None => {
-            serve_with_authorization(
-                effect_handler,
-                settings,
-                ack_registry,
-                metrics,
-                admission_state,
-                rate_limiter,
-                global_semaphore,
-                NoAuthorization,
-                shutdown,
-            )
-            .await
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn serve_with_authorization<A: HttpAuthorization>(
-    effect_handler: EffectHandler<OtapPdata>,
-    settings: HttpServerSettings,
-    ack_registry: AckRegistry,
-    metrics: Arc<Mutex<OtlpReceiverMetrics>>,
-    admission_state: SharedReceiverAdmissionState,
-    rate_limiter: Option<SharedAdmissionGate>,
-    global_semaphore: Option<Arc<Semaphore>>,
-    authorization: A,
     shutdown: CancellationToken,
 ) -> std::io::Result<()> {
     let listener = effect_handler
@@ -1158,7 +1052,7 @@ async fn serve_with_authorization<A: HttpAuthorization>(
                     global_semaphore: global_semaphore.clone(),
                     local_semaphore: local_semaphore.clone(),
                     peer_addr,
-                    authorization: authorization.clone(),
+                    authorizer: authorizer.clone(),
                 };
 
                 if let Some(acceptor) = maybe_tls_acceptor.clone() {
@@ -1244,6 +1138,9 @@ mod tests {
 
     use otel_arrow_dfe_engine::admission::{AdmissionBinder, AdmissionDimension};
     use otel_arrow_dfe_engine::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer as BearerTokenAuthorizerCapability;
+    use otel_arrow_dfe_engine::capability::auth::{
+        AuthorizedIdentity, AuthzDecision, BearerToken, DenyReason,
+    };
     use otel_arrow_dfe_engine::capability::{CapabilityError, CapabilityErrorSource};
     use otel_arrow_dfe_engine::memory_limiter::{MemoryPressureLevel, MemoryPressureState};
     use std::collections::HashMap;
@@ -1260,7 +1157,10 @@ mod tests {
             credential: &BearerToken,
         ) -> Result<AuthzDecision, CapabilityError> {
             Ok(match credential.expose_token() {
-                "allowed" => AuthzDecision::allow_anonymous(),
+                "allowed" => {
+                    AuthzDecision::allow(AuthorizedIdentity::new().with_subject("test-subject"))
+                }
+                "missing" => AuthzDecision::deny(DenyReason::MissingCredential),
                 "invalid" => AuthzDecision::deny(DenyReason::InvalidCredential),
                 _ => AuthzDecision::deny(DenyReason::NotPermitted),
             })
@@ -1297,6 +1197,13 @@ mod tests {
         }
     }
 
+    async fn authorize_request(
+        authorizer: &dyn BearerTokenAuthorizer,
+        headers: &http::HeaderMap,
+    ) -> Result<AuthorizedIdentity, AuthorizationRejection> {
+        authorize_bearer(authorizer, headers).await
+    }
+
     /// Scenario: HTTP authorization receives missing, non-bearer, allowed,
     /// invalid, and policy-denied credentials.
     /// Guarantees: Requests are admitted only on allow; authentication failures
@@ -1306,9 +1213,10 @@ mod tests {
         let authorizer = TestAuthorizer;
         let mut headers = http::HeaderMap::new();
 
-        let response = authorize_request(&authorizer, &headers)
+        let rejection = authorize_request(&authorizer, &headers)
             .await
             .expect_err("missing credential must be rejected");
+        let response = authorization_rejection_response(rejection);
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(response.headers()[http::header::WWW_AUTHENTICATE], "Bearer");
 
@@ -1316,33 +1224,74 @@ mod tests {
             http::header::AUTHORIZATION,
             HeaderValue::from_static("Basic dXNlcjpwYXNz"),
         );
-        let response = authorize_request(&authorizer, &headers)
+        let rejection = authorize_request(&authorizer, &headers)
             .await
             .expect_err("non-bearer credential must be rejected");
+        let response = authorization_rejection_response(rejection);
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        _ = headers.remove(http::header::AUTHORIZATION);
+        _ = headers.append(
+            http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer allowed"),
+        );
+        _ = headers.append(
+            http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer allowed"),
+        );
+        let rejection = authorize_request(&authorizer, &headers)
+            .await
+            .expect_err("duplicate credentials must be rejected");
+        let response = authorization_rejection_response(rejection);
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        _ = headers.insert(
+            http::header::AUTHORIZATION,
+            HeaderValue::from_bytes(b"Bearer \xff").expect("valid opaque header value"),
+        );
+        let rejection = authorize_request(&authorizer, &headers)
+            .await
+            .expect_err("non-UTF-8 credentials must be rejected");
+        let response = authorization_rejection_response(rejection);
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        _ = headers.insert(
+            http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer missing"),
+        );
+        let rejection = authorize_request(&authorizer, &headers)
+            .await
+            .expect_err("authorizer-reported missing credentials must be rejected");
+        let response = authorization_rejection_response(rejection);
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
         _ = headers.insert(
             http::header::AUTHORIZATION,
             HeaderValue::from_static("Bearer allowed"),
         );
-        assert!(authorize_request(&authorizer, &headers).await.is_ok());
+        let identity = authorize_request(&authorizer, &headers)
+            .await
+            .expect("allowed credential must be admitted");
+        assert_eq!(identity.subject(), Some("test-subject"));
 
         _ = headers.insert(
             http::header::AUTHORIZATION,
             HeaderValue::from_static("Bearer invalid"),
         );
-        let response = authorize_request(&authorizer, &headers)
+        let rejection = authorize_request(&authorizer, &headers)
             .await
             .expect_err("invalid credential must be rejected");
+        let response = authorization_rejection_response(rejection);
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
         _ = headers.insert(
             http::header::AUTHORIZATION,
             HeaderValue::from_static("Bearer denied"),
         );
-        let response = authorize_request(&authorizer, &headers)
+        let rejection = authorize_request(&authorizer, &headers)
             .await
             .expect_err("policy-denied credential must be rejected");
+        let response = authorization_rejection_response(rejection);
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
@@ -1361,9 +1310,10 @@ mod tests {
             HeaderValue::from_static("Bearer allowed"),
         );
 
-        let response = authorize_request(&authorizer, &headers)
+        let rejection = authorize_request(&authorizer, &headers)
             .await
             .expect_err("an undetermined decision must not admit the request");
+        let response = authorization_rejection_response(rejection);
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert!(
             !response
@@ -1492,7 +1442,7 @@ mod tests {
                 metrics
                     .rejections_for(
                         OtlpProtocol::Http,
-                        ReceiverRejectionErrorType::Authorization
+                        ReceiverRejectionErrorType::Authentication
                     )
                     .requests
                     .get(),
@@ -1625,7 +1575,7 @@ mod tests {
                 metrics
                     .rejections_for(
                         OtlpProtocol::Http,
-                        ReceiverRejectionErrorType::Authorization
+                        ReceiverRejectionErrorType::Authentication
                     )
                     .requests
                     .get(),

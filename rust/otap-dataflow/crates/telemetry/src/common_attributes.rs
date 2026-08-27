@@ -48,8 +48,12 @@ pub enum ReceiverRejectionErrorType {
     ConcurrencyLimit,
     /// The receiver-local rate limit refused the request.
     RateLimit,
-    /// The request failed receiver authorization.
-    Authorization,
+    /// The request did not contain a valid authentication credential.
+    Authentication,
+    /// The authenticated caller was not permitted to perform the request.
+    PermissionDenied,
+    /// The authorizer could not reach a decision.
+    AuthorizationUnavailable,
     /// The encoded or decoded payload exceeds the configured size limit.
     PayloadTooLarge,
     /// The request is malformed or otherwise invalid.
