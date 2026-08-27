@@ -413,7 +413,7 @@ mod test {
         }
         bm
     }
-    use data_engine_kql_parser::{KqlParser, Parser};
+    use otel_arrow_contrib_data_engine_kql_parser::{KqlParser, Parser};
     use otel_arrow_dfe_pdata::otap::filter::IdBitmap;
     use otel_arrow_dfe_pdata::otap::{Logs, Traces};
     use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
