@@ -330,7 +330,8 @@ release:
    CURRENT_VERSION=$(sed -n \
      's/^version = "\([0-9]\+\.[0-9]\+\.[0-9]\+\)"/\1/p' \
      rust/otap-dataflow/Cargo.toml | head -1)
-   sed -i "s/${CURRENT_VERSION}/X.Y.Z/g" \
+   CURRENT_VERSION_PATTERN=${CURRENT_VERSION//./\\.}
+   sed -i "s/${CURRENT_VERSION_PATTERN}/X.Y.Z/g" \
      rust/otap-dataflow/Cargo.toml
    cargo generate-lockfile \
      --manifest-path rust/otap-dataflow/Cargo.toml

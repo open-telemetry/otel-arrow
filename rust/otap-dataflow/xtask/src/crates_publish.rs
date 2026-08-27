@@ -16,20 +16,8 @@ use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-const PUBLISH_PACKAGES: &[&str] = &[
-    "otel-arrow-dfe-admin-types",
-    "otel-arrow-dfe-channel",
-    "otel-arrow-dfe-component-inventory-syntax",
-    "otel-arrow-dfe-config",
-    "otel-arrow-dfe-engine-macros",
-    "otel-arrow-dfe-expohisto",
-    "otel-arrow-dfe-pdata",
-    "otel-arrow-dfe-pdata-otlp-macros",
-    "otel-arrow-dfe-pdata-otlp-model",
-    "otel-arrow-dfe-pdata-views",
-    "otel-arrow-dfe-quiver",
-    "otel-arrow-dfe-telemetry-macros",
-];
+use crate::publish_policy::PUBLISH_PACKAGES;
+
 const CRATES_IO_API: &str = "https://crates.io/api/v1";
 const VISIBILITY_DELAYS: [u64; 8] = [0, 5, 10, 20, 40, 80, 160, 300];
 

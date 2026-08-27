@@ -8,20 +8,7 @@ use std::path::Path;
 use anyhow::Error;
 use toml::{Table, Value};
 
-const PUBLISH_PACKAGES: &[&str] = &[
-    "otel-arrow-dfe-admin-types",
-    "otel-arrow-dfe-channel",
-    "otel-arrow-dfe-component-inventory-syntax",
-    "otel-arrow-dfe-config",
-    "otel-arrow-dfe-engine-macros",
-    "otel-arrow-dfe-expohisto",
-    "otel-arrow-dfe-pdata",
-    "otel-arrow-dfe-pdata-otlp-macros",
-    "otel-arrow-dfe-pdata-otlp-model",
-    "otel-arrow-dfe-pdata-views",
-    "otel-arrow-dfe-quiver",
-    "otel-arrow-dfe-telemetry-macros",
-];
+use crate::publish_policy::PUBLISH_PACKAGES;
 
 /// Validates the entire structure of the project.
 ///
