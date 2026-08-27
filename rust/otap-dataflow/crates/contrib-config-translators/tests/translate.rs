@@ -415,3 +415,36 @@ fn agent_settings_payload_round_trips_through_the_engine_loader() {
         "engine rejected the configuration: {spec:?}\n{yaml}"
     );
 }
+
+/// Scenario: a generated YAML document is inspected for the engine-wide `engine:` block.
+/// Guarantees: the block is omitted while it holds nothing but engine defaults. It is
+/// `#[serde(default)]`, so an absent block parses back to exactly `EngineConfig::default()` and
+/// the engine behaves identically -- but emitting it would freeze roughly sixty lines of internal
+/// observability pipeline into every generated config, dwarfing the pipeline we actually generate
+/// and silently pinning defaults that would otherwise track the engine. Deliberate engine
+/// settings differ from the default and so are still written out.
+#[test]
+fn default_engine_configuration_is_not_pinned_into_the_output() {
+    let yaml = default_translator()
+        .translate_to_yaml(&fixture("AMCSConfig"))
+        .expect("translation should succeed");
+
+    assert!(
+        !yaml.contains("\nengine:"),
+        "a defaults-only engine block must not be written out:\n{yaml}"
+    );
+    // The observability pipeline is the bulky part of those defaults; make its absence explicit
+    // so this test fails loudly if the block ever creeps back in.
+    assert!(
+        !yaml.contains("internal_telemetry"),
+        "default observability pipeline leaked into the output:\n{yaml}"
+    );
+
+    // Omitting the block must not change what the engine actually runs.
+    let spec = OtelDataflowSpec::from_yaml(&yaml).expect("output should parse back");
+    assert_eq!(
+        spec.engine,
+        otel_arrow_dfe_config::engine::EngineConfig::default(),
+        "an absent engine block must deserialize to the engine defaults"
+    );
+}

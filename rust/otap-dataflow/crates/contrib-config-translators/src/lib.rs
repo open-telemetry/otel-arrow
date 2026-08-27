@@ -23,10 +23,46 @@
 
 pub mod amcs;
 pub mod error;
+mod yaml_style;
 
-use otel_arrow_dfe_config::engine::OtelDataflowSpec;
+use otel_arrow_dfe_config::engine::{EngineConfig, OtelDataflowSpec};
 
 pub use error::Error;
+
+/// Serializes a specification to YAML, omitting the `engine` block when it carries nothing but
+/// engine defaults.
+///
+/// `OtelDataflowSpec::engine` is `#[serde(default)]`, so an absent block deserializes back to
+/// `EngineConfig::default()` and the engine behaves identically. Writing the block out anyway
+/// would pin whatever the defaults happened to be at generation time -- currently around sixty
+/// lines of internal-observability pipeline that dwarf the pipeline we actually generate, and
+/// that would silently stop tracking the engine if those defaults ever change.
+///
+/// Any engine configuration we set deliberately differs from the default and is therefore kept.
+fn spec_to_yaml(spec: &OtelDataflowSpec) -> Result<String, Error> {
+    let mut value = serde_yaml::to_value(spec).map_err(|e| Error::Serialization {
+        details: e.to_string(),
+    })?;
+    let default_engine =
+        serde_yaml::to_value(EngineConfig::default()).map_err(|e| Error::Serialization {
+            details: e.to_string(),
+        })?;
+
+    if let serde_yaml::Value::Mapping(map) = &mut value {
+        let key = serde_yaml::Value::String("engine".to_owned());
+        if map.get(&key) == Some(&default_engine) {
+            let _ = map.remove(&key);
+        }
+    }
+
+    yaml_style::sort_nodes(&mut value);
+
+    serde_yaml::to_string(&value)
+        .map(|yaml| yaml_style::prettify(&yaml))
+        .map_err(|e| Error::Serialization {
+            details: e.to_string(),
+        })
+}
 
 /// Converts a vendor-specific configuration document into an engine pipeline specification.
 ///
@@ -55,8 +91,6 @@ pub trait ConfigTranslator {
     /// Returns an [`Error`] if translation fails, or if the specification cannot be serialized.
     fn translate_to_yaml(&self, raw: &str) -> Result<String, Error> {
         let spec = self.translate(raw)?;
-        serde_yaml::to_string(&spec).map_err(|e| Error::Serialization {
-            details: e.to_string(),
-        })
+        spec_to_yaml(&spec)
     }
 }

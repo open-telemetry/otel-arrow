@@ -1,0 +1,12 @@
+change_type: new_component
+
+component: pipeline
+
+note: Add an AMCS config translator that turns Azure Monitor Data Collection Rules into a pipeline configuration.
+
+issues: [3911]
+
+subtext: |
+  Reads the AMCS configuration payload delivered to the agent and generates the equivalent
+  receiver, filter, batch and exporter pipeline. Supports multiple Data Collection Rules on one
+  host, per-signal resource attribute routing, and the AgentSettings rule for OTLP listener ports.
