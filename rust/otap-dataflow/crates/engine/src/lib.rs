@@ -370,6 +370,10 @@ pub struct Interests: u16 {
     /// level, or per node via `policies.telemetry.item_counts`.
     const PRODUCED_CONSUMED_ITEM_COUNTS = 1 << 8;
 
+    /// Per-signal produced/consumed logical payload size requested. Enabled at
+    /// the `Detailed` metric level, or per node via `policies.telemetry.size`.
+    const PRODUCED_CONSUMED_SIZE = 1 << 9;
+
     /// Pipeline-metrics is either CONSUMER_METRICS or PRODUCER_METRICS.
     const PIPELINE_METRICS = Self::CONSUMER_METRICS.bits() | Self::PRODUCER_METRICS.bits();
 }
@@ -383,6 +387,7 @@ impl Interests {
     /// Normal:   CONSUMER_METRICS | PRODUCER_METRICS | PROCESS_DURATION
     /// Detailed: CONSUMER_METRICS | PRODUCER_METRICS | PROCESS_DURATION
     ///           | ENTRY_TIMESTAMP | PRODUCED_CONSUMED_ITEM_COUNTS
+    ///           | PRODUCED_CONSUMED_SIZE
     #[must_use]
     pub fn from_metric_level(level: MetricLevel) -> Self {
         match level {
@@ -393,6 +398,7 @@ impl Interests {
                     | Self::PROCESS_DURATION
                     | Self::ENTRY_TIMESTAMP
                     | Self::PRODUCED_CONSUMED_ITEM_COUNTS
+                    | Self::PRODUCED_CONSUMED_SIZE
             }
         }
     }
@@ -2663,6 +2669,19 @@ mod test {
         PropagationAction, PropagationDefault, PropagationSelector, PropagationSelectorType,
     };
     use std::time::Duration;
+
+    /// Scenario: runtime metric levels resolve the optional payload measurements.
+    /// Guarantees: detailed metrics enable both item counts and size while normal metrics enable neither by default.
+    #[test]
+    fn detailed_runtime_metrics_enable_payload_measurements() {
+        let normal = Interests::from_metric_level(MetricLevel::Normal);
+        assert!(!normal.contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS));
+        assert!(!normal.contains(Interests::PRODUCED_CONSUMED_SIZE));
+
+        let detailed = Interests::from_metric_level(MetricLevel::Detailed);
+        assert!(detailed.contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS));
+        assert!(detailed.contains(Interests::PRODUCED_CONSUMED_SIZE));
+    }
 
     fn admission_policy(unit: RateLimitUnit) -> RateLimiterPolicy {
         RateLimiterPolicy {

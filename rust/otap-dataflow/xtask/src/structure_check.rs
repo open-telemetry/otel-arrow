@@ -8,6 +8,8 @@ use std::path::Path;
 use anyhow::Error;
 use toml::{Table, Value};
 
+const PUBLISH_PILOT_PACKAGE: &str = "otel-arrow-dfe-pdata-views";
+
 /// Validates the entire structure of the project.
 ///
 /// This procedure checks that the following rules are properly followed for
@@ -175,7 +177,7 @@ fn check_package<P: AsRef<Path>>(cargo_toml_path: P, toml: &Table) -> anyhow::Re
         package,
     )?;
     check_path_is_true(cargo_toml_path.as_ref(), &["license", "workspace"], package)?;
-    check_path_is_true(cargo_toml_path.as_ref(), &["publish", "workspace"], package)?;
+    check_publish_policy(cargo_toml_path.as_ref(), package_name, package)?;
     check_path_is_true(cargo_toml_path.as_ref(), &["edition", "workspace"], package)?;
     check_path_is_true(
         cargo_toml_path.as_ref(),
@@ -184,6 +186,19 @@ fn check_package<P: AsRef<Path>>(cargo_toml_path: P, toml: &Table) -> anyhow::Re
     )?;
 
     Ok(())
+}
+
+#[cfg(not(tarpaulin_include))]
+fn check_publish_policy(
+    cargo_toml_path: &Path,
+    package_name: &str,
+    package: &Value,
+) -> anyhow::Result<()> {
+    if package_name == PUBLISH_PILOT_PACKAGE {
+        check_path_is_true(cargo_toml_path, &["publish"], package)
+    } else {
+        check_path_is_true(cargo_toml_path, &["publish", "workspace"], package)
+    }
 }
 
 /// Checks the `lints` section of a Cargo.toml file.
@@ -224,4 +239,52 @@ workspace = true
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn package(contents: &str) -> Value {
+        contents
+            .parse::<Table>()
+            .expect("manifest should parse")
+            .remove("package")
+            .expect("manifest should contain package")
+    }
+
+    /// Scenario: the views pilot explicitly enables publication.
+    /// Guarantees: structure validation accepts the sole approved publication override.
+    #[test]
+    fn publish_policy_accepts_views_pilot() {
+        let manifest = package(
+            r#"
+            [package]
+            name = "otel-arrow-dfe-pdata-views"
+            publish = true
+            "#,
+        );
+
+        assert!(
+            check_publish_policy(Path::new("Cargo.toml"), PUBLISH_PILOT_PACKAGE, &manifest).is_ok()
+        );
+    }
+
+    /// Scenario: a non-pilot package explicitly enables publication.
+    /// Guarantees: structure validation requires every other crate to inherit workspace policy.
+    #[test]
+    fn publish_policy_rejects_other_override() {
+        let manifest = package(
+            r#"
+            [package]
+            name = "otel-arrow-dfe-pdata"
+            publish = true
+            "#,
+        );
+
+        assert!(
+            check_publish_policy(Path::new("Cargo.toml"), "otel-arrow-dfe-pdata", &manifest)
+                .is_err()
+        );
+    }
 }

@@ -88,6 +88,8 @@ pub(super) fn frame(node_id: usize, interests: Interests, tag: u64) -> Frame {
         },
         produced_items: 0,
         consumed_items: 0,
+        produced_size: 0,
+        consumed_size: 0,
     }
 }
 

@@ -10,7 +10,8 @@ The repository uses two GitHub Actions workflows to manage releases:
 
 1. **Prepare Release**: Renders pending changelog entries, bumps versions,
    and opens a pull request.
-2. **Push Release**: Creates git tags and publishes the GitHub release.
+2. **Push Release**: Publishes opted-in Rust crates, creates git tags, and
+   publishes the GitHub release.
 
 This two-step process ensures that all changes are reviewed before the release
 is published.
@@ -25,6 +26,11 @@ is published.
    YAML fragment under `go/.chloggen/` (for Go changes) or
    `rust/otap-dataflow/.chloggen/` (for Rust changes). The release workflow
    collapses these into the appropriate CHANGELOG at release time.
+4. **Protected environment**: The `release` GitHub environment exists with
+   the required maintainers as approvers.
+5. **Trusted publishing**: crates.io trusts
+   `.github/workflows/push-release.yml` in this repository with the `release`
+   environment.
 
 ## Changelog management
 
@@ -134,6 +140,10 @@ Before publishing the release, run the push workflow in dry-run mode:
 2. The workflow will:
    - Resolve the merged `otelbot/release-vX.Y.Z` pull request and use its
      merge commit as the release commit.
+   - Obtain a short-lived crates.io token through trusted publishing.
+   - Publish `otel-arrow-dfe-pdata-views`, or skip the version if it already
+     exists.
+   - Wait until crates.io reports the version before creating release tags.
    - Create git tags for the main release, the Go modules, and the Rust
      workspace at that release commit.
    - Publish the GitHub release with the combined changelog content.
@@ -160,9 +170,9 @@ The release process handles:
 
 **Rust Workspace:**
 
-- `rust/otap-dataflow/` (git-tag only; **not** published to crates.io
-  yet). Consumers wire the workspace directly via a git reference until
-  the Rust side is ready for end-user releases.
+- `rust/otap-dataflow/` aggregate git tag.
+- `otel-arrow-dfe-pdata-views` on crates.io. All other Rust workspace
+  packages remain unpublished during the pilot.
 
 ## Troubleshooting
 
@@ -195,19 +205,30 @@ The release process handles:
 - Ensure the new version follows semantic versioning and is greater than
   the current version.
 
+#### crates.io trusted publishing authentication fails
+
+- Confirm the crate's trusted publisher names `open-telemetry/otel-arrow`,
+  workflow `push-release.yml`, and environment `release`.
+- Confirm the workflow was started from an event and ref allowed by the
+  protected `release` environment.
+- Do not restore or add a long-lived crates.io token to the workflow.
+
 ### Manual Recovery
 
 If the workflow fails partway through:
 
-1. Delete the release branch if it was created:
+1. Check whether `otel-arrow-dfe-pdata-views@X.Y.Z` exists on crates.io.
+2. If it exists, publication is irreversible. Re-run Push Release with the
+   same version. The publisher skips the existing crate before resuming tags
+   and the GitHub release.
+3. Never attempt to replace an existing crates.io version. Prepare a new patch
+   version if the published contents are wrong.
+4. If publication did not occur, fix the underlying issue and re-run the
+   workflow normally.
 
-   ```bash
-   git push origin --delete otelbot/release-vX.Y.Z
-   ```
-
-2. Delete the draft release from the GitHub UI if it was created.
-
-3. Fix the underlying issue and re-run the workflow.
+Do not yank a version merely because a later tag or GitHub release step failed.
+Yanking prevents normal dependency resolution and does not permit republishing
+the same version.
 
 ### Emergency Release Process
 
@@ -230,7 +251,18 @@ release:
 
 3. Commit the changes, open and merge a PR.
 
-4. Create and push the release tags:
+4. From the merged release commit, publish or verify the views crate with a
+   short-lived crates.io token:
+
+   ```bash
+   cd rust/otap-dataflow
+   export CARGO_REGISTRY_TOKEN="REPLACE_WITH_SHORT_LIVED_TOKEN"
+   cargo xtask crates-publish publish X.Y.Z
+   unset CARGO_REGISTRY_TOKEN
+   cd ../..
+   ```
+
+5. Create and push the release tags:
 
    ```bash
    git tag -a vX.Y.Z -m "Release vX.Y.Z"
@@ -241,7 +273,7 @@ release:
      rust/otap-dataflow/vX.Y.Z
    ```
 
-5. Create a GitHub release manually.
+6. Create a GitHub release manually.
 
 ## Version Strategy
 
@@ -253,5 +285,5 @@ release:
   changes.
 - Pre-release versions are not currently supported through the automated
   workflow.
-- Rust crates are **not** published to crates.io yet. The Rust release is
-  git-tag-only until the Rust side is ready for end-user releases.
+- Only `otel-arrow-dfe-pdata-views` is published to crates.io during the
+  pilot. Consume every other Rust crate using the Rust workspace git tag.

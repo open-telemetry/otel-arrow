@@ -249,9 +249,10 @@ pub(super) fn join_and_eval_value(
     session_ctx: &SessionContext,
 ) -> Result<Option<ScopedValue>> {
     // evaluate all children
-    let mut child_results = Vec::with_capacity(children.len());
-    for child in children.iter_mut() {
-        let result = match child.execute_as_value(otap_batch, session_ctx)? {
+    let num_children = children.len();
+    let mut child_results = Vec::with_capacity(num_children);
+    for i in 0..num_children {
+        let result = match children[i].execute_as_value(otap_batch, session_ctx)? {
             Some(mut result) => {
                 // maybe align children to root if configured. We skip alignment for scalar results
                 // because it's handled by the join below
@@ -263,6 +264,37 @@ pub(super) fn join_and_eval_value(
             None => {
                 if default_null_children {
                     ScopedValue::new_scalar(ScalarValue::Null)
+                } else if let Some((strategy, default)) =
+                    short_circuit.and_then(|s| s.absent_child_default().map(|d| (s, d)))
+                {
+                    // The short-circuit strategy can handle absent children (e.g. OR
+                    // treats absent data as "no match"/false). For the 2-child OR
+                    // case we skip the join entirely and return the other child's
+                    // result directly.
+                    if num_children == 2
+                        && matches!(
+                            strategy,
+                            ShortCircuitStrategy::Or | ShortCircuitStrategy::NotOr
+                        )
+                    {
+                        // The other child is either already evaluated (in
+                        // child_results) or is the next child to evaluate.
+                        let other = if let Some(sv) = child_results.into_iter().next() {
+                            Some(sv)
+                        } else {
+                            children[i + 1].execute_as_value(otap_batch, session_ctx)?
+                        };
+                        return resolve_or_with_absent_child(
+                            other,
+                            default,
+                            align_children_to_root,
+                            strategy,
+                            otap_batch,
+                        );
+                    }
+                    // Otherwise, fall back to substituting the identity value and
+                    // proceeding through the join.
+                    default
                 } else {
                     return Ok(None); // if any child is absent, the whole expression is null
                 }
@@ -341,6 +373,70 @@ pub(super) fn join_and_eval_value(
     );
 
     Ok(Some(result))
+}
+
+/// When one child of a 2-child OR/NotOr `JoinAndEval` is absent (returns `None`), the
+/// join can be skipped entirely. The absent side is the OR identity (`false`), so the
+/// non-absent child's result alone determines the outcome.
+fn resolve_or_with_absent_child(
+    other: Option<ScopedValue>,
+    absent_default: ScopedValue,
+    align_children_to_root: bool,
+    strategy: &ShortCircuitStrategy,
+    otap_batch: &OtapArrowRecords,
+) -> Result<Option<ScopedValue>> {
+    let mut sv = match other {
+        None => absent_default,
+        Some(mut sv) => {
+            if align_children_to_root && matches!(sv.values, ColumnarValue::Array(_)) {
+                sv = align_value_to_root(sv, otap_batch)?;
+            }
+            sv
+        }
+    };
+
+    // For NotOr, invert the result.
+    if matches!(strategy, ShortCircuitStrategy::NotOr) {
+        sv = invert_boolean_scoped_value(sv)?;
+    }
+
+    Ok(Some(sv))
+}
+
+/// Invert a boolean `ScopedValue` (flip true/false, preserve scope and ids).
+fn invert_boolean_scoped_value(sv: ScopedValue) -> Result<ScopedValue> {
+    let inverted = match sv.values {
+        ColumnarValue::Scalar(ScalarValue::Boolean(Some(b))) => {
+            ColumnarValue::Scalar(ScalarValue::Boolean(Some(!b)))
+        }
+        ColumnarValue::Scalar(ScalarValue::Boolean(None) | ScalarValue::Null) => {
+            // null stays null (NOT null = null)
+            sv.values
+        }
+        ColumnarValue::Array(ref arr) => {
+            let bool_arr = arr.as_boolean_opt().ok_or_else(|| Error::ExecutionError {
+                cause: format!(
+                    "expected boolean array for NotOr inversion, got {:?}",
+                    arr.data_type()
+                ),
+            })?;
+            ColumnarValue::Array(Arc::new(arrow::compute::not(bool_arr)?))
+        }
+        _ => {
+            return Err(Error::ExecutionError {
+                cause: format!(
+                    "expected boolean value for NotOr inversion, got {:?}",
+                    sv.values.data_type()
+                ),
+            });
+        }
+    };
+    Ok(ScopedValue {
+        values: inverted,
+        scope: sv.scope,
+        ids: sv.ids,
+        parent_ids: sv.parent_ids,
+    })
 }
 
 fn coerce_nulls_for_predicate(
