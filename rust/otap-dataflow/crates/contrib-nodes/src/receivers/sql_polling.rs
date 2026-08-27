@@ -4,6 +4,7 @@
 //! Narrow database boundary for SQL polling receivers.
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use std::error::Error as StdError;
 
 /// Credentials supplied when an adapter opens a database session.
@@ -28,18 +29,19 @@ impl Credentials {
 }
 
 /// Stable position used by paged SQL polling.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct CompoundWatermark {
     /// Ordered timestamp component.
     pub(crate) timestamp: String,
     /// Unique tie-breaker for rows sharing the timestamp.
-    pub(crate) tie_breaker: String,
+    pub(crate) tie_breaker: i64,
 }
 
 /// One bounded page request sent to a SQL adapter.
 pub(crate) struct PageRequest {
-    /// Last acknowledged position, or `None` for an initial/stateless read.
-    pub(crate) watermark: Option<CompoundWatermark>,
+    /// Last durably acknowledged position.
+    pub(crate) watermark: CompoundWatermark,
     /// Maximum number of rows the adapter may return.
     pub(crate) limit: usize,
 }
@@ -56,12 +58,16 @@ pub(crate) struct SqlColumn {
 pub(crate) struct SqlRow {
     /// Ordered columns in the row.
     pub(crate) columns: Vec<SqlColumn>,
+    /// Composite position represented by this row.
+    pub(crate) watermark: CompoundWatermark,
 }
 
 /// One bounded page returned by an adapter.
 pub(crate) struct Page {
     /// Extracted rows.
     pub(crate) rows: Vec<SqlRow>,
+    /// Composite watermark from the final returned row.
+    pub(crate) candidate: Option<CompoundWatermark>,
 }
 
 /// Database-neutral error category returned by an adapter classifier.

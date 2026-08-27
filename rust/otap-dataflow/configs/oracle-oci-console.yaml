@@ -13,13 +13,35 @@ groups:
           oracle:
             type: urn:otel:receiver:oracle
             config:
+              source_id: local-events
               connect_string: //localhost:1521/FREEPDB1
               username: PDBADMIN
               password_env: ORACLE_PWD
-              query: SELECT SYSDATE AS CURRENT_TIME FROM DUAL
-              poll_interval: 30s
+              query: >-
+                SELECT EVENT_TS, EVENT_ID, PAYLOAD
+                FROM OTAP_ORACLE_EVENTS
+                WHERE (
+                  EVENT_TS > :last_ts
+                  OR (EVENT_TS = :last_ts AND EVENT_ID > :last_id)
+                )
+                ORDER BY EVENT_TS ASC, EVENT_ID ASC
+              watermark:
+                timestamp:
+                  column: EVENT_TS
+                  bind: last_ts
+                  initial: "1970-01-01 00:00:00"
+                tie_breaker:
+                  column: EVENT_ID
+                  bind: last_id
+                  initial: 0
+              checkpoint:
+                directory: "${engine.state_dir}/oracle"
+                max_consecutive_failures: 5
+              nack_backoff: 1s
+              poll_interval: 10s
               call_timeout: 10s
               max_rows: 100
+              max_batch_bytes: 1 MiB
           console:
             type: exporter:console
             config: {}
