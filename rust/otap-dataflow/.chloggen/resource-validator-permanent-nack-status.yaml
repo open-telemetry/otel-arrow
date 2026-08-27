@@ -5,13 +5,13 @@ change_type: enhancement
 
 # The name of the component, or a single word describing the area of concern, (e.g. engine, otap).
 # Must be one of the components listed in rust/otap-dataflow/.chloggen/config.yaml.
-component: pipeline
+component: otap
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Operators can now build the df_engine binary with experimental wasm processor plugin support by enabling the `wasm` Cargo feature (`--features wasm`)
+note: OTLP receivers now return HTTP 400 / gRPC INVALID_ARGUMENT for permanent client-caused rejections instead of a retryable 503 / UNAVAILABLE.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
-issues: [2973, 3227]
+issues: [3826]
 
 # (Optional) One or more lines of additional information to render under the primary note.
 # These lines will be padded with 2 spaces and then inserted directly into the document.
@@ -19,7 +19,4 @@ issues: [2973, 3227]
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
 subtext: |
-  The `wasm` cargo feature is still off by default; enabling it force-links
-  `otel-arrow-dfe-wasm-host` into `df_engine` and registers the `wasm_processor`
-  factory (URN `urn:otel:processor:wasm_processor`). No wasmtime dependency
-  is pulled into the default build.
+  Applies only when the OTLP receiver is configured with wait_for_result: true (default false); otherwise it responds before the pipeline NACK is seen. Transient failures still map to 503 / UNAVAILABLE and permanent server-side failures to 500 / INTERNAL.
