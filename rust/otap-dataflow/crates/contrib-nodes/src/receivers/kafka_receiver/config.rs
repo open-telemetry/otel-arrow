@@ -81,6 +81,41 @@ pub enum CommitMode {
     Manual,
 }
 
+/// Policy applied when a non-permanent NACK reaches the Kafka receiver.
+#[derive(Copy, Clone, PartialEq, Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TransientNackMode {
+    /// Preserve the legacy behavior: treat the NACK as terminal and commit it.
+    Commit,
+    /// Pause the partition and replay from Kafka after exponential backoff.
+    Replay,
+}
+
+/// Configuration for non-permanent NACK handling.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TransientNackConfig {
+    /// Whether a non-permanent NACK is committed or replayed from Kafka.
+    #[serde(default = "default_transient_nack_mode")]
+    pub mode: TransientNackMode,
+    /// Delay before the first Kafka replay attempt, in milliseconds.
+    #[serde(default = "default_transient_nack_initial_backoff_ms")]
+    pub initial_backoff_ms: u64,
+    /// Maximum delay between Kafka replay attempts, in milliseconds.
+    #[serde(default = "default_transient_nack_max_backoff_ms")]
+    pub max_backoff_ms: u64,
+}
+
+impl Default for TransientNackConfig {
+    fn default() -> Self {
+        Self {
+            mode: default_transient_nack_mode(),
+            initial_backoff_ms: default_transient_nack_initial_backoff_ms(),
+            max_backoff_ms: default_transient_nack_max_backoff_ms(),
+        }
+    }
+}
+
 /// Partition assignment strategy for consumer group rebalancing.
 #[derive(Copy, Clone, Debug, PartialEq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -120,7 +155,8 @@ pub struct CommitConfig {
     ///   positive default (5000 ms).
     /// - In `manual` mode: controls a periodic safety-net timer for offset commits.
     ///   When omitted, no periodic timer is created and offsets are committed
-    ///   purely through ack/nack signals from downstream processing.
+    ///   When omitted, the safety-net timer is disabled and terminal feedback
+    ///   drives commits. Transient NACKs in replay mode remain uncommitted.
     #[serde(default)]
     pub interval_ms: Option<u64>,
 }
@@ -275,6 +311,10 @@ pub struct KafkaReceiverConfigBuilder {
     /// Commit configuration (replaces `enable_auto_commit` + `commit_interval_ms`).
     #[serde(default)]
     commit: CommitConfig,
+
+    /// Policy for non-permanent NACKs returned by downstream nodes.
+    #[serde(default)]
+    transient_nack: TransientNackConfig,
 
     /// Interval, in milliseconds, between consumer-lag refreshes.
     ///
@@ -566,6 +606,31 @@ impl TryFrom<KafkaReceiverConfigBuilder> for KafkaReceiverConfig {
             });
         }
 
+        if builder.transient_nack.initial_backoff_ms == 0 {
+            return Err(KafkaReceiverError::ConfigNonPositiveValue {
+                field: "transient_nack.initial_backoff_ms".to_string(),
+            });
+        }
+
+        if builder.transient_nack.max_backoff_ms == 0 {
+            return Err(KafkaReceiverError::ConfigNonPositiveValue {
+                field: "transient_nack.max_backoff_ms".to_string(),
+            });
+        }
+
+        if builder.transient_nack.initial_backoff_ms > builder.transient_nack.max_backoff_ms {
+            return Err(KafkaReceiverError::ConfigInvalidTransientNackBackoff {
+                initial: builder.transient_nack.initial_backoff_ms,
+                max: builder.transient_nack.max_backoff_ms,
+            });
+        }
+
+        if matches!(builder.commit.mode, CommitMode::Auto)
+            && matches!(builder.transient_nack.mode, TransientNackMode::Replay)
+        {
+            return Err(KafkaReceiverError::ConfigTransientNackReplayRequiresManual);
+        }
+
         if builder.lag_refresh_interval_ms == Some(0) {
             return Err(KafkaReceiverError::ConfigNonPositiveValue {
                 field: "lag_refresh_interval_ms".to_string(),
@@ -625,6 +690,7 @@ impl KafkaReceiverConfigBuilder {
             logs: SignalConfig::default(),
             auto_offset_reset: default_auto_offset_reset(),
             commit: CommitConfig::default(),
+            transient_nack: TransientNackConfig::default(),
             lag_refresh_interval_ms: None,
             session_timeout_ms: default_session_timeout_ms(),
             heartbeat_interval_ms: default_heartbeat_interval_ms(),
@@ -776,6 +842,13 @@ impl KafkaReceiverConfigBuilder {
     #[must_use]
     pub fn with_commit(mut self, commit: CommitConfig) -> Self {
         self.commit = commit;
+        self
+    }
+
+    /// Set the non-permanent NACK policy.
+    #[must_use]
+    pub fn with_transient_nack(mut self, transient_nack: TransientNackConfig) -> Self {
+        self.transient_nack = transient_nack;
         self
     }
 
@@ -1091,6 +1164,18 @@ impl KafkaReceiverConfig {
         self.0.commit.interval_ms
     }
 
+    /// Get the configured non-permanent NACK policy.
+    #[must_use]
+    pub fn transient_nack(&self) -> &TransientNackConfig {
+        &self.0.transient_nack
+    }
+
+    /// Returns `true` when non-permanent NACKs should be replayed from Kafka.
+    #[must_use]
+    pub fn replays_transient_nacks(&self) -> bool {
+        matches!(self.0.transient_nack.mode, TransientNackMode::Replay)
+    }
+
     /// Get the configured consumer-lag refresh interval in milliseconds.
     ///
     /// Returns `None` when consumer-lag refresh is disabled (the default).
@@ -1193,6 +1278,18 @@ fn default_isolation_level() -> IsolationLevel {
 
 fn default_commit_mode() -> CommitMode {
     CommitMode::Manual
+}
+
+fn default_transient_nack_mode() -> TransientNackMode {
+    TransientNackMode::Commit
+}
+
+const fn default_transient_nack_initial_backoff_ms() -> u64 {
+    1_000
+}
+
+const fn default_transient_nack_max_backoff_ms() -> u64 {
+    30_000
 }
 
 fn default_session_timeout_ms() -> u64 {
@@ -1320,6 +1417,32 @@ mod tests {
         let cfg: CommitConfig = serde_json::from_value(json).unwrap();
         assert_eq!(cfg.mode, CommitMode::Manual);
         assert_eq!(cfg.interval_ms, None);
+    }
+
+    /// Scenario: The transient-NACK configuration is omitted.
+    /// Guarantees: Legacy commit behavior remains the default with documented replay backoffs.
+    #[test]
+    fn transient_nack_config_defaults_preserve_legacy_behavior() {
+        let cfg = TransientNackConfig::default();
+        assert_eq!(cfg.mode, TransientNackMode::Commit);
+        assert_eq!(cfg.initial_backoff_ms, 1_000);
+        assert_eq!(cfg.max_backoff_ms, 30_000);
+    }
+
+    /// Scenario: A transient-NACK replay policy is deserialized.
+    /// Guarantees: Operators can opt into Kafka replay and configure its bounded backoff.
+    #[test]
+    fn transient_nack_replay_config_deserializes() {
+        let cfg: TransientNackConfig = serde_json::from_value(json!({
+            "mode": "replay",
+            "initial_backoff_ms": 250,
+            "max_backoff_ms": 10_000,
+        }))
+        .expect("valid replay config");
+
+        assert_eq!(cfg.mode, TransientNackMode::Replay);
+        assert_eq!(cfg.initial_backoff_ms, 250);
+        assert_eq!(cfg.max_backoff_ms, 10_000);
     }
 
     /// Scenario (construction and configuration): a `SignalConfig` is constructed with
@@ -1657,6 +1780,42 @@ mod tests {
                 ..Default::default()
             });
         assert!(KafkaReceiverConfig::try_from(cfg).is_ok());
+    }
+
+    /// Scenario: Kafka replay is selected together with auto-commit mode.
+    /// Guarantees: Validation rejects a combination that cannot honor downstream feedback.
+    #[test]
+    fn validate_transient_nack_replay_requires_manual_commit() {
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c")
+            .with_traces(SignalConfig::new(vec!["t".to_string()]))
+            .with_commit(CommitConfig {
+                mode: CommitMode::Auto,
+                interval_ms: None,
+            })
+            .with_transient_nack(TransientNackConfig {
+                mode: TransientNackMode::Replay,
+                ..Default::default()
+            });
+
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
+        assert!(err.contains("requires commit.mode manual"));
+    }
+
+    /// Scenario: The transient-NACK initial backoff exceeds its maximum.
+    /// Guarantees: Validation rejects an inverted replay backoff range.
+    #[test]
+    fn validate_transient_nack_backoff_range() {
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c")
+            .with_traces(SignalConfig::new(vec!["t".to_string()]))
+            .with_transient_nack(TransientNackConfig {
+                mode: TransientNackMode::Replay,
+                initial_backoff_ms: 200,
+                max_backoff_ms: 100,
+            });
+
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
+        assert!(err.contains("initial_backoff_ms"));
+        assert!(err.contains("must be <="));
     }
 
     /// Scenario (construction and configuration): the default consumer-group

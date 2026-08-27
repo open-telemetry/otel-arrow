@@ -20,3 +20,4 @@ pub mod offset_tracker;
 pub mod rebalance;
 /// Implementation of the main kafka receiver
 pub mod receiver;
+mod retry;

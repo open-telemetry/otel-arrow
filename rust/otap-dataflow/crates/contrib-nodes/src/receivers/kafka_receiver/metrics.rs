@@ -228,6 +228,27 @@ pub struct KafkaReceiverConsumerMetrics {
     /// Ack or nack responses ignored because their partition ownership was stale.
     #[metric(name = "group.feedback.after_revocation", unit = "{response}")]
     pub feedback_after_revocation: Counter<u64>,
+    /// Non-permanent NACK responses received from downstream.
+    #[metric(name = "retry.transient_nacks", unit = "{response}")]
+    pub transient_nacks: Counter<u64>,
+    /// Kafka replay attempts started after transient NACK backoff.
+    #[metric(name = "retry.replay_attempts", unit = "{attempt}")]
+    pub replay_attempts: Counter<u64>,
+    /// Current number of partitions paused during transient-NACK recovery.
+    #[metric(name = "retry.partitions_paused", unit = "{partition}")]
+    pub retry_partitions_paused: ObserveUpDownCounter<u64>,
+    /// Partition pause operations that failed during transient-NACK recovery.
+    #[metric(name = "retry.pause_failures", unit = "{error}")]
+    pub retry_pause_failures: Counter<u64>,
+    /// Partition seek operations that failed during transient-NACK recovery.
+    #[metric(name = "retry.seek_failures", unit = "{error}")]
+    pub retry_seek_failures: Counter<u64>,
+    /// Partition resume operations that failed during transient-NACK recovery.
+    #[metric(name = "retry.resume_failures", unit = "{error}")]
+    pub retry_resume_failures: Counter<u64>,
+    /// Feedback ignored because it belongs to an obsolete replay generation.
+    #[metric(name = "retry.feedback.stale", unit = "{response}")]
+    pub stale_retry_feedback: Counter<u64>,
 }
 
 /// Transport-level Kafka receiver errors.
@@ -443,6 +464,7 @@ mod tests {
         metrics.record_message_admitted(SignalType::Logs, 42);
         metrics.record_message_completed(SignalType::Logs);
         metrics.record_acknowledgement(SignalType::Logs, Outcome::Refused);
+        metrics.record_acknowledgement(SignalType::Logs, Outcome::Failure);
         metrics.record_rejection(
             Some(SignalType::Logs),
             ReceiverRejectionErrorType::InvalidRequest,
@@ -480,6 +502,17 @@ mod tests {
                 .get(SignalOutcomeAttributes {
                     signal: SignalType::Logs,
                     outcome: Outcome::Refused,
+                })
+                .responses
+                .get(),
+            1
+        );
+        assert_eq!(
+            metrics
+                .acknowledgements
+                .get(SignalOutcomeAttributes {
+                    signal: SignalType::Logs,
+                    outcome: Outcome::Failure,
                 })
                 .responses
                 .get(),
