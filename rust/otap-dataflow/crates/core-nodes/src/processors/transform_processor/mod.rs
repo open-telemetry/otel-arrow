@@ -14,11 +14,11 @@
 //!
 //! # Ack/Nack behaviour
 //!
-//! Some transformations may split the into multiple outbound batches (notably when the `route_to`
-//! operator is used the query). When this happens, a new context will be created for the outbound
-//! batches, and this component will subscribe to Acks/Nacks on these outbound contexts. Once all
-//! outbound contexts have been Ack'd or Nack'd this component will then produce an Ack or Nack for
-//! the inbound context.
+//! Some transformations may split the batch into multiple outbound batches (notably when the
+//! `route_to` operator is used in the query). When this happens, a new context will be created for
+//! the outbound batches, and this component will subscribe to Acks/Nacks on these outbound
+//! contexts. Once all outbound contexts have been Ack'd or Nack'd, this component will then
+//! produce an Ack or Nack for the inbound context.
 //!
 //! The rules by which it creates this Ack/Nack for the inbound context are as follows:
 //!

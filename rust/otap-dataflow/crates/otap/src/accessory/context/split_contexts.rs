@@ -71,6 +71,7 @@ impl Contexts {
     /// # Parameters
     ///
     /// - `context`: The context of the inbound batch.
+    /// - `payload`: The payload of the inbound batch.
     /// - `error_reason`: The error may have occurred processing the inbound batch.
     pub fn insert_inbound(
         &mut self,
