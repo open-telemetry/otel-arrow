@@ -134,7 +134,7 @@ area:query-engine:
       - any-glob-to-any-file:
           - "rust/otap-dataflow/crates/query-engine/**"
           - "rust/otap-dataflow/crates/query-engine-languages/**"
-          - "rust/experimental/query_engine/**"
+          - "rust/experimental/data_engine/**"
 
 area:query-engine/otap:
   - changed-files:
@@ -144,12 +144,12 @@ area:query-engine/otap:
 area:query-engine/recordset:
   - changed-files:
       - any-glob-to-any-file:
-          - "rust/experimental/query_engine/engine-recordset*/**"
+          - "rust/experimental/data_engine/engine-recordset*/**"
 
 area:query-engine/kql:
   - changed-files:
       - any-glob-to-any-file:
-          - "rust/experimental/query_engine/kql-parser/**"
+          - "rust/experimental/data_engine/kql-parser/**"
 
 area:query-engine/ottl:
   - changed-files:

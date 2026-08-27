@@ -351,7 +351,7 @@ mod test {
         },
     };
     use arrow::array::UInt16Array;
-    use data_engine_parser_abstractions::Parser;
+    use otel_arrow_contrib_data_engine_parser_abstractions::Parser;
     use otel_arrow_dfe_pdata::{
         otap::Logs,
         proto::opentelemetry::{

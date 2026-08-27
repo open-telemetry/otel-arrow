@@ -20,9 +20,9 @@ otel_arrow_dfe_telemetry::otel_component_scope!(
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use data_engine_expressions::Expression;
-use data_engine_kql_parser::{KqlParser, Parser};
 use linkme::distributed_slice;
+use otel_arrow_contrib_data_engine_expressions::Expression;
+use otel_arrow_contrib_data_engine_kql_parser::{KqlParser, Parser};
 use otel_arrow_dfe_config::{SignalType, error::Error as ConfigError, node::NodeUserConfig};
 use otel_arrow_dfe_engine::{
     ConsumerEffectHandlerExtension, Interests, MessageSourceLocalEffectHandlerExtension,
