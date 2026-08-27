@@ -75,6 +75,7 @@ otel-arrow-dfe-pdata = { path = "crates/pdata" }
 otel-arrow-dfe-pdata-views = { path = "crates/pdata-views" }
 otel-arrow-dfe-telemetry = { path = "crates/telemetry" }
 otel-arrow-dfe-quiver = { path = "crates/quiver" }
+otel-arrow-dfe-contrib-config-translators = { path = "crates/contrib-config-translators" }
 data_engine_expressions = { path = "../experimental/query_engine/expressions" }
 data_engine_kql_parser = { path = "../experimental/query_engine/kql-parser" }
 data_engine_parser_abstractions = { path = "../experimental/query_engine/parser-abstractions"}

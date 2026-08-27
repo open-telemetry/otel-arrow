@@ -7349,6 +7349,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "otel-arrow-dfe-contrib-config-translators"
+version = "0.52.0"
+dependencies = [
+ "clap",
+ "otel-arrow-dfe-config",
+ "otel-arrow-dfe-telemetry",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror 2.0.20",
+ "urlencoding",
+]
+
+[[package]]
 name = "otel-arrow-dfe-contrib-extensions"
 version = "0.52.0"
 dependencies = [
