@@ -31,6 +31,21 @@ pub enum ClickhouseExporterError {
     #[error("Clickhouse data insertion request error: ClickHouse writer lane {lane} is closed")]
     WriterLaneClosed { lane: usize },
 
+    #[error("ClickHouse writer lane {lane} exited unexpectedly")]
+    WriterLaneExited { lane: usize },
+
+    #[error("ClickHouse writer lane {lane} panicked: {message}")]
+    WriterLanePanicked { lane: usize, message: String },
+
+    #[error("ClickHouse writer lane {lane} was cancelled unexpectedly")]
+    WriterLaneCancelled { lane: usize },
+
+    #[error("ClickHouse writer-lane supervisor failed: {message}")]
+    WriterLaneSupervisorError { message: String },
+
+    #[error("ClickHouse write dispatcher stopped while writes were still pending")]
+    WriteDispatcherStopped,
+
     // Data processing errors
     #[error("Missing column: {name}")]
     MissingColumn { name: String },

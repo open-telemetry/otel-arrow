@@ -126,9 +126,10 @@ concurrency used by the benchmark Collector configuration. Set it to `1` to
 retain serialized insert behavior.
 
 `insert_batching` coalesces compatible Arrow batches before assigning a
-completed group to a writer lane. The lane keeps one ClickHouse insertion open
-while writing every Arrow batch in that group. The group is dispatched when
-the first configured threshold is reached:
+completed group to a writer lane. After the group closes, the lane opens one
+ClickHouse insertion, writes every Arrow batch in that group, and waits for the
+final response. The group is dispatched when the first configured threshold is
+reached:
 
 ```yaml
 insert_batching:
@@ -150,9 +151,18 @@ When `insert_batching` is enabled, `max_in_flight` is the number of independent
 writer lanes that can execute completed insertion groups concurrently. Each
 accepted message is reported successful only after the shared insertion
 receives a successful final response. A final response error reports failure
-for every message grouped into that insertion. Omitting `insert_batching`
-preserves the existing behavior: each transformed message is written and
-completed in its own insertion.
+for every message grouped into that insertion. Lane completions can arrive out
+of input order. Omitting `insert_batching` preserves the existing behavior:
+each transformed destination batch is written in its own insertion, and its
+original message completes after every mapped insertion succeeds.
+
+A message mapped to multiple ClickHouse tables bypasses coalescing. Those table
+insertions are sequential but not atomic: if a later insertion fails, an
+earlier table may already contain rows from the message. Retrying the failed
+message can therefore duplicate the rows that committed before the failure.
+An unexpected writer-lane termination stops the exporter with a transport
+error instead of treating unresolved writes as a clean drain. At shutdown,
+accepted insertions are drained only until the pipeline's shutdown deadline.
 
 Inline attributes are always stored as `Map(LowCardinality(String), String)`;
 there is no per-group representation configuration.

@@ -202,6 +202,16 @@ impl ClickhouseExporter {
         }
         Ok(())
     }
+
+    /// Converts an internal dispatcher failure into the engine's exporter error contract.
+    fn dispatcher_failure(exporter_id: &NodeId, error: &error::ClickhouseExporterError) -> Error {
+        Error::ExporterError {
+            exporter: exporter_id.clone(),
+            kind: ExporterErrorKind::Transport,
+            error: error.to_string(),
+            source_detail: format_error_sources(error),
+        }
+    }
 }
 
 fn transform_raw_otlp_logs(
@@ -314,8 +324,20 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                 biased;
 
                 event = write_dispatcher.next_event(), if has_pending_writes => {
-                    if let Some(DispatcherEvent::Completed(completed)) = event {
-                        self.finalize_write(completed, &effect_handler).await?;
+                    match event {
+                        Some(DispatcherEvent::Completed(completed)) => {
+                            self.finalize_write(completed, &effect_handler).await?;
+                        }
+                        Some(DispatcherEvent::PendingFlushed) => {}
+                        Some(DispatcherEvent::Failed(error)) => {
+                            return Err(Self::dispatcher_failure(&exporter_id, error.as_ref()));
+                        }
+                        None => {
+                            return Err(Self::dispatcher_failure(
+                                &exporter_id,
+                                &error::ClickhouseExporterError::WriteDispatcherStopped,
+                            ));
+                        }
                     }
                     continue;
                 }
@@ -338,8 +360,16 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                             Ok(Some(DispatcherEvent::Completed(completed))) => {
                                 self.finalize_write(completed, &effect_handler).await?;
                             }
-                            Ok(Some(DispatcherEvent::CapacityAvailable)) => {}
-                            Ok(None) => break 0,
+                            Ok(Some(DispatcherEvent::PendingFlushed)) => {}
+                            Ok(Some(DispatcherEvent::Failed(error))) => {
+                                return Err(Self::dispatcher_failure(&exporter_id, error.as_ref()));
+                            }
+                            Ok(None) => {
+                                return Err(Self::dispatcher_failure(
+                                    &exporter_id,
+                                    &error::ClickhouseExporterError::WriteDispatcherStopped,
+                                ));
+                            }
                             Err(abandoned) => break abandoned,
                         }
                     };
@@ -723,9 +753,7 @@ mod tests {
                     export_started_at: Instant::now(),
                     result: Err(std::rc::Rc::new(
                         error::ClickhouseExporterError::InsertResponseError {
-                            source: clickhouse::error::Error::Custom(
-                                "temporary failure".to_owned(),
-                            ),
+                            source: clickhouse::error::Error::TimedOut,
                         },
                     )),
                 },
@@ -739,7 +767,7 @@ mod tests {
                 assert!(!nack.permanent);
                 assert_eq!(
                     nack.reason,
-                    "Clickhouse data insertion response error: temporary failure"
+                    "Clickhouse data insertion response error: timeout expired"
                 );
             }
             PipelineCompletionMsg::DeliverAck { .. } => panic!("expected retryable NACK"),

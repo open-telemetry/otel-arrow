@@ -24,7 +24,7 @@
 //! - Without `insert_batching`, `InFlightWrites` runs one ordinary `write_batches` future per
 //!   message. `max_in_flight` bounds the number of concurrently polled message writes. This is the
 //!   legacy behavior and opens a separate insertion for each mapped batch.
-//! - With `insert_batching`, `PersistentWritePool` first coalesces compatible batches and then
+//! - With `insert_batching`, `BatchedWritePool` first coalesces compatible batches and then
 //!   dispatches closed insertion groups across `max_in_flight` long-lived lane tasks.
 //!
 //! The lane tasks are persistent, but ClickHouse insertions are not kept open while batches
@@ -70,7 +70,7 @@
 //!
 //! Only messages with exactly one mapped batch participate in coalescing. A message with no mapped
 //! batch completes immediately. A message with batches for multiple tables first closes the pending
-//! group, then runs as one immediate lane job so its original message still has one completion.
+//! group, then runs as one uncoalesced lane job so its original message still has one completion.
 //!
 //! # Lane scheduling and backpressure
 //!
@@ -86,11 +86,22 @@
 //!
 //! # Completion and error semantics
 //!
-//! Every accepted pdata message produces exactly one `CompletedWrite`. A coalesced insertion keeps
-//! the original pdata and row count for each member in `PendingWrite`; all members receive the same
-//! insertion outcome. Structured insertion failures are shared with `Rc` because the entire path
-//! runs on the exporter's local runtime. Start/write failures are classified as request errors,
-//! while `end()` failures are response errors, and the ClickHouse client source chain is retained.
+//! During normal operation, every accepted pdata message produces exactly one `CompletedWrite`. A
+//! coalesced insertion keeps the original pdata and row count for each member in `PendingWrite`;
+//! all members receive the same insertion outcome. The exceptions are an expired shutdown deadline
+//! or a terminal dispatcher failure, both of which stop the exporter with unresolved work reported
+//! or surfaced as an exporter error rather than a successful drain.
+//!
+//! Completions from different lanes can arrive out of input order. Members of one completed group
+//! retain their original order, but incremental group fan-out can interleave them with members of
+//! other completed groups. A pdata message mapped to multiple ClickHouse tables bypasses
+//! coalescing. Those table insertions are sequential but not atomic: a later table can fail after
+//! an earlier table has committed, and retrying the failed pdata may duplicate those committed
+//! rows.
+//!
+//! Structured insertion failures are shared with `Rc` because the entire path runs on the
+//! exporter's local runtime. Start/write failures are classified as request errors, while `end()`
+//! failures are response errors, and the ClickHouse client source chain is retained.
 //!
 //! `CompletedGroup` expands an aggregate lane result incrementally and rotates partially drained
 //! groups through the completion queue. The dispatcher yields after a bounded number of individual
@@ -101,9 +112,12 @@
 //!
 //! Shutdown first flushes any partial `PendingInsertion`, then drains accepted work until the
 //! caller's deadline. `outstanding` counts original pdata messages rather than lane jobs, so a
-//! deadline reports how many delivery outcomes remain unresolved. Dropping the pool aborts its
-//! local lane tasks after draining finishes or the deadline expires.
+//! deadline reports how many delivery outcomes remain unresolved. Writer tasks are supervised:
+//! an unexpected exit, cancellation, or panic becomes a terminal exporter error instead of a
+//! disconnected completion stream or a busy loop. Dropping the pool aborts its local lane tasks
+//! after draining finishes or the deadline expires.
 
+use std::any::Any;
 use std::collections::{HashMap, VecDeque};
 use std::num::NonZeroUsize;
 use std::rc::Rc;
@@ -117,7 +131,7 @@ use futures::future::LocalBoxFuture;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
+use tokio::task::{Id as TaskId, JoinError, JoinSet};
 use tokio::time::Instant;
 
 use super::config::InsertBatchingConfig;
@@ -233,8 +247,9 @@ struct LaneCompletion {
     reason = "boxing CompletedWrite would allocate on every completed insertion"
 )]
 pub(super) enum DispatcherEvent {
-    CapacityAvailable,
+    PendingFlushed,
     Completed(CompletedWrite),
+    Failed(Rc<ClickhouseExporterError>),
 }
 
 /// Narrow test seam over an ArrowStream insertion.
@@ -365,6 +380,7 @@ async fn write_insertion<I: LaneInsert>(
         ..
     } = insertion;
     let batch_count = batches.len();
+    let message_count = pending.len();
 
     for batch in batches {
         if let Err(error) = insert.write(&batch).await {
@@ -380,6 +396,7 @@ async fn write_insertion<I: LaneInsert>(
                 table = table_name,
                 rows = rows,
                 batches = batch_count,
+                messages = message_count,
             );
             CompletedGroup::success(pending)
         }
@@ -397,7 +414,11 @@ async fn write_coalesced<W: LaneWriter>(writer: &W, insertion: PendingInsertion)
     write_insertion(insert, insertion).await
 }
 
-async fn write_immediately<W: LaneWriter>(
+/// Writes every mapped destination for one pdata message without coalescing.
+///
+/// Each destination uses an independent ClickHouse insertion. A failure after an earlier
+/// destination commits fails the original pdata message but cannot roll back the committed rows.
+async fn write_uncoalesced<W: LaneWriter>(
     writer: &W,
     pdata: OtapPdata,
     export_started_at: StdInstant,
@@ -440,9 +461,10 @@ async fn write_immediately<W: LaneWriter>(
     }])
 }
 
+/// One closed unit of ClickHouse work waiting for a writer lane.
 enum LaneJob {
     Coalesced(PendingInsertion),
-    Immediate {
+    Uncoalesced {
         pdata: OtapPdata,
         export_started_at: StdInstant,
         batches: Vec<(ArrowPayloadType, String, RecordBatch)>,
@@ -453,7 +475,7 @@ impl LaneJob {
     fn fail(self, lane: usize) -> CompletedGroup {
         match self {
             Self::Coalesced(insertion) => CompletedGroup::lane_closed(insertion.pending, lane),
-            Self::Immediate {
+            Self::Uncoalesced {
                 pdata,
                 export_started_at,
                 ..
@@ -478,11 +500,11 @@ async fn run_lane<W: LaneWriter>(
     while let Some(job) = jobs.recv().await {
         let group = match job {
             LaneJob::Coalesced(insertion) => write_coalesced(&writer, insertion).await,
-            LaneJob::Immediate {
+            LaneJob::Uncoalesced {
                 pdata,
                 export_started_at,
                 batches,
-            } => write_immediately(&writer, pdata, export_started_at, batches).await,
+            } => write_uncoalesced(&writer, pdata, export_started_at, batches).await,
         };
         if events.send(LaneCompletion { lane, group }).await.is_err() {
             break;
@@ -490,7 +512,13 @@ async fn run_lane<W: LaneWriter>(
     }
 }
 
-pub(super) struct PersistentWritePool<W: LaneWriter> {
+/// Coalesces compatible batches and schedules closed groups across local writer tasks.
+///
+/// `available_lanes`, `waiting_jobs`, and `worker_lanes` jointly describe lane ownership. A lane
+/// appears in `available_lanes` only when it owns no job. Normal pdata admission pauses as soon as
+/// `waiting_jobs` becomes non-empty, while the bounded exporter inbox constrains additional jobs
+/// that can be force-drained during shutdown.
+pub(super) struct BatchedWritePool<W: LaneWriter> {
     writer: W,
     config: InsertBatchingConfig,
     pending: Option<PendingInsertion>,
@@ -500,28 +528,31 @@ pub(super) struct PersistentWritePool<W: LaneWriter> {
     completed_groups: VecDeque<CompletedGroup>,
     completed_group_capacity: usize,
     completions_since_yield: usize,
-    handles: Vec<JoinHandle<()>>,
+    workers: JoinSet<()>,
+    worker_lanes: HashMap<TaskId, usize>,
     available_lanes: VecDeque<usize>,
     outstanding: usize,
 }
 
-impl<W: LaneWriter> PersistentWritePool<W> {
+impl<W: LaneWriter> BatchedWritePool<W> {
     fn new(writer: W, lane_count: usize, config: InsertBatchingConfig) -> Self {
         let lane_count = lane_count.max(1);
         // Each lane can have at most one completion waiting to be consumed. Keeping the channel
         // bounded makes acknowledgement delivery part of the writer's backpressure chain.
         let (event_sender, events) = mpsc::channel(lane_count);
         let mut senders = Vec::with_capacity(lane_count);
-        let mut handles = Vec::with_capacity(lane_count);
+        let mut workers = JoinSet::new();
+        let mut worker_lanes = HashMap::with_capacity(lane_count);
         for lane in 0..lane_count {
             let (job_sender, job_receiver) = mpsc::channel(1);
             senders.push(job_sender);
-            handles.push(tokio::task::spawn_local(run_lane(
+            let abort_handle = workers.spawn_local(run_lane(
                 lane,
                 writer.clone(),
                 job_receiver,
                 event_sender.clone(),
-            )));
+            ));
+            _ = worker_lanes.insert(abort_handle.id(), lane);
         }
         Self {
             writer,
@@ -533,7 +564,8 @@ impl<W: LaneWriter> PersistentWritePool<W> {
             completed_groups: VecDeque::with_capacity(lane_count),
             completed_group_capacity: lane_count,
             completions_since_yield: 0,
-            handles,
+            workers,
+            worker_lanes,
             available_lanes: (0..lane_count).collect(),
             outstanding: 0,
         }
@@ -635,7 +667,7 @@ impl<W: LaneWriter> PersistentWritePool<W> {
             _ => {
                 self.outstanding = self.outstanding.saturating_add(1);
                 self.flush_pending();
-                self.waiting_jobs.push_back(LaneJob::Immediate {
+                self.waiting_jobs.push_back(LaneJob::Uncoalesced {
                     pdata,
                     export_started_at,
                     batches: mapped_batches,
@@ -650,6 +682,44 @@ impl<W: LaneWriter> PersistentWritePool<W> {
         self.completed_groups.push_back(event.group);
         self.available_lanes.push_back(event.lane);
         self.schedule_waiting_jobs();
+    }
+
+    /// Converts any lane-task termination into a structured terminal dispatcher failure.
+    fn worker_failure(
+        &mut self,
+        result: Option<Result<(TaskId, ()), JoinError>>,
+    ) -> Rc<ClickhouseExporterError> {
+        let Some(result) = result else {
+            return Rc::new(ClickhouseExporterError::WriterLaneSupervisorError {
+                message: "no writer tasks remain".to_string(),
+            });
+        };
+
+        match result {
+            Ok((task_id, ())) => match self.worker_lanes.remove(&task_id) {
+                Some(lane) => Rc::new(ClickhouseExporterError::WriterLaneExited { lane }),
+                None => Rc::new(ClickhouseExporterError::WriterLaneSupervisorError {
+                    message: format!("unregistered writer task {task_id:?} exited"),
+                }),
+            },
+            Err(error) => {
+                let task_id = error.id();
+                let Some(lane) = self.worker_lanes.remove(&task_id) else {
+                    return Rc::new(ClickhouseExporterError::WriterLaneSupervisorError {
+                        message: format!("unregistered writer task failed: {error}"),
+                    });
+                };
+
+                if error.is_panic() {
+                    Rc::new(ClickhouseExporterError::WriterLanePanicked {
+                        lane,
+                        message: panic_message(error.into_panic()),
+                    })
+                } else {
+                    Rc::new(ClickhouseExporterError::WriterLaneCancelled { lane })
+                }
+            }
+        }
     }
 
     fn pop_completion(&mut self) -> Option<CompletedWrite> {
@@ -668,13 +738,17 @@ impl<W: LaneWriter> PersistentWritePool<W> {
     }
 
     async fn next_event(&mut self) -> Option<DispatcherEvent> {
+        if let Some(result) = self.workers.try_join_next_with_id() {
+            return Some(DispatcherEvent::Failed(self.worker_failure(Some(result))));
+        }
+
         if self
             .pending
             .as_ref()
             .is_some_and(|pending| pending.deadline <= Instant::now())
         {
             self.flush_pending();
-            return Some(DispatcherEvent::CapacityAvailable);
+            return Some(DispatcherEvent::PendingFlushed);
         }
 
         if self.completed_groups.len() < self.completed_group_capacity {
@@ -684,7 +758,8 @@ impl<W: LaneWriter> PersistentWritePool<W> {
                 Err(mpsc::error::TryRecvError::Disconnected)
                     if self.completed_groups.is_empty() =>
                 {
-                    return None;
+                    let result = self.workers.join_next_with_id().await;
+                    return Some(DispatcherEvent::Failed(self.worker_failure(result)));
                 }
                 Err(mpsc::error::TryRecvError::Disconnected) => {}
             }
@@ -704,14 +779,25 @@ impl<W: LaneWriter> PersistentWritePool<W> {
             tokio::select! {
                 biased;
 
+                result = self.workers.join_next_with_id() => {
+                    return Some(DispatcherEvent::Failed(self.worker_failure(result)));
+                }
+
                 _ = tokio::time::sleep_until(deadline) => {
                     self.flush_pending();
-                    return Some(DispatcherEvent::CapacityAvailable);
+                    return Some(DispatcherEvent::PendingFlushed);
                 }
                 event = self.events.recv() => event,
             }
         } else {
-            self.events.recv().await
+            tokio::select! {
+                biased;
+
+                result = self.workers.join_next_with_id() => {
+                    return Some(DispatcherEvent::Failed(self.worker_failure(result)));
+                }
+                event = self.events.recv() => event,
+            }
         };
 
         let event = event?;
@@ -730,20 +816,12 @@ impl<W: LaneWriter> PersistentWritePool<W> {
     }
 }
 
-impl<W: LaneWriter> Drop for PersistentWritePool<W> {
-    fn drop(&mut self) {
-        for handle in &self.handles {
-            handle.abort();
-        }
-    }
-}
-
 pub(super) enum WriteDispatcher {
-    Immediate {
+    PerMessage {
         writer: Rc<ClickHouseWriter>,
         in_flight: InFlightWrites,
     },
-    Persistent(Box<PersistentWritePool<ClickHouseWriter>>),
+    Batched(Box<BatchedWritePool<ClickHouseWriter>>),
 }
 
 impl WriteDispatcher {
@@ -753,12 +831,12 @@ impl WriteDispatcher {
         insert_batching: Option<InsertBatchingConfig>,
     ) -> Self {
         match insert_batching {
-            Some(config) => Self::Persistent(Box::new(PersistentWritePool::new(
+            Some(config) => Self::Batched(Box::new(BatchedWritePool::new(
                 writer,
                 max_in_flight.get(),
                 config,
             ))),
-            None => Self::Immediate {
+            None => Self::PerMessage {
                 writer: Rc::new(writer),
                 in_flight: InFlightWrites::new(max_in_flight),
             },
@@ -767,15 +845,15 @@ impl WriteDispatcher {
 
     pub(super) fn is_at_capacity(&self) -> bool {
         match self {
-            Self::Immediate { in_flight, .. } => in_flight.is_at_capacity(),
-            Self::Persistent(pool) => pool.is_at_capacity(),
+            Self::PerMessage { in_flight, .. } => in_flight.is_at_capacity(),
+            Self::Batched(pool) => pool.is_at_capacity(),
         }
     }
 
     pub(super) fn has_pending(&self) -> bool {
         match self {
-            Self::Immediate { in_flight, .. } => !in_flight.is_empty(),
-            Self::Persistent(pool) => pool.outstanding > 0,
+            Self::PerMessage { in_flight, .. } => !in_flight.is_empty(),
+            Self::Batched(pool) => pool.outstanding > 0,
         }
     }
 
@@ -786,7 +864,7 @@ impl WriteDispatcher {
         batches: HashMap<ArrowPayloadType, RecordBatch>,
     ) -> Option<CompletedWrite> {
         match self {
-            Self::Immediate { writer, in_flight } => {
+            Self::PerMessage { writer, in_flight } => {
                 let writer = Rc::clone(writer);
                 let write_future: LocalBoxFuture<'static, CompletedWrite> = Box::pin(async move {
                     CompletedWrite {
@@ -798,23 +876,23 @@ impl WriteDispatcher {
                 in_flight.push(write_future);
                 None
             }
-            Self::Persistent(pool) => pool.submit(WriteJob::new(pdata, export_started_at, batches)),
+            Self::Batched(pool) => pool.submit(WriteJob::new(pdata, export_started_at, batches)),
         }
     }
 
     pub(super) async fn next_event(&mut self) -> Option<DispatcherEvent> {
         match self {
-            Self::Immediate { in_flight, .. } => in_flight
+            Self::PerMessage { in_flight, .. } => in_flight
                 .next_completion()
                 .await
                 .map(DispatcherEvent::Completed),
-            Self::Persistent(pool) => pool.next_event().await,
+            Self::Batched(pool) => pool.next_event().await,
         }
     }
 
     /// Dispatches a partial insertion group before shutdown draining begins.
     pub(super) fn flush_pending(&mut self) {
-        if let Self::Persistent(pool) = self {
+        if let Self::Batched(pool) = self {
             pool.flush_pending();
         }
     }
@@ -828,12 +906,22 @@ impl WriteDispatcher {
         deadline: Instant,
     ) -> Result<Option<DispatcherEvent>, usize> {
         match self {
-            Self::Immediate { in_flight, .. } => in_flight
+            Self::PerMessage { in_flight, .. } => in_flight
                 .next_completion_until(deadline)
                 .await
                 .map(|completed| completed.map(DispatcherEvent::Completed)),
-            Self::Persistent(pool) => pool.next_event_until(deadline).await,
+            Self::Batched(pool) => pool.next_event_until(deadline).await,
         }
+    }
+}
+
+fn panic_message(payload: Box<dyn Any + Send>) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "non-string panic payload".to_string()
     }
 }
 
@@ -857,17 +945,24 @@ mod tests {
     struct FakeState {
         insertions_started: usize,
         insertion_rows: Vec<Vec<usize>>,
+        fail_start: bool,
         fail_end: bool,
+        fail_end_at: Option<usize>,
         stall_end: bool,
+        panic_end: bool,
+        delay_rows: Option<usize>,
     }
 
     #[derive(Clone, Default)]
     struct FakeWriter {
         state: Rc<RefCell<FakeState>>,
+        release_delayed: Rc<tokio::sync::Notify>,
     }
 
     struct FakeInsert {
         state: Rc<RefCell<FakeState>>,
+        release_delayed: Rc<tokio::sync::Notify>,
+        insertion_index: usize,
         rows: Vec<usize>,
     }
 
@@ -879,11 +974,19 @@ mod tests {
         }
 
         async fn end(self) -> Result<(), clickhouse::error::Error> {
-            if self.state.borrow().stall_end {
+            let (stall_end, panic_end, delay_rows) = {
+                let state = self.state.borrow();
+                (state.stall_end, state.panic_end, state.delay_rows)
+            };
+            assert!(!panic_end, "injected writer-lane panic");
+            if stall_end {
                 futures::future::pending().await
             }
+            if delay_rows.is_some_and(|rows| self.rows == [rows]) {
+                self.release_delayed.notified().await;
+            }
             let mut state = self.state.borrow_mut();
-            if state.fail_end {
+            if state.fail_end || state.fail_end_at == Some(self.insertion_index) {
                 return Err(clickhouse::error::Error::Custom(
                     "injected end failure".to_string(),
                 ));
@@ -897,16 +1000,32 @@ mod tests {
         type Insert = FakeInsert;
 
         fn destination_table(&self, payload_type: ArrowPayloadType) -> Option<&str> {
-            (payload_type == ArrowPayloadType::Logs).then_some("logs")
+            match payload_type {
+                ArrowPayloadType::Logs => Some("logs"),
+                ArrowPayloadType::Spans => Some("spans"),
+                _ => None,
+            }
         }
 
         fn start_insert(
             &self,
             _table_name: &str,
         ) -> Result<Self::Insert, clickhouse::error::Error> {
-            self.state.borrow_mut().insertions_started += 1;
+            let insertion_index = {
+                let mut state = self.state.borrow_mut();
+                if state.fail_start {
+                    return Err(clickhouse::error::Error::Custom(
+                        "injected start failure".to_string(),
+                    ));
+                }
+                let insertion_index = state.insertions_started;
+                state.insertions_started += 1;
+                insertion_index
+            };
             Ok(FakeInsert {
                 state: Rc::clone(&self.state),
+                release_delayed: Rc::clone(&self.release_delayed),
+                insertion_index,
                 rows: Vec::new(),
             })
         }
@@ -948,17 +1067,210 @@ mod tests {
         )
     }
 
-    fn submit(pool: &mut PersistentWritePool<FakeWriter>, job: WriteJob) {
+    fn multi_table_job(log_rows: usize, span_rows: usize) -> WriteJob {
+        WriteJob::new(
+            logs_pdata(),
+            StdInstant::now(),
+            HashMap::from([
+                (ArrowPayloadType::Logs, batch(log_rows)),
+                (ArrowPayloadType::Spans, batch(span_rows)),
+            ]),
+        )
+    }
+
+    fn submit(pool: &mut BatchedWritePool<FakeWriter>, job: WriteJob) {
         assert!(pool.submit(job).is_none());
     }
 
-    async fn next_completed(pool: &mut PersistentWritePool<FakeWriter>) -> CompletedWrite {
+    async fn next_completed(pool: &mut BatchedWritePool<FakeWriter>) -> CompletedWrite {
         loop {
             match pool.next_event().await.expect("a write should complete") {
-                DispatcherEvent::CapacityAvailable => {}
+                DispatcherEvent::PendingFlushed => {}
                 DispatcherEvent::Completed(completed) => return completed,
+                DispatcherEvent::Failed(error) => panic!("writer lane failed: {error}"),
             }
         }
+    }
+
+    /// Scenario: a transformed message contains no batch mapped to a configured table.
+    /// Guarantees: the message completes successfully without entering a lane or changing outstanding work.
+    #[tokio::test(flavor = "current_thread")]
+    async fn unmapped_message_completes_without_lane_work() {
+        LocalSet::new()
+            .run_until(async {
+                let writer = FakeWriter::default();
+                let mut pool = BatchedWritePool::new(
+                    writer.clone(),
+                    1,
+                    config(usize::MAX, usize::MAX, 60_000),
+                );
+                let job = WriteJob::new(
+                    logs_pdata(),
+                    StdInstant::now(),
+                    HashMap::from([(ArrowPayloadType::UnivariateMetrics, batch(2))]),
+                );
+
+                let completed = pool
+                    .submit(job)
+                    .expect("an unmapped message should complete immediately");
+
+                assert_eq!(completed.result.expect("completion should succeed"), vec![]);
+                assert_eq!(pool.outstanding, 0);
+                assert_eq!(writer.state.borrow().insertions_started, 0);
+            })
+            .await;
+    }
+
+    /// Scenario: one message maps to log and span tables and both insertions succeed.
+    /// Guarantees: the uncoalesced lane job completes the message once with both written row counts.
+    #[tokio::test(flavor = "current_thread")]
+    async fn multi_table_message_completes_after_every_insertion() {
+        LocalSet::new()
+            .run_until(async {
+                let writer = FakeWriter::default();
+                let mut pool = BatchedWritePool::new(
+                    writer.clone(),
+                    1,
+                    config(usize::MAX, usize::MAX, 60_000),
+                );
+
+                submit(&mut pool, multi_table_job(2, 3));
+                let written_rows = next_completed(&mut pool)
+                    .await
+                    .result
+                    .expect("both table insertions should succeed");
+
+                assert_eq!(written_rows.len(), 2);
+                assert!(written_rows.contains(&(ArrowPayloadType::Logs, 2)));
+                assert!(written_rows.contains(&(ArrowPayloadType::Spans, 3)));
+                assert_eq!(writer.state.borrow().insertions_started, 2);
+            })
+            .await;
+    }
+
+    /// Scenario: the second insertion for a multi-table message fails after the first commits.
+    /// Guarantees: the message fails once while the already committed insertion remains observable.
+    #[tokio::test(flavor = "current_thread")]
+    async fn multi_table_partial_commit_is_reported_as_message_failure() {
+        LocalSet::new()
+            .run_until(async {
+                let writer = FakeWriter::default();
+                writer.state.borrow_mut().fail_end_at = Some(1);
+                let mut pool = BatchedWritePool::new(
+                    writer.clone(),
+                    1,
+                    config(usize::MAX, usize::MAX, 60_000),
+                );
+
+                submit(&mut pool, multi_table_job(2, 3));
+                let error = next_completed(&mut pool)
+                    .await
+                    .result
+                    .expect_err("the second table insertion should fail");
+
+                assert!(matches!(
+                    error.as_ref(),
+                    ClickhouseExporterError::InsertResponseError {
+                        source: clickhouse::error::Error::Custom(message)
+                    } if message == "injected end failure"
+                ));
+                assert_eq!(writer.state.borrow().insertions_started, 2);
+                assert_eq!(writer.state.borrow().insertion_rows.len(), 1);
+            })
+            .await;
+    }
+
+    /// Scenario: two writer lanes receive groups whose first insertion is deliberately delayed.
+    /// Guarantees: lanes execute concurrently and completions may arrive out of input order.
+    #[tokio::test(flavor = "current_thread")]
+    async fn concurrent_lanes_can_complete_out_of_input_order() {
+        LocalSet::new()
+            .run_until(async {
+                let writer = FakeWriter::default();
+                writer.state.borrow_mut().delay_rows = Some(1);
+                let mut pool =
+                    BatchedWritePool::new(writer.clone(), 2, config(1, usize::MAX, 60_000));
+
+                submit(&mut pool, logs_job(1));
+                submit(&mut pool, logs_job(2));
+
+                let second = next_completed(&mut pool)
+                    .await
+                    .result
+                    .expect("the undelayed insertion should succeed");
+                assert_eq!(second, vec![(ArrowPayloadType::Logs, 2)]);
+                assert_eq!(writer.state.borrow().insertions_started, 2);
+
+                writer.release_delayed.notify_one();
+                let first = next_completed(&mut pool)
+                    .await
+                    .result
+                    .expect("the released insertion should succeed");
+                assert_eq!(first, vec![(ArrowPayloadType::Logs, 1)]);
+            })
+            .await;
+    }
+
+    /// Scenario: starting a shared insertion fails for a group containing two messages.
+    /// Guarantees: every grouped message receives the same structured request failure.
+    #[tokio::test(flavor = "current_thread")]
+    async fn insertion_start_failure_is_reported_to_every_grouped_message() {
+        LocalSet::new()
+            .run_until(async {
+                let writer = FakeWriter::default();
+                writer.state.borrow_mut().fail_start = true;
+                let mut pool = BatchedWritePool::new(writer, 1, config(5, usize::MAX, 60_000));
+
+                submit(&mut pool, logs_job(2));
+                submit(&mut pool, logs_job(3));
+
+                let first_error = next_completed(&mut pool)
+                    .await
+                    .result
+                    .expect_err("the first message should fail");
+                let second_error = next_completed(&mut pool)
+                    .await
+                    .result
+                    .expect_err("the second message should fail");
+                assert!(Rc::ptr_eq(&first_error, &second_error));
+                assert!(matches!(
+                    first_error.as_ref(),
+                    ClickhouseExporterError::InsertRequestError {
+                        source: clickhouse::error::Error::Custom(message)
+                    } if message == "injected start failure"
+                ));
+            })
+            .await;
+    }
+
+    /// Scenario: a writer lane panics while ending an insertion with accepted pdata.
+    /// Guarantees: task supervision surfaces a structured terminal failure instead of disconnecting silently.
+    #[tokio::test(flavor = "current_thread")]
+    async fn writer_lane_panic_is_a_terminal_dispatcher_failure() {
+        LocalSet::new()
+            .run_until(async {
+                let writer = FakeWriter::default();
+                writer.state.borrow_mut().panic_end = true;
+                let mut pool = BatchedWritePool::new(writer, 1, config(1, usize::MAX, 60_000));
+
+                submit(&mut pool, logs_job(1));
+                let event = pool
+                    .next_event()
+                    .await
+                    .expect("task supervision should produce a terminal event");
+
+                assert!(matches!(
+                    event,
+                    DispatcherEvent::Failed(error)
+                        if matches!(
+                            error.as_ref(),
+                            ClickhouseExporterError::WriterLanePanicked { lane: 0, message }
+                                if message == "injected writer-lane panic"
+                        )
+                ));
+                assert_eq!(pool.outstanding, 1);
+            })
+            .await;
     }
 
     /// Scenario: two compatible log batches reach the row threshold with sixteen writer lanes.
@@ -969,7 +1281,7 @@ mod tests {
             .run_until(async {
                 let writer = FakeWriter::default();
                 let mut pool =
-                    PersistentWritePool::new(writer.clone(), 16, config(5, usize::MAX, 60_000));
+                    BatchedWritePool::new(writer.clone(), 16, config(5, usize::MAX, 60_000));
 
                 submit(&mut pool, logs_job(2));
                 submit(&mut pool, logs_job(3));
@@ -993,7 +1305,7 @@ mod tests {
                     .get_array_memory_size()
                     .saturating_add(second.get_array_memory_size());
                 let writer = FakeWriter::default();
-                let mut pool = PersistentWritePool::new(
+                let mut pool = BatchedWritePool::new(
                     writer.clone(),
                     1,
                     config(usize::MAX, byte_limit, 60_000),
@@ -1030,11 +1342,8 @@ mod tests {
         LocalSet::new()
             .run_until(async {
                 let writer = FakeWriter::default();
-                let mut pool = PersistentWritePool::new(
-                    writer.clone(),
-                    16,
-                    config(usize::MAX, usize::MAX, 50),
-                );
+                let mut pool =
+                    BatchedWritePool::new(writer.clone(), 16, config(usize::MAX, usize::MAX, 50));
 
                 submit(&mut pool, logs_job(2));
                 while pool.is_at_capacity() {
@@ -1072,7 +1381,7 @@ mod tests {
         LocalSet::new()
             .run_until(async {
                 let writer = FakeWriter::default();
-                let mut pool = PersistentWritePool::new(
+                let mut pool = BatchedWritePool::new(
                     writer.clone(),
                     1,
                     config(usize::MAX, usize::MAX, 60_000),
@@ -1095,7 +1404,7 @@ mod tests {
             .run_until(async {
                 let writer = FakeWriter::default();
                 writer.state.borrow_mut().stall_end = true;
-                let mut pool = PersistentWritePool::new(writer, 1, config(1, usize::MAX, 60_000));
+                let mut pool = BatchedWritePool::new(writer, 1, config(1, usize::MAX, 60_000));
 
                 submit(&mut pool, logs_job(1));
                 let deadline = Instant::now() + Duration::from_secs(5);
@@ -1118,7 +1427,7 @@ mod tests {
                 let writer = FakeWriter::default();
                 writer.state.borrow_mut().fail_end = true;
                 let mut pool =
-                    PersistentWritePool::new(writer.clone(), 1, config(5, usize::MAX, 60_000));
+                    BatchedWritePool::new(writer.clone(), 1, config(5, usize::MAX, 60_000));
 
                 submit(&mut pool, logs_job(2));
                 submit(&mut pool, logs_job(3));
@@ -1150,7 +1459,7 @@ mod tests {
         LocalSet::new()
             .run_until(async {
                 let writer = FakeWriter::default();
-                let mut pool = PersistentWritePool::new(
+                let mut pool = BatchedWritePool::new(
                     writer.clone(),
                     1,
                     config(usize::MAX, usize::MAX, 60_000),
@@ -1185,7 +1494,7 @@ mod tests {
             .run_until(async {
                 let writer = FakeWriter::default();
                 let mut pool =
-                    PersistentWritePool::new(writer.clone(), 1, config(4, usize::MAX, 60_000));
+                    BatchedWritePool::new(writer.clone(), 1, config(4, usize::MAX, 60_000));
 
                 assert!(pool.submit(logs_job(2)).is_none());
                 assert!(pool.submit(logs_job(2)).is_none());
@@ -1214,7 +1523,7 @@ mod tests {
             .run_until(async {
                 let writer = FakeWriter::default();
                 let mut pool =
-                    PersistentWritePool::new(writer.clone(), 1, config(3, usize::MAX, 60_000));
+                    BatchedWritePool::new(writer.clone(), 1, config(3, usize::MAX, 60_000));
                 assert_eq!(pool.events.max_capacity(), 1);
 
                 for _ in 0..6 {
