@@ -11,7 +11,9 @@ enum; they must not invent new values or ad-hoc variants.
 This complements the
 [Stability and Compatibility Guide](telemetry/stability-compatibility-guide.md),
 which covers the stability of emitted telemetry rather than of the nodes
-themselves. Both use the same lowercase level vocabulary.
+themselves. That guide works in terms of `experimental`, `stable`, and
+`deprecated`; the ladder below adds `alpha` and `beta` between the first two.
+Levels that appear in both are spelled the same way and mean the same thing.
 
 ## Levels
 
@@ -43,9 +45,11 @@ existing name `experimental` for the earliest rung.
 
 ## Declaring a node's stability
 
-- Write the level in lowercase everywhere. Lowercase matches the enum's
-  serialized form and the level vocabulary already used by the catalog tables
-  and the telemetry stability guide.
+- Write the level in lowercase everywhere, matching the vocabulary already
+  used by the catalog tables and the telemetry stability guide. These levels are
+  a documentation convention: the component inventory deliberately carries no
+  stability field (see the note in `crates/engine/src/inventory.rs`), so a node
+  README is the canonical place a level is recorded.
 - Each node README declares the level in its `## Metadata` section:
 
   ```markdown

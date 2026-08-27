@@ -28,8 +28,8 @@ Contrib nodes are enabled through individual feature gates or aggregate feature
 gates such as `contrib-receivers`, `contrib-processors`, and
 `contrib-exporters`. The `Stability` column uses the levels defined in
 [`docs/node-stability.md`](../../docs/node-stability.md). A node documented as
-`experimental` or `alpha` has no stable compatibility guarantee yet, and its
-behavior or configuration can change between releases.
+`experimental`, `alpha`, or `beta` has no stable compatibility guarantee yet,
+and its behavior or configuration can change between releases.
 
 ## Node Type Syntax
 
