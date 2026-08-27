@@ -1,0 +1,111 @@
+{
+    "configurations": [
+        {
+            "configurationId": "dcr-00000000000000000000000000000003",
+            "eTag": "dcr-00000000000000000000000000000003/%22e3e3e3e3-0000-0000-0000-0000000000e3%22",
+            "op": "added",
+            "content": {
+                "kind": "AgentSettings",
+                "settings": [
+                    {
+                        "name": "MaxDiskQuotaInMB",
+                        "value": "10240"
+                    },
+                    {
+                        "name": "OtlpGrpcLogsTracesPort",
+                        "value": "4329"
+                    },
+                    {
+                        "name": "OtlpHttpProtobufLogsTracesPort",
+                        "value": "4330"
+                    }
+                ]
+            }
+        },
+        {
+            "configurationId": "dcr-00000000000000000000000000000002",
+            "eTag": "dcr-00000000000000000000000000000002/%22e1e1e1e1-0000-0000-0000-0000000000e1%22",
+            "op": "added",
+            "content": {
+                "dataSources": [
+                    {
+                        "configuration": {
+                            "scheduledTransferPeriod": "PT1M",
+                            "counters": [
+                                {
+                                    "samplingFrequencyInSeconds": 30,
+                                    "counterSpecifiers": [
+                                        "\\Process(_Total)\\Thread Count"
+                                    ]
+                                }
+                            ]
+                        },
+                        "id": "myPerfCounterDataSource1",
+                        "kind": "perfCounter",
+                        "streams": [
+                            {
+                                "stream": "GENERIC_PERF_BLOB",
+                                "solution": "LogManagement"
+                            }
+                        ],
+                        "sendToChannels": [
+                            "ods-aaaaaaaa-0000-0000-0000-00000000000a"
+                        ]
+                    },
+                    {
+                        "configuration": {
+                            "resourceAttributeRouting": {
+                                "attributeName": "service.name",
+                                "attributeValue": "amcs"
+                            }
+                        },
+                        "id": "myOtelLogs1DataSource",
+                        "kind": "otelLogs",
+                        "streams": [
+                            {
+                                "stream": "OPENTELEMETRY_LOGS_AGENT"
+                            }
+                        ],
+                        "sendToChannels": [
+                            "gigl-dce-00000000000000000000000000000002"
+                        ]
+                    },
+                    {
+                        "configuration": {
+                            "resourceAttributeRouting": {
+                                "attributeName": "service.name",
+                                "attributeValue": "amcs"
+                            }
+                        },
+                        "id": "myOtelTraces1DataSource",
+                        "kind": "otelTraces",
+                        "streams": [
+                            {
+                                "stream": "OPENTELEMETRY_TRACES_AGENT"
+                            }
+                        ],
+                        "sendToChannels": [
+                            "gigl-dce-00000000000000000000000000000002"
+                        ]
+                    }
+                ],
+                "channels": [
+                    {
+                        "endpoint": "https://aaaaaaaa-0000-0000-0000-00000000000a.ods.opinsights.azure.com",
+                        "tokenEndpointUri": "https://handler.control.monitor.azure.com//issueIngestionToken?api-version=2022-06-02",
+                        "id": "ods-aaaaaaaa-0000-0000-0000-00000000000a",
+                        "protocol": "ods"
+                    },
+                    {
+                        "endpointUriTemplate": "https://example-dce-2.eastus2euap-1.ingest.monitor.azure.com/dataCollectionRules/dcr-00000000000000000000000000000002/streams/<STREAM>?api-version=2021-11-01-preview",
+                        "tokenEndpointUri": "https://handler.control.monitor.azure.com//issueIngestionToken?api-version=2022-06-02",
+                        "otelLogsEndpointUriTemplate": "https://example-dce-2.eastus2euap-1.ingest.monitor.azure.com/dataCollectionRules/dcr-00000000000000000000000000000002/streams/<STREAM>/otlp/v1/logs?api-version=2021-11-01-preview",
+                        "otelTracesEndpointUriTemplate": "https://example-dce-2.eastus2euap-1.ingest.monitor.azure.com/dataCollectionRules/dcr-00000000000000000000000000000002/streams/<STREAM>/otlp/v1/traces?api-version=2021-11-01-preview",
+                        "id": "gigl-dce-00000000000000000000000000000002",
+                        "protocol": "gig"
+                    }
+                ]
+            }
+        }
+    ]
+}

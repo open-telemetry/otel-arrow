@@ -1,0 +1,26 @@
+{
+    "configurations": [
+        {
+            "configurationId": "dcr-00000000000000000000000000000003",
+            "eTag": "dcr-00000000000000000000000000000003/%22e3e3e3e3-0000-0000-0000-0000000000e3%22",
+            "op": "added",
+            "content": {
+                "kind": "AgentSettings",
+                "settings": [
+                    {
+                        "name": "MaxDiskQuotaInMB",
+                        "value": "10240"
+                    },
+                    {
+                        "name": "OtlpGrpcLogsTracesPort",
+                        "value": "4329"
+                    },
+                    {
+                        "name": "OtlpHttpProtobufLogsTracesPort",
+                        "value": "4330"
+                    }
+                ]
+            }
+        }
+    ]
+}

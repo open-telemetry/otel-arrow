@@ -25,7 +25,9 @@
 //! |---|---|
 //! | [`schema`] | Serde model of the AMCS JSON payload |
 //! | [`listener`] | OTLP listener discovery from the environment and Agent Settings |
+//! | [`extract`] | Payload plus listeners to routable endpoint bindings |
 
+pub mod extract;
 pub mod listener;
 pub mod schema;
 

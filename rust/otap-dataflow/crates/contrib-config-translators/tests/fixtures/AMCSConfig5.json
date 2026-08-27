@@ -1,0 +1,161 @@
+{
+    "configurations": [
+        {
+            "configurationId": "dcr-00000000000000000000000000000001",
+            "content": {
+                "dataSources": [
+                    {
+                        "configuration": { "extensionName": "ContainerInsights" },
+                        "id": "ContainerInsightsExtension:ods-bbbbbbbb-0000-0000-0000-00000000000b",
+                        "kind": "extension",
+                        "streams": [
+                            {
+                                "stream": "CONTAINER_LOG_BLOB",
+                                "solution": "Containers",
+                                "extensionOutputStream": "dcr-00000000000000000000000000000001:ContainerInsightsExtension:ods-bbbbbbbb-0000-0000-0000-00000000000b:CONTAINER_LOG_BLOB"
+                            },
+                            {
+                                "stream": "CONTAINERINSIGHTS_CONTAINERLOGV2",
+                                "solution": "ContainerInsights",
+                                "extensionOutputStream": "dcr-00000000000000000000000000000001:ContainerInsightsExtension:ods-bbbbbbbb-0000-0000-0000-00000000000b:CONTAINERINSIGHTS_CONTAINERLOGV2"
+                            },
+                            {
+                                "stream": "KUBE_EVENTS_BLOB",
+                                "solution": "ContainerInsights",
+                                "extensionOutputStream": "dcr-00000000000000000000000000000001:ContainerInsightsExtension:ods-bbbbbbbb-0000-0000-0000-00000000000b:KUBE_EVENTS_BLOB"
+                            },
+                            {
+                                "stream": "KUBE_POD_INVENTORY_BLOB",
+                                "solution": "ContainerInsights",
+                                "extensionOutputStream": "dcr-00000000000000000000000000000001:ContainerInsightsExtension:ods-bbbbbbbb-0000-0000-0000-00000000000b:KUBE_POD_INVENTORY_BLOB"
+                            },
+                            {
+                                "stream": "KUBE_NODE_INVENTORY_BLOB",
+                                "solution": "ContainerInsights",
+                                "extensionOutputStream": "dcr-00000000000000000000000000000001:ContainerInsightsExtension:ods-bbbbbbbb-0000-0000-0000-00000000000b:KUBE_NODE_INVENTORY_BLOB"
+                            },
+                            {
+                                "stream": "KUBE_PV_INVENTORY_BLOB",
+                                "solution": "ContainerInsights",
+                                "extensionOutputStream": "dcr-00000000000000000000000000000001:ContainerInsightsExtension:ods-bbbbbbbb-0000-0000-0000-00000000000b:KUBE_PV_INVENTORY_BLOB"
+                            },
+                            {
+                                "stream": "KUBE_SERVICES_BLOB",
+                                "solution": "ContainerInsights",
+                                "extensionOutputStream": "dcr-00000000000000000000000000000001:ContainerInsightsExtension:ods-bbbbbbbb-0000-0000-0000-00000000000b:KUBE_SERVICES_BLOB"
+                            },
+                            {
+                                "stream": "KUBE_MON_AGENT_EVENTS_BLOB",
+                                "solution": "Containers",
+                                "extensionOutputStream": "dcr-00000000000000000000000000000001:ContainerInsightsExtension:ods-bbbbbbbb-0000-0000-0000-00000000000b:KUBE_MON_AGENT_EVENTS_BLOB"
+                            },
+                            {
+                                "stream": "INSIGHTS_METRICS_BLOB",
+                                "solution": "VMInsights",
+                                "extensionOutputStream": "dcr-00000000000000000000000000000001:ContainerInsightsExtension:ods-bbbbbbbb-0000-0000-0000-00000000000b:INSIGHTS_METRICS_BLOB"
+                            },
+                            {
+                                "stream": "CONTAINER_INVENTORY_BLOB",
+                                "solution": "ContainerInsights",
+                                "extensionOutputStream": "dcr-00000000000000000000000000000001:ContainerInsightsExtension:ods-bbbbbbbb-0000-0000-0000-00000000000b:CONTAINER_INVENTORY_BLOB"
+                            },
+                            {
+                                "stream": "CONTAINER_NODE_INVENTORY_BLOB",
+                                "solution": "ContainerInsights",
+                                "extensionOutputStream": "dcr-00000000000000000000000000000001:ContainerInsightsExtension:ods-bbbbbbbb-0000-0000-0000-00000000000b:CONTAINER_NODE_INVENTORY_BLOB"
+                            },
+                            {
+                                "stream": "LINUX_PERF_BLOB",
+                                "solution": "LogManagement",
+                                "extensionOutputStream": "dcr-00000000000000000000000000000001:ContainerInsightsExtension:ods-bbbbbbbb-0000-0000-0000-00000000000b:LINUX_PERF_BLOB"
+                            }
+                        ],
+                        "sendToChannels": [ "ods-bbbbbbbb-0000-0000-0000-00000000000b" ]
+                    },
+                    {
+                        "configuration": { "extensionName": "ContainerInsights" },
+                        "id": "ContainerInsightsExtension:gigl-dce-00000000000000000000000000000001",
+                        "kind": "extension",
+                        "streams": [
+                            {
+                                "stream": "RETINA_NETWORK_FLOW_LOGS",
+                                "extensionOutputStream": "dcr-00000000000000000000000000000001:ContainerInsightsExtension:gigl-dce-00000000000000000000000000000001:RETINA_NETWORK_FLOW_LOGS"
+                            }
+                        ],
+                        "sendToChannels": [ "gigl-dce-00000000000000000000000000000001" ]
+                    },
+                    {
+                        "configuration": {
+                            "resourceAttributeRouting": {
+                                "attributeName": "service.name",
+                                "attributeValue": "amcs"
+                            }
+                        },
+                        "id": "myOtelLogs1DataSource",
+                        "kind": "otelLogs",
+                        "streams": [ { "stream": "OPENTELEMETRY_LOGS_AGENT" } ],
+                        "sendToChannels": [ "gigl-dce-00000000000000000000000000000001" ]
+                    }
+                ],
+                "channels": [
+                    {
+                        "endpoint": "https://bbbbbbbb-0000-0000-0000-00000000000b.ods.opinsights.azure.com",
+                        "tokenEndpointUri": "https://global.handler.control.monitor.azure.com/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/example-rg/providers/Microsoft.ContainerService/managedClusters/example-cluster/agentConfigurations/dcr-00000000000000000000000000000001/channels/ods-bbbbbbbb-0000-0000-0000-00000000000b/issueIngestionToken?operatingLocation=eastus2euap&platform=linux&includeMeConfig=true&api-version=2022-06-02",
+                        "id": "ods-bbbbbbbb-0000-0000-0000-00000000000b",
+                        "protocol": "ods"
+                    },
+                    {
+                        "endpointUriTemplate": "https://example-dce-1.eastus2euap-1.ingest.monitor.azure.com/dataCollectionRules/dcr-00000000000000000000000000000001/streams/<STREAM>?api-version=2021-11-01-preview",
+                        "tokenEndpointUri": "https://global.handler.control.monitor.azure.com/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/example-rg/providers/Microsoft.ContainerService/managedClusters/example-cluster/agentConfigurations/dcr-00000000000000000000000000000001/channels/gigl-dce-00000000000000000000000000000001/issueIngestionToken?operatingLocation=eastus2euap&platform=linux&includeMeConfig=true&api-version=2022-06-02",
+                        "otelLogsEndpointUriTemplate": "https://example-dce-1.eastus2euap-1.ingest.monitor.azure.com/dataCollectionRules/dcr-00000000000000000000000000000001/streams/<STREAM>/otlp/v1/logs?api-version=2021-11-01-preview",
+                        "id": "gigl-dce-00000000000000000000000000000001",
+                        "protocol": "gig"
+                    }
+                ],
+                "extensionConfigurations": {
+                    "ContainerInsights": [
+                        {
+                            "id": "dcr-00000000000000000000000000000001:ContainerInsightsExtension:ods-bbbbbbbb-0000-0000-0000-00000000000b",
+                            "originIds": [ "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/example-rg/providers/Microsoft.Insights/dataCollectionRules/MSCI-eastus2euap-example-cluster" ],
+                            "extensionSettings": {
+                                "dataCollectionSettings": {
+                                    "interval": "1m",
+                                    "namespaceFilteringMode": "Off",
+                                    "namespaces": [ "kube-system", "gatekeeper-system", "azure-arc" ],
+                                    "enableContainerLogV2": true
+                                }
+                            },
+                            "outputStreams": {
+                                "CONTAINER_LOG_BLOB": "dcr-00000000000000000000000000000001:ContainerInsightsExtension:ods-bbbbbbbb-0000-0000-0000-00000000000b:CONTAINER_LOG_BLOB",
+                                "CONTAINERINSIGHTS_CONTAINERLOGV2": "dcr-00000000000000000000000000000001:ContainerInsightsExtension:ods-bbbbbbbb-0000-0000-0000-00000000000b:CONTAINERINSIGHTS_CONTAINERLOGV2",
+                                "KUBE_EVENTS_BLOB": "dcr-00000000000000000000000000000001:ContainerInsightsExtension:ods-bbbbbbbb-0000-0000-0000-00000000000b:KUBE_EVENTS_BLOB",
+                                "KUBE_POD_INVENTORY_BLOB": "dcr-00000000000000000000000000000001:ContainerInsightsExtension:ods-bbbbbbbb-0000-0000-0000-00000000000b:KUBE_POD_INVENTORY_BLOB",
+                                "KUBE_NODE_INVENTORY_BLOB": "dcr-00000000000000000000000000000001:ContainerInsightsExtension:ods-bbbbbbbb-0000-0000-0000-00000000000b:KUBE_NODE_INVENTORY_BLOB",
+                                "KUBE_PV_INVENTORY_BLOB": "dcr-00000000000000000000000000000001:ContainerInsightsExtension:ods-bbbbbbbb-0000-0000-0000-00000000000b:KUBE_PV_INVENTORY_BLOB",
+                                "KUBE_SERVICES_BLOB": "dcr-00000000000000000000000000000001:ContainerInsightsExtension:ods-bbbbbbbb-0000-0000-0000-00000000000b:KUBE_SERVICES_BLOB",
+                                "KUBE_MON_AGENT_EVENTS_BLOB": "dcr-00000000000000000000000000000001:ContainerInsightsExtension:ods-bbbbbbbb-0000-0000-0000-00000000000b:KUBE_MON_AGENT_EVENTS_BLOB",
+                                "INSIGHTS_METRICS_BLOB": "dcr-00000000000000000000000000000001:ContainerInsightsExtension:ods-bbbbbbbb-0000-0000-0000-00000000000b:INSIGHTS_METRICS_BLOB",
+                                "CONTAINER_INVENTORY_BLOB": "dcr-00000000000000000000000000000001:ContainerInsightsExtension:ods-bbbbbbbb-0000-0000-0000-00000000000b:CONTAINER_INVENTORY_BLOB",
+                                "CONTAINER_NODE_INVENTORY_BLOB": "dcr-00000000000000000000000000000001:ContainerInsightsExtension:ods-bbbbbbbb-0000-0000-0000-00000000000b:CONTAINER_NODE_INVENTORY_BLOB",
+                                "LINUX_PERF_BLOB": "dcr-00000000000000000000000000000001:ContainerInsightsExtension:ods-bbbbbbbb-0000-0000-0000-00000000000b:LINUX_PERF_BLOB"
+                            }
+                        },
+                        {
+                            "id": "dcr-00000000000000000000000000000001:ContainerInsightsExtension:gigl-dce-00000000000000000000000000000001",
+                            "originIds": [ "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/example-rg/providers/Microsoft.Insights/dataCollectionRules/MSCI-eastus2euap-example-cluster" ],
+                            "extensionSettings": {
+                                "dataCollectionSettings": {
+                                    "interval": "1m",
+                                    "namespaceFilteringMode": "Off",
+                                    "namespaces": [ "kube-system", "gatekeeper-system", "azure-arc" ],
+                                    "enableContainerLogV2": true
+                                }
+                            },
+                            "outputStreams": { "RETINA_NETWORK_FLOW_LOGS": "dcr-00000000000000000000000000000001:ContainerInsightsExtension:gigl-dce-00000000000000000000000000000001:RETINA_NETWORK_FLOW_LOGS" }
+                        }
+                    ]
+                }
+            }
+        }
+    ]
+}
