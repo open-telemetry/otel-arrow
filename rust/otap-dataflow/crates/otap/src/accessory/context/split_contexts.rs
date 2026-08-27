@@ -509,4 +509,105 @@ mod test {
             "Should complete after clearing the second (and last) outbound"
         );
     }
+
+    /// Scenario: An outbound key's transient-errors flag is explicitly set to false.
+    /// Guarantees: The inbound returned from clear_outbound reflects the updated flag value.
+    #[test]
+    fn test_set_outbound_all_transient_errors_to_false() {
+        let mut contexts = new_contexts();
+        let context = create_context_with_subscribers();
+        let inbound_key = contexts.insert_inbound(context, None, None).unwrap();
+        let outbound_key = contexts.insert_outbound(inbound_key).unwrap();
+
+        // set the flag to false (simulating an ACK or permanent NACK downstream)
+        contexts.set_outbound_all_transient_errors(outbound_key, false);
+
+        let inbound = contexts.clear_outbound(outbound_key).unwrap();
+        assert!(
+            !inbound.outbound_all_transient_errors,
+            "flag should be false after being explicitly set to false"
+        );
+    }
+
+    /// Scenario: set_outbound_all_transient_errors is called with a key from a different
+    /// Contexts instance.
+    /// Guarantees: The call does not panic when the outbound key is not found.
+    #[test]
+    fn test_set_outbound_all_transient_errors_with_invalid_key() {
+        let mut contexts = new_contexts();
+
+        let invalid_key = {
+            let mut temp_contexts = new_contexts();
+            let ctx = create_context_with_subscribers();
+            let inbound_key = temp_contexts.insert_inbound(ctx, None, None).unwrap();
+            temp_contexts.insert_outbound(inbound_key).unwrap()
+        };
+
+        // should not panic
+        contexts.set_outbound_all_transient_errors(invalid_key, false);
+    }
+
+    /// Scenario: An inbound batch is inserted with an associated payload.
+    /// Guarantees: The payload is preserved and returned when the inbound is completed
+    /// via clear_outbound.
+    #[test]
+    fn test_insert_inbound_with_payload() {
+        let mut contexts = new_contexts();
+        let pdata = create_test_pdata();
+        let (context, payload) = pdata.into_parts();
+
+        // subscribe so context needs completion tracking
+        let pdata = crate::pdata::OtapPdata::new(context, payload).test_subscribe_to(
+            otel_arrow_dfe_engine::Interests::ACKS,
+            smallvec::smallvec![otel_arrow_dfe_engine::control::Context8u8::from(1u64)],
+            1,
+        );
+        let (context, payload) = pdata.into_parts();
+
+        let inbound_key = contexts
+            .insert_inbound(context, Some(payload.clone()), None)
+            .unwrap();
+        assert!(!inbound_key.is_null());
+
+        let outbound_key = contexts.insert_outbound(inbound_key).unwrap();
+        let inbound = contexts.clear_outbound(outbound_key).unwrap();
+
+        assert!(
+            inbound.payload.is_some(),
+            "payload should be preserved in inbound"
+        );
+        assert_eq!(
+            inbound.payload.unwrap().signal_type(),
+            payload.signal_type(),
+            "returned payload should match the original"
+        );
+    }
+
+    /// Scenario: Multiple outbounds share one inbound, and set_outbound_all_transient_errors
+    /// is called with false on only one of them.
+    /// Guarantees: The inbound's flag is false after all outbounds are cleared, because
+    /// the flag can only transition from true to false (never back).
+    #[test]
+    fn test_multiple_outbounds_transient_errors_flag_set_false_on_one() {
+        let mut contexts = new_contexts();
+        let context = create_context_with_subscribers();
+        let inbound_key = contexts.insert_inbound(context, None, None).unwrap();
+
+        let outbound_key1 = contexts.insert_outbound(inbound_key).unwrap();
+        let outbound_key2 = contexts.insert_outbound(inbound_key).unwrap();
+        let outbound_key3 = contexts.insert_outbound(inbound_key).unwrap();
+
+        // only set false on one outbound (e.g. it was ACK'd)
+        contexts.set_outbound_all_transient_errors(outbound_key2, false);
+
+        // clear all outbounds
+        assert!(contexts.clear_outbound(outbound_key1).is_none());
+        assert!(contexts.clear_outbound(outbound_key2).is_none());
+
+        let inbound = contexts.clear_outbound(outbound_key3).unwrap();
+        assert!(
+            !inbound.outbound_all_transient_errors,
+            "flag should be false because at least one outbound set it to false"
+        );
+    }
 }

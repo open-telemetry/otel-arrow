@@ -11,6 +11,29 @@
 //! still being developed.
 //!
 //! ToDo: Detect unsupported pipelines at config time instead of run time.
+//!
+//! # Ack/Nack behaviour
+//!
+//! Some transformations may split the into multiple outbound batches (notably when the `route_to`
+//! operator is used the query). When this happens, a new context will be created for the outbound
+//! batches, and this component will subscribe to Acks/Nacks on these outbound contexts. Once all
+//! outbound contexts have been Ack'd or Nack'd this component will then produce an Ack or Nack for
+//! the inbound context.
+//!
+//! The rules by which it creates this Ack/Nack for the inbound context are as follows:
+//!
+//! If all outbound contexts were Ack'd, this component will produce an Ack.
+//!
+//! Otherwise, (when at least one outbound context was NAck'd). The Nack reason will be the first
+//! error received from the Nack of any Nack'd outbound batch.
+//!
+//! This Nack will be non-permanent ONLY if all the outbound contexts were Nack'd with
+//! `permanent=false` (e.g. if all the downstream errors were transient). It has this behaviour to
+//! avoid a) having the data retried in the case of a permanent downstream error and b) replaying
+//! data that has already been Ack'd. This means *a transient downstream error will not necessarily
+//! cause the batch to be retried*, and it may be considered good practice to put any retry
+//! processors downstream of this component.
+//!
 
 otel_arrow_dfe_telemetry::otel_component_scope!(
     urn = TRANSFORM_PROCESSOR_URN,
