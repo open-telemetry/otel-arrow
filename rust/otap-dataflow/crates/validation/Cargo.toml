@@ -28,7 +28,8 @@ minijinja = { workspace = true }
 otel-arrow-dfe-admin-api = { workspace = true }
 otel-arrow-dfe-engine = { workspace = true }
 otel-arrow-dfe-config = { workspace = true }
-otel-arrow-dfe-core-nodes = { workspace = true, features = ["dev-tools"] }
+otel-arrow-dfe-core-nodes = { workspace = true }
+otel-arrow-dfe-dev-nodes = { workspace = true }
 otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
 otel-arrow-dfe-telemetry = { workspace = true }
 otel-arrow-dfe-telemetry-macros = { workspace = true }

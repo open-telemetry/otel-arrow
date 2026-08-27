@@ -96,7 +96,7 @@ don't need multiple load-generator cores.
 ```bash
 cd rust/otap-dataflow
 cargo build --release
-bash crates/core-nodes/src/receivers/traffic_generator/bench/bench.sh
+bash crates/dev-nodes/src/receivers/traffic_generator/bench/bench.sh
 ```
 
 ---

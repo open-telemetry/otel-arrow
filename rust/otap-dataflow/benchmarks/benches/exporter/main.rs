@@ -9,7 +9,7 @@ use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use fluke_hpack::Encoder;
 use otel_arrow_dfe_channel::mpsc;
 use otel_arrow_dfe_core_nodes::exporters::otap_exporter::{OTAP_EXPORTER_URN, OTAPExporter};
-use otel_arrow_dfe_core_nodes::exporters::perf_exporter::{
+use otel_arrow_dfe_dev_nodes::exporters::perf_exporter::{
     OTAP_PERF_EXPORTER_URN, PerfExporter, config::Config,
 };
 use otel_arrow_dfe_engine::{
