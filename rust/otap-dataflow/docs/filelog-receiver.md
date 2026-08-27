@@ -58,18 +58,12 @@ The design is split into four normative layers:
 These four documents form one normative contract set. An implementation can
 claim Phase 1 conformance only when it satisfies all four.
 
-The lower-level specifications refine the architecture and cannot contradict it.
-A conflict is a design defect that must be surfaced and resolved deliberately;
-it is not resolved by allowing one document to override another.
-
-For example, this document owns the rule that source progress advances only
-after a matching aggregate downstream Ack. The Phase 1 specification owns exact
-correlation, retry, stale-completion, atomic-delta, and drain behavior. The
-checkpoint-format specification owns the exact encoding and replay
-representation of the resulting progress operation.
-
-Requirements in this architecture use direct declarative language. The
-checkpoint-format specification states its own normative-keyword convention.
+The lower-level specifications refine the architecture but cannot contradict
+it. For example, the architecture requires Ack-gated source progress, the
+behavioral specification defines correlation, retry, stale-completion, and
+drain behavior, and the checkpoint-format specification defines its durable
+encoding and replay. Any conflict is a design defect that must be resolved
+explicitly; no document silently overrides another.
 
 ## Goals and non-goals
 
