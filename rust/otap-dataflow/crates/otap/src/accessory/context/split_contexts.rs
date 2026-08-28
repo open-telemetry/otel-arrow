@@ -5,6 +5,7 @@
 //! produced by processors that may split the incoming batch into
 //! multiple outbound batches
 
+use otel_arrow_dfe_engine::control::NackCause;
 use otel_arrow_dfe_pdata::OtapPayload;
 use slotmap::Key as _;
 use std::num::NonZeroUsize;
@@ -23,7 +24,7 @@ pub struct Inbound {
     pub payload: Option<OtapPayload>,
 
     /// error that may have been produced via processing for some outbound batch
-    pub error_reason: Option<String>,
+    pub error: Option<OutboundError>,
 
     num_outbound: usize,
 
@@ -31,6 +32,15 @@ pub struct Inbound {
     /// If so, we could emit a Nack for the inbound batch that is transient, otherwise
     /// if there are any errors we must emit a permanent Nack.
     pub outbound_all_transient_errors: bool,
+}
+
+/// represents error that may have been produced via processing for some outbound batch
+pub struct OutboundError {
+    /// reason for the error
+    pub reason: String,
+
+    /// identifier of cause of the error
+    pub cause: NackCause,
 }
 
 struct Outbound {
@@ -77,7 +87,7 @@ impl Contexts {
         &mut self,
         context: Context,
         payload: Option<OtapPayload>,
-        error_reason: Option<String>,
+        error: Option<OutboundError>,
     ) -> Option<Key> {
         if !context.needs_completion_tracking() {
             // No completion routing or metrics unwinding depends on this context.
@@ -88,7 +98,7 @@ impl Contexts {
             context,
             num_outbound: 0,
             payload,
-            error_reason,
+            error,
 
             // initialize to true, can be set to false if/when there are any outbound batch results
             // that are not a non-permanent Nack
@@ -124,19 +134,19 @@ impl Contexts {
 
     /// Set an error message on the inbound context associated with this outbound key explaining
     /// why the batch processing failed. Note - this method does not clear the outbound
-    pub fn set_failed_outbound(&mut self, outbound_key: Key, error_reason: String) {
+    pub fn set_failed_outbound(&mut self, outbound_key: Key, error: OutboundError) {
         if let Some(inbound_key) = self.outbound.get(outbound_key).map(|o| o.inbound_key) {
-            self.set_failed_inbound(inbound_key, error_reason);
+            self.set_failed_inbound(inbound_key, error);
         }
     }
 
     /// Set an error message on the inbound context associated with this key explaining why the
     /// batch processing failed.
-    pub fn set_failed_inbound(&mut self, inbound_key: Key, error_reason: String) {
+    pub fn set_failed_inbound(&mut self, inbound_key: Key, error: OutboundError) {
         if let Some(inbound) = self.inbound.get_mut(inbound_key) {
             // keep the original error if it exists
-            if inbound.error_reason.is_none() {
-                inbound.error_reason = Some(error_reason)
+            if inbound.error.is_none() {
+                inbound.error = Some(error)
             }
         }
     }
@@ -234,7 +244,7 @@ mod test {
 
         let inbound = contexts.clear_outbound(outbound_key).unwrap();
         assert_eq!(inbound.context, original_context);
-        assert_eq!(inbound.error_reason, None);
+        assert!(inbound.error.is_none());
         assert!(inbound.outbound_all_transient_errors);
         assert!(inbound.payload.is_none());
     }
@@ -284,7 +294,7 @@ mod test {
 
         let inbound = contexts.clear_outbound(outbound_key3).unwrap();
         assert_eq!(inbound.context, original_context);
-        assert_eq!(inbound.error_reason, None);
+        assert!(inbound.error.is_none());
         assert!(inbound.outbound_all_transient_errors);
         assert!(inbound.payload.is_none());
     }
@@ -313,7 +323,14 @@ mod test {
         let context = create_context_with_subscribers();
         let error_msg = "pipeline processing failed".to_string();
         let inbound_key = contexts
-            .insert_inbound(context, None, Some(error_msg.clone()))
+            .insert_inbound(
+                context,
+                None,
+                Some(OutboundError {
+                    reason: error_msg.clone(),
+                    cause: NackCause::Refused,
+                }),
+            )
             .unwrap();
         let outbound_key = contexts.insert_outbound(inbound_key).unwrap();
 
@@ -321,8 +338,10 @@ mod test {
         let result = contexts.clear_outbound(outbound_key);
         assert!(result.is_some());
         let inbound = result.unwrap();
-        assert!(inbound.error_reason.is_some());
-        assert_eq!(inbound.error_reason.unwrap(), error_msg);
+        assert!(inbound.error.is_some());
+        let inbound_err = inbound.error.unwrap();
+        assert_eq!(inbound_err.reason, error_msg);
+        assert_eq!(inbound_err.cause, NackCause::Refused);
     }
 
     #[test]
@@ -350,14 +369,21 @@ mod test {
 
         // Set the outbound as failed
         let error_msg = "export failed".to_string();
-        contexts.set_failed_outbound(outbound_key, error_msg.clone());
+        contexts.set_failed_outbound(
+            outbound_key,
+            OutboundError {
+                reason: error_msg.clone(),
+                cause: NackCause::RouteFull,
+            },
+        );
 
         // Clear the outbound and verify error is returned
         let result = contexts.clear_outbound(outbound_key);
         assert!(result.is_some());
         let inbound = result.unwrap();
-        assert!(inbound.error_reason.is_some());
-        assert_eq!(inbound.error_reason.unwrap(), error_msg);
+        let error = inbound.error.unwrap();
+        assert_eq!(error.reason, error_msg);
+        assert_eq!(error.cause, NackCause::RouteFull)
     }
 
     #[test]
@@ -372,11 +398,23 @@ mod test {
 
         // Set first outbound as failed
         let error_msg1 = "first error".to_string();
-        contexts.set_failed_outbound(outbound_key1, error_msg1.clone());
+        contexts.set_failed_outbound(
+            outbound_key1,
+            OutboundError {
+                reason: error_msg1.clone(),
+                cause: NackCause::NodeShutdown,
+            },
+        );
 
         // Set second outbound as failed (should be ignored since error_reason is already set)
         let error_msg2 = "second error".to_string();
-        contexts.set_failed_outbound(outbound_key2, error_msg2.clone());
+        contexts.set_failed_outbound(
+            outbound_key2,
+            OutboundError {
+                reason: error_msg2.clone(),
+                cause: NackCause::Unspecified,
+            },
+        );
 
         // Clear all outbounds
         assert!(contexts.clear_outbound(outbound_key1).is_none());
@@ -386,12 +424,9 @@ mod test {
         let result = contexts.clear_outbound(outbound_key3);
         assert!(result.is_some());
         let inbound = result.unwrap();
-        assert!(inbound.error_reason.is_some());
-        assert_eq!(
-            inbound.error_reason.unwrap(),
-            error_msg1,
-            "First error should be preserved"
-        );
+        let error = inbound.error.unwrap();
+        assert_eq!(error.reason, error_msg1, "First error should be preserved");
+        assert_eq!(error.cause, NackCause::NodeShutdown)
     }
 
     /// Scenario: A split input has pipeline metric interests but no Ack/Nack subscriber.
@@ -414,7 +449,7 @@ mod test {
         let outbound_key = contexts.insert_outbound(inbound_key).unwrap();
         let inbound = contexts.clear_outbound(outbound_key).unwrap();
         assert_eq!(inbound.context, original_context);
-        assert!(inbound.error_reason.is_none());
+        assert!(inbound.error.is_none());
     }
 
     #[test]
@@ -430,7 +465,13 @@ mod test {
         };
 
         // Setting failed with invalid key should not panic
-        contexts.set_failed_outbound(invalid_key, "error".to_string());
+        contexts.set_failed_outbound(
+            invalid_key,
+            OutboundError {
+                reason: "error".to_string(),
+                cause: NackCause::Refused,
+            },
+        );
     }
 
     #[test]
@@ -445,7 +486,13 @@ mod test {
         assert!(outbound_key.is_null());
 
         // Setting failed with null key should not panic
-        contexts.set_failed_outbound(outbound_key, "error".to_string());
+        contexts.set_failed_outbound(
+            outbound_key,
+            OutboundError {
+                reason: "error".to_string(),
+                cause: NackCause::Refused,
+            },
+        );
     }
 
     #[test]
@@ -456,24 +503,42 @@ mod test {
         // Insert inbound with an initial error
         let inbound_error = "initial inbound error".to_string();
         let inbound_key = contexts
-            .insert_inbound(context, None, Some(inbound_error.clone()))
+            .insert_inbound(
+                context,
+                None,
+                Some(OutboundError {
+                    reason: inbound_error.clone(),
+                    cause: NackCause::RouteClosed,
+                }),
+            )
             .unwrap();
         let outbound_key = contexts.insert_outbound(inbound_key).unwrap();
 
         // Try to set a different error via set_failed
         let outbound_error = "outbound error".to_string();
-        contexts.set_failed_outbound(outbound_key, outbound_error);
+        contexts.set_failed_outbound(
+            outbound_key,
+            OutboundError {
+                reason: outbound_error,
+                cause: NackCause::Refused,
+            },
+        );
 
         // Clear outbound and verify the original inbound error is preserved
         let result = contexts.clear_outbound(outbound_key);
         assert!(result.is_some());
         let inbound = result.unwrap();
-        assert!(inbound.error_reason.is_some());
+        let error = inbound.error.unwrap();
+
         assert_eq!(
-            inbound.error_reason.unwrap(),
-            inbound_error,
+            error.reason, inbound_error,
             "Original inbound error should be preserved"
         );
+        assert_eq!(
+            error.cause,
+            NackCause::RouteClosed,
+            "Original inbound error should be preserved"
+        )
     }
 
     #[test]

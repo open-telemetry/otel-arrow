@@ -19,7 +19,7 @@ use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_engine::config::ProcessorConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
-use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
+use otel_arrow_dfe_engine::control::{AckMsg, NackCause, NackMsg, NodeControlMsg};
 use otel_arrow_dfe_engine::error::ProcessorErrorKind;
 use otel_arrow_dfe_engine::local::processor::{EffectHandler, Processor};
 use otel_arrow_dfe_engine::message::Message;
@@ -31,7 +31,7 @@ use otel_arrow_dfe_engine::{
     MessageSourceLocalEffectHandlerExtension, ProcessorFactory, ProducerEffectHandlerExtension,
 };
 use otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES;
-use otel_arrow_dfe_otap::accessory::context::split_contexts::Contexts;
+use otel_arrow_dfe_otap::accessory::context::split_contexts::{Contexts, OutboundError};
 use otel_arrow_dfe_otap::accessory::slots::Key;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
 use otel_arrow_dfe_otap::transport_headers::{TransportHeader, ValueKind};
@@ -163,8 +163,10 @@ impl PartitionProcessor {
             // if we're in this location, we've cleared the final outbound context for some inbound
             // batch, which means we can now Ack or Nack the inbound context
             let pdata = OtapPdata::new(inbound.context, OtapPayload::empty(signal_type));
-            if let Some(error) = inbound.error_reason {
-                effect_handler.notify_nack(NackMsg::new(error, pdata)).await
+            if let Some(error) = inbound.error {
+                effect_handler
+                    .notify_nack(NackMsg::new_with_cause(error.reason, pdata, error.cause))
+                    .await
             } else {
                 effect_handler.notify_ack(AckMsg::new(pdata)).await
             }
@@ -204,8 +206,13 @@ impl Processor<OtapPdata> for PartitionProcessor {
 
                 NodeControlMsg::Nack(nack_msg) => {
                     let outbound_key: Key = nack_msg.unwind.route.calldata.try_into()?;
-                    self.contexts
-                        .set_failed_outbound(outbound_key, nack_msg.reason);
+                    self.contexts.set_failed_outbound(
+                        outbound_key,
+                        OutboundError {
+                            reason: nack_msg.reason,
+                            cause: nack_msg.cause,
+                        },
+                    );
                     self.handle_ack_nack(
                         outbound_key,
                         nack_msg.refused.signal_type(),
@@ -329,7 +336,11 @@ impl Processor<OtapPdata> for PartitionProcessor {
                                     // indicating that some partition was not emitted.
                                     self.contexts.set_failed_inbound(
                                         inbound_ctx_key,
-                                        "insufficient outbound slots for partitions".into(),
+                                        OutboundError {
+                                            reason: "insufficient outbound slots for partitions"
+                                                .into(),
+                                            cause: NackCause::RouteFull,
+                                        },
                                     );
                                 }
 

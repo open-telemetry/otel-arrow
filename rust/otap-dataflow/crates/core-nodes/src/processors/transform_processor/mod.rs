@@ -52,7 +52,7 @@ use otel_arrow_dfe_engine::{
     ProcessorFactory, ProducerEffectHandlerExtension,
     config::ProcessorConfig,
     context::PipelineContext,
-    control::{AckMsg, NackMsg, NodeControlMsg},
+    control::{AckMsg, NackCause, NackMsg, NodeControlMsg},
     error::{Error as EngineError, ProcessorErrorKind},
     local::processor::{EffectHandler, Processor},
     message::Message,
@@ -61,7 +61,10 @@ use otel_arrow_dfe_engine::{
 };
 use otel_arrow_dfe_otap::{
     OTAP_PROCESSOR_FACTORIES,
-    accessory::{context::split_contexts::Contexts, slots::Key},
+    accessory::{
+        context::split_contexts::{Contexts, OutboundError},
+        slots::Key,
+    },
     pdata::{Context, OtapPdata},
 };
 use otel_arrow_dfe_pdata::TryIntoWithOptions;
@@ -461,7 +464,10 @@ impl TransformProcessor {
                         // record the partial-send failure so that closure sends a NACK.
                         self.contexts.set_failed_inbound(
                             inbound_ctx_key,
-                            "outbound slots were not available".into(),
+                            OutboundError {
+                                reason: "outbound slots were not available".into(),
+                                cause: NackCause::RouteFull,
+                            },
                         );
                     } else {
                         // No default or named output was registered, so nothing can
@@ -513,12 +519,12 @@ impl TransformProcessor {
             // which means we can now Ack or Nack the inbound context
             let payload = inbound.payload.unwrap_or(OtapPayload::empty(signal_type));
             let pdata = OtapPdata::new(inbound.context, payload);
-            if let Some(error) = inbound.error_reason {
+            if let Some(error) = inbound.error {
                 let nack_msg = if inbound.outbound_all_transient_errors {
                     // this constructor creates a non-permanent Nack
-                    NackMsg::new(error, pdata)
+                    NackMsg::new_with_cause(error.reason, pdata, error.cause)
                 } else {
-                    NackMsg::new_permanent(error, pdata)
+                    NackMsg::new_permanent_with_cause(error.reason, pdata, error.cause)
                 };
                 effect_handler.notify_nack(nack_msg).await
             } else {
@@ -596,8 +602,13 @@ impl Processor<OtapPdata> for TransformProcessor {
                 }
                 NodeControlMsg::Nack(nack_message) => {
                     let outbound_key: Key = nack_message.unwind.route.calldata.try_into()?;
-                    self.contexts
-                        .set_failed_outbound(outbound_key, nack_message.reason);
+                    self.contexts.set_failed_outbound(
+                        outbound_key,
+                        OutboundError {
+                            reason: nack_message.reason,
+                            cause: nack_message.cause,
+                        },
+                    );
                     if nack_message.permanent {
                         self.contexts
                             .set_outbound_all_transient_errors(outbound_key, false);
@@ -911,10 +922,12 @@ mod test {
         context: Context,
         signal_type: SignalType,
         reason: &str,
+        cause: NackCause,
     ) -> Result<(), EngineError> {
-        let nack = next_nack(NackMsg::new(
+        let nack = next_nack(NackMsg::new_with_cause(
             reason,
             OtapPdata::new(context, OtapPayload::empty(signal_type)),
+            cause,
         ));
         let (_, nack) = nack.unwrap();
         ctx.process(Message::Control(NodeControlMsg::Nack(nack)))
@@ -927,10 +940,12 @@ mod test {
         context: Context,
         signal_type: SignalType,
         reason: &str,
+        cause: NackCause,
     ) -> Result<(), EngineError> {
-        let nack = next_nack(NackMsg::new_permanent(
+        let nack = next_nack(NackMsg::new_permanent_with_cause(
             reason,
             OtapPdata::new(context, OtapPayload::empty(signal_type)),
+            cause,
         ));
         let (_, nack) = nack.unwrap();
         ctx.process(Message::Control(NodeControlMsg::Nack(nack)))
@@ -1854,6 +1869,7 @@ mod test {
                     routed_context,
                     SignalType::Logs,
                     "downstream routed error",
+                    NackCause::NodeShutdown,
                 )
                 .await
                 .expect("nack routed output");
@@ -1864,6 +1880,7 @@ mod test {
                             next_nack(nack).expect("expected upstream subscriber");
                         assert_eq!(node_id, 999);
                         assert_eq!(nack.reason, "downstream routed error");
+                        assert_eq!(nack.cause, NackCause::NodeShutdown)
                     }
                     other => panic!("expected DeliverNack, got {other:?}"),
                 }
@@ -2754,6 +2771,7 @@ mod test {
                     outbound_ctx_routed,
                     SignalType::Logs,
                     "downstream routed error",
+                    NackCause::Refused,
                 )
                 .await
                 .unwrap();
@@ -2766,6 +2784,7 @@ mod test {
                         let (node_id, nack) = next_nack(nack).expect("expected nack subscriber");
                         assert_eq!(node_id, upstream_node_id);
                         assert_eq!(nack.reason, "downstream routed error");
+                        assert_eq!(nack.cause, NackCause::Refused)
                     }
                     other => {
                         panic!("got unexpected pipeline ctrl message {other:?}")
@@ -2835,6 +2854,7 @@ mod test {
                     outbound_ctx_default,
                     SignalType::Logs,
                     "downstream default error",
+                    NackCause::RouteFull,
                 )
                 .await
                 .unwrap();
@@ -2854,6 +2874,7 @@ mod test {
                         let (node_id, nack) = next_nack(nack).expect("expected nack subscriber");
                         assert_eq!(node_id, upstream_node_id);
                         assert_eq!(nack.reason, "downstream default error");
+                        assert_eq!(nack.cause, NackCause::RouteFull)
                     }
                     other => {
                         panic!("got unexpected pipeline ctrl message {other:?}")
@@ -2944,6 +2965,7 @@ mod test {
                         let (node_id, nack) = next_nack(nack).expect("expected nack subscriber");
                         assert_eq!(node_id, upstream_node_id);
                         assert_eq!(nack.reason, "outbound slots were not available");
+                        assert_eq!(nack.cause, NackCause::RouteFull);
                     }
                     other => {
                         panic!("got unexpected pipeline ctrl message {other:?}")
@@ -3060,6 +3082,7 @@ mod test {
                             next_nack(nack).expect("expected upstream subscriber");
                         assert_eq!(node_id, 999);
                         assert_eq!(nack.reason, "outbound slots were not available");
+                        assert_eq!(nack.cause, NackCause::RouteFull);
                     }
                     other => panic!("expected DeliverNack, got {other:?}"),
                 }
@@ -3505,6 +3528,7 @@ mod test {
                     outbound_ctx_default,
                     SignalType::Logs,
                     "transient error on default",
+                    NackCause::Refused,
                 )
                 .await
                 .unwrap();
@@ -3518,6 +3542,7 @@ mod test {
                     outbound_ctx_routed,
                     SignalType::Logs,
                     "transient error on routed",
+                    NackCause::NodeShutdown,
                 )
                 .await
                 .unwrap();
@@ -3535,6 +3560,7 @@ mod test {
                         );
                         // first error wins
                         assert_eq!(nack.reason, "transient error on default");
+                        assert_eq!(nack.cause, NackCause::Refused);
                     }
                     other => {
                         panic!("expected DeliverNack, got {other:?}")
@@ -3597,6 +3623,7 @@ mod test {
                     outbound_ctx_routed,
                     SignalType::Logs,
                     "transient error on routed",
+                    NackCause::Refused,
                 )
                 .await
                 .unwrap();
@@ -3612,6 +3639,7 @@ mod test {
                             "nack should be permanent when any downstream ACK'd (data was consumed)"
                         );
                         assert_eq!(nack.reason, "transient error on routed");
+                        assert_eq!(nack.cause, NackCause::Refused);
                     }
                     other => {
                         panic!("expected DeliverNack, got {other:?}")
@@ -3669,6 +3697,7 @@ mod test {
                     outbound_ctx_default,
                     SignalType::Logs,
                     "transient error on default",
+                    NackCause::RouteClosed,
                 )
                 .await
                 .unwrap();
@@ -3680,6 +3709,7 @@ mod test {
                     outbound_ctx_routed,
                     SignalType::Logs,
                     "permanent error on routed",
+                    NackCause::NodeShutdown,
                 )
                 .await
                 .unwrap();
@@ -3696,6 +3726,7 @@ mod test {
                         );
                         // first error wins
                         assert_eq!(nack.reason, "transient error on default");
+                        assert_eq!(nack.cause, NackCause::RouteClosed);
                     }
                     other => {
                         panic!("expected DeliverNack, got {other:?}")
@@ -3749,6 +3780,7 @@ mod test {
                     routed_context,
                     SignalType::Logs,
                     "transient downstream error",
+                    NackCause::Refused,
                 )
                 .await
                 .unwrap();
@@ -3764,6 +3796,7 @@ mod test {
                             "nack should be non-permanent for a single transient downstream error"
                         );
                         assert_eq!(nack.reason, "transient downstream error");
+                        assert_eq!(nack.cause, NackCause::Refused);
                     }
                     other => {
                         panic!("expected DeliverNack, got {other:?}")
@@ -3816,6 +3849,7 @@ mod test {
                     routed_context,
                     SignalType::Logs,
                     "permanent downstream error",
+                    NackCause::Refused,
                 )
                 .await
                 .unwrap();
@@ -3831,6 +3865,7 @@ mod test {
                             "nack should be permanent for a single permanent downstream error"
                         );
                         assert_eq!(nack.reason, "permanent downstream error");
+                        assert_eq!(nack.cause, NackCause::Refused);
                     }
                     other => {
                         panic!("expected DeliverNack, got {other:?}")
@@ -3886,6 +3921,7 @@ mod test {
                     routed_context,
                     SignalType::Logs,
                     "downstream error",
+                    NackCause::Refused,
                 )
                 .await
                 .unwrap();
@@ -3901,6 +3937,7 @@ mod test {
                             expected_num_items,
                             "nack should include the original payload when RETURN_DATA is set"
                         );
+                        assert_eq!(nack.cause, NackCause::Refused);
                     }
                     other => {
                         panic!("expected DeliverNack, got {other:?}")
@@ -3952,6 +3989,7 @@ mod test {
                     routed_context,
                     SignalType::Logs,
                     "downstream error",
+                    NackCause::RouteClosed,
                 )
                 .await
                 .unwrap();
@@ -3967,6 +4005,7 @@ mod test {
                             0,
                             "nack should have empty payload when RETURN_DATA is not set"
                         );
+                        assert_eq!(nack.cause, NackCause::RouteClosed);
                     }
                     other => {
                         panic!("expected DeliverNack, got {other:?}")
