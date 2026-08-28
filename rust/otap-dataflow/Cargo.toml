@@ -75,9 +75,9 @@ otel-arrow-dfe-pdata = { path = "crates/pdata" }
 otel-arrow-dfe-pdata-views = { path = "crates/pdata-views" }
 otel-arrow-dfe-telemetry = { path = "crates/telemetry" }
 otel-arrow-dfe-quiver = { path = "crates/quiver" }
-data_engine_expressions = { path = "../experimental/query_engine/expressions" }
-data_engine_kql_parser = { path = "../experimental/query_engine/kql-parser" }
-data_engine_parser_abstractions = { path = "../experimental/query_engine/parser-abstractions"}
+otel-arrow-contrib-data-engine-expressions = { path = "../experimental/data_engine/expressions", version = "=0.1.0" }
+otel-arrow-contrib-data-engine-kql-parser = { path = "../experimental/data_engine/kql-parser", version = "=0.1.0" }
+otel-arrow-contrib-data-engine-parser-abstractions = { path = "../experimental/data_engine/parser-abstractions", version = "=0.1.0" }
 
 aws-config = "1.0"
 aws-msk-iam-sasl-signer = "1.0.1"
@@ -270,7 +270,7 @@ time = ">=0.3.47, <0.3.56"
 wiremock = "0.6.5"
 anyhow = "1.0.98"
 crossterm = "0.29"
-data_engine_recordset = { path = '../experimental/query_engine/engine-recordset' }
+otel-arrow-contrib-data-engine-recordset = { path = "../experimental/data_engine/engine-recordset", version = "=0.1.0" }
 eventheader_dynamic = "0.5.0"
 include_dir = "0.7.4"
 mime_guess = "2.0.5"

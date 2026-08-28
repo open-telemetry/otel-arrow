@@ -1,8 +1,8 @@
 use std::{collections::HashMap, mem};
 
-use data_engine_recordset::*;
+use otel_arrow_contrib_data_engine_recordset::*;
 
-use data_engine_expressions::*;
+use otel_arrow_contrib_data_engine_expressions::*;
 
 use crate::processors::recordset_kql_processor::otlp_bridge::serializer::ProtobufField;
 

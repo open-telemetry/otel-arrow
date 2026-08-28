@@ -4,8 +4,8 @@
 use std::{collections::HashMap, str::FromStr};
 
 use chrono::{TimeZone, Utc};
-use data_engine_expressions::AsValue;
-use data_engine_recordset::*;
+use otel_arrow_contrib_data_engine_expressions::AsValue;
+use otel_arrow_contrib_data_engine_recordset::*;
 
 use crate::processors::recordset_kql_processor::otlp_bridge::{
     serializer::protobuf_reader::ProtobufReader, *,
