@@ -187,7 +187,8 @@ leaves the policy inactive. Explicit `mode: replay` requires
 `commit.mode: manual`; startup validation rejects it with auto commit because
 broker-managed commits cannot honor downstream feedback. Retries are unlimited
 and use exponential backoff capped by `max_backoff_ms`. There is no
-retry-exhaustion action and no built-in DLQ.
+retry-exhaustion action. Built-in DLQ support is planned for a future release;
+until then, the receiver does not publish failed records to a DLQ.
 
 ```yaml
 config:
@@ -206,7 +207,7 @@ Manual-mode completion behavior is:
 | Completion | Offset behavior |
 | --- | --- |
 | ACK | Marks the record complete and advances the partition watermark when contiguous progress permits. |
-| Permanent NACK | Remains terminal and marks the record complete. There is no built-in DLQ. |
+| Permanent NACK | Remains terminal and marks the record complete. Built-in DLQ support is planned but not yet available. |
 | Non-permanent NACK with `mode: commit_and_skip` | Explicitly opts out of recovery, marks the record complete, and permits the offset to advance. |
 | Non-permanent NACK with `mode: replay` | Leaves the record unresolved, pauses only its partition, waits for backoff, seeks to the earliest unresolved offset, and resumes. |
 | Feedback from an obsolete assignment or replay generation | Ignored without changing offsets. |
@@ -366,7 +367,7 @@ the Go Kafka receiver:
 
 - **Permanent-error policy.** This receiver always commits a permanent NACK;
   it has no equivalent to leaving a permanent error unmarked or publishing it
-  to a built-in DLQ.
+  to a built-in DLQ. Built-in DLQ support is planned for a future release.
 - **Transient-NACK opt-out.** Manual mode replays non-permanent NACKs by
   default. Set `transient_nack.mode: commit_and_skip` only when advancing past
   a transient processing failure is intentional.
@@ -942,13 +943,13 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 ### Metric Sets
 
-#### `receiver.messages`
+#### `receiver.kafka.messages`
 
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
-| `receiver.messages.started` | `{message}` | `signal` | Decoded messages admitted to the pipeline send path. |
-| `receiver.messages.completed` | `{message}` | `signal` | Admitted messages whose receiver work terminated. |
-| `receiver.messages.bytes` | `By` | `signal` | Encoded Kafka payload bytes admitted to the pipeline send path. |
+| `receiver.kafka.messages.started` | `{message}` | `signal` | Decoded messages admitted to the pipeline send path. |
+| `receiver.kafka.messages.completed` | `{message}` | `signal` | Admitted messages whose receiver work terminated. |
+| `receiver.kafka.messages.payload_size` | `By` | `signal` | Encoded Kafka payload bytes admitted to the pipeline send path. |
 
 `signal` is one of `traces`, `metrics`, or `logs`. Comparing `started` with
 `completed` exposes receiver work abandoned by an interrupted pipeline send.
@@ -1027,7 +1028,7 @@ an empty assignment resets it to zero.
 | --- | --- |
 | `receiver.kafka.messages_received` | `receiver.kafka.consumer.records.received`. |
 | `receiver.kafka.bytes_received` | `receiver.kafka.consumer.records.bytes`. |
-| `receiver.kafka.log_msgs_received`, `metric_msgs_received`, `trace_msgs_received` | Sum `receiver.messages.started` and `receiver.kafka.rejections.messages{reason="decode"}`, filtered by `signal`. |
+| `receiver.kafka.log_msgs_received`, `metric_msgs_received`, `trace_msgs_received` | Sum `receiver.kafka.messages.started` and `receiver.kafka.rejections.messages{reason="decode"}`, filtered by `signal`. |
 | `receiver.kafka.acks_received`, `nacks_received` | `receiver.kafka.acknowledgements.responses` with `outcome="success"`, `outcome="failure"` (non-permanent NACK), or `outcome="refused"` (permanent NACK). |
 | `receiver.kafka.processing_errors` | Sum `receiver.kafka.rejections.messages` across its bounded attributes. |
 | `receiver.kafka.unmarshal_failed_traces`, `unmarshal_failed_metrics`, `unmarshal_failed_logs` | `receiver.kafka.rejections.messages{reason="decode"}` filtered by `signal`. |
@@ -1099,8 +1100,9 @@ an empty assignment resets it to zero.
   remains within Kafka retention. It may duplicate records at or after the
   rewind point and blocks the affected partition until progress resumes.
 - Receiver replay retries indefinitely with a capped exponential backoff. It
-  has no jitter, retry limit, operator-resume command, or built-in retry/DLQ
-  topic. Permanent NACKs commit the record.
+  has no jitter, retry limit, operator-resume command, or built-in retry topic.
+  Built-in DLQ support is planned for a future release. Permanent NACKs
+  currently commit the record.
 - See
   [Comparison with the Go Kafka receiver](#comparison-with-the-go-kafka-receiver)
   for details.

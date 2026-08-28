@@ -3,7 +3,9 @@
 
 //! Integration coverage for transient-NACK Kafka replay.
 
+use super::super::replay::{ReplayConsumerOperations, ReplayOperation};
 use super::*;
+use crate::receivers::kafka_receiver::retry::BeginRetry;
 use std::cell::RefCell;
 
 struct FailingReplayConsumer {
@@ -49,6 +51,28 @@ impl ReplayConsumerOperations for FailingReplayConsumer {
 
     fn resume_partition(&self, _topic: &str, _partition: i32) -> Result<(), KafkaError> {
         self.execute(ReplayOperation::Resume)
+    }
+}
+
+/// Receives until the requested partition is observed or the shared deadline expires.
+async fn recv_partition_delivery(
+    receiver: &mut KafkaReceiverHarness,
+    partition: i32,
+    timeout: Duration,
+) -> OtapPdata {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let pdata = receiver.try_recv_pdata(remaining).await.unwrap_or_else(|| {
+            panic!("partition {partition} was not delivered within {timeout:?}")
+        });
+        let route = pdata
+            .source_route()
+            .expect("redelivered pdata carries source calldata");
+        let (_, delivered_partition, _, _) = decode_calldata(&route.calldata);
+        if delivered_partition == partition {
+            return pdata;
+        }
     }
 }
 
@@ -621,10 +645,12 @@ async fn transient_nack_reassignment_to_same_consumer_redelivers_failed_offset()
                 .wait_for_partition_assignment(TOPIC, revoked_partition, Duration::from_secs(30))
                 .await;
 
-            let replayed = receiver
-                .try_recv_pdata(Duration::from_secs(10))
-                .await
-                .expect("reacquired partition should redeliver its failed offset");
+            // Kafka does not define ordering across partitions. A delivery from
+            // the retained partition can race with the reacquired partition's
+            // redelivery, so select the partition this scenario is exercising.
+            let replayed =
+                recv_partition_delivery(&mut receiver, revoked_partition, Duration::from_secs(10))
+                    .await;
             let route = replayed
                 .source_route()
                 .expect("redelivered pdata carries source calldata");

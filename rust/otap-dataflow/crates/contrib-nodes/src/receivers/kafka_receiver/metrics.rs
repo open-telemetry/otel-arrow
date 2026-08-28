@@ -5,7 +5,6 @@
 
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_engine::context::PipelineContext;
-use otel_arrow_dfe_otap::metrics::ReceiverMessageMetrics;
 use otel_arrow_dfe_telemetry::common_attributes::{
     Outcome, OutcomeAttributes, ReceiverRejectionErrorType, SignalAttributes,
     SignalOutcomeAttributes,
@@ -146,6 +145,24 @@ impl KafkaReceiverTransportErrorType {
     }
 }
 
+/// Lifecycle and payload metrics for admitted Kafka messages.
+#[metric_set(
+    name = "receiver.kafka.messages",
+    measurement_attributes = SignalAttributes
+)]
+#[derive(Debug, Default, Clone)]
+pub struct KafkaReceiverMessageMetrics {
+    /// Number of decoded messages admitted to the pipeline send path.
+    #[metric(unit = "{message}")]
+    pub started: Counter<u64>,
+    /// Number of admitted messages whose receiver work terminated.
+    #[metric(unit = "{message}")]
+    pub completed: Counter<u64>,
+    /// Encoded Kafka payload bytes admitted to the pipeline send path.
+    #[metric(unit = "By")]
+    pub payload_size: Counter<u64>,
+}
+
 /// Bounded error category for a Kafka consumer transport failure.
 #[attribute_set(item, measurement)]
 #[derive(Debug, Clone, Copy)]
@@ -266,7 +283,7 @@ pub struct KafkaReceiverTransportMetrics {
 /// Bounded-cardinality Kafka receiver metrics tracker.
 pub struct KafkaReceiverMetrics {
     /// Admitted message lifecycle metrics.
-    pub messages: MeasurementMetricSet<ReceiverMessageMetrics>,
+    pub messages: MeasurementMetricSet<KafkaReceiverMessageMetrics>,
     /// Downstream acknowledgement metrics.
     pub acknowledgements: MeasurementMetricSet<KafkaReceiverAcknowledgementMetrics>,
     /// Pre-admission rejection metrics.
@@ -284,7 +301,7 @@ impl KafkaReceiverMetrics {
     #[must_use]
     pub fn register(pipeline_ctx: &PipelineContext) -> Self {
         Self {
-            messages: ReceiverMessageMetrics::register(pipeline_ctx),
+            messages: KafkaReceiverMessageMetrics::register(pipeline_ctx),
             acknowledgements: KafkaReceiverAcknowledgementMetrics::register(pipeline_ctx),
             rejections: KafkaReceiverRejectionMetrics::register(pipeline_ctx),
             offset_commits: KafkaReceiverOffsetCommitMetrics::register(pipeline_ctx),
@@ -306,7 +323,7 @@ impl KafkaReceiverMetrics {
         let messages = self.messages.with(SignalAttributes { signal });
         messages.started.inc();
         if payload_bytes > 0 {
-            messages.bytes.add(payload_bytes);
+            messages.payload_size.add(payload_bytes);
         }
     }
 
@@ -483,7 +500,7 @@ mod tests {
         });
         assert_eq!(messages.started.get(), 1);
         assert_eq!(messages.completed.get(), 1);
-        assert_eq!(messages.bytes.get(), 42);
+        assert_eq!(messages.payload_size.get(), 42);
         assert_eq!(metrics.consumer.records_received.get(), 1);
         assert_eq!(metrics.consumer.record_bytes.get(), 42);
         assert_eq!(
@@ -603,7 +620,7 @@ mod tests {
         let snapshots = metrics.terminal_snapshots();
         assert_eq!(snapshots.len(), 4);
         assert!(snapshots.iter().any(|snapshot| {
-            snapshot.descriptor().name == "receiver.messages"
+            snapshot.descriptor().name == "receiver.kafka.messages"
                 && snapshot.measurement_attribute_value("signal") == Some("traces")
         }));
         assert!(snapshots.iter().any(|snapshot| {

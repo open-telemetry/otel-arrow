@@ -1,0 +1,6 @@
+change_type: breaking
+component: pipeline
+note: Kafka receiver lifecycle metrics now use the receiver.kafka.messages namespace.
+issues: [3505]
+subtext: |
+  Migration: Rename receiver.messages.started, receiver.messages.completed, and receiver.messages.bytes queries to receiver.kafka.messages.started, receiver.kafka.messages.completed, and receiver.kafka.messages.payload_size.
