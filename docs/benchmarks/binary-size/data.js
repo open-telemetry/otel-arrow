@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787939619641,
+  "lastUpdate": 1787940916968,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -25820,6 +25820,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
             "value": 3.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 114.99,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 102.48,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "a.lockett@f5.com",
+            "name": "albertlockett",
+            "username": "albertlockett"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8e1a7f1161fb71a8364af619e895951594c2576f",
+          "message": "fix(transform_processor): Nack permanent flag and payload handling (#3913)\n\n# Change summary\n\n<!--Replace with a brief summary of the change in this PR-->\n\nWhen transform processor handles a transformation that does routing,\nbecause the batch may be split, it creates new outbound contexts and\nhandles `Ack`/`Nack`ing the inbound context depending on what happened\nto the outbound batches.\n\nBefore this change, `transform_processor`, when `Nack`ing an inbound\nbatch, would always produce a `NackMsg` with `permanent=false` and the\npayload absent. This wasn't by design (it was basically just an\noversight).\n\nThis corrects the behaviour such that:\na) the payload is either populated, or not, according to the wishes of\nthe inbound context (by checking `context.may_return_payload()`)\nb) The `Nack` will be non-permanent ONLY if all outbound batches were\nNack'd with `permanent=false`. Stated differently, if ANY outbound batch\neither succeeded (was `Ack`d) or was `Nack`d with `permanent=true`, we\nwill `Nack` the inbound batch with `permanent=true`. This is done to a)\navoid retrying permanent failures and b) avoid replaying Ack'd data.\n\n## Related issue\n\n<!--We highly recommend correlation of every PR to an issue-->\n\n* Closes #3904\n\n## Validation\n\n<!--How did you confirm your change has the intended effect?-->\n\nUnit tests\n\nI also validated the behaviour using the configuration in the linked\nissue (which has the transform processor after the retry and does\nrouting, followed by transient Nack exporter) and confirmed that we no\nlonger see a metric like:\n\n```\nterminated_total{ ... reason=\"payload_missing\", ...} 1 ...\n```\n\nand instead we now see (as expected)\n```\nretries_scheduled_total{...} 2\nterminated_total{ ... reason=\"deadline\", ...} 1 ...\n```\n\n## User-facing changes\n\n<!--\nDescribe the impact, or write `None`.\nUser-facing changes require a `.chloggen/*.yaml` entry. If no entry is\nneeded,\ninclude `chore` in the PR title. Documentation-only changes are exempt.\n-->\n\nNone\n\n---\n\npartition processor actually has the same issue, and I can fix this in a\nfollow up",
+          "timestamp": "2026-08-28T17:17:34Z",
+          "tree_id": "9c06defc362e3af61cc4ba33b52bd7d2fa6d9fcc",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/8e1a7f1161fb71a8364af619e895951594c2576f"
+        },
+        "date": 1787940900937,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 83.12,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.96,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 70.6,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.8,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.47,
             "unit": "MB"
           },
           {
