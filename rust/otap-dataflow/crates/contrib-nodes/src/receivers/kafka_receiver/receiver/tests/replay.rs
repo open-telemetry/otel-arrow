@@ -6,7 +6,104 @@
 use super::super::replay::{ReplayConsumerOperations, ReplayOperation};
 use super::*;
 use crate::receivers::kafka_receiver::retry::BeginRetry;
+use async_trait::async_trait;
+use linkme::distributed_slice;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_config::observed_state::{ObservedStateSettings, SendPolicy};
+use otel_arrow_dfe_config::pipeline::{PipelineConfigBuilder, PipelineType};
+use otel_arrow_dfe_config::policy::{ChannelCapacityPolicy, TelemetryPolicy};
+use otel_arrow_dfe_config::{DeployedPipelineKey, PipelineGroupId, PipelineId};
+use otel_arrow_dfe_core_nodes::processors::retry_processor::RETRY_PROCESSOR_URN;
+use otel_arrow_dfe_engine::ConsumerEffectHandlerExtension;
+use otel_arrow_dfe_engine::ExporterFactory;
+use otel_arrow_dfe_engine::config::ExporterConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::control::{
+    AckMsg, NackMsg, NodeControlMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
+};
+use otel_arrow_dfe_engine::entity_context::set_pipeline_entity_key;
+use otel_arrow_dfe_engine::error::Error as EngineError;
+use otel_arrow_dfe_engine::exporter::ExporterWrapper;
+use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
+use otel_arrow_dfe_engine::message::{ExporterInbox, Message as EngineMessage};
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
+use otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY;
+use otel_arrow_dfe_state::store::ObservedStateStore;
+use otel_arrow_dfe_telemetry::InternalTelemetrySystem;
+use serde_json::json;
 use std::cell::RefCell;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use std::sync::{Arc, LazyLock, Mutex};
+
+const REPLAY_TOPOLOGY_EXPORTER_URN: &str = "urn:otel:exporter:kafka-replay-topology-test";
+
+static REPLAY_TOPOLOGY_ATTEMPTS: LazyLock<Mutex<Vec<u64>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
+static REPLAY_TOPOLOGY_ACKED: AtomicBool = AtomicBool::new(false);
+
+struct ReplayTopologyExporter;
+
+#[allow(unsafe_code)]
+#[distributed_slice(OTAP_EXPORTER_FACTORIES)]
+static REPLAY_TOPOLOGY_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
+    name: REPLAY_TOPOLOGY_EXPORTER_URN,
+    create:
+        |_pipeline: PipelineContext,
+         node: NodeId,
+         node_config: Arc<NodeUserConfig>,
+         exporter_config: &ExporterConfig,
+         _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
+            Ok(ExporterWrapper::local(
+                ReplayTopologyExporter,
+                node,
+                node_config,
+                exporter_config,
+            ))
+        },
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: |_| Ok(()),
+};
+
+#[async_trait(?Send)]
+impl Exporter<OtapPdata> for ReplayTopologyExporter {
+    async fn start(
+        self: Box<Self>,
+        mut msg_chan: ExporterInbox<OtapPdata>,
+        effect_handler: EffectHandler<OtapPdata>,
+    ) -> Result<TerminalState, EngineError> {
+        loop {
+            match msg_chan.recv().await? {
+                EngineMessage::Control(NodeControlMsg::Shutdown { .. }) => break,
+                EngineMessage::PData(data) => {
+                    let retry_count = data
+                        .source_route()
+                        .and_then(|route| route.calldata.first().copied())
+                        .map(u64::from)
+                        .expect("retry processor must provide retry state");
+                    let attempt = {
+                        let mut attempts = REPLAY_TOPOLOGY_ATTEMPTS
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        attempts.push(retry_count);
+                        attempts.len()
+                    };
+                    if attempt <= 2 {
+                        effect_handler
+                            .notify_nack(NackMsg::new("topology retry", data))
+                            .await?;
+                    } else {
+                        effect_handler.notify_ack(AckMsg::new(data)).await?;
+                        REPLAY_TOPOLOGY_ACKED.store(true, AtomicOrdering::Release);
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(TerminalState::default())
+    }
+}
 
 struct FailingReplayConsumer {
     failed_operation: ReplayOperation,
@@ -284,6 +381,199 @@ fn manual_traces_config_with_replay_backoff(
         .with_auto_offset_reset(AutoOffsetReset::Earliest)
         .with_isolation_level(IsolationLevel::ReadUncommitted);
     KafkaReceiverConfig::try_from(builder).expect("test replay config valid")
+}
+
+fn run_retry_topology_pipeline(bootstrap_servers: String) {
+    const TOPIC: &str = "retry-topology-fallback-traces";
+    const GROUP: &str = "retry-topology-fallback-group";
+    let pipeline_group_id: PipelineGroupId = "kafka-replay-topology".into();
+    let pipeline_id: PipelineId = "retry-fallback".into();
+    let config = PipelineConfigBuilder::new()
+        .add_receiver(
+            "kafka_receiver",
+            KAFKA_RECEIVER_URN,
+            Some(json!({
+                "brokers": bootstrap_servers.clone(),
+                "group_id": GROUP,
+                "client_id": "retry-topology-client",
+                "traces": {
+                    "topics": [TOPIC],
+                    "encoding": "otlp_proto"
+                },
+                "commit": { "mode": "manual" },
+                "transient_nack": {
+                    "mode": "replay",
+                    "initial_backoff_ms": 20,
+                    "max_backoff_ms": 20
+                },
+                "auto_offset_reset": "earliest",
+                "isolation_level": "read_uncommitted",
+                "enable_idempotency": true
+            })),
+        )
+        .add_processor(
+            "retry",
+            RETRY_PROCESSOR_URN,
+            Some(json!({
+                "initial_interval": "500ms",
+                "max_interval": "2s",
+                "max_elapsed_time": "1500ms",
+                "multiplier": 2.0,
+                "exhaustion_action": "propagate_transient"
+            })),
+        )
+        .add_exporter("topology_exporter", REPLAY_TOPOLOGY_EXPORTER_URN, None)
+        .one_of("kafka_receiver", ["retry"])
+        .one_of("retry", ["topology_exporter"])
+        .build(
+            PipelineType::Otap,
+            pipeline_group_id.clone(),
+            pipeline_id.clone(),
+        )
+        .expect("build Kafka replay topology");
+
+    let telemetry_system = InternalTelemetrySystem::default();
+    let registry = telemetry_system.registry();
+    let controller_ctx = ControllerContext::new(registry.clone());
+    let pipeline_ctx = controller_ctx.pipeline_context_with(
+        pipeline_group_id.clone(),
+        pipeline_id.clone(),
+        0,
+        1,
+        0,
+    );
+    let pipeline_entity_key = pipeline_ctx.register_pipeline_entity();
+    let channel_capacity_policy = ChannelCapacityPolicy::default();
+    let runtime_pipeline = OTAP_PIPELINE_FACTORY
+        .build(
+            pipeline_ctx.clone(),
+            config,
+            channel_capacity_policy.clone(),
+            TelemetryPolicy::default(),
+            None,
+            std::collections::BTreeMap::new(),
+            None,
+            None,
+        )
+        .expect("build runtime Kafka replay topology");
+
+    let (runtime_ctrl_tx, runtime_ctrl_rx) =
+        runtime_ctrl_msg_channel(channel_capacity_policy.control.pipeline);
+    let (pipeline_completion_tx, pipeline_completion_rx) =
+        pipeline_completion_msg_channel(channel_capacity_policy.control.completion);
+    let runtime_ctrl_tx_for_shutdown = runtime_ctrl_tx.clone();
+    let shutdown_handle = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !REPLAY_TOPOLOGY_ACKED.load(AtomicOrdering::Acquire) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        let acked = REPLAY_TOPOLOGY_ACKED.load(AtomicOrdering::Acquire);
+        if acked {
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build topology shutdown runtime")
+            .block_on(
+                runtime_ctrl_tx_for_shutdown.send(RuntimeControlMsg::Shutdown {
+                    deadline: Instant::now() + Duration::from_secs(2),
+                    reason: "Kafka replay topology test complete".to_string(),
+                }),
+            )
+            .expect("send topology shutdown");
+        acked
+    });
+
+    let observed_state_store =
+        ObservedStateStore::new(&ObservedStateSettings::default(), registry.clone());
+    let pipeline_key = DeployedPipelineKey {
+        pipeline_group_id,
+        pipeline_id,
+        core_id: 0,
+        deployment_generation: 0,
+    };
+    let metrics_reporter = telemetry_system.reporter();
+    let event_reporter = observed_state_store.reporter(SendPolicy::default());
+    let run_result = {
+        let _pipeline_entity_guard =
+            set_pipeline_entity_key(pipeline_ctx.metrics_registry(), pipeline_entity_key);
+        let (_memory_pressure_tx, memory_pressure_rx) = tokio::sync::watch::channel(
+            otel_arrow_dfe_engine::memory_limiter::MemoryPressureChanged::initial(),
+        );
+        runtime_pipeline.run_forever(
+            pipeline_key,
+            pipeline_ctx,
+            event_reporter,
+            metrics_reporter,
+            Duration::from_millis(100),
+            memory_pressure_rx,
+            runtime_ctrl_tx,
+            runtime_ctrl_rx,
+            pipeline_completion_tx,
+            pipeline_completion_rx,
+        )
+    };
+    let acked = shutdown_handle.join().expect("join topology shutdown");
+
+    assert!(
+        run_result.is_ok(),
+        "Kafka replay topology must shut down cleanly: {run_result:?}"
+    );
+    assert!(acked, "exporter must ACK the Kafka replay before shutdown");
+}
+
+/// Scenario: an exporter transiently NACKs through a real retry processor until its local
+/// retry budget expires, then ACKs the record only after the Kafka receiver replays it.
+/// Guarantees: exporter failures are retried payload-locally first, the exhausted transient
+/// NACK reaches the receiver, and Kafka replay starts a fresh retry-processor attempt that commits.
+#[tokio::test]
+async fn retry_processor_exhaustion_falls_back_to_kafka_replay() {
+    const TOPIC: &str = "retry-topology-fallback-traces";
+    const GROUP: &str = "retry-topology-fallback-group";
+    REPLAY_TOPOLOGY_ACKED.store(false, AtomicOrdering::Release);
+    REPLAY_TOPOLOGY_ATTEMPTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clear();
+
+    with_cluster(
+        KafkaTestCluster::builder().topic(TOPIC),
+        |cluster| async move {
+            let producer = cluster.producer().build();
+            let req = create_traces_with_spans();
+            let mut bytes = Vec::new();
+            req.encode(&mut bytes).expect("encode trace request");
+            producer
+                .send_full(SendRecord::new(TOPIC, &bytes))
+                .await
+                .expect("produce topology record");
+            drop(producer);
+
+            let bootstrap_servers = cluster.bootstrap_servers().to_string();
+            let brokers = bootstrap_servers.clone();
+            std::thread::spawn(move || run_retry_topology_pipeline(bootstrap_servers))
+                .join()
+                .expect("run Kafka replay topology");
+
+            let committed = poll_until(Duration::from_secs(5), Duration::from_millis(25), || {
+                committed_offset(&brokers, GROUP, TOPIC, 0)
+                    .expect("probe topology committed offset")
+                    .is_some_and(|offset| offset >= 1)
+            })
+            .await;
+            assert!(committed, "ACK after Kafka replay must commit offset 1");
+        },
+    )
+    .await;
+
+    assert_eq!(
+        *REPLAY_TOPOLOGY_ATTEMPTS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        vec![0, 1, 0],
+        "the retry processor must retry locally before Kafka starts a fresh delivery"
+    );
 }
 
 /// Scenario: Explicit commit-and-skip handles transient and permanent NACKs as terminal outcomes.

@@ -239,6 +239,9 @@ pub struct KafkaReceiverConsumerMetrics {
     /// Synchronous commit calls that failed while partitions were being revoked.
     #[metric(name = "group.rebalance.commit_failures", unit = "{error}")]
     pub rebalance_commit_failures: Counter<u64>,
+    /// Partition resume operations that failed while clearing rebalance pause state.
+    #[metric(name = "group.rebalance.resume_failures", unit = "{error}")]
+    pub rebalance_resume_failures: Counter<u64>,
     /// Mean broker-committed consumer-group lag across every owned partition.
     #[metric(name = "group.lag", unit = "{message}")]
     pub lag: Gauge<f64>,

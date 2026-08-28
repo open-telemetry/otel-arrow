@@ -998,6 +998,7 @@ commit mode because librdkafka owns offset management in auto-commit mode.
 | `receiver.kafka.consumer.group.partition.assignments` | `{partition}` | Partitions newly acquired across rebalances. |
 | `receiver.kafka.consumer.group.partition.revocations` | `{partition}` | Owned partitions revoked across rebalances. |
 | `receiver.kafka.consumer.group.rebalance.commit_failures` | `{error}` | Synchronous commit calls that failed while partitions were being revoked. |
+| `receiver.kafka.consumer.group.rebalance.resume_failures` | `{error}` | Partition resume operations that failed while clearing rebalance pause state. |
 | `receiver.kafka.consumer.group.lag` | `{message}` | Mean broker-committed consumer-group lag across every owned partition. |
 | `receiver.kafka.consumer.group.feedback.after_revocation` | `{response}` | Ack or nack responses ignored because their partition ownership was stale. |
 | `receiver.kafka.consumer.retry.transient_nacks` | `{response}` | Non-permanent NACK responses received from downstream. |
@@ -1064,7 +1065,8 @@ an empty assignment resets it to zero.
 | `kafka.rebalance.partitions_assigned` | `info` | Partitions newly assigned during a rebalance (includes `count`, a `partitions` list truncated with a trailing `...` when it exceeds the entry cap, `listed_count`, and `truncated`). |
 | `kafka.rebalance.partitions_revoked` | `info` | Owned partitions revoked during a rebalance (includes `count`, a `partitions` list truncated with a trailing `...` when it exceeds the entry cap, `listed_count`, and `truncated`). |
 | `kafka.rebalance.commit_failed` | `error` | Commit-before-revoke failed during a rebalance. |
-| `kafka.rebalance.resume.fail` | `error` | Clearing persistent client-side pause state failed during the bounded `revoke` or `assign` phase. |
+| `kafka.rebalance.resume.fail` | `error` | Clearing persistent client-side pause state failed during `revoke` or `assign`; assignment failures are retried off the callback thread with capped backoff. |
+| `kafka.rebalance.resume.recovered` | `info` | A receive-loop retry cleared persistent pause state after an assignment resume failure. |
 | `kafka.rebalance.assignment_query_failed` | `warn` | Querying the full assignment after a rebalance failed; the receiver fell back to merging the reported delta. |
 | `kafka.rebalance.error` | `warn` | librdkafka reported a rebalance error. |
 | `kafka.assignment.became_non_empty` | `info` | The owned-partition set transitioned from empty to non-empty. This is an assignment-size transition, not a consumer-group membership event: an eager rebalance revokes all partitions before reassigning, so this fires on ordinary rebalances. |

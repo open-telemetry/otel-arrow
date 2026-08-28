@@ -29,6 +29,7 @@ use otel_arrow_dfe_config::validation::validate_typed_config;
 use otel_arrow_dfe_engine::config::ReceiverConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_engine::control::{CallData, Context8u8, NodeControlMsg};
+use otel_arrow_dfe_engine::effect_handler::TelemetryTimerCancelHandle;
 use otel_arrow_dfe_engine::error::{Error as EngineError, ReceiverErrorKind, format_error_sources};
 use otel_arrow_dfe_engine::local::receiver as local;
 use otel_arrow_dfe_engine::node::NodeId;
@@ -71,6 +72,34 @@ const LAG_FETCH_PARTITION_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Total deadline for a single off-loop consumer-lag refresh.
 const LAG_REFRESH_TOTAL_DEADLINE: Duration = Duration::from_secs(15);
+
+type LagRefreshTask = (
+    tokio::task::JoinHandle<Option<f64>>,
+    tokio::time::Instant,
+    CancellationToken,
+);
+
+/// Stops receiver-owned background work and closes the Kafka consumer without
+/// blocking the single-threaded pipeline runtime past `deadline`.
+async fn close_consumer_bounded<C: ConsumerContext + 'static>(
+    consumer: Arc<StreamConsumer<C>>,
+    lag_refresh_in_flight: &mut Option<LagRefreshTask>,
+    telemetry_cancel_handle: TelemetryTimerCancelHandle<OtapPdata>,
+    deadline: Instant,
+) {
+    if let Some((handle, lag_deadline, lag_cancel)) = lag_refresh_in_flight.take() {
+        lag_cancel.cancel();
+        let bound = lag_deadline.min(tokio::time::Instant::from_std(deadline));
+        let _ = tokio::time::timeout_at(bound, handle).await;
+    }
+
+    let _ = telemetry_cancel_handle.cancel().await;
+    let close_handle = tokio::task::spawn_blocking(move || {
+        consumer.unsubscribe();
+        drop(consumer);
+    });
+    let _ = tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), close_handle).await;
+}
 
 /// Compile a slice of topic config strings into a parallel [`Vec`] of
 /// optional [`Regex`] values. Entries starting with `^` are treated as
@@ -572,6 +601,10 @@ impl KafkaReceiver {
                 .consumer
                 .rebalance_commit_failures
                 .add(delta.rebalance_commit_errors);
+            self.metrics
+                .consumer
+                .rebalance_resume_failures
+                .add(delta.rebalance_resume_errors);
             // `receiver.kafka.consumer.group.partitions` is an observed up/down
             // counter: observe the current owned count snapshot rather than
             // accumulating. Folded only when a rebalance actually occurred
@@ -822,23 +855,22 @@ impl KafkaReceiver {
 
         // Keeps track of the current in flight consumer_lag worker: its join
         // handle, its absolute deadline, and a cancellation token used to stop
-        // it cooperatively on shutdown so it cannot outlive the receiver.
-        let mut lag_refresh_in_flight: Option<(
-            tokio::task::JoinHandle<Option<f64>>,
-            tokio::time::Instant,
-            CancellationToken,
-        )> = None;
-
-        // Set once the receiver-first drain protocol begins. After this the
-        // receiver stops polling Kafka (see the `consumer.recv()` branch guard)
-        // but stays responsive to control messages until `Shutdown` arrives.
-        let mut draining_deadline: Option<Instant> = None;
+        // it cooperatively on shutdown or ingress drain so it cannot outlive
+        // the receiver.
+        let mut lag_refresh_in_flight: Option<LagRefreshTask> = None;
 
         loop {
             // Reconcile any partition revocations / metrics produced by the
             // rebalance callbacks since the last iteration. Cheap when idle.
             self.reconcile_rebalance_state();
-            let retry_deadline = self.retry_manager.next_deadline();
+            let retry_deadline = match (
+                self.retry_manager.next_deadline(),
+                self.rebalance_state.next_assignment_resume_deadline(),
+            ) {
+                (Some(replay), Some(resume)) => Some(replay.min(resume)),
+                (Some(deadline), None) | (None, Some(deadline)) => Some(deadline),
+                (None, None) => None,
+            };
 
             tokio::select! {
                 biased;
@@ -873,49 +905,11 @@ impl KafkaReceiver {
                             // expires the wait returns while the worker (and its
                             // `Arc` clone of the consumer) is still alive. See the
                             // `Arc`-count note on the close below.
-                            if let Some((handle, lag_deadline, lag_cancel)) =
-                                lag_refresh_in_flight.take()
-                            {
-                                lag_cancel.cancel();
-                                let bound =
-                                    lag_deadline.min(tokio::time::Instant::from_std(deadline));
-                                let _ = tokio::time::timeout_at(bound, handle).await;
-                            }
-                            // Close the consumer off the loop thread, bounded by
-                            // the shutdown deadline. Both `unsubscribe()` and the
-                            // consumer's `Drop` (leave-group/close) are synchronous
-                            // librdkafka FFI calls that can block indefinitely when
-                            // the broker is unreachable; running them inline on this
-                            // single-threaded runtime would stall it and hang the
-                            // pipeline past its deadline. We take the snapshot
-                            // first, then move the loop's `consumer` handle into a
-                            // blocking task and wait only until the deadline.
-                            //
-                            // The drop below is NOT guaranteed to be the last
-                            // `Arc`: the lag-worker drain above is bounded and
-                            // best-effort, so a worker still mid-FFI can outlive it
-                            // and keep its own clone. When that happens this drop
-                            // just decrements the count, and the actual
-                            // leave-group/close runs later, on the lag worker's own
-                            // blocking thread, when it finally releases its clone.
-                            // Either way the close never runs on the loop thread, so
-                            // the runtime is never blocked, and if it outruns the
-                            // deadline the task is left to finish on its own thread
-                            // while the receiver returns its terminal state. This
-                            // refcount behavior is covered by the unit tests
-                            // `shutdown_bounded_drain_lets_cooperative_lag_worker_release_clone_before_close`
-                            // and
-                            // `shutdown_bounded_drain_can_leave_lag_worker_clone_alive_refcount_two`,
-                            // and the bounded-termination guarantee by
-                            // `shutdown_with_lag_refresh_in_flight_still_terminates_within_deadline`.
-                            _ = telemetry_cancel_handle.cancel().await;
-                            let close_handle = tokio::task::spawn_blocking(move || {
-                                consumer.unsubscribe();
-                                drop(consumer);
-                            });
-                            let _ = tokio::time::timeout_at(
-                                tokio::time::Instant::from_std(deadline),
-                                close_handle,
+                            close_consumer_bounded(
+                                consumer,
+                                &mut lag_refresh_in_flight,
+                                telemetry_cancel_handle,
+                                deadline,
                             )
                             .await;
                             return Ok(TerminalState::new(
@@ -927,35 +921,33 @@ impl KafkaReceiver {
                             // Receiver-first shutdown: the engine sends
                             // DrainIngress and waits for notify_receiver_drained()
                             // before shutting down downstream nodes.
-                            if draining_deadline.is_none() {
-                                otel_info!("kafka.receiver.drain_ingress");
-                                // Stop admitting new Kafka records immediately.
-                                // Unsubscribing halts the subscription so the
-                                // `consumer.recv()` branch (now gated on
-                                // `draining_deadline.is_none()`) yields no more
-                                // messages.
-                                consumer.unsubscribe();
-                                draining_deadline = Some(deadline);
-                                // Bounded receiver-local drain: one final
-                                // synchronous commit of everything acked so far.
-                                // Un-acked offsets are safely re-delivered on
-                                // restart (at-least-once), so there is nothing
-                                // else to wait on.
-                                if manual_commit {
-                                    if let Err(e) = self.commit_offsets(consumer.as_ref(), &receiver_id) {
-                                        otel_error!(
-                                            "kafka.drain.commit_failed",
-                                            error = %e,
-                                        );
-                                    }
-                                    self.refresh_committable_snapshot();
+                            otel_info!("kafka.receiver.drain_ingress");
+                            // Stop admitting new Kafka records by returning from
+                            // this receive loop after the receiver-local drain.
+                            // Un-acked offsets are safely re-delivered on restart.
+                            if manual_commit {
+                                if let Err(e) = self.commit_offsets(consumer.as_ref(), &receiver_id) {
+                                    otel_error!(
+                                        "kafka.drain.commit_failed",
+                                        error = %e,
+                                    );
                                 }
-                                // Signal the runtime that receiver-local drain is
-                                // complete so it can proceed to shut down
-                                // downstream nodes. The loop stays alive and
-                                // responsive to the eventual Shutdown message.
-                                effect_handler.notify_receiver_drained().await?;
+                                self.refresh_committable_snapshot();
                             }
+                            // Signal before the bounded broker close so the
+                            // downstream pipeline can begin draining promptly.
+                            effect_handler.notify_receiver_drained().await?;
+                            close_consumer_bounded(
+                                consumer,
+                                &mut lag_refresh_in_flight,
+                                telemetry_cancel_handle,
+                                deadline,
+                            )
+                            .await;
+                            return Ok(TerminalState::new(
+                                deadline,
+                                self.metrics.terminal_snapshots(),
+                            ));
                         },
                         Ok(NodeControlMsg::Ack(ack_msg)) => {
                             self.metrics.record_acknowledgement(
@@ -1071,13 +1063,14 @@ impl KafkaReceiver {
                         }
                         None => std::future::pending().await,
                     }
-                }, if retry_deadline.is_some() && draining_deadline.is_none() => {
+                }, if retry_deadline.is_some() => {
+                    self.rebalance_state
+                        .process_due_assignment_resumes(consumer.as_ref());
                     self.process_due_replays(consumer.as_ref());
                 }
 
-                // 4. Consume Kafka messages. Stops once draining begins so no
-                // new records are admitted during receiver-first shutdown.
-                result = consumer.recv(), if draining_deadline.is_none() => {
+                // 4. Consume Kafka messages.
+                result = consumer.recv() => {
                     match result {
                         Ok(data) => {
                             // Extract metadata before processing so we can
@@ -1375,7 +1368,7 @@ impl KafkaReceiver {
                     }
                 }, if lag_ticker.is_some()
                     && lag_refresh_in_flight.is_none()
-                    && draining_deadline.is_none() => {
+                    => {
                     // pass the instant deadline to the worker so it can
                     // monitor itself during the consumer_lag calculation
                     // if deadline exceeds, it returns None
@@ -5055,8 +5048,8 @@ mod tests {
     /// then receives `DrainIngress`; more records are produced after the drain.
     /// Guarantees: the receiver emits `RuntimeControlMsg::ReceiverDrained`, stops
     /// forwarding new records (no pdata arrives post-drain), commits the
-    /// pre-drain offsets (committed offset >= INITIAL), and still terminates when
-    /// later sent `Shutdown` (via `await_stopped` returning).
+    /// pre-drain offsets (committed offset >= INITIAL), and terminates as part
+    /// of the receiver-first drain (via `await_stopped` returning).
     #[tokio::test]
     async fn drain_ingress_stops_polling_and_notifies_drained() {
         const TOPIC: &str = "drain-ingress-traces";
@@ -5149,10 +5142,8 @@ mod tests {
                         .expect("kafka-test: committed-offset probe failed"),
                 );
 
-                // The receiver must still terminate cleanly on Shutdown; awaiting the
-                // spawned task returning (without hanging) preserves the
-                // clean-termination guarantee.
-                receiver.shutdown(Duration::from_secs(5));
+                // The receiver terminates after reporting its ingress drain,
+                // matching the runtime's receiver-first lifecycle contract.
                 receiver.await_stopped().await;
             },
         )
@@ -5407,12 +5398,12 @@ mod tests {
 
     /// Scenario (lifecycle: drain and shutdown): a manual-commit receiver
     /// consumes and acks records while a producer keeps sending throughout; the
-    /// receiver is then drained and later shut down, with more records produced
-    /// after the drain begins.
+    /// receiver is then drained, with more records produced after the drain
+    /// begins.
     /// Guarantees: under sustained traffic the receiver still emits
     /// `ReceiverDrained`, stops forwarding new records once drained, commits the
     /// offsets acked before the drain (committed offset >= the pre-drain acked
-    /// count), and terminates cleanly on the subsequent `Shutdown`.
+    /// count), and terminates cleanly as part of ingress drain.
     #[tokio::test]
     async fn drain_under_sustained_traffic_commits_and_stops_cleanly() {
         const TOPIC: &str = "drain-sustained-traces";
@@ -5504,7 +5495,6 @@ mod tests {
                         .expect("kafka-test: committed-offset probe failed"),
                 );
 
-                receiver.shutdown(Duration::from_secs(5));
                 receiver.await_stopped().await;
             },
         )
@@ -5580,9 +5570,9 @@ mod tests {
                 );
 
                 // The held records are still un-acked; drop them to release the
-                // in-flight set, then terminate cleanly.
+                // in-flight set; the receiver has already terminated cleanly
+                // as part of ingress drain.
                 drop(in_flight);
-                receiver.shutdown(Duration::from_secs(5));
                 receiver.await_stopped().await;
             },
         )
