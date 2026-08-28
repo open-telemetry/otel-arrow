@@ -20,10 +20,10 @@ use otel_arrow_dfe_config::observed_state::{ObservedStateSettings, SendPolicy};
 use otel_arrow_dfe_config::pipeline::{PipelineConfig, PipelineConfigBuilder, PipelineType};
 use otel_arrow_dfe_config::policy::{ChannelCapacityPolicy, TelemetryPolicy};
 use otel_arrow_dfe_config::{DeployedPipelineKey, PipelineGroupId, PipelineId};
-use otel_arrow_dfe_core_nodes::exporters::error_exporter::ERROR_EXPORTER_URN;
 use otel_arrow_dfe_core_nodes::exporters::noop_exporter::NOOP_EXPORTER_URN;
 use otel_arrow_dfe_core_nodes::processors::durable_buffer_processor::DURABLE_BUFFER_URN;
-use otel_arrow_dfe_core_nodes::receivers::traffic_generator::TRAFFIC_GENERATOR_RECEIVER_URN;
+use otel_arrow_dfe_dev_nodes::exporters::error_exporter::ERROR_EXPORTER_URN;
+use otel_arrow_dfe_dev_nodes::receivers::traffic_generator::TRAFFIC_GENERATOR_RECEIVER_URN;
 use otel_arrow_dfe_engine::context::ControllerContext;
 use otel_arrow_dfe_engine::control::{
     RuntimeControlMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
