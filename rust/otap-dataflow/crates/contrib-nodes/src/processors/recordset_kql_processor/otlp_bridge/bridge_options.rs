@@ -3,9 +3,11 @@
 
 use std::fmt::Display;
 
-use data_engine_expressions::PipelineExpression;
-use data_engine_kql_parser::*;
-use data_engine_recordset::{RecordSetEngineDiagnostic, RecordSetEngineRecord, format_diagnostics};
+use otel_arrow_contrib_data_engine_expressions::PipelineExpression;
+use otel_arrow_contrib_data_engine_kql_parser::*;
+use otel_arrow_contrib_data_engine_recordset::{
+    RecordSetEngineDiagnostic, RecordSetEngineRecord, format_diagnostics,
+};
 
 use crate::processors::recordset_kql_processor::otlp_bridge::LogRecord;
 

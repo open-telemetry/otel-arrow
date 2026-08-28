@@ -37,7 +37,7 @@ Stages under active development:
 
 The query engine's pipeline receives the definition of transforms to be applied
 in the form of the intermediate abstract language defined in the
-[`data_engine_expressions` crate](../../../experimental/query_engine/README.md#intermediate-language-abstraction).
+[`otel-arrow-contrib-data-engine-expressions` crate](../../../experimental/data_engine/README.md#intermediate-language-abstraction).
 
 This means that transformations can be defined in any higher level language
 that can be transpiled into this IL.

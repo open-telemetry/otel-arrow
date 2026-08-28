@@ -1,10 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-/// Traffic generator receiver.
-#[cfg(feature = "dev-tools")]
-pub mod traffic_generator;
-
 /// Topic receiver.
 pub mod topic_receiver;
 

@@ -6,6 +6,9 @@ test support used by node implementations in other crates.
 
 Core node implementations live in `crates/core-nodes`.
 
+Development-only test, fault-injection, and benchmark nodes live in
+`crates/dev-nodes`.
+
 Contrib components (for example Geneva and Azure Monitor exporters, and
 optional contrib processors) live in `crates/contrib-nodes`.
 
@@ -27,7 +30,8 @@ Universal node metrics describe internal PData delivery, while receivers and
 exporters own the external boundaries:
 
 ```text
-wire -> receiver.received -> node.producer -> ... -> node.consumer -> exporter.attempted -> wire
+wire -> receiver.received -> node.output -> ... -> node.input
+node.input -> exporter.attempted -> wire
 ```
 
 The shared contracts are:
@@ -49,7 +53,7 @@ and Ack/Nack completion. Rejections before signal classification remain
 component-specific diagnostics.
 
 Receiver received omits `items` because decoded items are measured by
-`node.producer.produced.items`.
+`node.output.items`.
 
 ### Exporter attempted
 
@@ -72,7 +76,7 @@ either optional metric.
 
 The legacy `exporter.exports` set remains during migration but will be
 deprecated. Attempt-level external behavior belongs to `exporter.attempted`,
-while `node.consumer` owns the logical message's terminal pipeline outcome.
+while `node.input` owns the logical message's terminal pipeline outcome.
 
 ### Payload size and internal size
 
@@ -83,7 +87,7 @@ without an encoded application payload, or whose encoder does not expose its
 size, omit the optional metric set rather than reporting zero.
 
 The internal `size` measurement remains separate: it describes the PData
-representation at `node.producer` and `node.consumer`.
+representation at `node.output` and `node.input`.
 
 ## Node Implementations Using This Crate
 

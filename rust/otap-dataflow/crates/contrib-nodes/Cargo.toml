@@ -43,9 +43,9 @@ geneva-uploader = { workspace = true, optional = true }
 opentelemetry-proto = { workspace = true, optional = true }
 futures-channel = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
-data_engine_expressions = { workspace = true, optional = true }
-data_engine_kql_parser = { workspace = true, optional = true }
-data_engine_recordset = { workspace = true, optional = true }
+otel-arrow-contrib-data-engine-expressions = { workspace = true, optional = true }
+otel-arrow-contrib-data-engine-kql-parser = { workspace = true, optional = true }
+otel-arrow-contrib-data-engine-recordset = { workspace = true, optional = true }
 rdkafka = { workspace = true, features = ["zstd", "ssl"], optional = true }
 tokio-util = { workspace = true, optional = true }
 xxhash-rust = { workspace = true, optional = true, features = ["xxh64"] }
@@ -180,9 +180,9 @@ contrib-processors = [
 condense-attributes-processor = []
 condense-attributes-processor-bench = ["condense-attributes-processor"]
 recordset-kql-processor = [
-    "dep:data_engine_expressions",
-    "dep:data_engine_kql_parser",
-    "dep:data_engine_recordset",
+    "dep:otel-arrow-contrib-data-engine-expressions",
+    "dep:otel-arrow-contrib-data-engine-kql-parser",
+    "dep:otel-arrow-contrib-data-engine-recordset",
     "dep:regex",
     "dep:chrono",
 ]
@@ -194,8 +194,8 @@ chrono.workspace = true
 clap.workspace = true
 insta = { workspace = true }
 criterion = { workspace = true, features = ["html_reports"] }
-data_engine_expressions.workspace = true
-data_engine_recordset.workspace = true
+otel-arrow-contrib-data-engine-expressions.workspace = true
+otel-arrow-contrib-data-engine-recordset.workspace = true
 humantime.workspace = true
 core_affinity.workspace = true
 otel-arrow-dfe-channel = { workspace = true }

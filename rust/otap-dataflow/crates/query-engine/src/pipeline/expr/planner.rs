@@ -9,14 +9,6 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use arrow::datatypes::DataType;
-use data_engine_expressions::{
-    BinaryMathematicalScalarExpression, BooleanValue, CaptureTextScalarExpression,
-    CoalesceScalarExpression, CollectionScalarExpression, CombineScalarExpression, DateTimeValue,
-    DoubleValue, Expression, IntegerValue, InvokeFunctionArgument, InvokeFunctionScalarExpression,
-    JoinTextScalarExpression, LogicalExpression, MathScalarExpression, PipelineFunction,
-    PipelineFunctionImplementation, ReplaceTextScalarExpression, ScalarExpression,
-    StaticScalarExpression, StringScalarExpression, StringValue, TextScalarExpression, ValueType,
-};
 use datafusion::functions::core::coalesce::CoalesceFunc;
 use datafusion::functions::core::expr_ext::FieldAccessor;
 use datafusion::functions::crypto::{md5, sha256, sha512};
@@ -31,6 +23,14 @@ use datafusion::logical_expr::expr::ScalarFunction;
 use datafusion::logical_expr::simplify::{ExprSimplifyResult, SimplifyContext};
 use datafusion::logical_expr::{BinaryExpr, Expr, Operator, ScalarUDF, col, lit, not};
 use datafusion::prelude::{binary_expr, lit_timestamp_nano};
+use otel_arrow_contrib_data_engine_expressions::{
+    BinaryMathematicalScalarExpression, BooleanValue, CaptureTextScalarExpression,
+    CoalesceScalarExpression, CollectionScalarExpression, CombineScalarExpression, DateTimeValue,
+    DoubleValue, Expression, IntegerValue, InvokeFunctionArgument, InvokeFunctionScalarExpression,
+    JoinTextScalarExpression, LogicalExpression, MathScalarExpression, PipelineFunction,
+    PipelineFunctionImplementation, ReplaceTextScalarExpression, ScalarExpression,
+    StaticScalarExpression, StringScalarExpression, StringValue, TextScalarExpression, ValueType,
+};
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_pdata::otlp::metrics::MetricType;
 use otel_arrow_dfe_pdata::schema::consts;
@@ -465,28 +465,26 @@ impl ExprPlanner {
                         eval: LeafEval::new_df_expr(left_expr.or(right_expr), downcast_dicts)?,
                     })
                 } else {
-                    let mut align_children_to_root = false;
+                    let left_scope = left.effective_value_scope()?;
+                    let right_scope = right.effective_value_scope()?;
+
+                    // If both sides are AttributesAll with the same ID, the most
+                    // performant path is a bitmap OR over parent_ids.
                     if let (
                         DataScope::AttributesAll(left_attrs_id),
                         DataScope::AttributesAll(right_attrs_id),
-                    ) = (
-                        left.effective_value_scope()?.as_ref(),
-                        right.effective_value_scope()?.as_ref(),
-                    ) {
+                    ) = (left_scope.as_ref(), right_scope.as_ref())
+                    {
                         if left_attrs_id == right_attrs_id {
-                            // most performant way to "or" the results of the children exprs
-                            // is to create a bitmap of the parent_ids passing each side then
-                            // combine the bitmaps
                             return Ok(ScopedExpr::BitmapOr(Box::new(left), Box::new(right)));
-                        } else {
-                            // here we're "or"ing the results of filters on attributes, but the
-                            // parent_id columns represent different IDs, so we can't "or" the
-                            // bitmaps. We set `align_children_to_root` because it's just the most
-                            // performant way to line up the results of the filters on each side in
-                            // join eval
-                            align_children_to_root = true;
                         }
                     }
+
+                    // When either side is attribute-scoped, align children to root
+                    // so that root rows without the attribute get null (not dropped
+                    // by an inner join).
+                    let align_children_to_root =
+                        left_scope.attrs_id().is_some() || right_scope.attrs_id().is_some();
 
                     Ok(ScopedExpr::JoinAndEval {
                         children: vec![left, right],
@@ -1340,7 +1338,7 @@ impl ExprPlanner {
 
     fn plan_contains(
         &self,
-        contains_expr: &data_engine_expressions::ContainsLogicalExpression,
+        contains_expr: &otel_arrow_contrib_data_engine_expressions::ContainsLogicalExpression,
         functions: &[PipelineFunction],
     ) -> Result<ScopedExpr> {
         let mut haystack = self.plan_scalar(contains_expr.get_haystack(), functions)?;
@@ -1475,7 +1473,7 @@ impl ExprPlanner {
 
     fn plan_matches(
         &self,
-        matches_expr: &data_engine_expressions::MatchesLogicalExpression,
+        matches_expr: &otel_arrow_contrib_data_engine_expressions::MatchesLogicalExpression,
         functions: &[PipelineFunction],
     ) -> Result<ScopedExpr> {
         let pattern = match matches_expr.get_pattern() {
@@ -2308,14 +2306,14 @@ fn rewrite_body_expr(planned: &mut PlannedOp, field_name: &str) {
 mod test {
     use super::*;
 
-    use data_engine_expressions::{
+    use datafusion::common::cast::as_boolean_array;
+    use datafusion::logical_expr::ColumnarValue;
+    use datafusion::scalar::ScalarValue;
+    use otel_arrow_contrib_data_engine_expressions::{
         EqualToLogicalExpression, GetRecordTypeScalarExpression, GreaterThanLogicalExpression,
         IntegerScalarExpression, NotLogicalExpression, QueryLocation, SourceScalarExpression,
         ValueAccessor,
     };
-    use datafusion::common::cast::as_boolean_array;
-    use datafusion::logical_expr::ColumnarValue;
-    use datafusion::scalar::ScalarValue;
     use otel_arrow_dfe_pdata::otap::filter::IdBitmapPool;
     use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
     use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
@@ -2480,7 +2478,9 @@ mod test {
 
     #[test]
     fn test_plan_same_scope_arithmetic() {
-        use data_engine_expressions::{BinaryMathematicalScalarExpression, MathScalarExpression};
+        use otel_arrow_contrib_data_engine_expressions::{
+            BinaryMathematicalScalarExpression, MathScalarExpression,
+        };
 
         let planner = ExprPlanner::new();
         let left = make_column_expr("severity_number");
@@ -2518,7 +2518,9 @@ mod test {
 
     #[test]
     fn test_plan_cross_scope_arithmetic() {
-        use data_engine_expressions::{BinaryMathematicalScalarExpression, MathScalarExpression};
+        use otel_arrow_contrib_data_engine_expressions::{
+            BinaryMathematicalScalarExpression, MathScalarExpression,
+        };
 
         let planner = ExprPlanner::new();
         let left = make_column_expr("severity_number");
@@ -2584,7 +2586,11 @@ mod test {
             make_int_literal(10),
         ));
 
-        let and_expr = data_engine_expressions::AndLogicalExpression::new(ql(), left_eq, right_gt);
+        let and_expr = otel_arrow_contrib_data_engine_expressions::AndLogicalExpression::new(
+            ql(),
+            left_eq,
+            right_gt,
+        );
         let logical = LogicalExpression::And(and_expr);
 
         let op = planner.plan_logical(&logical, &[]).unwrap();
@@ -2796,7 +2802,7 @@ mod test {
 
     #[test]
     fn test_plan_fused_attr_gt_integer() {
-        use data_engine_expressions::GreaterThanLogicalExpression;
+        use otel_arrow_contrib_data_engine_expressions::GreaterThanLogicalExpression;
 
         // Test batch with integer attributes
         let logs = to_logs_data(vec![
@@ -2871,7 +2877,11 @@ mod test {
             false,
         ));
 
-        let and_expr = data_engine_expressions::AndLogicalExpression::new(ql(), left, right);
+        let and_expr = otel_arrow_contrib_data_engine_expressions::AndLogicalExpression::new(
+            ql(),
+            left,
+            right,
+        );
         let logical = LogicalExpression::And(and_expr);
 
         let op = planner.plan_logical(&logical, &[]).unwrap();
@@ -2902,7 +2912,7 @@ mod test {
         // attributes["x"] + 2 > 5 should NOT use fused path (attribute in arithmetic)
         // But just attributes["x"] > 5 SHOULD use fused path
 
-        use data_engine_expressions::{
+        use otel_arrow_contrib_data_engine_expressions::{
             BinaryMathematicalScalarExpression, GreaterThanLogicalExpression, MathScalarExpression,
         };
 
@@ -2984,7 +2994,11 @@ mod test {
             false,
         ));
 
-        let and_expr = data_engine_expressions::AndLogicalExpression::new(ql(), left_eq, right_eq);
+        let and_expr = otel_arrow_contrib_data_engine_expressions::AndLogicalExpression::new(
+            ql(),
+            left_eq,
+            right_eq,
+        );
         let logical = LogicalExpression::And(and_expr);
         let op = planner.plan_logical(&logical, &[]).unwrap();
 
@@ -3024,7 +3038,11 @@ mod test {
             false,
         ));
 
-        let or_expr = data_engine_expressions::OrLogicalExpression::new(ql(), left_eq, right_eq);
+        let or_expr = otel_arrow_contrib_data_engine_expressions::OrLogicalExpression::new(
+            ql(),
+            left_eq,
+            right_eq,
+        );
         let logical = LogicalExpression::Or(or_expr);
         let op = planner.plan_logical(&logical, &[]).unwrap();
 
@@ -3046,7 +3064,9 @@ mod test {
     /// strategy, preventing incorrect early termination of arithmetic evaluation.
     #[test]
     fn test_plan_cross_scope_arithmetic_no_short_circuit_strategy() {
-        use data_engine_expressions::{BinaryMathematicalScalarExpression, MathScalarExpression};
+        use otel_arrow_contrib_data_engine_expressions::{
+            BinaryMathematicalScalarExpression, MathScalarExpression,
+        };
 
         let planner = ExprPlanner::new();
 

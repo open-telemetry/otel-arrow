@@ -14,7 +14,7 @@ exclude = [
 resolver = "2"
 
 [workspace.package]
-version = "0.51.0"
+version = "0.52.0"
 authors = ["OpenTelemetry"]
 edition = "2024"
 repository = "https://github.com/open-telemetry/otel-arrow"
@@ -24,11 +24,12 @@ rust-version = "1.87.0"
 
 [package]
 name = "otel-arrow-dfe"
-version = "0.51.0"
+version = "0.52.0"
 description = "OTel-Arrow Dataflow Engine supporting natively OTLP and OTAP Data Formats"
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
+publish.workspace = true
 keywords = ["OpenTelemetry", "OTLP", "OTAP", "Dataflow", "Engine"]
 categories = ["asynchronous", "network-programming"]
 
@@ -42,6 +43,7 @@ otel-arrow-dfe-contrib-extensions.workspace = true
 otel-arrow-dfe-contrib-nodes.workspace = true
 otel-arrow-dfe-controller.workspace = true
 otel-arrow-dfe-core-nodes.workspace = true
+otel-arrow-dfe-dev-nodes = { workspace = true, optional = true }
 otel-arrow-dfe-engine.workspace = true
 otel-arrow-dfe-otap.workspace = true
 otel-arrow-dfe-wasm-host = { workspace = true, optional = true }
@@ -64,6 +66,7 @@ otel-arrow-dfe-contrib-nodes = { path = "crates/contrib-nodes" }
 otel-arrow-dfe-control-channel = { path = "crates/control-channel" }
 otel-arrow-dfe-controller = { path = "crates/controller" }
 otel-arrow-dfe-core-nodes = { path = "crates/core-nodes" }
+otel-arrow-dfe-dev-nodes = { path = "crates/dev-nodes" }
 otel-arrow-dfe-engine = { path = "crates/engine" }
 otel-arrow-dfe-expohisto = { path = "crates/expohisto" }
 otel-arrow-dfe-otap = { path = "crates/otap" }
@@ -74,9 +77,10 @@ otel-arrow-dfe-pdata = { path = "crates/pdata" }
 otel-arrow-dfe-pdata-views = { path = "crates/pdata-views" }
 otel-arrow-dfe-telemetry = { path = "crates/telemetry" }
 otel-arrow-dfe-quiver = { path = "crates/quiver" }
-data_engine_expressions = { path = "../experimental/query_engine/expressions" }
-data_engine_kql_parser = { path = "../experimental/query_engine/kql-parser" }
-data_engine_parser_abstractions = { path = "../experimental/query_engine/parser-abstractions"}
+otel-arrow-contrib-data-engine-expressions = "0.1.0"
+otel-arrow-contrib-data-engine-kql-parser = "0.1.0"
+otel-arrow-contrib-data-engine-parser-abstractions = "0.1.0"
+otel-arrow-contrib-data-engine-recordset = "0.1.0"
 
 aws-config = "1.0"
 aws-msk-iam-sasl-signer = "1.0.1"
@@ -240,11 +244,11 @@ trybuild = "1.0"
 unsync = "0.1.2"
 url = "2.5.7"
 uuid = { version = "1.17.0", features = ["v4", "v7"] }
-weaver_common = { git = "https://github.com/open-telemetry/weaver.git", rev = "a3db0b726d19eabaf282b1c71dab1ff254121213" } # v0.24.2
-weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", rev = "a3db0b726d19eabaf282b1c71dab1ff254121213" } # v0.24.2
-weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", rev = "a3db0b726d19eabaf282b1c71dab1ff254121213" } # v0.24.2
-weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", rev = "a3db0b726d19eabaf282b1c71dab1ff254121213" } # v0.24.2
-weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", rev = "a3db0b726d19eabaf282b1c71dab1ff254121213" } # v0.24.2
+weaver_common = { git = "https://github.com/open-telemetry/weaver.git", rev = "78b64d8da8e0034374e66a560ae22991b2e88a81" } # v0.24.2
+weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", rev = "78b64d8da8e0034374e66a560ae22991b2e88a81" } # v0.24.2
+weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", rev = "78b64d8da8e0034374e66a560ae22991b2e88a81" } # v0.24.2
+weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", rev = "78b64d8da8e0034374e66a560ae22991b2e88a81" } # v0.24.2
+weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", rev = "78b64d8da8e0034374e66a560ae22991b2e88a81" } # v0.24.2
 sha1 = { version = "0.11" }
 sha2 = "0.11.0"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
@@ -257,8 +261,8 @@ cpu-time = "1.0.0"
 one_collect = "0.1.35021"
 
 # TODO: un-pin these dependencies as soon as Arc support is available in a released version: https://github.com/open-telemetry/otel-arrow/issues/3551
-azure_core = { git = "https://github.com/Azure/azure-sdk-for-rust.git", rev = "16e18e91a4480e93aa0e155bfdeb38902b04dd06", default-features = false }
-azure_identity = { git = "https://github.com/Azure/azure-sdk-for-rust.git", rev = "16e18e91a4480e93aa0e155bfdeb38902b04dd06", default-features = false }
+azure_core = { git = "https://github.com/Azure/azure-sdk-for-rust.git", rev = "b28858626ec4ec2188f14b55f20159eb2b9580e9", default-features = false }
+azure_identity = { git = "https://github.com/Azure/azure-sdk-for-rust.git", rev = "b28858626ec4ec2188f14b55f20159eb2b9580e9", default-features = false }
 flate2 = "1.1.5"
 
 # Keep reqwest default features off to avoid pulling in default-tls (and aws-lc-rs via reqwest's rustls feature).
@@ -269,7 +273,6 @@ time = ">=0.3.47, <0.3.56"
 wiremock = "0.6.5"
 anyhow = "1.0.98"
 crossterm = "0.29"
-data_engine_recordset = { path = '../experimental/query_engine/engine-recordset' }
 eventheader_dynamic = "0.5.0"
 include_dir = "0.7.4"
 mime_guess = "2.0.5"
@@ -295,7 +298,7 @@ urlencoding = "2"
 geneva-uploader = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "43bd04be9e825564eeb3424b3e4caebf3e3ba7c5", default-features = false, features = ["tls-rustls"] }
 # Pinned to a rev containing upstream resource detector work. Swap to a published version once
 # contrib cuts one.
-opentelemetry-resource-detectors = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "7819998d4bd015b7ae7576b1e26aaa56314f03e6" }
+opentelemetry-resource-detectors = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "43bd04be9e825564eeb3424b3e4caebf3e3ba7c5" }
 
 [patch."https://github.com/open-telemetry/otel-arrow"]
 otap-df-pdata-views = { path = "compat/otap-df-pdata-views" }
@@ -323,12 +326,16 @@ dhat-heap = [
     "dep:dhat",
 ]
 
-# Dev/test tooling (traffic generator) and the otap integration tests
+# Development nodes and the otap integration tests
 # that exercise it. Activating this from the workspace default keeps
 # `cargo test` running the full suite locally; CI jobs that drop
 # `dev-tools` (e.g. the Linux ARM `build_nonrequired` job) avoid the
 # weaver / gix / reqwest / native-tls / openssl-sys C build.
-dev-tools = ["otel-arrow-dfe-core-nodes/dev-tools", "otel-arrow-dfe-otap/integration-tests"]
+dev-tools = [
+    "dep:otel-arrow-dfe-dev-nodes",
+    "otel-arrow-dfe-core-nodes/dev-tools",
+    "otel-arrow-dfe-otap/integration-tests",
+]
 
 # Admin UI live log streaming over WebSocket.
 admin-live-logs-ws = ["otel-arrow-dfe-controller/admin-live-logs-ws"]

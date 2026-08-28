@@ -74,6 +74,7 @@ area:pipeline:
           - "rust/otap-dataflow/crates/otap/**"
           - "rust/otap-dataflow/crates/core-nodes/**"
           - "rust/otap-dataflow/crates/contrib-nodes/**"
+          - "rust/otap-dataflow/crates/dev-nodes/**"
 
 # --- Node-type areas (rust/otap-dataflow contrib + core nodes) ----------
 
@@ -83,6 +84,7 @@ area:receiver:
           - "rust/otap-dataflow/crates/*receiver*/**"
           - "rust/otap-dataflow/crates/core-nodes/src/receivers/**"
           - "rust/otap-dataflow/crates/contrib-nodes/src/receivers/**"
+          - "rust/otap-dataflow/crates/dev-nodes/src/receivers/**"
 
 area:processor:
   - changed-files:
@@ -90,6 +92,7 @@ area:processor:
           - "rust/otap-dataflow/crates/*processor*/**"
           - "rust/otap-dataflow/crates/core-nodes/src/processors/**"
           - "rust/otap-dataflow/crates/contrib-nodes/src/processors/**"
+          - "rust/otap-dataflow/crates/dev-nodes/src/processors/**"
 
 area:exporter:
   - changed-files:
@@ -97,6 +100,7 @@ area:exporter:
           - "rust/otap-dataflow/crates/*exporter*/**"
           - "rust/otap-dataflow/crates/core-nodes/src/exporters/**"
           - "rust/otap-dataflow/crates/contrib-nodes/src/exporters/**"
+          - "rust/otap-dataflow/crates/dev-nodes/src/exporters/**"
 
 area:syslog:
   - changed-files:
@@ -134,7 +138,7 @@ area:query-engine:
       - any-glob-to-any-file:
           - "rust/otap-dataflow/crates/query-engine/**"
           - "rust/otap-dataflow/crates/query-engine-languages/**"
-          - "rust/experimental/query_engine/**"
+          - "rust/experimental/data_engine/**"
 
 area:query-engine/otap:
   - changed-files:
@@ -144,12 +148,12 @@ area:query-engine/otap:
 area:query-engine/recordset:
   - changed-files:
       - any-glob-to-any-file:
-          - "rust/experimental/query_engine/engine-recordset*/**"
+          - "rust/experimental/data_engine/engine-recordset*/**"
 
 area:query-engine/kql:
   - changed-files:
       - any-glob-to-any-file:
-          - "rust/experimental/query_engine/kql-parser/**"
+          - "rust/experimental/data_engine/kql-parser/**"
 
 area:query-engine/ottl:
   - changed-files:
