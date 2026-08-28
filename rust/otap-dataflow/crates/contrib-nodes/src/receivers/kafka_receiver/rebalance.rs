@@ -43,9 +43,10 @@
 //! the assigned generation is what rejects a stale ack during that window --
 //! before it can advance the tracker or roll back the committed offset.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 #[cfg(feature = "aws")]
 use crate::common::kafka::aws::AwsMskAuthClientContext;
@@ -53,6 +54,209 @@ use rdkafka::ClientContext;
 use rdkafka::client::OAuthToken;
 use rdkafka::consumer::{BaseConsumer, CommitMode, Consumer, ConsumerContext, Rebalance};
 use rdkafka::topic_partition_list::{Offset, TopicPartitionList};
+
+/// Delay before retrying a partition resume that failed during assignment.
+const ASSIGNMENT_RESUME_INITIAL_BACKOFF: Duration = Duration::from_millis(100);
+/// Maximum delay between assignment-resume attempts.
+const ASSIGNMENT_RESUME_MAX_BACKOFF: Duration = Duration::from_secs(5);
+/// Maximum assignment-resume attempts performed by one receive-loop turn.
+const MAX_DUE_ASSIGNMENT_RESUMES_PER_TURN: usize = 8;
+
+type PartitionKey = (String, i32);
+
+/// Consumer operation used by rebalance-time resume handling and its tests.
+pub(crate) trait PartitionResumeOperations {
+    /// Resume every partition in `tpl`.
+    fn resume_partitions(&self, tpl: &TopicPartitionList)
+    -> Result<(), rdkafka::error::KafkaError>;
+}
+
+impl<C: ConsumerContext> PartitionResumeOperations for BaseConsumer<C> {
+    fn resume_partitions(
+        &self,
+        tpl: &TopicPartitionList,
+    ) -> Result<(), rdkafka::error::KafkaError> {
+        self.resume(tpl)
+    }
+}
+
+impl<C: ConsumerContext> PartitionResumeOperations for rdkafka::consumer::StreamConsumer<C> {
+    fn resume_partitions(
+        &self,
+        tpl: &TopicPartitionList,
+    ) -> Result<(), rdkafka::error::KafkaError> {
+        self.resume(tpl)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResumePhase {
+    Assign,
+    Revoke,
+}
+
+impl ResumePhase {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Assign => "assign",
+            Self::Revoke => "revoke",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct AssignmentResumeRetryState {
+    generation: u64,
+    failures: u32,
+    deadline: Option<Instant>,
+    version: u64,
+}
+
+#[derive(Debug)]
+struct DueAssignmentResume {
+    topic: String,
+    partition: i32,
+    generation: u64,
+    failures: u32,
+    version: u64,
+}
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct ScheduledAssignmentResume {
+    deadline: Instant,
+    version: u64,
+    topic: String,
+    partition: i32,
+}
+
+/// Deduplicated, deadline-ordered retry state for assignment resume failures.
+///
+/// Entries are bounded by the consumer's assigned partitions. `version`
+/// prevents an in-flight receive-loop attempt from overwriting a newer callback
+/// update for the same partition.
+#[derive(Debug, Default)]
+struct AssignmentResumeRetries {
+    entries: HashMap<PartitionKey, AssignmentResumeRetryState>,
+    deadlines: BTreeSet<ScheduledAssignmentResume>,
+    next_version: u64,
+}
+
+impl AssignmentResumeRetries {
+    fn schedule(
+        &mut self,
+        topic: String,
+        partition: i32,
+        generation: u64,
+        failures: u32,
+        now: Instant,
+    ) {
+        let key = (topic.clone(), partition);
+        self.remove(&key);
+        self.next_version = self.next_version.wrapping_add(1);
+        let version = self.next_version;
+        let deadline = now + assignment_resume_backoff(failures);
+        let _ = self.deadlines.insert(ScheduledAssignmentResume {
+            deadline,
+            version,
+            topic,
+            partition,
+        });
+        let _ = self.entries.insert(
+            key,
+            AssignmentResumeRetryState {
+                generation,
+                failures,
+                deadline: Some(deadline),
+                version,
+            },
+        );
+    }
+
+    fn remove(&mut self, key: &PartitionKey) {
+        if let Some(state) = self.entries.remove(key)
+            && let Some(deadline) = state.deadline
+        {
+            let _ = self.deadlines.remove(&ScheduledAssignmentResume {
+                deadline,
+                version: state.version,
+                topic: key.0.clone(),
+                partition: key.1,
+            });
+        }
+    }
+
+    fn next_deadline(&self) -> Option<Instant> {
+        self.deadlines.first().map(|entry| entry.deadline)
+    }
+
+    fn take_due(&mut self, now: Instant, limit: usize) -> Vec<DueAssignmentResume> {
+        let mut due = Vec::with_capacity(limit);
+        while due.len() < limit {
+            let Some(scheduled) = self.deadlines.first() else {
+                break;
+            };
+            if scheduled.deadline > now {
+                break;
+            }
+            let Some(scheduled) = self.deadlines.pop_first() else {
+                break;
+            };
+            let key = (scheduled.topic.clone(), scheduled.partition);
+            let Some(state) = self.entries.get_mut(&key) else {
+                continue;
+            };
+            if state.version != scheduled.version || state.deadline != Some(scheduled.deadline) {
+                continue;
+            }
+            state.deadline = None;
+            due.push(DueAssignmentResume {
+                topic: scheduled.topic,
+                partition: scheduled.partition,
+                generation: state.generation,
+                failures: state.failures,
+                version: scheduled.version,
+            });
+        }
+        due
+    }
+
+    fn complete(&mut self, retry: &DueAssignmentResume) {
+        let key = (retry.topic.clone(), retry.partition);
+        if self
+            .entries
+            .get(&key)
+            .is_some_and(|state| state.version == retry.version)
+        {
+            self.remove(&key);
+        }
+    }
+
+    fn reschedule(&mut self, retry: &DueAssignmentResume, now: Instant) {
+        let key = (retry.topic.clone(), retry.partition);
+        let Some(state) = self.entries.get_mut(&key) else {
+            return;
+        };
+        if state.version != retry.version || state.deadline.is_some() {
+            return;
+        }
+        state.failures = retry.failures.saturating_add(1);
+        let deadline = now + assignment_resume_backoff(state.failures);
+        state.deadline = Some(deadline);
+        let _ = self.deadlines.insert(ScheduledAssignmentResume {
+            deadline,
+            version: state.version,
+            topic: retry.topic.clone(),
+            partition: retry.partition,
+        });
+    }
+}
+
+fn assignment_resume_backoff(failures: u32) -> Duration {
+    let exponent = failures.saturating_sub(1).min(31);
+    ASSIGNMENT_RESUME_INITIAL_BACKOFF
+        .saturating_mul(1_u32 << exponent)
+        .min(ASSIGNMENT_RESUME_MAX_BACKOFF)
+}
 
 /// The set of topic-partitions currently assigned to this consumer, each tagged
 /// with a per-partition **ownership generation**.
@@ -164,6 +368,10 @@ pub(crate) struct RebalanceState {
     /// with the generation at revoke time. Drained by the loop, which then
     /// purges the tracker (only for state not newer than the revoke generation).
     revoked: Mutex<Vec<RevokedPartition>>,
+    /// Newly assigned partitions whose immediate resume failed. The receive
+    /// loop retries these with capped backoff until resume succeeds or the
+    /// ownership generation changes.
+    assignment_resume_retries: Mutex<AssignmentResumeRetries>,
     /// Monotonic allocator for per-partition ownership generations. Advanced in
     /// [`set_assignment`](Self::set_assignment) for each partition that is
     /// *newly* acquired (not-owned -> owned), so a partition reacquired after a
@@ -187,6 +395,8 @@ pub(crate) struct RebalanceState {
     partition_revocations: AtomicU64,
     /// Count of commit failures during pre-rebalance revoke (callback-incremented).
     rebalance_commit_errors: AtomicU64,
+    /// Count of failed resume operations while clearing rebalance pause state.
+    rebalance_resume_errors: AtomicU64,
     /// Count of offset commits acknowledged by the broker, observed on the
     /// commit callback (callback-incremented). Covers the receiver's async
     /// steady-state commits and the sync pre-rebalance commit.
@@ -213,6 +423,8 @@ pub(crate) struct RebalanceMetricsDelta {
     pub(crate) partitions_owned: u64,
     /// Commit failures during revoke since the last drain.
     pub(crate) rebalance_commit_errors: u64,
+    /// Resume failures while clearing rebalance pause state since the last drain.
+    pub(crate) rebalance_resume_errors: u64,
     /// Broker-acknowledged offset commits since the last drain.
     pub(crate) offset_commits: u64,
     /// Broker-rejected offset commits since the last drain.
@@ -232,6 +444,7 @@ impl RebalanceMetricsDelta {
             && self.partition_assignments == 0
             && self.partition_revocations == 0
             && self.rebalance_commit_errors == 0
+            && self.rebalance_resume_errors == 0
             && self.offset_commits == 0
             && self.offset_commit_errors == 0
     }
@@ -247,12 +460,14 @@ impl RebalanceState {
         Self {
             assigned: Mutex::new(AssignedPartitions::new()),
             revoked: Mutex::new(Vec::new()),
+            assignment_resume_retries: Mutex::new(AssignmentResumeRetries::default()),
             committable: Mutex::new(HashMap::new()),
             auto_commit,
             rebalances_total: AtomicU64::new(0),
             partition_assignments: AtomicU64::new(0),
             partition_revocations: AtomicU64::new(0),
             rebalance_commit_errors: AtomicU64::new(0),
+            rebalance_resume_errors: AtomicU64::new(0),
             offset_commits: AtomicU64::new(0),
             offset_commit_errors: AtomicU64::new(0),
             generation_allocator: AtomicU64::new(0),
@@ -315,6 +530,53 @@ impl RebalanceState {
         std::mem::take(&mut *guard)
     }
 
+    /// Earliest pending assignment-resume retry deadline.
+    #[must_use]
+    pub(crate) fn next_assignment_resume_deadline(&self) -> Option<Instant> {
+        lock_ignore_poison(&self.assignment_resume_retries).next_deadline()
+    }
+
+    /// Retry due assignment resumes without blocking the rebalance callback.
+    pub(crate) fn process_due_assignment_resumes<O: PartitionResumeOperations + ?Sized>(
+        &self,
+        consumer: &O,
+    ) {
+        self.process_due_assignment_resumes_at(consumer, Instant::now());
+    }
+
+    fn process_due_assignment_resumes_at<O: PartitionResumeOperations + ?Sized>(
+        &self,
+        consumer: &O,
+        now: Instant,
+    ) {
+        let due = lock_ignore_poison(&self.assignment_resume_retries)
+            .take_due(now, MAX_DUE_ASSIGNMENT_RESUMES_PER_TURN);
+        for retry in due {
+            if self.current_generation(&retry.topic, retry.partition) != retry.generation {
+                lock_ignore_poison(&self.assignment_resume_retries).complete(&retry);
+                continue;
+            }
+
+            let mut tpl = TopicPartitionList::new();
+            let _ = tpl.add_partition(&retry.topic, retry.partition);
+            match consumer.resume_partitions(&tpl) {
+                Ok(()) => {
+                    lock_ignore_poison(&self.assignment_resume_retries).complete(&retry);
+                    otel_info!(
+                        "kafka.rebalance.resume.recovered",
+                        topic = %retry.topic,
+                        partition = retry.partition,
+                        attempts = retry.failures,
+                    );
+                }
+                Err(error) => {
+                    self.record_resume_failure(ResumePhase::Assign, &error);
+                    lock_ignore_poison(&self.assignment_resume_retries).reschedule(&retry, now);
+                }
+            }
+        }
+    }
+
     /// Drain accumulated rebalance metric counters into a delta.
     ///
     /// The counter fields are swapped to zero; `partitions_owned` is a
@@ -326,6 +588,7 @@ impl RebalanceState {
             partition_revocations: self.partition_revocations.swap(0, Ordering::Relaxed),
             partitions_owned: self.lock_assigned().len() as u64,
             rebalance_commit_errors: self.rebalance_commit_errors.swap(0, Ordering::Relaxed),
+            rebalance_resume_errors: self.rebalance_resume_errors.swap(0, Ordering::Relaxed),
             offset_commits: self.offset_commits.swap(0, Ordering::Relaxed),
             offset_commit_errors: self.offset_commit_errors.swap(0, Ordering::Relaxed),
         }
@@ -432,6 +695,12 @@ impl RebalanceState {
                 );
             }
         }
+
+        // Pause state is client-local and survives revocation/reassignment in
+        // librdkafka. Clear it while these partitions are still assigned so a
+        // later acquisition by this consumer cannot remain paused forever after
+        // the receive loop discards its retry deadline.
+        self.resume_rebalance_partitions(consumer, tpl, ResumePhase::Revoke);
 
         // Look up each partition's ownership generation and drop it from the assigned
         // set. Queue every revoked partition (tagged with its own generation) for the
@@ -665,6 +934,66 @@ impl RebalanceState {
                 self.merge_assignment(tpl);
             }
         }
+
+        // `tpl` is the newly-assigned delta under cooperative rebalancing and
+        // the full newly-owned set under eager rebalancing. Resume exactly this
+        // set so retained partitions with an active retry remain paused.
+        self.resume_rebalance_partitions(base_consumer, tpl, ResumePhase::Assign);
+    }
+
+    fn resume_rebalance_partitions<O: PartitionResumeOperations + ?Sized>(
+        &self,
+        consumer: &O,
+        tpl: &TopicPartitionList,
+        phase: ResumePhase,
+    ) {
+        match consumer.resume_partitions(tpl) {
+            Ok(()) => self.clear_assignment_resume_retries(tpl),
+            Err(error) => {
+                self.record_resume_failure(phase, &error);
+                if phase == ResumePhase::Assign {
+                    self.schedule_assignment_resume_retries(tpl, Instant::now());
+                } else {
+                    self.clear_assignment_resume_retries(tpl);
+                }
+            }
+        }
+    }
+
+    fn record_resume_failure(&self, phase: ResumePhase, error: &rdkafka::error::KafkaError) {
+        let _ = self.rebalance_resume_errors.fetch_add(1, Ordering::Relaxed);
+        otel_error!(
+            "kafka.rebalance.resume.fail",
+            phase = phase.as_str(),
+            "exception.type" = "rdkafka",
+            "exception.message" = %error,
+        );
+    }
+
+    fn schedule_assignment_resume_retries(&self, tpl: &TopicPartitionList, now: Instant) {
+        let partitions = topic_partitions(tpl);
+        let assigned = self.lock_assigned();
+        let owned = partitions
+            .into_iter()
+            .filter_map(|(topic, partition)| {
+                assigned
+                    .generation(&topic, partition)
+                    .map(|generation| (topic, partition, generation))
+            })
+            .collect::<Vec<_>>();
+        drop(assigned);
+
+        let mut retries = lock_ignore_poison(&self.assignment_resume_retries);
+        for (topic, partition, generation) in owned {
+            retries.schedule(topic, partition, generation, 1, now);
+        }
+    }
+
+    fn clear_assignment_resume_retries(&self, tpl: &TopicPartitionList) {
+        let mut retries = lock_ignore_poison(&self.assignment_resume_retries);
+        for key in topic_partitions(tpl) {
+            retries.remove(&key);
+        }
     }
 }
 
@@ -886,6 +1215,7 @@ mod tests {
     use crate::common::kafka::test::cluster::KafkaTestCluster;
     use crate::common::kafka::test::with_cluster;
     use rdkafka::ClientConfig;
+    use std::collections::VecDeque;
     use std::sync::Arc;
 
     // ---- Shared test helpers ----
@@ -907,6 +1237,32 @@ mod tests {
             .set("auto.offset.reset", "earliest")
             .create_with_context(ctx)
             .expect("failed to create mock base consumer")
+    }
+
+    struct ScriptedResumeConsumer {
+        results: Mutex<VecDeque<Result<(), rdkafka::error::KafkaError>>>,
+        attempts: AtomicU64,
+    }
+
+    impl ScriptedResumeConsumer {
+        fn new(results: Vec<Result<(), rdkafka::error::KafkaError>>) -> Self {
+            Self {
+                results: Mutex::new(results.into()),
+                attempts: AtomicU64::new(0),
+            }
+        }
+    }
+
+    impl PartitionResumeOperations for ScriptedResumeConsumer {
+        fn resume_partitions(
+            &self,
+            _tpl: &TopicPartitionList,
+        ) -> Result<(), rdkafka::error::KafkaError> {
+            let _ = self.attempts.fetch_add(1, Ordering::Relaxed);
+            lock_ignore_poison(&self.results)
+                .pop_front()
+                .unwrap_or(Ok(()))
+        }
     }
 
     // ---- Construction and configuration ----
@@ -1313,6 +1669,36 @@ mod tests {
         assert_eq!(drained.len(), 2);
         // Second drain is empty again.
         assert!(state.drain_revoked().is_empty());
+    }
+
+    /// Scenario: an immediate assignment resume fails once and the receive-loop retry succeeds.
+    /// Guarantees: the failed assignment remains scheduled with bounded backoff until a later
+    /// resume succeeds, after which no retry deadline remains to leave the partition stuck paused.
+    #[test]
+    fn assignment_resume_failure_is_retried_until_success() {
+        let state = RebalanceState::new(false);
+        state.assign_for_test("traces", 0, 7);
+        let mut tpl = TopicPartitionList::new();
+        let _ = tpl.add_partition("traces", 0);
+        let consumer = ScriptedResumeConsumer::new(vec![
+            Err(rdkafka::error::KafkaError::ClientCreation(
+                "resume failed".to_string(),
+            )),
+            Ok(()),
+        ]);
+
+        state.resume_rebalance_partitions(&consumer, &tpl, ResumePhase::Assign);
+        let retry_deadline = state
+            .next_assignment_resume_deadline()
+            .expect("failed assignment resume must schedule a retry");
+        assert_eq!(consumer.attempts.load(Ordering::Relaxed), 1);
+        assert_eq!(state.drain_metrics().rebalance_resume_errors, 1);
+
+        state.process_due_assignment_resumes_at(&consumer, retry_deadline);
+
+        assert_eq!(consumer.attempts.load(Ordering::Relaxed), 2);
+        assert!(state.next_assignment_resume_deadline().is_none());
+        assert_eq!(state.drain_metrics().rebalance_resume_errors, 0);
     }
 
     /// Scenario (consumer-group rebalancing): `handle_assign` runs against a live

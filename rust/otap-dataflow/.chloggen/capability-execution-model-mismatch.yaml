@@ -5,13 +5,13 @@ change_type: bug_fix
 
 # The name of the component, or a single word describing the area of concern, (e.g. engine, otap).
 # Must be one of the components listed in rust/otap-dataflow/.chloggen/config.yaml.
-component: pipeline
+component: engine
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Include the Azure Monitor response body in unexpected HTTP status errors
+note: Nodes now report an error when a bound capability does not support the requested execution model.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
-issues: [3921]
+issues: [3883]
 
 # (Optional) One or more lines of additional information to render under the primary note.
 # These lines will be padded with 2 spaces and then inserted directly into the document.
