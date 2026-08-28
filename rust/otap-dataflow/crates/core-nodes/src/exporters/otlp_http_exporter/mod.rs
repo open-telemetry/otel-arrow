@@ -18,7 +18,7 @@ otel_arrow_dfe_telemetry::otel_component_scope!(
 use std::num::NonZeroUsize;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
@@ -720,21 +720,12 @@ impl From<ExportTraceServiceResponse> for ServiceResponse {
 
 #[derive(thiserror::Error, Debug)]
 enum ServiceRequestError {
-    #[error("An error occurred sending HTTP request: {err}{}", format_source(err))]
-    RequestError {
-        #[from]
-        err: reqwest::Error,
-    },
-
     #[error(
-        "HTTP status error ({status}) for url ({url}){}",
-        format_error_body(body)
+        "An error occurred sending HTTP request: {err}{}{}",
+        format_source(err),
+        format_error_body(detail)
     )]
-    HttpStatus {
-        status: StatusCode,
-        url: String,
-        body: String,
-    },
+    RequestError { err: reqwest::Error, detail: String },
 
     #[error("An error occurred decoding response body: {0}")]
     DecodeError(#[from] prost::DecodeError),
@@ -743,11 +734,20 @@ enum ServiceRequestError {
     BodyTooLarge { body_size: usize, max_size: usize },
 }
 
+impl From<reqwest::Error> for ServiceRequestError {
+    fn from(err: reqwest::Error) -> Self {
+        Self::RequestError {
+            err,
+            detail: String::new(),
+        }
+    }
+}
+
 impl ServiceRequestError {
     /// Classifies this terminal request failure for bounded diagnostic metrics.
     fn error_type(&self) -> OtlpHttpExporterErrorType {
         match self {
-            Self::RequestError { err } => {
+            Self::RequestError { err, .. } => {
                 if err.is_timeout() {
                     OtlpHttpExporterErrorType::Timeout
                 } else if let Some(status) = err.status() {
@@ -756,7 +756,6 @@ impl ServiceRequestError {
                     OtlpHttpExporterErrorType::Transport
                 }
             }
-            Self::HttpStatus { status, .. } => OtlpHttpExporterErrorType::from_status(*status),
             Self::DecodeError(_) => OtlpHttpExporterErrorType::ResponseDecode,
             Self::BodyTooLarge { .. } => OtlpHttpExporterErrorType::ResponseTooLarge,
         }
@@ -764,31 +763,31 @@ impl ServiceRequestError {
 
     fn is_retryable(&self) -> bool {
         match self {
-            Self::RequestError { err: req_err } => {
-                // At this point the request never received an HTTP response (a
-                // response is instead reported via `HttpStatus`), so this is some
-                // other kind of error sending the request. For example, maybe
-                // there was connection refused, the server disconnected without
-                // sending a response, or there was a non-HTTP timeout.
+            Self::RequestError { err: req_err, .. } => {
+                // For requests that received an HTTP response, reqwest retains
+                // the response status in the error returned by
+                // `error_for_status_ref`. Other errors are failures sending the
+                // request, such as connection refused, server disconnect, or a
+                // non-HTTP timeout.
                 //
                 // The OTLP spec isn't entirely clear on what to do here, but it does
                 // instruct to adhere to HTTP spec and explicitly states to retry on
                 // server disconnects
                 // https://opentelemetry.io/docs/specs/otlp/#all-other-responses
                 //
-                // we'll do something reasonable here and retry on these errors which
-                // may be transient, network related
-                req_err.is_connect() || req_err.is_timeout()
-            }
-
-            Self::HttpStatus { status, .. } => {
-                // The OTLP HTTP spec defines certain status codes for which the
-                // client may retry the request
-                // https://opentelemetry.io/docs/specs/otlp/#retryable-response-codes
-                *status == StatusCode::TOO_MANY_REQUESTS
-                    || *status == StatusCode::BAD_GATEWAY
-                    || *status == StatusCode::SERVICE_UNAVAILABLE
-                    || *status == StatusCode::GATEWAY_TIMEOUT
+                // We'll retry transient transport failures and the status codes
+                // OTLP permits clients to retry.
+                req_err.is_connect()
+                    || req_err.is_timeout()
+                    || matches!(
+                        req_err.status(),
+                        Some(
+                            StatusCode::TOO_MANY_REQUESTS
+                                | StatusCode::BAD_GATEWAY
+                                | StatusCode::SERVICE_UNAVAILABLE
+                                | StatusCode::GATEWAY_TIMEOUT
+                        )
+                    )
             }
 
             Self::BodyTooLarge { .. } | ServiceRequestError::DecodeError(_) => {
@@ -814,7 +813,7 @@ impl ServiceRequestError {
     fn is_auth_failure(&self) -> bool {
         matches!(
             self,
-            Self::HttpStatus { status, .. } if *status == StatusCode::UNAUTHORIZED
+            Self::RequestError { err, .. } if err.status() == Some(StatusCode::UNAUTHORIZED)
         )
     }
 }
@@ -834,11 +833,9 @@ fn format_source(e: &reqwest::Error) -> String {
     }
 }
 
-/// Formats a captured HTTP error response body for inclusion in the
-/// [`ServiceRequestError::HttpStatus`] display message, so e.g. a 400 Bad
-/// Request logged by [`finalize_completed_export`] carries the server's
-/// explanation (often the specific field/reason OTLP rejected) instead of
-/// just the status code.
+/// Formats captured HTTP error detail for inclusion in a request error's display
+/// message, so a backend rejection includes its explanation alongside reqwest's
+/// status and URL diagnostic.
 fn format_error_body(body: &str) -> String {
     if body.is_empty() {
         String::new()
@@ -848,23 +845,44 @@ fn format_error_body(body: &str) -> String {
 }
 
 const MAX_ERROR_BODY_LOG_LENGTH: usize = 4096;
+const ERROR_BODY_READ_TIMEOUT: Duration = Duration::from_secs(1);
 
-fn error_body_summary(body: &Bytes) -> String {
-    let summary = RpcStatus::decode(body.clone())
-        .ok()
-        .filter(|status| !status.message.is_empty())
-        .map(|status| format!("{} (RPC code {})", status.message, status.code))
-        .unwrap_or_else(|| String::from_utf8_lossy(body).into_owned());
-
-    if summary.len() <= MAX_ERROR_BODY_LOG_LENGTH {
-        summary
+fn error_body_summary(body: &Bytes, truncated: bool) -> String {
+    let summary = if truncated {
+        String::from_utf8_lossy(body).into_owned()
     } else {
-        let mut end = MAX_ERROR_BODY_LOG_LENGTH;
-        while !summary.is_char_boundary(end) {
-            end -= 1;
-        }
-        format!("{}... <truncated>", &summary[..end])
+        RpcStatus::decode(body.clone())
+            .ok()
+            .filter(|status| !status.message.is_empty())
+            .map(|status| format!("{} (RPC code {})", status.message, status.code))
+            .unwrap_or_else(|| String::from_utf8_lossy(body).into_owned())
+    };
+
+    if truncated {
+        format!("{summary}... <truncated>")
+    } else {
+        summary
     }
+}
+
+/// Reads a bounded prefix of a failed HTTP response body for diagnostics. The
+/// timeout prevents an indefinitely streaming error response from occupying an
+/// export slot when the configured HTTP request timeout is unset.
+async fn collect_error_body_prefix(response: Response) -> Result<(Bytes, bool), reqwest::Error> {
+    let mut buf = BytesMut::with_capacity(MAX_ERROR_BODY_LOG_LENGTH);
+    let mut stream = response.bytes_stream();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        let remaining = MAX_ERROR_BODY_LOG_LENGTH - buf.len();
+        let prefix_len = remaining.min(chunk.len());
+        buf.extend_from_slice(&chunk[..prefix_len]);
+        if prefix_len < chunk.len() {
+            return Ok((buf.freeze(), true));
+        }
+    }
+
+    Ok((buf.freeze(), false))
 }
 
 async fn query_result_to_service_response(
@@ -873,20 +891,20 @@ async fn query_result_to_service_response(
     result: Result<Response, reqwest::Error>,
 ) -> Result<ServiceResponse, ServiceRequestError> {
     let resp = result?;
-    let status = resp.status();
-    if !status.is_success() {
-        // Capture the response body (bounded/best-effort) instead of relying on
-        // `error_for_status()`, which discards it: OTLP HTTP servers commonly put
-        // the rejection reason (e.g. why a 400 was returned) in the body.
-        let url = resp.url().to_string();
-        let body = match collect_body(resp, max_response_body_len).await {
-            Ok(body) => error_body_summary(&body),
-            Err(ServiceRequestError::BodyTooLarge { .. }) => {
-                "<response body too large to capture>".to_string()
-            }
-            Err(err) => format!("<failed to read response body: {err}>"),
-        };
-        return Err(ServiceRequestError::HttpStatus { status, url, body });
+    if let Err(err) = resp.error_for_status_ref() {
+        // `error_for_status_ref` preserves the response, while its error keeps
+        // reqwest's status and URL classification used below. Read only a small,
+        // time-bounded prefix because diagnostics must not hold an export slot on
+        // an unbounded or indefinitely streaming error response.
+        let detail =
+            match tokio::time::timeout(ERROR_BODY_READ_TIMEOUT, collect_error_body_prefix(resp))
+                .await
+            {
+                Ok(Ok((body, truncated))) => error_body_summary(&body, truncated),
+                Ok(Err(error)) => format!("<failed to read response body: {error}>"),
+                Err(_) => "<timed out reading response body>".to_string(),
+            };
+        return Err(ServiceRequestError::RequestError { err, detail });
     }
     let mut body = collect_body(resp, max_response_body_len).await?;
 
@@ -2608,7 +2626,8 @@ mod test {
     /// plain text, empty, or invalid UTF-8.
     /// Guarantees: the response body is read exactly once (no double-consume), the
     /// NACK reason is deterministic and never panics regardless of body shape, and a
-    /// decodable `RpcStatus` message surfaces its human-readable message and code.
+    /// decodable `RpcStatus` message surfaces its human-readable message and code;
+    /// a larger body is capped at the diagnostic prefix limit.
     #[test]
     fn test_handles_non_200_response_body_variants() {
         // Wire-compatible stand-in for `otel_arrow_dfe_otap::otlp_http::RpcStatus`: same field
@@ -2634,7 +2653,7 @@ mod test {
             Bytes::from(buf)
         };
 
-        let test_cases: [(Bytes, Option<&str>); 4] = [
+        let test_cases: [(Bytes, Option<&str>); 5] = [
             // A valid RpcStatus body surfaces its decoded message and code.
             (
                 rpc_status_body,
@@ -2650,6 +2669,12 @@ mod test {
             // Invalid UTF-8 (and not a valid RpcStatus) must not panic; it falls back
             // to a lossy string conversion.
             (Bytes::from_static(&[0xff, 0xfe, 0xfd]), None),
+            // Diagnostic capture stops after the bounded 4 KiB prefix rather than
+            // waiting for or retaining the whole backend error response.
+            (
+                Bytes::from(vec![b'x'; MAX_ERROR_BODY_LOG_LENGTH + 1]),
+                Some("... <truncated>"),
+            ),
         ];
 
         for (error_body, expected_fragment) in test_cases {
