@@ -120,6 +120,8 @@ impl Capabilities {
     ///   [`Self::optional_local`].
     /// - [`Error::CapabilityAlreadyConsumed`] if the capability was
     ///   already claimed on this node.
+    /// - [`Error::CapabilityExecutionModelMismatch`] if a binding was
+    ///   declared but the extension provides only a local implementation.
     ///
     /// # Panics
     ///
@@ -262,10 +264,9 @@ impl Capabilities {
     ///
     /// # Errors
     ///
-    /// - Returns [`Error::CapabilityAlreadyConsumed`] if the capability was
-    ///   already claimed on this node.
-    /// - Returns [`Error::CapabilityExecutionModelMismatch`] if a binding was
-    ///   declared but the extension cannot satisfy the local execution model.
+    /// Returns [`Error::CapabilityAlreadyConsumed`] if the capability was
+    /// already claimed on this node. A shared-only implementation remains
+    /// usable through the `SharedAsLocal` adapter.
     ///
     /// # Panics
     ///

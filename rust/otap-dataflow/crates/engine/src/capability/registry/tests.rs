@@ -419,6 +419,38 @@ fn test_optional_shared_rejects_local_only_binding() {
     }
 }
 
+/// Scenario: A node binds a local-only capability and requires a shared
+/// implementation.
+/// Guarantees: Required access reports an execution-model mismatch rather than
+/// misclassifying the configured capability as unbound.
+#[test]
+fn test_require_shared_rejects_local_only_binding() {
+    let mut reg = CapabilityRegistry::new();
+    register_local(&mut reg, "ext-a", "local-val");
+
+    let mut tracker = ConsumedTracker::new();
+    let caps = resolve_bindings(
+        &bindings("test_cap", "ext-a"),
+        &reg,
+        &known_exts(&["ext-a"]),
+        &mut tracker,
+    )
+    .unwrap();
+
+    let error = match caps.require_shared::<TestCap>() {
+        Err(error) => error,
+        Ok(_) => panic!("expected execution model mismatch"),
+    };
+    assert!(matches!(
+        error,
+        Error::CapabilityExecutionModelMismatch {
+            requested_execution_model: "shared",
+            available_execution_model: "local",
+            ..
+        }
+    ));
+}
+
 /// Scenario: A node binds a shared-only capability and requests it through
 /// `optional_local`.
 /// Guarantees: Shared-only providers remain valid local providers through the
