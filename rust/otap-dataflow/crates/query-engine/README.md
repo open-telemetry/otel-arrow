@@ -1,5 +1,8 @@
 # OTAP Query Engine
 
+This crate is currently pre-1.0. Its public API may evolve between minor
+releases.
+
 This crate provides implementation of "query engine" for transforming telemetry
 pipeline data in OTAP format.
 

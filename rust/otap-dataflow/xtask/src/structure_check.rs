@@ -8,7 +8,7 @@ use std::path::Path;
 use anyhow::Error;
 use toml::{Table, Value};
 
-const PUBLISH_PILOT_PACKAGE: &str = "otel-arrow-dfe-pdata-views";
+use crate::publish_policy::PUBLISH_PACKAGES;
 
 /// Validates the entire structure of the project.
 ///
@@ -194,7 +194,7 @@ fn check_publish_policy(
     package_name: &str,
     package: &Value,
 ) -> anyhow::Result<()> {
-    if package_name == PUBLISH_PILOT_PACKAGE {
+    if PUBLISH_PACKAGES.contains(&package_name) {
         check_path_is_true(cargo_toml_path, &["publish"], package)
     } else {
         check_path_is_true(cargo_toml_path, &["publish", "workspace"], package)
@@ -253,10 +253,10 @@ mod tests {
             .expect("manifest should contain package")
     }
 
-    /// Scenario: the views pilot explicitly enables publication.
-    /// Guarantees: structure validation accepts the sole approved publication override.
+    /// Scenario: an approved package explicitly enables publication.
+    /// Guarantees: structure validation accepts packages in the publication set.
     #[test]
-    fn publish_policy_accepts_views_pilot() {
+    fn publish_policy_accepts_approved_package() {
         let manifest = package(
             r#"
             [package]
@@ -266,24 +266,29 @@ mod tests {
         );
 
         assert!(
-            check_publish_policy(Path::new("Cargo.toml"), PUBLISH_PILOT_PACKAGE, &manifest).is_ok()
+            check_publish_policy(
+                Path::new("Cargo.toml"),
+                "otel-arrow-dfe-pdata-views",
+                &manifest
+            )
+            .is_ok()
         );
     }
 
-    /// Scenario: a non-pilot package explicitly enables publication.
+    /// Scenario: an unapproved package explicitly enables publication.
     /// Guarantees: structure validation requires every other crate to inherit workspace policy.
     #[test]
-    fn publish_policy_rejects_other_override() {
+    fn publish_policy_rejects_unapproved_override() {
         let manifest = package(
             r#"
             [package]
-            name = "otel-arrow-dfe-pdata"
+            name = "otel-arrow-dfe-engine"
             publish = true
             "#,
         );
 
         assert!(
-            check_publish_policy(Path::new("Cargo.toml"), "otel-arrow-dfe-pdata", &manifest)
+            check_publish_policy(Path::new("Cargo.toml"), "otel-arrow-dfe-engine", &manifest)
                 .is_err()
         );
     }
