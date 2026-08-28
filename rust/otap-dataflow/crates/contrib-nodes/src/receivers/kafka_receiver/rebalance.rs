@@ -121,6 +121,14 @@ struct DueAssignmentResume {
     version: u64,
 }
 
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct ScheduledAssignmentResume {
+    deadline: Instant,
+    version: u64,
+    topic: String,
+    partition: i32,
+}
+
 /// Deduplicated, deadline-ordered retry state for assignment resume failures.
 ///
 /// Entries are bounded by the consumer's assigned partitions. `version`
@@ -129,7 +137,7 @@ struct DueAssignmentResume {
 #[derive(Debug, Default)]
 struct AssignmentResumeRetries {
     entries: HashMap<PartitionKey, AssignmentResumeRetryState>,
-    deadlines: BTreeSet<(Instant, u64, String, i32)>,
+    deadlines: BTreeSet<ScheduledAssignmentResume>,
     next_version: u64,
 }
 
@@ -147,7 +155,12 @@ impl AssignmentResumeRetries {
         self.next_version = self.next_version.wrapping_add(1);
         let version = self.next_version;
         let deadline = now + assignment_resume_backoff(failures);
-        let _ = self.deadlines.insert((deadline, version, topic, partition));
+        let _ = self.deadlines.insert(ScheduledAssignmentResume {
+            deadline,
+            version,
+            topic,
+            partition,
+        });
         let _ = self.entries.insert(
             key,
             AssignmentResumeRetryState {
@@ -163,43 +176,45 @@ impl AssignmentResumeRetries {
         if let Some(state) = self.entries.remove(key)
             && let Some(deadline) = state.deadline
         {
-            let _ = self
-                .deadlines
-                .remove(&(deadline, state.version, key.0.clone(), key.1));
+            let _ = self.deadlines.remove(&ScheduledAssignmentResume {
+                deadline,
+                version: state.version,
+                topic: key.0.clone(),
+                partition: key.1,
+            });
         }
     }
 
     fn next_deadline(&self) -> Option<Instant> {
-        self.deadlines.first().map(|entry| entry.0)
+        self.deadlines.first().map(|entry| entry.deadline)
     }
 
     fn take_due(&mut self, now: Instant, limit: usize) -> Vec<DueAssignmentResume> {
         let mut due = Vec::with_capacity(limit);
         while due.len() < limit {
-            let Some((deadline, version, topic, partition)) = self.deadlines.first().cloned()
-            else {
+            let Some(scheduled) = self.deadlines.first() else {
                 break;
             };
-            if deadline > now {
+            if scheduled.deadline > now {
                 break;
             }
-            let _ = self
-                .deadlines
-                .remove(&(deadline, version, topic.clone(), partition));
-            let key = (topic.clone(), partition);
+            let Some(scheduled) = self.deadlines.pop_first() else {
+                break;
+            };
+            let key = (scheduled.topic.clone(), scheduled.partition);
             let Some(state) = self.entries.get_mut(&key) else {
                 continue;
             };
-            if state.version != version || state.deadline != Some(deadline) {
+            if state.version != scheduled.version || state.deadline != Some(scheduled.deadline) {
                 continue;
             }
             state.deadline = None;
             due.push(DueAssignmentResume {
-                topic,
-                partition,
+                topic: scheduled.topic,
+                partition: scheduled.partition,
                 generation: state.generation,
                 failures: state.failures,
-                version,
+                version: scheduled.version,
             });
         }
         due
@@ -227,12 +242,12 @@ impl AssignmentResumeRetries {
         state.failures = retry.failures.saturating_add(1);
         let deadline = now + assignment_resume_backoff(state.failures);
         state.deadline = Some(deadline);
-        let _ = self.deadlines.insert((
+        let _ = self.deadlines.insert(ScheduledAssignmentResume {
             deadline,
-            state.version,
-            retry.topic.clone(),
-            retry.partition,
-        ));
+            version: state.version,
+            topic: retry.topic.clone(),
+            partition: retry.partition,
+        });
     }
 }
 

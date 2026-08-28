@@ -73,7 +73,7 @@ struct FeedbackTombstone {
     delivery_generation: DeliveryGeneration,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct ScheduledReplay {
     deadline: Instant,
     topic: String,
@@ -315,37 +315,41 @@ impl RetryManager {
             if scheduled.deadline > now {
                 break;
             }
-            let scheduled = scheduled.clone();
-            let _ = self.scheduled_replays.remove(&scheduled);
+            let Some(scheduled) = self.scheduled_replays.pop_first() else {
+                break;
+            };
             examined += 1;
             let Some(mut state) = self.take_state(&scheduled.topic, scheduled.partition) else {
                 continue;
             };
-            let due_replay = if state.delivery_generation == scheduled.delivery_generation {
-                state.retry.as_mut().and_then(|retry| match retry.phase {
-                    RetryPhase::Backoff { deadline, paused } if deadline == scheduled.deadline => {
-                        retry.phase = RetryPhase::Due { paused };
-                        Some(DueReplay {
-                            topic: scheduled.topic.clone(),
-                            partition: scheduled.partition,
-                            ownership_generation: state.ownership_generation,
-                            delivery_generation: state.delivery_generation,
-                            rewind_offset: retry.rewind_offset,
-                            failed_offset: retry.failed_offset,
-                            paused,
-                        })
-                    }
-                    RetryPhase::Backoff { .. } | RetryPhase::Due { .. } | RetryPhase::Replaying => {
-                        None
-                    }
-                })
-            } else {
-                None
-            };
-            self.put_state(&scheduled.topic, scheduled.partition, state);
-            if let Some(replay) = due_replay {
-                due.push(replay);
+            if state.delivery_generation != scheduled.delivery_generation {
+                self.put_state(&scheduled.topic, scheduled.partition, state);
+                continue;
             }
+            let Some(retry) = state.retry.as_mut() else {
+                self.put_state(&scheduled.topic, scheduled.partition, state);
+                continue;
+            };
+            let RetryPhase::Backoff { deadline, paused } = retry.phase else {
+                self.put_state(&scheduled.topic, scheduled.partition, state);
+                continue;
+            };
+            if deadline != scheduled.deadline {
+                self.put_state(&scheduled.topic, scheduled.partition, state);
+                continue;
+            }
+            retry.phase = RetryPhase::Due { paused };
+            let replay = DueReplay {
+                topic: scheduled.topic,
+                partition: scheduled.partition,
+                ownership_generation: state.ownership_generation,
+                delivery_generation: state.delivery_generation,
+                rewind_offset: retry.rewind_offset,
+                failed_offset: retry.failed_offset,
+                paused,
+            };
+            self.put_state(&replay.topic, replay.partition, state);
+            due.push(replay);
         }
         due
     }
