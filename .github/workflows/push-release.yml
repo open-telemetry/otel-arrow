@@ -173,8 +173,8 @@ jobs:
             fi
           done
 
-      - name: Validate Rust crates.io publish pilot
-        run: cargo xtask crates-publish check
+      - name: Preflight Rust crates.io publish
+        run: cargo xtask crates-publish preflight "${{ inputs.version }}"
         working-directory: rust/otap-dataflow
 
       - name: Extract changelog content for this release
@@ -197,6 +197,19 @@ jobs:
             /tmp/rust_release_content.txt
 
           {
+            echo "## Go Module"
+            echo ""
+            echo "This release includes the following Go module:"
+            echo ""
+            echo "- \`github.com/open-telemetry/otel-arrow/go@v${{ inputs.version }}\`"
+            echo ""
+            echo "## Rust Crates"
+            echo ""
+            (cd rust/otap-dataflow && cargo xtask crates-publish plan) |
+              jq -r --arg version "${{ inputs.version }}" '.packages[] | "- `\(.name)@\($version)`"'
+            echo ""
+            echo "The Rust workspace is tagged as \`rust/otap-dataflow/v${{ inputs.version }}\`."
+            echo ""
             echo "## What's Changed (Go :hamster:)"
             echo ""
             if [ -s /tmp/go_release_content.txt ]; then
@@ -205,12 +218,6 @@ jobs:
               echo "_No Go changes in this release._"
             fi
             echo ""
-            echo "### Go Modules"
-            echo ""
-            echo "This release includes the following Go module:"
-            echo ""
-            echo "- \`github.com/open-telemetry/otel-arrow/go@v${{ inputs.version }}\`"
-            echo ""
             echo "## What's Changed (Rust :crab:)"
             echo ""
             if [ -s /tmp/rust_release_content.txt ]; then
@@ -218,13 +225,6 @@ jobs:
             else
               echo "_No Rust changes in this release._"
             fi
-            echo ""
-            echo "### Rust Workspace"
-            echo ""
-            echo "The Rust workspace at \`rust/otap-dataflow/\` is tagged as \`rust/otap-dataflow/v${{ inputs.version }}\`."
-            echo ""
-            echo "This release tests crates.io publishing with \`otel-arrow-dfe-pdata-views@${{ inputs.version }}\`."
-            echo "All other OTAP Dataflow crates remain unpublished and should be consumed using the Rust workspace git reference."
           } > /tmp/release_content.txt
 
       - name: Dry run - Show planned changes
@@ -249,7 +249,7 @@ jobs:
           - `rust/otap-dataflow/v${{ inputs.version }}` - Rust workspace tag
 
           ## crates.io
-          - **Package**: `otel-arrow-dfe-pdata-views@${{ inputs.version }}`
+          - **Packages**: 14 OTAP Dataflow crates in dependency order
           - **Authentication**: crates.io trusted publishing (OIDC)
           - Existing versions are detected and skipped.
 
@@ -286,7 +286,7 @@ jobs:
         id: crates-io-auth
         uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
 
-      - name: Publish views crate with trusted publishing
+      - name: Publish Rust crates with trusted publishing
         if: "!inputs.dry_run"
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.crates-io-auth.outputs.token }}

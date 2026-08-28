@@ -49,6 +49,7 @@ config:
 | `logs` | object | `{}` | Per-signal config for logs. |
 | `auto_offset_reset` | string | `latest` | Where to start consuming when no committed offset exists. |
 | `commit` | object | `{mode: manual}` | Commit configuration (see [Commit Configuration](#commit-configuration)). |
+| `transient_nack` | object | Manual: `{mode: replay, initial_backoff_ms: 1000, max_backoff_ms: 30000}`; auto: inactive | Policy for non-permanent downstream NACKs (see [Transient NACK Configuration](#transient-nack-configuration)). |
 | `lag_refresh_interval_ms` | integer | *none* | Interval between consumer-lag refreshes, in milliseconds. Enables `receiver.kafka.consumer.group.lag` (consumer-group lag against broker-committed offsets; see [Metric Sets](#metric-sets)). Manual commit mode only; runs off the receive loop so it never blocks processing. Off by default; recommended `60000` (60s), higher under large partition fan-out; must be > 0 when set. |
 | `session_timeout_ms` | integer | `10000` | Session timeout in milliseconds. Must be > 0. |
 | `heartbeat_interval_ms` | integer | `3000` | Heartbeat interval in milliseconds. Must be > 0 and strictly less than `session_timeout_ms`. |
@@ -149,7 +150,7 @@ The `commit` block controls offset management:
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `mode` | string | `manual` | `manual` (at-least-once, up to a terminal nack -- see [Failure Handling and Retries](#failure-handling-and-retries)) or `auto` (at-most-once). |
+| `mode` | string | `manual` | `manual` (downstream-aware commits -- see [Failure Handling and Retries](#failure-handling-and-retries)) or `auto` (at-most-once). |
 | `interval_ms` | integer | *none* | Commit interval in milliseconds. Optional; see mode-specific behavior below. |
 
 #### Offset Management
@@ -160,7 +161,7 @@ The receiver supports two offset commit modes controlled by `commit.mode`.
 
 The receiver tracks each consumed message individually per partition. Offsets are only committed up to the lowest un-acknowledged message, preventing offset skipping when downstream acknowledgements arrive out of order.
 
-The `commit.interval_ms` value controls a periodic safety-net timer for offset commits. If `commit.interval_ms` is not set, the safety-net timer is disabled and offsets are committed purely through ack/nack signals from downstream processing.
+The `commit.interval_ms` value controls a periodic safety-net timer for offset commits. If `commit.interval_ms` is not set, the safety-net timer is disabled and offsets are committed through terminal downstream feedback. A transient NACK configured for replay remains unresolved and cannot be committed past by this timer.
 
 ```yaml
 config:
@@ -169,26 +170,92 @@ config:
     interval_ms: 1000
 ```
 
+### Transient NACK Configuration
+
+Kafka has no per-record NACK operation. The top-level `transient_nack` block
+therefore selects what the receiver does when downstream returns a
+non-permanent NACK:
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `mode` | string | `replay` | `replay` pauses and rewinds the affected Kafka partition. `commit_and_skip` explicitly treats the NACK as terminal and allows the offset to advance. |
+| `initial_backoff_ms` | integer | `1000` | Delay before the first replay operation. Must be greater than zero. |
+| `max_backoff_ms` | integer | `30000` | Maximum delay between replay attempts. Must be greater than zero and at least `initial_backoff_ms`. |
+
+When the block is omitted, manual commit defaults to replay and auto commit
+leaves the policy inactive. Explicit `mode: replay` requires
+`commit.mode: manual`; startup validation rejects it with auto commit because
+broker-managed commits cannot honor downstream feedback. Retries are unlimited
+and use exponential backoff capped by `max_backoff_ms`. There is no
+retry-exhaustion action. Built-in DLQ support is planned for a future release;
+until then, the receiver does not publish failed records to a DLQ.
+
+```yaml
+config:
+  commit:
+    mode: manual
+  transient_nack:
+    mode: replay
+    initial_backoff_ms: 1000
+    max_backoff_ms: 30000
+```
+
 #### Failure Handling and Retries
 
-In manual mode the committable offset advances on **both acks and nacks**. A
-nack reaching the receiver is treated as a **terminal** outcome: the receiver
-advances past the message and commits its offset, so the message is **not**
-redelivered.
+Manual-mode completion behavior is:
 
-Retrying transient downstream failures is a separate pipeline concern handled
-by the [retry processor](../../../../core-nodes/src/processors/retry_processor/README.md)
-(`processor:retry`). To get at-least-once delivery, place a retry
-processor in the pipeline between the Kafka receiver and a failure-prone
-exporter:
+| Completion | Offset behavior |
+| --- | --- |
+| ACK | Marks the record complete and advances the partition watermark when contiguous progress permits. |
+| Permanent NACK | Remains terminal and marks the record complete. Built-in DLQ support is planned but not yet available. |
+| Non-permanent NACK with `mode: commit_and_skip` | Explicitly opts out of recovery, marks the record complete, and permits the offset to advance. |
+| Non-permanent NACK with `mode: replay` | Leaves the record unresolved, pauses only its partition, waits for backoff, seeks to the earliest unresolved offset, and resumes. |
+| Feedback from an obsolete assignment or replay generation | Ignored without changing offsets. |
 
-- The retry processor retries **transient** nacks with exponential backoff and
-  only forwards a nack to the receiver once retries are exhausted (a "final
-  retry") or when the failure is marked permanent.
-- While retries are in progress the message's offset stays in-flight at the
-  receiver, so it is **not** committed and remains eligible for redelivery on
-  restart.
-- Only genuinely terminal failures reach the receiver and advance the offset.
+Replay is durable at-least-once recovery, not exactly-once processing. Records
+at or after the rewind point can be delivered more than once, and the affected
+partition has head-of-line blocking while it waits. Other assigned partitions
+continue to be polled and processed. `enable_idempotency` does not suppress a
+deliberate replay.
+
+If pause, seek, or resume fails, the receiver emits an error and reschedules
+the operation without completing the failed offset. It keeps the partition
+paused when possible. A rebalance resumes revoked partitions before dropping
+local retry and tracking state, and newly assigned partitions are explicitly
+resumed so a partition reacquired by the same consumer cannot inherit stale
+pause state. The new owner starts at the broker-committed offset. Shutdown
+commits at most the earliest unresolved offset, so Kafka delivers that offset
+again after restart.
+
+The no-loss window is bounded by Kafka retention. Configure topic retention to
+outlast the maximum expected outage and recovery period. If the required
+offset expires, Kafka's reset policy applies and the receiver cannot reconstruct
+the deleted record. Operators that need retention-independent recovery should
+publish failures durably to a retry topic or DLQ before allowing a commit.
+
+The [retry processor](../../../../core-nodes/src/processors/retry_processor/README.md)
+(`processor:retry`) remains useful for cheap, payload-local retries. Place it
+immediately before the exporter or other external boundary:
+
+```text
+Kafka receiver -> internal processors -> retry processor -> exporter
+```
+
+- Exporter transient NACKs are retried locally by the retry processor.
+- NACKs originating in an earlier processor bypass that retry processor and
+  reach the Kafka receiver.
+- Set the retry processor's `exhaustion_action` according to the intended
+  terminal behavior:
+  - `propagate_transient` preserves a non-permanent NACK after local retries
+    are exhausted, so a replay-enabled receiver falls back to Kafka replay.
+    This can repeat the local-retry and Kafka-replay cycle until processing
+    succeeds or Kafka retention expires.
+  - `mark_permanent` converts the exhausted NACK to a permanent one. The Kafka
+    receiver then treats it as terminal and permits the offset to advance. Use
+    this only when bounded local retries followed by commit-and-skip are
+    intended.
+- A retry processor immediately after the receiver is not a complete no-loss
+  solution: retries are finite and some NACKs do not retain a retryable payload.
 
 See [At-Least-Once with the Retry Processor](#at-least-once-with-the-retry-processor)
 for a complete pipeline example.
@@ -196,10 +263,10 @@ for a complete pipeline example.
 #### Comparison with the Go Kafka receiver
 
 The OpenTelemetry Collector's Go Kafka receiver bundles offset committing,
-message marking, and error backoff into a single component. This receiver splits
-those concerns across two pipeline nodes: the receiver handles offset commit and
-marking, while transient-failure retry is delegated to the
-[retry processor](../../../../core-nodes/src/processors/retry_processor/README.md).
+message marking, and error backoff into a single component. This receiver can
+replay transiently failed records from Kafka and can also use a separate
+[retry processor](../../../../core-nodes/src/processors/retry_processor/README.md)
+for local retries immediately before an exporter.
 
 The tables below summarize
 the **feature gaps** relative to the Go receiver; the
@@ -288,17 +355,17 @@ equivalent configuration here.
 | Go Kafka receiver option | Equivalent here | Notes |
 | --- | --- | --- |
 | `autocommit.enable: true` | `commit.mode: auto` | At-most-once; offsets committed by the client regardless of downstream outcome. |
-| `autocommit.enable: false` | `commit.mode: manual` | At-least-once up to a terminal nack. |
+| `autocommit.enable: false` | `commit.mode: manual` | Downstream-aware offset tracking with Kafka replay of non-permanent NACKs by default. |
 | `autocommit.interval` | `commit.interval_ms` | In `auto` mode forwarded to rdkafka as `auto.commit.interval.ms`; in `manual` mode it drives the safety-net commit timer. |
 | `initial_offset: latest` / `earliest` | `auto_offset_reset: latest` / `earliest` | Same semantics. |
-| `error_backoff.enabled` | Add a `processor:retry` node to the pipeline | Retry is a separate node, not a receiver field. Omit the node to disable. |
-| `error_backoff.initial_interval` | retry processor `initial_interval` | Default `5s`. |
-| `error_backoff.max_interval` | retry processor `max_interval` | Default `30s`. |
+| `error_backoff.enabled` | `transient_nack.mode: replay` and/or a `processor:retry` before the exporter | Receiver replay is partition-local and durable within Kafka retention; processor retry is payload-local. |
+| `error_backoff.initial_interval` | `transient_nack.initial_backoff_ms` | Receiver default `1000` ms. The retry processor has its own `initial_interval`. |
+| `error_backoff.max_interval` | `transient_nack.max_backoff_ms` | Receiver default `30000` ms. The retry processor has its own `max_interval`. |
 | `error_backoff.multiplier` | retry processor `multiplier` | Default `1.5`. |
 | `error_backoff.max_elapsed_time` | retry processor `max_elapsed_time` | Default `300s` (5m). Set `0` is **not** supported here (must be > 0). |
 | `error_backoff.randomization_factor` | *(no equivalent)* | The retry processor backoff has no jitter -- see gaps below. |
-| `message_marking.after` | *(no exact equivalent)* | Offsets are tracked at receive time and committed on the downstream ack/nack; there is no "mark only after success" toggle. |
-| `message_marking.on_error` / `on_permanent_error` | *(no exact equivalent)* | The receiver commits on **any** terminal nack (it treats a nack as terminal); there is no per-error-kind marking toggle. |
+| `message_marking.after` | *(no exact equivalent)* | Offsets are tracked at receive time and completed by ACK or a terminal policy. |
+| `message_marking.on_error` / `on_permanent_error` | `transient_nack.mode` partially maps `on_error` | Non-permanent NACKs can commit or replay; permanent NACKs always retain the historical commit behavior. |
 | `group_id`, `client_id`, `session_timeout`, `heartbeat_interval`, `group_rebalance_strategy`, fetch sizes, `tls`, `auth` | Direct receiver fields | See [Consumer Settings](#consumer-settings), [Authentication](#authentication), and [TLS Configuration](#tls-configuration). |
 
 ##### Known gaps / behavioral differences
@@ -306,25 +373,19 @@ equivalent configuration here.
 Even with a retry processor in the pipeline, the following behaviors differ from
 the Go Kafka receiver:
 
-- **Commit-on-terminal-failure vs. replay from Kafka.** With
-  `message_marking.on_error: false`, the Go receiver leaves a failed message's
-  offset *unmarked*, so Kafka redelivers it (after a fetch rewind or on the next
-  rebalance). This receiver **commits the offset once a terminal nack is
-  received** (including after the retry processor exhausts its retries), so the
-  message is advanced past at the source rather than replayed from Kafka. The
-  retry processor protects against *transient* failures in-process, but it does
-  not cause the receiver to hold the offset past a terminal nack.
-- **No partition pause on error.** The Go receiver pauses a partition on a
-  permanent error (or when no backoff is configured) until the next rebalance.
-  This receiver keeps consuming subsequent offsets on the same partition.
+- **Permanent-error policy.** This receiver always commits a permanent NACK;
+  it has no equivalent to leaving a permanent error unmarked or publishing it
+  to a built-in DLQ. Built-in DLQ support is planned for a future release.
+- **Transient-NACK opt-out.** Manual mode replays non-permanent NACKs by
+  default. Set `transient_nack.mode: commit_and_skip` only when advancing past
+  a transient processing failure is intentional.
 - **No backoff jitter.** The retry processor uses exponential backoff without a
-  `randomization_factor` (jitter) equivalent.
-- **Retry ordering.** The Go receiver retries inline per partition, preserving
-  per-partition order at the cost of head-of-line blocking. The retry processor
-  retries out-of-band, so a later message can be acked and committed before an
-  earlier message that is still being retried.
+  `randomization_factor` (jitter) equivalent. Receiver Kafka replay also has no
+  jitter.
+- **Retry limits.** Receiver Kafka replay is unlimited; unlike Go's
+  `max_elapsed_time`, it has no elapsed-time limit or exhaustion action.
 - **Marking selectivity.** There is no equivalent to `message_marking.after`,
-  `on_error`, or `on_permanent_error`; nack handling is uniform.
+  and permanent-NACK marking is not configurable.
 
 Out of scope for error handling, but worth noting as general differences: the Go
 receiver supports additional encodings (e.g. `jaeger_proto`, `zipkin_json`,
@@ -334,6 +395,11 @@ receiver supports additional encodings (e.g. `jaeger_proto`, `zipkin_json`,
 #### Auto Mode (`commit.mode: auto`)
 
 Offsets are committed automatically by the underlying rdkafka client. The `commit.interval_ms` value is forwarded to rdkafka as `auto.commit.interval.ms`. If `commit.interval_ms` is not set, the property is omitted and librdkafka retains its positive default (5000 ms). `commit.interval_ms`, when set, must be greater than 0.
+
+Auto mode remains independent of downstream ACK/NACK feedback and cannot
+provide downstream-aware replay. Omitting `transient_nack` leaves the policy
+inactive. Explicit `transient_nack.mode: replay` is rejected;
+`commit_and_skip` is accepted but does not change broker-managed commits.
 
 ```yaml
 config:
@@ -626,6 +692,7 @@ The receiver validates the configuration at startup:
 14. `lag_refresh_interval_ms`, when set, must be > 0.
 15. `session_timeout_ms` and `heartbeat_interval_ms` must be > 0.
 16. `heartbeat_interval_ms` must be strictly less than `session_timeout_ms`.
+17. Explicit `transient_nack.mode: replay` requires `commit.mode: manual`.
 
 Integer settings are validated against a lower bound in one of two ways, which
 map to two distinct configuration errors:
@@ -821,20 +888,17 @@ config:
     interval_ms: 5000   # equivalent to Go autocommit.interval
 ```
 
-#### Recipe B -- At-least-once with transient retry (matches Go `autocommit: false` + `error_backoff`)
+#### Recipe B -- At-least-once with local retry and Kafka replay
 
-Place a retry processor between the Kafka receiver (in `manual` commit mode) and
-the exporter. The retry processor retries transient nacks with exponential
-backoff; while retries are in progress the offset stays in-flight and is not
-committed, so it remains eligible for redelivery if the process restarts. Only a
-terminal failure (retries exhausted or a permanent error) reaches the receiver
-and advances the committed offset.
+Enable receiver replay and place the retry processor immediately before the
+exporter. Exporter failures are retried locally without rerunning earlier
+processors. A transient NACK from an earlier processor, or one that remains
+after exporter retries are exhausted, reaches the receiver and triggers
+partition-local Kafka replay. Permanent NACKs remain terminal and commit.
 
-The retry processor fields below map directly to Go's `error_backoff`.
-
-> **Differs from Go:** once retries are exhausted, this receiver **commits** the
-> offset (advances past the message) rather than leaving it unmarked for
-> redelivery. See [Known gaps](#known-gaps--behavioral-differences).
+The example has no internal processor, so the retry processor is directly after
+the receiver while still being immediately upstream of the exporter. In a
+larger pipeline, insert internal processors before `retry`.
 
 ```yaml
 version: otel_dataflow/v1
@@ -854,6 +918,10 @@ groups:
                   - "otel-traces"
               commit:
                 mode: manual
+              transient_nack:
+                mode: replay
+                initial_backoff_ms: 1000
+                max_backoff_ms: 30000
 
           retry:
             type: processor:retry
@@ -862,6 +930,7 @@ groups:
               max_interval: 30s        # Go error_backoff.max_interval
               max_elapsed_time: 5m     # Go error_backoff.max_elapsed_time
               multiplier: 2.0          # Go error_backoff.multiplier
+              exhaustion_action: propagate_transient # Preserve Kafka replay fallback.
               # Go error_backoff.randomization_factor has no equivalent (no jitter).
 
           otlp/export:
@@ -883,13 +952,13 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 ### Metric Sets
 
-#### `receiver.messages`
+#### `receiver.kafka.messages`
 
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
-| `receiver.messages.started` | `{message}` | `signal` | Decoded messages admitted to the pipeline send path. |
-| `receiver.messages.completed` | `{message}` | `signal` | Admitted messages whose receiver work terminated. |
-| `receiver.messages.bytes` | `By` | `signal` | Encoded Kafka payload bytes admitted to the pipeline send path. |
+| `receiver.kafka.messages.started` | `{message}` | `signal` | Decoded messages admitted to the pipeline send path. |
+| `receiver.kafka.messages.completed` | `{message}` | `signal` | Admitted messages whose receiver work terminated. |
+| `receiver.kafka.messages.payload_size` | `By` | `signal` | Encoded Kafka payload bytes admitted to the pipeline send path. |
 
 `signal` is one of `traces`, `metrics`, or `logs`. Comparing `started` with
 `completed` exposes receiver work abandoned by an interrupted pipeline send.
@@ -900,8 +969,8 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | --- | --- | --- | --- |
 | `receiver.kafka.acknowledgements.responses` | `{response}` | `signal`, `outcome` | Downstream acknowledgement responses for admitted messages. |
 
-The receiver emits the terminal `outcome` values `success` for an ack and
-`refused` for a nack.
+The receiver emits `success` for an ACK, `failure` for a non-permanent NACK,
+and `refused` for a permanent NACK.
 
 #### `receiver.kafka.rejections`
 
@@ -938,8 +1007,16 @@ commit mode because librdkafka owns offset management in auto-commit mode.
 | `receiver.kafka.consumer.group.partition.assignments` | `{partition}` | Partitions newly acquired across rebalances. |
 | `receiver.kafka.consumer.group.partition.revocations` | `{partition}` | Owned partitions revoked across rebalances. |
 | `receiver.kafka.consumer.group.rebalance.commit_failures` | `{error}` | Synchronous commit calls that failed while partitions were being revoked. |
+| `receiver.kafka.consumer.group.rebalance.resume_failures` | `{error}` | Partition resume operations that failed while clearing rebalance pause state. |
 | `receiver.kafka.consumer.group.lag` | `{message}` | Mean broker-committed consumer-group lag across every owned partition. |
 | `receiver.kafka.consumer.group.feedback.after_revocation` | `{response}` | Ack or nack responses ignored because their partition ownership was stale. |
+| `receiver.kafka.consumer.retry.transient_nacks` | `{response}` | Non-permanent NACK responses received from downstream. |
+| `receiver.kafka.consumer.retry.replay_attempts` | `{attempt}` | Kafka replay operations attempted after backoff. |
+| `receiver.kafka.consumer.retry.partitions_paused` | `{partition}` | Current partitions believed to be paused for transient-NACK recovery. |
+| `receiver.kafka.consumer.retry.pause_failures` | `{error}` | Partition pause operations that failed during recovery. |
+| `receiver.kafka.consumer.retry.seek_failures` | `{error}` | Partition seek operations that failed during recovery. |
+| `receiver.kafka.consumer.retry.resume_failures` | `{error}` | Partition resume operations that failed during recovery. |
+| `receiver.kafka.consumer.retry.feedback.stale` | `{response}` | Feedback ignored because it belongs to an obsolete replay generation. |
 
 Record ingress metrics are active in both commit modes. Consumer-group metrics
 are active only in manual commit mode. Lag is also opt-in via
@@ -961,8 +1038,8 @@ an empty assignment resets it to zero.
 | --- | --- |
 | `receiver.kafka.messages_received` | `receiver.kafka.consumer.records.received`. |
 | `receiver.kafka.bytes_received` | `receiver.kafka.consumer.records.bytes`. |
-| `receiver.kafka.log_msgs_received`, `metric_msgs_received`, `trace_msgs_received` | Sum `receiver.messages.started` and `receiver.kafka.rejections.messages{reason="decode"}`, filtered by `signal`. |
-| `receiver.kafka.acks_received`, `nacks_received` | `receiver.kafka.acknowledgements.responses` with `outcome="success"` or `outcome="refused"`. |
+| `receiver.kafka.log_msgs_received`, `metric_msgs_received`, `trace_msgs_received` | Sum `receiver.kafka.messages.started` and `receiver.kafka.rejections.messages{reason="decode"}`, filtered by `signal`. |
+| `receiver.kafka.acks_received`, `nacks_received` | `receiver.kafka.acknowledgements.responses` with `outcome="success"`, `outcome="failure"` (non-permanent NACK), or `outcome="refused"` (permanent NACK). |
 | `receiver.kafka.processing_errors` | Sum `receiver.kafka.rejections.messages` across its bounded attributes. |
 | `receiver.kafka.unmarshal_failed_traces`, `unmarshal_failed_metrics`, `unmarshal_failed_logs` | `receiver.kafka.rejections.messages{reason="decode"}` filtered by `signal`. |
 | `receiver.kafka.empty_payloads`, `unknown_topic_errors`, `topic_id_exhausted` | `receiver.kafka.rejections.messages` filtered by the corresponding `reason`. |
@@ -982,7 +1059,7 @@ an empty assignment resets it to zero.
 | --- | --- | --- |
 | `kafka.receiver.consumer_config.override` | `warn` | A `consumer_config` entry was overridden by a built-in configuration field. |
 | `kafka.shutdown.commit_failed` | `error` | Final offset commit during shutdown failed. |
-| `kafka.commit.failed` | `error` | An offset commit failed (non-fatal; offsets stay tracked and are retried on the next ack/nack/timer-tick). |
+| `kafka.commit.failed` | `error` | An offset commit failed (non-fatal; offsets stay tracked and are retried on the next terminal feedback or timer tick). |
 | `kafka.message.empty_payload` | `error` | A consumed message had an empty payload. |
 | `kafka.message.unknown_topic` | `error` | A consumed message came from a topic not mapped to any signal. |
 | `kafka.message.unmarshal_failed` | `error` | A consumed message failed to unmarshal (includes `signal` field: traces, metrics, or logs). |
@@ -997,6 +1074,8 @@ an empty assignment resets it to zero.
 | `kafka.rebalance.partitions_assigned` | `info` | Partitions newly assigned during a rebalance (includes `count`, a `partitions` list truncated with a trailing `...` when it exceeds the entry cap, `listed_count`, and `truncated`). |
 | `kafka.rebalance.partitions_revoked` | `info` | Owned partitions revoked during a rebalance (includes `count`, a `partitions` list truncated with a trailing `...` when it exceeds the entry cap, `listed_count`, and `truncated`). |
 | `kafka.rebalance.commit_failed` | `error` | Commit-before-revoke failed during a rebalance. |
+| `kafka.rebalance.resume.fail` | `error` | Clearing persistent client-side pause state failed during `revoke` or `assign`; assignment failures are retried off the callback thread with capped backoff. |
+| `kafka.rebalance.resume.recovered` | `info` | A receive-loop retry cleared persistent pause state after an assignment resume failure. |
 | `kafka.rebalance.assignment_query_failed` | `warn` | Querying the full assignment after a rebalance failed; the receiver fell back to merging the reported delta. |
 | `kafka.rebalance.error` | `warn` | librdkafka reported a rebalance error. |
 | `kafka.assignment.became_non_empty` | `info` | The owned-partition set transitioned from empty to non-empty. This is an assignment-size transition, not a consumer-group membership event: an eager rebalance revokes all partitions before reassigning, so this fires on ordinary rebalances. |
@@ -1006,6 +1085,9 @@ an empty assignment resets it to zero.
 | `kafka.lag.fetch_watermarks_failed` | `error` | Broker high-watermark lookup for a partition failed during consumer-lag refresh. |
 | `kafka.lag.refresh_incomplete` | `warn` | A consumer-lag refresh could not measure every owned partition -- either it exceeded its total deadline (`reason=deadline_exceeded`) or an owned partition had no committed offset yet (`reason=uncommitted_partition`); the previous `receiver.kafka.consumer.group.lag` value is retained. |
 | `kafka.lag.refresh_task_failed` | `error` | The off-loop consumer-lag refresh task failed to run to completion (e.g. panicked); the previous `receiver.kafka.consumer.group.lag` value is retained. |
+| `kafka.retry.schedule` | `warn` | A transient NACK paused a partition and scheduled replay; includes failed and rewind offsets. |
+| `kafka.retry.start` | `info` | Backoff elapsed and the partition was sought and resumed from the rewind offset. |
+| `kafka.retry.fail` | `error` | A pause, seek, or resume operation failed; the bounded `operation` attribute identifies the stage and recovery is rescheduled without completing the offset. |
 | `kafka.header.attribute.invalid_utf8` | `error` | A Kafka header value was not valid UTF-8 during resource-attribute extraction; the attribute is skipped. |
 | `kafka.header.attribute.parse_bool_failed` | `error` | A Kafka header value could not be parsed as a boolean attribute. |
 | `kafka.header.attribute.parse_float_failed` | `error` | A Kafka header value could not be parsed as a float attribute. |
@@ -1020,11 +1102,19 @@ an empty assignment resets it to zero.
 - `consumer_config` entries that conflict with built-in fields are silently
   overridden by the built-in values.
 - Idempotent processing (`enable_idempotency`) only applies when commit mode
-  is `manual`; the setting is ignored in `auto` mode.
-- Compared to the Go Kafka receiver, this receiver does not replay terminally
-  failed messages from Kafka (a terminal nack commits the offset), does not pause
-  partitions on error, has no backoff jitter, and does not preserve per-partition
-  order across retries. See
+  is `manual`; the setting is ignored in `auto` mode. Deliberate transient-NACK
+  replay bypasses this duplicate filter.
+- Auto commit cannot provide downstream-aware failure recovery. An omitted
+  policy is inactive, and explicit `transient_nack.mode: replay` is rejected
+  with `commit.mode: auto`.
+- Kafka replay provides at-least-once delivery only while the failed record
+  remains within Kafka retention. It may duplicate records at or after the
+  rewind point and blocks the affected partition until progress resumes.
+- Receiver replay retries indefinitely with a capped exponential backoff. It
+  has no jitter, retry limit, operator-resume command, or built-in retry topic.
+  Built-in DLQ support is planned for a future release. Permanent NACKs
+  currently commit the record.
+- See
   [Comparison with the Go Kafka receiver](#comparison-with-the-go-kafka-receiver)
   for details.
 
