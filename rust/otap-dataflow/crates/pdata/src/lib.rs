@@ -18,10 +18,15 @@ pub mod otap;
 pub mod schema;
 
 pub mod arrays;
+pub mod codec;
 pub(crate) mod decode;
 pub mod encode;
 pub(crate) mod payload;
 
+pub use codec::{
+    CodecDirection, CodecState, CodecView, EncodeOutput, EncodingPlan, PdataCodec,
+    PdataCodecMetadata, PdataCodecRegistration, PdataEncoding, ResolvedCodec,
+};
 pub use otap::OtapArrowRecords;
 pub use otlp::OtlpProtoBytes;
 pub use payload::{OtapPayload, OtapPayloadHelpers, PayloadData};

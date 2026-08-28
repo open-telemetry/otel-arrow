@@ -3,6 +3,7 @@
 
 //! Testing utilities for OTLP and OTAP verification.
 
+pub mod codec_conformance;
 pub mod equiv;
 pub mod fixtures;
 pub mod record_batch;

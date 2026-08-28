@@ -53,7 +53,7 @@ pub use topic::{
 /// Validation helpers for node configuration.
 pub mod validation;
 
-pub use conversion::ConversionOptions;
+pub use conversion::{ConversionOptions, EncodeOptions};
 
 /// Signal types
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
