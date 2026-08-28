@@ -116,6 +116,47 @@ impl Default for TransientNackConfig {
     }
 }
 
+/// Validated replay timing used by the runtime retry state machine.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ReplayBackoffConfig {
+    initial_backoff_ms: u64,
+    max_backoff_ms: u64,
+}
+
+impl ReplayBackoffConfig {
+    /// Delay before the first replay attempt, in milliseconds.
+    #[must_use]
+    pub(crate) const fn initial_backoff_ms(&self) -> u64 {
+        self.initial_backoff_ms
+    }
+
+    /// Maximum delay between replay attempts, in milliseconds.
+    #[must_use]
+    pub(crate) const fn max_backoff_ms(&self) -> u64 {
+        self.max_backoff_ms
+    }
+}
+
+impl From<&TransientNackConfig> for ReplayBackoffConfig {
+    fn from(config: &TransientNackConfig) -> Self {
+        Self {
+            initial_backoff_ms: config.initial_backoff_ms,
+            max_backoff_ms: config.max_backoff_ms,
+        }
+    }
+}
+
+/// Effective transient-NACK behavior after commit-mode defaults are resolved.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum EffectiveTransientNackPolicy {
+    /// Downstream feedback is inactive because Kafka owns offset commits.
+    Inactive,
+    /// A transient NACK is terminal and allows the Kafka offset to advance.
+    CommitAndSkip,
+    /// A transient NACK starts partition-local Kafka replay.
+    Replay(ReplayBackoffConfig),
+}
+
 /// Partition assignment strategy for consumer group rebalancing.
 #[derive(Copy, Clone, Debug, PartialEq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -461,25 +502,22 @@ impl IsolationLevel {
 /// pattern, ensuring consistency across Kafka components.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(try_from = "KafkaReceiverConfigBuilder")]
-pub struct KafkaReceiverConfig(KafkaReceiverConfigBuilder, TransientNackConfig);
+pub struct KafkaReceiverConfig {
+    inner: KafkaReceiverConfigBuilder,
+    transient_nack_policy: EffectiveTransientNackPolicy,
+}
 
 impl TryFrom<KafkaReceiverConfigBuilder> for KafkaReceiverConfig {
     type Error = KafkaReceiverError;
 
-    fn try_from(builder: KafkaReceiverConfigBuilder) -> Result<Self, KafkaReceiverError> {
-        // An omitted policy follows the commit mode: manual commit defaults to
-        // downstream-aware replay, while auto commit leaves feedback handling
-        // inactive and uses the terminal value only as an internal sentinel.
-        let transient_nack = builder.transient_nack.clone().unwrap_or_else(|| {
-            let mode = match builder.commit.mode {
-                CommitMode::Manual => TransientNackMode::Replay,
-                CommitMode::Auto => TransientNackMode::CommitAndSkip,
-            };
-            TransientNackConfig {
-                mode,
-                ..TransientNackConfig::default()
-            }
-        });
+    fn try_from(mut builder: KafkaReceiverConfigBuilder) -> Result<Self, KafkaReceiverError> {
+        // Consume the user-facing optional value so the validated config keeps
+        // exactly one source of truth: the effective policy resolved below.
+        let configured_transient_nack = builder.transient_nack.take();
+        let transient_nack = configured_transient_nack
+            .as_ref()
+            .cloned()
+            .unwrap_or_default();
 
         // Reject empty required string fields
         if builder.brokers.is_empty() {
@@ -640,10 +678,22 @@ impl TryFrom<KafkaReceiverConfigBuilder> for KafkaReceiverConfig {
         }
 
         if matches!(builder.commit.mode, CommitMode::Auto)
-            && matches!(transient_nack.mode, TransientNackMode::Replay)
+            && configured_transient_nack
+                .as_ref()
+                .is_some_and(|config| matches!(config.mode, TransientNackMode::Replay))
         {
             return Err(KafkaReceiverError::ConfigTransientNackReplayRequiresManual);
         }
+
+        let transient_nack_policy = match (builder.commit.mode, transient_nack.mode) {
+            (CommitMode::Auto, _) => EffectiveTransientNackPolicy::Inactive,
+            (CommitMode::Manual, TransientNackMode::CommitAndSkip) => {
+                EffectiveTransientNackPolicy::CommitAndSkip
+            }
+            (CommitMode::Manual, TransientNackMode::Replay) => {
+                EffectiveTransientNackPolicy::Replay(ReplayBackoffConfig::from(&transient_nack))
+            }
+        };
 
         if builder.lag_refresh_interval_ms == Some(0) {
             return Err(KafkaReceiverError::ConfigNonPositiveValue {
@@ -677,7 +727,10 @@ impl TryFrom<KafkaReceiverConfigBuilder> for KafkaReceiverConfig {
             });
         }
 
-        Ok(Self(builder, transient_nack))
+        Ok(Self {
+            inner: builder,
+            transient_nack_policy,
+        })
     }
 }
 
@@ -1062,132 +1115,146 @@ impl KafkaReceiverConfig {
     /// Get the broker addresses.
     #[must_use]
     pub fn brokers(&self) -> &str {
-        &self.0.brokers
+        &self.inner.brokers
     }
 
     /// Get the group id.
     #[must_use]
     pub fn group_id(&self) -> &str {
-        &self.0.group_id
+        &self.inner.group_id
     }
 
     /// Get the client_id.
     #[must_use]
     pub fn client_id(&self) -> &str {
-        &self.0.client_id
+        &self.inner.client_id
     }
 
     /// Get the static group instance ID, if configured.
     #[must_use]
     pub fn group_instance_id(&self) -> Option<&str> {
-        self.0.group_instance_id.as_deref()
+        self.inner.group_instance_id.as_deref()
     }
 
     /// Set the static group instance ID.
     pub fn set_group_instance_id(&mut self, id: String) {
-        self.0.group_instance_id = Some(id);
+        self.inner.group_instance_id = Some(id);
     }
 
     /// Get the traces signal configuration.
     #[must_use]
     pub fn traces(&self) -> &SignalConfig {
-        &self.0.traces
+        &self.inner.traces
     }
 
     /// Get the metrics signal configuration.
     #[must_use]
     pub fn metrics(&self) -> &SignalConfig {
-        &self.0.metrics
+        &self.inner.metrics
     }
 
     /// Get the logs signal configuration.
     #[must_use]
     pub fn logs(&self) -> &SignalConfig {
-        &self.0.logs
+        &self.inner.logs
     }
 
     /// Get the traces topics.
     #[must_use]
     pub fn traces_topics(&self) -> &[String] {
-        &self.0.traces.topics
+        &self.inner.traces.topics
     }
 
     /// Get the metrics topics.
     #[must_use]
     pub fn metrics_topics(&self) -> &[String] {
-        &self.0.metrics.topics
+        &self.inner.metrics.topics
     }
 
     /// Get the logs topics.
     #[must_use]
     pub fn logs_topics(&self) -> &[String] {
-        &self.0.logs.topics
+        &self.inner.logs.topics
     }
 
     /// Get the traces exclude topics.
     #[must_use]
     pub fn traces_exclude_topics(&self) -> &[String] {
-        &self.0.traces.exclude_topics
+        &self.inner.traces.exclude_topics
     }
 
     /// Get the metrics exclude topics.
     #[must_use]
     pub fn metrics_exclude_topics(&self) -> &[String] {
-        &self.0.metrics.exclude_topics
+        &self.inner.metrics.exclude_topics
     }
 
     /// Get the logs exclude topics.
     #[must_use]
     pub fn logs_exclude_topics(&self) -> &[String] {
-        &self.0.logs.exclude_topics
+        &self.inner.logs.exclude_topics
     }
 
     /// Get the traces encoding.
     #[must_use]
     pub fn traces_encoding(&self) -> MessageFormat {
-        self.0.traces.encoding
+        self.inner.traces.encoding
     }
 
     /// Get the metrics encoding.
     #[must_use]
     pub fn metrics_encoding(&self) -> MessageFormat {
-        self.0.metrics.encoding
+        self.inner.metrics.encoding
     }
 
     /// Get the logs encoding.
     #[must_use]
     pub fn logs_encoding(&self) -> MessageFormat {
-        self.0.logs.encoding
+        self.inner.logs.encoding
     }
 
     /// Returns `true` if auto-commit mode is enabled.
     #[must_use]
     pub fn is_auto_commit(&self) -> bool {
-        matches!(self.0.commit.mode, CommitMode::Auto)
+        matches!(self.inner.commit.mode, CommitMode::Auto)
     }
 
     /// Get the commit configuration.
     #[must_use]
     pub fn commit(&self) -> &CommitConfig {
-        &self.0.commit
+        &self.inner.commit
     }
 
     /// Get the configured commit interval in milliseconds.
     #[must_use]
     pub fn commit_interval_ms(&self) -> Option<u64> {
-        self.0.commit.interval_ms
+        self.inner.commit.interval_ms
     }
 
     /// Get the effective non-permanent NACK policy after commit-mode defaults.
+    #[cfg(test)]
     #[must_use]
-    pub fn transient_nack(&self) -> &TransientNackConfig {
-        &self.1
+    pub(crate) fn transient_nack_policy(&self) -> &EffectiveTransientNackPolicy {
+        &self.transient_nack_policy
+    }
+
+    /// Get replay timing when the effective policy replays transient NACKs.
+    #[must_use]
+    pub(crate) fn replay_backoff(&self) -> Option<&ReplayBackoffConfig> {
+        match &self.transient_nack_policy {
+            EffectiveTransientNackPolicy::Replay(config) => Some(config),
+            EffectiveTransientNackPolicy::Inactive
+            | EffectiveTransientNackPolicy::CommitAndSkip => None,
+        }
     }
 
     /// Returns `true` when non-permanent NACKs should be replayed from Kafka.
     #[must_use]
     pub fn replays_transient_nacks(&self) -> bool {
-        matches!(self.transient_nack().mode, TransientNackMode::Replay)
+        matches!(
+            self.transient_nack_policy,
+            EffectiveTransientNackPolicy::Replay(_)
+        )
     }
 
     /// Get the configured consumer-lag refresh interval in milliseconds.
@@ -1195,25 +1262,25 @@ impl KafkaReceiverConfig {
     /// Returns `None` when consumer-lag refresh is disabled (the default).
     #[must_use]
     pub fn lag_refresh_interval_ms(&self) -> Option<u64> {
-        self.0.lag_refresh_interval_ms
+        self.inner.lag_refresh_interval_ms
     }
 
     /// Returns `true` if idempotent message processing is enabled.
     #[must_use]
     pub fn is_idempotent(&self) -> bool {
-        self.0.enable_idempotency
+        self.inner.enable_idempotency
     }
 
     /// Get the TLS configuration, if set.
     #[must_use]
     pub fn tls(&self) -> Option<&TlsConfig> {
-        self.0.tls.as_ref()
+        self.inner.tls.as_ref()
     }
 
     /// Get the configured rebalance strategy.
     #[must_use]
     pub fn rebalance_strategy(&self) -> Option<RebalanceStrategy> {
-        self.0.rebalance_strategy
+        self.inner.rebalance_strategy
     }
 
     /// The Kafka header key used for the message format indicator.
@@ -1222,56 +1289,58 @@ impl KafkaReceiverConfig {
     /// active.
     #[must_use]
     pub fn message_format_header(&self) -> &str {
-        &self.0.message_format_header
+        &self.inner.message_format_header
     }
 
     /// The librdkafka debug contexts, if configured.
     #[must_use]
     pub fn debug(&self) -> Option<&[DebugContext]> {
-        self.0.debug.as_deref()
+        self.inner.debug.as_deref()
     }
 
     /// The librdkafka log level, if configured.
     #[must_use]
     pub fn log_level(&self) -> Option<LogLevel> {
-        self.0.log_level
+        self.inner.log_level
     }
 
     /// Get the header extraction rules.
     #[must_use]
     pub fn resource_attrs_from_headers(&self) -> &HashMap<String, HeaderExtraction> {
-        &self.0.resource_attrs_from_headers
+        &self.inner.resource_attrs_from_headers
     }
 
     /// Get the list of all topics to subscribe to.
     #[must_use]
     pub fn all_topics(&self) -> Vec<&str> {
         let mut topics = Vec::with_capacity(
-            self.0.traces.topics.len() + self.0.metrics.topics.len() + self.0.logs.topics.len(),
+            self.inner.traces.topics.len()
+                + self.inner.metrics.topics.len()
+                + self.inner.logs.topics.len(),
         );
-        topics.extend(self.0.traces.topics.iter().map(String::as_str));
-        topics.extend(self.0.metrics.topics.iter().map(String::as_str));
-        topics.extend(self.0.logs.topics.iter().map(String::as_str));
+        topics.extend(self.inner.traces.topics.iter().map(String::as_str));
+        topics.extend(self.inner.metrics.topics.iter().map(String::as_str));
+        topics.extend(self.inner.logs.topics.iter().map(String::as_str));
         topics
     }
 
     /// Get the authentication configuration, if set.
     #[must_use]
     pub fn auth(&self) -> Option<&Auth> {
-        self.0.auth.as_ref()
+        self.inner.auth.as_ref()
     }
 
     /// Build Kafka client configuration.
     #[must_use]
     pub fn build_client_config(&self) -> ClientConfig {
-        self.0.build_client_config()
+        self.inner.build_client_config()
     }
 
     /// Returns any `consumer_config` keys that overlap with rdkafka keys
     /// managed by first-class config fields and may be overwritten.
     #[must_use]
     pub fn overridden_consumer_config_keys(&self) -> Vec<&str> {
-        self.0
+        self.inner
             .consumer_config
             .keys()
             .filter(|k| MANAGED_CONSUMER_CONFIG_KEYS.contains(&k.as_str()))
@@ -1452,7 +1521,10 @@ mod tests {
 
         let cfg = KafkaReceiverConfig::try_from(builder).expect("manual config is valid");
 
-        assert_eq!(cfg.transient_nack().mode, TransientNackMode::Replay);
+        assert!(matches!(
+            cfg.transient_nack_policy(),
+            EffectiveTransientNackPolicy::Replay(_)
+        ));
         assert!(cfg.replays_transient_nacks());
     }
 
@@ -1469,7 +1541,54 @@ mod tests {
 
         let cfg = KafkaReceiverConfig::try_from(builder).expect("auto config is valid");
 
-        assert_eq!(cfg.transient_nack().mode, TransientNackMode::CommitAndSkip);
+        assert_eq!(
+            cfg.transient_nack_policy(),
+            &EffectiveTransientNackPolicy::Inactive
+        );
+        assert!(!cfg.replays_transient_nacks());
+    }
+
+    /// Scenario: A manual-commit receiver explicitly selects commit-and-skip.
+    /// Guarantees: Validation preserves the explicit terminal policy rather than treating it as inactive.
+    #[test]
+    fn explicit_commit_and_skip_policy_is_active_in_manual_mode() {
+        let builder = KafkaReceiverConfigBuilder::new("b", "g", "c")
+            .with_traces(SignalConfig::new(vec!["t".to_string()]))
+            .with_transient_nack(TransientNackConfig {
+                mode: TransientNackMode::CommitAndSkip,
+                ..TransientNackConfig::default()
+            });
+
+        let cfg = KafkaReceiverConfig::try_from(builder).expect("manual config is valid");
+
+        assert_eq!(
+            cfg.transient_nack_policy(),
+            &EffectiveTransientNackPolicy::CommitAndSkip
+        );
+        assert!(!cfg.replays_transient_nacks());
+    }
+
+    /// Scenario: An auto-commit receiver explicitly selects commit-and-skip.
+    /// Guarantees: Validation resolves the policy to inactive because Kafka owns commits.
+    #[test]
+    fn explicit_commit_and_skip_policy_is_inactive_in_auto_mode() {
+        let builder = KafkaReceiverConfigBuilder::new("b", "g", "c")
+            .with_traces(SignalConfig::new(vec!["t".to_string()]))
+            .with_commit(CommitConfig {
+                mode: CommitMode::Auto,
+                interval_ms: None,
+            })
+            .with_transient_nack(TransientNackConfig {
+                mode: TransientNackMode::CommitAndSkip,
+                ..TransientNackConfig::default()
+            });
+
+        let cfg = KafkaReceiverConfig::try_from(builder).expect("auto config is valid");
+
+        assert_eq!(
+            cfg.transient_nack_policy(),
+            &EffectiveTransientNackPolicy::Inactive
+        );
         assert!(!cfg.replays_transient_nacks());
     }
 
