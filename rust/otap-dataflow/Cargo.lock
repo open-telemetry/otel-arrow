@@ -7179,6 +7179,8 @@ dependencies = [
 [[package]]
 name = "otel-arrow-contrib-data-engine-expressions"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b58a41bd9f7c43e4b337993a68e02b660d0323d6974f6cd8c9b8ed22642fc5b"
 dependencies = [
  "caseless",
  "chrono",
@@ -7190,6 +7192,8 @@ dependencies = [
 [[package]]
 name = "otel-arrow-contrib-data-engine-kql-parser"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "014d8adc2d00f77e23dd7bed55dfabf58ca7b53aad68f7c861b5939fbc3a0b59"
 dependencies = [
  "chrono",
  "otel-arrow-contrib-data-engine-expressions",
@@ -7202,6 +7206,8 @@ dependencies = [
 [[package]]
 name = "otel-arrow-contrib-data-engine-parser-abstractions"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "76e0038dec22377f113084e9d13aa16a268235ca1c9d4aca3e1a94e0c42356ee"
 dependencies = [
  "chrono",
  "otel-arrow-contrib-data-engine-expressions",
@@ -7213,6 +7219,8 @@ dependencies = [
 [[package]]
 name = "otel-arrow-contrib-data-engine-recordset"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "63af15bf7b4983c4af6ddaef792064d75cbb7bce6346e8aae635c0b2d5647bbb"
 dependencies = [
  "chrono",
  "hex",
