@@ -8,15 +8,19 @@
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
 
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_otap::compression::CompressionMethod;
 use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
-use otel_arrow_dfe_pdata::OtapPayload;
 use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
+use otel_arrow_dfe_pdata::otap::batching::make_item_batches;
 use otel_arrow_dfe_pdata::otlp::OtlpProtoBytes;
+use otel_arrow_dfe_pdata::otlp::batching::make_bytes_batches_owned;
 use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
 use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::*;
 use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::*;
 use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::*;
 use otel_arrow_dfe_pdata::testing::round_trip::{otlp_message_to_bytes, otlp_to_otap};
+use otel_arrow_dfe_pdata::{OtapPayload, TryIntoWithOptions};
 
 #[cfg(not(windows))]
 use tikv_jemallocator::Jemalloc;
@@ -179,10 +183,112 @@ fn measure_payload_size(c: &mut Criterion) {
     group.finish();
 }
 
+fn legacy_representation_paths(c: &mut Criterion) {
+    let mut group = c.benchmark_group("PData legacy representation paths");
+
+    for record_count in [10, 100, 1_000] {
+        let message = OtlpProtoMessage::Logs(create_logs_data(record_count));
+        let otlp_bytes: OtlpProtoBytes = otlp_message_to_bytes(&message);
+        let otap_records: OtapArrowRecords = otlp_to_otap(&message);
+
+        _ = group.bench_function(BenchmarkId::new("OTLP/forward", record_count), |b| {
+            b.iter_batched(
+                || OtapPayload::from(otlp_bytes.clone()),
+                |payload| {
+                    let forwarded: OtlpProtoBytes = payload
+                        .try_into_with_default()
+                        .expect("matching OTLP forwarding");
+                    black_box(forwarded)
+                },
+                BatchSize::SmallInput,
+            )
+        });
+
+        _ = group.bench_function(BenchmarkId::new("OTLP/decode", record_count), |b| {
+            b.iter_batched(
+                || OtapPayload::from(otlp_bytes.clone()),
+                |payload| {
+                    let records: OtapArrowRecords =
+                        payload.try_into_with_default().expect("OTLP decode");
+                    black_box(records)
+                },
+                BatchSize::SmallInput,
+            )
+        });
+
+        _ = group.bench_function(BenchmarkId::new("OTAP/encode_otlp", record_count), |b| {
+            b.iter_batched(
+                || otap_records.clone(),
+                |records| {
+                    let encoded: OtlpProtoBytes =
+                        records.try_into_with_default().expect("OTLP encode");
+                    black_box(encoded)
+                },
+                BatchSize::SmallInput,
+            )
+        });
+
+        _ = group.bench_function(BenchmarkId::new("OTAP/native_move", record_count), |b| {
+            b.iter_batched(
+                || OtapPayload::from(otap_records.clone()),
+                |payload| {
+                    let records: OtapArrowRecords = payload
+                        .try_into_with_default()
+                        .expect("native payload move");
+                    black_box(records)
+                },
+                BatchSize::SmallInput,
+            )
+        });
+
+        _ = group.bench_function(BenchmarkId::new("OTLP/batch", record_count), |b| {
+            b.iter_batched(
+                || vec![otlp_bytes.clone(), otlp_bytes.clone()],
+                |inputs| {
+                    black_box(
+                        make_bytes_batches_owned(SignalType::Logs, None, None, None, None, inputs)
+                            .expect("OTLP byte batching"),
+                    )
+                },
+                BatchSize::SmallInput,
+            )
+        });
+
+        _ = group.bench_function(BenchmarkId::new("OTAP/batch", record_count), |b| {
+            b.iter_batched(
+                || vec![otap_records.clone(), otap_records.clone()],
+                |inputs| {
+                    black_box(
+                        make_item_batches(SignalType::Logs, None, inputs)
+                            .expect("OTAP item batching"),
+                    )
+                },
+                BatchSize::SmallInput,
+            )
+        });
+
+        _ = group.bench_function(BenchmarkId::new("OTLP/zstd", record_count), |b| {
+            b.iter_batched_ref(
+                Vec::new,
+                |scratch| {
+                    CompressionMethod::Zstd
+                        .encode(black_box(otlp_bytes.as_bytes()), scratch)
+                        .expect("OTLP HTTP compression");
+                    _ = black_box(scratch.len());
+                },
+                BatchSize::SmallInput,
+            )
+        });
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     payload_measurements,
     count_logs,
     count_payload_items,
-    measure_payload_size
+    measure_payload_size,
+    legacy_representation_paths
 );
 criterion_main!(payload_measurements);

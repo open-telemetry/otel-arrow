@@ -691,6 +691,29 @@ mod test {
     use bytes::Bytes;
     use pretty_assertions::assert_eq;
     use prost::Message;
+    use std::mem::size_of;
+
+    /// Scenario: The legacy payload representation is built for a 64-bit target.
+    /// Guarantees: The baseline payload layout remains fixed for codec comparisons.
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn legacy_payload_layout_is_stable() {
+        assert_eq!(size_of::<PayloadData>(), 40);
+        assert_eq!(size_of::<OtapPayload>(), 72);
+    }
+
+    /// Scenario: An OTLP payload is converted back to its matching legacy representation.
+    /// Guarantees: Forwarding retains the original shared byte buffer without copying it.
+    #[test]
+    fn matching_otlp_forwarding_preserves_buffer() {
+        let original = Bytes::from_static(b"legacy-otlp");
+        let pointer = original.as_ptr();
+        let payload = OtapPayload::from(OtlpProtoBytes::ExportLogsRequest(original));
+        let forwarded: OtlpProtoBytes = payload
+            .try_into_with_default()
+            .expect("matching OTLP forwarding");
+        assert_eq!(forwarded.as_bytes().as_ptr(), pointer);
+    }
 
     #[test]
     fn test_conversion_logs() {
