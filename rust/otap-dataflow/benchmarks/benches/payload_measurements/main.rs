@@ -20,7 +20,9 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::*;
 use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::*;
 use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::*;
 use otel_arrow_dfe_pdata::testing::round_trip::{otlp_message_to_bytes, otlp_to_otap};
-use otel_arrow_dfe_pdata::{OtapPayload, TryIntoWithOptions};
+use otel_arrow_dfe_pdata::{
+    CodecState, EncodingPlan, OtapPayload, ResolvedCodec, TryIntoWithOptions,
+};
 
 #[cfg(not(windows))]
 use tikv_jemallocator::Jemalloc;
@@ -284,11 +286,84 @@ fn legacy_representation_paths(c: &mut Criterion) {
     group.finish();
 }
 
+fn direct_codec_paths(c: &mut Criterion) {
+    let mut group = c.benchmark_group("PData direct codec paths");
+
+    for record_count in [10, 100, 1_000] {
+        let message = OtlpProtoMessage::Logs(create_logs_data(record_count));
+        let otlp_bytes: OtlpProtoBytes = otlp_message_to_bytes(&message);
+        let encoded = otlp_bytes.clone_bytes();
+        let otap_records: OtapArrowRecords = otlp_to_otap(&message);
+
+        _ = group.bench_function(BenchmarkId::new("OTLP/count", record_count), |b| {
+            b.iter(|| black_box(ResolvedCodec::OTLP.count_items(SignalType::Logs, &encoded)))
+        });
+
+        _ = group.bench_function(BenchmarkId::new("OTLP/view", record_count), |b| {
+            let mut state = CodecState::default();
+            b.iter(|| {
+                black_box(
+                    state
+                        .view(ResolvedCodec::OTLP, SignalType::Logs, &encoded)
+                        .expect("OTLP codec view"),
+                )
+            })
+        });
+
+        _ = group.bench_function(BenchmarkId::new("OTLP/decode", record_count), |b| {
+            let mut state = CodecState::default();
+            b.iter(|| {
+                black_box(
+                    state
+                        .decode(ResolvedCodec::OTLP, SignalType::Logs, &encoded)
+                        .expect("OTLP codec decode"),
+                )
+            })
+        });
+
+        _ = group.bench_function(
+            BenchmarkId::new("OTAP/encode_prepared", record_count),
+            |b| {
+                let mut state = CodecState::default();
+                b.iter_batched(
+                    || otap_records.clone(),
+                    |mut records| {
+                        let output = state
+                            .prepare_encode(&mut records, &EncodingPlan::OTLP)
+                            .expect("OTLP prepared output");
+                        black_box(output.as_ref().len())
+                    },
+                    BatchSize::SmallInput,
+                )
+            },
+        );
+
+        _ = group.bench_function(BenchmarkId::new("OTAP/encode_owned", record_count), |b| {
+            let mut state = CodecState::default();
+            b.iter_batched(
+                || otap_records.clone(),
+                |mut records| {
+                    black_box(
+                        state
+                            .prepare_encode(&mut records, &EncodingPlan::OTLP)
+                            .expect("OTLP owned output")
+                            .into_bytes(),
+                    )
+                },
+                BatchSize::SmallInput,
+            )
+        });
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     payload_measurements,
     count_logs,
     count_payload_items,
     measure_payload_size,
-    legacy_representation_paths
+    legacy_representation_paths,
+    direct_codec_paths
 );
 criterion_main!(payload_measurements);
