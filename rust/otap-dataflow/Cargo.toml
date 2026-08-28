@@ -43,6 +43,7 @@ otel-arrow-dfe-contrib-extensions.workspace = true
 otel-arrow-dfe-contrib-nodes.workspace = true
 otel-arrow-dfe-controller.workspace = true
 otel-arrow-dfe-core-nodes.workspace = true
+otel-arrow-dfe-dev-nodes = { workspace = true, optional = true }
 otel-arrow-dfe-engine.workspace = true
 otel-arrow-dfe-otap.workspace = true
 otel-arrow-dfe-wasm-host = { workspace = true, optional = true }
@@ -65,6 +66,7 @@ otel-arrow-dfe-contrib-nodes = { path = "crates/contrib-nodes" }
 otel-arrow-dfe-control-channel = { path = "crates/control-channel" }
 otel-arrow-dfe-controller = { path = "crates/controller" }
 otel-arrow-dfe-core-nodes = { path = "crates/core-nodes" }
+otel-arrow-dfe-dev-nodes = { path = "crates/dev-nodes" }
 otel-arrow-dfe-engine = { path = "crates/engine" }
 otel-arrow-dfe-expohisto = { path = "crates/expohisto" }
 otel-arrow-dfe-otap = { path = "crates/otap" }
@@ -75,9 +77,10 @@ otel-arrow-dfe-pdata = { path = "crates/pdata" }
 otel-arrow-dfe-pdata-views = { path = "crates/pdata-views" }
 otel-arrow-dfe-telemetry = { path = "crates/telemetry" }
 otel-arrow-dfe-quiver = { path = "crates/quiver" }
-otel-arrow-contrib-data-engine-expressions = { path = "../experimental/data_engine/expressions", version = "=0.1.0" }
-otel-arrow-contrib-data-engine-kql-parser = { path = "../experimental/data_engine/kql-parser", version = "=0.1.0" }
-otel-arrow-contrib-data-engine-parser-abstractions = { path = "../experimental/data_engine/parser-abstractions", version = "=0.1.0" }
+otel-arrow-contrib-data-engine-expressions = "0.1.0"
+otel-arrow-contrib-data-engine-kql-parser = "0.1.0"
+otel-arrow-contrib-data-engine-parser-abstractions = "0.1.0"
+otel-arrow-contrib-data-engine-recordset = "0.1.0"
 
 aws-config = "1.0"
 aws-msk-iam-sasl-signer = "1.0.1"
@@ -159,11 +162,9 @@ openssl = "0.10"
 opentelemetry-proto = { version = "0.32", default-features = false, features = ["gen-tonic-messages", "logs", "trace"]}
 
 # Detector-only use: opentelemetry_sdk provides the `Resource` type and `ResourceDetector` trait;
-# opentelemetry provides the `Key`/`Value` types those resources hold. Both use
-# `default-features = false` to drop trace/metrics/logs. Two caveats keep this from being fully slim
-# today: opentelemetry_sdk 0.32.1 predates the slimming in opentelemetry-rust #3593 (unreleased), and
-# the contrib resource-detectors crate still enables opentelemetry's default features, so they are
-# pulled in transitively until fixed upstream.
+# opentelemetry provides the `Key`/`Value` types those resources hold. These dependencies use
+# `default-features = false` to drop trace/metrics/logs. opentelemetry_sdk 0.32.1 predates the
+# slimming in opentelemetry-rust #3593 (unreleased).
 opentelemetry = { version = "0.32.0", default-features = false }
 opentelemetry_sdk = { version = "0.32.1", default-features = false }
 
@@ -270,7 +271,6 @@ time = ">=0.3.47, <0.3.56"
 wiremock = "0.6.5"
 anyhow = "1.0.98"
 crossterm = "0.29"
-otel-arrow-contrib-data-engine-recordset = { path = "../experimental/data_engine/engine-recordset", version = "=0.1.0" }
 eventheader_dynamic = "0.5.0"
 include_dir = "0.7.4"
 mime_guess = "2.0.5"
@@ -294,9 +294,7 @@ tracelogging = "1.2.4"
 tracelogging_dynamic = "1.2.4"
 urlencoding = "2"
 geneva-uploader = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "43bd04be9e825564eeb3424b3e4caebf3e3ba7c5", default-features = false, features = ["tls-rustls"] }
-# Pinned to a rev containing upstream resource detector work. Swap to a published version once
-# contrib cuts one.
-opentelemetry-resource-detectors = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "43bd04be9e825564eeb3424b3e4caebf3e3ba7c5" }
+opentelemetry-resource-detectors = "0.12.0"
 
 [patch."https://github.com/open-telemetry/otel-arrow"]
 otap-df-pdata-views = { path = "compat/otap-df-pdata-views" }
@@ -324,12 +322,16 @@ dhat-heap = [
     "dep:dhat",
 ]
 
-# Dev/test tooling (traffic generator) and the otap integration tests
+# Development nodes and the otap integration tests
 # that exercise it. Activating this from the workspace default keeps
 # `cargo test` running the full suite locally; CI jobs that drop
 # `dev-tools` (e.g. the Linux ARM `build_nonrequired` job) avoid the
 # weaver / gix / reqwest / native-tls / openssl-sys C build.
-dev-tools = ["otel-arrow-dfe-core-nodes/dev-tools", "otel-arrow-dfe-otap/integration-tests"]
+dev-tools = [
+    "dep:otel-arrow-dfe-dev-nodes",
+    "otel-arrow-dfe-core-nodes/dev-tools",
+    "otel-arrow-dfe-otap/integration-tests",
+]
 
 # Admin UI live log streaming over WebSocket.
 admin-live-logs-ws = ["otel-arrow-dfe-controller/admin-live-logs-ws"]

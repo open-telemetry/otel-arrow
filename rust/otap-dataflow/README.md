@@ -157,8 +157,8 @@ All gRPC services are implemented using
 [Tonic](https://github.com/hyperium/tonic).
 
 The major OTAP Dataflow components related to OTAP/OTLP pipeline transport are
-listed next. Their concrete core-node implementations now live in
-`otel-arrow-dfe-core-nodes`.
+listed next. Runtime components live in `otel-arrow-dfe-core-nodes`;
+development-only components live in `otel-arrow-dfe-dev-nodes`.
 
 #### Attributes processor
 
@@ -252,16 +252,28 @@ establish the performance of the OTAP Dataflow system.
 
 [See the core-node catalog.](./crates/core-nodes/README.md)
 
-- Exporters: `console_exporter`, `error_exporter`, `noop_exporter`,
+- Exporters: `console_exporter`, `noop_exporter`,
   `otap_exporter`, `otlp_grpc_exporter`, `otlp_http_exporter`,
-  `parquet_exporter`, `perf_exporter`, `topic_exporter`
+  `parquet_exporter`, `topic_exporter`
 - Processors: `attributes_processor`, `batch_processor`,
-  `content_router`, `debug_processor`, `delay_processor`,
-  `durable_buffer_processor`, `fanout_processor`, `filter_processor`,
-  `retry_processor`, `signal_type_router`, `transform_processor`
+  `content_router`, `debug_processor`, `durable_buffer_processor`,
+  `fanout_processor`, `filter_processor`, `retry_processor`,
+  `signal_type_router`, `transform_processor`
 - Receivers: `host_metrics_receiver`, `internal_telemetry_receiver`,
   `journald_receiver`, `otap_receiver`, `otlp_receiver`,
-  `syslog_cef_receiver`, `topic_receiver`, `traffic_generator`
+  `syslog_cef_receiver`, `topic_receiver`
+
+### Development Nodes
+
+[See the development-node catalog.](./crates/dev-nodes/README.md)
+
+The unpublished `otel-arrow-dfe-dev-nodes` crate contains nodes for testing,
+failure injection, and benchmarking. The default build enables them through
+the `dev-tools` feature.
+
+- Exporters: `error_exporter`, `perf_exporter`
+- Processors: `delay_processor`
+- Receivers: `traffic_generator`
 
 ### Contrib Nodes
 

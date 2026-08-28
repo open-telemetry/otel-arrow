@@ -1257,6 +1257,7 @@ dependencies = [
  "otel-arrow-dfe-config",
  "otel-arrow-dfe-control-channel",
  "otel-arrow-dfe-core-nodes",
+ "otel-arrow-dfe-dev-nodes",
  "otel-arrow-dfe-engine",
  "otel-arrow-dfe-otap",
  "otel-arrow-dfe-pdata",
@@ -7090,7 +7091,6 @@ dependencies = [
  "js-sys",
  "pin-project-lite",
  "thiserror 2.0.20",
- "tracing",
 ]
 
 [[package]]
@@ -7106,8 +7106,9 @@ dependencies = [
 
 [[package]]
 name = "opentelemetry-resource-detectors"
-version = "0.11.0"
-source = "git+https://github.com/open-telemetry/opentelemetry-rust-contrib.git?rev=43bd04be9e825564eeb3424b3e4caebf3e3ba7c5#43bd04be9e825564eeb3424b3e4caebf3e3ba7c5"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "90ca3c069db41e9a9319dc075cf05aac4841d7c174995270223f1f16ad2eab18"
 dependencies = [
  "opentelemetry",
  "opentelemetry-semantic-conventions",
@@ -7179,6 +7180,8 @@ dependencies = [
 [[package]]
 name = "otel-arrow-contrib-data-engine-expressions"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b58a41bd9f7c43e4b337993a68e02b660d0323d6974f6cd8c9b8ed22642fc5b"
 dependencies = [
  "caseless",
  "chrono",
@@ -7190,6 +7193,8 @@ dependencies = [
 [[package]]
 name = "otel-arrow-contrib-data-engine-kql-parser"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "014d8adc2d00f77e23dd7bed55dfabf58ca7b53aad68f7c861b5939fbc3a0b59"
 dependencies = [
  "chrono",
  "otel-arrow-contrib-data-engine-expressions",
@@ -7202,6 +7207,8 @@ dependencies = [
 [[package]]
 name = "otel-arrow-contrib-data-engine-parser-abstractions"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "76e0038dec22377f113084e9d13aa16a268235ca1c9d4aca3e1a94e0c42356ee"
 dependencies = [
  "chrono",
  "otel-arrow-contrib-data-engine-expressions",
@@ -7213,6 +7220,8 @@ dependencies = [
 [[package]]
 name = "otel-arrow-contrib-data-engine-recordset"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "63af15bf7b4983c4af6ddaef792064d75cbb7bce6346e8aae635c0b2d5647bbb"
 dependencies = [
  "chrono",
  "hex",
@@ -7236,6 +7245,7 @@ dependencies = [
  "otel-arrow-dfe-contrib-nodes",
  "otel-arrow-dfe-controller",
  "otel-arrow-dfe-core-nodes",
+ "otel-arrow-dfe-dev-nodes",
  "otel-arrow-dfe-engine",
  "otel-arrow-dfe-otap",
  "otel-arrow-dfe-wasm-host",
@@ -7312,6 +7322,7 @@ version = "0.52.0"
 dependencies = [
  "otel-arrow-dfe-contrib-nodes",
  "otel-arrow-dfe-core-nodes",
+ "otel-arrow-dfe-dev-nodes",
  "otel-arrow-dfe-engine",
  "otel-arrow-dfe-otap",
  "serde",
@@ -7581,7 +7592,6 @@ dependencies = [
  "uuid",
  "weaver_common",
  "weaver_forge",
- "weaver_resolved_schema",
  "weaver_resolver",
  "weaver_semconv",
  "xxhash-rust",
@@ -7610,6 +7620,34 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "wiremock",
+]
+
+[[package]]
+name = "otel-arrow-dfe-dev-nodes"
+version = "0.52.0"
+dependencies = [
+ "async-trait",
+ "humantime-serde",
+ "linkme",
+ "otel-arrow-dfe-channel",
+ "otel-arrow-dfe-config",
+ "otel-arrow-dfe-engine",
+ "otel-arrow-dfe-otap",
+ "otel-arrow-dfe-pdata",
+ "otel-arrow-dfe-telemetry",
+ "otel-arrow-dfe-telemetry-macros",
+ "prost 0.14.4",
+ "rand 0.10.2",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+ "weaver_common",
+ "weaver_forge",
+ "weaver_resolved_schema",
+ "weaver_resolver",
+ "weaver_semconv",
+ "zstd",
 ]
 
 [[package]]
@@ -7698,6 +7736,7 @@ dependencies = [
  "otel-arrow-dfe-config",
  "otel-arrow-dfe-contrib-nodes",
  "otel-arrow-dfe-core-nodes",
+ "otel-arrow-dfe-dev-nodes",
  "otel-arrow-dfe-engine",
  "otel-arrow-dfe-engine-macros",
  "otel-arrow-dfe-pdata",
@@ -7987,6 +8026,7 @@ dependencies = [
  "otel-arrow-dfe-config",
  "otel-arrow-dfe-controller",
  "otel-arrow-dfe-core-nodes",
+ "otel-arrow-dfe-dev-nodes",
  "otel-arrow-dfe-engine",
  "otel-arrow-dfe-otap",
  "otel-arrow-dfe-pdata",
