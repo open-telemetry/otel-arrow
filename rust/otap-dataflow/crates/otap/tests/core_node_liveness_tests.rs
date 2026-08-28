@@ -18,7 +18,7 @@ use otel_arrow_dfe_config::policy::{ChannelCapacityPolicy, TelemetryPolicy};
 use otel_arrow_dfe_config::{DeployedPipelineKey, PipelineGroupId, PipelineId};
 use otel_arrow_dfe_core_nodes::processors::batch_processor::OTAP_BATCH_PROCESSOR_URN;
 use otel_arrow_dfe_core_nodes::processors::retry_processor::RETRY_PROCESSOR_URN;
-use otel_arrow_dfe_core_nodes::receivers::traffic_generator::TRAFFIC_GENERATOR_RECEIVER_URN;
+use otel_arrow_dfe_dev_nodes::receivers::traffic_generator::TRAFFIC_GENERATOR_RECEIVER_URN;
 use otel_arrow_dfe_engine::context::ControllerContext;
 use otel_arrow_dfe_engine::control::{
     RuntimeControlMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
