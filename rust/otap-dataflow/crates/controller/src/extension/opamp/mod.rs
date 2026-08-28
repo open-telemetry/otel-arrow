@@ -36,7 +36,7 @@ use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::{Connector, MaybeTlsStream, WebSocketStream};
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::{connect_async_tls_with_config, tungstenite::Message};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -279,8 +279,21 @@ async fn connect_websocket(
     backoff: &mut ExponentialBackoff,
 ) -> Option<WebSocketStream<MaybeTlsStream<TcpStream>>> {
     loop {
+        // TODO this connector can be created once and passed into this function
+        let connector = connector(config).await;
+        
+        // TODO - this is kind of crappy having to clone this, need better logic also
+        let endpoint = if matches!(connector, Connector::Rustls(_)) {
+            config.endpoint.replace("ws://", "wss://")
+        } else {
+            config.endpoint.clone()
+        };
+        println!("connecting endpoint {endpoint:?}");
+
+
         let connect_result = cancellation_token
-            .run_until_cancelled(connect_async(&config.endpoint))
+            // .run_until_cancelled(connect_async(&config.endpoint))
+            .run_until_cancelled(connect_async_tls_with_config(&endpoint, None, false, Some(connector)))
             .await?;
 
         match connect_result {
@@ -291,6 +304,7 @@ async fn connect_websocket(
 
             // backoff and retry connection
             Err(e) => {
+                println!("ERROR CONNECTING {e:?}");
                 let retry_in = backoff.next_delay();
                 otel_warn!(
                     "opamp.controller_extension.ws_connect.error",
@@ -310,6 +324,7 @@ async fn connect_websocket(
 async fn connector(config: &Config) -> Connector {
     match &config.tls {
         Some(tls_client_config) => {
+            println!("connecting TLS");
             // TODO initialize this elsewhere
             let connector = create_client_config(tls_client_config)
                 .await
@@ -317,7 +332,10 @@ async fn connector(config: &Config) -> Connector {
                 .unwrap();
             Connector::Rustls(Arc::new(connector))
         }
-        None => Connector::Plain,
+        None => { 
+            println!("connecting not tls");
+            Connector::Plain
+        },
     }
 }
 
@@ -1635,13 +1653,17 @@ fn pipeline_status_custom_message(
 mod test {
     use std::{borrow::Cow, sync::Arc};
 
+    use tempfile::TempDir;
+
     use otel_arrow_dfe_admin::ControlPlane;
     use otel_arrow_dfe_config::{
         extension::{ExtensionUrn, ExtensionUserConfig},
         observed_state::ObservedStateSettings,
+        tls::{TlsConfig, TlsServerConfig},
     };
     use otel_arrow_dfe_state::store::ObservedStateStore;
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_test_tls_certs::{ExtendedKeyUsage, generate_ca};
 
     use crate::extension::opamp::proto::opamp::v1::{
         AgentRemoteConfig, AnyValue, RetryInfo, ServerErrorResponse, any_value::Value,
@@ -1667,12 +1689,22 @@ mod test {
         control_plane: Arc<MockControlPlane>,
         expected_exchanges: usize,
         mut config: Config,
+        server_tls_config: Option<TlsServerConfig>,
     ) -> Vec<AgentToServer> {
         let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
-        config.endpoint = format!("ws://127.0.0.1:{port}/v1/opamp");
+        // TODO - not sure the if/else is actually necesasry here
+        config.endpoint = if server_tls_config.is_none() {
+            format!("ws://127.0.0.1:{port}/v1/opamp")
+        } else {
+            format!("ws://localhost:{port}/v1/opamp")
+        };
 
         let cancellation_token = CancellationToken::new();
-        let mut server = MockWebSocketServer::new(port, mock_server_responses);
+        let mut server = if let Some(server_tls_config) = server_tls_config {
+            MockWebSocketServer::new_tls(port, mock_server_responses, server_tls_config)
+        } else {
+            MockWebSocketServer::new(port, mock_server_responses)
+        };
         let server_state = server.state();
         let server_cancellation_token = cancellation_token.clone();
 
@@ -1700,7 +1732,9 @@ mod test {
 
         let client_cancellation_token = cancellation_token.clone();
         let client_handle = tokio::spawn(async move {
-            run_websocket_connect_loop(context, config, client_cancellation_token).await
+            let result = run_websocket_connect_loop(context, config, client_cancellation_token).await;
+            println!("OOPS - WS connect loop exited with error {result:?}");
+            return result
         });
 
         server_state
@@ -1728,7 +1762,8 @@ mod test {
             "endpoint": ""
         }))
         .unwrap();
-        let requests = run_web_socket_test_with_config(responses, control_plane, 3, config).await;
+        let requests =
+            run_web_socket_test_with_config(responses, control_plane, 3, config, None).await;
         assert_eq!(requests.len(), 3);
 
         let uid = EXPECTED_INSTANCE_UID_BYTES.to_vec();
@@ -1800,7 +1835,8 @@ mod test {
             }
         }))
         .unwrap();
-        let requests = run_web_socket_test_with_config(responses, control_plane, 3, config).await;
+        let requests =
+            run_web_socket_test_with_config(responses, control_plane, 3, config, None).await;
         assert_eq!(requests.len(), 3);
 
         // Message 1: initial full-state - should contain the agent description since is in config
@@ -1871,7 +1907,8 @@ mod test {
             "endpoint": ""
         }))
         .unwrap();
-        let requests = run_web_socket_test_with_config(responses, control_plane, 3, config).await;
+        let requests =
+            run_web_socket_test_with_config(responses, control_plane, 3, config, None).await;
         assert_eq!(requests.len(), 3);
 
         let applied = &requests[2];
@@ -1898,7 +1935,8 @@ mod test {
             "endpoint": ""
         }))
         .unwrap();
-        let requests = run_web_socket_test_with_config(responses, control_plane, 3, config).await;
+        let requests =
+            run_web_socket_test_with_config(responses, control_plane, 3, config, None).await;
         assert_eq!(requests.len(), 3);
 
         let applied = &requests[2];
@@ -1938,7 +1976,8 @@ mod test {
         }))
         .unwrap();
 
-        let requests = run_web_socket_test_with_config(responses, control_plane, 2, config).await;
+        let requests =
+            run_web_socket_test_with_config(responses, control_plane, 2, config, None).await;
         assert_eq!(requests.len(), 2);
 
         let applied = &requests[1];
@@ -2034,7 +2073,8 @@ mod test {
         .expect("OpAMP test config should parse");
 
         let requests =
-            run_web_socket_test_with_config(responses, Arc::clone(&control_plane), 3, config).await;
+            run_web_socket_test_with_config(responses, Arc::clone(&control_plane), 3, config, None)
+                .await;
 
         assert_eq!(requests.len(), 3);
         assert_eq!(
@@ -2072,7 +2112,8 @@ mod test {
         }))
         .unwrap();
 
-        let requests = run_web_socket_test_with_config(responses, control_plane, 4, config).await;
+        let requests =
+            run_web_socket_test_with_config(responses, control_plane, 4, config, None).await;
         assert_eq!(requests.len(), 4);
 
         let heartbeat = &requests[3];
@@ -2109,7 +2150,8 @@ mod test {
             "endpoint": ""
         }))
         .unwrap();
-        let requests = run_web_socket_test_with_config(responses, control_plane, 4, config).await;
+        let requests =
+            run_web_socket_test_with_config(responses, control_plane, 4, config, None).await;
         assert_eq!(requests.len(), 4);
 
         // assert the first request was retried - same message and same sequence number
@@ -2132,8 +2174,56 @@ mod test {
             }
         }))
         .unwrap();
-        let requests = run_web_socket_test_with_config(responses, control_plane, 2, config).await;
+        let requests =
+            run_web_socket_test_with_config(responses, control_plane, 2, config, None).await;
         assert_eq!(requests.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_client_configured_with_server_tls() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path();
+        let ca = generate_ca("Test CA");
+        let server = ca.issue_leaf(
+            "localhost",
+            Some("localhost"),
+            Some(ExtendedKeyUsage::ServerAuth),
+        );
+        server.write_to_dir(path, "server");
+
+        let control_plane = Arc::new(MockControlPlane::new(empty_engine_config()));
+        let responses = vec![
+            Some(server_to_agent_with_config(&test_config(), vec![5, 1, 4])),
+            None,
+            None,
+        ];
+
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "instance_uid": EXPECTED_INSTANCE_UID_STR,
+            "endpoint": "",
+            "tls": {
+                "ca_pem": &ca.cert_pem
+            }
+        }))
+        .unwrap();
+
+        let requests = run_web_socket_test_with_config(
+            responses,
+            control_plane,
+            3,
+            config,
+            Some(TlsServerConfig {
+                config: TlsConfig {
+                    cert_file: Some(path.join("server.crt")),
+                    key_file: Some(path.join("server.key")),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+        )
+        .await;
+        assert_eq!(requests.len(), 3);
     }
 
     /// Helper: create an ObservedStateStore, spawn its consumer loop, send engine events to
@@ -2568,7 +2658,8 @@ mod test {
             "heartbeat_interval": "200ms"
         }))
         .unwrap();
-        let requests = run_web_socket_test_with_config(responses, control_plane, 4, config).await;
+        let requests =
+            run_web_socket_test_with_config(responses, control_plane, 4, config, None).await;
         assert_eq!(requests.len(), 4);
 
         // expect that the 3rd message (the one w/ the applying status) has presented that the last

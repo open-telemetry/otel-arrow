@@ -36,7 +36,7 @@ use otel_arrow_dfe_config::{
 };
 use prost::Message as _;
 use tokio::{fs::File, io::AsyncReadExt, net::TcpListener, sync::RwLock};
-use tokio_util::sync::CancellationToken;
+use tokio_util::{future::FutureExt, sync::CancellationToken};
 
 use crate::extension::opamp::proto::opamp::v1::{
     AgentConfigFile, AgentConfigMap, AgentRemoteConfig, AgentToServer, ServerToAgent,
@@ -270,12 +270,17 @@ impl MockWebSocketServer {
         }
 
         if let Some(server_tls_config) = server_tls_config {
+            println!("serving with TLS");
             let socket_addr = SocketAddr::from(([127, 0, 0, 1], self.port));
             axum_server::bind_rustls(socket_addr, server_tls_config)
                 .serve(app.into_make_service())
+                .with_cancellation_token_owned(cancellation_token)
                 .await
+                .transpose()
                 .unwrap()
+                .unwrap_or_default();
         } else {
+            println!("servin plaintext");
             let bind_addr = format!("127.0.0.1:{}", self.port);
             let listener = TcpListener::bind(&bind_addr).await.unwrap();
 

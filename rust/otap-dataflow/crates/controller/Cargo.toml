@@ -56,5 +56,7 @@ axum = { workspace = true }
 axum-server = { workspace = true }
 axum-server-mtls = { workspace = true }
 otel-arrow-dfe-test-net = { workspace = true }
+otel-arrow-dfe-test-tls-certs = { workspace = true }
+tempfile = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["registry"] }
