@@ -867,7 +867,8 @@ fn error_body_summary(body: &Bytes, truncated: bool) -> String {
 
 /// Reads a bounded prefix of a failed HTTP response body for diagnostics. The
 /// timeout prevents an indefinitely streaming error response from occupying an
-/// export slot when the configured HTTP request timeout is unset.
+/// export slot when the configured HTTP request timeout is unset. Returns a
+/// boolean that indicates when truncation occurs.
 async fn collect_error_body_prefix(response: Response) -> Result<(Bytes, bool), reqwest::Error> {
     let mut buf = BytesMut::with_capacity(MAX_ERROR_BODY_LOG_LENGTH);
     let mut stream = response.bytes_stream();
