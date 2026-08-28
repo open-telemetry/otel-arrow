@@ -20,4 +20,4 @@ issues: [3901]
 subtext: |
   A capability for feeding API Keys into components (typically used for
   authorization) retrieved via extensions. API Key values are treated as secrets
-  and may be accompanied by optional attributes and\or expiration.
+  and may be accompanied by optional attributes and/or expiration.

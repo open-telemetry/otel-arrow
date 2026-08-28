@@ -173,5 +173,5 @@ pub trait ApiKeyProvider {
     /// `tokio::sync::watch`-backed implementation satisfies this naturally,
     /// since a fresh receiver observes the channel's current value on its first
     /// poll.
-    fn get_api_key_stream(&self) -> ApiKeyStream;
+    fn api_key_stream(&self) -> ApiKeyStream;
 }
