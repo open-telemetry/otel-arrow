@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787863987294,
+  "lastUpdate": 1787890710998,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -2968,6 +2968,112 @@ window.BENCHMARK_DATA = {
             "value": 60.001905,
             "unit": "seconds",
             "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - Test Duration"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Drew Relmas",
+            "username": "drewrelmas",
+            "email": "drewrelmas@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "80d38834e747127ee02559e8c6dafd792193bdb2",
+          "message": "chore(repo): Isolate test-only nodes in `dev-nodes` crate to minimize dependency chain (#3912)\n\n# Chore summary\n\nMoves the following nodes into a new `dev-nodes` crate:\n- `traffic_generator_receiver`\n- `delay_processor`\n- `error_exporter`\n- `perf_exporter`\n\nAs #3909 mentions, we do this to unblock publishing of `core-nodes`\ncrate on `crates.io` because there is currently a git Weaver dependency\nwith no published crate. We do not plan to publish `dev-nodes`\nexternally.\n\n## Related issue\n\n- Closes #3909",
+          "timestamp": "2026-08-28T01:54:22Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/80d38834e747127ee02559e8c6dafd792193bdb2"
+        },
+        "date": 1787890709865,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "clickhouse_cpu_percentage_normalized_avg",
+            "value": 49.40329940571708,
+            "unit": "%",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - clickhouse CPU"
+          },
+          {
+            "name": "go-collector_cpu_percentage_normalized_avg",
+            "value": 89.59799382568941,
+            "unit": "%",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - go-collector CPU"
+          },
+          {
+            "name": "clickhouse_ram_mib_max",
+            "value": 1218.0546875,
+            "unit": "MiB",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - clickhouse RAM"
+          },
+          {
+            "name": "go-collector_ram_mib_max",
+            "value": 211.8359375,
+            "unit": "MiB",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - go-collector RAM"
+          },
+          {
+            "name": "df-engine_cpu_percentage_normalized_avg",
+            "value": 25.611145866061985,
+            "unit": "%",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - df-engine CPU"
+          },
+          {
+            "name": "clickhouse_cpu_percentage_normalized_avg",
+            "value": 49.15834942868209,
+            "unit": "%",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - clickhouse CPU"
+          },
+          {
+            "name": "clickhouse_ram_mib_max",
+            "value": 1200.42578125,
+            "unit": "MiB",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - clickhouse RAM"
+          },
+          {
+            "name": "df-engine_ram_mib_max",
+            "value": 49.76953125,
+            "unit": "MiB",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - df-engine RAM"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.006924,
+            "unit": "seconds",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - Test Duration"
+          },
+          {
+            "name": "df-engine_cpu_percentage_normalized_avg",
+            "value": 45.70481625683678,
+            "unit": "%",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - df-engine CPU"
+          },
+          {
+            "name": "clickhouse_cpu_percentage_normalized_avg",
+            "value": 49.153198704156935,
+            "unit": "%",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - clickhouse CPU"
+          },
+          {
+            "name": "clickhouse_ram_mib_max",
+            "value": 1181.29296875,
+            "unit": "MiB",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - clickhouse RAM"
+          },
+          {
+            "name": "df-engine_ram_mib_max",
+            "value": 55.1015625,
+            "unit": "MiB",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - df-engine RAM"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.004155,
+            "unit": "seconds",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - Test Duration"
           }
         ]
       }
