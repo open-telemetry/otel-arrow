@@ -20,6 +20,7 @@ use otel_arrow_dfe_config::transport_headers::{TransportHeader, TransportHeaders
 use otel_arrow_dfe_engine::MessageSourceLocalEffectHandlerExtension;
 use otel_arrow_dfe_engine::config::ReceiverConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::context_declaration::{ContextAccessId, ContextDeclaration};
 use otel_arrow_dfe_engine::control::CallData;
 use otel_arrow_dfe_engine::error::{Error, ReceiverErrorKind, TypedError};
 use otel_arrow_dfe_engine::local::receiver as local;
@@ -103,6 +104,8 @@ fn elapsed_nanos(start: StdInstant) -> f64 {
 #[otel_arrow_dfe_engine::component_inventory(category = Receiver)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static TRAFFIC_GENERATOR_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
+    // Declares generated context names; this source consumes no context.
+    context_declarations: Some(traffic_generator_declarations),
     name: TRAFFIC_GENERATOR_RECEIVER_URN,
     create:
         |pipeline: PipelineContext,
@@ -756,6 +759,29 @@ impl local::Receiver<OtapPdata> for TrafficGeneratorReceiver {
     }
 }
 
+/// Declares configured generated context names in sorted order.
+fn traffic_generator_declarations(
+    config_value: &Value,
+) -> Result<Vec<ContextDeclaration>, otel_arrow_dfe_config::error::Error> {
+    let config: Config = serde_json::from_value(config_value.clone()).map_err(|e| {
+        otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+            error: format!("traffic generator declaration provider: {e}"),
+        }
+    })?;
+
+    let mut names: Vec<&String> = config.transport_headers().keys().collect();
+    names.sort();
+
+    Ok(names
+        .into_iter()
+        .enumerate()
+        .map(|(index, name)| ContextDeclaration::Produces {
+            access: ContextAccessId::new(index),
+            name: name.to_ascii_lowercase(),
+        })
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::config::{DataSource, GenerationStrategy};
@@ -765,6 +791,7 @@ mod tests {
     use otel_arrow_dfe_config::node::NodeUserConfig;
     use otel_arrow_dfe_config::transport_headers::ValueKind;
     use otel_arrow_dfe_engine::context::ControllerContext;
+    use otel_arrow_dfe_engine::context_declaration::ContextDeclaration;
     use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
     use otel_arrow_dfe_engine::testing::{
         receiver::{NotSendValidateContext, TestContext, TestRuntime},
@@ -1860,5 +1887,63 @@ mod tests {
             .set_receiver(receiver)
             .run_test(scenario)
             .run_validation(validation);
+    }
+
+    /// Scenario: Traffic generation config contains several context names.
+    /// Guarantees: every name is declared in deterministic order.
+    #[test]
+    fn traffic_gen_declaration_sorted_headers() {
+        let config = serde_json::json!({
+            "traffic_config": {
+                "signals_per_second": 10,
+                "max_batch_size": 5,
+                "metric_weight": 0,
+                "trace_weight": 0,
+                "log_weight": 1
+            },
+            "data_source": "synthetic",
+            "generation_strategy": "fresh",
+            "transport_headers": {
+                "x-tenant-id": "acme",
+                "x-request-id": null,
+                "a-first": "val"
+            }
+        });
+        let decls = (TRAFFIC_GENERATOR_RECEIVER
+            .context_declarations
+            .expect("traffic generator declares context"))(&config)
+        .unwrap();
+        assert_eq!(decls.len(), 3);
+
+        let names: Vec<&str> = decls
+            .iter()
+            .map(|d| match d {
+                ContextDeclaration::Produces { name, .. } => name.as_str(),
+                other => panic!("unexpected declaration: {other:?}"),
+            })
+            .collect();
+        assert_eq!(names, vec!["a-first", "x-request-id", "x-tenant-id"]);
+    }
+
+    /// Scenario: Traffic generation config contains no context.
+    /// Guarantees: the factory declares no producers.
+    #[test]
+    fn traffic_gen_declaration_no_headers() {
+        let config = serde_json::json!({
+            "traffic_config": {
+                "signals_per_second": 10,
+                "max_batch_size": 5,
+                "metric_weight": 0,
+                "trace_weight": 0,
+                "log_weight": 1
+            },
+            "data_source": "synthetic",
+            "generation_strategy": "fresh"
+        });
+        let decls = (TRAFFIC_GENERATOR_RECEIVER
+            .context_declarations
+            .expect("traffic generator declares context"))(&config)
+        .unwrap();
+        assert!(decls.is_empty());
     }
 }

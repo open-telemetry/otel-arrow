@@ -247,6 +247,7 @@ async fn notify_permanent_rejection(
 #[otel_arrow_dfe_engine::component_inventory(category = Exporter)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static CLICKHOUSE_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
+    context_declarations: None,
     name: CLICKHOUSE_EXPORTER_URN,
     create:
         |pipeline: PipelineContext,

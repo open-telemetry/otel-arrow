@@ -19,6 +19,7 @@ use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_engine::config::ProcessorConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::context_declaration::{ContextAccessId, ContextDeclaration};
 use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otel_arrow_dfe_engine::error::ProcessorErrorKind;
 use otel_arrow_dfe_engine::local::processor::{EffectHandler, Processor};
@@ -73,6 +74,8 @@ fn create_partition_processor(
 #[otel_arrow_dfe_engine::component_inventory(category = Processor)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static PARTITION_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
+    // Consumer bindings require parsed OPL; this pass declares only the output.
+    context_declarations: Some(partition_processor_declarations),
     name: PARTITION_PROCESSOR_URN,
     create: create_partition_processor,
     wiring_contract: WiringContract::UNRESTRICTED,
@@ -479,12 +482,31 @@ fn partition_value_to_transport_header(
     }
 }
 
+const PARTITION_OUTPUT_ACCESS: ContextAccessId = ContextAccessId::new(0);
+
+/// Declares the configured partition output context name.
+fn partition_processor_declarations(
+    config: &Value,
+) -> Result<Vec<ContextDeclaration>, otel_arrow_dfe_config::error::Error> {
+    let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
+        otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+            error: format!("partition processor declaration provider: {e}"),
+        }
+    })?;
+
+    Ok(vec![ContextDeclaration::Produces {
+        access: PARTITION_OUTPUT_ACCESS,
+        name: config.partition_header_name,
+    }])
+}
+
 #[cfg(test)]
 mod test {
     use std::collections::VecDeque;
 
     use super::*;
 
+    use otel_arrow_dfe_engine::context_declaration::ContextDeclaration;
     use otel_arrow_dfe_engine::{
         capability::registry::Capabilities,
         context::ControllerContext,
@@ -1768,5 +1790,27 @@ mod test {
                 );
             })
             .validate(|_ctx| async move {});
+    }
+
+    /// Scenario: A partition processor has a configured output header.
+    /// Guarantees: Its factory declares the produced context name.
+    #[test]
+    fn partition_declaration_names_output() {
+        let config = serde_json::json!({
+            "partition_by": { "opl_expression": "name" },
+            "partition_header_name": "x-partition"
+        });
+        let decls = (PARTITION_PROCESSOR_FACTORY
+            .context_declarations
+            .expect("partition processor declares context"))(&config)
+        .unwrap();
+        assert_eq!(decls.len(), 1);
+        assert_eq!(
+            decls[0],
+            ContextDeclaration::Produces {
+                access: PARTITION_OUTPUT_ACCESS,
+                name: "x-partition".into(),
+            }
+        );
     }
 }

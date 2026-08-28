@@ -106,6 +106,7 @@ impl<
             CoreId { id: core_id },
             core_placement.numa_node_id,
             Arc::clone(&placement.listener_group_snapshot),
+            Arc::clone(&self.context_policy),
             num_cores,
             resolved_pipeline.pipeline.clone(),
             resolved_pipeline.policies.channel_capacity.clone(),

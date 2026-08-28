@@ -42,6 +42,9 @@ use otel_arrow_dfe_engine::ConsumerEffectHandlerExtension;
 use otel_arrow_dfe_engine::ExporterFactory;
 use otel_arrow_dfe_engine::config::ExporterConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::context_declaration::{
+    ContextAccessId, ContextDeclaration, ContextReadSelector,
+};
 use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otel_arrow_dfe_engine::error::Error as EngineError;
 use otel_arrow_dfe_engine::exporter::ExporterWrapper;
@@ -319,6 +322,8 @@ pub struct KafkaExporter {
 #[otel_arrow_dfe_engine::component_inventory(category = Exporter)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static KAFKA_EXPORTER_FACTORY: ExporterFactory<OtapPdata> = ExporterFactory {
+    // Declares topic/partition reads; generic policy handles propagation.
+    context_declarations: Some(kafka_exporter_declarations),
     name: KAFKA_EXPORTER_URN,
     create:
         |pipeline_ctx: PipelineContext,
@@ -336,6 +341,57 @@ pub static KAFKA_EXPORTER_FACTORY: ExporterFactory<OtapPdata> = ExporterFactory 
     validate_config: validate_typed_config::<KafkaExporterConfig>,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
 };
+
+const TRACES_TOPIC_ACCESS: ContextAccessId = ContextAccessId::new(0);
+const TRACES_PARTITION_ACCESS: ContextAccessId = ContextAccessId::new(1);
+const METRICS_TOPIC_ACCESS: ContextAccessId = ContextAccessId::new(2);
+const METRICS_PARTITION_ACCESS: ContextAccessId = ContextAccessId::new(3);
+const LOGS_TOPIC_ACCESS: ContextAccessId = ContextAccessId::new(4);
+const LOGS_PARTITION_ACCESS: ContextAccessId = ContextAccessId::new(5);
+
+/// Declares configured per-signal topic and partition context reads.
+fn kafka_exporter_declarations(
+    config: &serde_json::Value,
+) -> Result<Vec<ContextDeclaration>, otel_arrow_dfe_config::error::Error> {
+    let config: KafkaExporterConfig =
+        serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
+            error: format!("kafka exporter declaration provider: {e}"),
+        })?;
+
+    let mut decls = Vec::new();
+    let signals: &[(ContextAccessId, ContextAccessId, Option<&SignalConfig>)] = &[
+        (
+            TRACES_TOPIC_ACCESS,
+            TRACES_PARTITION_ACCESS,
+            config.traces(),
+        ),
+        (
+            METRICS_TOPIC_ACCESS,
+            METRICS_PARTITION_ACCESS,
+            config.metrics(),
+        ),
+        (LOGS_TOPIC_ACCESS, LOGS_PARTITION_ACCESS, config.logs()),
+    ];
+
+    for (topic_access, partition_access, signal_cfg) in signals {
+        if let Some(cfg) = signal_cfg {
+            if let Some(header) = cfg.topic_from_transport_header() {
+                decls.push(ContextDeclaration::Consumes {
+                    access: *topic_access,
+                    selector: ContextReadSelector::Register(header.to_string()),
+                });
+            }
+            if cfg.partition_by_transport_headers() {
+                decls.push(ContextDeclaration::Consumes {
+                    access: *partition_access,
+                    selector: ContextReadSelector::All,
+                });
+            }
+        }
+    }
+
+    Ok(decls)
+}
 
 impl KafkaExporter {
     /// Creates a new Kafka exporter from configuration.
@@ -1495,6 +1551,7 @@ pub mod test_support {
             HeaderPropagationPolicy, PropagationDefault, PropagationSelector,
             PropagationSelectorType,
         };
+        use otel_arrow_dfe_engine::context_declaration::{ContextDeclaration, ContextReadSelector};
         use otel_arrow_dfe_otap::pdata::Context;
         use otel_arrow_dfe_pdata::OtlpProtoBytes;
         use prost::Message as _;
@@ -1587,6 +1644,68 @@ pub mod test_support {
 
             // Expected to fail (no live broker) but should not have compilation/borrow errors
             let _ = result;
+        }
+
+        /// Scenario: Two signals configure different context reads.
+        /// Guarantees: access IDs distinguish reads emitted in signal order.
+        #[test]
+        fn declarations_use_generic_bindings() {
+            let config = serde_json::json!({
+                "brokers": "localhost:9092",
+                "client_id": "test",
+                "traces": {
+                    "topic": "traces-static",
+                    "topic_from_transport_header": "x-traces-topic",
+                    "partition_by_transport_headers": false,
+                    "encoding": "otlp_proto"
+                },
+                "logs": {
+                    "topic": "logs-static",
+                    "partition_by_transport_headers": true,
+                    "encoding": "otlp_proto"
+                }
+            });
+
+            let decls = (KAFKA_EXPORTER_FACTORY
+                .context_declarations
+                .expect("Kafka exporter declares context"))(&config)
+            .unwrap();
+            assert_eq!(decls.len(), 2);
+
+            assert_eq!(
+                decls[0],
+                ContextDeclaration::Consumes {
+                    access: TRACES_TOPIC_ACCESS,
+                    selector: ContextReadSelector::Register("x-traces-topic".into()),
+                },
+            );
+            assert_eq!(
+                decls[1],
+                ContextDeclaration::Consumes {
+                    access: LOGS_PARTITION_ACCESS,
+                    selector: ContextReadSelector::All,
+                },
+            );
+        }
+
+        /// Scenario: Kafka config has no context reads.
+        /// Guarantees: the factory declares no consumers.
+        #[test]
+        fn declarations_empty_when_no_header_consumption() {
+            let config = serde_json::json!({
+                "brokers": "localhost:9092",
+                "client_id": "test",
+                "logs": {
+                    "topic": "logs-static",
+                    "encoding": "otlp_proto"
+                }
+            });
+
+            let decls = (KAFKA_EXPORTER_FACTORY
+                .context_declarations
+                .expect("Kafka exporter declares context"))(&config)
+            .unwrap();
+            assert!(decls.is_empty());
         }
 
         // ---- KafkaExporter::new() validation ----

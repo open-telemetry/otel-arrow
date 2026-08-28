@@ -197,6 +197,7 @@ pub struct InternalTelemetryReceiver {
 #[otel_arrow_dfe_engine::component_inventory(category = Receiver)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static INTERNAL_TELEMETRY_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
+    context_declarations: None,
     name: INTERNAL_TELEMETRY_RECEIVER_URN,
     create:
         |mut pipeline: PipelineContext,

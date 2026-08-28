@@ -165,24 +165,28 @@ fn recovery_test_exporter_create(
 
 static TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
     ReceiverFactory {
+        context_declarations: None,
         name: "urn:test:receiver:example",
         create: test_receiver_create,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
     ReceiverFactory {
+        context_declarations: None,
         name: "urn:otel:receiver:topic",
         create: test_receiver_create,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
     ReceiverFactory {
+        context_declarations: None,
         name: "urn:otel:receiver:otlp",
         create: test_receiver_create,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
     ReceiverFactory {
+        context_declarations: None,
         name: "urn:otel:receiver:internal_telemetry",
         create: test_receiver_create,
         wiring_contract: WiringContract::UNRESTRICTED,
@@ -191,6 +195,7 @@ static TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
 ];
 
 static TEST_PROCESSOR_FACTORIES: &[ProcessorFactory<()>] = &[ProcessorFactory {
+    context_declarations: None,
     name: "urn:otel:processor:type_router",
     create: test_processor_create,
     wiring_contract: WiringContract::UNRESTRICTED,
@@ -199,24 +204,28 @@ static TEST_PROCESSOR_FACTORIES: &[ProcessorFactory<()>] = &[ProcessorFactory {
 
 static TEST_EXPORTER_FACTORIES: &[ExporterFactory<()>] = &[
     ExporterFactory {
+        context_declarations: None,
         name: "urn:test:exporter:example",
         create: test_exporter_create,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
     ExporterFactory {
+        context_declarations: None,
         name: "urn:otel:exporter:topic",
         create: test_exporter_create,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
     ExporterFactory {
+        context_declarations: None,
         name: "urn:otel:exporter:console",
         create: test_exporter_create,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
     ExporterFactory {
+        context_declarations: None,
         name: "urn:otel:exporter:noop",
         create: test_exporter_create,
         wiring_contract: WiringContract::UNRESTRICTED,
@@ -233,12 +242,14 @@ static TEST_PIPELINE_FACTORY: PipelineFactory<()> = PipelineFactory::new(
 
 static RECOVERY_TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
     ReceiverFactory {
+        context_declarations: None,
         name: "urn:test:receiver:example",
         create: recovery_test_receiver_create,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
     ReceiverFactory {
+        context_declarations: None,
         name: "urn:otel:receiver:internal_telemetry",
         create: recovery_test_receiver_create,
         wiring_contract: WiringContract::UNRESTRICTED,
@@ -248,18 +259,21 @@ static RECOVERY_TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
 
 static RECOVERY_TEST_EXPORTER_FACTORIES: &[ExporterFactory<()>] = &[
     ExporterFactory {
+        context_declarations: None,
         name: "urn:test:exporter:example",
         create: recovery_test_exporter_create,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
     ExporterFactory {
+        context_declarations: None,
         name: "urn:otel:exporter:console",
         create: recovery_test_exporter_create,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
     ExporterFactory {
+        context_declarations: None,
         name: "urn:otel:exporter:noop",
         create: recovery_test_exporter_create,
         wiring_contract: WiringContract::UNRESTRICTED,
@@ -332,6 +346,9 @@ fn test_runtime_with_log_filter_and_topology(
         tokio::sync::watch::channel(MemoryPressureChanged::initial());
     let (log_filter, log_filter_handle) =
         RuntimeLogFilter::new(&config.engine.telemetry.logs.level);
+    let context_policy = pipeline_factory
+        .compile_context_policy(&config.resolve())
+        .expect("test context policy should compile");
 
     (
         Arc::new(ControllerRuntime::new(
@@ -342,6 +359,7 @@ fn test_runtime_with_log_filter_and_topology(
             engine_event_reporter,
             metrics_reporter,
             declared_topics,
+            context_policy,
             available_core_ids(),
             topology,
             TracingSetup::new(ProviderSetup::Noop, LogLevel::default(), engine_context)

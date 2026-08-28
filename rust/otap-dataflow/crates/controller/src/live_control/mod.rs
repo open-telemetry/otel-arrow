@@ -77,6 +77,8 @@ pub(super) struct ControllerRuntime<PData: 'static + Clone + Send + Sync + std::
     metrics_reporter: MetricsReporter,
     /// Topic registry shared by all runtime instances.
     declared_topics: DeclaredTopics<PData>,
+    /// Compiled context policy created at startup.
+    context_policy: Arc<CompiledContextPolicy>,
     /// Controller-wide core ids available for policy-based allocation.
     available_core_ids: Vec<CoreId>,
     /// Controller-owned topology snapshot used for live rollout placement metadata.
@@ -128,6 +130,7 @@ impl<
         engine_event_reporter: ObservedEventReporter,
         metrics_reporter: MetricsReporter,
         declared_topics: DeclaredTopics<PData>,
+        context_policy: Arc<CompiledContextPolicy>,
         available_core_ids: Vec<CoreId>,
         topology: NumaTopology,
         engine_tracing_setup: TracingSetup,
@@ -144,6 +147,7 @@ impl<
             engine_event_reporter,
             metrics_reporter,
             declared_topics,
+            context_policy,
             available_core_ids,
             topology,
             engine_tracing_setup,

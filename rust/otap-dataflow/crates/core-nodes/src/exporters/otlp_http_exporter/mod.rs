@@ -106,6 +106,7 @@ pub struct OtlpHttpExporter {
 #[otel_arrow_dfe_engine::component_inventory(category = Exporter)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static OTLP_HTTP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
+    context_declarations: None,
     name: OTLP_HTTP_EXPORTER_URN,
     create: factory_create,
     wiring_contract: WiringContract::UNRESTRICTED,

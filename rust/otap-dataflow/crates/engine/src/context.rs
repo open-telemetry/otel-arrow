@@ -138,6 +138,8 @@ pub struct PipelineContext {
     // Consumers should cache any needed listener plan during setup rather than cloning
     // or searching this snapshot from the per-record data path.
     listener_group_snapshot: Arc<ListenerGroupSnapshot>,
+    /// Compiled context policy shared by every node in this runtime.
+    compiled_context_policy: Option<Arc<crate::context_declaration::CompiledContextPolicy>>,
 }
 
 /// Registrar that binds generated metric-set registration to an existing entity.
@@ -327,6 +329,7 @@ impl PipelineContext {
             node_names: Arc::new(HashMap::new()),
             topic_set: None,
             listener_group_snapshot: Arc::new(ListenerGroupSnapshot::empty()),
+            compiled_context_policy: None,
         }
     }
 
@@ -428,6 +431,22 @@ impl PipelineContext {
     #[must_use]
     pub fn listener_group_snapshot(&self) -> Arc<ListenerGroupSnapshot> {
         Arc::clone(&self.listener_group_snapshot)
+    }
+
+    /// Sets the compiled context policy.
+    pub fn set_compiled_context_policy(
+        &mut self,
+        policy: Arc<crate::context_declaration::CompiledContextPolicy>,
+    ) {
+        self.compiled_context_policy = Some(policy);
+    }
+
+    /// Returns the compiled context policy, if present.
+    #[must_use]
+    pub fn compiled_context_policy(
+        &self,
+    ) -> Option<&Arc<crate::context_declaration::CompiledContextPolicy>> {
+        self.compiled_context_policy.as_ref()
     }
 
     /// Returns the pipeline-scoped topic set, if one was injected.
@@ -759,6 +778,7 @@ impl PipelineContext {
             node_names: self.node_names.clone(),
             topic_set: self.topic_set.clone(),
             listener_group_snapshot: Arc::clone(&self.listener_group_snapshot),
+            compiled_context_policy: self.compiled_context_policy.clone(),
         }
     }
 }
@@ -1136,6 +1156,36 @@ mod tests {
                 )
                 .is_some()
         );
+    }
+
+    /// Scenario: a node context is derived after declaration injection.
+    /// Guarantees: it retains the same declaration Arc.
+    #[test]
+    fn pipeline_context_preserves_compiled_policy_across_node_context() {
+        let resolved = otel_arrow_dfe_config::engine::ResolvedOtelDataflowSpec {
+            engine: Default::default(),
+            pipelines: Vec::new(),
+        };
+        let factory = crate::PipelineFactory::<()>::new(&[], &[], &[], &[]);
+        let policy = factory
+            .compile_context_policy(&resolved)
+            .expect("context policy");
+        let controller = ControllerContext::new(TelemetryRegistryHandle::new());
+        let mut pipeline =
+            controller.pipeline_context_with("group".into(), "pipeline".into(), 0, 1, 0);
+        pipeline.set_compiled_context_policy(Arc::clone(&policy));
+
+        let node = pipeline.with_node_context(
+            "node".into(),
+            "urn:otel:processor:test".into(),
+            NodeKind::Processor,
+            HashMap::new(),
+        );
+
+        assert!(Arc::ptr_eq(
+            node.compiled_context_policy().expect("context policy"),
+            &policy
+        ));
     }
 
     fn pipeline_ctx_with_custom_attrs(
