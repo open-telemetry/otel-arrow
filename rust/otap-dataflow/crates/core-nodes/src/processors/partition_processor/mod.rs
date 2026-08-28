@@ -599,9 +599,10 @@ mod test {
         reason: &str,
         cause: NackCause,
     ) -> Result<(), otel_arrow_dfe_engine::error::Error> {
-        let nack = next_nack(NackMsg::new(
+        let nack = next_nack(NackMsg::new_permanent_with_cause(
             reason,
             OtapPdata::new(context, OtapPayload::empty(signal_type)),
+            cause,
         ));
         let (_, nack) = nack.unwrap();
         ctx.process(Message::Control(NodeControlMsg::Nack(nack)))
