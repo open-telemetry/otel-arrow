@@ -67,7 +67,10 @@ explicitly; no document silently overrides another.
 
 ## Goals and non-goals
 
-### Goals
+### Architecture goals
+
+These properties apply across delivery phases and must survive later execution,
+ownership, and placement changes.
 
 - Tail eligible local files while they continue to grow.
 - Preserve deterministic per-file identity, framing, ordering, and Ack-gated
@@ -84,7 +87,10 @@ explicitly; no document silently overrides another.
 - Preserve a logical progress contract that Phase 3 can place behind shared
   identity, ownership, fencing, and checkpoint services.
 
-### Non-goals
+### Architecture non-goals
+
+These responsibilities are outside the filelog receiver architecture rather
+than capabilities deferred to a later delivery phase.
 
 - Compatibility with the Go filelog receiver or Stanza operator chains.
 - Performing timestamp extraction, JSON parsing, severity mapping, trace
@@ -93,12 +99,19 @@ explicitly; no document silently overrides another.
 - Destination-specific body conversion, field mapping, or delivery behavior.
 - Durable telemetry spooling or recovery after required source bytes disappear.
 - Guaranteed copytruncate capture or unconditional "never lose data" claims.
-- Multi-instance or multi-process ownership, virtual partitions, distributed
-  fencing, or lossless handoff in Phase 1.
-- A claim that local ownership acquisition means source readiness.
-- Permanent identity derived from path, native file ID, fingerprint, CPU,
-  thread, NUMA node, or deployment generation.
+- Permanent identity derived from deployment topology or one mutable evidence
+  source, including path, native file ID, fingerprint, CPU, thread, NUMA node,
+  or deployment generation.
 - Universal latency, throughput, memory, or production-readiness claims.
+
+### Phase 1 exclusions
+
+These capabilities are deliberately absent from the initial implementation.
+
+- Multi-instance or multi-process ownership.
+- Virtual partitions or another shared assignment mechanism.
+- Distributed fencing and lossless handoff.
+- A claim that local ownership acquisition means source readiness.
 
 ### Separately scoped capabilities
 
@@ -109,7 +122,7 @@ delivery, recovery, security, and operational guarantees:
 | --- | --- |
 | Read once and delete | Completion proof, Ack of all records, durable tombstones, and delete retry |
 | Compressed streams and archives | Decompression bounds, member identity, and restart rules |
-| Network shares | Filesystem-specific identity, outage, advisory-lock, and cross-agent ownership behavior |
+| Network shares | Filesystem-specific identity, outage, advisory-lock, and cross-process or cross-host ownership behavior |
 | Windows files denying shared read | A privileged capture mechanism such as a driver, journal, or snapshot |
 | Importing unrelated checkpoints | Distribution-specific evidence and an explicit idempotent migration |
 | Header-content skipping | Identity, initial-offset, framing, and restart semantics |
@@ -391,10 +404,13 @@ consistent hashing, and virtual partitions remain alternatives. This Phase 1
 proposal does not close the multi-instance epic or add its coordination
 machinery.
 
-## Core Phase 1 invariants
+## Core architectural invariants for Phase 1
 
-The behavioral specification owns exact procedures and transition ordering.
-The architecture requires the following invariants across every conforming
+These are the architecture-level safety properties that every Phase 1
+subsystem must preserve. The behavioral specification defines their complete
+enforcement rules and transition ordering.
+
+The architecture requires these invariants across every conforming
 implementation:
 
 ### Discovery, identity, and ownership
