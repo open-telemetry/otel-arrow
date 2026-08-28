@@ -168,12 +168,26 @@ nodes:
       http: {}
 ```
 
-The host sets the token by publishing an `AgentFedCredentialSnapshot` containing
-a `BearerToken`; there is no token field under the exporter. An unavailable,
-malformed, empty, expired, or near-expiry token backpressures new input rather
-than sending an unauthenticated request. A buffered batch that must be drained
-during shutdown is NACK'd as retryable. HTTP 401 is also retryable, and the next
-attempt reads a new snapshot.
+The host sets the token by publishing an `Arc<AgentFedCredentialSnapshot>`
+containing a `BearerToken`; there is no token field under the exporter. The host
+must return a clone of the same `Arc` while that snapshot is current and publish
+a new `Arc` when either the token or its generation changes. The exporter checks
+the provider before each batch but reuses the already validated header when
+`Arc` identity is unchanged, avoiding repeated header allocation and parsing.
+
+An unavailable, malformed, empty, expired, or near-expiry token backpressures
+new input rather than sending an unauthenticated request. Each lookup has a
+fixed five-second timeout. Failed lookups use a fixed one-second retry delay;
+both policies are intentionally internal rather than configurable. Repeated
+warnings are emitted only for consecutive failure counts 1, 2, 4, 8, and so on,
+and the count resets after recovery. A buffered batch that must be drained
+during shutdown is NACK'd as retryable.
+
+HTTP 401 is retryable. The exporter marks the exact snapshot generation used by
+that request as rejected and does not send it again. It continues checking at
+the one-second retry cadence and resumes only after the host publishes a
+different `Arc` snapshot. A delayed 401 for an older generation does not reject
+a newer snapshot that is already cached.
 
 Bind either `agent_fed_credential_provider` or `bearer_token_provider`, not both.
 The exporter rejects an ambiguous configuration. With neither capability bound,
@@ -224,6 +238,16 @@ channel and is not duplicated by the exporter.
 `partial_rejection`, or `other`. Successful exports, zero-rejection partial
 successes, and Ack/Nack notification failures do not emit this metric.
 
+#### `exporter.otlp_http.authentication`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `exporter.otlp_http.authentication.failures` | `{attempt}` | `error.type` | Agent-fed credential checks that did not produce a usable snapshot, including failures before a signal batch is admitted. |
+
+Authentication `error.type` is one of `credential_unavailable`,
+`lookup_timeout`, `empty_token`, `token_near_expiry`, `invalid_token`, or
+`rejected_credential_unchanged`.
+
 ### Events
 
 | Event | Severity | Description |
@@ -236,6 +260,7 @@ successes, and Ack/Nack notification failures do not emit this metric.
 | `otlp.exporter.http.export_error` | `warn` | An HTTP export request did not complete successfully. |
 | `otlp.exporter.http.invalid_bearer_token` | `warn` | A bearer token from the provider could not be turned into a valid `Authorization` header. |
 | `otlp.exporter.http.token_stream_closed` | `warn` | The bearer token provider closed its refresh stream; the last token (if any) is reused and no longer refreshes. |
+| `otlp.exporter.http.agent_fed_credential_unavailable` | `warn` | An agent-fed credential check failed; repeated failures are sampled at powers of two. |
 
 ## Limits
 

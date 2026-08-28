@@ -64,7 +64,7 @@ use secrecy::ExposeSecret;
 use self::config::Config;
 use crate::exporters::otlp_grpc_exporter::InFlightExports;
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
-use otel_arrow_dfe_otap::bearer_auth::{BearerAuth, BearerAuthEvents, apply_auth_rejection};
+use otel_arrow_dfe_otap::bearer_auth::{BearerAuth, BearerAuthEvents};
 use otel_arrow_dfe_otap::otlp_http::client_settings::{HttpClientError, HttpClientSettings};
 use otel_arrow_dfe_otap::otlp_http::{LOGS_PATH, METRICS_PATH, PROTOBUF_CONTENT_TYPE, TRACES_PATH};
 use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
@@ -73,7 +73,7 @@ mod agent_fed_auth;
 mod config;
 mod metrics;
 
-use self::agent_fed_auth::AgentFedAuth;
+use self::agent_fed_auth::{AgentFedAuth, AgentFedAuthFailure};
 use self::metrics::{OtlpHttpExporterErrorType, OtlpHttpExporterMetrics};
 
 /// The URN for the OTLP HTTP exporter
@@ -97,20 +97,129 @@ const HTTP_BEARER_AUTH_EVENTS: BearerAuthEvents = BearerAuthEvents {
 pub struct OtlpHttpExporter {
     config: Config,
     metrics: OtlpHttpExporterMetrics,
-    /// Optional bearer token provider resolved from the
-    /// `bearer_token_provider` capability. When bound, a fresh
-    /// `Authorization: Bearer <token>` is injected on every outgoing
-    /// request; when absent, the exporter behaves exactly as before.
-    token_provider: Option<Box<dyn BearerTokenProvider>>,
-    /// Optional atomic agent-fed credential provider. This is mutually
-    /// exclusive with `token_provider`; each export attempt reads a fresh
-    /// snapshot so host-side token rotation is immediately visible.
-    agent_fed_provider: Option<Box<dyn AgentFedCredentialProvider>>,
+    /// Optional dynamic authentication source selected during capability
+    /// resolution. When absent, the exporter behaves exactly as before.
+    dynamic_auth: Option<DynamicAuthProvider>,
 }
 
 pub(crate) enum DynamicAuthProvider {
     Bearer(Box<dyn BearerTokenProvider>),
     AgentFed(Box<dyn AgentFedCredentialProvider>),
+}
+
+/// Runtime authentication state for the exporter.
+enum AuthState {
+    None,
+    Bearer(BearerAuth),
+    AgentFed(AgentFedAuth),
+}
+
+impl AuthState {
+    fn new(provider: Option<DynamicAuthProvider>) -> Self {
+        match provider {
+            Some(DynamicAuthProvider::Bearer(provider)) => {
+                Self::Bearer(BearerAuth::new(provider, HTTP_BEARER_AUTH_EVENTS))
+            }
+            Some(DynamicAuthProvider::AgentFed(provider)) => {
+                Self::AgentFed(AgentFedAuth::new(provider))
+            }
+            None => Self::None,
+        }
+    }
+
+    fn is_ready(&self) -> bool {
+        match self {
+            Self::None => true,
+            Self::Bearer(auth) => auth.is_ready(),
+            Self::AgentFed(auth) => auth.is_ready(),
+        }
+    }
+
+    fn should_poll(&self) -> bool {
+        match self {
+            Self::None => false,
+            Self::Bearer(auth) => auth.is_active(),
+            Self::AgentFed(auth) => auth.should_poll(),
+        }
+    }
+
+    fn requires_request_check(&self) -> bool {
+        matches!(self, Self::AgentFed(_))
+    }
+
+    fn require_request_check(&mut self) {
+        if let Self::AgentFed(auth) = self {
+            auth.require_request_check();
+        }
+    }
+
+    fn refresh_deadline(&self) -> Option<Instant> {
+        match self {
+            Self::None => None,
+            Self::Bearer(auth) => auth.refresh_deadline(),
+            Self::AgentFed(auth) => auth.refresh_deadline(),
+        }
+    }
+
+    async fn poll_update(&mut self) -> Option<AgentFedAuthFailure> {
+        match self {
+            Self::None => std::future::pending().await,
+            Self::Bearer(auth) => {
+                auth.poll_refresh().await;
+                None
+            }
+            Self::AgentFed(auth) => auth.poll_credential().await.err(),
+        }
+    }
+
+    fn header(&mut self) -> Option<(HeaderValue, RequestAuth)> {
+        match self {
+            Self::None => None,
+            Self::Bearer(auth) => auth
+                .header()
+                .map(|(header, generation)| (header, RequestAuth::BearerProvider { generation })),
+            Self::AgentFed(auth) => auth
+                .header()
+                .map(|(header, generation)| (header, RequestAuth::AgentFed { generation })),
+        }
+    }
+
+    fn invalidate(&mut self, rejected_auth: Option<RequestAuth>) {
+        match (self, rejected_auth) {
+            (Self::Bearer(auth), Some(RequestAuth::BearerProvider { generation })) => {
+                auth.invalidate(generation);
+            }
+            (Self::AgentFed(auth), Some(RequestAuth::AgentFed { generation })) => {
+                auth.invalidate(generation);
+            }
+            _ => {}
+        }
+    }
+
+    fn not_ready_reason(&self) -> &'static str {
+        match self {
+            Self::None => "authentication is not configured",
+            Self::Bearer(auth) => auth.not_ready_reason(),
+            Self::AgentFed(auth) => auth.not_ready_reason(),
+        }
+    }
+
+    #[cfg(test)]
+    fn mode(&self) -> AuthMode {
+        match self {
+            Self::None => AuthMode::None,
+            Self::Bearer(_) => AuthMode::Bearer,
+            Self::AgentFed(_) => AuthMode::AgentFed,
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug, PartialEq, Eq)]
+enum AuthMode {
+    None,
+    Bearer,
+    AgentFed,
 }
 
 fn select_dynamic_auth(
@@ -268,17 +377,10 @@ impl OtlpHttpExporter {
             }
         }
 
-        let (token_provider, agent_fed_provider) = match dynamic_auth {
-            Some(DynamicAuthProvider::Bearer(provider)) => (Some(provider), None),
-            Some(DynamicAuthProvider::AgentFed(provider)) => (None, Some(provider)),
-            None => (None, None),
-        };
-
         Ok(Self {
             config,
             metrics,
-            token_provider,
-            agent_fed_provider,
+            dynamic_auth,
         })
     }
 }
@@ -301,19 +403,12 @@ struct CompletedExport {
 enum RequestAuth {
     None,
     BearerProvider { generation: u64 },
-    AgentFed,
+    AgentFed { generation: u64 },
 }
 
 impl RequestAuth {
     fn is_dynamic(self) -> bool {
         !matches!(self, Self::None)
-    }
-
-    fn bearer_generation(self) -> Option<u64> {
-        match self {
-            Self::BearerProvider { generation } => Some(generation),
-            Self::None | Self::AgentFed => None,
-        }
     }
 }
 
@@ -362,6 +457,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                 })?;
 
         let mut inflight_exports = InFlightExports::new();
+        let mut pending_pdata: Option<(OtapPdata, Instant)> = None;
 
         let mut logs_proto_encoder = LogsProtoBytesEncoder::new();
         let mut metrics_proto_encoder = MetricsProtoBytesEncoder::new();
@@ -382,15 +478,9 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
         // buffer size.
         let mut compressed_buffer: Vec<u8> = Vec::new();
 
-        // Consumer-side bearer-token adapter, if a provider is bound. It owns
-        // the token subscription, the cached `Authorization` header, and token
-        // usability; the loop below stays auth-agnostic -- it only asks whether
-        // it may send and stamps the header the adapter hands back.
-        let mut auth = self
-            .token_provider
-            .take()
-            .map(|provider| BearerAuth::new(provider, HTTP_BEARER_AUTH_EVENTS));
-        let mut agent_fed_auth = self.agent_fed_provider.take().map(AgentFedAuth::new);
+        // One state machine owns provider-specific readiness, refresh, request
+        // identity, and rejection behavior.
+        let mut auth = AuthState::new(self.dynamic_auth.take());
 
         // Timer that fires when the cached token crosses its usability margin.
         // Hoisted out of the loop and re-armed only when the deadline actually
@@ -409,22 +499,15 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
             // back-pressures upstream instead of being accepted and NACK'd. Control
             // messages remain enabled while intake is gated, so waiting neither
             // drops data nor prevents shutdown.
-            let accepting_pdata = auth.as_ref().is_none_or(BearerAuth::is_ready)
-                && agent_fed_auth.as_ref().is_none_or(AgentFedAuth::is_ready)
+            let accepting_pdata = pending_pdata.is_none()
+                && auth.is_ready()
                 && inflight_exports.len() < max_in_flight;
 
             // Instant at which a currently-usable token crosses the usability
             // margin. Used to wake the loop so `accepting_pdata` re-evaluates
             // (and gates) before a near-expiry batch is admitted, since the recv
             // arm below may already be parked when the margin is reached.
-            let auth_margin_deadline = auth
-                .as_ref()
-                .and_then(BearerAuth::refresh_deadline)
-                .or_else(|| {
-                    agent_fed_auth
-                        .as_ref()
-                        .and_then(AgentFedAuth::refresh_deadline)
-                });
+            let auth_margin_deadline = auth.refresh_deadline();
             if auth_margin_deadline != armed_margin_deadline {
                 if let Some(deadline) = auth_margin_deadline {
                     margin_sleep
@@ -434,7 +517,15 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                 armed_margin_deadline = auth_margin_deadline;
             }
 
-            let msg = tokio::select! {
+            let (msg, request_auth_checked, pending_started_at) = if pending_pdata.is_some()
+                && auth.is_ready()
+            {
+                let Some((pdata, started_at)) = pending_pdata.take() else {
+                    continue;
+                };
+                (Message::PData(pdata), true, Some(started_at))
+            } else {
+                let msg = tokio::select! {
                 biased;
 
                 // Wake when the cached token reaches its usability margin so the
@@ -446,38 +537,19 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                     continue;
                 }
 
-                // Pick up token refreshes (initial + subsequent) even while pdata
-                // intake is gated, so a pending token can arrive and unblock us.
-                // The `async` block keeps this lazy: `select!` evaluates a branch
-                // expression even when its `if` guard is false, and `auth` is
-                // `None` when no provider is bound. The `None` arm is unreachable
-                // while the guard holds; it pends rather than panics.
-                () = async {
-                    match auth.as_mut() {
-                        Some(a) => a.poll_refresh().await,
-                        None => std::future::pending().await,
-                    }
-                }, if auth.as_ref().is_some_and(BearerAuth::is_active) => {
-                    // A refresh was drained (the adapter caches it and logs any
-                    // anomaly); loop to re-evaluate intake readiness.
-                    continue;
-                }
-
-                // Agent-fed credentials have no refresh stream. Fetch one
-                // snapshot before admitting each batch, and drive the lookup as a
-                // select arm so control messages can cancel a slow provider call.
-                result = async {
-                    agent_fed_auth
-                        .as_mut()
-                        .expect("agent-fed auth must exist while its select guard is enabled")
-                        .poll_credential()
-                        .await
-                }, if agent_fed_auth.as_ref().is_some_and(|a| !a.is_ready()) => {
-                    if let Err(error) = result {
-                        otel_warn!(
-                            "otlp.exporter.http.agent_fed_credential_unavailable",
-                            error = %error
-                        );
+                // Drive either provider through one cancellation-safe branch.
+                // Agent-fed auth checks before each batch and reuses the validated
+                // header when the provider returns the same Arc snapshot.
+                failure = auth.poll_update(), if auth.should_poll() => {
+                    if let Some(failure) = failure {
+                        self.metrics.record_auth_failure(failure.error_type());
+                        if let Some(consecutive_failures) = failure.log_count() {
+                            otel_warn!(
+                                "otlp.exporter.http.agent_fed_credential_unavailable",
+                                error = %failure,
+                                consecutive_failures = consecutive_failures
+                            );
+                        }
                     }
                     continue;
                 }
@@ -487,7 +559,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                 // which would otherwise busy-loop.
                 completed = inflight_exports.next_completion(), if !inflight_exports.is_empty() => {
                     if let Some(completed) = completed {
-                        let rejected_generation = finalize_completed_export(
+                        let rejected_auth = finalize_completed_export(
                             completed,
                             &effect_handler,
                             &mut self.metrics,
@@ -498,7 +570,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                         // `token_stream` delivers a fresh one, and the retry never
                         // reuses the rejected token. A stale 401 (a newer token was
                         // already cached) is ignored by the generation guard.
-                        apply_auth_rejection(&mut auth, rejected_generation);
+                        auth.invalidate(rejected_auth);
                     }
                     continue;
                 }
@@ -510,14 +582,26 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                     otel_debug!("otlp.exporter.http.receive");
                     msg
                 }
+                    };
+                (msg, false, None)
             };
 
             match msg {
                 Message::Control(NodeControlMsg::Shutdown { deadline, reason }) => {
                     otel_info!("otlp.exporter.http.shutdown", reason = reason);
+                    if let Some((pdata, started_at)) = pending_pdata.take() {
+                        let signal_type = pdata.signal_type();
+                        let nack = NackMsg::new(auth.not_ready_reason(), pdata);
+                        _ = effect_handler.notify_nack(nack).await;
+                        self.metrics.record_failure(
+                            signal_type,
+                            OtlpHttpExporterErrorType::Authentication,
+                            started_at.elapsed(),
+                        );
+                    }
                     while !inflight_exports.is_empty() {
                         if let Some(completed) = inflight_exports.next_completion().await {
-                            let rejected_generation = finalize_completed_export(
+                            let rejected_auth = finalize_completed_export(
                                 completed,
                                 &effect_handler,
                                 &mut self.metrics,
@@ -525,7 +609,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                             .await;
                             // Honor a 401 even while draining, so a later
                             // force-drained request cannot reuse the rejected token.
-                            apply_auth_rejection(&mut auth, rejected_generation);
+                            auth.invalidate(rejected_auth);
                         }
                     }
                     return Ok(TerminalState::new(
@@ -537,7 +621,12 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                     mut metrics_reporter,
                 }) => _ = self.metrics.report(&mut metrics_reporter),
                 Message::PData(pdata) => {
-                    let export_started_at = Instant::now();
+                    let export_started_at = pending_started_at.unwrap_or_else(Instant::now);
+                    if !request_auth_checked && auth.requires_request_check() {
+                        auth.require_request_check();
+                        pending_pdata = Some((pdata, export_started_at));
+                        continue;
+                    }
                     let signal_type = pdata.signal_type();
                     let (context, payload) = pdata.into_parts();
 
@@ -546,22 +635,18 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                     // force-drains buffered pdata even while auth was pending: with no
                     // usable token we cannot send, so NACK it as retryable -- a token
                     // may yet arrive, so nothing is dropped.
-                    if let Some(a) = auth.as_ref() {
-                        if !a.is_ready() {
-                            let export_duration = export_started_at.elapsed();
-                            // `NackMsg::new` is retryable by construction.
-                            let nack = NackMsg::new(
-                                a.not_ready_reason(),
-                                OtapPdata::new(context, payload),
-                            );
-                            _ = effect_handler.notify_nack(nack).await;
-                            self.metrics.record_failure(
-                                signal_type,
-                                OtlpHttpExporterErrorType::Authentication,
-                                export_duration,
-                            );
-                            continue;
-                        }
+                    if !auth.is_ready() {
+                        let export_duration = export_started_at.elapsed();
+                        // `NackMsg::new` is retryable by construction.
+                        let nack =
+                            NackMsg::new(auth.not_ready_reason(), OtapPdata::new(context, payload));
+                        _ = effect_handler.notify_nack(nack).await;
+                        self.metrics.record_failure(
+                            signal_type,
+                            OtlpHttpExporterErrorType::Authentication,
+                            export_duration,
+                        );
+                        continue;
                     }
 
                     // The cached bearer header, together with the generation of the
@@ -569,32 +654,10 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                     // precedence over any statically configured `authorization`; the
                     // generation is echoed back on completion so a 401 can be matched
                     // to the exact token used and a stale rejection ignored.
-                    let (auth_header, request_auth) =
-                        match auth.as_ref().and_then(BearerAuth::header) {
-                            Some((header, generation)) => {
-                                (Some(header), RequestAuth::BearerProvider { generation })
-                            }
-                            None => match agent_fed_auth.as_mut() {
-                                Some(agent_fed_auth) => match agent_fed_auth.take_header() {
-                                    Some(header) => (Some(header), RequestAuth::AgentFed),
-                                    None => {
-                                        let export_duration = export_started_at.elapsed();
-                                        let nack = NackMsg::new(
-                                            "agent-fed bearer token unavailable",
-                                            OtapPdata::new(context, payload),
-                                        );
-                                        _ = effect_handler.notify_nack(nack).await;
-                                        self.metrics.record_failure(
-                                            signal_type,
-                                            OtlpHttpExporterErrorType::Authentication,
-                                            export_duration,
-                                        );
-                                        continue;
-                                    }
-                                },
-                                None => (None, RequestAuth::None),
-                            },
-                        };
+                    let (auth_header, request_auth) = match auth.header() {
+                        Some((header, request_auth)) => (Some(header), request_auth),
+                        None => (None, RequestAuth::None),
+                    };
 
                     // For the OtapArrowRecords path we keep the uncompressed bytes in
                     // `proto_buffer` rather than materializing them into a `Bytes` up front: when
@@ -709,7 +772,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                     while inflight_exports.len() >= max_in_flight {
                         match inflight_exports.next_completion().await {
                             Some(completed) => {
-                                let rejected_generation = finalize_completed_export(
+                                let rejected_auth = finalize_completed_export(
                                     completed,
                                     &effect_handler,
                                     &mut self.metrics,
@@ -717,7 +780,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                                 .await;
                                 // Honor a 401 here too, so the next force-drained
                                 // request does not reuse the rejected token.
-                                apply_auth_rejection(&mut auth, rejected_generation);
+                                auth.invalidate(rejected_auth);
                             }
                             None => break,
                         }
@@ -981,7 +1044,7 @@ async fn finalize_completed_export(
     completed: CompletedExport,
     effect_handler: &EffectHandler<OtapPdata>,
     metrics: &mut OtlpHttpExporterMetrics,
-) -> Option<u64> {
+) -> Option<RequestAuth> {
     let CompletedExport {
         result,
         context,
@@ -994,10 +1057,9 @@ async fn finalize_completed_export(
 
     let pdata = OtapPdata::new(context, saved_payload);
 
-    // Set to the rejected token's generation when the server rejected the token
-    // this request used (401), so the caller can invalidate exactly that
-    // generation before the batch is retried.
-    let mut rejected_generation = None;
+    // Set to the request identity when the server rejects its credential (401),
+    // so the caller can invalidate exactly that generation before retry.
+    let mut rejected_auth = None;
     let err = match result {
         Ok(service_resp) => service_resp.partial_success.and_then(|partial_success| {
             // As per OTLP HTTP spec, the server may use partial success to convey information
@@ -1026,12 +1088,11 @@ async fn finalize_completed_export(
             }
         }),
         Err(e) => {
-            // A 401 for either dynamic source is retryable. Only the stream-backed
-            // provider has a cached generation to invalidate; agent-fed auth reads
-            // a fresh snapshot on the next export attempt.
+            // A 401 for either dynamic source is retryable and carries the exact
+            // request generation back to the owning authentication variant.
             let auth_failure = request_auth.is_dynamic() && e.is_auth_failure();
             if auth_failure {
-                rejected_generation = request_auth.bearer_generation();
+                rejected_auth = Some(request_auth);
             }
             let retryable = e.is_retryable() || auth_failure;
             let error_type = e.error_type();
@@ -1076,7 +1137,7 @@ async fn finalize_completed_export(
         }
     }
 
-    rejected_generation
+    rejected_auth
 }
 
 /// A simple pool of HTTP clients to allow for concurrent exports.
@@ -1177,6 +1238,7 @@ impl HttpClientPool {
 #[cfg(test)]
 mod test {
     use std::collections::{HashMap, VecDeque};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
 
     use arrow::array::Int32Array;
@@ -1266,6 +1328,20 @@ mod test {
             if !self.delay.is_zero() {
                 tokio::time::sleep(self.delay).await;
             }
+
+            Ok(Arc::clone(&self.snapshot))
+        }
+    }
+
+    struct CountingAgentFedProvider {
+        snapshot: Arc<AgentFedCredentialSnapshot>,
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait(?Send)]
+    impl AgentFedCredentialProvider for CountingAgentFedProvider {
+        async fn get_credential(&self) -> Result<Arc<AgentFedCredentialSnapshot>, CapabilityError> {
+            _ = self.calls.fetch_add(1, Ordering::Relaxed);
             Ok(Arc::clone(&self.snapshot))
         }
     }
@@ -1586,6 +1662,66 @@ mod test {
         server_cancellation_token2
     }
 
+    /// Runs a server that delays responses and records peak request concurrency.
+    fn run_concurrency_server(
+        tokio_rt: &Runtime,
+        endpoint_addr: &str,
+        active: Arc<AtomicUsize>,
+        peak: Arc<AtomicUsize>,
+        delay: Duration,
+    ) -> CancellationToken {
+        let cancellation = CancellationToken::new();
+        let returned_cancellation = cancellation.clone();
+        let endpoint_addr = endpoint_addr.to_string();
+        _ = tokio_rt.spawn(async move {
+            let listener = tokio::net::TcpListener::bind(endpoint_addr).await.unwrap();
+            let tracker = TaskTracker::new();
+            loop {
+                tokio::select! {
+                    _ = cancellation.cancelled() => break,
+                    accept_result = listener.accept() => {
+                        let (stream, _) = accept_result.unwrap();
+                        let cancellation = cancellation.clone();
+                        let active = Arc::clone(&active);
+                        let peak = Arc::clone(&peak);
+                        drop(tracker.spawn(async move {
+                            let io = TokioIo::new(stream);
+                            let service = service_fn(move |_req: hyper::Request<hyper::body::Incoming>| {
+                                let active = Arc::clone(&active);
+                                let peak = Arc::clone(&peak);
+                                async move {
+                                    let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                                    _ = peak.fetch_max(current, Ordering::SeqCst);
+                                    tokio::time::sleep(delay).await;
+                                    _ = active.fetch_sub(1, Ordering::SeqCst);
+                                    Ok::<_, hyper::Error>(
+                                        Response::builder()
+                                            .status(200)
+                                            .body(Full::new(Bytes::new()))
+                                            .unwrap(),
+                                    )
+                                }
+                            });
+                            let conn = http1::Builder::new().serve_connection(io, service);
+                            let mut conn = std::pin::pin!(conn);
+                            tokio::select! {
+                                _ = cancellation.cancelled() => {
+                                    conn.as_mut().graceful_shutdown();
+                                    let _ = conn.await;
+                                },
+                                result = &mut conn => {
+                                    let _ = result;
+                                }
+                            }
+                        }));
+                    }
+                }
+            }
+            _ = tracker.close();
+        });
+        returned_cancellation
+    }
+
     #[test]
     fn test_auth_failure_is_retryable_when_provider_bound() {
         // With a bearer token provider bound, a 401 from the backend (e.g. the
@@ -1862,8 +1998,7 @@ mod test {
             OtlpHttpExporter {
                 config,
                 metrics: OtlpHttpExporterMetrics::register(&pipeline_ctx),
-                token_provider: Some(Box::new(provider)),
-                agent_fed_provider: None,
+                dynamic_auth: Some(DynamicAuthProvider::Bearer(Box::new(provider))),
             },
             node_id,
             node_config,
@@ -1902,8 +2037,7 @@ mod test {
             OtlpHttpExporter {
                 config,
                 metrics: OtlpHttpExporterMetrics::register(&pipeline_ctx),
-                token_provider: None,
-                agent_fed_provider: Some(provider),
+                dynamic_auth: Some(DynamicAuthProvider::AgentFed(provider)),
             },
             node_id,
             node_config,
@@ -1958,8 +2092,10 @@ mod test {
 
         let unauthenticated =
             OtlpHttpExporter::from_config(make_pipeline(), &config, None).unwrap();
-        assert!(unauthenticated.token_provider.is_none());
-        assert!(unauthenticated.agent_fed_provider.is_none());
+        assert_eq!(
+            AuthState::new(unauthenticated.dynamic_auth).mode(),
+            AuthMode::None
+        );
 
         let bearer = OtlpHttpExporter::from_config(
             make_pipeline(),
@@ -1969,8 +2105,7 @@ mod test {
             ))),
         )
         .unwrap();
-        assert!(bearer.token_provider.is_some());
-        assert!(bearer.agent_fed_provider.is_none());
+        assert_eq!(AuthState::new(bearer.dynamic_auth).mode(), AuthMode::Bearer);
 
         let agent_fed = OtlpHttpExporter::from_config(
             make_pipeline(),
@@ -1980,8 +2115,10 @@ mod test {
             ))),
         )
         .unwrap();
-        assert!(agent_fed.token_provider.is_none());
-        assert!(agent_fed.agent_fed_provider.is_some());
+        assert_eq!(
+            AuthState::new(agent_fed.dynamic_auth).mode(),
+            AuthMode::AgentFed
+        );
     }
 
     /// Scenario: The exporter factory is invoked without capability bindings.
@@ -2013,14 +2150,47 @@ mod test {
     #[test]
     fn request_auth_helpers_cover_each_mode() {
         assert!(!RequestAuth::None.is_dynamic());
-        assert_eq!(RequestAuth::None.bearer_generation(), None);
-
-        assert!(RequestAuth::AgentFed.is_dynamic());
-        assert_eq!(RequestAuth::AgentFed.bearer_generation(), None);
+        assert!(RequestAuth::AgentFed { generation: 7 }.is_dynamic());
 
         let bearer = RequestAuth::BearerProvider { generation: 42 };
         assert!(bearer.is_dynamic());
-        assert_eq!(bearer.bearer_generation(), Some(42));
+    }
+
+    /// Scenario: Each runtime authentication variant is polled, queried, and invalidated.
+    /// Guarantees: The unified state owns mode-specific behavior without external option checks.
+    #[tokio::test]
+    async fn auth_state_centralizes_each_authentication_mode() {
+        let mut none = AuthState::new(None);
+        assert!(none.is_ready());
+        assert!(none.refresh_deadline().is_none());
+        assert!(none.header().is_none());
+        assert_eq!(none.not_ready_reason(), "authentication is not configured");
+        none.invalidate(Some(RequestAuth::BearerProvider { generation: 1 }));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(1), none.poll_update())
+                .await
+                .is_err()
+        );
+
+        let mut bearer = AuthState::new(Some(DynamicAuthProvider::Bearer(Box::new(
+            MockTokenProvider::new("bearer"),
+        ))));
+        assert!(bearer.poll_update().await.is_none());
+        let (_, bearer_request) = bearer.header().expect("bearer header");
+        bearer.invalidate(Some(bearer_request));
+        assert!(!bearer.is_ready());
+
+        let mut agent_fed = AuthState::new(Some(DynamicAuthProvider::AgentFed(Box::new(
+            StaticAgentFedProvider::new("agent-fed"),
+        ))));
+        assert!(agent_fed.poll_update().await.is_none());
+        let (_, agent_request) = agent_fed.header().expect("agent-fed header");
+        agent_fed.invalidate(Some(agent_request));
+        assert!(!agent_fed.is_ready());
+        assert_eq!(
+            agent_fed.not_ready_reason(),
+            "agent-fed bearer token was rejected; awaiting a different snapshot"
+        );
     }
 
     /// Scenario: Capability lookup fails while the exporter factory resolves authentication.
@@ -2099,6 +2269,144 @@ mod test {
         assert_eq!(
             headers.get(http::header::AUTHORIZATION).unwrap(),
             "Bearer agent-fed-token"
+        );
+    }
+
+    /// Scenario: A non-expiring agent-fed snapshot rotates while the exporter is idle.
+    /// Guarantees: The first later batch rechecks the provider and uses the replacement token.
+    #[test]
+    fn test_agent_fed_non_expiring_snapshot_rotates_while_idle() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let tokio_rt = Runtime::new().unwrap();
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
+        let endpoint_addr = format!("127.0.0.1:{port}");
+        let endpoint = format!("http://{endpoint_addr}");
+        let captured: Arc<parking_lot::Mutex<Option<HeaderMap>>> =
+            Arc::new(parking_lot::Mutex::new(None));
+        let cancel = run_header_capture_server(&tokio_rt, &endpoint_addr, Arc::clone(&captured));
+        wait_for_port_ready(&endpoint_addr);
+
+        let provider = RotatingAgentFedProvider::new([
+            BearerToken::without_expiry("initial-token".to_owned()),
+            BearerToken::without_expiry("rotated-token".to_owned()),
+        ]);
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let exporter = exporter_with_agent_fed_provider(
+            &test_runtime,
+            default_test_config(endpoint),
+            provider,
+        );
+        let (logs_batch, _, _) = gen_batches_for_each_signal_type();
+        let mut bytes = Vec::new();
+        logs_batch.encode(&mut bytes).unwrap();
+        let pdata = subscribe_pdatas(
+            vec![OtapPdata::new_default(OtapPayload::from(
+                OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes)),
+            ))],
+            false,
+        )
+        .pop()
+        .expect("test pdata");
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(|ctx| {
+                Box::pin(async move {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    ctx.send_pdata(pdata).await.unwrap();
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "test complete")
+                        .await
+                        .unwrap();
+                })
+            })
+            .run_validation(|_ctx, result| Box::pin(async move { result.unwrap() }));
+
+        cancel.cancel();
+        let headers = captured
+            .lock()
+            .clone()
+            .expect("server did not capture request headers");
+        assert_eq!(
+            headers.get(http::header::AUTHORIZATION).unwrap(),
+            "Bearer rotated-token"
+        );
+    }
+
+    /// Scenario: Several batches use one unchanged agent-fed snapshot while responses are delayed.
+    /// Guarantees: Snapshot checks do not prevent the exporter from filling `max_in_flight`.
+    #[test]
+    fn test_agent_fed_snapshot_reuse_preserves_max_in_flight() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        const MAX_IN_FLIGHT: usize = 4;
+        let tokio_rt = Runtime::new().unwrap();
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
+        let endpoint_addr = format!("127.0.0.1:{port}");
+        let endpoint = format!("http://{endpoint_addr}");
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let cancel = run_concurrency_server(
+            &tokio_rt,
+            &endpoint_addr,
+            Arc::clone(&active),
+            Arc::clone(&peak),
+            Duration::from_millis(200),
+        );
+        wait_for_port_ready(&endpoint_addr);
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let provider = CountingAgentFedProvider {
+            snapshot: StaticAgentFedProvider::new("shared-token").snapshot,
+            calls: Arc::clone(&calls),
+        };
+        let config = Config {
+            client_pool_size: NonZeroUsize::new(MAX_IN_FLIGHT).unwrap(),
+            max_in_flight: MAX_IN_FLIGHT,
+            ..default_test_config(endpoint)
+        };
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let exporter = exporter_with_agent_fed_provider(&test_runtime, config, provider);
+        let (logs_batch, _, _) = gen_batches_for_each_signal_type();
+        let mut bytes = Vec::new();
+        logs_batch.encode(&mut bytes).unwrap();
+        let pdatas = subscribe_pdatas(
+            (0..MAX_IN_FLIGHT)
+                .map(|_| {
+                    OtapPdata::new_default(OtapPayload::from(OtlpProtoBytes::ExportLogsRequest(
+                        Bytes::copy_from_slice(&bytes),
+                    )))
+                })
+                .collect(),
+            false,
+        );
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(|ctx| {
+                Box::pin(async move {
+                    for pdata in pdatas {
+                        ctx.send_pdata(pdata).await.unwrap();
+                    }
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "test complete")
+                        .await
+                        .unwrap();
+                })
+            })
+            .run_validation(|_ctx, result| Box::pin(async move { result.unwrap() }));
+
+        cancel.cancel();
+        tokio_rt.block_on(async {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        });
+        assert_eq!(
+            peak.load(Ordering::SeqCst),
+            MAX_IN_FLIGHT,
+            "unchanged snapshot checks must not serialize HTTP exports"
+        );
+        assert!(
+            calls.load(Ordering::Relaxed) >= MAX_IN_FLIGHT,
+            "the provider must still be checked before every admitted batch"
         );
     }
 
@@ -2710,8 +3018,7 @@ mod test {
             OtlpHttpExporter {
                 config,
                 metrics: OtlpHttpExporterMetrics::register(&pipeline_ctx),
-                token_provider: None,
-                agent_fed_provider: None,
+                dynamic_auth: None,
             },
             node_id.clone(),
             node_config,
