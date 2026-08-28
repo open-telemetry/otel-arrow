@@ -162,11 +162,9 @@ openssl = "0.10"
 opentelemetry-proto = { version = "0.32", default-features = false, features = ["gen-tonic-messages", "logs", "trace"]}
 
 # Detector-only use: opentelemetry_sdk provides the `Resource` type and `ResourceDetector` trait;
-# opentelemetry provides the `Key`/`Value` types those resources hold. Both use
-# `default-features = false` to drop trace/metrics/logs. Two caveats keep this from being fully slim
-# today: opentelemetry_sdk 0.32.1 predates the slimming in opentelemetry-rust #3593 (unreleased), and
-# the contrib resource-detectors crate still enables opentelemetry's default features, so they are
-# pulled in transitively until fixed upstream.
+# opentelemetry provides the `Key`/`Value` types those resources hold. These dependencies use
+# `default-features = false` to drop trace/metrics/logs. opentelemetry_sdk 0.32.1 predates the
+# slimming in opentelemetry-rust #3593 (unreleased).
 opentelemetry = { version = "0.32.0", default-features = false }
 opentelemetry_sdk = { version = "0.32.1", default-features = false }
 
@@ -296,9 +294,7 @@ tracelogging = "1.2.4"
 tracelogging_dynamic = "1.2.4"
 urlencoding = "2"
 geneva-uploader = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "43bd04be9e825564eeb3424b3e4caebf3e3ba7c5", default-features = false, features = ["tls-rustls"] }
-# Pinned to a rev containing upstream resource detector work. Swap to a published version once
-# contrib cuts one.
-opentelemetry-resource-detectors = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "43bd04be9e825564eeb3424b3e4caebf3e3ba7c5" }
+opentelemetry-resource-detectors = "0.12.0"
 
 [patch."https://github.com/open-telemetry/otel-arrow"]
 otap-df-pdata-views = { path = "compat/otap-df-pdata-views" }
