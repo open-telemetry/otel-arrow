@@ -1005,10 +1005,14 @@ is not required: globs can overlap without resolving to the same file, and
 aliases or replacement can create runtime conflicts that static text cannot
 prove.
 
-The namespace lock and runtime leases prevent overlapping local readers in one engine
-process. They provide no distributed fencing. Separate processes, independent state
-directories, and unreliable network-filesystem advisory locks are outside the Phase 1
-ownership guarantee.
+The namespace lock serializes checkpoint writers that open the same effective
+checkpoint namespace, including independent filelog nodes in one engine process and
+separate local processes sharing the same state directory. Its lock mechanism must
+conflict across both independently opened in-process store instances and processes.
+Process-local runtime leases separately prevent two filelog nodes in one engine process
+from reading the same exact locator. Neither mechanism provides distributed fencing.
+Independent state directories and unreliable network-filesystem advisory locks are
+outside the Phase 1 ownership guarantee.
 
 ## Reader scheduling and descriptor resources
 

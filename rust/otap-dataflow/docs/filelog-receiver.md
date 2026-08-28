@@ -192,7 +192,7 @@ accepted compromises:
 | D12 | Support move/create rotation and describe copytruncate as best-effort | Portable observation cannot guarantee copytruncate capture |
 | D13 | Retain one receiver-wide in-flight batch plus at most one bounded already-framed carry-over record | This preserves progress correctness without rereading a completed record from mutable source bytes |
 | D14 | Use periodic reconciliation as the Phase 1 correctness mechanism | Native notifications may reduce latency later but cannot be the sole source of truth |
-| D15 | Use a namespace lock plus process-local runtime leases for Phase 1 local ownership | These prevent overlapping local readers but provide no distributed fencing or readiness promise |
+| D15 | Use a namespace lock plus process-local runtime leases for Phase 1 local ownership | The namespace lock serializes in-process and local cross-process writers sharing one effective checkpoint namespace; runtime leases prevent duplicate in-process readers; neither provides distributed fencing or readiness |
 | D16 | Fail closed on corrupt durable state and persist fail-policy quarantine | Ambiguous recovery never silently inherits progress, and restart cannot bypass failure |
 | D17 | At confirmed permanent rotation EOF, emit a nonempty pending frame with bounded terminal-unterminated evidence | This preserves terminal bytes without silently claiming normal newline or multiline completion; deterministic decode-fail and corrupt-state conditions can still quarantine |
 | D18 | Require a nonempty, ready required-subscriber snapshot before a publication can Ack | Zero required membership is backpressure or explicit non-success, never vacuous Ack; this is an engine/topic release dependency |
@@ -430,9 +430,10 @@ implementation:
   the replacement target's own existing lifecycle state still wins.
 - Incomplete discovery cannot prove absence, uniqueness, replacement, or
   eligibility for destructive cleanup.
-- The checkpoint namespace lock and process-local locator leases prevent only
-  the documented local overlaps. They are not distributed fencing or source
-  readiness.
+- The checkpoint namespace lock prevents concurrent in-process or local
+  cross-process writers sharing one effective checkpoint namespace.
+  Process-local locator leases prevent duplicate in-process readers. Neither
+  mechanism is distributed fencing or source readiness.
 
 ### Reading, framing, and output
 

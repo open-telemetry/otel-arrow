@@ -119,10 +119,14 @@ the behavioral compaction state machine. They are never authoritative.
 - `CURRENT` is a small fixed-width binary marker (not free-form text) that
   names the active generation. Its exact layout is defined in
   [The `CURRENT` marker](#the-current-marker).
-- `ownership.lock` is an empty lock file used only for advisory OS locking
-  (POSIX `flock`/`fcntl` or Windows `LockFileEx`, per architecture decision
-  [D15](filelog-receiver.md#decisions-requested)); it has no format of its
-  own and is out of scope for this document.
+- `ownership.lock` is an empty lock file used only for exclusive checkpoint-
+  namespace ownership under architecture decision
+  [D15](filelog-receiver.md#decisions-requested). The lock mechanism MUST
+  reject concurrent acquisition by another process and by another independent
+  store instance in the same process. A process-associated lock that permits a
+  second in-process acquisition does not satisfy this contract. The lock file
+  has no byte format of its own and is otherwise out of scope for this
+  document.
 
 Recovery always reads `CURRENT` first to select the generation, then opens
 both files named by that generation. A missing, unreadable, or incomplete

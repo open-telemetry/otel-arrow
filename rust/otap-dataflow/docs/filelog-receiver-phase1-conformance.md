@@ -395,6 +395,9 @@ while their semantic and format definitions remain normative from version 1.
 | Identity | Replacement at quarantined path | New identity, no inherited quarantine |
 | Identity | Duplicate runtime lease request | One reader; bounded wait/failure |
 | Identity | Descriptor closes temporarily | Lease remains held |
+| Ownership | Two independent stores in one process open the same effective checkpoint namespace | Exactly one owns the namespace; the other waits or times out without reading or mutation |
+| Ownership | Two local processes open the same effective checkpoint namespace and state directory | Exactly one owns the namespace; the other waits or times out without reading or mutation |
+| Ownership | Current namespace owner releases its lock | A waiting local store can acquire ownership and recover before reading |
 | Reader | More tracked than open files | Resident handles remain bounded |
 | Reader | Receiver FD budget exceeds process soft limit | Startup rejected before source open |
 | Reader | Receiver FD budget exceeds warning threshold | Bounded startup warning; no aggregate process-ownership claim |
