@@ -46,8 +46,8 @@ config:
 ```
 
 Authorization is optional. Binding the `bearer_token_authorizer` capability
-makes the receiver require a bearer token on every OTLP/gRPC and OTLP/HTTP
-request:
+makes the receiver require a bearer token for OTLP export requests accepted on
+the configured gRPC and HTTP export endpoints:
 
 ```yaml
 extensions:
