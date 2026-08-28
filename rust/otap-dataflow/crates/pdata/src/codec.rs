@@ -10,6 +10,7 @@
 
 use std::borrow::{Borrow, Cow};
 use std::fmt;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use bytes::Bytes;
 use otel_arrow_dfe_config::{EncodeOptions, SignalType};
@@ -338,6 +339,83 @@ impl EncodingPlan {
 #[derive(Default)]
 pub struct CodecState {
     codecs: Vec<(ResolvedCodec, Box<dyn PdataCodec>)>,
+}
+
+/// Scoped handle to the codec state owned by one pipeline runtime.
+///
+/// Cloning this value only clones the `Arc`. The closure boundary prevents a
+/// mutable codec borrow from escaping the operation or crossing an async
+/// suspension point. The mutex also lets shared nodes use the same pipeline
+/// service as local nodes. A future blocking or async executor can replace this
+/// implementation without putting codec state into node structs.
+#[derive(Clone, Default)]
+pub struct CodecExecutor {
+    state: Arc<Mutex<CodecState>>,
+}
+
+impl CodecExecutor {
+    fn lock(&self) -> MutexGuard<'_, CodecState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Runs one synchronous operation against runtime-owned codec state.
+    ///
+    /// This is an implementation hook for pdata-aware effect handlers. Nodes
+    /// should use the higher-level effect-handler capabilities instead.
+    #[doc(hidden)]
+    pub fn execute<R>(&self, operation: impl FnOnce(&mut CodecState) -> R) -> R {
+        operation(&mut self.lock())
+    }
+
+    /// Extracts or decodes native records while retaining failed input.
+    pub fn try_into_otap(
+        &self,
+        payload: crate::OtapPayload,
+    ) -> Result<OtapArrowRecords, crate::OtapPayloadDecodeError> {
+        self.execute(|state| payload.try_into_otap(state))
+    }
+
+    /// Borrows a representation-independent view of a payload.
+    pub fn view<'a>(
+        &self,
+        payload: &'a crate::OtapPayload,
+    ) -> Result<CodecView<'a>, crate::encode::Error> {
+        self.execute(|state| payload.view(state))
+    }
+
+    /// Encodes inside a scope that cannot outlive reusable codec storage.
+    pub fn with_encoded<R>(
+        &self,
+        payload: &mut crate::OtapPayload,
+        plan: &EncodingPlan,
+        consume: impl FnOnce(&[u8]) -> R,
+    ) -> Result<R, Error> {
+        self.execute(|state| {
+            let output = payload.prepare_encoded(state, plan)?;
+            Ok(consume(output.as_ref()))
+        })
+    }
+
+    /// Encodes to owned bytes suitable for an asynchronous send.
+    pub fn encode_owned(
+        &self,
+        payload: &mut crate::OtapPayload,
+        plan: &EncodingPlan,
+    ) -> Result<Bytes, Error> {
+        self.execute(|state| {
+            payload
+                .prepare_encoded(state, plan)
+                .map(EncodeOutput::into_bytes)
+        })
+    }
+
+    /// Returns whether two handles address the same pipeline-owned state.
+    #[must_use]
+    pub fn shares_state_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.state, &other.state)
+    }
 }
 
 impl CodecState {
@@ -783,6 +861,21 @@ mod tests {
         assert_eq!(codec, ResolvedCodec::OTLP);
         assert_eq!(codec.count_items(SignalType::Logs, &bytes), Some(4));
         assert_eq!(CodecState::default().test_instance_count(), 0);
+    }
+
+    /// Scenario: two runtime handles execute codec work for one pipeline.
+    /// Guarantees: cloned handles share the same lazily created codec instance.
+    #[test]
+    fn executor_clones_share_lazy_state() {
+        let first = CodecExecutor::default();
+        let second = first.clone();
+        assert!(first.shares_state_with(&second));
+        first.execute(|state| {
+            _ = state
+                .decode(ResolvedCodec::OTLP, SignalType::Logs, &logs_bytes())
+                .unwrap();
+        });
+        second.execute(|state| assert_eq!(state.test_instance_count(), 1));
     }
 
     /// Scenario: OTLP bytes are viewed and then decoded through reusable codec state.

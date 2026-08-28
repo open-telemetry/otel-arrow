@@ -53,6 +53,7 @@ use crate::shared::message::SharedSender;
 use crate::{WakeupError, WakeupSetOutcome};
 use async_trait::async_trait;
 use otel_arrow_dfe_config::{PortName, SignalType};
+use otel_arrow_dfe_pdata::codec::CodecExecutor;
 use otel_arrow_dfe_telemetry::common_attributes::SignalAttributes;
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
 use otel_arrow_dfe_telemetry::instrument::HistogramNormal;
@@ -130,6 +131,7 @@ pub trait Processor<PData> {
 #[derive(Clone)]
 pub struct EffectHandler<PData> {
     pub(crate) core: EffectHandlerCore<PData>,
+    codec_executor: CodecExecutor,
     /// Output-port router.
     pub router: OutputRouter<SharedSender<PData>>,
     /// Per-handler flow_metric state. See [`SharedFlowMetricState`] /
@@ -156,9 +158,21 @@ impl<PData> EffectHandler<PData> {
         let router = OutputRouter::new(node_id, msg_senders, default_port);
         EffectHandler {
             core,
+            codec_executor: CodecExecutor::default(),
             router,
             flow: SharedFlowMetricState::default(),
         }
+    }
+
+    /// Returns the runtime-owned pdata codec service.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn codec_executor(&self) -> &CodecExecutor {
+        &self.codec_executor
+    }
+
+    pub(crate) fn set_codec_executor(&mut self, codec_executor: CodecExecutor) {
+        self.codec_executor = codec_executor;
     }
 
     /// Returns the id of the processor associated with this handler.
