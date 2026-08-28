@@ -104,9 +104,11 @@ jobs:
       - name: Bump Rust crate versions
         run: |
           # Rust crates currently track the same release version as Go.
-          # Replace the version in both [workspace.package] and the root
-          # [package] section (both have `version = "X.Y.Z"` at column 0).
-          sed -i 's/^version = "[0-9]\+\.[0-9]\+\.[0-9]\+"/version = "${{ inputs.version }}"/g' rust/otap-dataflow/Cargo.toml
+          # Replace the workspace/root package versions and same-release
+          # dependency constraints in the workspace manifest.
+          CURRENT_VERSION=$(sed -n 's/^version = "\([0-9]\+\.[0-9]\+\.[0-9]\+\)"/\1/p' rust/otap-dataflow/Cargo.toml | head -1)
+          CURRENT_VERSION_PATTERN=$(printf '%s' "${CURRENT_VERSION}" | sed 's/\./\\./g')
+          sed -i "s/${CURRENT_VERSION_PATTERN}/${{ inputs.version }}/g" rust/otap-dataflow/Cargo.toml
           echo "Updated rust/otap-dataflow/Cargo.toml to ${{ inputs.version }}"
 
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
@@ -116,7 +118,7 @@ jobs:
       - name: Update Rust lockfile
         run: cargo generate-lockfile --manifest-path rust/otap-dataflow/Cargo.toml
 
-      - name: Validate Rust crates.io publish pilot
+      - name: Validate Rust crates.io publish plan
         run: cargo xtask crates-publish check
         working-directory: rust/otap-dataflow
 
