@@ -46,7 +46,8 @@ jobs:
         id: get-user-id
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: echo "user-id=$(gh api "/users/${{ steps.app-token.outputs.app-slug }}[bot]" --jq .id)" >> "$GITHUB_OUTPUT"
+          STEPS_APP_TOKEN_OUTPUTS_APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+        run: echo "user-id=$(gh api "/users/${STEPS_APP_TOKEN_OUTPUTS_APP_SLUG}[bot]" --jq .id)" >> "$GITHUB_OUTPUT"
 
       - name: Checkout (release preparation)
         if: "!inputs.dry_run"
@@ -62,7 +63,9 @@ jobs:
           cache-dependency-path: "**/*.sum"
 
       - name: Validate inputs
-        run: ./.github/workflows/scripts/validate-version.sh "${{ inputs.version }}"
+        run: ./.github/workflows/scripts/validate-version.sh "${INPUTS_VERSION}"
+        env:
+          INPUTS_VERSION: ${{ inputs.version }}
 
       - name: Record release base commit
         id: release_base
@@ -75,10 +78,15 @@ jobs:
           LAST_VERSION=$(./.github/workflows/scripts/get-last-version.sh)
           echo "last_version=$LAST_VERSION" >> $GITHUB_OUTPUT
           echo "Last released version: $LAST_VERSION"
-          echo "New version: ${{ inputs.version }}"
+          echo "New version: ${INPUTS_VERSION}"
+        env:
+          INPUTS_VERSION: ${{ inputs.version }}
 
       - name: Validate version increment
-        run: ./.github/workflows/scripts/validate-version-increment.sh "${{ steps.last_version.outputs.last_version }}" "${{ inputs.version }}"
+        run: ./.github/workflows/scripts/validate-version-increment.sh "${STEPS_LAST_VERSION_OUTPUTS_LAST_VERSION}" "${INPUTS_VERSION}"
+        env:
+          STEPS_LAST_VERSION_OUTPUTS_LAST_VERSION: ${{ steps.last_version.outputs.last_version }}
+          INPUTS_VERSION: ${{ inputs.version }}
 
       - name: Generate dependency-bot changelog entries
         run: |
@@ -96,18 +104,22 @@ jobs:
         run: |
           # Renders pending entries from go/.chloggen/ and
           # rust/otap-dataflow/.chloggen/ into their respective CHANGELOG.md
-          # files under the new `## v${{ inputs.version }}` heading, then
+          # files under the new `## v${INPUTS_VERSION}` heading, then
           # deletes the consumed .yaml entry files.
           make chlog-install
-          make chlog-update VERSION="v${{ inputs.version }}"
+          make chlog-update VERSION="v${INPUTS_VERSION}"
+        env:
+          INPUTS_VERSION: ${{ inputs.version }}
 
       - name: Bump Rust crate versions
         run: |
           # Rust crates currently track the same release version as Go.
           # Replace the version in both [workspace.package] and the root
           # [package] section (both have `version = "X.Y.Z"` at column 0).
-          sed -i 's/^version = "[0-9]\+\.[0-9]\+\.[0-9]\+"/version = "${{ inputs.version }}"/g' rust/otap-dataflow/Cargo.toml
-          echo "Updated rust/otap-dataflow/Cargo.toml to ${{ inputs.version }}"
+          sed -i "s/^version = \"[0-9]\+\.[0-9]\+\.[0-9]\+\"/version = \"${INPUTS_VERSION}\"/g" rust/otap-dataflow/Cargo.toml
+          echo "Updated rust/otap-dataflow/Cargo.toml to ${INPUTS_VERSION}"
+        env:
+          INPUTS_VERSION: ${{ inputs.version }}
 
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
@@ -130,13 +142,13 @@ jobs:
           # --allow-missing keeps the workflow working if one side had no
           # chloggen entries this release.
           ./.github/workflows/scripts/extract-changelog.sh \
-            --version "${{ inputs.version }}" \
+            --version "${INPUTS_VERSION}" \
             --file go/CHANGELOG.md \
             --allow-missing \
             --omit-subtext \
             /tmp/go_release_content.txt
           ./.github/workflows/scripts/extract-changelog.sh \
-            --version "${{ inputs.version }}" \
+            --version "${INPUTS_VERSION}" \
             --file rust/otap-dataflow/CHANGELOG.md \
             --allow-missing \
             --omit-subtext \
@@ -164,36 +176,38 @@ jobs:
           echo "----------------------------------------"
           cat /tmp/combined_release_content.txt
           echo "----------------------------------------"
+        env:
+          INPUTS_VERSION: ${{ inputs.version }}
 
       - name: Dry run - Show planned changes
         if: inputs.dry_run
         run: |
           # Write to GitHub Step Summary
-          cat >> $GITHUB_STEP_SUMMARY << 'EOF'
+          cat >> $GITHUB_STEP_SUMMARY << EOF
           # :clipboard: Release Preparation Dry Run
 
           ## Summary
           **DRY RUN MODE** - No changes will be made to the repository
 
           ## Planned Changes
-          - **New version**: `${{ inputs.version }}`
-          - **Last version**: `${{ steps.last_version.outputs.last_version }}`
+          - **New version**: \`${INPUTS_VERSION}\`
+          - **Last version**: \`${STEPS_LAST_VERSION_OUTPUTS_LAST_VERSION}\`
 
           ## Git Operations
-          - Create branch: `otelbot/release-v${{ inputs.version }}`
+          - Create branch: \`otelbot/release-v${INPUTS_VERSION}\`
           - Commit version updates
           - Create pull request
 
           ## File Changes
           The following files would be modified:
-          - `go/.chloggen/auto-dependency-updates.yaml`, `rust/otap-dataflow/.chloggen/auto-dependency-updates.yaml` - Auto-generated entries aggregating renovate[bot]/dependabot[bot] PRs (created only when such commits exist for the tree)
-          - `go/CHANGELOG.md` - Render pending `go/.chloggen/*.yaml` entries under `## v${{ inputs.version }}`
-          - `rust/otap-dataflow/CHANGELOG.md` - Render pending `rust/otap-dataflow/.chloggen/*.yaml` entries under `## v${{ inputs.version }}`
-          - `go/.chloggen/*.yaml`, `rust/otap-dataflow/.chloggen/*.yaml` - Consumed entries deleted
-          - `rust/otap-dataflow/Cargo.toml` - Bump workspace and root package version to ${{ inputs.version }}
+          - \`go/.chloggen/auto-dependency-updates.yaml\`, \`rust/otap-dataflow/.chloggen/auto-dependency-updates.yaml\` - Auto-generated entries aggregating renovate[bot]/dependabot[bot] PRs (created only when such commits exist for the tree)
+          - \`go/CHANGELOG.md\` - Render pending \`go/.chloggen/*.yaml\` entries under \`## v${INPUTS_VERSION}\`
+          - \`rust/otap-dataflow/CHANGELOG.md\` - Render pending \`rust/otap-dataflow/.chloggen/*.yaml\` entries under \`## v${INPUTS_VERSION}\`
+          - \`go/.chloggen/*.yaml\`, \`rust/otap-dataflow/.chloggen/*.yaml\` - Consumed entries deleted
+          - \`rust/otap-dataflow/Cargo.toml\` - Bump workspace and root package version to ${INPUTS_VERSION}
 
           ## Release Notes Preview
-          ```
+          \`\`\`
           EOF
           cat /tmp/combined_release_content.txt >> $GITHUB_STEP_SUMMARY
           cat >> $GITHUB_STEP_SUMMARY << 'EOF'
@@ -207,36 +221,44 @@ jobs:
           ---
           **Note**: This is a dry run. To execute the actual release preparation, set `dry_run` to `false`.
           EOF
+        env:
+          INPUTS_VERSION: ${{ inputs.version }}
+          STEPS_LAST_VERSION_OUTPUTS_LAST_VERSION: ${{ steps.last_version.outputs.last_version }}
 
       - name: Create release branch and commit changes
         if: "!inputs.dry_run"
         env:
           GH_TOKEN: ${{ github.token }}
+          STEPS_RELEASE_BASE_OUTPUTS_SHA: ${{ steps.release_base.outputs.sha }}
+          STEPS_APP_TOKEN_OUTPUTS_APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          STEPS_GET_USER_ID_OUTPUTS_USER_ID: ${{ steps.get-user-id.outputs.user-id }}
+          INPUTS_VERSION: ${{ inputs.version }}
         run: |
           ./.github/workflows/scripts/verify-release-window.sh \
-            "${{ steps.release_base.outputs.sha }}"
+            "${STEPS_RELEASE_BASE_OUTPUTS_SHA}"
 
           # Configure git for otelbot
-          git config user.name '${{ steps.app-token.outputs.app-slug }}[bot]'
-          git config user.email '${{ steps.get-user-id.outputs.user-id }}+${{ steps.app-token.outputs.app-slug }}[bot]@users.noreply.github.com'
+          git config user.name "${STEPS_APP_TOKEN_OUTPUTS_APP_SLUG}[bot]"
+          git config user.email "${STEPS_GET_USER_ID_OUTPUTS_USER_ID}+${STEPS_APP_TOKEN_OUTPUTS_APP_SLUG}[bot]@users.noreply.github.com"
 
           # Use script to create branch and commit
-          ./.github/workflows/scripts/create-release-branch.sh "${{ inputs.version }}" --push
+          ./.github/workflows/scripts/create-release-branch.sh "${INPUTS_VERSION}" --push
 
       - name: Create or update pull request
         if: "!inputs.dry_run"
         env:
           # not using secrets.GITHUB_TOKEN since pull requests from that token do not trigger workflows
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          INPUTS_VERSION: ${{ inputs.version }}
         run: |
           # Read combined changelog content for PR body
           CHANGELOG_CONTENT=$(cat /tmp/combined_release_content.txt)
 
           # Create PR body content
           cat > /tmp/pr_body.md << EOF
-          ## Release v${{ inputs.version }}
+          ## Release v${INPUTS_VERSION}
 
-          This PR prepares the repository for release v${{ inputs.version }}.
+          This PR prepares the repository for release v${INPUTS_VERSION}.
 
           ### Changes included:
           - Rendered pending chloggen entries into \`go/CHANGELOG.md\` and \`rust/otap-dataflow/CHANGELOG.md\`
@@ -253,8 +275,8 @@ jobs:
           After merging this PR, run the **Push Release** workflow to create git tags and publish the GitHub release.
           EOF
 
-          BRANCH="otelbot/release-v${{ inputs.version }}"
-          TITLE="chore(release) Prepare Release v${{ inputs.version }}"
+          BRANCH="otelbot/release-v${INPUTS_VERSION}"
+          TITLE="chore(release) Prepare Release v${INPUTS_VERSION}"
 
           # Check if a PR already exists for this branch
           EXISTING_PR=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
@@ -279,9 +301,10 @@ jobs:
         if: "!inputs.dry_run"
         env:
           GH_TOKEN: ${{ github.token }}
+          STEPS_RELEASE_BASE_OUTPUTS_SHA: ${{ steps.release_base.outputs.sha }}
         run: |
           ./.github/workflows/scripts/verify-release-window.sh \
-            "${{ steps.release_base.outputs.sha }}"
+            "${STEPS_RELEASE_BASE_OUTPUTS_SHA}"
 
       - name: Summary
         run: |
@@ -296,6 +319,8 @@ jobs:
             echo "1. Review and merge the pull request: https://github.com/open-telemetry/otel-arrow/pulls"
             echo "2. After merging, run the 'Push Release' workflow to create git tags and GitHub release"
             echo ""
-            echo "Release branch: otelbot/release-v${{ inputs.version }}"
-            echo "Release version: v${{ inputs.version }}"
+            echo "Release branch: otelbot/release-v${INPUTS_VERSION}"
+            echo "Release version: v${INPUTS_VERSION}"
           fi
+        env:
+          INPUTS_VERSION: ${{ inputs.version }}

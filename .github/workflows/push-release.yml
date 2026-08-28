@@ -52,7 +52,8 @@ jobs:
         id: get-user-id
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: echo "user-id=$(gh api "/users/${{ steps.app-token.outputs.app-slug }}[bot]" --jq .id)" >> "$GITHUB_OUTPUT"
+          STEPS_APP_TOKEN_OUTPUTS_APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+        run: echo "user-id=$(gh api "/users/${STEPS_APP_TOKEN_OUTPUTS_APP_SLUG}[bot]" --jq .id)" >> "$GITHUB_OUTPUT"
 
       - name: Checkout (release push)
         if: "!inputs.dry_run"
@@ -66,17 +67,20 @@ jobs:
       - name: Validate inputs
         run: |
           # Validate version format
-          if [[ ! "${{ inputs.version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          if [[ ! "${INPUTS_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "Error: Version must be in format X.Y.Z (e.g., 0.40.0)"
             exit 1
           fi
+        env:
+          INPUTS_VERSION: ${{ inputs.version }}
 
       - name: Resolve release pull request commit
         id: release
         env:
           GH_TOKEN: ${{ inputs.dry_run && github.token || steps.app-token.outputs.token }}
+          INPUTS_VERSION: ${{ inputs.version }}
         run: |
-          BRANCH="otelbot/release-v${{ inputs.version }}"
+          BRANCH="otelbot/release-v${INPUTS_VERSION}"
           RELEASE_PRS=$(gh api \
             "repos/${GITHUB_REPOSITORY}/pulls?state=closed&base=main&head=${GITHUB_REPOSITORY_OWNER}:${BRANCH}&per_page=100" \
             --jq '[.[] | select(.merged_at != null)]')
@@ -84,7 +88,7 @@ jobs:
 
           if [ "$RELEASE_PR_COUNT" -ne 1 ]; then
             echo "Error: Expected exactly one merged release PR from ${BRANCH}, found ${RELEASE_PR_COUNT}"
-            echo "Make sure the Prepare Release PR for v${{ inputs.version }} has been merged"
+            echo "Make sure the Prepare Release PR for v${INPUTS_VERSION} has been merged"
             exit 1
           fi
 
@@ -98,7 +102,9 @@ jobs:
       - name: Check out release pull request commit
         run: |
           git fetch --quiet origin main --tags
-          git checkout --detach "${{ steps.release.outputs.sha }}"
+          git checkout --detach "${STEPS_RELEASE_OUTPUTS_SHA}"
+        env:
+          STEPS_RELEASE_OUTPUTS_SHA: ${{ steps.release.outputs.sha }}
 
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
@@ -108,8 +114,8 @@ jobs:
         run: |
           # Check if the version is already in go/CHANGELOG.md.
           # Chloggen renders new entries under `## v<VERSION>`.
-          if ! grep -q "^## v${{ inputs.version }}$" go/CHANGELOG.md; then
-            echo "Error: Version v${{ inputs.version }} not found in go/CHANGELOG.md"
+          if ! grep -q "^## v${INPUTS_VERSION}$" go/CHANGELOG.md; then
+            echo "Error: Version v${INPUTS_VERSION} not found in go/CHANGELOG.md"
             echo "Make sure you have run the 'Prepare Release' workflow and merged the PR first"
             exit 1
           fi
@@ -121,10 +127,13 @@ jobs:
             exit 1
           fi
 
-          if [ "$(git rev-parse HEAD)" != "${{ steps.release.outputs.sha }}" ]; then
+          if [ "$(git rev-parse HEAD)" != "${STEPS_RELEASE_OUTPUTS_SHA}" ]; then
             echo "Error: Checkout does not match the resolved release PR commit"
             exit 1
           fi
+        env:
+          INPUTS_VERSION: ${{ inputs.version }}
+          STEPS_RELEASE_OUTPUTS_SHA: ${{ steps.release.outputs.sha }}
 
       - name: Get last released version
         id: last_version
@@ -132,7 +141,7 @@ jobs:
           # Get the latest tag
           LAST_TAG=$(
             git tag --list 'v*' --sort=-version:refname |
-              awk -v current="v${{ inputs.version }}" '$0 != current { print; exit }'
+              awk -v current="v${INPUTS_VERSION}" '$0 != current { print; exit }'
           )
           if [ -z "$LAST_TAG" ]; then
             echo "No previous tags found"
@@ -142,12 +151,14 @@ jobs:
           fi
           echo "last_version=$LAST_VERSION" >> $GITHUB_OUTPUT
           echo "Last released version: $LAST_VERSION"
-          echo "New version: ${{ inputs.version }}"
+          echo "New version: ${INPUTS_VERSION}"
+        env:
+          INPUTS_VERSION: ${{ inputs.version }}
 
       - name: Validate version increment
         run: |
-          LAST_VERSION="${{ steps.last_version.outputs.last_version }}"
-          NEW_VERSION="${{ inputs.version }}"
+          LAST_VERSION="${STEPS_LAST_VERSION_OUTPUTS_LAST_VERSION}"
+          NEW_VERSION="${INPUTS_VERSION}"
 
           # Simple version comparison (assumes semantic versioning)
           if [ "$LAST_VERSION" != "0.0.0" ]; then
@@ -156,22 +167,28 @@ jobs:
               exit 1
             fi
           fi
+        env:
+          STEPS_LAST_VERSION_OUTPUTS_LAST_VERSION: ${{ steps.last_version.outputs.last_version }}
+          INPUTS_VERSION: ${{ inputs.version }}
 
       - name: Validate existing tags
         run: |
           for tag in \
-            "v${{ inputs.version }}" \
-            "go/v${{ inputs.version }}" \
-            "rust/otap-dataflow/v${{ inputs.version }}"; do
+            "v${INPUTS_VERSION}" \
+            "go/v${INPUTS_VERSION}" \
+            "rust/otap-dataflow/v${INPUTS_VERSION}"; do
             if git rev-parse --verify --quiet "refs/tags/${tag}" >/dev/null; then
               TAG_COMMIT=$(git rev-parse "${tag}^{commit}")
-              if [ "$TAG_COMMIT" != "${{ steps.release.outputs.sha }}" ]; then
+              if [ "$TAG_COMMIT" != "${STEPS_RELEASE_OUTPUTS_SHA}" ]; then
                 echo "Error: Existing tag ${tag} points to ${TAG_COMMIT}"
                 exit 1
               fi
               echo "Existing tag ${tag} already points to the release commit"
             fi
           done
+        env:
+          INPUTS_VERSION: ${{ inputs.version }}
+          STEPS_RELEASE_OUTPUTS_SHA: ${{ steps.release.outputs.sha }}
 
       - name: Validate Rust crates.io publish pilot
         run: cargo xtask crates-publish check
@@ -186,12 +203,12 @@ jobs:
           # workflow working if one side had no chloggen entries this
           # release.
           .github/workflows/scripts/extract-changelog.sh \
-            --version "${{ inputs.version }}" \
+            --version "${INPUTS_VERSION}" \
             --file go/CHANGELOG.md \
             --allow-missing \
             /tmp/go_release_content.txt
           .github/workflows/scripts/extract-changelog.sh \
-            --version "${{ inputs.version }}" \
+            --version "${INPUTS_VERSION}" \
             --file rust/otap-dataflow/CHANGELOG.md \
             --allow-missing \
             /tmp/rust_release_content.txt
@@ -209,7 +226,7 @@ jobs:
             echo ""
             echo "This release includes the following Go module:"
             echo ""
-            echo "- \`github.com/open-telemetry/otel-arrow/go@v${{ inputs.version }}\`"
+            echo "- \`github.com/open-telemetry/otel-arrow/go@v${INPUTS_VERSION}\`"
             echo ""
             echo "## What's Changed (Rust :crab:)"
             echo ""
@@ -221,52 +238,54 @@ jobs:
             echo ""
             echo "### Rust Workspace"
             echo ""
-            echo "The Rust workspace at \`rust/otap-dataflow/\` is tagged as \`rust/otap-dataflow/v${{ inputs.version }}\`."
+            echo "The Rust workspace at \`rust/otap-dataflow/\` is tagged as \`rust/otap-dataflow/v${INPUTS_VERSION}\`."
             echo ""
-            echo "This release tests crates.io publishing with \`otel-arrow-dfe-pdata-views@${{ inputs.version }}\`."
+            echo "This release tests crates.io publishing with \`otel-arrow-dfe-pdata-views@${INPUTS_VERSION}\`."
             echo "All other OTAP Dataflow crates remain unpublished and should be consumed using the Rust workspace git reference."
           } > /tmp/release_content.txt
+        env:
+          INPUTS_VERSION: ${{ inputs.version }}
 
       - name: Dry run - Show planned changes
         if: inputs.dry_run
         run: |
           # Write to GitHub Step Summary
-          cat >> $GITHUB_STEP_SUMMARY << 'EOF'
+          cat >> $GITHUB_STEP_SUMMARY << EOF
           # :rocket: Release Push Dry Run
 
           ## Summary
           **DRY RUN MODE** - No changes will be made to the repository
 
           ## Planned Operations
-          - **Version to tag**: `v${{ inputs.version }}`
-          - **Release PR**: `#${{ steps.release.outputs.pr_number }}`
-          - **Commit to tag**: `${{ steps.release.outputs.sha }}`
-          - **Last version**: `v${{ steps.last_version.outputs.last_version }}`
+          - **Version to tag**: \`v${INPUTS_VERSION}\`
+          - **Release PR**: \`#${STEPS_RELEASE_OUTPUTS_PR_NUMBER}\`
+          - **Commit to tag**: \`${STEPS_RELEASE_OUTPUTS_SHA}\`
+          - **Last version**: \`v${STEPS_LAST_VERSION_OUTPUTS_LAST_VERSION}\`
 
           ## Git Tags to Create
-          - `v${{ inputs.version }}` - Main release tag
-          - `go/v${{ inputs.version }}` - Go module tag
-          - `rust/otap-dataflow/v${{ inputs.version }}` - Rust workspace tag
+          - \`v${INPUTS_VERSION}\` - Main release tag
+          - \`go/v${INPUTS_VERSION}\` - Go module tag
+          - \`rust/otap-dataflow/v${INPUTS_VERSION}\` - Rust workspace tag
 
           ## crates.io
-          - **Package**: `otel-arrow-dfe-pdata-views@${{ inputs.version }}`
+          - **Package**: \`otel-arrow-dfe-pdata-views@${INPUTS_VERSION}\`
           - **Authentication**: crates.io trusted publishing (OIDC)
           - Existing versions are detected and skipped.
 
           ## GitHub Release
-          - **Title**: Release v${{ inputs.version }}
-          - **Tag**: v${{ inputs.version }}
+          - **Title**: Release v${INPUTS_VERSION}
+          - **Tag**: v${INPUTS_VERSION}
           - **Type**: Draft release (latest)
-          - **Release notes**: Combined from `go/CHANGELOG.md` and `rust/otap-dataflow/CHANGELOG.md`
+          - **Release notes**: Combined from \`go/CHANGELOG.md\` and \`rust/otap-dataflow/CHANGELOG.md\`
 
           ## Go Modules
           After release, the following modules will be available:
-          ```bash
-          go get github.com/open-telemetry/otel-arrow/go@v${{ inputs.version }}
-          ```
+          \`\`\`bash
+          go get github.com/open-telemetry/otel-arrow/go@v${INPUTS_VERSION}
+          \`\`\`
 
           ## Release Notes Preview
-          ```
+          \`\`\`
           EOF
           cat /tmp/release_content.txt >> $GITHUB_STEP_SUMMARY
           cat >> $GITHUB_STEP_SUMMARY << 'EOF'
@@ -280,6 +299,11 @@ jobs:
           ---
           **Note**: This is a dry run. To execute the actual release push, set `dry_run` to `false`.
           EOF
+        env:
+          INPUTS_VERSION: ${{ inputs.version }}
+          STEPS_RELEASE_OUTPUTS_PR_NUMBER: ${{ steps.release.outputs.pr_number }}
+          STEPS_RELEASE_OUTPUTS_SHA: ${{ steps.release.outputs.sha }}
+          STEPS_LAST_VERSION_OUTPUTS_LAST_VERSION: ${{ steps.last_version.outputs.last_version }}
 
       - name: Authenticate to crates.io with trusted publishing
         if: "!inputs.dry_run"
@@ -290,50 +314,60 @@ jobs:
         if: "!inputs.dry_run"
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.crates-io-auth.outputs.token }}
-        run: cargo xtask crates-publish publish "${{ inputs.version }}"
+          INPUTS_VERSION: ${{ inputs.version }}
+        run: cargo xtask crates-publish publish "${INPUTS_VERSION}"
         working-directory: rust/otap-dataflow
 
       - name: Create git tags
         if: "!inputs.dry_run"
         run: |
           # Configure git
-          git config user.name '${{ steps.app-token.outputs.app-slug }}[bot]'
-          git config user.email '${{ steps.get-user-id.outputs.user-id }}+${{ steps.app-token.outputs.app-slug }}[bot]@users.noreply.github.com'
+          git config user.name "${STEPS_APP_TOKEN_OUTPUTS_APP_SLUG}[bot]"
+          git config user.email "${STEPS_GET_USER_ID_OUTPUTS_USER_ID}+${STEPS_APP_TOKEN_OUTPUTS_APP_SLUG}[bot]@users.noreply.github.com"
 
           create_tag() {
             local tag="$1"
             if git rev-parse --verify --quiet "refs/tags/${tag}" >/dev/null; then
               echo "Tag ${tag} already exists at the release commit"
             else
-              git tag -a "$tag" "${{ steps.release.outputs.sha }}" -m "Release ${tag}"
+              git tag -a "$tag" "${STEPS_RELEASE_OUTPUTS_SHA}" -m "Release ${tag}"
             fi
           }
 
-          create_tag "v${{ inputs.version }}"
-          create_tag "go/v${{ inputs.version }}"
-          create_tag "rust/otap-dataflow/v${{ inputs.version }}"
+          create_tag "v${INPUTS_VERSION}"
+          create_tag "go/v${INPUTS_VERSION}"
+          create_tag "rust/otap-dataflow/v${INPUTS_VERSION}"
 
           echo "Created tags:"
-          git tag --list "v${{ inputs.version }}"
-          git tag --list "*v${{ inputs.version }}"
+          git tag --list "v${INPUTS_VERSION}"
+          git tag --list "*v${INPUTS_VERSION}"
+        env:
+          STEPS_APP_TOKEN_OUTPUTS_APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          STEPS_GET_USER_ID_OUTPUTS_USER_ID: ${{ steps.get-user-id.outputs.user-id }}
+          STEPS_RELEASE_OUTPUTS_SHA: ${{ steps.release.outputs.sha }}
+          INPUTS_VERSION: ${{ inputs.version }}
 
       - name: Push git tags
         if: "!inputs.dry_run"
         run: |
           # Push all tags for this version
-          git push origin "v${{ inputs.version }}"
-          git push origin "go/v${{ inputs.version }}"
-          git push origin "rust/otap-dataflow/v${{ inputs.version }}"
+          git push origin "v${INPUTS_VERSION}"
+          git push origin "go/v${INPUTS_VERSION}"
+          git push origin "rust/otap-dataflow/v${INPUTS_VERSION}"
 
           echo "Pushed tags:"
-          echo "- v${{ inputs.version }}"
-          echo "- go/v${{ inputs.version }}"
-          echo "- rust/otap-dataflow/v${{ inputs.version }}"
+          echo "- v${INPUTS_VERSION}"
+          echo "- go/v${INPUTS_VERSION}"
+          echo "- rust/otap-dataflow/v${INPUTS_VERSION}"
+        env:
+          INPUTS_VERSION: ${{ inputs.version }}
 
       - name: Create GitHub release
         if: "!inputs.dry_run"
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          STEPS_LAST_VERSION_OUTPUTS_LAST_VERSION: ${{ steps.last_version.outputs.last_version }}
+          INPUTS_VERSION: ${{ inputs.version }}
         run: |
           # Read combined changelog content into a variable
           RELEASE_CONTENT=$(cat /tmp/release_content.txt)
@@ -342,14 +376,14 @@ jobs:
           cat > /tmp/release_body.md << EOF
           ${RELEASE_CONTENT}
 
-          **Full Changelog**: https://github.com/open-telemetry/otel-arrow/compare/v${{ steps.last_version.outputs.last_version }}...v${{ inputs.version }}
+          **Full Changelog**: https://github.com/open-telemetry/otel-arrow/compare/v${STEPS_LAST_VERSION_OUTPUTS_LAST_VERSION}...v${INPUTS_VERSION}
           EOF
 
-          if gh release view "v${{ inputs.version }}" >/dev/null 2>&1; then
-            echo "GitHub release v${{ inputs.version }} already exists; skipping"
+          if gh release view "v${INPUTS_VERSION}" >/dev/null 2>&1; then
+            echo "GitHub release v${INPUTS_VERSION} already exists; skipping"
           else
-            gh release create "v${{ inputs.version }}" \
-              --title "Release v${{ inputs.version }}" \
+            gh release create "v${INPUTS_VERSION}" \
+              --title "Release v${INPUTS_VERSION}" \
               --notes-file /tmp/release_body.md \
               --draft \
               --latest
@@ -365,16 +399,20 @@ jobs:
             echo ":heavy_check_mark: Release published successfully"
             echo ""
             echo "Release details:"
-            echo "- Version: v${{ inputs.version }}"
-            echo "- Release PR: #${{ steps.release.outputs.pr_number }}"
-            echo "- Tagged commit: ${{ steps.release.outputs.sha }}"
-            echo "- GitHub release: https://github.com/open-telemetry/otel-arrow/releases/tag/v${{ inputs.version }}"
+            echo "- Version: v${INPUTS_VERSION}"
+            echo "- Release PR: #${STEPS_RELEASE_OUTPUTS_PR_NUMBER}"
+            echo "- Tagged commit: ${STEPS_RELEASE_OUTPUTS_SHA}"
+            echo "- GitHub release: https://github.com/open-telemetry/otel-arrow/releases/tag/v${INPUTS_VERSION}"
             echo ""
             echo "Git tags created:"
-            echo "- v${{ inputs.version }}"
-            echo "- go/v${{ inputs.version }}"
-            echo "- rust/otap-dataflow/v${{ inputs.version }}"
+            echo "- v${INPUTS_VERSION}"
+            echo "- go/v${INPUTS_VERSION}"
+            echo "- rust/otap-dataflow/v${INPUTS_VERSION}"
             echo ""
             echo "Go modules are now available:"
-            echo "- go get github.com/open-telemetry/otel-arrow/go@v${{ inputs.version }}"
+            echo "- go get github.com/open-telemetry/otel-arrow/go@v${INPUTS_VERSION}"
           fi
+        env:
+          INPUTS_VERSION: ${{ inputs.version }}
+          STEPS_RELEASE_OUTPUTS_PR_NUMBER: ${{ steps.release.outputs.pr_number }}
+          STEPS_RELEASE_OUTPUTS_SHA: ${{ steps.release.outputs.sha }}
