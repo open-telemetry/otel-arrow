@@ -77,6 +77,8 @@ use tower::util::Either;
 /// URN for the OTLP Receiver
 pub const OTLP_RECEIVER_URN: &str = "urn:otel:receiver:otlp";
 
+const DEFAULT_AUTHORIZATION_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Configuration for OTLP Receiver.
 ///
 /// The receiver supports three deployment modes matching the Go collector's `otlpreceiver`:
@@ -265,7 +267,6 @@ impl OTLPReceiver {
                     .to_string(),
             });
         }
-
         // Validate that gRPC and HTTP do not have conflicting listening addresses.
         // Conflicts occur when:
         // - Same port with either IP being unspecified (0.0.0.0 or ::), since unspecified binds all interfaces
@@ -600,9 +601,13 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                 )
             };
 
-            let authorization_layer = authorizer
-                .clone()
-                .map(|authorizer| AuthorizationLayer::new(authorizer, self.metrics.clone()));
+            let authorization_layer = authorizer.clone().map(|authorizer| {
+                AuthorizationLayer::new(
+                    authorizer,
+                    self.metrics.clone(),
+                    grpc_config.timeout.unwrap_or(DEFAULT_AUTHORIZATION_TIMEOUT),
+                )
+            });
             // ServiceBuilder runs layers in insertion order, so admission limits
             // remain outside authorization and reject saturated requests first.
             let server_layers = ServiceBuilder::new()

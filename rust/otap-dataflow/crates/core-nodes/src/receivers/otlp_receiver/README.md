@@ -47,7 +47,11 @@ config:
 
 Authorization is optional. Binding the `bearer_token_authorizer` capability
 makes the receiver require a bearer token for OTLP export requests accepted on
-the configured gRPC and HTTP export endpoints:
+the configured gRPC and HTTP export endpoints. The receiver bounds each
+authorization call with that protocol's existing `timeout`. When the gRPC
+timeout is unset, authorization still has a `10s` limit; HTTP already defaults
+to a `30s` request timeout. Provider operation timeouts, such as a Kubernetes
+review timeout, remain independently configurable:
 
 ```yaml
 extensions:

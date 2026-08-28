@@ -12,6 +12,7 @@ use otel_arrow_dfe_engine::capability::auth::{
 };
 use otel_arrow_dfe_engine::shared::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer;
 use otel_arrow_dfe_telemetry::common_attributes::ReceiverRejectionErrorType;
+use std::time::Duration;
 
 /// A protocol-neutral reason an OTLP request was not authorized.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +49,7 @@ impl AuthorizationRejection {
 pub(crate) async fn authorize_bearer(
     authorizer: &dyn BearerTokenAuthorizer,
     headers: &HeaderMap,
+    timeout: Option<Duration>,
 ) -> Result<AuthorizedIdentity, AuthorizationRejection> {
     let mut values = headers.get_all(http::header::AUTHORIZATION).iter();
     let Some(header) = values.next() else {
@@ -63,7 +65,22 @@ pub(crate) async fn authorize_bearer(
     let credential =
         BearerToken::from_header_value(header).ok_or(AuthorizationRejection::Unauthenticated)?;
 
-    match authorizer.authorize(&credential).await {
+    let decision = if let Some(timeout) = timeout {
+        match tokio::time::timeout(timeout, authorizer.authorize(&credential)).await {
+            Ok(decision) => decision,
+            Err(_) => {
+                otel_arrow_dfe_telemetry::otel_warn!(
+                    "receiver.authz.timeout",
+                    timeout = ?timeout
+                );
+                return Err(AuthorizationRejection::Unavailable);
+            }
+        }
+    } else {
+        authorizer.authorize(&credential).await
+    };
+
+    match decision {
         Ok(AuthzDecision::Allow { identity }) => Ok(identity),
         Ok(AuthzDecision::Deny {
             reason: DenyReason::MissingCredential | DenyReason::InvalidCredential,

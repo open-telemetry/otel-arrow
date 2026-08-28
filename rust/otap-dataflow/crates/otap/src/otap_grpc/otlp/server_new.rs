@@ -570,8 +570,9 @@ async fn authorize_request(
     authorizer: &dyn BearerTokenAuthorizer,
     metrics: &Arc<Mutex<OtlpReceiverMetrics>>,
     headers: &http::HeaderMap,
+    timeout: std::time::Duration,
 ) -> Result<AuthorizedIdentity, AuthorizationRejection> {
-    let result = authorize_bearer(authorizer, headers).await;
+    let result = authorize_bearer(authorizer, headers, Some(timeout)).await;
     if let Err(rejection) = &result {
         metrics
             .lock()
@@ -593,6 +594,7 @@ fn authorization_status(rejection: AuthorizationRejection) -> Status {
 pub struct AuthorizationLayer {
     authorizer: Arc<dyn BearerTokenAuthorizer>,
     metrics: Arc<Mutex<OtlpReceiverMetrics>>,
+    timeout: std::time::Duration,
 }
 
 impl AuthorizationLayer {
@@ -601,10 +603,12 @@ impl AuthorizationLayer {
     pub fn new(
         authorizer: Arc<dyn BearerTokenAuthorizer>,
         metrics: Arc<Mutex<OtlpReceiverMetrics>>,
+        timeout: std::time::Duration,
     ) -> Self {
         Self {
             authorizer,
             metrics,
+            timeout,
         }
     }
 }
@@ -617,6 +621,7 @@ impl<S> Layer<S> for AuthorizationLayer {
             inner,
             authorizer: self.authorizer.clone(),
             metrics: self.metrics.clone(),
+            timeout: self.timeout,
         }
     }
 }
@@ -627,6 +632,7 @@ pub struct AuthorizationService<S> {
     inner: S,
     authorizer: Arc<dyn BearerTokenAuthorizer>,
     metrics: Arc<Mutex<OtlpReceiverMetrics>>,
+    timeout: std::time::Duration,
 }
 
 impl<S> Service<Request<Body>> for AuthorizationService<S>
@@ -650,13 +656,20 @@ where
         let mut inner = mem::replace(&mut self.inner, clone);
         let authorizer = self.authorizer.clone();
         let metrics = self.metrics.clone();
+        let timeout = self.timeout;
 
         Box::pin(async move {
-            let _authorized_identity =
-                match authorize_request(authorizer.as_ref(), &metrics, req.headers()).await {
-                    Ok(identity) => identity,
-                    Err(rejection) => return Ok(authorization_status(rejection).into_http()),
-                };
+            let _authorized_identity = match authorize_request(
+                authorizer.as_ref(),
+                &metrics,
+                req.headers(),
+                timeout,
+            )
+            .await
+            {
+                Ok(identity) => identity,
+                Err(rejection) => return Ok(authorization_status(rejection).into_http()),
+            };
             inner.call(req).await
         })
     }
@@ -913,6 +926,8 @@ mod tests {
     use tokio::sync::mpsc as tokio_mpsc;
     use tonic::Code;
 
+    const TEST_AUTHORIZATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
     struct TestAuthorizer;
 
     #[async_trait::async_trait]
@@ -946,6 +961,18 @@ mod tests {
         }
     }
 
+    struct PendingAuthorizer;
+
+    #[async_trait::async_trait]
+    impl BearerTokenAuthorizer for PendingAuthorizer {
+        async fn authorize(
+            &self,
+            _credential: &BearerToken,
+        ) -> Result<AuthzDecision, CapabilityError> {
+            std::future::pending().await
+        }
+    }
+
     fn new_test_metrics() -> Arc<Mutex<OtlpReceiverMetrics>> {
         let registry = TelemetryRegistryHandle::new();
         let controller = otel_arrow_dfe_engine::context::ControllerContext::new(registry);
@@ -964,18 +991,20 @@ mod tests {
         let metrics = new_test_metrics();
         let mut headers = http::HeaderMap::new();
 
-        let response = authorize_request(&authorizer, &metrics, &headers)
-            .await
-            .expect_err("missing credential must be rejected");
+        let response =
+            authorize_request(&authorizer, &metrics, &headers, TEST_AUTHORIZATION_TIMEOUT)
+                .await
+                .expect_err("missing credential must be rejected");
         assert_eq!(authorization_status(response).code(), Code::Unauthenticated);
 
         _ = headers.insert(
             http::header::AUTHORIZATION,
             http::HeaderValue::from_static("Basic dXNlcjpwYXNz"),
         );
-        let response = authorize_request(&authorizer, &metrics, &headers)
-            .await
-            .expect_err("non-bearer credential must be rejected");
+        let response =
+            authorize_request(&authorizer, &metrics, &headers, TEST_AUTHORIZATION_TIMEOUT)
+                .await
+                .expect_err("non-bearer credential must be rejected");
         assert_eq!(authorization_status(response).code(), Code::Unauthenticated);
 
         _ = headers.remove(http::header::AUTHORIZATION);
@@ -987,9 +1016,10 @@ mod tests {
             http::header::AUTHORIZATION,
             http::HeaderValue::from_static("Bearer allowed"),
         );
-        let response = authorize_request(&authorizer, &metrics, &headers)
-            .await
-            .expect_err("duplicate credentials must be rejected");
+        let response =
+            authorize_request(&authorizer, &metrics, &headers, TEST_AUTHORIZATION_TIMEOUT)
+                .await
+                .expect_err("duplicate credentials must be rejected");
         assert_eq!(authorization_status(response).code(), Code::Unauthenticated);
 
         _ = headers.insert(
@@ -997,7 +1027,7 @@ mod tests {
             http::HeaderValue::from_static("Bearer allowed"),
         );
         assert!(
-            authorize_request(&authorizer, &metrics, &headers)
+            authorize_request(&authorizer, &metrics, &headers, TEST_AUTHORIZATION_TIMEOUT,)
                 .await
                 .is_ok()
         );
@@ -1006,18 +1036,20 @@ mod tests {
             http::header::AUTHORIZATION,
             http::HeaderValue::from_static("Bearer invalid"),
         );
-        let response = authorize_request(&authorizer, &metrics, &headers)
-            .await
-            .expect_err("invalid credential must be rejected");
+        let response =
+            authorize_request(&authorizer, &metrics, &headers, TEST_AUTHORIZATION_TIMEOUT)
+                .await
+                .expect_err("invalid credential must be rejected");
         assert_eq!(authorization_status(response).code(), Code::Unauthenticated);
 
         _ = headers.insert(
             http::header::AUTHORIZATION,
             http::HeaderValue::from_static("Bearer denied"),
         );
-        let response = authorize_request(&authorizer, &metrics, &headers)
-            .await
-            .expect_err("policy-denied credential must be rejected");
+        let response =
+            authorize_request(&authorizer, &metrics, &headers, TEST_AUTHORIZATION_TIMEOUT)
+                .await
+                .expect_err("policy-denied credential must be rejected");
         assert_eq!(
             authorization_status(response).code(),
             Code::PermissionDenied
@@ -1061,9 +1093,46 @@ mod tests {
             http::HeaderValue::from_static("Bearer allowed"),
         );
 
-        let response = authorize_request(&authorizer, &metrics, &headers)
-            .await
-            .expect_err("an undetermined decision must not admit the request");
+        let response =
+            authorize_request(&authorizer, &metrics, &headers, TEST_AUTHORIZATION_TIMEOUT)
+                .await
+                .expect_err("an undetermined decision must not admit the request");
+        assert_eq!(authorization_status(response).code(), Code::Unavailable);
+        assert_eq!(
+            metrics
+                .lock()
+                .rejections_for(
+                    OtlpProtocol::Grpc,
+                    ReceiverRejectionErrorType::AuthorizationUnavailable,
+                )
+                .requests
+                .get(),
+            1
+        );
+    }
+
+    /// Scenario: A bearer authorizer does not complete within the receiver's
+    /// authorization deadline.
+    /// Guarantees: The receiver cancels the capability call, returns gRPC
+    /// UNAVAILABLE, and records an authorization-unavailable rejection.
+    #[tokio::test]
+    async fn authorization_timeout_fails_closed() {
+        let authorizer = PendingAuthorizer;
+        let metrics = new_test_metrics();
+        let mut headers = http::HeaderMap::new();
+        _ = headers.insert(
+            http::header::AUTHORIZATION,
+            http::HeaderValue::from_static("******"),
+        );
+
+        let response = authorize_request(
+            &authorizer,
+            &metrics,
+            &headers,
+            std::time::Duration::from_millis(10),
+        )
+        .await
+        .expect_err("a timed-out decision must not admit the request");
         assert_eq!(authorization_status(response).code(), Code::Unavailable);
         assert_eq!(
             metrics

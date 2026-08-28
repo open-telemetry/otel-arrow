@@ -80,5 +80,10 @@ pub trait BearerTokenAuthorizer {
     /// when the authorizer **cannot reach a decision** (e.g. its token-review or
     /// policy backend is unreachable). Callers must **fail closed** -- treat an
     /// `Err` as a deny -- since an undetermined decision must never grant access.
+    ///
+    /// Callers may enforce their own deadline by dropping this future. Implementations
+    /// must therefore be cancellation-safe and must not rely on the future running to
+    /// completion for correctness or resource cleanup. Provider-specific operation
+    /// timeouts remain the implementation's responsibility.
     async fn authorize(&self, credential: &BearerToken) -> Result<AuthzDecision, CapabilityError>;
 }

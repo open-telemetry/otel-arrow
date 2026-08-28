@@ -740,7 +740,7 @@ impl HttpHandler {
             }
 
             let _authorized_identity = if let Some(authorizer) = &self.authorizer {
-                match authorize_bearer(authorizer.as_ref(), req.headers()).await {
+                match authorize_bearer(authorizer.as_ref(), req.headers(), None).await {
                     Ok(identity) => Some(identity),
                     Err(rejection) => {
                         self.record_rejection(rejection.error_type());
@@ -1201,7 +1201,7 @@ mod tests {
         authorizer: &dyn BearerTokenAuthorizer,
         headers: &http::HeaderMap,
     ) -> Result<AuthorizedIdentity, AuthorizationRejection> {
-        authorize_bearer(authorizer, headers).await
+        authorize_bearer(authorizer, headers, None).await
     }
 
     /// Scenario: HTTP authorization receives missing, non-bearer, allowed,
