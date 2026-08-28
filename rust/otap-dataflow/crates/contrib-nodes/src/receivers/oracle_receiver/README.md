@@ -1,105 +1,145 @@
 # Oracle OCI Receiver
 
-This is a minimal, experimental Oracle database receiver. It uses the
-OCI-backed Rust `oracle` crate and Oracle Instant Client.
+This experimental receiver incrementally reads Oracle rows with an ascending
+composite watermark:
 
-The implementation follows the design document's scraper-style boundary:
+```text
+(TIMESTAMP column, signed 64-bit integer tie-breaker)
+```
 
-- `receivers/scraper.rs` defines the small reusable `Scraper` trait and
-  `ScraperReceiver`;
-- `receivers/sql_polling.rs` defines the narrow `SqlPollingAdapter`,
-  `Credentials`, `PageRequest`, `Page`, and compound-watermark types;
-- `OracleAdapter` implements connection, bounded page fetching, value
-  extraction, and Oracle-specific error classification;
-- `OracleScraper` loads credentials, owns the adapter session, and converts
-  returned rows to OTLP; and
-- `ScraperReceiver` owns interval scheduling, non-overlap, lifecycle calls,
-  shutdown, and downstream backpressure.
+The operator supplies the complete SQL statement, including named Oracle binds
+and the matching final `ORDER BY`. The receiver binds the last durably
+acknowledged tuple, reads at most one page per poll interval, and emits one OTLP
+logs batch at a time.
 
-The Oracle scraper:
+## Delivery and checkpoint behavior
 
-- creates one OCI session pool containing one database session;
-- polls one configured SQL query on a fixed interval;
-- limits every poll to `max_rows`;
-- converts each row to one OTLP log record; and
-- represents the row as JSON in the log body.
+- The initial tuple is explicit; a missing checkpoint starts there.
+- The final emitted row supplies the next checkpoint candidate.
+- The receiver requests native OTAP ACK/NACK feedback for each batch.
+- ACK durably commits the candidate before another page can be in flight.
+- NACK retains the committed tuple and replays after `nack_backoff`.
+- Checkpoints are versioned, checksummed, configuration-fingerprinted, and
+  revisioned. Each revision is fsynced and atomically renamed.
+- Corrupt, incompatible, or configuration-mismatched state fails closed.
+- Drain stops new polling and waits for the in-flight ACK/NACK until its
+  deadline. Immediate shutdown never advances unacknowledged state.
+- A process-local lease prevents two receivers from owning the same checkpoint.
 
-The configured SQL must start with `SELECT` or `WITH`. Use a database account
-that has only the read permissions required by that query.
+The query must order the watermark columns ascending and make their tuple unique
+for stable pagination. Inserts at or below an already committed tuple cannot be
+observed. Use a database account with only the read permissions required by the
+query.
 
-This intentionally stops short of a universal SQL framework. The first version
-does not implement checkpoints, ACK/NACK tracking, retries, bind parameters,
-watermark query generation, or complete Oracle-to-OTel type mapping. The
-adapter currently receives `PageRequest { watermark: None, ... }` and rejects
-non-empty watermarks explicitly. Because polling is stateless, every poll can
-emit the same rows again.
-
-Every selected column is currently requested from the driver as an optional
-string. SQL `NULL` remains JSON `null`; types that the driver cannot convert to
-a string fail the poll. Queries can use `TO_CHAR` or another explicit Oracle
-conversion while typed OTel mapping is developed.
+Every selected column is currently requested as an optional string. SQL `NULL`
+is emitted as JSON `null`; values that Oracle cannot convert to strings fail the
+poll. Unbounded `CLOB`, `NCLOB`, `LONG`, and native `JSON` columns must be cast
+to a bounded character type in the query. The two watermark columns are
+additionally read as Oracle `TIMESTAMP` and signed 64-bit integer values.
 
 ## Configuration
 
 ```yaml
 type: urn:otel:receiver:oracle
 config:
+  source_id: local-events
   connect_string: //localhost:1521/FREEPDB1
   username: PDBADMIN
   password_env: ORACLE_PWD
-  query: SELECT SYSDATE AS CURRENT_TIME FROM DUAL
+  query: >-
+    SELECT EVENT_TS, EVENT_ID, PAYLOAD
+    FROM OTAP_ORACLE_EVENTS
+    WHERE (
+      EVENT_TS > :last_ts
+      OR (EVENT_TS = :last_ts AND EVENT_ID > :last_id)
+    )
+    ORDER BY EVENT_TS ASC, EVENT_ID ASC
+  watermark:
+    timestamp:
+      column: EVENT_TS
+      bind: last_ts
+      initial: "1970-01-01 00:00:00"
+    tie_breaker:
+      column: EVENT_ID
+      bind: last_id
+      initial: 0
+  checkpoint:
+    directory: "${engine.state_dir}/oracle"
+    max_consecutive_failures: 5
+  nack_backoff: 1s
   poll_interval: 30s
   call_timeout: 10s
   max_rows: 100
+  max_batch_bytes: 1 MiB
 ```
 
-The password is read from the environment variable named by `password_env`.
-It is not stored in the pipeline configuration.
+`source_id` is part of the durable checkpoint identity and must remain stable.
+`password_env` names the environment variable containing the password; the
+password is never stored in pipeline configuration. The checkpoint directory
+placeholder uses `OTAP_DF_STATE_DIR`, falling back to `.otap-state`.
 
-The receiver currently requires a single-core pipeline. This prevents
-multiple pipeline cores from polling and emitting the same rows.
+Configuration rejects unknown fields, zero or excessive limits, invalid
+identifiers, missing/extraneous bind-name prefixes, multiple SQL statements,
+comments, and a final ordering that does not exactly match the configured
+watermark columns. The receiver requires a one-core source pipeline and one OCI
+session.
+
+`max_rows` bounds fetched rows. `max_batch_bytes` bounds the encoded OTLP
+`LogsData`; if only a prefix fits, its final row becomes the candidate and the
+remaining rows are fetched on a later poll. A first row that exceeds the byte
+limit is an error rather than a skipped row.
+
+Telemetry reports counts, batch sizes, revisions, batch IDs, and error classes.
+It does not report SQL text, credentials, or watermark values.
 
 ## Local Oracle Database Free
 
-Make Oracle Instant Client available through `PATH`, set the password, then
-run the sample pipeline:
+Make Oracle Instant Client available through `PATH`, then prepare deterministic
+rows with timestamp collisions:
 
 ```powershell
 $env:PATH = "C:\path\to\instantclient_23_26;$env:PATH"
+$env:ORACLE_USERNAME = "PDBADMIN"
 $env:ORACLE_PWD = "your-local-password"
+$env:ORACLE_CONNECT_STRING = "//localhost:1521/FREEPDB1"
 
 cd rust\otap-dataflow
+cargo run -p otap-df-contrib-nodes --features oracle-receiver `
+  --example oracle_load_generator -- --reset --rows 1000 --collision-size 10
 cargo run --features oracle-receiver -- `
   --config configs\oracle-oci-console.yaml `
   --num-cores 1
 ```
 
-## Live Receiver Test
+The generator is idempotent without `--reset`: existing event IDs are retained
+and missing IDs are inserted deterministically.
 
-The normal unit tests exercise the shared lifecycle with a fake scraper, config
-validation, error classification, and row encoding without requiring Oracle:
+## Tests
+
+Unit tests require no Oracle installation:
 
 ```powershell
-cd rust\otap-dataflow
-cargo test -p otap-df-contrib-nodes --features oracle-receiver `
-  receivers::scraper
 cargo test -p otap-df-contrib-nodes --features oracle-receiver `
   receivers::oracle_receiver
 ```
 
-To run the opt-in live test:
+The opt-in live integration test creates an isolated table and covers
+more-than-page input, a timestamp collision across a page boundary, NACK replay,
+restart from an ACKed checkpoint, a concurrent ordered insert, and the final
+checkpoint:
 
 ```powershell
-$env:PATH = "C:\path\to\instantclient_23_26;$env:PATH"
 $env:OTAP_ORACLE_RECEIVER_E2E = "1"
-$env:ORACLE_USERNAME = "PDBADMIN"
-$env:ORACLE_PWD = "your-local-password"
-$env:ORACLE_CONNECT_STRING = "//localhost:1521/FREEPDB1"
-
 cargo test -p otap-df-contrib-nodes --features oracle-receiver `
-  oracle_receiver_emits_rows_when_configured -- --nocapture
+  live_composite_watermark_checkpoint_when_configured -- --nocapture
 ```
 
-The live test starts the receiver, executes the query through its one-session
-OCI pool, verifies that one row reaches the OTAP pipeline, and shuts the pool
-down through the shared scraper lifecycle.
+It uses `ORACLE_USERNAME`, `ORACLE_PWD`, and `ORACLE_CONNECT_STRING` from the
+load-generator example.
+
+## Deferred scope
+
+This slice does not implement snapshot or scalar modes, additional typed
+mappings or SQL components, multiple queries or databases, multiple pages per
+tick, multiple batches from one page, distributed ownership, checkpoint reset
+or migration, exactly-once delivery, or dead-letter handling.
