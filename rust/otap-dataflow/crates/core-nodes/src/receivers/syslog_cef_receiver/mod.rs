@@ -312,7 +312,6 @@ fn local_rate_gate(
 #[otel_arrow_dfe_engine::component_inventory(category = Receiver)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static SYSLOG_CEF_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
-    context_declarations: None,
     name: SYSLOG_CEF_RECEIVER_URN,
     create:
         |pipeline: PipelineContext,

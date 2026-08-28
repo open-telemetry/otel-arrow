@@ -167,8 +167,6 @@ pub struct OTAPReceiver {
 #[otel_arrow_dfe_engine::component_inventory(category = Receiver)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static OTAP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
-    // Generic receiver policy handles capture; this pass binds nothing else.
-    context_declarations: None,
     name: OTAP_RECEIVER_URN,
     create:
         |pipeline: PipelineContext,

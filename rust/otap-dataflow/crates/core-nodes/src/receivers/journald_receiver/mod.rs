@@ -143,7 +143,6 @@ pub struct JournaldReceiver {
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 /// Declares the journald receiver as a local receiver factory.
 pub static JOURNALD_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
-    context_declarations: None,
     name: JOURNALD_RECEIVER_URN,
     create:
         |pipeline: PipelineContext,

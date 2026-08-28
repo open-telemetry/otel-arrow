@@ -83,7 +83,6 @@ pub fn create_filter_processor(
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static FILTER_PROCESSOR_FACTORY: otel_arrow_dfe_engine::ProcessorFactory<OtapPdata> =
     otel_arrow_dfe_engine::ProcessorFactory {
-        context_declarations: None,
         name: FILTER_PROCESSOR_URN,
         create:
             |pipeline_ctx: PipelineContext,

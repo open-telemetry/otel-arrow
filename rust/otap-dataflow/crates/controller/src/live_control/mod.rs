@@ -77,7 +77,7 @@ pub(super) struct ControllerRuntime<PData: 'static + Clone + Send + Sync + std::
     metrics_reporter: MetricsReporter,
     /// Topic registry shared by all runtime instances.
     declared_topics: DeclaredTopics<PData>,
-    /// Compiled context policy created at startup.
+    /// Compiled context policy is immutable while live reconfiguration is supported.
     context_policy: Arc<CompiledContextPolicy>,
     /// Controller-wide core ids available for policy-based allocation.
     available_core_ids: Vec<CoreId>,

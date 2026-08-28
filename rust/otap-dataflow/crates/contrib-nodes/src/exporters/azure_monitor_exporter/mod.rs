@@ -61,7 +61,6 @@ pub const AZURE_MONITOR_EXPORTER_URN: &str = "urn:microsoft:exporter:azure_monit
 #[otel_arrow_dfe_engine::component_inventory(category = Exporter)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static AZURE_MONITOR_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
-    context_declarations: None,
     name: AZURE_MONITOR_EXPORTER_URN,
     create: |pipeline_ctx: PipelineContext,
              node: NodeId,

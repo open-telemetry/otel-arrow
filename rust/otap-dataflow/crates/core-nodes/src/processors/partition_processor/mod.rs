@@ -19,7 +19,9 @@ use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_engine::config::ProcessorConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
-use otel_arrow_dfe_engine::context_declaration::{ContextAccessId, ContextDeclaration};
+use otel_arrow_dfe_engine::context_declaration::{
+    ContextAccessId, ContextDeclaration, ContextDeclarationProvider,
+};
 use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otel_arrow_dfe_engine::error::ProcessorErrorKind;
 use otel_arrow_dfe_engine::local::processor::{EffectHandler, Processor};
@@ -74,8 +76,6 @@ fn create_partition_processor(
 #[otel_arrow_dfe_engine::component_inventory(category = Processor)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static PARTITION_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
-    // Consumer bindings require parsed OPL; this pass declares only the output.
-    context_declarations: Some(partition_processor_declarations),
     name: PARTITION_PROCESSOR_URN,
     create: create_partition_processor,
     wiring_contract: WiringContract::UNRESTRICTED,
@@ -103,6 +103,15 @@ pub static PARTITION_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorF
                 })?;
             }
         };
+
+        #[distributed_slice(
+            otel_arrow_dfe_engine::context_declaration::CONTEXT_DECLARATION_PROVIDERS
+        )]
+        static PARTITION_PROCESSOR_CONTEXT_DECLARATIONS: ContextDeclarationProvider =
+            ContextDeclarationProvider::from_config(
+                PARTITION_PROCESSOR_URN,
+                partition_processor_declarations,
+            );
 
         Ok(())
     },
@@ -1800,10 +1809,7 @@ mod test {
             "partition_by": { "opl_expression": "name" },
             "partition_header_name": "x-partition"
         });
-        let decls = (PARTITION_PROCESSOR_FACTORY
-            .context_declarations
-            .expect("partition processor declares context"))(&config)
-        .unwrap();
+        let decls = partition_processor_declarations(&config).unwrap();
         assert_eq!(decls.len(), 1);
         assert_eq!(
             decls[0],

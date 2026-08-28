@@ -1867,7 +1867,6 @@ pub fn create_durable_buffer(
 #[otel_arrow_dfe_engine::component_inventory(category = Processor)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static DURABLE_BUFFER_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
-    context_declarations: None,
     name: DURABLE_BUFFER_URN,
     create: create_durable_buffer,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,

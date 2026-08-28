@@ -46,7 +46,7 @@ use crate::thread_task::{ThreadLocalTaskHandle, spawn_thread_local_task};
 use core_affinity::CoreId;
 use otel_arrow_dfe_admin::ControlPlane;
 use otel_arrow_dfe_config::engine::{
-    OtelDataflowSpec, ResolvedPipelineConfig, ResolvedPipelineRole,
+    OtelDataflowSpec, ResolvedOtelDataflowSpec, ResolvedPipelineConfig, ResolvedPipelineRole,
     SYSTEM_OBSERVABILITY_PIPELINE_ID, SYSTEM_PIPELINE_GROUP_ID,
 };
 use otel_arrow_dfe_config::extension::{ExtensionUrn, ExtensionUserConfig};
@@ -3276,14 +3276,12 @@ connections:
 
     static TEST_OBSERVABILITY_RECEIVERS: &[ReceiverFactory<()>] = &[
         ReceiverFactory {
-            context_declarations: None,
             name: "urn:otel:receiver:internal_telemetry",
             create: create_test_observability_receiver,
             wiring_contract: WiringContract::UNRESTRICTED,
             validate_config: accept_any_test_config,
         },
         ReceiverFactory {
-            context_declarations: None,
             name: "urn:test:receiver:example",
             create: create_test_observability_receiver,
             wiring_contract: WiringContract::UNRESTRICTED,
@@ -3292,7 +3290,6 @@ connections:
     ];
 
     static TEST_OBSERVABILITY_PROCESSORS: &[ProcessorFactory<()>] = &[ProcessorFactory {
-        context_declarations: None,
         name: "urn:otel:processor:type_router",
         create: create_test_observability_processor,
         wiring_contract: WiringContract::UNRESTRICTED,
@@ -3301,21 +3298,18 @@ connections:
 
     static TEST_OBSERVABILITY_EXPORTERS: &[ExporterFactory<()>] = &[
         ExporterFactory {
-            context_declarations: None,
             name: "urn:otel:exporter:console",
             create: create_test_observability_exporter,
             wiring_contract: WiringContract::UNRESTRICTED,
             validate_config: accept_any_test_config,
         },
         ExporterFactory {
-            context_declarations: None,
             name: "urn:otel:exporter:noop",
             create: create_test_observability_exporter,
             wiring_contract: WiringContract::UNRESTRICTED,
             validate_config: accept_any_test_config,
         },
         ExporterFactory {
-            context_declarations: None,
             name: "urn:test:exporter:example",
             create: create_test_observability_exporter,
             wiring_contract: WiringContract::UNRESTRICTED,

@@ -327,7 +327,6 @@ impl RetryMetrics {
 #[otel_arrow_dfe_engine::component_inventory(category = Processor)]
 #[distributed_slice(otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES)]
 pub static RETRY_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
-    context_declarations: None,
     name: RETRY_PROCESSOR_URN,
     create: create_retry_processor,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,

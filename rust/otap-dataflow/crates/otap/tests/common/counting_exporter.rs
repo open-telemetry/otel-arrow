@@ -62,7 +62,6 @@ struct CountingExporter {
 #[allow(unsafe_code)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 static COUNTING_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
-    context_declarations: None,
     name: COUNTING_EXPORTER_URN,
     create:
         |_pipeline: PipelineContext,

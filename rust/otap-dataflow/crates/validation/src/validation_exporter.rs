@@ -11,11 +11,10 @@ use otel_arrow_dfe_config::NodeId as NodeName;
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_config::transport_headers::TransportHeaders;
-use otel_arrow_dfe_engine::ExporterFactory;
 use otel_arrow_dfe_engine::config::ExporterConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_engine::context_declaration::{
-    ContextAccessId, ContextDeclaration, ContextReadSelector,
+    ContextDeclaration, ContextDeclarationProvider, ContextReadSelector,
 };
 use otel_arrow_dfe_engine::control::NodeControlMsg;
 use otel_arrow_dfe_engine::error::Error as EngineError;
@@ -24,6 +23,7 @@ use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
 use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
 use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_engine::{ExporterFactory, context_access};
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
 use otel_arrow_dfe_pdata::TryFromWithOptions;
@@ -104,8 +104,6 @@ pub struct ValidationExporter {
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 /// Distributed-slice factory that registers the validation exporter with the engine.
 pub static VALIDATION_EXPORTER_FACTORY: ExporterFactory<OtapPdata> = ExporterFactory {
-    // Declares require bindings; deny checks remain runtime-only.
-    context_declarations: Some(validation_exporter_declarations),
     name: VALIDATION_EXPORTER_URN,
     create:
         |pipeline_ctx: PipelineContext,
@@ -126,8 +124,21 @@ pub static VALIDATION_EXPORTER_FACTORY: ExporterFactory<OtapPdata> = ExporterFac
     >,
 };
 
-const REQUIRE_KEYS_ACCESS: ContextAccessId = ContextAccessId::new(0);
-const REQUIRE_KEY_VALUES_ACCESS: ContextAccessId = ContextAccessId::new(1);
+#[distributed_slice(otel_arrow_dfe_engine::context_declaration::CONTEXT_DECLARATION_PROVIDERS)]
+static VALIDATION_EXPORTER_CONTEXT_DECLARATIONS: ContextDeclarationProvider =
+    ContextDeclarationProvider::from_config(
+        VALIDATION_EXPORTER_URN,
+        validation_exporter_declarations,
+    );
+
+context_access! {
+    struct RequireAccess {
+        keys,
+        key_values,
+    }
+
+    const REQUIRE_ACCESS;
+}
 
 /// Declaration-only projection of validation config.
 #[derive(Deserialize)]
@@ -168,7 +179,7 @@ fn validation_exporter_declarations(
     let mut declarations = Vec::new();
     if !require_key_names.is_empty() {
         declarations.push(ContextDeclaration::Consumes {
-            access: REQUIRE_KEYS_ACCESS,
+            access: REQUIRE_ACCESS.keys,
             selector: ContextReadSelector::Registers {
                 names: require_key_names.into_iter().collect(),
             },
@@ -176,7 +187,7 @@ fn validation_exporter_declarations(
     }
     if !require_key_value_names.is_empty() {
         declarations.push(ContextDeclaration::Consumes {
-            access: REQUIRE_KEY_VALUES_ACCESS,
+            access: REQUIRE_ACCESS.key_values,
             selector: ContextReadSelector::Registers {
                 names: require_key_value_names.into_iter().collect(),
             },
@@ -344,15 +355,12 @@ mod tests {
             ]
         });
 
-        let decls = (VALIDATION_EXPORTER_FACTORY
-            .context_declarations
-            .expect("validation exporter declares context"))(&config)
-        .unwrap();
+        let decls = validation_exporter_declarations(&config).unwrap();
         assert_eq!(decls.len(), 2);
         assert_eq!(
             decls[0],
             ContextDeclaration::Consumes {
-                access: REQUIRE_KEYS_ACCESS,
+                access: REQUIRE_ACCESS.keys,
                 selector: ContextReadSelector::Registers {
                     names: vec!["x-request-id".into(), "x-tenant-id".into()].into_boxed_slice(),
                 },
@@ -361,7 +369,7 @@ mod tests {
         assert_eq!(
             decls[1],
             ContextDeclaration::Consumes {
-                access: REQUIRE_KEY_VALUES_ACCESS,
+                access: REQUIRE_ACCESS.key_values,
                 selector: ContextReadSelector::Registers {
                     names: vec!["x-tenant-id".into()].into_boxed_slice(),
                 },
@@ -380,10 +388,7 @@ mod tests {
             ]
         });
 
-        let decls = (VALIDATION_EXPORTER_FACTORY
-            .context_declarations
-            .expect("validation exporter declares context"))(&config)
-        .unwrap();
+        let decls = validation_exporter_declarations(&config).unwrap();
         assert!(decls.is_empty());
     }
 }

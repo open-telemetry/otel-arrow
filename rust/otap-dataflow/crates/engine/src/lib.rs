@@ -69,7 +69,7 @@ pub mod extension;
 mod extension_lifecycle;
 mod extension_monitor;
 pub mod inventory;
-pub use otel_arrow_dfe_engine_macros::component_inventory;
+pub use otel_arrow_dfe_engine_macros::{component_inventory, context_access};
 pub mod message;
 pub mod processor;
 pub mod receiver;
@@ -168,8 +168,6 @@ pub struct ReceiverFactory<PData> {
     /// that accept no user configuration.
     pub validate_config:
         fn(config: &serde_json::Value) -> Result<(), otel_arrow_dfe_config::error::Error>,
-    /// Optionally declares context produced or consumed by this component.
-    pub context_declarations: Option<context_declaration::ContextDeclarationFn>,
 }
 
 // Note: We don't use `#[derive(Clone)]` here to avoid forcing the `PData` type to implement `Clone`.
@@ -180,7 +178,6 @@ impl<PData> Clone for ReceiverFactory<PData> {
             create: self.create,
             wiring_contract: self.wiring_contract,
             validate_config: self.validate_config,
-            context_declarations: self.context_declarations,
         }
     }
 }
@@ -216,8 +213,6 @@ pub struct ProcessorFactory<PData> {
     /// that accept no user configuration.
     pub validate_config:
         fn(config: &serde_json::Value) -> Result<(), otel_arrow_dfe_config::error::Error>,
-    /// Optionally declares context produced or consumed by this component.
-    pub context_declarations: Option<context_declaration::ContextDeclarationFn>,
 }
 
 // Note: We don't use `#[derive(Clone)]` here to avoid forcing the `PData` type to implement `Clone`.
@@ -228,7 +223,6 @@ impl<PData> Clone for ProcessorFactory<PData> {
             create: self.create,
             wiring_contract: self.wiring_contract,
             validate_config: self.validate_config,
-            context_declarations: self.context_declarations,
         }
     }
 }
@@ -264,8 +258,6 @@ pub struct ExporterFactory<PData> {
     /// that accept no user configuration.
     pub validate_config:
         fn(config: &serde_json::Value) -> Result<(), otel_arrow_dfe_config::error::Error>,
-    /// Optionally declares context produced or consumed by this component.
-    pub context_declarations: Option<context_declaration::ContextDeclarationFn>,
 }
 
 // Note: We don't use `#[derive(Clone)]` here to avoid forcing the `PData` type to implement `Clone`.
@@ -276,7 +268,6 @@ impl<PData> Clone for ExporterFactory<PData> {
             create: self.create,
             wiring_contract: self.wiring_contract,
             validate_config: self.validate_config,
-            context_declarations: self.context_declarations,
         }
     }
 }

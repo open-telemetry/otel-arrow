@@ -450,7 +450,6 @@ mod tests {
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static WASM_PROCESSOR_FACTORY: otel_arrow_dfe_engine::ProcessorFactory<OtapPdata> =
     otel_arrow_dfe_engine::ProcessorFactory {
-        context_declarations: None,
         name: WASM_PROCESSOR_URN,
         create:
             |pipeline: PipelineContext,

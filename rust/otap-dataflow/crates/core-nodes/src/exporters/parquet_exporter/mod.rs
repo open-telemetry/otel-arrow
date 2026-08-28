@@ -89,7 +89,6 @@ pub struct ParquetExporter {
 #[otel_arrow_dfe_engine::component_inventory(category = Exporter)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static PARQUET_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
-    context_declarations: None,
     name: PARQUET_EXPORTER_URN,
     create: |pipeline: PipelineContext,
              node: NodeId,

@@ -130,7 +130,6 @@ pub const TEMPORAL_REAGGREGATION_PROCESSOR_URN: &str = "urn:otel:processor:tempo
 pub static TEMPORAL_REAGGREGATION_PROCESSOR_FACTORY: otel_arrow_dfe_engine::ProcessorFactory<
     OtapPdata,
 > = otel_arrow_dfe_engine::ProcessorFactory {
-    context_declarations: None,
     name: TEMPORAL_REAGGREGATION_PROCESSOR_URN,
     create:
         |pipeline_ctx: PipelineContext,

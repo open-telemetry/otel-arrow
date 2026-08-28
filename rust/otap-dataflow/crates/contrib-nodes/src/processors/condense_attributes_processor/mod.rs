@@ -198,7 +198,6 @@ pub fn create_condense_attributes_processor(
 pub static CONDENSE_ATTRIBUTES_PROCESSOR_FACTORY: otel_arrow_dfe_engine::ProcessorFactory<
     OtapPdata,
 > = otel_arrow_dfe_engine::ProcessorFactory {
-    context_declarations: None,
     name: CONDENSE_ATTRIBUTES_PROCESSOR_URN,
     create:
         |pipeline_ctx: PipelineContext,

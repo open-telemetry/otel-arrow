@@ -424,14 +424,12 @@ mod tests {
     fn test_factory() -> PipelineFactory<()> {
         let receiver_factories = Box::leak(Box::new([
             ReceiverFactory {
-                context_declarations: None,
                 name: "urn:test:receiver:example",
                 create: test_receiver_create,
                 wiring_contract: WiringContract::UNRESTRICTED,
                 validate_config: otel_arrow_dfe_config::validation::no_config,
             },
             ReceiverFactory {
-                context_declarations: None,
                 name: "urn:otel:receiver:internal_telemetry",
                 create: test_receiver_create,
                 wiring_contract: WiringContract::UNRESTRICTED,
@@ -439,7 +437,6 @@ mod tests {
             },
         ]));
         let processor_factories = Box::leak(Box::new([ProcessorFactory {
-            context_declarations: None,
             name: "urn:otel:processor:type_router",
             create: test_processor_create,
             wiring_contract: WiringContract::UNRESTRICTED,
@@ -447,21 +444,18 @@ mod tests {
         }]));
         let exporter_factories = Box::leak(Box::new([
             ExporterFactory {
-                context_declarations: None,
                 name: "urn:test:exporter:example",
                 create: test_exporter_create,
                 wiring_contract: WiringContract::UNRESTRICTED,
                 validate_config: otel_arrow_dfe_config::validation::no_config,
             },
             ExporterFactory {
-                context_declarations: None,
                 name: "urn:otel:exporter:console",
                 create: test_exporter_create,
                 wiring_contract: WiringContract::UNRESTRICTED,
                 validate_config: otel_arrow_dfe_config::validation::no_config,
             },
             ExporterFactory {
-                context_declarations: None,
                 name: "urn:otel:exporter:noop",
                 create: test_exporter_create,
                 wiring_contract: WiringContract::UNRESTRICTED,

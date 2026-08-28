@@ -1181,7 +1181,6 @@ pub fn create_fanout_processor(
 #[otel_arrow_dfe_engine::component_inventory(category = Processor)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static FANOUT_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
-    context_declarations: None,
     name: FANOUT_PROCESSOR_URN,
     create:
         |pipeline_ctx: PipelineContext,

@@ -93,7 +93,6 @@ pub fn create_debug_processor(
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static DEBUG_PROCESSOR_FACTORY: otel_arrow_dfe_engine::ProcessorFactory<OtapPdata> =
     otel_arrow_dfe_engine::ProcessorFactory {
-        context_declarations: None,
         name: DEBUG_PROCESSOR_URN,
         create:
             |pipeline_ctx: PipelineContext,

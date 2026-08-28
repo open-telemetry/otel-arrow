@@ -624,6 +624,7 @@ impl<
             pipeline_id,
             request,
             None,
+            false,
             None,
             None,
         )?;
@@ -643,9 +644,29 @@ impl<
             pipeline_id,
             request,
             None,
+            false,
             None,
             None,
         )
+    }
+
+    fn verify_context_policy(
+        &self,
+        resolved: &ResolvedOtelDataflowSpec,
+    ) -> Result<(), ControlPlaneError> {
+        let candidate_context_policy = self
+            .pipeline_factory
+            .compile_context_policy(resolved)
+            .map_err(|error| ControlPlaneError::InvalidRequest {
+                message: error.to_string(),
+            })?;
+        if self.context_policy != candidate_context_policy {
+            return Err(ControlPlaneError::InvalidRequest {
+                message: "request would modify the compiled context policy".to_owned(),
+            });
+        }
+
+        Ok(())
     }
 
     fn prepare_rollout_plan_for_engine_operation(
@@ -654,6 +675,7 @@ impl<
         pipeline_id: &str,
         request: &ReconfigureRequest,
         planning_config: Option<&OtelDataflowSpec>,
+        context_policy_prevalidated: bool,
         engine_operation_id: Option<&str>,
         projected_reserved_core_ids: Option<&BTreeSet<usize>>,
     ) -> Result<CandidateRolloutPlan, ControlPlaneError> {
@@ -728,8 +750,11 @@ impl<
         }
         Self::validate_live_memory_limiter_unchanged(&live_config, &candidate_config)?;
 
-        let resolved_pipeline = candidate_config
-            .resolve()
+        let resolved_candidate_config = candidate_config.resolve();
+        if !context_policy_prevalidated {
+            self.verify_context_policy(&resolved_candidate_config)?;
+        }
+        let resolved_pipeline = resolved_candidate_config
             .pipelines
             .into_iter()
             .find(|pipeline| {
@@ -1982,14 +2007,18 @@ impl<
                 ));
             }
         }
-        let desired_phase_by_key: HashMap<_, _> = desired_config
-            .resolve()
+        let desired_resolved_config = desired_config.resolve();
+        self.verify_context_policy(&desired_resolved_config)?;
+        let desired_phase_by_key: HashMap<_, _> = desired_resolved_config
             .pipelines
-            .into_iter()
+            .iter()
             .filter(|pipeline| pipeline.role == ResolvedPipelineRole::Regular)
             .map(|pipeline| {
                 (
-                    PipelineKey::new(pipeline.pipeline_group_id, pipeline.pipeline_id),
+                    PipelineKey::new(
+                        pipeline.pipeline_group_id.clone(),
+                        pipeline.pipeline_id.clone(),
+                    ),
                     Self::reconcile_placement_phase_for_strategy(
                         &pipeline.policies.resources.core_allocation.strategy,
                     ),
@@ -2034,6 +2063,7 @@ impl<
                 pipeline_key.pipeline_id(),
                 &reconfigure_request,
                 Some(&desired_config),
+                true,
                 Some(guard.operation_id()),
                 Some(&projected_exclusive_core_ids),
             )?;

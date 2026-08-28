@@ -575,7 +575,6 @@ async fn process_drained_records(
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 /// Declares the Linux user_events receiver as a local receiver factory.
 pub static USER_EVENTS_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
-    context_declarations: None,
     name: USER_EVENTS_RECEIVER_URN,
     create:
         |pipeline: PipelineContext,

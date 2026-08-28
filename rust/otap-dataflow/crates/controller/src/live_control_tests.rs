@@ -165,28 +165,24 @@ fn recovery_test_exporter_create(
 
 static TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
     ReceiverFactory {
-        context_declarations: None,
         name: "urn:test:receiver:example",
         create: test_receiver_create,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
     ReceiverFactory {
-        context_declarations: None,
         name: "urn:otel:receiver:topic",
         create: test_receiver_create,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
     ReceiverFactory {
-        context_declarations: None,
         name: "urn:otel:receiver:otlp",
         create: test_receiver_create,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
     ReceiverFactory {
-        context_declarations: None,
         name: "urn:otel:receiver:internal_telemetry",
         create: test_receiver_create,
         wiring_contract: WiringContract::UNRESTRICTED,
@@ -195,7 +191,6 @@ static TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
 ];
 
 static TEST_PROCESSOR_FACTORIES: &[ProcessorFactory<()>] = &[ProcessorFactory {
-    context_declarations: None,
     name: "urn:otel:processor:type_router",
     create: test_processor_create,
     wiring_contract: WiringContract::UNRESTRICTED,
@@ -204,28 +199,24 @@ static TEST_PROCESSOR_FACTORIES: &[ProcessorFactory<()>] = &[ProcessorFactory {
 
 static TEST_EXPORTER_FACTORIES: &[ExporterFactory<()>] = &[
     ExporterFactory {
-        context_declarations: None,
         name: "urn:test:exporter:example",
         create: test_exporter_create,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
     ExporterFactory {
-        context_declarations: None,
         name: "urn:otel:exporter:topic",
         create: test_exporter_create,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
     ExporterFactory {
-        context_declarations: None,
         name: "urn:otel:exporter:console",
         create: test_exporter_create,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
     ExporterFactory {
-        context_declarations: None,
         name: "urn:otel:exporter:noop",
         create: test_exporter_create,
         wiring_contract: WiringContract::UNRESTRICTED,
@@ -242,14 +233,12 @@ static TEST_PIPELINE_FACTORY: PipelineFactory<()> = PipelineFactory::new(
 
 static RECOVERY_TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
     ReceiverFactory {
-        context_declarations: None,
         name: "urn:test:receiver:example",
         create: recovery_test_receiver_create,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
     ReceiverFactory {
-        context_declarations: None,
         name: "urn:otel:receiver:internal_telemetry",
         create: recovery_test_receiver_create,
         wiring_contract: WiringContract::UNRESTRICTED,
@@ -259,21 +248,18 @@ static RECOVERY_TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
 
 static RECOVERY_TEST_EXPORTER_FACTORIES: &[ExporterFactory<()>] = &[
     ExporterFactory {
-        context_declarations: None,
         name: "urn:test:exporter:example",
         create: recovery_test_exporter_create,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
     ExporterFactory {
-        context_declarations: None,
         name: "urn:otel:exporter:console",
         create: recovery_test_exporter_create,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
     ExporterFactory {
-        context_declarations: None,
         name: "urn:otel:exporter:noop",
         create: recovery_test_exporter_create,
         wiring_contract: WiringContract::UNRESTRICTED,

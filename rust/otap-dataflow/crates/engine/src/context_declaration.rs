@@ -3,9 +3,10 @@
 
 //! Component context declarations collected before runtime construction.
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::collections::{BTreeSet, HashMap};
+use std::sync::{Arc, OnceLock};
 
+use linkme::distributed_slice;
 use otel_arrow_dfe_config::engine::ResolvedOtelDataflowSpec;
 use otel_arrow_dfe_config::error::Error;
 use otel_arrow_dfe_config::node::NodeKind;
@@ -13,6 +14,27 @@ use otel_arrow_dfe_config::{NodeId as ConfigNodeId, PipelineKey};
 
 use crate::PipelineFactory;
 use crate::error::Error as EngineError;
+
+/// A configuration-dependent declaration provider registered by a component.
+#[derive(Clone, Copy)]
+pub struct ContextDeclarationProvider {
+    /// The registered component's URN.
+    pub urn: &'static str,
+    /// Produces declarations using a component configuration.
+    pub declarations: ContextDeclarationFn,
+}
+
+impl ContextDeclarationProvider {
+    /// Creates a provider that derives declarations from component configuration.
+    #[must_use]
+    pub const fn from_config(urn: &'static str, declarations: ContextDeclarationFn) -> Self {
+        Self { urn, declarations }
+    }
+}
+
+/// Context declaration providers registered by components.
+#[distributed_slice]
+pub static CONTEXT_DECLARATION_PROVIDERS: [ContextDeclarationProvider];
 
 /// Context access identifier scoped to one node factory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -35,8 +57,6 @@ impl ContextAccessId {
 /// Generic context registers selected by one consumer binding.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ContextReadSelector {
-    /// Selects one named register.
-    Register(String),
     /// Selects named registers in order; providers canonicalize unordered inputs.
     Registers {
         /// Logical context register names.
@@ -68,11 +88,53 @@ pub enum ContextDeclaration {
 /// Deterministically describes a node factory's context access.
 pub type ContextDeclarationFn = fn(&serde_json::Value) -> Result<Vec<ContextDeclaration>, Error>;
 
+/// Builds deterministic producer declarations from configuration-sized inputs.
+#[derive(Default)]
+pub struct ContextDeclarationsBuilder {
+    produced_names: BTreeSet<String>,
+}
+
+impl ContextDeclarationsBuilder {
+    /// Creates an empty declaration builder.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Adds a produced register, normalizing its logical name.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when another configured name has the same normalized
+    /// logical name.
+    pub fn produce(&mut self, name: impl AsRef<str>) -> Result<(), Error> {
+        let name = name.as_ref().to_ascii_lowercase();
+        if !self.produced_names.insert(name.clone()) {
+            return Err(Error::InvalidUserConfig {
+                error: format!("duplicate context register name after normalization: `{name}`"),
+            });
+        }
+        Ok(())
+    }
+
+    /// Returns produced declarations in normalized-name order with assigned IDs.
+    #[must_use]
+    pub fn finish(self) -> Vec<ContextDeclaration> {
+        self.produced_names
+            .into_iter()
+            .enumerate()
+            .map(|(index, name)| ContextDeclaration::Produces {
+                access: ContextAccessId::new(index),
+                name,
+            })
+            .collect()
+    }
+}
+
 /// Opaque context policy compiled from the resolved configuration.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompiledContextPolicy {
     // Replaced by executable plans in the next compiler pass.
-    #[allow(dead_code)]
     declarations: HashMap<PipelineKey, HashMap<ConfigNodeId, Box<[ContextDeclaration]>>>,
 }
 
@@ -118,31 +180,47 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
                 error: format!("node factory `{urn}` is not registered"),
             }))
         };
-        let declarations = match kind {
+        let _ = match kind {
             NodeKind::Receiver => {
                 self.get_receiver_factory_map()
                     .get(urn)
                     .ok_or_else(&missing_factory)?
-                    .context_declarations
+                    .name
             }
             NodeKind::Processor => {
                 self.get_processor_factory_map()
                     .get(urn)
                     .ok_or_else(&missing_factory)?
-                    .context_declarations
+                    .name
             }
             NodeKind::Exporter => {
                 self.get_exporter_factory_map()
                     .get(urn)
                     .ok_or_else(&missing_factory)?
-                    .context_declarations
+                    .name
             }
         };
-        declarations.map_or_else(
+        context_declaration_provider(urn).map_or_else(
             || Ok(Vec::new()),
-            |declare| declare(config).map_err(|error| EngineError::ConfigError(Box::new(error))),
+            |provider| {
+                (provider.declarations)(config)
+                    .map_err(|error| EngineError::ConfigError(Box::new(error)))
+            },
         )
     }
+}
+
+fn context_declaration_provider(urn: &str) -> Option<ContextDeclarationProvider> {
+    static PROVIDERS: OnceLock<HashMap<&'static str, ContextDeclarationProvider>> = OnceLock::new();
+    PROVIDERS
+        .get_or_init(|| {
+            CONTEXT_DECLARATION_PROVIDERS
+                .iter()
+                .map(|provider| (provider.urn, *provider))
+                .collect()
+        })
+        .get(urn)
+        .copied()
 }
 
 #[cfg(test)]
@@ -199,11 +277,27 @@ mod tests {
         assert!(!policy.declarations[&pipeline].contains_key("other"));
     }
 
+    /// Scenario: equivalent policies are compiled from the same declarations.
+    /// Guarantees: policy equality detects unchanged context configuration.
+    #[test]
+    fn compiled_policy_equality_detects_unchanged_configuration() {
+        let policy = CompiledContextPolicy {
+            declarations: HashMap::new(),
+        };
+        let equivalent = CompiledContextPolicy {
+            declarations: HashMap::new(),
+        };
+
+        assert_eq!(policy, equivalent);
+    }
+
     /// Scenario: Two access IDs select the same register.
     /// Guarantees: the declarations remain distinct.
     #[test]
     fn access_id_distinguishes_consumers() {
-        let selector = ContextReadSelector::Register("x-topic".into());
+        let selector = ContextReadSelector::Registers {
+            names: vec!["x-topic".into()].into_boxed_slice(),
+        };
         let first = ContextDeclaration::Consumes {
             access: ContextAccessId::new(0),
             selector: selector.clone(),
@@ -215,13 +309,17 @@ mod tests {
         assert_ne!(first, second);
     }
 
-    /// Scenario: Generic selectors represent one, ordered, and all-register reads.
+    /// Scenario: Generic selectors represent ordered and all-register reads.
     /// Guarantees: selector equality preserves register selection and order.
     #[test]
     fn selectors_preserve_generic_read_contracts() {
         assert_ne!(
-            ContextReadSelector::Register("tenant".into()),
-            ContextReadSelector::Register("region".into())
+            ContextReadSelector::Registers {
+                names: vec!["tenant".into()].into_boxed_slice(),
+            },
+            ContextReadSelector::Registers {
+                names: vec!["region".into()].into_boxed_slice(),
+            }
         );
         assert_ne!(
             ContextReadSelector::Registers {
@@ -231,5 +329,41 @@ mod tests {
                 names: vec!["region".into(), "tenant".into()].into_boxed_slice(),
             },
         );
+    }
+
+    /// Scenario: Producer inputs are unordered and use mixed-case names.
+    /// Guarantees: finished declarations normalize names and assign sorted IDs.
+    #[test]
+    fn builder_normalizes_and_orders_producers() {
+        let mut builder = ContextDeclarationsBuilder::new();
+        builder.produce("X-Tenant-Id").unwrap();
+        builder.produce("a-first").unwrap();
+
+        assert_eq!(
+            builder.finish(),
+            vec![
+                ContextDeclaration::Produces {
+                    access: ContextAccessId::new(0),
+                    name: "a-first".into(),
+                },
+                ContextDeclaration::Produces {
+                    access: ContextAccessId::new(1),
+                    name: "x-tenant-id".into(),
+                },
+            ]
+        );
+    }
+
+    /// Scenario: Producer inputs differ only by logical-name casing.
+    /// Guarantees: configuration compilation rejects ambiguous register names.
+    #[test]
+    fn builder_rejects_duplicate_normalized_producers() {
+        let mut builder = ContextDeclarationsBuilder::new();
+        builder.produce("X-Tenant-Id").unwrap();
+
+        assert!(matches!(
+            builder.produce("x-tenant-id"),
+            Err(Error::InvalidUserConfig { .. })
+        ));
     }
 }

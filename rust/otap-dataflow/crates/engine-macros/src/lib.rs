@@ -11,6 +11,7 @@ use syn::{Item, ItemStatic, ItemTrait, parse_macro_input};
 
 mod capability;
 mod component_inventory;
+mod context_access;
 mod pipeline_factory;
 
 /// Attribute macro to generate distributed slices and initialize a factory registry.
@@ -188,4 +189,11 @@ pub fn component_inventory(args: TokenStream, input: TokenStream) -> TokenStream
     );
     let item = parse_macro_input!(input as Item);
     component_inventory::expand_component_inventory(args, item).into()
+}
+
+/// Declares provider-local access constants using sequential identifiers.
+#[proc_macro]
+pub fn context_access(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as context_access::ContextAccess);
+    context_access::expand_context_access(input).into()
 }

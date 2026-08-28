@@ -38,7 +38,6 @@ pub const RECORDSET_KQL_PROCESSOR_URN: &str = "urn:microsoft:processor:recordset
 #[otel_arrow_dfe_engine::component_inventory(category = Processor)]
 #[distributed_slice(otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES)]
 pub static RECORDSET_KQL_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
-    context_declarations: None,
     name: RECORDSET_KQL_PROCESSOR_URN,
     create: create_recordset_kql_processor,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,

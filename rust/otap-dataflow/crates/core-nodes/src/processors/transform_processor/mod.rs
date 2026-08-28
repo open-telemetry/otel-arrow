@@ -522,7 +522,6 @@ fn create_transform_processor(
 #[otel_arrow_dfe_engine::component_inventory(category = Processor)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static TRANSFORM_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
-    context_declarations: None,
     name: TRANSFORM_PROCESSOR_URN,
     create: create_transform_processor,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,

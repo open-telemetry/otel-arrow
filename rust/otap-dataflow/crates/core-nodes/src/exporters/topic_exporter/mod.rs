@@ -118,8 +118,6 @@ enum BlockedPublishCompletion {
 #[otel_arrow_dfe_engine::component_inventory(category = Exporter)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static TOPIC_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
-    // Whole-context forwarding uses topic topology, not entry bindings.
-    context_declarations: None,
     name: TOPIC_EXPORTER_URN,
     create:
         |pipeline: PipelineContext,

@@ -156,8 +156,6 @@ struct PendingForward {
 #[otel_arrow_dfe_engine::component_inventory(category = Receiver)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static TOPIC_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
-    // Whole-context forwarding uses topic topology, not entry bindings.
-    context_declarations: None,
     name: TOPIC_RECEIVER_URN,
     create:
         |pipeline: PipelineContext,

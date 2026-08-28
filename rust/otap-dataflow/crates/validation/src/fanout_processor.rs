@@ -40,7 +40,6 @@ struct FanoutProcessor {
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 /// Distributed-slice factory that registers the fanout processor with the engine.
 pub static FANOUT_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
-    context_declarations: None,
     name: FANOUT_PROCESSOR_URN,
     create:
         |pipeline_ctx: PipelineContext,

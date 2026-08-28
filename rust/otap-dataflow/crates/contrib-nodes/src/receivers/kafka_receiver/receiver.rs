@@ -224,8 +224,6 @@ pub struct KafkaReceiver {
 #[otel_arrow_dfe_engine::component_inventory(category = Receiver)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static KAFKA_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
-    // Generic receiver policy handles Kafka header capture; no bindings yet.
-    context_declarations: None,
     name: KAFKA_RECEIVER_URN,
     create:
         |pipeline: PipelineContext,

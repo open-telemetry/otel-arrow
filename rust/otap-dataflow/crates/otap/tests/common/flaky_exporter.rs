@@ -181,7 +181,6 @@ struct FlakyExporter {
 #[allow(unsafe_code)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 static FLAKY_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
-    context_declarations: None,
     name: FLAKY_EXPORTER_URN,
     create:
         |_pipeline: PipelineContext,

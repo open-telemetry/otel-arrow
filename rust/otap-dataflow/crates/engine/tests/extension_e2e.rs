@@ -444,7 +444,6 @@ fn probe_receiver_create(
 }
 
 const PROBE_RECEIVER_FACTORY: ReceiverFactory<()> = ReceiverFactory {
-    context_declarations: None,
     name: PROBE_RECEIVER_URN,
     create: probe_receiver_create,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
@@ -492,7 +491,6 @@ fn noop_exporter_create(
 }
 
 const NOOP_EXPORTER_FACTORY: ExporterFactory<()> = ExporterFactory {
-    context_declarations: None,
     name: NOOP_EXPORTER_URN,
     create: noop_exporter_create,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
@@ -1744,7 +1742,6 @@ fn probe_processor_create(
 
 const PROBE_PROCESSOR_FACTORY: otel_arrow_dfe_engine::ProcessorFactory<()> =
     otel_arrow_dfe_engine::ProcessorFactory {
-        context_declarations: None,
         name: PROBE_PROCESSOR_URN,
         create: probe_processor_create,
         wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
@@ -1827,7 +1824,6 @@ fn probe_exporter_create(
 }
 
 const PROBE_EXPORTER_FACTORY: ExporterFactory<()> = ExporterFactory {
-    context_declarations: None,
     name: PROBE_EXPORTER_URN,
     create: probe_exporter_create,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,

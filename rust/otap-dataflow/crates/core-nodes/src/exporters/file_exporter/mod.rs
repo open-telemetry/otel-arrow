@@ -71,7 +71,6 @@ pub struct FileExporter {
 #[otel_arrow_dfe_engine::component_inventory(category = Exporter)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static FILE_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
-    context_declarations: None,
     name: FILE_EXPORTER_URN,
     create:
         |pipeline: PipelineContext,

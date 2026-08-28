@@ -122,8 +122,6 @@ pub struct OTLPExporter {
 #[otel_arrow_dfe_engine::component_inventory(category = Exporter)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static OTLP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
-    // Generic exporter policy handles propagation; this pass binds nothing else.
-    context_declarations: None,
     name: OTLP_EXPORTER_URN,
     create: |pipeline: PipelineContext,
              node: NodeId,

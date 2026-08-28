@@ -102,7 +102,6 @@ fn create_capture_exporter(
 #[allow(unsafe_code)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 static CAPTURE_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
-    context_declarations: None,
     name: CAPTURE_EXPORTER_URN,
     create: create_capture_exporter,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,

@@ -830,7 +830,6 @@ impl EtwReceiver {
 #[otel_arrow_dfe_engine::component_inventory(category = Receiver)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static ETW_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
-    context_declarations: None,
     name: ETW_RECEIVER_URN,
     create:
         |pipeline: PipelineContext,

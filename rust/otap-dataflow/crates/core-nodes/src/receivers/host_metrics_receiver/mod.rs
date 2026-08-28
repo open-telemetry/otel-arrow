@@ -142,7 +142,6 @@ pub struct HostMetricsReceiver {
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 /// Declares the host metrics receiver as a local receiver factory.
 pub static HOST_METRICS_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
-    context_declarations: None,
     name: HOST_METRICS_RECEIVER_URN,
     create:
         |pipeline: PipelineContext,

@@ -663,7 +663,6 @@ pub fn create_signal_type_router(
 #[otel_arrow_dfe_engine::component_inventory(category = Processor)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static SIGNAL_TYPE_ROUTER_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
-    context_declarations: None,
     name: SIGNAL_TYPE_ROUTER_URN,
     create:
         |pipeline: PipelineContext,

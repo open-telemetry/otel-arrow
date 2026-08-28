@@ -20,7 +20,9 @@ use otel_arrow_dfe_config::transport_headers::{TransportHeader, TransportHeaders
 use otel_arrow_dfe_engine::MessageSourceLocalEffectHandlerExtension;
 use otel_arrow_dfe_engine::config::ReceiverConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
-use otel_arrow_dfe_engine::context_declaration::{ContextAccessId, ContextDeclaration};
+use otel_arrow_dfe_engine::context_declaration::{
+    ContextDeclaration, ContextDeclarationProvider, ContextDeclarationsBuilder,
+};
 use otel_arrow_dfe_engine::control::CallData;
 use otel_arrow_dfe_engine::error::{Error, ReceiverErrorKind, TypedError};
 use otel_arrow_dfe_engine::local::receiver as local;
@@ -104,8 +106,6 @@ fn elapsed_nanos(start: StdInstant) -> f64 {
 #[otel_arrow_dfe_engine::component_inventory(category = Receiver)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static TRAFFIC_GENERATOR_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
-    // Declares generated context names; this source consumes no context.
-    context_declarations: Some(traffic_generator_declarations),
     name: TRAFFIC_GENERATOR_RECEIVER_URN,
     create:
         |pipeline: PipelineContext,
@@ -123,6 +123,13 @@ pub static TRAFFIC_GENERATOR_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFact
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<Config>,
 };
+
+#[distributed_slice(otel_arrow_dfe_engine::context_declaration::CONTEXT_DECLARATION_PROVIDERS)]
+static TRAFFIC_GENERATOR_CONTEXT_DECLARATIONS: ContextDeclarationProvider =
+    ContextDeclarationProvider::from_config(
+        TRAFFIC_GENERATOR_RECEIVER_URN,
+        traffic_generator_declarations,
+    );
 
 impl TrafficGeneratorReceiver {
     /// creates a new TrafficGeneratorReceiver
@@ -494,10 +501,11 @@ fn build_transport_headers(
     }
     let mut headers = TransportHeaders::with_capacity(config_headers.len());
     for (key, value) in config_headers {
+        let name = key.to_ascii_lowercase();
         // Infer the value kind from the key name, matching the convention
         // used by the header capture policy: keys ending in `-bin` are
         // treated as binary (the gRPC binary metadata convention).
-        if key.ends_with("-bin") {
+        if name.ends_with("-bin") {
             let resolved_value = match value {
                 Some(v) => v.as_bytes().to_vec(),
                 None => {
@@ -506,11 +514,7 @@ fn build_transport_headers(
                     buf.to_vec()
                 }
             };
-            headers.push(TransportHeader::binary(
-                key.clone(),
-                key.clone(),
-                resolved_value,
-            ));
+            headers.push(TransportHeader::binary(name, key.clone(), resolved_value));
         } else {
             let resolved_value = match value {
                 Some(v) => v.as_bytes().to_vec(),
@@ -522,11 +526,7 @@ fn build_transport_headers(
                         .collect()
                 }
             };
-            headers.push(TransportHeader::text(
-                key.clone(),
-                key.clone(),
-                resolved_value,
-            ));
+            headers.push(TransportHeader::text(name, key.clone(), resolved_value));
         }
     }
     Some(headers)
@@ -769,17 +769,11 @@ fn traffic_generator_declarations(
         }
     })?;
 
-    let mut names: Vec<&String> = config.transport_headers().keys().collect();
-    names.sort();
-
-    Ok(names
-        .into_iter()
-        .enumerate()
-        .map(|(index, name)| ContextDeclaration::Produces {
-            access: ContextAccessId::new(index),
-            name: name.to_ascii_lowercase(),
-        })
-        .collect())
+    let mut declarations = ContextDeclarationsBuilder::new();
+    for name in config.transport_headers().keys() {
+        declarations.produce(name)?;
+    }
+    Ok(declarations.finish())
 }
 
 #[cfg(test)]
@@ -1905,14 +1899,11 @@ mod tests {
             "generation_strategy": "fresh",
             "transport_headers": {
                 "x-tenant-id": "acme",
-                "x-request-id": null,
+                "X-Request-Id": null,
                 "a-first": "val"
             }
         });
-        let decls = (TRAFFIC_GENERATOR_RECEIVER
-            .context_declarations
-            .expect("traffic generator declares context"))(&config)
-        .unwrap();
+        let decls = traffic_generator_declarations(&config).unwrap();
         assert_eq!(decls.len(), 3);
 
         let names: Vec<&str> = decls
@@ -1923,6 +1914,30 @@ mod tests {
             })
             .collect();
         assert_eq!(names, vec!["a-first", "x-request-id", "x-tenant-id"]);
+    }
+
+    /// Scenario: Configured headers use mixed-case wire names.
+    /// Guarantees: their logical names and binary classification are normalized.
+    #[test]
+    fn traffic_gen_headers_normalize_logical_names() {
+        let headers = build_transport_headers(&HashMap::from([
+            ("X-Request-Id".to_string(), Some("request".to_string())),
+            ("X-Trace-Bin".to_string(), Some("trace".to_string())),
+        ]))
+        .expect("configured headers produce transport headers");
+        let request_header = headers
+            .iter()
+            .find(|header| header.wire_name == "X-Request-Id")
+            .expect("request header is present");
+        let trace_header = headers
+            .iter()
+            .find(|header| header.wire_name == "X-Trace-Bin")
+            .expect("trace header is present");
+
+        assert_eq!(request_header.name, "x-request-id");
+        assert_eq!(request_header.value_kind, ValueKind::Text);
+        assert_eq!(trace_header.name, "x-trace-bin");
+        assert_eq!(trace_header.value_kind, ValueKind::Binary);
     }
 
     /// Scenario: Traffic generation config contains no context.
@@ -1940,10 +1955,30 @@ mod tests {
             "data_source": "synthetic",
             "generation_strategy": "fresh"
         });
-        let decls = (TRAFFIC_GENERATOR_RECEIVER
-            .context_declarations
-            .expect("traffic generator declares context"))(&config)
-        .unwrap();
+        let decls = traffic_generator_declarations(&config).unwrap();
         assert!(decls.is_empty());
+    }
+
+    /// Scenario: Configured header names differ only by casing.
+    /// Guarantees: declaration compilation rejects ambiguous logical names.
+    #[test]
+    fn traffic_gen_declaration_rejects_duplicate_normalized_headers() {
+        let config = serde_json::json!({
+            "traffic_config": {
+                "signals_per_second": 10,
+                "max_batch_size": 5,
+                "metric_weight": 0,
+                "trace_weight": 0,
+                "log_weight": 1
+            },
+            "data_source": "synthetic",
+            "generation_strategy": "fresh",
+            "transport_headers": {
+                "X-Tenant-Id": "acme",
+                "x-tenant-id": "contoso"
+            }
+        });
+
+        assert!(traffic_generator_declarations(&config).is_err());
     }
 }
