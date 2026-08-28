@@ -4,7 +4,7 @@
 //! Kafka client operations and receiver orchestration for transient-NACK replay.
 
 use super::KafkaReceiver;
-use crate::receivers::kafka_receiver::retry::BeginRetry;
+use crate::receivers::kafka_receiver::retry::{BeginRetry, DueReplay};
 use otel_arrow_dfe_engine::control::CallData;
 use rdkafka::consumer::{Consumer, ConsumerContext, StreamConsumer};
 use rdkafka::error::KafkaError;
@@ -59,6 +59,33 @@ impl<C: ConsumerContext> ReplayConsumerOperations for StreamConsumer<C> {
 }
 
 impl KafkaReceiver {
+    /// Discard replay state whose partition ownership changed during an operation.
+    fn discard_stale_replay(&mut self, replay: &DueReplay) -> bool {
+        if self
+            .rebalance_state
+            .is_assigned(&replay.topic, replay.partition)
+            && self
+                .rebalance_state
+                .current_generation(&replay.topic, replay.partition)
+                == replay.ownership_generation.raw()
+        {
+            return false;
+        }
+
+        let _ = self.offset_tracker.revoke_if_older(
+            &replay.topic,
+            replay.partition,
+            replay.ownership_generation.raw(),
+        );
+        self.retry_manager.revoke_if_older(
+            &replay.topic,
+            replay.partition,
+            replay.ownership_generation,
+        );
+        self.refresh_committable_snapshot();
+        true
+    }
+
     /// Record a failed Kafka replay operation with one stable event schema.
     fn record_retry_operation_failure(
         &mut self,
@@ -155,19 +182,7 @@ impl KafkaReceiver {
             .retry_manager
             .due_replays(now, MAX_DUE_REPLAYS_PER_TURN)
         {
-            if !self
-                .rebalance_state
-                .is_assigned(&replay.topic, replay.partition)
-                || self
-                    .rebalance_state
-                    .current_generation(&replay.topic, replay.partition)
-                    != replay.ownership_generation.raw()
-            {
-                self.retry_manager.revoke_if_older(
-                    &replay.topic,
-                    replay.partition,
-                    replay.ownership_generation,
-                );
+            if self.discard_stale_replay(&replay) {
                 continue;
             }
 
@@ -194,6 +209,9 @@ impl KafkaReceiver {
                     }
                 }
             };
+            if self.discard_stale_replay(&replay) {
+                continue;
+            }
 
             self.metrics.consumer.replay_attempts.inc();
             if let Err(error) =
@@ -214,6 +232,9 @@ impl KafkaReceiver {
                 );
                 continue;
             }
+            if self.discard_stale_replay(&replay) {
+                continue;
+            }
 
             if let Err(error) = consumer.resume_partition(&replay.topic, replay.partition) {
                 self.record_retry_operation_failure(
@@ -225,6 +246,9 @@ impl KafkaReceiver {
                 );
                 self.retry_manager
                     .reschedule_operation_failure(&replay, true, now, &retry_config);
+                continue;
+            }
+            if self.discard_stale_replay(&replay) {
                 continue;
             }
 

@@ -244,8 +244,16 @@ Kafka receiver -> internal processors -> retry processor -> exporter
 - Exporter transient NACKs are retried locally by the retry processor.
 - NACKs originating in an earlier processor bypass that retry processor and
   reach the Kafka receiver.
-- If local exporter retries are exhausted and a non-permanent NACK reaches a
-  replay-enabled receiver, the receiver falls back to Kafka replay.
+- Set the retry processor's `exhaustion_action` according to the intended
+  terminal behavior:
+  - `propagate_transient` preserves a non-permanent NACK after local retries
+    are exhausted, so a replay-enabled receiver falls back to Kafka replay.
+    This can repeat the local-retry and Kafka-replay cycle until processing
+    succeeds or Kafka retention expires.
+  - `mark_permanent` converts the exhausted NACK to a permanent one. The Kafka
+    receiver then treats it as terminal and permits the offset to advance. Use
+    this only when bounded local retries followed by commit-and-skip are
+    intended.
 - A retry processor immediately after the receiver is not a complete no-loss
   solution: retries are finite and some NACKs do not retain a retryable payload.
 
@@ -922,6 +930,7 @@ groups:
               max_interval: 30s        # Go error_backoff.max_interval
               max_elapsed_time: 5m     # Go error_backoff.max_elapsed_time
               multiplier: 2.0          # Go error_backoff.multiplier
+              exhaustion_action: propagate_transient # Preserve Kafka replay fallback.
               # Go error_backoff.randomization_factor has no equivalent (no jitter).
 
           otlp/export:

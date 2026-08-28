@@ -33,7 +33,7 @@ use otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY;
 use otel_arrow_dfe_state::store::ObservedStateStore;
 use otel_arrow_dfe_telemetry::InternalTelemetrySystem;
 use serde_json::json;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Arc, LazyLock, Mutex};
 
@@ -148,6 +148,80 @@ impl ReplayConsumerOperations for FailingReplayConsumer {
 
     fn resume_partition(&self, _topic: &str, _partition: i32) -> Result<(), KafkaError> {
         self.execute(ReplayOperation::Resume)
+    }
+}
+
+#[derive(Copy, Clone)]
+enum ReplayOwnershipChange {
+    Revoke,
+    Reassign,
+}
+
+impl ReplayOwnershipChange {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Revoke => "revocation",
+            Self::Reassign => "reassignment",
+        }
+    }
+}
+
+struct OwnershipChangingReplayConsumer {
+    change_during: ReplayOperation,
+    change: ReplayOwnershipChange,
+    rebalance_state: Arc<RebalanceState>,
+    calls: RefCell<Vec<ReplayOperation>>,
+    changed: Cell<bool>,
+}
+
+impl OwnershipChangingReplayConsumer {
+    fn new(
+        change_during: ReplayOperation,
+        change: ReplayOwnershipChange,
+        rebalance_state: Arc<RebalanceState>,
+    ) -> Self {
+        Self {
+            change_during,
+            change,
+            rebalance_state,
+            calls: RefCell::new(Vec::new()),
+            changed: Cell::new(false),
+        }
+    }
+
+    fn execute(&self, operation: ReplayOperation, topic: &str, partition: i32) {
+        self.calls.borrow_mut().push(operation);
+        if operation != self.change_during || self.changed.replace(true) {
+            return;
+        }
+
+        let revoked_generation = self.rebalance_state.current_generation(topic, partition);
+        self.rebalance_state
+            .push_revoked_for_test(topic, partition, revoked_generation);
+        self.rebalance_state
+            .set_assignment_for_test(&TopicPartitionList::new());
+        if matches!(self.change, ReplayOwnershipChange::Reassign) {
+            let mut reassignment = TopicPartitionList::new();
+            let _ = reassignment.add_partition(topic, partition);
+            self.rebalance_state.set_assignment_for_test(&reassignment);
+        }
+    }
+}
+
+impl ReplayConsumerOperations for OwnershipChangingReplayConsumer {
+    fn pause_partition(&self, topic: &str, partition: i32) -> Result<(), KafkaError> {
+        self.execute(ReplayOperation::Pause, topic, partition);
+        Ok(())
+    }
+
+    fn seek_partition(&self, topic: &str, partition: i32, _offset: i64) -> Result<(), KafkaError> {
+        self.execute(ReplayOperation::Seek, topic, partition);
+        Ok(())
+    }
+
+    fn resume_partition(&self, topic: &str, partition: i32) -> Result<(), KafkaError> {
+        self.execute(ReplayOperation::Resume, topic, partition);
+        Ok(())
     }
 }
 
@@ -322,6 +396,119 @@ fn replay_operation_failures_preserve_failed_offset_watermark() {
         assert!(receiver.retry_manager.next_deadline().is_some());
         assert_eq!(receiver.retry_manager.paused_count(), expected_paused);
         assert_eq!(*consumer.calls.borrow(), expected_calls);
+    }
+}
+
+/// Scenario: A partition is revoked or reassigned during each pause, seek, or resume phase.
+/// Guarantees: Stale replay work stops, its retry state is dropped, and its offset is not advanced.
+#[test]
+fn replay_phase_ownership_change_discards_stale_state_without_advancing_offset() {
+    let scenarios = [
+        (ReplayOperation::Pause, false, vec![ReplayOperation::Pause]),
+        (ReplayOperation::Seek, true, vec![ReplayOperation::Seek]),
+        (
+            ReplayOperation::Resume,
+            true,
+            vec![ReplayOperation::Seek, ReplayOperation::Resume],
+        ),
+    ];
+
+    for change in [
+        ReplayOwnershipChange::Revoke,
+        ReplayOwnershipChange::Reassign,
+    ] {
+        for (change_during, initially_paused, expected_calls) in &scenarios {
+            let cfg = manual_traces_config_with_replay_backoff(
+                "localhost:9092",
+                "operation-ownership-change-group",
+                "traces",
+                1,
+                4,
+            );
+            let ctx = make_pipeline_ctx();
+            let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
+            let mut assignment = TopicPartitionList::new();
+            let _ = assignment.add_partition("traces", 0);
+            receiver
+                .rebalance_state
+                .set_assignment_for_test(&assignment);
+            let ownership_raw = receiver.rebalance_state.current_generation("traces", 0);
+            let ownership_generation = OwnershipGeneration::from_raw(ownership_raw);
+            receiver
+                .offset_tracker
+                .track("traces", 0, 12, ownership_raw);
+            receiver
+                .offset_tracker
+                .track("traces", 0, 13, ownership_raw);
+            assert!(!receiver.offset_tracker.acknowledge("traces", 0, 13));
+            let _ = receiver
+                .retry_manager
+                .delivery_generation("traces", 0, ownership_generation);
+            let rewind = receiver
+                .offset_tracker
+                .prepare_replay("traces", 0, 12, ownership_raw)
+                .expect("failed offset remains pending");
+            let retry_config = receiver
+                .config
+                .replay_backoff()
+                .expect("replay config")
+                .clone();
+            let replay_delivery = receiver.retry_manager.begin_retry(
+                BeginRetry {
+                    topic: "traces",
+                    partition: 0,
+                    ownership_generation,
+                    failed_offset: 12,
+                    rewind_offset: rewind,
+                    paused: *initially_paused,
+                    now: Instant::now() - Duration::from_secs(1),
+                },
+                &retry_config,
+            );
+            let consumer = OwnershipChangingReplayConsumer::new(
+                *change_during,
+                change,
+                receiver.rebalance_state_for_test(),
+            );
+
+            receiver.process_due_replays(&consumer);
+
+            match change {
+                ReplayOwnershipChange::Revoke => assert!(
+                    !receiver.rebalance_state.is_assigned("traces", 0),
+                    "revocation during {} must remove the assignment",
+                    change_during.as_str(),
+                ),
+                ReplayOwnershipChange::Reassign => assert!(
+                    receiver.rebalance_state.current_generation("traces", 0) > ownership_raw,
+                    "reassignment during {} must allocate a new ownership generation",
+                    change_during.as_str(),
+                ),
+            }
+            assert_eq!(receiver.offset_tracker.pending_count("traces", 0), 0);
+            assert!(
+                !receiver
+                    .offset_tracker
+                    .committable_snapshot()
+                    .contains_key(&("traces".to_string(), 0)),
+                "{} during {} must not advance the revoked ownership period's offset",
+                change.as_str(),
+                change_during.as_str(),
+            );
+            assert_eq!(receiver.retry_manager.paused_count(), 0);
+            assert!(receiver.retry_manager.next_deadline().is_none());
+            assert_eq!(
+                receiver
+                    .retry_manager
+                    .feedback_ownership_generation("traces", 0, replay_delivery,),
+                Some(ownership_generation),
+            );
+            assert_eq!(*consumer.calls.borrow(), *expected_calls);
+
+            receiver.reconcile_rebalance_state();
+            assert_eq!(receiver.offset_tracker.pending_count("traces", 0), 0);
+            assert_eq!(receiver.retry_manager.paused_count(), 0);
+        }
     }
 }
 
