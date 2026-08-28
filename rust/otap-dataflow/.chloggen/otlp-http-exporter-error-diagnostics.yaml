@@ -1,0 +1,4 @@
+change_type: enhancement
+component: pipeline
+note: "OTLP HTTP exporter now reads bounded (4 KiB) error response bodies to include diagnostic information in export failures, preventing indefinite buffering from unresponsive backends."
+issues: []
