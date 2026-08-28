@@ -4,8 +4,11 @@
 //! Partition-local delivery generations and transient-NACK replay state.
 
 use super::config::TransientNackConfig;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::time::{Duration, Instant};
+
+/// Maximum revoked delivery identities retained for late-feedback classification.
+const MAX_FEEDBACK_TOMBSTONES: usize = 1_024;
 
 /// A topic-partition whose replay backoff has elapsed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,11 +38,32 @@ struct PartitionState {
     retry: Option<RetryState>,
 }
 
+#[derive(Debug)]
+struct FeedbackTombstone {
+    topic: String,
+    partition: i32,
+    ownership_generation: u64,
+    delivery_generation: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct ScheduledReplay {
+    deadline: Instant,
+    topic: String,
+    partition: i32,
+    delivery_generation: u64,
+}
+
 /// Tracks the current delivery generation and optional replay for each partition.
 #[derive(Debug)]
 pub(crate) struct RetryManager {
     partitions: HashMap<String, HashMap<i32, PartitionState>>,
+    /// Ordered, one-entry-per-partition replay schedule.
+    scheduled_replays: BTreeSet<ScheduledReplay>,
+    /// Bounded identities for classifying feedback received after revocation.
+    feedback_tombstones: VecDeque<FeedbackTombstone>,
     next_delivery_generation: u64,
+    paused_partitions: usize,
 }
 
 impl RetryManager {
@@ -48,7 +72,10 @@ impl RetryManager {
     pub(crate) fn new() -> Self {
         Self {
             partitions: HashMap::new(),
+            scheduled_replays: BTreeSet::new(),
+            feedback_tombstones: VecDeque::with_capacity(MAX_FEEDBACK_TOMBSTONES),
             next_delivery_generation: 1,
+            paused_partitions: 0,
         }
     }
 
@@ -80,6 +107,61 @@ impl RetryManager {
         }
     }
 
+    fn remove_state(&mut self, topic: &str, partition: i32) -> Option<PartitionState> {
+        let partitions = self.partitions.get_mut(topic)?;
+        let removed = partitions.remove(&partition);
+        if partitions.is_empty() {
+            let _ = self.partitions.remove(topic);
+        }
+        removed
+    }
+
+    fn remember_feedback_tombstone(&mut self, topic: &str, partition: i32, state: &PartitionState) {
+        if self.feedback_tombstones.len() == MAX_FEEDBACK_TOMBSTONES {
+            let _ = self.feedback_tombstones.pop_front();
+        }
+        self.feedback_tombstones.push_back(FeedbackTombstone {
+            topic: topic.to_string(),
+            partition,
+            ownership_generation: state.ownership_generation,
+            delivery_generation: state.delivery_generation,
+        });
+    }
+
+    fn remove_retry_indexes(&mut self, topic: &str, partition: i32, state: &PartitionState) {
+        let Some(retry) = state.retry.as_ref() else {
+            return;
+        };
+        if retry.paused {
+            self.paused_partitions = self.paused_partitions.saturating_sub(1);
+        }
+        if let Some(deadline) = retry.next_attempt {
+            let _ = self.scheduled_replays.remove(&ScheduledReplay {
+                deadline,
+                topic: topic.to_string(),
+                partition,
+                delivery_generation: state.delivery_generation,
+            });
+        }
+    }
+
+    fn insert_retry_indexes(&mut self, topic: &str, partition: i32, state: &PartitionState) {
+        let Some(retry) = state.retry.as_ref() else {
+            return;
+        };
+        if retry.paused {
+            self.paused_partitions = self.paused_partitions.saturating_add(1);
+        }
+        if let Some(deadline) = retry.next_attempt {
+            let _ = self.scheduled_replays.insert(ScheduledReplay {
+                deadline,
+                topic: topic.to_string(),
+                partition,
+                delivery_generation: state.delivery_generation,
+            });
+        }
+    }
+
     /// Returns the current delivery generation for an owned partition.
     ///
     /// A newly observed ownership period gets a fresh delivery generation. A
@@ -95,6 +177,11 @@ impl RetryManager {
             if state.ownership_generation == ownership_generation {
                 return state.delivery_generation;
             }
+        }
+
+        if let Some(previous) = self.remove_state(topic, partition) {
+            self.remove_retry_indexes(topic, partition, &previous);
+            self.remember_feedback_tombstone(topic, partition, &previous);
         }
 
         let delivery_generation = self.allocate_delivery_generation();
@@ -123,6 +210,17 @@ impl RetryManager {
         self.state(topic, partition)
             .filter(|state| state.delivery_generation == delivery_generation)
             .map(|state| state.ownership_generation)
+            .or_else(|| {
+                self.feedback_tombstones
+                    .iter()
+                    .rev()
+                    .find(|tombstone| {
+                        tombstone.topic == topic
+                            && tombstone.partition == partition
+                            && tombstone.delivery_generation == delivery_generation
+                    })
+                    .map(|tombstone| tombstone.ownership_generation)
+            })
     }
 
     /// Starts or restarts replay backoff and advances the delivery generation.
@@ -143,57 +241,69 @@ impl RetryManager {
             .map_or(0, |retry| retry.attempts);
         let delivery_generation = self.allocate_delivery_generation();
         let next_attempt = retry_deadline(now, config, attempts);
-        self.insert_state(
-            topic,
-            partition,
-            PartitionState {
-                ownership_generation,
-                delivery_generation,
-                retry: Some(RetryState {
-                    rewind_offset,
-                    failed_offset,
-                    attempts,
-                    next_attempt: Some(next_attempt),
-                    paused,
-                }),
-            },
-        );
+        if let Some(previous) = self.remove_state(topic, partition) {
+            self.remove_retry_indexes(topic, partition, &previous);
+        }
+        let state = PartitionState {
+            ownership_generation,
+            delivery_generation,
+            retry: Some(RetryState {
+                rewind_offset,
+                failed_offset,
+                attempts,
+                next_attempt: Some(next_attempt),
+                paused,
+            }),
+        };
+        self.insert_retry_indexes(topic, partition, &state);
+        self.insert_state(topic, partition, state);
         delivery_generation
     }
 
     /// Returns the earliest scheduled replay deadline.
     #[must_use]
     pub(crate) fn next_deadline(&self) -> Option<Instant> {
-        self.partitions
-            .values()
-            .flat_map(HashMap::values)
-            .filter_map(|state| state.retry.as_ref()?.next_attempt)
-            .min()
+        self.scheduled_replays.first().map(|replay| replay.deadline)
     }
 
-    /// Returns all replay attempts whose deadlines have elapsed.
+    /// Returns at most `limit` replay attempts whose deadlines have elapsed.
     #[must_use]
-    pub(crate) fn due_replays(&self, now: Instant) -> Vec<DueReplay> {
-        self.partitions
-            .iter()
-            .flat_map(|(topic, partitions)| {
-                partitions.iter().filter_map(move |(partition, state)| {
-                    let retry = state.retry.as_ref()?;
-                    retry
-                        .next_attempt
-                        .is_some_and(|deadline| deadline <= now)
-                        .then(|| DueReplay {
-                            topic: topic.clone(),
-                            partition: *partition,
-                            ownership_generation: state.ownership_generation,
-                            delivery_generation: state.delivery_generation,
-                            rewind_offset: retry.rewind_offset,
-                            failed_offset: retry.failed_offset,
-                            paused: retry.paused,
-                        })
-                })
-            })
-            .collect()
+    pub(crate) fn due_replays(&mut self, now: Instant, limit: usize) -> Vec<DueReplay> {
+        let mut due = Vec::with_capacity(limit);
+        let mut examined = 0;
+        while examined < limit {
+            let Some(scheduled) = self.scheduled_replays.first() else {
+                break;
+            };
+            if scheduled.deadline > now {
+                break;
+            }
+            let scheduled = scheduled.clone();
+            let _ = self.scheduled_replays.remove(&scheduled);
+            examined += 1;
+            let Some(state) = self.state(&scheduled.topic, scheduled.partition) else {
+                continue;
+            };
+            if state.delivery_generation != scheduled.delivery_generation {
+                continue;
+            }
+            let Some(retry) = state.retry.as_ref() else {
+                continue;
+            };
+            if retry.next_attempt != Some(scheduled.deadline) {
+                continue;
+            }
+            due.push(DueReplay {
+                topic: scheduled.topic,
+                partition: scheduled.partition,
+                ownership_generation: state.ownership_generation,
+                delivery_generation: state.delivery_generation,
+                rewind_offset: retry.rewind_offset,
+                failed_offset: retry.failed_offset,
+                paused: retry.paused,
+            });
+        }
+        due
     }
 
     /// Reschedules a failed pause, seek, or resume operation.
@@ -204,34 +314,43 @@ impl RetryManager {
         now: Instant,
         config: &TransientNackConfig,
     ) {
-        let Some(state) = self
-            .state_mut(&replay.topic, replay.partition)
-            .filter(|state| state.delivery_generation == replay.delivery_generation)
-        else {
+        let Some(mut state) = self.remove_state(&replay.topic, replay.partition) else {
             return;
         };
+        if state.delivery_generation != replay.delivery_generation {
+            self.insert_state(&replay.topic, replay.partition, state);
+            return;
+        }
+        self.remove_retry_indexes(&replay.topic, replay.partition, &state);
         let Some(retry) = state.retry.as_mut() else {
+            self.insert_state(&replay.topic, replay.partition, state);
             return;
         };
         retry.attempts = retry.attempts.saturating_add(1);
         retry.paused = paused;
         retry.next_attempt = Some(retry_deadline(now, config, retry.attempts));
+        self.insert_retry_indexes(&replay.topic, replay.partition, &state);
+        self.insert_state(&replay.topic, replay.partition, state);
     }
 
     /// Marks a due replay as resumed and awaiting feedback.
     pub(crate) fn mark_replaying(&mut self, replay: &DueReplay) {
-        let Some(state) = self
-            .state_mut(&replay.topic, replay.partition)
-            .filter(|state| state.delivery_generation == replay.delivery_generation)
-        else {
+        let Some(mut state) = self.remove_state(&replay.topic, replay.partition) else {
             return;
         };
+        if state.delivery_generation != replay.delivery_generation {
+            self.insert_state(&replay.topic, replay.partition, state);
+            return;
+        }
+        self.remove_retry_indexes(&replay.topic, replay.partition, &state);
         let Some(retry) = state.retry.as_mut() else {
+            self.insert_state(&replay.topic, replay.partition, state);
             return;
         };
         retry.attempts = retry.attempts.saturating_add(1);
         retry.next_attempt = None;
         retry.paused = false;
+        self.insert_state(&replay.topic, replay.partition, state);
     }
 
     /// Returns `true` while buffered deliveries must be discarded before seek.
@@ -279,30 +398,31 @@ impl RetryManager {
         }
     }
 
-    /// Clears retry state for a revoked ownership period while retaining the
-    /// delivery token long enough to classify late feedback as post-revocation.
+    /// Removes state for a revoked ownership period and retains its delivery
+    /// identity in the bounded late-feedback tombstone queue.
     pub(crate) fn revoke_if_older(
         &mut self,
         topic: &str,
         partition: i32,
         ownership_generation: u64,
     ) {
-        let Some(state) = self.state_mut(topic, partition) else {
+        let Some(state) = self.state(topic, partition) else {
             return;
         };
-        if state.ownership_generation <= ownership_generation {
-            state.retry = None;
+        if state.ownership_generation > ownership_generation {
+            return;
         }
+        let Some(state) = self.remove_state(topic, partition) else {
+            return;
+        };
+        self.remove_retry_indexes(topic, partition, &state);
+        self.remember_feedback_tombstone(topic, partition, &state);
     }
 
     /// Number of partitions currently believed to be paused for retry.
     #[must_use]
     pub(crate) fn paused_count(&self) -> usize {
-        self.partitions
-            .values()
-            .flat_map(HashMap::values)
-            .filter(|state| state.retry.as_ref().is_some_and(|retry| retry.paused))
-            .count()
+        self.paused_partitions
     }
 }
 
@@ -385,7 +505,7 @@ mod tests {
         let mut expected_delay = 10_u128;
         for _ in 0..4 {
             let due_at = manager.next_deadline().expect("deadline scheduled");
-            let due = manager.due_replays(due_at).pop().expect("replay is due");
+            let due = manager.due_replays(due_at, 1).pop().expect("replay is due");
             assert_eq!(due.delivery_generation, delivery);
             let now = due_at;
             manager.reschedule_operation_failure(&due, true, now, &config);
@@ -431,7 +551,7 @@ mod tests {
             &replay_config(),
         );
         let due = manager
-            .due_replays(Instant::now() + Duration::from_secs(1))
+            .due_replays(Instant::now() + Duration::from_secs(1), 1)
             .pop()
             .expect("replay due");
         manager.mark_replaying(&due);
@@ -472,7 +592,7 @@ mod tests {
         let _ = manager.delivery_generation("traces", 0, 1);
         let _ = manager.begin_retry("traces", 0, 1, 5, 5, true, start, &config);
         let due_at = manager.next_deadline().expect("deadline scheduled");
-        let replay = manager.due_replays(due_at).pop().expect("replay is due");
+        let replay = manager.due_replays(due_at, 1).pop().expect("replay is due");
 
         manager.reschedule_operation_failure(&replay, true, due_at, &config);
 
@@ -500,6 +620,60 @@ mod tests {
             manager
                 .next_deadline()
                 .is_some_and(|deadline| deadline > start)
+        );
+    }
+
+    /// Scenario: More replay deadlines are due than one receive-loop turn may process.
+    /// Guarantees: Due replay extraction respects its work limit and leaves another due deadline cached.
+    #[test]
+    fn due_replays_are_bounded_per_turn() {
+        let config = replay_config();
+        let start = Instant::now();
+        let mut manager = RetryManager::new();
+        for partition in 0..5 {
+            let _ = manager.delivery_generation("traces", partition, 1);
+            let _ = manager.begin_retry("traces", partition, 1, 5, 5, true, start, &config);
+        }
+        let due_at = manager.next_deadline().expect("deadline scheduled");
+
+        assert_eq!(manager.due_replays(due_at, 2).len(), 2);
+        assert!(
+            manager
+                .next_deadline()
+                .is_some_and(|deadline| deadline <= due_at)
+        );
+    }
+
+    /// Scenario: Revoked partitions exceed the retained late-feedback history.
+    /// Guarantees: Active state is reclaimed and the tombstone queue remains at its explicit bound.
+    #[test]
+    fn revoked_feedback_tombstones_are_bounded() {
+        let mut manager = RetryManager::new();
+        let mut oldest_delivery = 0;
+        let mut newest_delivery = 0;
+        for partition in 0..=(MAX_FEEDBACK_TOMBSTONES as i32) {
+            let delivery = manager.delivery_generation("traces", partition, 1);
+            if partition == 0 {
+                oldest_delivery = delivery;
+            }
+            newest_delivery = delivery;
+            manager.revoke_if_older("traces", partition, 1);
+        }
+
+        assert!(manager.partitions.is_empty());
+        assert!(manager.scheduled_replays.is_empty());
+        assert_eq!(manager.feedback_tombstones.len(), MAX_FEEDBACK_TOMBSTONES);
+        assert_eq!(
+            manager.feedback_ownership_generation("traces", 0, oldest_delivery),
+            None,
+        );
+        assert_eq!(
+            manager.feedback_ownership_generation(
+                "traces",
+                MAX_FEEDBACK_TOMBSTONES as i32,
+                newest_delivery,
+            ),
+            Some(1),
         );
     }
 }

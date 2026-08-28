@@ -433,6 +433,12 @@ impl RebalanceState {
             }
         }
 
+        // Pause state is client-local and survives revocation/reassignment in
+        // librdkafka. Clear it while these partitions are still assigned so a
+        // later acquisition by this consumer cannot remain paused forever after
+        // the receive loop discards its retry deadline.
+        Self::resume_rebalance_partitions(consumer, tpl, "revoke");
+
         // Look up each partition's ownership generation and drop it from the assigned
         // set. Queue every revoked partition (tagged with its own generation) for the
         // receive loop to purge from the tracker; the generation lets the purge skip
@@ -664,6 +670,26 @@ impl RebalanceState {
                 );
                 self.merge_assignment(tpl);
             }
+        }
+
+        // `tpl` is the newly-assigned delta under cooperative rebalancing and
+        // the full newly-owned set under eager rebalancing. Resume exactly this
+        // set so retained partitions with an active retry remain paused.
+        Self::resume_rebalance_partitions(base_consumer, tpl, "assign");
+    }
+
+    fn resume_rebalance_partitions<C: ConsumerContext>(
+        consumer: &BaseConsumer<C>,
+        tpl: &TopicPartitionList,
+        phase: &'static str,
+    ) {
+        if let Err(error) = consumer.resume(tpl) {
+            otel_error!(
+                "kafka.rebalance.resume.fail",
+                phase,
+                "exception.type" = "rdkafka",
+                "exception.message" = %error,
+            );
         }
     }
 }

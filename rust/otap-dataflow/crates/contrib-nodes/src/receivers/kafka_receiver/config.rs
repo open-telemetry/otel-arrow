@@ -85,8 +85,8 @@ pub enum CommitMode {
 #[derive(Copy, Clone, PartialEq, Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TransientNackMode {
-    /// Preserve the legacy behavior: treat the NACK as terminal and commit it.
-    Commit,
+    /// Treat the NACK as terminal, commit it, and skip Kafka redelivery.
+    CommitAndSkip,
     /// Pause the partition and replay from Kafka after exponential backoff.
     Replay,
 }
@@ -95,7 +95,7 @@ pub enum TransientNackMode {
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TransientNackConfig {
-    /// Whether a non-permanent NACK is committed or replayed from Kafka.
+    /// Whether a non-permanent NACK is committed and skipped or replayed from Kafka.
     #[serde(default = "default_transient_nack_mode")]
     pub mode: TransientNackMode,
     /// Delay before the first Kafka replay attempt, in milliseconds.
@@ -314,7 +314,7 @@ pub struct KafkaReceiverConfigBuilder {
 
     /// Policy for non-permanent NACKs returned by downstream nodes.
     #[serde(default)]
-    transient_nack: TransientNackConfig,
+    transient_nack: Option<TransientNackConfig>,
 
     /// Interval, in milliseconds, between consumer-lag refreshes.
     ///
@@ -461,12 +461,26 @@ impl IsolationLevel {
 /// pattern, ensuring consistency across Kafka components.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(try_from = "KafkaReceiverConfigBuilder")]
-pub struct KafkaReceiverConfig(KafkaReceiverConfigBuilder);
+pub struct KafkaReceiverConfig(KafkaReceiverConfigBuilder, TransientNackConfig);
 
 impl TryFrom<KafkaReceiverConfigBuilder> for KafkaReceiverConfig {
     type Error = KafkaReceiverError;
 
     fn try_from(builder: KafkaReceiverConfigBuilder) -> Result<Self, KafkaReceiverError> {
+        // An omitted policy follows the commit mode: manual commit defaults to
+        // downstream-aware replay, while auto commit leaves feedback handling
+        // inactive and uses the terminal value only as an internal sentinel.
+        let transient_nack = builder.transient_nack.clone().unwrap_or_else(|| {
+            let mode = match builder.commit.mode {
+                CommitMode::Manual => TransientNackMode::Replay,
+                CommitMode::Auto => TransientNackMode::CommitAndSkip,
+            };
+            TransientNackConfig {
+                mode,
+                ..TransientNackConfig::default()
+            }
+        });
+
         // Reject empty required string fields
         if builder.brokers.is_empty() {
             return Err(KafkaReceiverError::ConfigEmptyField {
@@ -606,27 +620,27 @@ impl TryFrom<KafkaReceiverConfigBuilder> for KafkaReceiverConfig {
             });
         }
 
-        if builder.transient_nack.initial_backoff_ms == 0 {
+        if transient_nack.initial_backoff_ms == 0 {
             return Err(KafkaReceiverError::ConfigNonPositiveValue {
                 field: "transient_nack.initial_backoff_ms".to_string(),
             });
         }
 
-        if builder.transient_nack.max_backoff_ms == 0 {
+        if transient_nack.max_backoff_ms == 0 {
             return Err(KafkaReceiverError::ConfigNonPositiveValue {
                 field: "transient_nack.max_backoff_ms".to_string(),
             });
         }
 
-        if builder.transient_nack.initial_backoff_ms > builder.transient_nack.max_backoff_ms {
+        if transient_nack.initial_backoff_ms > transient_nack.max_backoff_ms {
             return Err(KafkaReceiverError::ConfigInvalidTransientNackBackoff {
-                initial: builder.transient_nack.initial_backoff_ms,
-                max: builder.transient_nack.max_backoff_ms,
+                initial: transient_nack.initial_backoff_ms,
+                max: transient_nack.max_backoff_ms,
             });
         }
 
         if matches!(builder.commit.mode, CommitMode::Auto)
-            && matches!(builder.transient_nack.mode, TransientNackMode::Replay)
+            && matches!(transient_nack.mode, TransientNackMode::Replay)
         {
             return Err(KafkaReceiverError::ConfigTransientNackReplayRequiresManual);
         }
@@ -663,7 +677,7 @@ impl TryFrom<KafkaReceiverConfigBuilder> for KafkaReceiverConfig {
             });
         }
 
-        Ok(Self(builder))
+        Ok(Self(builder, transient_nack))
     }
 }
 
@@ -690,7 +704,7 @@ impl KafkaReceiverConfigBuilder {
             logs: SignalConfig::default(),
             auto_offset_reset: default_auto_offset_reset(),
             commit: CommitConfig::default(),
-            transient_nack: TransientNackConfig::default(),
+            transient_nack: None,
             lag_refresh_interval_ms: None,
             session_timeout_ms: default_session_timeout_ms(),
             heartbeat_interval_ms: default_heartbeat_interval_ms(),
@@ -848,7 +862,7 @@ impl KafkaReceiverConfigBuilder {
     /// Set the non-permanent NACK policy.
     #[must_use]
     pub fn with_transient_nack(mut self, transient_nack: TransientNackConfig) -> Self {
-        self.transient_nack = transient_nack;
+        self.transient_nack = Some(transient_nack);
         self
     }
 
@@ -1164,16 +1178,16 @@ impl KafkaReceiverConfig {
         self.0.commit.interval_ms
     }
 
-    /// Get the configured non-permanent NACK policy.
+    /// Get the effective non-permanent NACK policy after commit-mode defaults.
     #[must_use]
     pub fn transient_nack(&self) -> &TransientNackConfig {
-        &self.0.transient_nack
+        &self.1
     }
 
     /// Returns `true` when non-permanent NACKs should be replayed from Kafka.
     #[must_use]
     pub fn replays_transient_nacks(&self) -> bool {
-        matches!(self.0.transient_nack.mode, TransientNackMode::Replay)
+        matches!(self.transient_nack().mode, TransientNackMode::Replay)
     }
 
     /// Get the configured consumer-lag refresh interval in milliseconds.
@@ -1281,7 +1295,7 @@ fn default_commit_mode() -> CommitMode {
 }
 
 fn default_transient_nack_mode() -> TransientNackMode {
-    TransientNackMode::Commit
+    TransientNackMode::Replay
 }
 
 const fn default_transient_nack_initial_backoff_ms() -> u64 {
@@ -1419,18 +1433,48 @@ mod tests {
         assert_eq!(cfg.interval_ms, None);
     }
 
-    /// Scenario: The transient-NACK configuration is omitted.
-    /// Guarantees: Legacy commit behavior remains the default with documented replay backoffs.
+    /// Scenario: A transient-NACK block uses all field defaults.
+    /// Guarantees: Replay is preferred and the documented backoff bounds are applied.
     #[test]
-    fn transient_nack_config_defaults_preserve_legacy_behavior() {
+    fn transient_nack_config_defaults_to_replay() {
         let cfg = TransientNackConfig::default();
-        assert_eq!(cfg.mode, TransientNackMode::Commit);
+        assert_eq!(cfg.mode, TransientNackMode::Replay);
         assert_eq!(cfg.initial_backoff_ms, 1_000);
         assert_eq!(cfg.max_backoff_ms, 30_000);
     }
 
+    /// Scenario: A manual-commit receiver omits the transient-NACK policy.
+    /// Guarantees: Validation resolves the effective policy to Kafka replay.
+    #[test]
+    fn omitted_transient_nack_policy_defaults_to_replay_in_manual_mode() {
+        let builder = KafkaReceiverConfigBuilder::new("b", "g", "c")
+            .with_traces(SignalConfig::new(vec!["t".to_string()]));
+
+        let cfg = KafkaReceiverConfig::try_from(builder).expect("manual config is valid");
+
+        assert_eq!(cfg.transient_nack().mode, TransientNackMode::Replay);
+        assert!(cfg.replays_transient_nacks());
+    }
+
+    /// Scenario: An auto-commit receiver omits the transient-NACK policy.
+    /// Guarantees: Validation succeeds with replay inactive instead of rejecting an implicit policy.
+    #[test]
+    fn omitted_transient_nack_policy_is_inactive_in_auto_mode() {
+        let builder = KafkaReceiverConfigBuilder::new("b", "g", "c")
+            .with_traces(SignalConfig::new(vec!["t".to_string()]))
+            .with_commit(CommitConfig {
+                mode: CommitMode::Auto,
+                interval_ms: None,
+            });
+
+        let cfg = KafkaReceiverConfig::try_from(builder).expect("auto config is valid");
+
+        assert_eq!(cfg.transient_nack().mode, TransientNackMode::CommitAndSkip);
+        assert!(!cfg.replays_transient_nacks());
+    }
+
     /// Scenario: A transient-NACK replay policy is deserialized.
-    /// Guarantees: Operators can opt into Kafka replay and configure its bounded backoff.
+    /// Guarantees: Operators can explicitly configure Kafka replay and its bounded backoff.
     #[test]
     fn transient_nack_replay_config_deserializes() {
         let cfg: TransientNackConfig = serde_json::from_value(json!({
@@ -1443,6 +1487,18 @@ mod tests {
         assert_eq!(cfg.mode, TransientNackMode::Replay);
         assert_eq!(cfg.initial_backoff_ms, 250);
         assert_eq!(cfg.max_backoff_ms, 10_000);
+    }
+
+    /// Scenario: A transient-NACK commit-and-skip policy is deserialized.
+    /// Guarantees: Operators can explicitly opt out of manual-mode Kafka redelivery.
+    #[test]
+    fn transient_nack_commit_and_skip_config_deserializes() {
+        let cfg: TransientNackConfig = serde_json::from_value(json!({
+            "mode": "commit_and_skip",
+        }))
+        .expect("valid commit-and-skip config");
+
+        assert_eq!(cfg.mode, TransientNackMode::CommitAndSkip);
     }
 
     /// Scenario (construction and configuration): a `SignalConfig` is constructed with

@@ -71,6 +71,9 @@ const LAG_FETCH_PARTITION_TIMEOUT: Duration = Duration::from_secs(5);
 /// Total deadline for a single off-loop consumer-lag refresh.
 const LAG_REFRESH_TOTAL_DEADLINE: Duration = Duration::from_secs(15);
 
+/// Maximum partition replay attempts performed before returning to `select!`.
+const MAX_DUE_REPLAYS_PER_TURN: usize = 8;
+
 /// Compile a slice of topic config strings into a parallel [`Vec`] of
 /// optional [`Regex`] values. Entries starting with `^` are treated as
 /// regex patterns; literal topic names yield `None`.
@@ -751,11 +754,36 @@ impl KafkaReceiver {
         );
     }
 
+    /// Record a failed Kafka replay operation with one stable event schema.
+    fn record_retry_operation_failure(
+        &mut self,
+        operation: ReplayOperation,
+        topic: &str,
+        partition: i32,
+        offset: i64,
+        error: &KafkaError,
+    ) {
+        match operation {
+            ReplayOperation::Pause => self.metrics.consumer.retry_pause_failures.inc(),
+            ReplayOperation::Seek => self.metrics.consumer.retry_seek_failures.inc(),
+            ReplayOperation::Resume => self.metrics.consumer.retry_resume_failures.inc(),
+        }
+        otel_error!(
+            "kafka.retry.fail",
+            operation = operation.as_str(),
+            topic = %topic,
+            partition = partition,
+            offset = offset,
+            "exception.type" = "rdkafka",
+            "exception.message" = %error,
+        );
+    }
+
     /// Pause a partition and schedule Kafka replay for a non-permanent NACK.
-    fn handle_transient_nack<C: ConsumerContext>(
+    fn handle_transient_nack<O: ReplayConsumerOperations + ?Sized>(
         &mut self,
         calldata: &CallData,
-        consumer: &StreamConsumer<C>,
+        consumer: &O,
     ) {
         let Some(feedback) = self.resolve_offset_feedback(calldata) else {
             return;
@@ -769,17 +797,15 @@ impl KafkaReceiver {
             return;
         };
 
-        let partitions = single_partition_list(&feedback.topic, feedback.partition);
-        let paused = match consumer.pause(&partitions) {
+        let paused = match consumer.pause_partition(&feedback.topic, feedback.partition) {
             Ok(()) => true,
             Err(error) => {
-                self.metrics.consumer.retry_pause_failures.inc();
-                otel_error!(
-                    "kafka.retry.pause_failed",
-                    topic = %feedback.topic,
-                    partition = feedback.partition,
-                    offset = feedback.offset,
-                    error = %error,
+                self.record_retry_operation_failure(
+                    ReplayOperation::Pause,
+                    &feedback.topic,
+                    feedback.partition,
+                    feedback.offset,
+                    &error,
                 );
                 false
             }
@@ -798,7 +824,7 @@ impl KafkaReceiver {
         );
         self.refresh_committable_snapshot();
         otel_warn!(
-            "kafka.retry.scheduled",
+            "kafka.retry.schedule",
             topic = %feedback.topic,
             partition = feedback.partition,
             failed_offset = feedback.offset,
@@ -808,10 +834,13 @@ impl KafkaReceiver {
     }
 
     /// Run every pause/seek/resume replay attempt whose backoff has elapsed.
-    fn process_due_replays<C: ConsumerContext>(&mut self, consumer: &StreamConsumer<C>) {
+    fn process_due_replays<O: ReplayConsumerOperations + ?Sized>(&mut self, consumer: &O) {
         let now = Instant::now();
         let retry_config = self.config.transient_nack().clone();
-        for replay in self.retry_manager.due_replays(now) {
+        for replay in self
+            .retry_manager
+            .due_replays(now, MAX_DUE_REPLAYS_PER_TURN)
+        {
             if !self
                 .rebalance_state
                 .is_assigned(&replay.topic, replay.partition)
@@ -828,20 +857,18 @@ impl KafkaReceiver {
                 continue;
             }
 
-            let partitions = single_partition_list(&replay.topic, replay.partition);
             let paused = if replay.paused {
                 true
             } else {
-                match consumer.pause(&partitions) {
+                match consumer.pause_partition(&replay.topic, replay.partition) {
                     Ok(()) => true,
                     Err(error) => {
-                        self.metrics.consumer.retry_pause_failures.inc();
-                        otel_error!(
-                            "kafka.retry.pause_failed",
-                            topic = %replay.topic,
-                            partition = replay.partition,
-                            offset = replay.rewind_offset,
-                            error = %error,
+                        self.record_retry_operation_failure(
+                            ReplayOperation::Pause,
+                            &replay.topic,
+                            replay.partition,
+                            replay.rewind_offset,
+                            &error,
                         );
                         self.retry_manager.reschedule_operation_failure(
                             &replay,
@@ -855,19 +882,15 @@ impl KafkaReceiver {
             };
 
             self.metrics.consumer.replay_attempts.inc();
-            if let Err(error) = consumer.seek(
-                &replay.topic,
-                replay.partition,
-                rdkafka::Offset::Offset(replay.rewind_offset),
-                Timeout::After(Duration::ZERO),
-            ) {
-                self.metrics.consumer.retry_seek_failures.inc();
-                otel_error!(
-                    "kafka.retry.seek_failed",
-                    topic = %replay.topic,
-                    partition = replay.partition,
-                    offset = replay.rewind_offset,
-                    error = %error,
+            if let Err(error) =
+                consumer.seek_partition(&replay.topic, replay.partition, replay.rewind_offset)
+            {
+                self.record_retry_operation_failure(
+                    ReplayOperation::Seek,
+                    &replay.topic,
+                    replay.partition,
+                    replay.rewind_offset,
+                    &error,
                 );
                 self.retry_manager.reschedule_operation_failure(
                     &replay,
@@ -878,14 +901,13 @@ impl KafkaReceiver {
                 continue;
             }
 
-            if let Err(error) = consumer.resume(&partitions) {
-                self.metrics.consumer.retry_resume_failures.inc();
-                otel_error!(
-                    "kafka.retry.resume_failed",
-                    topic = %replay.topic,
-                    partition = replay.partition,
-                    offset = replay.rewind_offset,
-                    error = %error,
+            if let Err(error) = consumer.resume_partition(&replay.topic, replay.partition) {
+                self.record_retry_operation_failure(
+                    ReplayOperation::Resume,
+                    &replay.topic,
+                    replay.partition,
+                    replay.rewind_offset,
+                    &error,
                 );
                 self.retry_manager
                     .reschedule_operation_failure(&replay, true, now, &retry_config);
@@ -894,7 +916,7 @@ impl KafkaReceiver {
 
             self.retry_manager.mark_replaying(&replay);
             otel_info!(
-                "kafka.retry.replay_started",
+                "kafka.retry.start",
                 topic = %replay.topic,
                 partition = replay.partition,
                 offset = replay.rewind_offset,
@@ -1685,6 +1707,49 @@ struct ResolvedOffsetFeedback {
     delivery_generation: u64,
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum ReplayOperation {
+    Pause,
+    Seek,
+    Resume,
+}
+
+impl ReplayOperation {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pause => "pause",
+            Self::Seek => "seek",
+            Self::Resume => "resume",
+        }
+    }
+}
+
+/// Narrow consumer-operation seam used by replay logic and failure-path tests.
+trait ReplayConsumerOperations {
+    fn pause_partition(&self, topic: &str, partition: i32) -> Result<(), KafkaError>;
+    fn seek_partition(&self, topic: &str, partition: i32, offset: i64) -> Result<(), KafkaError>;
+    fn resume_partition(&self, topic: &str, partition: i32) -> Result<(), KafkaError>;
+}
+
+impl<C: ConsumerContext> ReplayConsumerOperations for StreamConsumer<C> {
+    fn pause_partition(&self, topic: &str, partition: i32) -> Result<(), KafkaError> {
+        self.pause(&single_partition_list(topic, partition))
+    }
+
+    fn seek_partition(&self, topic: &str, partition: i32, offset: i64) -> Result<(), KafkaError> {
+        self.seek(
+            topic,
+            partition,
+            rdkafka::Offset::Offset(offset),
+            Timeout::After(Duration::ZERO),
+        )
+    }
+
+    fn resume_partition(&self, topic: &str, partition: i32) -> Result<(), KafkaError> {
+        self.resume(&single_partition_list(topic, partition))
+    }
+}
+
 /// Build a one-entry partition list for pause and resume operations.
 fn single_partition_list(topic: &str, partition: i32) -> TopicPartitionList {
     let mut partitions = TopicPartitionList::new();
@@ -2016,6 +2081,7 @@ mod tests {
     use rdkafka::consumer::{Consumer, StreamConsumer};
     use rdkafka::topic_partition_list::{Offset, TopicPartitionList};
     use rdkafka::types::RDKafkaRespErr;
+    use std::cell::RefCell;
     use std::collections::HashMap;
     use std::time::Duration;
 
@@ -2025,6 +2091,52 @@ mod tests {
     const REBALANCE_RECORDS_PER_PARTITION: i32 = 5;
 
     // ---- Shared test helpers ----
+
+    struct FailingReplayConsumer {
+        failed_operation: ReplayOperation,
+        calls: RefCell<Vec<ReplayOperation>>,
+    }
+
+    impl FailingReplayConsumer {
+        fn new(failed_operation: ReplayOperation) -> Self {
+            Self {
+                failed_operation,
+                calls: RefCell::new(Vec::new()),
+            }
+        }
+
+        fn execute(&self, operation: ReplayOperation) -> Result<(), KafkaError> {
+            self.calls.borrow_mut().push(operation);
+            if operation != self.failed_operation {
+                return Ok(());
+            }
+            match operation {
+                ReplayOperation::Pause | ReplayOperation::Resume => Err(KafkaError::PauseResume(
+                    format!("injected {} failure", operation.as_str()),
+                )),
+                ReplayOperation::Seek => Err(KafkaError::Seek("injected seek failure".to_string())),
+            }
+        }
+    }
+
+    impl ReplayConsumerOperations for FailingReplayConsumer {
+        fn pause_partition(&self, _topic: &str, _partition: i32) -> Result<(), KafkaError> {
+            self.execute(ReplayOperation::Pause)
+        }
+
+        fn seek_partition(
+            &self,
+            _topic: &str,
+            _partition: i32,
+            _offset: i64,
+        ) -> Result<(), KafkaError> {
+            self.execute(ReplayOperation::Seek)
+        }
+
+        fn resume_partition(&self, _topic: &str, _partition: i32) -> Result<(), KafkaError> {
+            self.execute(ReplayOperation::Resume)
+        }
+    }
 
     fn measurement_counter(
         snapshots: &[otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot],
@@ -2279,6 +2391,30 @@ mod tests {
             .with_auto_offset_reset(AutoOffsetReset::Earliest)
             .with_isolation_level(IsolationLevel::ReadUncommitted);
         KafkaReceiverConfig::try_from(builder).expect("test config valid")
+    }
+
+    /// Builds a manual-commit config that explicitly commits and skips transient NACKs.
+    fn manual_traces_config_with_commit_and_skip(
+        brokers: &str,
+        group_id: &str,
+        traces_topic: &str,
+    ) -> KafkaReceiverConfig {
+        let builder = KafkaReceiverConfigBuilder::new(brokers, group_id, "test-client")
+            .with_traces(
+                SignalConfig::new(vec![traces_topic.to_string()])
+                    .with_encoding(MessageFormat::OtlpProto),
+            )
+            .with_commit(CommitConfig {
+                mode: ConfigCommitMode::Manual,
+                interval_ms: None,
+            })
+            .with_transient_nack(TransientNackConfig {
+                mode: TransientNackMode::CommitAndSkip,
+                ..Default::default()
+            })
+            .with_auto_offset_reset(AutoOffsetReset::Earliest)
+            .with_isolation_level(IsolationLevel::ReadUncommitted);
+        KafkaReceiverConfig::try_from(builder).expect("test commit-and-skip config valid")
     }
 
     /// Builds a manual-commit config with transient-NACK Kafka replay enabled.
@@ -3409,11 +3545,11 @@ mod tests {
     /// Scenario (offset guarantees): two records are consumed from one partition;
     /// the first is terminated with a transient (non-permanent) Nack and the
     /// second with a permanent Nack.
-    /// Guarantees: the compatibility-default `transient_nack.mode: commit`
-    /// treats both NACKs as terminal and advances the committed offset, while
-    /// Kafka replay remains an explicit opt-in.
+    /// Guarantees: explicit `transient_nack.mode: commit_and_skip` treats both
+    /// NACKs as terminal and advances the committed offset despite replay being
+    /// the preferred manual-mode default.
     #[tokio::test]
-    async fn transient_and_permanent_nack_both_advance_offset() {
+    async fn explicit_commit_and_skip_advances_transient_and_permanent_nacks() {
         const TOPIC: &str = "offset-nack-parity-traces";
         const RECORDS: usize = 2;
         let group = "offset-nack-parity-group";
@@ -3433,7 +3569,11 @@ mod tests {
                         .expect("send record");
                 }
 
-                let cfg = manual_traces_config_no_timer(cluster.bootstrap_servers(), group, TOPIC);
+                let cfg = manual_traces_config_with_commit_and_skip(
+                    cluster.bootstrap_servers(),
+                    group,
+                    TOPIC,
+                );
                 let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
 
                 // Correlate each delivered record to its offset so the nacks are
@@ -3450,8 +3590,8 @@ mod tests {
                     let _ = by_offset.insert(offset, pdata);
                 }
 
-                // Under the compatibility default, offset 0's transient NACK
-                // and offset 1's permanent NACK both advance the watermark.
+                // Under the explicit opt-out, offset 0's transient NACK and
+                // offset 1's permanent NACK both advance the watermark.
                 receiver.nack_transient(
                     "transient failure",
                     by_offset.remove(&0).expect("offset 0 delivered"),
@@ -3681,6 +3821,159 @@ mod tests {
                         .is_none_or(|committed| committed <= 0),
                     "shutdown during retry must not commit past the failed offset",
                 );
+            },
+        )
+        .await;
+    }
+
+    /// Scenario: Two partitions enter transient-NACK backoff and a second same-group consumer joins.
+    /// Guarantees: The revoked partition stays uncommitted and the new owner receives its failed
+    /// offset from Kafka, proving that a real rebalance transfers recovery to the new owner.
+    #[tokio::test]
+    async fn transient_nack_rebalance_replays_failed_offset_on_new_owner() {
+        const TOPIC: &str = "offset-transient-rebalance-traces";
+        let group = "offset-transient-rebalance-group";
+        with_cluster(
+            KafkaTestCluster::builder().topic_with(TOPIC, 2, 1),
+            |cluster| async move {
+                let producer = cluster.producer().build();
+                let req = create_traces_with_spans();
+                let mut bytes = vec![];
+                req.encode(&mut bytes).expect("encode");
+                producer.produce_per_partition(TOPIC, 2, 1, &bytes).await;
+
+                let cfg = manual_traces_config_with_replay_backoff(
+                    cluster.bootstrap_servers(),
+                    group,
+                    TOPIC,
+                    30_000,
+                    30_000,
+                );
+                let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+                for _ in 0..2 {
+                    let pdata = receiver.recv_pdata().await;
+                    receiver.nack_transient("hold for rebalance", pdata);
+                }
+                receiver.wait_for_control_barrier().await;
+
+                let new_owner = cluster
+                    .consumer()
+                    .group_id(group)
+                    .enable_auto_commit(false)
+                    .auto_offset_reset("earliest")
+                    .subscribe(&[TOPIC]);
+                assert!(
+                    new_owner
+                        .wait_for_assignment(1, Duration::from_secs(30))
+                        .await,
+                    "second consumer never acquired a partition",
+                );
+                let assigned_partition = new_owner
+                    .assignment()
+                    .into_iter()
+                    .find_map(|(topic, partition)| (topic == TOPIC).then_some(partition))
+                    .expect("second consumer owns a test partition");
+                receiver
+                    .wait_for_partition_revocation(
+                        TOPIC,
+                        assigned_partition,
+                        Duration::from_secs(10),
+                    )
+                    .await;
+
+                let replayed = new_owner
+                    .try_recv(Duration::from_secs(10))
+                    .await
+                    .expect("new owner should receive the failed offset");
+                assert_eq!(replayed.topic, TOPIC);
+                assert_eq!(replayed.partition, assigned_partition);
+                assert_eq!(replayed.offset, 0);
+                assert!(
+                    new_owner
+                        .committed_offset(TOPIC, assigned_partition)
+                        .expect("committed-offset probe")
+                        .is_none_or(|offset| offset <= 0),
+                    "rebalance must not commit past the failed offset",
+                );
+
+                receiver.shutdown(Duration::from_secs(5));
+                receiver.await_stopped().await;
+                drop(new_owner);
+            },
+        )
+        .await;
+    }
+
+    /// Scenario: Two partitions are transiently NACKed and paused, one is revoked to a temporary
+    /// same-group member, and that member leaves so the original receiver reacquires it.
+    /// Guarantees: Rebalance clears librdkafka's persistent pause state and the original consumer
+    /// redelivers the failed offset after reassignment instead of remaining paused indefinitely.
+    #[tokio::test]
+    async fn transient_nack_reassignment_to_same_consumer_redelivers_failed_offset() {
+        const TOPIC: &str = "offset-transient-reassign-same-consumer-traces";
+        let group = "offset-transient-reassign-same-consumer-group";
+        with_cluster(
+            KafkaTestCluster::builder().topic_with(TOPIC, 2, 1),
+            |cluster| async move {
+                let producer = cluster.producer().build();
+                let req = create_traces_with_spans();
+                let mut bytes = vec![];
+                req.encode(&mut bytes).expect("encode");
+                producer.produce_per_partition(TOPIC, 2, 1, &bytes).await;
+
+                let cfg = manual_traces_config_with_replay_backoff(
+                    cluster.bootstrap_servers(),
+                    group,
+                    TOPIC,
+                    30_000,
+                    30_000,
+                );
+                let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+                for _ in 0..2 {
+                    let pdata = receiver.recv_pdata().await;
+                    receiver.nack_transient("hold through reassignment", pdata);
+                }
+                receiver.wait_for_control_barrier().await;
+
+                let trigger =
+                    RebalanceTrigger::join(&cluster, group, &[TOPIC], Duration::from_secs(30))
+                        .await;
+                let revoked_partition = trigger
+                    .assignment()
+                    .into_iter()
+                    .find_map(|(topic, partition)| (topic == TOPIC).then_some(partition))
+                    .expect("temporary member should own a test partition");
+                receiver
+                    .wait_for_partition_revocation(
+                        TOPIC,
+                        revoked_partition,
+                        Duration::from_secs(10),
+                    )
+                    .await;
+
+                drop(trigger);
+                receiver
+                    .wait_for_partition_assignment(
+                        TOPIC,
+                        revoked_partition,
+                        Duration::from_secs(30),
+                    )
+                    .await;
+
+                let replayed = receiver
+                    .try_recv_pdata(Duration::from_secs(10))
+                    .await
+                    .expect("reacquired partition should redeliver its failed offset");
+                let route = replayed
+                    .source_route()
+                    .expect("redelivered pdata carries source calldata");
+                let (_topic_id, partition, offset, _generation) = decode_calldata(&route.calldata);
+                assert_eq!(partition, revoked_partition);
+                assert_eq!(offset, 0);
+
+                receiver.ack(replayed);
+                receiver.shutdown(Duration::from_secs(5));
+                receiver.await_stopped().await;
             },
         )
         .await;
@@ -3927,55 +4220,71 @@ mod tests {
         );
     }
 
-    /// Scenario: Pause, seek, and resume operations fail in sequence while offset 12 is unresolved.
-    /// Guarantees: Every failure keeps offset 12 as the committable position and leaves delivery
-    /// blocked with another retry deadline, so broker-operation errors cannot create data loss.
+    /// Scenario: Injected pause, seek, and resume failures occur in the production replay handler.
+    /// Guarantees: Every failure keeps offset 12 committable, records the correct operation path,
+    /// and leaves delivery blocked with another deadline so broker errors cannot create data loss.
     #[test]
     fn replay_operation_failures_preserve_failed_offset_watermark() {
-        let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
-        let ctx = make_pipeline_ctx();
-        let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
-        let retry_config = TransientNackConfig {
-            mode: TransientNackMode::Replay,
-            initial_backoff_ms: 10,
-            max_backoff_ms: 40,
-        };
-        receiver.offset_tracker.track("traces", 0, 12, 1);
-        receiver.offset_tracker.track("traces", 0, 13, 1);
-        assert!(!receiver.offset_tracker.acknowledge("traces", 0, 13));
-        let _ = receiver.retry_manager.delivery_generation("traces", 0, 1);
-        let rewind = receiver
-            .offset_tracker
-            .prepare_replay("traces", 0, 12, 1)
-            .expect("failed offset remains pending");
-        let start = Instant::now();
-        let _ = receiver.retry_manager.begin_retry(
-            "traces",
-            0,
-            1,
-            12,
-            rewind,
-            false,
-            start,
-            &retry_config,
-        );
+        let scenarios = [
+            (
+                ReplayOperation::Pause,
+                false,
+                vec![ReplayOperation::Pause],
+                0,
+            ),
+            (ReplayOperation::Seek, true, vec![ReplayOperation::Seek], 1),
+            (
+                ReplayOperation::Resume,
+                true,
+                vec![ReplayOperation::Seek, ReplayOperation::Resume],
+                1,
+            ),
+        ];
 
-        for paused_after_failure in [false, true, true] {
-            let due_at = receiver
+        for (failed_operation, initially_paused, expected_calls, expected_paused) in scenarios {
+            let cfg = manual_traces_config_with_replay_backoff(
+                "localhost:9092",
+                "operation-failure-group",
+                "traces",
+                1,
+                4,
+            );
+            let ctx = make_pipeline_ctx();
+            let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
+            let mut assignment = TopicPartitionList::new();
+            let _ = assignment.add_partition("traces", 0);
+            receiver
+                .rebalance_state
+                .set_assignment_for_test(&assignment);
+            let ownership_generation = receiver.rebalance_state.current_generation("traces", 0);
+            receiver
+                .offset_tracker
+                .track("traces", 0, 12, ownership_generation);
+            receiver
+                .offset_tracker
+                .track("traces", 0, 13, ownership_generation);
+            assert!(!receiver.offset_tracker.acknowledge("traces", 0, 13));
+            let _ = receiver
                 .retry_manager
-                .next_deadline()
-                .expect("operation retry scheduled");
-            let replay = receiver
-                .retry_manager
-                .due_replays(due_at)
-                .pop()
-                .expect("operation retry is due");
-            receiver.retry_manager.reschedule_operation_failure(
-                &replay,
-                paused_after_failure,
-                due_at,
+                .delivery_generation("traces", 0, ownership_generation);
+            let rewind = receiver
+                .offset_tracker
+                .prepare_replay("traces", 0, 12, ownership_generation)
+                .expect("failed offset remains pending");
+            let retry_config = receiver.config.transient_nack().clone();
+            let _ = receiver.retry_manager.begin_retry(
+                "traces",
+                0,
+                ownership_generation,
+                12,
+                rewind,
+                initially_paused,
+                Instant::now() - Duration::from_secs(1),
                 &retry_config,
             );
+            let consumer = FailingReplayConsumer::new(failed_operation);
+
+            receiver.process_due_replays(&consumer);
 
             assert_eq!(
                 receiver
@@ -3986,6 +4295,8 @@ mod tests {
             );
             assert!(receiver.retry_manager.blocks_delivery("traces", 0));
             assert!(receiver.retry_manager.next_deadline().is_some());
+            assert_eq!(receiver.retry_manager.paused_count(), expected_paused);
+            assert_eq!(*consumer.calls.borrow(), expected_calls);
         }
     }
 

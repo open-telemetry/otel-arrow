@@ -49,7 +49,7 @@ config:
 | `logs` | object | `{}` | Per-signal config for logs. |
 | `auto_offset_reset` | string | `latest` | Where to start consuming when no committed offset exists. |
 | `commit` | object | `{mode: manual}` | Commit configuration (see [Commit Configuration](#commit-configuration)). |
-| `transient_nack` | object | `{mode: commit, initial_backoff_ms: 1000, max_backoff_ms: 30000}` | Policy for non-permanent downstream NACKs (see [Transient NACK Configuration](#transient-nack-configuration)). |
+| `transient_nack` | object | Manual: `{mode: replay, initial_backoff_ms: 1000, max_backoff_ms: 30000}`; auto: inactive | Policy for non-permanent downstream NACKs (see [Transient NACK Configuration](#transient-nack-configuration)). |
 | `lag_refresh_interval_ms` | integer | *none* | Interval between consumer-lag refreshes, in milliseconds. Enables `receiver.kafka.consumer.group.lag` (consumer-group lag against broker-committed offsets; see [Metric Sets](#metric-sets)). Manual commit mode only; runs off the receive loop so it never blocks processing. Off by default; recommended `60000` (60s), higher under large partition fan-out; must be > 0 when set. |
 | `session_timeout_ms` | integer | `10000` | Session timeout in milliseconds. Must be > 0. |
 | `heartbeat_interval_ms` | integer | `3000` | Heartbeat interval in milliseconds. Must be > 0 and strictly less than `session_timeout_ms`. |
@@ -178,14 +178,16 @@ non-permanent NACK:
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `mode` | string | `commit` | `commit` preserves the historical terminal behavior. `replay` pauses and rewinds the affected Kafka partition. |
+| `mode` | string | `replay` | `replay` pauses and rewinds the affected Kafka partition. `commit_and_skip` explicitly treats the NACK as terminal and allows the offset to advance. |
 | `initial_backoff_ms` | integer | `1000` | Delay before the first replay operation. Must be greater than zero. |
 | `max_backoff_ms` | integer | `30000` | Maximum delay between replay attempts. Must be greater than zero and at least `initial_backoff_ms`. |
 
-`mode: replay` requires `commit.mode: manual`; startup validation rejects it
-with auto commit because broker-managed commits cannot honor downstream
-feedback. Retries are unlimited and use exponential backoff capped by
-`max_backoff_ms`. There is no retry-exhaustion action and no built-in DLQ.
+When the block is omitted, manual commit defaults to replay and auto commit
+leaves the policy inactive. Explicit `mode: replay` requires
+`commit.mode: manual`; startup validation rejects it with auto commit because
+broker-managed commits cannot honor downstream feedback. Retries are unlimited
+and use exponential backoff capped by `max_backoff_ms`. There is no
+retry-exhaustion action and no built-in DLQ.
 
 ```yaml
 config:
@@ -205,7 +207,7 @@ Manual-mode completion behavior is:
 | --- | --- |
 | ACK | Marks the record complete and advances the partition watermark when contiguous progress permits. |
 | Permanent NACK | Remains terminal and marks the record complete. There is no built-in DLQ. |
-| Non-permanent NACK with `mode: commit` | Preserves the compatibility default: marks the record complete. |
+| Non-permanent NACK with `mode: commit_and_skip` | Explicitly opts out of recovery, marks the record complete, and permits the offset to advance. |
 | Non-permanent NACK with `mode: replay` | Leaves the record unresolved, pauses only its partition, waits for backoff, seeks to the earliest unresolved offset, and resumes. |
 | Feedback from an obsolete assignment or replay generation | Ignored without changing offsets. |
 
@@ -217,9 +219,12 @@ deliberate replay.
 
 If pause, seek, or resume fails, the receiver emits an error and reschedules
 the operation without completing the failed offset. It keeps the partition
-paused when possible. A rebalance drops local retry and tracking state; the new
-owner starts at the broker-committed offset. Shutdown commits at most the
-earliest unresolved offset, so Kafka delivers that offset again after restart.
+paused when possible. A rebalance resumes revoked partitions before dropping
+local retry and tracking state, and newly assigned partitions are explicitly
+resumed so a partition reacquired by the same consumer cannot inherit stale
+pause state. The new owner starts at the broker-committed offset. Shutdown
+commits at most the earliest unresolved offset, so Kafka delivers that offset
+again after restart.
 
 The no-loss window is bounded by Kafka retention. Configure topic retention to
 outlast the maximum expected outage and recovery period. If the required
@@ -341,7 +346,7 @@ equivalent configuration here.
 | Go Kafka receiver option | Equivalent here | Notes |
 | --- | --- | --- |
 | `autocommit.enable: true` | `commit.mode: auto` | At-most-once; offsets committed by the client regardless of downstream outcome. |
-| `autocommit.enable: false` | `commit.mode: manual` | Downstream-aware offset tracking. Add `transient_nack.mode: replay` for Kafka replay of non-permanent NACKs. |
+| `autocommit.enable: false` | `commit.mode: manual` | Downstream-aware offset tracking with Kafka replay of non-permanent NACKs by default. |
 | `autocommit.interval` | `commit.interval_ms` | In `auto` mode forwarded to rdkafka as `auto.commit.interval.ms`; in `manual` mode it drives the safety-net commit timer. |
 | `initial_offset: latest` / `earliest` | `auto_offset_reset: latest` / `earliest` | Same semantics. |
 | `error_backoff.enabled` | `transient_nack.mode: replay` and/or a `processor:retry` before the exporter | Receiver replay is partition-local and durable within Kafka retention; processor retry is payload-local. |
@@ -362,9 +367,9 @@ the Go Kafka receiver:
 - **Permanent-error policy.** This receiver always commits a permanent NACK;
   it has no equivalent to leaving a permanent error unmarked or publishing it
   to a built-in DLQ.
-- **Compatibility default.** Kafka replay for a non-permanent NACK is opt-in.
-  The default `transient_nack.mode: commit` preserves earlier deployments that
-  advanced past every NACK.
+- **Transient-NACK opt-out.** Manual mode replays non-permanent NACKs by
+  default. Set `transient_nack.mode: commit_and_skip` only when advancing past
+  a transient processing failure is intentional.
 - **No backoff jitter.** The retry processor uses exponential backoff without a
   `randomization_factor` (jitter) equivalent. Receiver Kafka replay also has no
   jitter.
@@ -383,8 +388,9 @@ receiver supports additional encodings (e.g. `jaeger_proto`, `zipkin_json`,
 Offsets are committed automatically by the underlying rdkafka client. The `commit.interval_ms` value is forwarded to rdkafka as `auto.commit.interval.ms`. If `commit.interval_ms` is not set, the property is omitted and librdkafka retains its positive default (5000 ms). `commit.interval_ms`, when set, must be greater than 0.
 
 Auto mode remains independent of downstream ACK/NACK feedback and cannot
-provide downstream-aware replay. Only the compatibility
-`transient_nack.mode: commit` is valid with auto mode.
+provide downstream-aware replay. Omitting `transient_nack` leaves the policy
+inactive. Explicit `transient_nack.mode: replay` is rejected;
+`commit_and_skip` is accepted but does not change broker-managed commits.
 
 ```yaml
 config:
@@ -677,6 +683,7 @@ The receiver validates the configuration at startup:
 14. `lag_refresh_interval_ms`, when set, must be > 0.
 15. `session_timeout_ms` and `heartbeat_interval_ms` must be > 0.
 16. `heartbeat_interval_ms` must be strictly less than `session_timeout_ms`.
+17. Explicit `transient_nack.mode: replay` requires `commit.mode: manual`.
 
 Integer settings are validated against a lower bound in one of two ways, which
 map to two distinct configuration errors:
@@ -1056,6 +1063,7 @@ an empty assignment resets it to zero.
 | `kafka.rebalance.partitions_assigned` | `info` | Partitions newly assigned during a rebalance (includes `count`, a `partitions` list truncated with a trailing `...` when it exceeds the entry cap, `listed_count`, and `truncated`). |
 | `kafka.rebalance.partitions_revoked` | `info` | Owned partitions revoked during a rebalance (includes `count`, a `partitions` list truncated with a trailing `...` when it exceeds the entry cap, `listed_count`, and `truncated`). |
 | `kafka.rebalance.commit_failed` | `error` | Commit-before-revoke failed during a rebalance. |
+| `kafka.rebalance.resume.fail` | `error` | Clearing persistent client-side pause state failed during the bounded `revoke` or `assign` phase. |
 | `kafka.rebalance.assignment_query_failed` | `warn` | Querying the full assignment after a rebalance failed; the receiver fell back to merging the reported delta. |
 | `kafka.rebalance.error` | `warn` | librdkafka reported a rebalance error. |
 | `kafka.assignment.became_non_empty` | `info` | The owned-partition set transitioned from empty to non-empty. This is an assignment-size transition, not a consumer-group membership event: an eager rebalance revokes all partitions before reassigning, so this fires on ordinary rebalances. |
@@ -1065,11 +1073,9 @@ an empty assignment resets it to zero.
 | `kafka.lag.fetch_watermarks_failed` | `error` | Broker high-watermark lookup for a partition failed during consumer-lag refresh. |
 | `kafka.lag.refresh_incomplete` | `warn` | A consumer-lag refresh could not measure every owned partition -- either it exceeded its total deadline (`reason=deadline_exceeded`) or an owned partition had no committed offset yet (`reason=uncommitted_partition`); the previous `receiver.kafka.consumer.group.lag` value is retained. |
 | `kafka.lag.refresh_task_failed` | `error` | The off-loop consumer-lag refresh task failed to run to completion (e.g. panicked); the previous `receiver.kafka.consumer.group.lag` value is retained. |
-| `kafka.retry.scheduled` | `warn` | A transient NACK paused a partition and scheduled replay; includes failed and rewind offsets. |
-| `kafka.retry.replay_started` | `info` | Backoff elapsed and the partition was sought and resumed from the rewind offset. |
-| `kafka.retry.pause_failed` | `error` | Pausing the affected partition failed; recovery is rescheduled without completing the offset. |
-| `kafka.retry.seek_failed` | `error` | Seeking the affected partition failed; it remains paused when possible and recovery is rescheduled. |
-| `kafka.retry.resume_failed` | `error` | Resuming the affected partition failed; recovery is rescheduled without completing the offset. |
+| `kafka.retry.schedule` | `warn` | A transient NACK paused a partition and scheduled replay; includes failed and rewind offsets. |
+| `kafka.retry.start` | `info` | Backoff elapsed and the partition was sought and resumed from the rewind offset. |
+| `kafka.retry.fail` | `error` | A pause, seek, or resume operation failed; the bounded `operation` attribute identifies the stage and recovery is rescheduled without completing the offset. |
 | `kafka.header.attribute.invalid_utf8` | `error` | A Kafka header value was not valid UTF-8 during resource-attribute extraction; the attribute is skipped. |
 | `kafka.header.attribute.parse_bool_failed` | `error` | A Kafka header value could not be parsed as a boolean attribute. |
 | `kafka.header.attribute.parse_float_failed` | `error` | A Kafka header value could not be parsed as a float attribute. |
@@ -1086,8 +1092,9 @@ an empty assignment resets it to zero.
 - Idempotent processing (`enable_idempotency`) only applies when commit mode
   is `manual`; the setting is ignored in `auto` mode. Deliberate transient-NACK
   replay bypasses this duplicate filter.
-- Auto commit cannot provide downstream-aware failure recovery, and
-  `transient_nack.mode: replay` is rejected with `commit.mode: auto`.
+- Auto commit cannot provide downstream-aware failure recovery. An omitted
+  policy is inactive, and explicit `transient_nack.mode: replay` is rejected
+  with `commit.mode: auto`.
 - Kafka replay provides at-least-once delivery only while the failed record
   remains within Kafka retention. It may duplicate records at or after the
   rewind point and blocks the affected partition until progress resumes.

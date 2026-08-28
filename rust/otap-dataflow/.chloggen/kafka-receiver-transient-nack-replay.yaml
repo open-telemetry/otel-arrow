@@ -1,6 +1,6 @@
 change_type: enhancement
 component: pipeline
-note: Kafka receivers can preserve offsets and replay non-permanently NACKed records with an opt-in manual-commit policy.
+note: Kafka receivers in manual-commit mode preserve offsets and replay non-permanently NACKed records by default.
 issues: [3505]
 subtext: |
-  Replay pauses only the affected partition, retries indefinitely with capped backoff, and may duplicate records. The compatibility default still commits transient NACKs.
+  Replay pauses only the affected partition, retries indefinitely with capped backoff, and may duplicate records. Use transient_nack.mode: commit_and_skip to explicitly advance past failures.

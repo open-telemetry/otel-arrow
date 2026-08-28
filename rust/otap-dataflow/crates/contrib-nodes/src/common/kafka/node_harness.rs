@@ -656,6 +656,29 @@ mod receiver_harness {
             );
         }
 
+        /// Waits until the receiver's rebalance callback has assigned a partition.
+        ///
+        /// # Panics
+        ///
+        /// Panics if the partition is not assigned when `timeout` elapses.
+        pub(crate) async fn wait_for_partition_assignment(
+            &self,
+            topic: &str,
+            partition: i32,
+            timeout: Duration,
+        ) {
+            let assigned = crate::common::kafka::test::wait::poll_until_async(
+                timeout,
+                Duration::from_millis(25),
+                || async { self.rebalance_state.is_assigned(topic, partition) },
+            )
+            .await;
+            assert!(
+                assigned,
+                "kafka-test: receiver did not acquire {topic}/{partition} before timeout"
+            );
+        }
+
         /// Acknowledges a consumed `pdata`, folding `next_ack` + `AckMsg` +
         /// control-channel send so manual-commit offsets advance.
         pub(crate) fn ack(&self, pdata: OtapPdata) {
@@ -683,7 +706,7 @@ mod receiver_harness {
         /// (non-permanent) nack, folding `next_nack` + `NackMsg::new` +
         /// control-channel send. Mirrors [`nack_permanent`](Self::nack_permanent)
         /// but leaves `permanent = false`; receiver tests use it for both the
-        /// compatibility commit policy and opt-in Kafka replay policy.
+        /// explicit commit-and-skip policy and default Kafka replay policy.
         pub(crate) fn nack_transient(&self, reason: impl Into<String>, pdata: OtapPdata) {
             if let Some((_node_id, nack)) = next_nack(NackMsg::new(reason.into(), pdata)) {
                 self.control_tx
