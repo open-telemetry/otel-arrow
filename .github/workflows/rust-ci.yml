@@ -31,7 +31,7 @@ jobs:
       fail-fast: false
       matrix:
         folder:
-          - experimental/query_engine
+          - experimental/data_engine
         os:
           - ubuntu-latest
           - ubuntu-24.04-arm
@@ -247,7 +247,7 @@ jobs:
       matrix:
         folder:
           - otap-dataflow
-          - experimental/query_engine
+          - experimental/data_engine
         os:
           - ubuntu-latest
           - ubuntu-24.04-arm
@@ -328,7 +328,7 @@ jobs:
       matrix:
         folder:
           - otap-dataflow
-          - experimental/query_engine
+          - experimental/data_engine
         os:
           - ubuntu-latest
           - ubuntu-24.04-arm
@@ -366,7 +366,7 @@ jobs:
       matrix:
         folder:
           - otap-dataflow
-          - experimental/query_engine
+          - experimental/data_engine
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -407,7 +407,7 @@ jobs:
       matrix:
         folder:
           - otap-dataflow
-          - experimental/query_engine
+          - experimental/data_engine
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -437,7 +437,7 @@ jobs:
       - name: Run cargo xtask for ${{ matrix.folder }}
         run: cargo xtask structure-check
         working-directory: ./rust/${{ matrix.folder }}
-      - name: Validate crates.io publish pilot
+      - name: Validate crates.io publish plan
         run: cargo xtask crates-publish check
         working-directory: ./rust/${{ matrix.folder }}
       - name: Check telemetry macro usage

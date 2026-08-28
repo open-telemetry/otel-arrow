@@ -28,9 +28,10 @@ is published.
    collapses these into the appropriate CHANGELOG at release time.
 4. **Protected environment**: The `release` GitHub environment exists with
    the required maintainers as approvers.
-5. **Trusted publishing**: crates.io trusts
+5. **Trusted publishing**: Each previously published crate trusts
    `.github/workflows/push-release.yml` in this repository with the `release`
-   environment.
+   environment. Follow the bootstrap process below before adding a new crate
+   to an automated release.
 
 ## Changelog management
 
@@ -100,7 +101,11 @@ Before making actual changes, run the workflow in dry-run mode:
      `rust/otap-dataflow/CHANGELOG.md`, deleting the consumed `.yaml`
      entries.
    - Bump the Rust workspace + root package versions in
-     `rust/otap-dataflow/Cargo.toml`.
+     `rust/otap-dataflow/Cargo.toml`, including same-release dependency
+     constraints.
+   - Regenerate `rust/otap-dataflow/Cargo.lock`.
+   - Validate the crates.io allowlist, dependency graph, semantic version
+     requirements, and package contents.
    - Create a release branch (`otelbot/release-vX.Y.Z`) and open a pull
      request.
 
@@ -110,7 +115,10 @@ Before making actual changes, run the workflow in dry-run mode:
 2. Verify that:
    - Both `go/CHANGELOG.md` and `rust/otap-dataflow/CHANGELOG.md` render
      the expected entries.
-   - `rust/otap-dataflow/Cargo.toml` reflects the new version.
+   - `rust/otap-dataflow/Cargo.toml` reflects the new workspace version and
+     uses that version for same-release crate dependencies.
+   - `cargo xtask crates-publish plan`, run from `rust/otap-dataflow`, lists
+     the intended crates in dependency order.
 3. Ensure all CI checks pass.
 4. Merge the pull request. While it is open, the required `changelog` check
    blocks every other pull request from merging.
@@ -131,8 +139,9 @@ Before making actual changes, run the workflow in dry-run mode:
 Before publishing the release, run the push workflow in dry-run mode:
 
 1. Set "Dry run mode" to `true`.
-2. Review the output to ensure all git tags and release content look
-   correct.
+2. Review the preflight output and confirm every package is ready before any
+   irreversible registry change.
+3. Review the output to ensure all git tags and release content look correct.
 
 ### Step 8: Publish Release
 
@@ -140,10 +149,16 @@ Before publishing the release, run the push workflow in dry-run mode:
 2. The workflow will:
    - Resolve the merged `otelbot/release-vX.Y.Z` pull request and use its
      merge commit as the release commit.
+   - Preflight every selected crate before authentication or publication:
+     validate the release version, package all independently verifiable
+     crates, validate dependent package file sets, and reject conflicting or
+     yanked versions already on crates.io.
    - Obtain a short-lived crates.io token through trusted publishing.
-   - Publish `otel-arrow-dfe-pdata-views`, or skip the version if it already
-     exists.
-   - Wait until crates.io reports the version before creating release tags.
+   - Publish the selected Rust crates in dependency order.
+   - Skip an existing version only when its checksum matches the archive built
+     from the release commit.
+   - After each crate, wait until both the crates.io API and Cargo registry
+     index expose the exact version before publishing dependents.
    - Create git tags for the main release, the Go modules, and the Rust
      workspace at that release commit.
    - Publish the GitHub release with the combined changelog content.
@@ -171,8 +186,70 @@ The release process handles:
 **Rust Workspace:**
 
 - `rust/otap-dataflow/` aggregate git tag.
-- `otel-arrow-dfe-pdata-views` on crates.io. All other Rust workspace
-  packages remain unpublished during the pilot.
+- The crates.io publication set printed by:
+
+  ```bash
+  cd rust/otap-dataflow
+  cargo xtask crates-publish plan
+  ```
+
+The explicit allowlist in `xtask/src/publish_policy.rs` controls which
+workspace packages may be published. Cargo metadata supplies dependency edges
+and deterministic publication order. Packages outside that allowlist remain
+available only through the Rust workspace git tag.
+
+## Bootstrapping a Newly Published Crate
+
+crates.io trusted publishing can be configured only after a crate exists. When
+a release first adds crates to the publication allowlist:
+
+1. Merge the Prepare Release pull request and identify its exact merge commit.
+2. From a clean checkout of that commit, run:
+
+   ```bash
+   cd rust/otap-dataflow
+   cargo xtask crates-publish preflight X.Y.Z
+   ```
+
+3. Create an expiring crates.io API token with only the scopes needed for
+   initial publication and ownership management.
+4. Publish the allowlisted set from the same clean release commit:
+
+   ```bash
+   export CARGO_REGISTRY_TOKEN="REPLACE_WITH_BOOTSTRAP_TOKEN"
+   cargo xtask crates-publish publish X.Y.Z
+   ```
+
+   The publisher skips matching versions that already exist and uploads new
+   crates in dependency order.
+
+5. Add the OpenTelemetry owner team and designated individual recovery owners
+   to every new crate. GitHub team owners can publish and yank releases, while
+   named owners provide the recovery path for managing crate ownership.
+
+   For example, the `pdata-views` bootstrap used:
+
+   ```bash
+   cargo owner --add github:open-telemetry:arrow-maintainers \
+     otel-arrow-dfe-pdata-views
+   cargo owner --add drewrelmas otel-arrow-dfe-pdata-views
+   cargo owner --add lquerel otel-arrow-dfe-pdata-views
+   cargo owner --add jmacd otel-arrow-dfe-pdata-views
+   cargo owner --list otel-arrow-dfe-pdata-views
+   ```
+
+   Repeat these commands with each new crate name and confirm the team plus all
+   three recovery owners appear before proceeding. Each named owner must have
+   signed in to crates.io at least once.
+6. Configure each new crate to trust organization `open-telemetry`, repository
+   `otel-arrow`, workflow `push-release.yml`, and environment `release`.
+7. Revoke the bootstrap token.
+8. Run Push Release normally with the same version. It verifies the existing
+   crate checksums through OIDC before creating tags and the GitHub release.
+
+Never bootstrap from a feature branch or a commit other than the merged release
+commit. A crates.io version is immutable and must correspond to the source
+identified by the release tags.
 
 ## Troubleshooting
 
@@ -199,6 +276,9 @@ The release process handles:
 #### "Repository has uncommitted changes"
 
 - Commit or stash any local changes before running the workflow.
+- For local inspection of uncommitted publication changes, run
+  `cargo xtask crates-publish check`. `preflight` intentionally requires a
+  clean checkout because it computes release archive checksums.
 
 #### "Version is not greater than last version"
 
@@ -217,10 +297,12 @@ The release process handles:
 
 If the workflow fails partway through:
 
-1. Check whether `otel-arrow-dfe-pdata-views@X.Y.Z` exists on crates.io.
-2. If it exists, publication is irreversible. Re-run Push Release with the
-   same version. The publisher skips the existing crate before resuming tags
-   and the GitHub release.
+1. Run `cargo xtask crates-publish plan` to list every selected crate and
+   inspect which `name@X.Y.Z` versions exist on crates.io.
+2. If any version exists, publication is irreversible. Re-run Push Release
+   with the same version from the same release commit. The publisher verifies
+   each existing checksum, skips matching versions, waits for Cargo index
+   readiness, and resumes at the first missing crate.
 3. Never attempt to replace an existing crates.io version. Prepare a new patch
    version if the published contents are wrong.
 4. If publication did not occur, fix the underlying issue and re-run the
@@ -242,27 +324,39 @@ release:
    make chlog-update VERSION=vX.Y.Z
    ```
 
-2. Bump the Rust workspace versions:
+2. Bump the Rust workspace versions and same-release dependency constraints:
 
    ```bash
-   sed -i 's/^version = "[0-9]\+\.[0-9]\+\.[0-9]\+"/version = "X.Y.Z"/g' \
+   CURRENT_VERSION=$(sed -n \
+     's/^version = "\([0-9]\+\.[0-9]\+\.[0-9]\+\)"/\1/p' \
+     rust/otap-dataflow/Cargo.toml | head -1)
+   CURRENT_VERSION_PATTERN=$(printf '%s' "${CURRENT_VERSION}" | sed 's/\./\\./g')
+   sed -i "s/${CURRENT_VERSION_PATTERN}/X.Y.Z/g" \
      rust/otap-dataflow/Cargo.toml
+   cargo generate-lockfile \
+     --manifest-path rust/otap-dataflow/Cargo.toml
    ```
 
 3. Commit the changes, open and merge a PR.
 
-4. From the merged release commit, publish or verify the views crate with a
-   short-lived crates.io token:
+4. From a clean checkout of the merged release commit, preflight the selected
+   crates:
 
    ```bash
    cd rust/otap-dataflow
+   cargo xtask crates-publish preflight X.Y.Z
+   ```
+
+5. Publish or verify the selected crates with a short-lived crates.io token:
+
+   ```bash
    export CARGO_REGISTRY_TOKEN="REPLACE_WITH_SHORT_LIVED_TOKEN"
    cargo xtask crates-publish publish X.Y.Z
    unset CARGO_REGISTRY_TOKEN
    cd ../..
    ```
 
-5. Create and push the release tags:
+6. Create and push the release tags:
 
    ```bash
    git tag -a vX.Y.Z -m "Release vX.Y.Z"
@@ -273,7 +367,7 @@ release:
      rust/otap-dataflow/vX.Y.Z
    ```
 
-6. Create a GitHub release manually.
+7. Create a GitHub release manually.
 
 ## Version Strategy
 
@@ -285,5 +379,5 @@ release:
   changes.
 - Pre-release versions are not currently supported through the automated
   workflow.
-- Only `otel-arrow-dfe-pdata-views` is published to crates.io during the
-  pilot. Consume every other Rust crate using the Rust workspace git tag.
+- Only crates in the explicit publication allowlist are published to
+  crates.io. Consume every other Rust crate using the Rust workspace git tag.

@@ -33,8 +33,8 @@ byte-unit.workspace = true
 bytes.workspace = true
 chrono.workspace = true
 hashbrown.workspace = true
-data_engine_expressions.workspace = true
-data_engine_kql_parser.workspace = true
+otel-arrow-contrib-data-engine-expressions.workspace = true
+otel-arrow-contrib-data-engine-kql-parser.workspace = true
 futures.workspace = true
 futures-timer.workspace = true
 hex.workspace = true
@@ -64,24 +64,15 @@ async-stream.workspace = true
 arrow-ipc.workspace = true
 uuid.workspace = true
 xxhash-rust.workspace = true
-weaver_common = { workspace = true, optional = true }
-weaver_forge = { workspace = true, optional = true }
-weaver_resolved_schema = { workspace = true, optional = true }
-weaver_resolver = { workspace = true, optional = true }
-weaver_semconv = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc.workspace = true
 nix.workspace = true
 
 [features]
-dev-tools = [
-    "dep:weaver_common",
-    "dep:weaver_forge",
-    "dep:weaver_resolved_schema",
-    "dep:weaver_resolver",
-    "dep:weaver_semconv",
-]
+# Enables Weaver-backed semantic-convention assertions in core-node tests.
+# Weaver remains a dev-dependency and is not part of the published crate graph.
+dev-tools = []
 # Azure Blob Storage backend for the Parquet exporter.
 azure = ["otel-arrow-dfe-otap/azure"]
 bench = []
@@ -107,6 +98,10 @@ tempfile.workspace = true
 otel-arrow-dfe-test-net.workspace = true
 otel-arrow-dfe-test-tls-certs.workspace = true
 criterion.workspace = true
+weaver_common.workspace = true
+weaver_forge.workspace = true
+weaver_resolver.workspace = true
+weaver_semconv.workspace = true
 
 [[bench]]
 name = "temporal_reaggregation_processor"

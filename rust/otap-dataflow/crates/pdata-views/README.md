@@ -1,5 +1,8 @@
 # otel-arrow-dfe-pdata-views
 
+This crate is currently pre-1.0. Its public API may evolve between minor
+releases.
+
 Zero-dependency, backend-agnostic view traits for OTLP/OTAP telemetry data.
 
 ## Overview
@@ -39,9 +42,6 @@ fn resource_group_count(metrics: &impl MetricsView) -> usize {
     metrics.resources().count()
 }
 ```
-
-This crate is currently pre-1.0. Its public API may evolve between minor
-releases.
 
 ## Dependencies
 

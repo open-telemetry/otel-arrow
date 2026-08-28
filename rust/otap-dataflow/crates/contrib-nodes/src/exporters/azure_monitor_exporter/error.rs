@@ -81,7 +81,7 @@ pub enum Error {
     },
 
     /// Unexpected HTTP status.
-    #[error("Unexpected status ({status})")]
+    #[error("Unexpected status ({status}): {body}")]
     UnexpectedStatus {
         /// The HTTP status code.
         status: StatusCode,
@@ -361,10 +361,13 @@ mod tests {
     fn test_unexpected_status_message() {
         let error = Error::UnexpectedStatus {
             status: StatusCode::IM_A_TEAPOT,
-            body: "I'm a teapot".to_string(),
+            body: "hello from the teapot".to_string(),
         };
         // Note: http crate canonical_reason() returns "I'm a teapot" (lowercase)
-        assert_eq!(error.to_string(), "Unexpected status (418 I'm a teapot)");
+        assert_eq!(
+            error.to_string(),
+            "Unexpected status (418 I'm a teapot): hello from the teapot"
+        );
     }
 
     // ==================== Export Error Tests ====================
