@@ -38,7 +38,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use data_engine_parser_abstractions::Parser;
+use otel_arrow_contrib_data_engine_parser_abstractions::Parser;
 use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
 use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
 use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogsData;

@@ -46,6 +46,12 @@ config:
 
   # Exponential backoff multiplier (default: 1.5).
   multiplier: 2.0
+
+  # Action applied to the final NACK when retries are exhausted or otherwise
+  # terminated (default: propagate_transient).
+  #   propagate_transient: leave the final NACK unchanged.
+  #   mark_permanent:      force the final NACK to be permanent to notify upstream nodes.
+  exhaustion_action: propagate_transient
 ```
 
 ## Telemetry
