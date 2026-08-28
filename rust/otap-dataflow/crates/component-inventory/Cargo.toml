@@ -21,6 +21,7 @@ workspace = true
 otel-arrow-dfe-engine = { workspace = true }
 otel-arrow-dfe-core-nodes = { workspace = true }
 otel-arrow-dfe-contrib-nodes = { workspace = true }
+otel-arrow-dfe-dev-nodes = { workspace = true }
 otel-arrow-dfe-otap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

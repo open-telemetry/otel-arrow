@@ -43,6 +43,7 @@ otel-arrow-dfe-contrib-extensions.workspace = true
 otel-arrow-dfe-contrib-nodes.workspace = true
 otel-arrow-dfe-controller.workspace = true
 otel-arrow-dfe-core-nodes.workspace = true
+otel-arrow-dfe-dev-nodes = { workspace = true, optional = true }
 otel-arrow-dfe-engine.workspace = true
 otel-arrow-dfe-otap.workspace = true
 otel-arrow-dfe-wasm-host = { workspace = true, optional = true }
@@ -65,6 +66,7 @@ otel-arrow-dfe-contrib-nodes = { path = "crates/contrib-nodes" }
 otel-arrow-dfe-control-channel = { path = "crates/control-channel" }
 otel-arrow-dfe-controller = { path = "crates/controller" }
 otel-arrow-dfe-core-nodes = { path = "crates/core-nodes" }
+otel-arrow-dfe-dev-nodes = { path = "crates/dev-nodes" }
 otel-arrow-dfe-engine = { path = "crates/engine" }
 otel-arrow-dfe-expohisto = { path = "crates/expohisto" }
 otel-arrow-dfe-otap = { path = "crates/otap" }
@@ -75,9 +77,10 @@ otel-arrow-dfe-pdata = { path = "crates/pdata" }
 otel-arrow-dfe-pdata-views = { path = "crates/pdata-views" }
 otel-arrow-dfe-telemetry = { path = "crates/telemetry" }
 otel-arrow-dfe-quiver = { path = "crates/quiver" }
-otel-arrow-contrib-data-engine-expressions = { path = "../experimental/data_engine/expressions", version = "=0.1.0" }
-otel-arrow-contrib-data-engine-kql-parser = { path = "../experimental/data_engine/kql-parser", version = "=0.1.0" }
-otel-arrow-contrib-data-engine-parser-abstractions = { path = "../experimental/data_engine/parser-abstractions", version = "=0.1.0" }
+otel-arrow-contrib-data-engine-expressions = "0.1.0"
+otel-arrow-contrib-data-engine-kql-parser = "0.1.0"
+otel-arrow-contrib-data-engine-parser-abstractions = "0.1.0"
+otel-arrow-contrib-data-engine-recordset = "0.1.0"
 
 aws-config = "1.0"
 aws-msk-iam-sasl-signer = "1.0.1"
@@ -270,7 +273,6 @@ time = ">=0.3.47, <0.3.56"
 wiremock = "0.6.5"
 anyhow = "1.0.98"
 crossterm = "0.29"
-otel-arrow-contrib-data-engine-recordset = { path = "../experimental/data_engine/engine-recordset", version = "=0.1.0" }
 eventheader_dynamic = "0.5.0"
 include_dir = "0.7.4"
 mime_guess = "2.0.5"
@@ -324,12 +326,16 @@ dhat-heap = [
     "dep:dhat",
 ]
 
-# Dev/test tooling (traffic generator) and the otap integration tests
+# Development nodes and the otap integration tests
 # that exercise it. Activating this from the workspace default keeps
 # `cargo test` running the full suite locally; CI jobs that drop
 # `dev-tools` (e.g. the Linux ARM `build_nonrequired` job) avoid the
 # weaver / gix / reqwest / native-tls / openssl-sys C build.
-dev-tools = ["otel-arrow-dfe-core-nodes/dev-tools", "otel-arrow-dfe-otap/integration-tests"]
+dev-tools = [
+    "dep:otel-arrow-dfe-dev-nodes",
+    "otel-arrow-dfe-core-nodes/dev-tools",
+    "otel-arrow-dfe-otap/integration-tests",
+]
 
 # Admin UI live log streaming over WebSocket.
 admin-live-logs-ws = ["otel-arrow-dfe-controller/admin-live-logs-ws"]
