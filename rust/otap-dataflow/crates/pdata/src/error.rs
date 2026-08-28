@@ -235,6 +235,12 @@ pub enum Error {
     #[error("Format error: {}", error)]
     Format { error: String },
 
+    #[error("PData codec `{encoding}` failed: {reason}")]
+    PdataCodec {
+        encoding: crate::codec::PdataEncoding,
+        reason: String,
+    },
+
     #[error("Invalid schema for payload {payload_type:?}: {source}")]
     InvalidSchemaForPayload {
         payload_type: ArrowPayloadType,
