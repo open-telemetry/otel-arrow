@@ -14,6 +14,8 @@ pub(crate) const PUBLISH_PACKAGES: &[&str] = &[
     "otel-arrow-dfe-pdata-otlp-macros",
     "otel-arrow-dfe-pdata-otlp-model",
     "otel-arrow-dfe-pdata-views",
+    "otel-arrow-dfe-query-engine",
+    "otel-arrow-dfe-query-engine-languages",
     "otel-arrow-dfe-quiver",
     "otel-arrow-dfe-telemetry-macros",
 ];

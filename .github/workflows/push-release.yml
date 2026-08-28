@@ -249,7 +249,7 @@ jobs:
           - `rust/otap-dataflow/v${{ inputs.version }}` - Rust workspace tag
 
           ## crates.io
-          - **Packages**: 12 OTAP Dataflow crates in dependency order
+          - **Packages**: 14 OTAP Dataflow crates in dependency order
           - **Authentication**: crates.io trusted publishing (OIDC)
           - Existing versions are detected and skipped.
 

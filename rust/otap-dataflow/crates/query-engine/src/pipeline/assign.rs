@@ -28,12 +28,12 @@ use arrow::compute::kernels::merge::merge;
 use arrow::compute::{and_not, cast, filter, max, take};
 use arrow::datatypes::{DataType, Field, Fields, Schema, UInt16Type};
 use async_trait::async_trait;
-use data_engine_expressions::QueryLocation;
 use datafusion::config::ConfigOptions;
 use datafusion::execution::TaskContext;
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::prelude::SessionContext;
 use datafusion::scalar::ScalarValue;
+use otel_arrow_contrib_data_engine_expressions::QueryLocation;
 use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_pdata::arrays::ByteArrayAccessor;
 use otel_arrow_dfe_pdata::encode::record::array::dictionary::DictionaryOptions;
@@ -2456,7 +2456,7 @@ mod test {
         },
         datatypes::DataType,
     };
-    use data_engine_kql_parser::{KqlParser, Parser};
+    use otel_arrow_contrib_data_engine_kql_parser::{KqlParser, Parser};
     use otel_arrow_dfe_pdata::{
         OtapArrowRecords,
         otap::Logs,

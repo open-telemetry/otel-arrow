@@ -525,6 +525,9 @@ mod tests {
                         "otel-arrow-dfe-pdata-otlp-model",
                         "otel-arrow-dfe-pdata-views",
                     ],
+                    "otel-arrow-dfe-query-engine" => {
+                        &["otel-arrow-dfe-config", "otel-arrow-dfe-pdata"]
+                    }
                     _ => &[],
                 };
                 package(name, None, dependencies)

@@ -94,7 +94,7 @@ impl PipelineStage for ApplyToAttributesPipelineStage {
 #[cfg(test)]
 mod test {
     use arrow::{array::UInt8Array, datatypes::DataType};
-    use data_engine_kql_parser::Parser;
+    use otel_arrow_contrib_data_engine_kql_parser::Parser;
     use otel_arrow_dfe_pdata::{
         OtapArrowRecords,
         otap::Logs,

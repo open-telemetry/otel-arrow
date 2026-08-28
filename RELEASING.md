@@ -193,7 +193,7 @@ The release process handles:
   cargo xtask crates-publish plan
   ```
 
-The explicit allowlist in `xtask/src/crates_publish.rs` controls which
+The explicit allowlist in `xtask/src/publish_policy.rs` controls which
 workspace packages may be published. Cargo metadata supplies dependency edges
 and deterministic publication order. Packages outside that allowlist remain
 available only through the Rust workspace git tag.
