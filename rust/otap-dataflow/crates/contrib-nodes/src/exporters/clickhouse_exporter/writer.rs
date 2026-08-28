@@ -28,7 +28,7 @@ use std::collections::HashMap;
 use arrow_array::RecordBatch;
 use clickhouse::Client;
 use clickhouse_ext_arrow::ArrowClientExt;
-use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use secrecy::ExposeSecret;
 
 use crate::exporters::clickhouse_exporter::{
@@ -45,7 +45,7 @@ pub struct ClickHouseWriter {
 impl ClickHouseWriter {
     pub async fn new(config: &Config) -> Result<Self, ClickhouseExporterError> {
         let payload_destination_tables = build_payload_destination_table_map(config);
-        otap_df_telemetry::otel_info!(
+        otel_info!(
             "clickhouse.exporter.tables.bound",
             message = "Destination tables bound",
             logs = payload_destination_tables.get(&ArrowPayloadType::Logs),
@@ -88,7 +88,7 @@ impl ClickHouseWriter {
             .map_err(|e| ClickhouseExporterError::InsertResponseError {
                 error: format!("{e}"),
             })?;
-        otap_df_telemetry::otel_debug!(
+        otel_debug!(
             "clickhouse.exporter.batch.written",
             message = "Record batch successfully written.",
             table = table_name,

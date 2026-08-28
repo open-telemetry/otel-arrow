@@ -181,7 +181,7 @@ pub struct QuiverEngine {
 /// # Example
 ///
 /// ```ignore
-/// use quiver::{QuiverEngineBuilder, QuiverConfig, DiskBudget, RetentionPolicy};
+/// use otel_arrow_dfe_quiver::{QuiverEngineBuilder, QuiverConfig, DiskBudget, RetentionPolicy};
 /// use std::sync::Arc;
 ///
 /// #[tokio::main]
@@ -283,7 +283,7 @@ impl QuiverEngine {
     /// # Example
     ///
     /// ```ignore
-    /// use quiver::{QuiverEngine, QuiverConfig};
+    /// use otel_arrow_dfe_quiver::{QuiverEngine, QuiverConfig};
     ///
     /// #[tokio::main]
     /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -1402,7 +1402,7 @@ impl QuiverEngine {
     ///
     /// ```ignore
     /// use std::time::Duration;
-    /// use quiver::CancellationToken;
+    /// use otel_arrow_dfe_quiver::CancellationToken;
     ///
     /// let cancel = CancellationToken::new();
     ///

@@ -1,0 +1,56 @@
+name: DFE Kafka Receiver OTLP (Logs)
+slug: dfe_logs_kafka_otlp_recv
+description: >-
+  Receiver-isolation benchmark. A fixed DFE Kafka exporter produces OTLP
+  protobuf logs to the broker; the benchmarked DFE Kafka receiver consumes them
+  and forwards to a DFE backend. Isolates DFE Kafka receiver performance.
+orchestrator_template: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/orchestrator/dfe-kafka-recv-single-core-multi-rate.yaml
+
+meta:
+  binary: dfe
+  protocols: []
+  signals: [logs]
+  compression: none
+
+variables:
+  report: ../pipeline_perf_test/test_suites/comparison_dashboard/reports/report_logs.yaml
+  # Fixed DFE reference producer (loadgen side).
+  loadgen_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/engine/kafka-loadgen-otlp.yaml.j2
+  # Benchmarked DFE Kafka receiver (consumer side).
+  kafka_consumer_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/engine/kafka-consumer-otlp.yaml.j2
+  # Fixed DFE OTLP perf backend.
+  backend_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/backend/otlp.yaml.j2
+  protocol: otlp
+  signal: logs
+  loadgen_max_batch_size: 1000
+  # Offline synthetic load source (semantic_conventions fetches the semconv
+  # registry from GitHub at runtime, which the sandboxed containers cannot reach).
+  data_source: synthetic
+  num_log_attributes: 12
+  compression_method: none
+  wait_for_result: true
+
+  # --- Canonical Kafka producer tuning (single source of truth) ---
+  kafka_producer_acks: one
+  kafka_producer_acks_sarama: 1
+  kafka_producer_compression: none
+  kafka_producer_linger_ms: 5
+  kafka_producer_max_message_bytes: 10485760
+  kafka_producer_partitioner: consistent_random
+  kafka_producer_partitioner_rotel: consistent-random
+  kafka_producer_batch_num_messages: 10000
+  kafka_producer_queue_buffering_max_messages: 100000
+  kafka_producer_flush_max_messages: 0
+
+  # --- Canonical Kafka consumer tuning (single source of truth) ---
+  kafka_consumer_group_id: kafka-benchmark-consumer
+  kafka_consumer_auto_offset_reset: earliest
+  kafka_consumer_commit_interval_ms: 1000
+  kafka_consumer_session_timeout_ms: 30000
+  kafka_consumer_heartbeat_interval_ms: 3000
+  kafka_consumer_fetch_min_bytes: 1
+  kafka_consumer_fetch_max_bytes: 1048576
+  kafka_consumer_fetch_max_wait_ms: 500
+  kafka_consumer_max_partition_fetch_bytes: 1048576
+  kafka_consumer_isolation_level: read_uncommitted
+  kafka_consumer_isolation_level_sarama: ReadUncommitted

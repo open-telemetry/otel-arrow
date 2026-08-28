@@ -25,12 +25,12 @@ use crate::node::{Node, NodeId, NodeWithPDataSender};
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::shared::receiver as shared;
 use crate::terminal_state::TerminalState;
-use otap_df_channel::error::SendError;
-use otap_df_channel::mpsc;
-use otap_df_config::PortName;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_config::transport_headers_policy::HeaderCapturePolicy;
-use otap_df_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_channel::error::SendError;
+use otel_arrow_dfe_channel::mpsc;
+use otel_arrow_dfe_config::PortName;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_config::transport_headers_policy::HeaderCapturePolicy;
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -563,7 +563,7 @@ mod tests {
     use crate::testing::receiver::{NotSendValidateContext, TestContext, TestRuntime};
     use crate::testing::{CtrlMsgCounters, TestMsg, test_node};
     use async_trait::async_trait;
-    use otap_df_config::node::NodeUserConfig;
+    use otel_arrow_dfe_config::node::NodeUserConfig;
     use serde_json::Value;
     use std::future::Future;
     use std::net::SocketAddr;
@@ -866,7 +866,7 @@ mod tests {
 
     // -- with_capture_policy tests --------------------------------------------
 
-    use otap_df_config::transport_headers_policy::HeaderCapturePolicy;
+    use otel_arrow_dfe_config::transport_headers_policy::HeaderCapturePolicy;
 
     #[test]
     fn test_with_capture_policy_none_by_default() {

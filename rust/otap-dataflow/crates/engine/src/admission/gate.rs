@@ -22,7 +22,7 @@ use super::{AdmissionContext, AdmissionDecision};
 use crate::memory_limiter::{
     LocalReceiverAdmissionState, MemoryPressureLevel, SharedReceiverAdmissionState,
 };
-use otap_df_config::policy::{RateLimitEnforcement, RateLimitPressure, RateLimiterPolicy};
+use otel_arrow_dfe_config::policy::{RateLimitEnforcement, RateLimitPressure, RateLimiterPolicy};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -248,7 +248,7 @@ mod tests {
     use super::*;
     use crate::admission::clock::ManualClock;
     use crate::memory_limiter::{MemoryPressureChanged, MemoryPressureState};
-    use otap_df_config::policy::{RateLimitAggregation, RateLimitUnit, TokenBucketPolicy};
+    use otel_arrow_dfe_config::policy::{RateLimitAggregation, RateLimitUnit, TokenBucketPolicy};
     use std::time::Duration;
 
     const RETRY_AFTER_SECS: u32 = 7;

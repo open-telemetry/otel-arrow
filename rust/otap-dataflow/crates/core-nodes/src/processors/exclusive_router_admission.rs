@@ -16,11 +16,11 @@
 //! the normal pdata inbox. That keeps blocked-route work separate from fresh
 //! ingress and makes the policy explicit in router-local state.
 
-use otap_df_config::PortName;
-use otap_df_config::error::Error as ConfigError;
-use otap_df_engine::control::{WakeupRevision, WakeupSlot};
-use otap_df_engine::local::processor::EffectHandler;
-use otap_df_engine::{ProcessorRuntimeRequirements, WakeupError};
+use otel_arrow_dfe_config::PortName;
+use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_engine::control::{WakeupRevision, WakeupSlot};
+use otel_arrow_dfe_engine::local::processor::EffectHandler;
+use otel_arrow_dfe_engine::{ProcessorRuntimeRequirements, WakeupError};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};

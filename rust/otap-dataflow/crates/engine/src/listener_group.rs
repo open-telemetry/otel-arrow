@@ -8,7 +8,7 @@
 //! `SO_REUSEPORT`, eBPF `sk_reuseport`, or future engine-level load balancers,
 //! but it does not bind sockets or attach any selector.
 
-use otap_df_config::{NodeId, PipelineGroupId, PipelineId};
+use otel_arrow_dfe_config::{NodeId, PipelineGroupId, PipelineId};
 use std::borrow::Cow;
 use std::net::SocketAddr;
 

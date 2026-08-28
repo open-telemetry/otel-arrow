@@ -1,14 +1,14 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Utilities for configuring [`Parser`](data_engine_kql_parser::Parser) to parse program for OTAP
+//! Utilities for configuring [`Parser`](otel_arrow_contrib_data_engine_kql_parser::Parser) to parse program for OTAP
 //! query-engine
 
-use data_engine_expressions::{
+use otel_arrow_contrib_data_engine_expressions::{
     IntegerScalarExpression, NullScalarExpression, PipelineFunctionParameter,
     PipelineFunctionParameterType, QueryLocation, ScalarExpression, StaticScalarExpression,
 };
-use data_engine_parser_abstractions::ParserOptions;
+use otel_arrow_contrib_data_engine_parser_abstractions::ParserOptions;
 
 #[cfg(feature = "sha1-hash")]
 use crate::consts::SHA1_FUNC_NAME;

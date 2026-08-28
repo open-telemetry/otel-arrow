@@ -18,7 +18,7 @@ use opentelemetry_resource_detectors::{
 };
 use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::resource::{EnvResourceDetector, ResourceDetector};
-use otap_df_config::pipeline::telemetry::{AttributeValue, AttributeValueArray};
+use otel_arrow_dfe_config::pipeline::telemetry::{AttributeValue, AttributeValueArray};
 
 /// Selectable detectors, keyed by config name.
 const REGISTRY: &[(&str, fn() -> Box<dyn ResourceDetector>)] = &[

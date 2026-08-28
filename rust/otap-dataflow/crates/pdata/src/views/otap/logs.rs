@@ -24,11 +24,11 @@ use crate::views::otap::common::{
     OtapAnyValueView, OtapAttributeIter, OtapAttributeView, RowGroup, RowGroupIter,
     build_attribute_index, group_by_resource_id, group_by_scope_id,
 };
-use otap_df_pdata_views::views::common::{InstrumentationScopeView, Str};
-use otap_df_pdata_views::views::logs::{
+use otel_arrow_dfe_pdata_views::views::common::{InstrumentationScopeView, Str};
+use otel_arrow_dfe_pdata_views::views::logs::{
     LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView,
 };
-use otap_df_pdata_views::views::resource::ResourceView;
+use otel_arrow_dfe_pdata_views::views::resource::ResourceView;
 
 /// Zero-copy view over OTAP logs Arrow RecordBatches
 pub struct OtapLogsView<'a> {
@@ -688,7 +688,7 @@ mod tests {
         ArrayRef, Int32Array, Int64Array, StringArray, StructArray, UInt8Array, UInt16Array,
     };
     use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
-    use otap_df_pdata_views::views::common::{AnyValueView, AttributeView};
+    use otel_arrow_dfe_pdata_views::views::common::{AnyValueView, AttributeView};
     use std::sync::Arc;
 
     /// Helper to create a logs batch with optional ID column

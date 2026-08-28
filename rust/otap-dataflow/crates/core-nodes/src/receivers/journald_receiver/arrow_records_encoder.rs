@@ -4,7 +4,7 @@
 //! OTAP log record construction for journald entries.
 
 use chrono::Utc;
-use otap_df_pdata::{
+use otel_arrow_dfe_pdata::{
     encode::Result,
     encode::record::{
         attributes::StrKeysAttributesRecordBatchBuilder, logs::LogsRecordBatchBuilder,
@@ -145,9 +145,10 @@ impl JournaldArrowRecordsBuilder {
             .append_dropped_attributes_count_n(0, log_record_count);
 
         self.logs.scope.append_id_n(0, log_record_count);
-        self.logs
-            .scope
-            .append_name_n(Some(b"otap-df-core-nodes/journald"), log_record_count);
+        self.logs.scope.append_name_n(
+            Some(b"otel-arrow-dfe-core-nodes/journald"),
+            log_record_count,
+        );
         self.logs
             .scope
             .append_version_n(Some(env!("CARGO_PKG_VERSION").as_bytes()), log_record_count);
@@ -179,7 +180,7 @@ impl JournaldArrowRecordsBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_pdata::{
+    use otel_arrow_dfe_pdata::{
         otlp::{ProtoBuffer, ProtoBytesEncoder, logs::LogsProtoBytesEncoder},
         proto::opentelemetry::{
             collector::logs::v1::ExportLogsServiceRequest, common::v1::any_value::Value,

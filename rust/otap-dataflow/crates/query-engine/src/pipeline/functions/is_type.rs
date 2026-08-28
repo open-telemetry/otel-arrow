@@ -12,7 +12,7 @@ use datafusion::logical_expr::{
     ColumnarValue, Documentation, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
 use datafusion::scalar::ScalarValue;
-use otap_df_pdata::otlp::attributes::AttributeValueType;
+use otel_arrow_dfe_pdata::otlp::attributes::AttributeValueType;
 
 use crate::pipeline::expr::types::ExprLogicalType;
 use crate::pipeline::project::anyval::{
@@ -274,8 +274,8 @@ mod tests {
     use datafusion::config::ConfigOptions;
     use datafusion::logical_expr::{ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl};
     use datafusion::scalar::ScalarValue;
-    use otap_df_pdata::otlp::attributes::AttributeValueType;
-    use otap_df_pdata::schema::consts;
+    use otel_arrow_dfe_pdata::otlp::attributes::AttributeValueType;
+    use otel_arrow_dfe_pdata::schema::consts;
 
     /// helper to invoke is_type scalar UDF
     fn invoke_scalar(expected_type: ExprLogicalType, arg: ColumnarValue) -> Result<bool> {

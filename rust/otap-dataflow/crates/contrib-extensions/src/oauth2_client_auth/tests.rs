@@ -7,11 +7,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
-use otap_df_config::error::Error as ConfigError;
-use otap_df_engine::shared::capability::auth::bearer_token_provider::BearerTokenProvider as SharedBearerTokenProvider;
-use otap_df_telemetry::registry::TelemetryRegistryHandle;
-use otap_df_telemetry::testing::EmptyAttributes;
-use otap_test_tls_certs::{ExtendedKeyUsage, generate_ca};
+use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_engine::shared::capability::auth::bearer_token_provider::BearerTokenProvider as SharedBearerTokenProvider;
+use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+use otel_arrow_dfe_telemetry::testing::EmptyAttributes;
+use otel_arrow_dfe_test_tls_certs::{ExtendedKeyUsage, generate_ca};
 use rustls_pki_types::pem::PemObject;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -122,7 +122,7 @@ struct TlsTokenServer {
 /// minimal hand-rolled HTTP/1.1 responder over `tokio-rustls` that replies to
 /// any request with a canned token response.
 async fn start_tls_token_server(access_token: &'static str) -> TlsTokenServer {
-    otap_df_otap::crypto::ensure_crypto_provider();
+    otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
 
     let ca = generate_ca("oauth2 client auth test CA");
     let ca_pem = ca.cert_pem.clone();
@@ -501,8 +501,8 @@ fn factory_is_registered_with_capability() {
 /// Invokes the factory's `create` hook with `config` against a throwaway
 /// extension context, mirroring how the engine wires the extension.
 fn create_bundle(config: serde_json::Value) -> Result<ExtensionBundle, ConfigError> {
-    let (ext_ctx, _registry) = otap_df_engine::testing::test_extension_ctx();
-    let name: otap_df_config::ExtensionId = "oauth2-client-auth".into();
+    let (ext_ctx, _registry) = otel_arrow_dfe_engine::testing::test_extension_ctx();
+    let name: otel_arrow_dfe_config::ExtensionId = "oauth2-client-auth".into();
     let user_config = Arc::new(ExtensionUserConfig::new(
         OAUTH2_CLIENT_AUTH_URN.into(),
         config,
@@ -821,7 +821,7 @@ fn metrics_tracker_records_snapshots_and_reports() {
     );
 
     let (rx, mut reporter) =
-        otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(4);
+        otel_arrow_dfe_telemetry::reporter::MetricsReporter::create_new_and_receiver(4);
     tracker.report(&mut reporter).expect("report succeeds");
     assert!(
         rx.try_recv().is_ok(),

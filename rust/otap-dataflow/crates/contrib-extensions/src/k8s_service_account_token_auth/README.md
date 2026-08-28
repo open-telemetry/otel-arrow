@@ -38,7 +38,7 @@ The extension talks to the Kubernetes API server over TLS via `kube`'s
 `hyper`/`rustls` client, which requires a process-wide `rustls` crypto provider
 to be installed. The deployed binary **must** enable exactly one `crypto-*`
 feature (`crypto-ring`, `crypto-aws-lc`, `crypto-openssl`, or `crypto-symcrypt`,
-forwarded to `otap-df-otap`); the workspace binary's default build includes
+forwarded to `otel-arrow-dfe-otap`); the workspace binary's default build includes
 `crypto-ring`. A build that enables `k8s-service-account-token-auth-extension` without
 any `crypto-*` feature installs no provider, and the `TokenReview` call fails at
 runtime.

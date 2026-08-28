@@ -12,8 +12,8 @@ use crate::message::Sender;
 use crate::node::{NodeId, NodeType};
 use crate::shared::message::{SharedReceiver, SharedSender};
 use bytemuck::Pod;
-use otap_df_channel::error::SendError;
-use otap_df_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_channel::error::SendError;
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::marker::PhantomData;
@@ -150,6 +150,12 @@ pub struct Frame {
     /// Stamped only when the node has `CONSUMER_METRICS` interest. Saturates
     /// at `u32::MAX`.
     pub consumed_items: u32,
+    /// Logical payload size produced by the node at send time, in bytes.
+    /// Zero means the measurement was disabled, unavailable, or empty.
+    pub produced_size: u64,
+    /// Logical payload size consumed by the node at receive time, in bytes.
+    /// Zero means the measurement was disabled, unavailable, or empty.
+    pub consumed_size: u64,
 }
 
 /// The ACK message.
@@ -184,6 +190,10 @@ pub enum NackCause {
     RouteClosed,
     /// The node had to refuse locally parked work because shutdown started.
     NodeShutdown,
+    /// The request was permanently refused due to its content or a policy
+    /// decision (client error). Non-retryable; the client must change the
+    /// request or its configuration.
+    Refused,
 }
 
 /// The NACK message.
@@ -308,12 +318,12 @@ pub enum NodeControlMsg<PData> {
         revision: WakeupRevision,
     },
 
-    /// Delayed data returning to the node which delayed it.
-    DelayedData {
-        /// When resumed
+    /// Processor-local delayed resume returning to the node that requeued it.
+    ResumeData {
+        /// Original scheduled resume instant.
         when: Instant,
 
-        /// The data.
+        /// The retained data payload.
         data: Box<PData>,
     },
 
@@ -345,7 +355,7 @@ pub enum NodeControlMsg<PData> {
 }
 
 /// Runtime-control messages sent by nodes to the pipeline runtime for
-/// orchestration, delayed-data handling, and shutdown.
+/// orchestration, timer scheduling, and shutdown.
 #[derive(Debug, Clone)]
 pub enum RuntimeControlMsg<PData> {
     /// Requests the pipeline engine to start a periodic timer for the specified node.
@@ -376,17 +386,6 @@ pub enum RuntimeControlMsg<PData> {
 
         /// Temporarily placed, see #1083. Placement is arbitrary.
         _temp: PhantomData<PData>,
-    },
-    /// Delay this data.
-    DelayData {
-        /// The delayer's node_id
-        node_id: usize,
-
-        /// When to resume
-        when: Instant,
-
-        /// The data
-        data: Box<PData>,
     },
     /// Indicates that a receiver has stopped admitting new ingress and
     /// completed any receiver-local drain work needed before downstream
@@ -761,7 +760,7 @@ where
 /// Control messages sent to extensions.
 ///
 /// This is a PData-free subset of [`NodeControlMsg`] -- extensions never process
-/// pipeline data, so they have no `Ack`, `Nack`, or `DelayedData` variants.
+/// pipeline data, so they have no `Ack`, `Nack`, or `ResumeData` variants.
 #[derive(Debug, Clone)]
 pub enum ExtensionControlMsg {
     /// Notifies the extension of a configuration change.
@@ -841,7 +840,7 @@ pub struct ShutdownPayload {
 /// [`ExtensionControlSender`] on the regular control channel instead.
 pub(crate) struct ExtensionShutdownChannel {
     /// Unique identifier of the extension (used for diagnostic logs).
-    pub(crate) name: otap_df_config::ExtensionId,
+    pub(crate) name: otel_arrow_dfe_config::ExtensionId,
     /// The shutdown signal sender. Consuming the sender on `send` is
     /// the type-level expression of "shutdown is a one-shot event".
     pub(crate) sender: tokio::sync::oneshot::Sender<ShutdownPayload>,

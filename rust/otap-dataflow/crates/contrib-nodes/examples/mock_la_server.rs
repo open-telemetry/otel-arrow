@@ -13,7 +13,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example mock_la_server -p otap-df-contrib-nodes --features azure-monitor-exporter -- --port 9999
+//! cargo run --example mock_la_server -p otel-arrow-dfe-contrib-nodes --features azure-monitor-exporter -- --port 9999
 //! ```
 //!
 //! Then point your Azure Monitor Exporter config at `http://localhost:9999`
@@ -23,16 +23,16 @@
 //!
 //! ```bash
 //! # 10% of requests return 500
-//! cargo run --example mock_la_server -p otap-df-contrib-nodes --features azure-monitor-exporter -- --fail-rate 0.1
+//! cargo run --example mock_la_server -p otel-arrow-dfe-contrib-nodes --features azure-monitor-exporter -- --fail-rate 0.1
 //!
 //! # 10% of requests return 429 with Retry-After: 5
-//! cargo run --example mock_la_server -p otap-df-contrib-nodes --features azure-monitor-exporter -- --fail-rate 0.1 --retry-after 5
+//! cargo run --example mock_la_server -p otel-arrow-dfe-contrib-nodes --features azure-monitor-exporter -- --fail-rate 0.1 --retry-after 5
 //!
 //! # Artificial 200ms latency
-//! cargo run --example mock_la_server -p otap-df-contrib-nodes --features azure-monitor-exporter -- --latency 200ms
+//! cargo run --example mock_la_server -p otel-arrow-dfe-contrib-nodes --features azure-monitor-exporter -- --latency 200ms
 //!
 //! # Return 503 after 1000 successful requests
-//! cargo run --example mock_la_server -p otap-df-contrib-nodes --features azure-monitor-exporter -- --fail-after 1000
+//! cargo run --example mock_la_server -p otel-arrow-dfe-contrib-nodes --features azure-monitor-exporter -- --fail-after 1000
 //! ```
 
 use std::io::Read;

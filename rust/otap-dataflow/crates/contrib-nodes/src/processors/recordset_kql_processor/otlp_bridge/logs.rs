@@ -3,8 +3,8 @@
 
 use std::{collections::HashMap, mem};
 
-use data_engine_expressions::*;
-use data_engine_recordset::*;
+use otel_arrow_contrib_data_engine_expressions::*;
+use otel_arrow_contrib_data_engine_recordset::*;
 
 use crate::processors::recordset_kql_processor::otlp_bridge::{
     attached_records::OtlpAttachedRecords, *,

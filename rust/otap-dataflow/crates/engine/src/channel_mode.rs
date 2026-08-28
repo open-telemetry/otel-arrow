@@ -28,9 +28,9 @@ use crate::context::{ExtensionContext, PipelineContext};
 use crate::entity_context::{EntityTelemetryHandle, current_node_telemetry_handle};
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::shared::message::{SharedReceiver, SharedSender};
-use otap_df_channel::mpsc;
-use otap_df_telemetry::otel_warn;
-use otap_df_telemetry::registry::EntityKey;
+use otel_arrow_dfe_channel::mpsc;
+use otel_arrow_dfe_telemetry::otel_warn;
+use otel_arrow_dfe_telemetry::registry::EntityKey;
 use std::borrow::Cow;
 
 pub(crate) trait ChannelMode {
@@ -403,8 +403,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_channel::mpmc as raw_mpmc;
-    use otap_df_channel::mpsc as raw_mpsc;
+    use otel_arrow_dfe_channel::mpmc as raw_mpmc;
+    use otel_arrow_dfe_channel::mpsc as raw_mpsc;
     use std::cell::Cell;
     use std::num::NonZeroUsize;
     use std::rc::Rc;

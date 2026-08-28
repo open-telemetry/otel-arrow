@@ -25,12 +25,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use linkme::distributed_slice;
-use otap_df_admin::{
+use otel_arrow_dfe_admin::{
     ControlPlaneError, EngineConfigReconcileRequest, EngineConfigReconcileState,
     EngineConfigReconcileStatus,
 };
-use otap_df_config::engine::OtelDataflowSpec;
-use otap_df_state::phase::PipelinePhase;
+use otel_arrow_dfe_config::engine::OtelDataflowSpec;
+use otel_arrow_dfe_state::phase::PipelinePhase;
 use prost::Message as _;
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
@@ -39,11 +39,6 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
-
-use otap_df_config::PipelineKey;
-use otap_df_config::error::Error as ConfigError;
-use otap_df_state::pipeline_status::PipelineStatus;
-use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
 
 use crate::extension::opamp::config::Config;
 use crate::extension::opamp::consts::health_status;
@@ -61,6 +56,9 @@ use crate::{
     CONTROLLER_EXTENSION_FACTORIES, ControllerExtensionContext, ControllerExtensionError,
     ControllerExtensionFactory, ControllerExtensionTaskFactory,
 };
+use otel_arrow_dfe_config::PipelineKey;
+use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_state::pipeline_status::PipelineStatus;
 
 pub mod config;
 pub mod consts;
@@ -69,6 +67,11 @@ pub mod proto;
 mod util;
 
 const CONTROL_EXTENSION_URN: &str = "urn:otel:extension:opamp";
+
+otel_arrow_dfe_telemetry::otel_component_scope!(
+    urn = CONTROL_EXTENSION_URN,
+    target = "otel.extension.opamp",
+);
 
 /// Custom capability type - represents the custom message which can be sent by this OpAMP agent
 /// implementation containing the full pipeline status.
@@ -1614,13 +1617,13 @@ fn pipeline_status_custom_message(
 mod test {
     use std::{borrow::Cow, sync::Arc};
 
-    use otap_df_admin::ControlPlane;
-    use otap_df_config::{
+    use otel_arrow_dfe_admin::ControlPlane;
+    use otel_arrow_dfe_config::{
         extension::{ExtensionUrn, ExtensionUserConfig},
         observed_state::ObservedStateSettings,
     };
-    use otap_df_state::store::ObservedStateStore;
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_state::store::ObservedStateStore;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 
     use crate::extension::opamp::proto::opamp::v1::{
         AgentRemoteConfig, AnyValue, RetryInfo, ServerErrorResponse, any_value::Value,
@@ -1647,7 +1650,7 @@ mod test {
         expected_exchanges: usize,
         mut config: Config,
     ) -> Vec<AgentToServer> {
-        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         config.endpoint = format!("ws://127.0.0.1:{port}/v1/opamp");
 
         let cancellation_token = CancellationToken::new();
@@ -2128,14 +2131,14 @@ mod test {
             Vec<
                 Box<
                     dyn FnOnce(
-                        otap_df_config::DeployedPipelineKey,
-                    ) -> otap_df_telemetry::event::EngineEvent,
+                        otel_arrow_dfe_config::DeployedPipelineKey,
+                    ) -> otel_arrow_dfe_telemetry::event::EngineEvent,
                 >,
             >,
         )>,
     ) -> HashMap<PipelineKey, PipelineStatus> {
-        use otap_df_config::observed_state::ObservedStateSettings;
-        use otap_df_state::store::ObservedStateStore;
+        use otel_arrow_dfe_config::observed_state::ObservedStateSettings;
+        use otel_arrow_dfe_state::store::ObservedStateStore;
 
         let telemetry_registry_handle = TelemetryRegistryHandle::default();
         let store =
@@ -2165,7 +2168,7 @@ mod test {
             );
 
             for event_fn in events {
-                let deployed_key = otap_df_config::DeployedPipelineKey {
+                let deployed_key = otel_arrow_dfe_config::DeployedPipelineKey {
                     pipeline_group_id: Cow::Owned(group_id.to_owned()),
                     pipeline_id: Cow::Owned(pipeline_id.to_owned()),
                     core_id: 0,
@@ -2186,7 +2189,7 @@ mod test {
 
     #[tokio::test]
     async fn test_pipeline_health_running() {
-        use otap_df_telemetry::event::EngineEvent;
+        use otel_arrow_dfe_telemetry::event::EngineEvent;
 
         let snapshot = build_status_snapshot(vec![(
             "group1",
@@ -2207,7 +2210,7 @@ mod test {
 
     #[tokio::test]
     async fn test_pipeline_health_failed() {
-        use otap_df_telemetry::event::{EngineEvent, ErrorSummary};
+        use otel_arrow_dfe_telemetry::event::{EngineEvent, ErrorSummary};
 
         let snapshot = build_status_snapshot(vec![(
             "group1",
@@ -2239,7 +2242,7 @@ mod test {
 
     #[tokio::test]
     async fn test_pipeline_health_stopped() {
-        use otap_df_telemetry::event::EngineEvent;
+        use otel_arrow_dfe_telemetry::event::EngineEvent;
 
         let snapshot = build_status_snapshot(vec![(
             "group1",
@@ -2262,7 +2265,7 @@ mod test {
 
     #[tokio::test]
     async fn test_pipeline_health_starting() {
-        use otap_df_telemetry::event::EngineEvent;
+        use otel_arrow_dfe_telemetry::event::EngineEvent;
 
         // Only send admitted (not ready) -- pipeline is in Starting phase
         let snapshot = build_status_snapshot(vec![(
@@ -2281,7 +2284,7 @@ mod test {
 
     #[tokio::test]
     async fn test_pipeline_health_stopping() {
-        use otap_df_telemetry::event::EngineEvent;
+        use otel_arrow_dfe_telemetry::event::EngineEvent;
 
         // admitted -> ready -> shutdown_requested puts it into Draining
         let snapshot = build_status_snapshot(vec![(
@@ -2325,7 +2328,7 @@ mod test {
 
     #[tokio::test]
     async fn test_component_health_aggregates_pipeline_groups() {
-        use otap_df_telemetry::event::{EngineEvent, ErrorSummary};
+        use otel_arrow_dfe_telemetry::event::{EngineEvent, ErrorSummary};
 
         let snapshot = build_status_snapshot(vec![
             (

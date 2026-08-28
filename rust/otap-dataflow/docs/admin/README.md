@@ -24,7 +24,7 @@ Assuming the engine is running with admin HTTP enabled:
 - Metrics JSON: `http://<admin-host>:<admin-port>/api/v1/telemetry/metrics?format=json`
 - Prometheus output: `http://<admin-host>:<admin-port>/api/v1/metrics`
 
-For Rust consumers, prefer the `otap-df-admin-api` crate rather than building
+For Rust consumers, prefer the `otel-arrow-dfe-admin-api` crate rather than building
 raw HTTP requests directly.
 
 For architecture details (state model, derivation rules, graph rules, testing),

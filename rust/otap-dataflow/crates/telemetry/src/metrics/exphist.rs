@@ -13,11 +13,11 @@
 //! functions only build the per-point payload.
 
 #[cfg(test)]
-use otap_df_expohisto::HistogramView;
+use otel_arrow_dfe_expohisto::HistogramView;
 #[cfg(test)]
-use otap_df_pdata::proto::opentelemetry::common::v1::KeyValue;
+use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::KeyValue;
 #[cfg(test)]
-use otap_df_pdata::proto::opentelemetry::metrics::v1::{
+use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
     ExponentialHistogramDataPoint, exponential_histogram_data_point::Buckets,
 };
 
@@ -94,7 +94,7 @@ pub(crate) fn exponential_histogram_data_point<const N: usize>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_expohisto::HistogramNN;
+    use otel_arrow_dfe_expohisto::HistogramNN;
 
     /// Scenario: The shared OTLP sum rule is evaluated for an empty
     /// population, a non-negative one, and one whose minimum is negative.

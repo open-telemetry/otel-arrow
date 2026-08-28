@@ -1,7 +1,12 @@
 # Telemetry Macros
 
+This crate is currently pre-1.0. Its public API may evolve between minor
+releases.
+
 These macros help you define metric sets and attribute sets with minimal
 boilerplate.
+
+## Overview
 
 - metric_set: declare a metrics container struct and auto-derive the handler and
   descriptor
@@ -23,7 +28,8 @@ source for metric and attribute-set design:
 
 ## Macro API
 
-- Import instrument types from otap-df-telemetry and the macro from this crate.
+- Import instrument types from `otel-arrow-dfe-telemetry` and the macro from
+  this crate.
 - Annotate your struct with `#[metric_set(name = "<metrics.group.name>")]`.
 - For each metric field, choose one of the supported instruments and add
   `#[metric(unit = "<unit>")]`.
@@ -41,3 +47,22 @@ source for metric and attribute-set design:
 - The macro injects `#[repr(C, align(64))]` for better cache-line isolation.
 - The macro also derives the required handler to integrate with the metrics
   registry.
+
+## Usage
+
+```sh
+cargo add otel-arrow-dfe-telemetry otel-arrow-dfe-telemetry-macros
+```
+
+```rust
+use otel_arrow_dfe_telemetry::instrument::Counter;
+use otel_arrow_dfe_telemetry_macros::metric_set;
+
+#[metric_set(name = "example.requests")]
+#[derive(Debug, Default)]
+struct RequestMetrics {
+    /// Number of requests accepted by the component.
+    #[metric(unit = "{request}")]
+    accepted: Counter<u64>,
+}
+```

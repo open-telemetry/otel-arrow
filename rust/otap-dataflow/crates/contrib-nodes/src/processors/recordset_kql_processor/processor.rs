@@ -3,7 +3,7 @@
 
 use super::config::RecordsetKqlProcessorConfig;
 use super::create_recordset_kql_processor;
-use otap_df_otap::pdata::OtapPdata;
+use otel_arrow_dfe_otap::pdata::OtapPdata;
 
 use super::otlp_bridge::{
     BridgeDiagnosticOptions, BridgeError, BridgeOptions, BridgePipeline,
@@ -11,11 +11,13 @@ use super::otlp_bridge::{
     process_protobuf_otlp_export_logs_service_request_using_pipeline,
 };
 use async_trait::async_trait;
-use data_engine_recordset::{RecordSetEngineCounters, RecordSetEngineDiagnosticLevel};
 use linkme::distributed_slice;
-use otap_df_config::SignalType;
-use otap_df_config::error::Error as ConfigError;
-use otap_df_engine::{
+use otel_arrow_contrib_data_engine_recordset::{
+    RecordSetEngineCounters, RecordSetEngineDiagnosticLevel,
+};
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_engine::{
     ConsumerEffectHandlerExtension, ProcessorFactory,
     context::PipelineContext,
     control::NackMsg,
@@ -25,21 +27,23 @@ use otap_df_engine::{
     process_duration::ComputeDuration,
     processor::ProcessorRuntimeRequirements,
 };
-use otap_df_pdata::TryIntoWithOptions;
-use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
+use otel_arrow_dfe_pdata::TryIntoWithOptions;
+use otel_arrow_dfe_pdata::{OtapPayload, OtlpProtoBytes};
 
 /// URN identifier for the processor
 pub const RECORDSET_KQL_PROCESSOR_URN: &str = "urn:microsoft:processor:recordset_kql";
 
 /// OTAP KQL Processor
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Processor)]
-#[distributed_slice(otap_df_otap::OTAP_PROCESSOR_FACTORIES)]
+#[otel_arrow_dfe_engine::component_inventory(category = Processor)]
+#[distributed_slice(otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES)]
 pub static RECORDSET_KQL_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: RECORDSET_KQL_PROCESSOR_URN,
     create: create_recordset_kql_processor,
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    validate_config: otap_df_config::validation::validate_typed_config::<RecordsetKqlProcessorConfig>,
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
+        RecordsetKqlProcessorConfig,
+    >,
 };
 
 /// KQL processor that applies KQL queries to telemetry data
@@ -73,7 +77,7 @@ impl RecordsetKqlProcessor {
 
         let compute_duration = ComputeDuration::new(&pipeline_ctx);
 
-        otap_df_telemetry::otel_info!("recordset_kql_processor.ready");
+        otel_info!("recordset_kql_processor.ready");
 
         Ok(Self {
             config,
@@ -113,12 +117,20 @@ impl RecordsetKqlProcessor {
                         .get_line_and_column_numbers();
                     let message = diagnostic.get_message();
                     let level = match diagnostic.get_diagnostic_level() {
-                        RecordSetEngineDiagnosticLevel::Verbose => otap_df_telemetry::Level::DEBUG,
-                        RecordSetEngineDiagnosticLevel::Info => otap_df_telemetry::Level::INFO,
-                        RecordSetEngineDiagnosticLevel::Warn => otap_df_telemetry::Level::WARN,
-                        RecordSetEngineDiagnosticLevel::Error => otap_df_telemetry::Level::ERROR,
+                        RecordSetEngineDiagnosticLevel::Verbose => {
+                            otel_arrow_dfe_telemetry::Level::DEBUG
+                        }
+                        RecordSetEngineDiagnosticLevel::Info => {
+                            otel_arrow_dfe_telemetry::Level::INFO
+                        }
+                        RecordSetEngineDiagnosticLevel::Warn => {
+                            otel_arrow_dfe_telemetry::Level::WARN
+                        }
+                        RecordSetEngineDiagnosticLevel::Error => {
+                            otel_arrow_dfe_telemetry::Level::ERROR
+                        }
                     };
-                    otap_df_telemetry::otel_event!(
+                    otel_event!(
                         level,
                         "recordset_kql_processor.query_output",
                         query_line_number,
@@ -131,7 +143,7 @@ impl RecordsetKqlProcessor {
 
     async fn process_data(
         &mut self,
-        data: OtapPdata,
+        mut data: OtapPdata,
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         let signal = data.signal_type();
@@ -144,10 +156,7 @@ impl RecordsetKqlProcessor {
         // Process based on signal type (timed).
         let result = effect_handler.timed(&self.compute_duration, || match otlp_bytes {
             OtlpProtoBytes::ExportLogsRequest(bytes) => {
-                otap_df_telemetry::otel_debug!(
-                    "recordset_kql_processor.processing_logs",
-                    input_items
-                );
+                otel_debug!("recordset_kql_processor.processing_logs", input_items);
                 self.process_logs(bytes, signal)
             }
             OtlpProtoBytes::ExportMetricsRequest(_bytes) => Err(Error::InternalError {
@@ -161,12 +170,12 @@ impl RecordsetKqlProcessor {
         match result {
             Ok(ProcessedSignal { payload, counters }) => {
                 // Convert back to OtapPayload and reconstruct OtapPdata
-                let payload: OtapPayload = payload.into();
+                let mut payload: OtapPayload = payload.into();
                 // Note! we are recomputing the number of matched items, which
                 // the engine could tell us.
                 let output_items = payload.num_items() as u64;
 
-                otap_df_telemetry::otel_debug!(
+                otel_debug!(
                     "recordset_kql_processor.success",
                     input_items,
                     output_items,
@@ -184,11 +193,7 @@ impl RecordsetKqlProcessor {
             }
             Err(e) => {
                 let message = e.to_string();
-                otap_df_telemetry::otel_error!(
-                    "recordset_kql_processor.failure",
-                    input_items,
-                    message,
-                );
+                otel_error!("recordset_kql_processor.failure", input_items, message,);
 
                 effect_handler
                     .notify_nack(NackMsg::new(
@@ -247,7 +252,7 @@ impl Processor<OtapPdata> for RecordsetKqlProcessor {
         match msg {
             Message::PData(data) => self.process_data(data, effect_handler).await,
             Message::Control(control_msg) => {
-                use otap_df_engine::control::NodeControlMsg;
+                use otel_arrow_dfe_engine::control::NodeControlMsg;
                 match control_msg {
                     NodeControlMsg::Config { config } => {
                         if let Ok(new_config) =
@@ -260,7 +265,7 @@ impl Processor<OtapPdata> for RecordsetKqlProcessor {
                                 let parsed_bridge_options =
                                     match Self::parse_bridge_options(&new_config.bridge_options) {
                                         Err(e) => {
-                                            otap_df_telemetry::otel_warn!(
+                                            otel_warn!(
                                                 "recordset_kql_processor.reconfigure_error",
                                                 message = %e
                                             );
@@ -276,9 +281,7 @@ impl Processor<OtapPdata> for RecordsetKqlProcessor {
                                     )),
                                 ) {
                                     Ok(pipeline) => {
-                                        otap_df_telemetry::otel_info!(
-                                            "recordset_kql_processor.reconfigured"
-                                        );
+                                        otel_info!("recordset_kql_processor.reconfigured");
 
                                         self.pipeline = pipeline;
                                         self.config = new_config;
@@ -286,7 +289,7 @@ impl Processor<OtapPdata> for RecordsetKqlProcessor {
                                     Err(errors) => {
                                         let message =
                                             format!("Failed to parse updated query: {:?}", errors);
-                                        otap_df_telemetry::otel_error!(
+                                        otel_error!(
                                             "recordset_kql_processor.reconfigure_error",
                                             message,
                                         );
@@ -317,20 +320,20 @@ mod tests {
 
     use super::*;
     use bytes::BytesMut;
-    use otap_df_config::node::NodeUserConfig;
-    use otap_df_engine::capability;
-    use otap_df_engine::context::ControllerContext;
-    use otap_df_engine::message::Message;
-    use otap_df_engine::testing::{node::test_node, processor::TestRuntime};
-    use otap_df_otap::pdata::OtapPdata;
-    use otap_df_pdata::OtlpProtoBytes;
-    use otap_df_pdata::proto::opentelemetry::{
+    use otel_arrow_dfe_config::node::NodeUserConfig;
+    use otel_arrow_dfe_engine::capability;
+    use otel_arrow_dfe_engine::context::ControllerContext;
+    use otel_arrow_dfe_engine::message::Message;
+    use otel_arrow_dfe_engine::testing::{node::test_node, processor::TestRuntime};
+    use otel_arrow_dfe_otap::pdata::OtapPdata;
+    use otel_arrow_dfe_pdata::OtlpProtoBytes;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::{
         collector::logs::v1::ExportLogsServiceRequest,
         common::v1::{AnyValue, InstrumentationScope, KeyValue, any_value::Value::*},
         logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
         resource::v1::Resource,
     };
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use prost::Message as _;
     use serde_json::json;
 

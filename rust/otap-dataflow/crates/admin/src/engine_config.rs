@@ -13,7 +13,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use otap_df_telemetry::otel_info;
+use otel_arrow_dfe_telemetry::otel_info;
 
 /// All routes for engine configuration.
 pub(crate) fn routes() -> Router<AppState> {
@@ -82,12 +82,12 @@ mod tests {
         RolloutStatus, ShutdownStatus,
     };
     use axum::body::to_bytes;
-    use otap_df_admin_types::operations::{OperationError, OperationErrorKind};
-    use otap_df_config::engine::OtelDataflowSpec;
-    use otap_df_config::observed_state::ObservedStateSettings;
-    use otap_df_engine::memory_limiter::MemoryPressureState;
-    use otap_df_state::store::ObservedStateStore;
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_admin_types::operations::{OperationError, OperationErrorKind};
+    use otel_arrow_dfe_config::engine::OtelDataflowSpec;
+    use otel_arrow_dfe_config::observed_state::ObservedStateSettings;
+    use otel_arrow_dfe_engine::memory_limiter::MemoryPressureState;
+    use otel_arrow_dfe_state::store::ObservedStateStore;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use std::sync::Arc;
 
     #[derive(Clone)]
@@ -106,6 +106,7 @@ mod tests {
             _pipeline_group_id: &str,
             _pipeline_id: &str,
             _timeout_secs: u64,
+            _initiator: crate::PipelineShutdownInitiator,
         ) -> Result<ShutdownStatus, ControlPlaneError> {
             Err(ControlPlaneError::PipelineNotFound)
         }

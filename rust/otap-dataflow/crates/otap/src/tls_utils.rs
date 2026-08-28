@@ -5,9 +5,9 @@ use arc_swap::ArcSwap;
 use base64::prelude::*;
 use futures::{Stream, StreamExt};
 use notify::{Event, RecursiveMode, Watcher};
-use otap_df_config::tls::TlsClientConfig;
-use otap_df_config::tls::TlsServerConfig;
-use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
+use otel_arrow_dfe_config::tls::TlsClientConfig;
+use otel_arrow_dfe_config::tls::TlsServerConfig;
+use otel_arrow_dfe_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
 use rustls::RootCertStore;
 use rustls::pki_types::CertificateDer;
 use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
@@ -1635,8 +1635,8 @@ pub fn read_file_with_limit_sync(path: &Path) -> Result<Vec<u8>, io::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_config::tls::TlsConfig;
-    use otap_test_tls_certs as tls_certs;
+    use otel_arrow_dfe_config::tls::TlsConfig;
+    use otel_arrow_dfe_test_tls_certs as tls_certs;
     use std::fs;
     use tempfile::TempDir;
 

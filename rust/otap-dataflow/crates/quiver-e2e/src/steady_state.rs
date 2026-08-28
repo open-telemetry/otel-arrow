@@ -12,11 +12,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use quiver::SegmentReadMode;
-use quiver::budget::DiskBudget;
-use quiver::config::RetentionPolicy;
-use quiver::subscriber::SubscriberId;
-use quiver::{CancellationToken, QuiverConfig, QuiverEngine};
+use otel_arrow_dfe_quiver::SegmentReadMode;
+use otel_arrow_dfe_quiver::budget::DiskBudget;
+use otel_arrow_dfe_quiver::config::RetentionPolicy;
+use otel_arrow_dfe_quiver::subscriber::SubscriberId;
+use otel_arrow_dfe_quiver::{CancellationToken, QuiverConfig, QuiverEngine};
 use tempfile::TempDir;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
@@ -701,7 +701,7 @@ fn create_engine_config(
     engine_idx: usize,
     engine_count: usize,
 ) -> QuiverConfig {
-    use quiver::DurabilityMode;
+    use otel_arrow_dfe_quiver::DurabilityMode;
 
     let mut config = QuiverConfig::default().with_data_dir(data_dir);
 

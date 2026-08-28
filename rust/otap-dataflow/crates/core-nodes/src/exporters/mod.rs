@@ -4,17 +4,14 @@
 /// Noop exporter.
 pub mod noop_exporter;
 
-/// Error exporter.
-pub mod error_exporter;
-
 /// Console exporter.
 pub mod console_exporter;
 
+/// OTLP JSON file exporter.
+pub mod file_exporter;
+
 /// Topic exporter.
 pub mod topic_exporter;
-
-/// Perf exporter.
-pub mod perf_exporter;
 
 /// Parquet exporter.
 pub mod parquet_exporter;

@@ -11,8 +11,8 @@ mod client;
 #[cfg(feature = "http-client")]
 mod http_backend;
 
-pub use otap_df_admin_types::{engine, groups, operations, pipelines, telemetry};
-pub use otap_df_config as config;
+pub use otel_arrow_dfe_admin_types::{engine, groups, operations, pipelines, telemetry};
+pub use otel_arrow_dfe_config as config;
 
 #[cfg(feature = "http-client")]
 pub use crate::client::{

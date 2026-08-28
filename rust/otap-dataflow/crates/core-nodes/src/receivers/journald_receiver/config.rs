@@ -388,7 +388,7 @@ pub(crate) struct RuntimeConfig {
 }
 
 impl TryFrom<Config> for RuntimeConfig {
-    type Error = otap_df_config::error::Error;
+    type Error = otel_arrow_dfe_config::error::Error;
 
     fn try_from(config: Config) -> Result<Self, Self::Error> {
         let Config {
@@ -487,17 +487,17 @@ fn deserialize_byte_size<'de, D>(deserializer: D) -> Result<u64, D::Error>
 where
     D: Deserializer<'de>,
 {
-    otap_df_config::byte_units::deserialize_u64(deserializer)?
+    otel_arrow_dfe_config::byte_units::deserialize_u64(deserializer)?
         .ok_or_else(|| DeError::custom("byte size must not be null"))
 }
 
-fn invalid(msg: &str) -> otap_df_config::error::Error {
-    otap_df_config::error::Error::InvalidUserConfig {
+fn invalid(msg: &str) -> otel_arrow_dfe_config::error::Error {
+    otel_arrow_dfe_config::error::Error::InvalidUserConfig {
         error: msg.to_owned(),
     }
 }
 
-fn validate_source_id(source_id: String) -> Result<String, otap_df_config::error::Error> {
+fn validate_source_id(source_id: String) -> Result<String, otel_arrow_dfe_config::error::Error> {
     if source_id.is_empty() {
         return Err(invalid("source_id must not be empty"));
     }
@@ -516,7 +516,7 @@ fn validate_source_id(source_id: String) -> Result<String, otap_df_config::error
 
 fn validate_journal(
     mut journal: JournalConfig,
-) -> Result<JournalConfig, otap_df_config::error::Error> {
+) -> Result<JournalConfig, otel_arrow_dfe_config::error::Error> {
     if journal.root_path.as_os_str().is_empty() {
         return Err(invalid("journal.root_path must not be empty"));
     }
@@ -606,7 +606,7 @@ fn normalize_path(path: &Path) -> PathBuf {
 fn dedup_non_empty(
     values: Vec<String>,
     field: &str,
-) -> Result<Vec<String>, otap_df_config::error::Error> {
+) -> Result<Vec<String>, otel_arrow_dfe_config::error::Error> {
     let mut seen = BTreeSet::new();
     let mut out = Vec::with_capacity(values.len());
     for value in values {
@@ -623,7 +623,7 @@ fn dedup_non_empty(
 fn resolve_priorities(
     priorities: Option<Vec<u8>>,
     max_priority: Option<MaxPriority>,
-) -> Result<Vec<u8>, otap_df_config::error::Error> {
+) -> Result<Vec<u8>, otel_arrow_dfe_config::error::Error> {
     if let Some(max) = max_priority {
         if priorities.is_some() {
             return Err(invalid(

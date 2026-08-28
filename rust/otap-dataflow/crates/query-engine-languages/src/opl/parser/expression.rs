@@ -3,7 +3,7 @@
 
 use std::sync::LazyLock;
 
-use data_engine_expressions::{
+use otel_arrow_contrib_data_engine_expressions::{
     AndLogicalExpression, BinaryMathematicalScalarExpression, BooleanScalarExpression,
     CaptureTextScalarExpression, CoalesceScalarExpression, CollectionScalarExpression,
     CombineScalarExpression, ContainsLogicalExpression, DateTimeScalarExpression,
@@ -17,7 +17,7 @@ use data_engine_expressions::{
     SourceScalarExpression, StaticScalarExpression, StringScalarExpression, StringValue,
     TextScalarExpression, ValueAccessor,
 };
-use data_engine_parser_abstractions::{
+use otel_arrow_contrib_data_engine_parser_abstractions::{
     ParserError, parse_standard_double_literal, parse_standard_integer_literal,
     parse_standard_string_literal, to_query_location,
 };
@@ -1077,7 +1077,7 @@ mod test {
 
     use std::collections::HashMap;
 
-    use data_engine_expressions::{
+    use otel_arrow_contrib_data_engine_expressions::{
         AndLogicalExpression, BinaryMathematicalScalarExpression, BooleanScalarExpression,
         CaptureTextScalarExpression, CoalesceScalarExpression, CollectionScalarExpression,
         CombineScalarExpression, ContainsLogicalExpression, DateTimeScalarExpression,
@@ -1090,7 +1090,9 @@ mod test {
         SourceScalarExpression, StaticScalarExpression, StringScalarExpression,
         TextScalarExpression, ValueAccessor,
     };
-    use data_engine_parser_abstractions::{ParserError, ParserFunction, ParserState};
+    use otel_arrow_contrib_data_engine_parser_abstractions::{
+        ParserError, ParserFunction, ParserState,
+    };
     use pest::Parser;
     use pretty_assertions::assert_eq;
     use regex::Regex;
@@ -1116,7 +1118,7 @@ mod test {
 
         fn push_data_expression(
             &mut self,
-            _data_expression: data_engine_expressions::DataExpression,
+            _data_expression: otel_arrow_contrib_data_engine_expressions::DataExpression,
         ) {
             // unreachable because we only give out shared references to the function being tested
             unreachable!("push_data_expression should not be called")

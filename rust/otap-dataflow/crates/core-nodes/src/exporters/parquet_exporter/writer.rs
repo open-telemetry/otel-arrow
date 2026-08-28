@@ -11,8 +11,8 @@ use arrow::datatypes::SchemaRef;
 use futures::stream::FuturesUnordered;
 use futures::{StreamExt, TryStreamExt};
 use object_store::ObjectStore;
-use otap_df_pdata::otap::child_payload_types;
-use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_dfe_pdata::otap::child_payload_types;
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use parquet::arrow::AsyncArrowWriter;
 use parquet::arrow::async_writer::ParquetObjectWriter;
 use parquet::errors::ParquetError;
@@ -572,8 +572,8 @@ mod test {
         CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta,
         PutMultipartOptions, PutOptions, PutPayload, PutResult, RenameOptions, Result,
     };
-    use otap_df_pdata::otap::{OtapArrowRecords, from_record_messages};
-    use otap_df_pdata::{Consumer, proto::opentelemetry::arrow::v1::BatchArrowRecords};
+    use otel_arrow_dfe_pdata::otap::{OtapArrowRecords, from_record_messages};
+    use otel_arrow_dfe_pdata::{Consumer, proto::opentelemetry::arrow::v1::BatchArrowRecords};
     use parquet::arrow::ParquetRecordBatchStreamBuilder;
     use std::fmt;
     use std::ops::Range;

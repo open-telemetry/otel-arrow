@@ -9,13 +9,13 @@ use super::{
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use chrono::{DateTime, SecondsFormat, Utc};
-use otap_df_pdata_views::views::common::{
+use otel_arrow_dfe_pdata_views::views::common::{
     AnyValueView, AttributeView, InstrumentationScopeView, ValueType,
 };
-use otap_df_pdata_views::views::logs::{
+use otel_arrow_dfe_pdata_views::views::logs::{
     LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView,
 };
-use otap_df_pdata_views::views::resource::ResourceView;
+use otel_arrow_dfe_pdata_views::views::resource::ResourceView;
 use serde::Serialize;
 use serde::ser::{SerializeMap, Serializer};
 use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue};

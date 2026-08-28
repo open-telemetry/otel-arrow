@@ -14,14 +14,14 @@
 use std::borrow::Cow;
 
 use hashbrown::Equivalent;
-use otap_df_pdata_views::views::common::{
+use otel_arrow_dfe_pdata_views::views::common::{
     AnyValueView, AttributeView, InstrumentationScopeView, ValueType,
 };
-use otap_df_pdata_views::views::metrics::{
+use otel_arrow_dfe_pdata_views::views::metrics::{
     AggregationTemporality, DataType, DataView, ExponentialHistogramView, HistogramView,
     MetricView, SumView,
 };
-use otap_df_pdata_views::views::resource::ResourceView;
+use otel_arrow_dfe_pdata_views::views::resource::ResourceView;
 
 /// Compute a [`ResourceId`] from an optional resource view. When the view is
 /// `None`, the identity uses `AttributeHash::EMPTY`.

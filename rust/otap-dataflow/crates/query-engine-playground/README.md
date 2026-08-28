@@ -6,7 +6,7 @@ against OpenTelemetry data.
 ## Running
 
 ```bash
-cargo run -p otap-df-query-engine-playground
+cargo run -p otel-arrow-dfe-query-engine-playground
 ```
 
 Then open <http://localhost:3000> in a browser.

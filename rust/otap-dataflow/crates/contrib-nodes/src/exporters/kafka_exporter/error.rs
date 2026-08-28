@@ -16,7 +16,7 @@
 //! failure (transient vs. permanent nack) by matching one enum.
 
 use crate::common::kafka::sanitize_for_log;
-use otap_df_config::SignalType;
+use otel_arrow_dfe_config::SignalType;
 use rdkafka::error::KafkaError;
 use rdkafka::types::RDKafkaErrorCode;
 
@@ -155,7 +155,7 @@ impl KafkaExporterError {
     pub(crate) fn invalid_header_topic(topic: impl AsRef<str>, reason: impl Into<String>) -> Self {
         let topic = sanitize_for_log(topic.as_ref());
         let reason = sanitize_for_log(&reason.into());
-        otap_df_telemetry::otel_warn!(
+        otel_warn!(
             "kafka.exporter.topic.invalid_header",
             header_topic = %topic,
             %reason,
@@ -169,7 +169,7 @@ impl KafkaExporterError {
     /// logged or stored, since it is client-controlled.
     pub(crate) fn disallowed_header_topic(topic: impl AsRef<str>) -> Self {
         let topic = sanitize_for_log(topic.as_ref());
-        otap_df_telemetry::otel_warn!(
+        otel_warn!(
             "kafka.exporter.topic.disallowed_header",
             header_topic = %topic,
             "Kafka topic from transport header is not permitted by the routing policy, \

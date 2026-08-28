@@ -14,7 +14,7 @@
 //! structured with named fields so callers can inspect exactly which rule was
 //! violated instead of matching on a free-form string.
 
-use otap_df_engine::error::Error as EngineError;
+use otel_arrow_dfe_engine::error::Error as EngineError;
 
 /// Errors produced by the Kafka receiver.
 #[derive(Debug, thiserror::Error)]

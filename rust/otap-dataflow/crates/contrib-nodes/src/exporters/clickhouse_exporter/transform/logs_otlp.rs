@@ -131,34 +131,54 @@
 //! OTLP timestamp becomes zero. `ResourceAttributes` and `ServiceName` are emitted together when
 //! at least one resource attribute exists; an absent `service.name` becomes an empty string.
 //!
-//! # Reused state and allocation bounds
+//! # Allocation strategy and bounds
 //!
-//! [`OtlpLogsTransformer`] is owned by one exporter task and is reused sequentially. It retains:
+//! The exporter processes many requests with similar shapes. Rebuilding all allocation state from
+//! scratch for every request adds allocator work without changing the output. This transformer
+//! therefore follows three principles:
 //!
-//! - the previous request's row count as the next request's builder-capacity hint, capped at 16K
-//!   rows to prevent one unusually large request from causing persistent over-allocation
-//! - a scratch byte buffer used for `AnyValue` text/JSON conversion and ID encoding
-//! - a one-entry schema cache keyed by the sorted output column names and Arrow data types
+//! - reuse temporary storage and metadata that remain owned by the transformer
+//! - right-size output builders that must be recreated for each returned batch
+//! - bound retained capacity so an unusually large request does not determine steady-state memory
 //!
-//! The Arrow builders themselves are request-local and are finalized into the returned batch.
+//! ## Implementation details
+//!
+//! Arrow builders cannot be reused because finishing them transfers their column buffers into the
+//! returned [`RecordBatch`]. The transformer instead records the previous non-empty request's
+//! logical row, string-byte, and map sizes, then scales those observations by the ratio of encoded
+//! request sizes to preallocate the next request's builders.
+//!
+//! Temporary conversion state does not escape the call, so one transformer instance reuses it
+//! sequentially. Resource and scope keys and values share contiguous attribute arenas indexed by
+//! byte ranges, and a separate byte buffer handles `AnyValue`, base64, JSON, and ID conversion. A
+//! one-entry cache reuses the [`Schema`] when the sorted column names and data types are unchanged.
+//! The raw protobuf views likewise share their parse cursor and discovered field ranges through one
+//! reference-counted parser state.
+//!
+//! Capacity history controls initial reservations only; it never limits accepted rows or payload
+//! bytes. Builder projections reserve at most 16K rows, 64 MiB of aggregate variable-width data,
+//! and 1,048,576 aggregate map entries. Resource and scope arenas discard backing storage above
+//! 64 KiB or 1,024 entries.
+//!
 //! Changes to conversion, column presence, or sorting must preserve logical parity with the
 //! legacy path; the tests below compare names, row order, null placement, and values.
 
-use std::sync::Arc;
+use std::{ops::Range, sync::Arc};
 
 use arrow::array::{
-    ArrayRef, MapBuilder, RecordBatch, StringBuilder, TimestampNanosecondBuilder, UInt8Builder,
+    ArrayBuilder, ArrayRef, MapBuilder, RecordBatch, StringBuilder, TimestampNanosecondBuilder,
+    UInt8Builder,
 };
 use arrow::datatypes::{DataType, Field, Schema};
 use base64::Engine;
-use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
-use otap_df_pdata_views::views::common::{
+use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
+use otel_arrow_dfe_pdata_views::views::common::{
     AnyValueView, AttributeView, InstrumentationScopeView, ValueType,
 };
-use otap_df_pdata_views::views::logs::{
+use otel_arrow_dfe_pdata_views::views::logs::{
     LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView,
 };
-use otap_df_pdata_views::views::resource::ResourceView;
+use otel_arrow_dfe_pdata_views::views::resource::ResourceView;
 use serde::Serialize;
 use serde::ser::{Error as SerError, SerializeMap, SerializeSeq, Serializer};
 
@@ -168,21 +188,23 @@ use crate::exporters::clickhouse_exporter::error::ClickhouseExporterError;
 /// Raw resource-attribute key whose first value populates the dedicated `ServiceName` column.
 const SERVICE_NAME_KEY: &[u8] = b"service.name";
 
-/// Initial payload-byte estimate used for each row in an Arrow string builder.
-///
-/// Builders grow automatically, so this affects allocation behavior but never truncates values.
-const INITIAL_STRING_BYTES_PER_ROW: usize = 16;
-
 /// Maximum number of rows for which a new request speculatively reserves builder capacity.
 ///
 /// The output itself is not capped. Requests larger than this value continue growing their
-/// builders normally; only the capacity hint learned for the next request is bounded.
+/// builders normally; only the projected row capacity hint is bounded here.
 const MAX_PREALLOCATED_ROWS: usize = 16 * 1024;
 
-/// Clamp a previous request's row count before using it as the next capacity hint.
-fn bounded_row_capacity(row_count: usize) -> usize {
-    row_count.min(MAX_PREALLOCATED_ROWS)
-}
+/// Maximum aggregate variable-width data bytes speculatively reserved for one output batch.
+const MAX_PREALLOCATED_DATA_BYTES: usize = 64 * 1024 * 1024;
+
+/// Maximum aggregate entries speculatively reserved across the three map builders.
+const MAX_PREALLOCATED_MAP_ENTRIES: usize = MAX_PREALLOCATED_ROWS * 64;
+
+/// Maximum converted attribute bytes retained by one resource or scope arena between requests.
+const MAX_RETAINED_ATTRIBUTE_ARENA_BYTES: usize = 64 * 1024;
+
+/// Maximum attribute entries retained by one resource or scope arena between requests.
+const MAX_RETAINED_ATTRIBUTE_ARENA_ENTRIES: usize = 1024;
 
 /// Stateful converter from serialized OTLP log requests to ClickHouse Arrow batches.
 ///
@@ -195,8 +217,12 @@ pub(crate) struct OtlpLogsTransformer {
     cached_schema: Option<(Vec<(&'static str, DataType)>, Arc<Schema>)>,
     /// Reusable buffer for scalar text, JSON, base64, and hexadecimal representations.
     json_scratch: Vec<u8>,
-    /// Completed row count from the previous request, used only as a capacity estimate.
-    previous_row_count: usize,
+    /// Reusable storage for the current resource's flattened attributes.
+    resource_attributes: AttributeArena,
+    /// Reusable storage for the current scope's flattened attributes.
+    scope_attributes: AttributeArena,
+    /// Observed builder sizes from the previous non-empty request.
+    capacity_history: Option<CapacityHistory>,
 }
 
 impl OtlpLogsTransformer {
@@ -219,49 +245,79 @@ impl OtlpLogsTransformer {
         &mut self,
         request: &[u8],
     ) -> Result<Option<RecordBatch>, ClickhouseExporterError> {
+        let result = self.transform_request(request);
+        self.resource_attributes.clear();
+        self.scope_attributes.clear();
+        result
+    }
+
+    /// Build one batch while resource and scope attribute arenas are reused during traversal.
+    ///
+    /// This worker is separate from [`Self::transform`] so the outer entry point can clear both
+    /// arenas after capturing the result, including when parsing or conversion fails. Consequently,
+    /// this method may return with active or partially collected arena contents and must only be
+    /// called through [`Self::transform`]. Capacity history is updated only after a non-empty batch
+    /// is built successfully.
+    fn transform_request(
+        &mut self,
+        request: &[u8],
+    ) -> Result<Option<RecordBatch>, ClickhouseExporterError> {
         let logs = RawLogsData::try_new(request)?;
-        let mut builders = LogsBuilders::new(self.previous_row_count);
+        let capacities = self
+            .capacity_history
+            .as_ref()
+            .map(|history| history.project(request.len()))
+            .unwrap_or_default();
+        let mut builders = LogsBuilders::new(&capacities);
         let mut presence = ColumnPresence::default();
-        let mut row_count = 0;
 
         for resource_logs in logs.resources() {
             let resource_schema_url = optional_utf8(resource_logs.schema_url())?;
-            let (resource_attributes, service_name) = match resource_logs.resource() {
-                Some(resource) => collect_resource_attributes(resource, &mut self.json_scratch)?,
-                None => (Vec::new(), String::new()),
-            };
+            self.resource_attributes.clear();
+            if let Some(resource) = resource_logs.resource() {
+                self.resource_attributes.collect(
+                    resource.attributes(),
+                    &mut self.json_scratch,
+                    true,
+                )?;
+            }
             presence.resource_schema_url |= resource_schema_url.is_some();
-            presence.resource_attributes |= !resource_attributes.is_empty();
+            presence.resource_attributes |= !self.resource_attributes.is_empty();
+            let service_name = self.resource_attributes.service_name();
 
             for scope_logs in resource_logs.scopes() {
-                let (scope_name, scope_version, scope_attributes) = match scope_logs.scope() {
+                self.scope_attributes.clear();
+                let scope = scope_logs.scope();
+                let (scope_name, scope_version) = match scope.as_ref() {
                     Some(scope) => {
-                        let name = optional_utf8(scope.name())?;
-                        let version = optional_utf8(scope.version())?;
-                        let attributes =
-                            collect_attributes(scope.attributes(), &mut self.json_scratch)?;
-                        (name, version, attributes)
+                        self.scope_attributes.collect(
+                            scope.attributes(),
+                            &mut self.json_scratch,
+                            false,
+                        )?;
+                        (
+                            optional_utf8(scope.name())?,
+                            optional_utf8(scope.version())?,
+                        )
                     }
-                    None => (None, None, Vec::new()),
+                    None => (None, None),
                 };
                 presence.scope_name |= scope_name.is_some();
                 presence.scope_version |= scope_version.is_some();
-                presence.scope_attributes |= !scope_attributes.is_empty();
+                presence.scope_attributes |= !self.scope_attributes.is_empty();
 
                 for log in scope_logs.log_records() {
-                    row_count += 1;
                     builders
                         .timestamp
                         .append_value(log.time_unix_nano().unwrap_or(0) as i64);
-                    append_optional_string(
-                        &mut builders.resource_schema_url,
-                        resource_schema_url.as_deref(),
-                    );
-                    append_attribute_map(&mut builders.resource_attributes, &resource_attributes)?;
-                    builders.service_name.append_value(&service_name);
-                    append_optional_string(&mut builders.scope_name, scope_name.as_deref());
-                    append_optional_string(&mut builders.scope_version, scope_version.as_deref());
-                    append_attribute_map(&mut builders.scope_attributes, &scope_attributes)?;
+                    append_optional_string(&mut builders.resource_schema_url, resource_schema_url);
+                    self.resource_attributes
+                        .append_to(&mut builders.resource_attributes)?;
+                    builders.service_name.append_value(service_name);
+                    append_optional_string(&mut builders.scope_name, scope_name);
+                    append_optional_string(&mut builders.scope_version, scope_version);
+                    self.scope_attributes
+                        .append_to(&mut builders.scope_attributes)?;
 
                     let mut has_log_attributes = false;
                     for attribute in log.attributes() {
@@ -277,8 +333,7 @@ impl OtlpLogsTransformer {
 
                     match log.body() {
                         Some(body) if body.value_type() != ValueType::Empty => {
-                            stringify_any_value(body, &mut self.json_scratch)?;
-                            builders.body.append_value(utf8(&self.json_scratch)?);
+                            append_any_value(&mut builders.body, body, &mut self.json_scratch)?;
                             presence.body = true;
                         }
                         _ => builders.body.append_null(),
@@ -325,15 +380,19 @@ impl OtlpLogsTransformer {
             }
         }
 
-        self.previous_row_count = row_count;
-        if row_count == 0 {
+        if builders.timestamp.len() == 0 {
             return Ok(None);
         }
 
+        let next_capacities = builders.capacities();
         let mut columns = builders.finish(presence);
         columns.sort_unstable_by_key(|(name, _)| *name);
         let schema = self.schema_for(&columns);
         let arrays = columns.into_iter().map(|(_, array)| array).collect();
+        self.capacity_history = Some(CapacityHistory {
+            request_bytes: request.len(),
+            capacities: next_capacities,
+        });
         Ok(Some(RecordBatch::try_new(schema, arrays)?))
     }
 
@@ -359,6 +418,336 @@ impl OtlpLogsTransformer {
         let schema = Arc::new(Schema::new(fields));
         self.cached_schema = Some((key, schema.clone()));
         schema
+    }
+}
+
+/// Reusable arena for one resource or scope's flattened string attributes.
+///
+/// Keys and converted values share one backing string, and each entry stores ranges into that
+/// string instead of allocating separate strings. Entry order and duplicate keys are preserved.
+/// Ranges remain valid until [`Self::clear`], which resets the logical contents and either retains
+/// or releases the backing allocations according to the configured retention bounds.
+#[derive(Default)]
+struct AttributeArena {
+    /// Concatenated UTF-8 keys and converted values referenced by `entries`.
+    storage: String,
+    /// Ordered key/value ranges for the current resource or scope.
+    entries: Vec<AttributeRanges>,
+    /// First captured `service.name` value, stored as a range into `storage`.
+    service_name: Option<Range<usize>>,
+}
+
+/// Byte ranges for one key/value pair stored in an [`AttributeArena`].
+struct AttributeRanges {
+    key: Range<usize>,
+    value: Range<usize>,
+}
+
+impl AttributeArena {
+    /// Prepare the arena for another resource or scope.
+    ///
+    /// All previously returned ranges become invalid. Normal-sized allocations are retained for
+    /// reuse, while storage above the byte or entry retention bounds is replaced so an outlier
+    /// parent does not determine the transformer's steady-state memory usage.
+    fn clear(&mut self) {
+        if self.storage.capacity() > MAX_RETAINED_ATTRIBUTE_ARENA_BYTES {
+            self.storage = String::new();
+        } else {
+            self.storage.clear();
+        }
+        if self.entries.capacity() > MAX_RETAINED_ATTRIBUTE_ARENA_ENTRIES {
+            self.entries = Vec::new();
+        } else {
+            self.entries.clear();
+        }
+        self.service_name = None;
+    }
+
+    /// Convert and collect one parent message's attributes in input order.
+    ///
+    /// Values are converted to their ClickHouse string representation through `scratch`. When
+    /// `capture_service_name` is true, the first `service.name` value is also indexed for the
+    /// dedicated column. The caller must clear the arena before collecting a different parent.
+    /// An error may leave partially collected contents; [`OtlpLogsTransformer::transform`] still
+    /// clears them before returning.
+    fn collect<I, A>(
+        &mut self,
+        attributes: I,
+        scratch: &mut Vec<u8>,
+        capture_service_name: bool,
+    ) -> Result<(), ClickhouseExporterError>
+    where
+        I: Iterator<Item = A>,
+        A: AttributeView,
+    {
+        for attribute in attributes {
+            let key_bytes = attribute.key();
+            let key = utf8(key_bytes)?;
+            let key_range = self.append_string(key);
+
+            stringify_optional_any_value(attribute.value(), scratch)?;
+            let value_range = self.append_string(utf8(scratch)?);
+            if capture_service_name && self.service_name.is_none() && key_bytes == SERVICE_NAME_KEY
+            {
+                self.service_name = Some(value_range.clone());
+            }
+            self.entries.push(AttributeRanges {
+                key: key_range,
+                value: value_range,
+            });
+        }
+        Ok(())
+    }
+
+    /// Append the collected entries as one non-null Arrow map value.
+    ///
+    /// An empty arena appends an empty map rather than a null. Request-wide presence tracking later
+    /// decides whether the entire column is included in the returned batch.
+    fn append_to(
+        &self,
+        builder: &mut MapBuilder<StringBuilder, StringBuilder>,
+    ) -> Result<(), ClickhouseExporterError> {
+        for entry in &self.entries {
+            builder
+                .keys()
+                .append_value(&self.storage[entry.key.clone()]);
+            builder
+                .values()
+                .append_value(&self.storage[entry.value.clone()]);
+        }
+        builder.append(true)?;
+        Ok(())
+    }
+
+    /// Copy a string into shared storage and return its byte range until the next clear.
+    fn append_string(&mut self, value: &str) -> Range<usize> {
+        let start = self.storage.len();
+        self.storage.push_str(value);
+        start..self.storage.len()
+    }
+
+    /// Return whether the current parent contributed no attributes.
+    fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Return the first captured `service.name`, or an empty string when none was collected.
+    fn service_name(&self) -> &str {
+        self.service_name
+            .as_ref()
+            .map(|range| &self.storage[range.clone()])
+            .unwrap_or_default()
+    }
+}
+
+/// Builder sizes observed for one completed request and its encoded input size.
+#[derive(Clone, Default)]
+struct CapacityHistory {
+    request_bytes: usize,
+    capacities: LogsBuilderCapacities,
+}
+
+impl CapacityHistory {
+    fn project(&self, request_bytes: usize) -> LogsBuilderCapacities {
+        self.capacities.scaled(request_bytes, self.request_bytes)
+    }
+}
+
+/// Observed entry and payload sizes for one Arrow map builder.
+#[derive(Clone, Default)]
+struct MapBuilderCapacities {
+    entries: usize,
+    key_bytes: usize,
+    value_bytes: usize,
+}
+
+impl MapBuilderCapacities {
+    fn scaled(&self, numerator: usize, denominator: usize) -> Self {
+        Self {
+            entries: scale_capacity(self.entries, numerator, denominator),
+            key_bytes: scale_capacity(self.key_bytes, numerator, denominator),
+            value_bytes: scale_capacity(self.value_bytes, numerator, denominator),
+        }
+    }
+}
+
+/// Observed row and payload sizes for all request-local Arrow builders.
+#[derive(Clone, Default)]
+struct LogsBuilderCapacities {
+    rows: usize,
+    body_bytes: usize,
+    event_name_bytes: usize,
+    log_attributes: MapBuilderCapacities,
+    resource_attributes: MapBuilderCapacities,
+    resource_schema_url_bytes: usize,
+    scope_attributes: MapBuilderCapacities,
+    scope_name_bytes: usize,
+    scope_version_bytes: usize,
+    service_name_bytes: usize,
+    severity_text_bytes: usize,
+    span_id_bytes: usize,
+    trace_id_bytes: usize,
+}
+
+impl LogsBuilderCapacities {
+    fn scaled(&self, numerator: usize, denominator: usize) -> Self {
+        Self {
+            rows: scale_capacity(self.rows, numerator, denominator),
+            body_bytes: scale_capacity(self.body_bytes, numerator, denominator),
+            event_name_bytes: scale_capacity(self.event_name_bytes, numerator, denominator),
+            log_attributes: self.log_attributes.scaled(numerator, denominator),
+            resource_attributes: self.resource_attributes.scaled(numerator, denominator),
+            resource_schema_url_bytes: scale_capacity(
+                self.resource_schema_url_bytes,
+                numerator,
+                denominator,
+            ),
+            scope_attributes: self.scope_attributes.scaled(numerator, denominator),
+            scope_name_bytes: scale_capacity(self.scope_name_bytes, numerator, denominator),
+            scope_version_bytes: scale_capacity(self.scope_version_bytes, numerator, denominator),
+            service_name_bytes: scale_capacity(self.service_name_bytes, numerator, denominator),
+            severity_text_bytes: scale_capacity(self.severity_text_bytes, numerator, denominator),
+            span_id_bytes: scale_capacity(self.span_id_bytes, numerator, denominator),
+            trace_id_bytes: scale_capacity(self.trace_id_bytes, numerator, denominator),
+        }
+        .with_max_rows(MAX_PREALLOCATED_ROWS)
+        .with_max_data_bytes(MAX_PREALLOCATED_DATA_BYTES)
+        .with_max_map_entries(MAX_PREALLOCATED_MAP_ENTRIES)
+    }
+
+    /// Bound every projected capacity to the same per-row ratio at `max_rows`.
+    fn with_max_rows(self, max_rows: usize) -> Self {
+        if self.rows <= max_rows {
+            return self;
+        }
+
+        let projected_rows = self.rows;
+        Self {
+            rows: max_rows,
+            body_bytes: scale_capacity(self.body_bytes, max_rows, projected_rows),
+            event_name_bytes: scale_capacity(self.event_name_bytes, max_rows, projected_rows),
+            log_attributes: self.log_attributes.scaled(max_rows, projected_rows),
+            resource_attributes: self.resource_attributes.scaled(max_rows, projected_rows),
+            resource_schema_url_bytes: scale_capacity(
+                self.resource_schema_url_bytes,
+                max_rows,
+                projected_rows,
+            ),
+            scope_attributes: self.scope_attributes.scaled(max_rows, projected_rows),
+            scope_name_bytes: scale_capacity(self.scope_name_bytes, max_rows, projected_rows),
+            scope_version_bytes: scale_capacity(self.scope_version_bytes, max_rows, projected_rows),
+            service_name_bytes: scale_capacity(self.service_name_bytes, max_rows, projected_rows),
+            severity_text_bytes: scale_capacity(self.severity_text_bytes, max_rows, projected_rows),
+            span_id_bytes: scale_capacity(self.span_id_bytes, max_rows, projected_rows),
+            trace_id_bytes: scale_capacity(self.trace_id_bytes, max_rows, projected_rows),
+        }
+    }
+
+    /// Bound aggregate variable-width data reservations while preserving their relative sizes.
+    fn with_max_data_bytes(mut self, max_bytes: usize) -> Self {
+        let aggregate = self.data_bytes();
+        if aggregate <= max_bytes as u128 {
+            return self;
+        }
+
+        bound_aggregate_capacities(
+            &mut [
+                &mut self.body_bytes,
+                &mut self.event_name_bytes,
+                &mut self.log_attributes.key_bytes,
+                &mut self.log_attributes.value_bytes,
+                &mut self.resource_attributes.key_bytes,
+                &mut self.resource_attributes.value_bytes,
+                &mut self.resource_schema_url_bytes,
+                &mut self.scope_attributes.key_bytes,
+                &mut self.scope_attributes.value_bytes,
+                &mut self.scope_name_bytes,
+                &mut self.scope_version_bytes,
+                &mut self.service_name_bytes,
+                &mut self.severity_text_bytes,
+                &mut self.span_id_bytes,
+                &mut self.trace_id_bytes,
+            ],
+            max_bytes,
+            aggregate,
+        );
+        self
+    }
+
+    /// Bound aggregate map-entry reservations while preserving their relative sizes.
+    fn with_max_map_entries(mut self, max_entries: usize) -> Self {
+        let aggregate = self.map_entries();
+        if aggregate <= max_entries as u128 {
+            return self;
+        }
+
+        bound_aggregate_capacities(
+            &mut [
+                &mut self.log_attributes.entries,
+                &mut self.resource_attributes.entries,
+                &mut self.scope_attributes.entries,
+            ],
+            max_entries,
+            aggregate,
+        );
+        self
+    }
+
+    /// Return aggregate variable-width data bytes without overflowing on adversarial history.
+    fn data_bytes(&self) -> u128 {
+        self.body_bytes as u128
+            + self.event_name_bytes as u128
+            + self.log_attributes.key_bytes as u128
+            + self.log_attributes.value_bytes as u128
+            + self.resource_attributes.key_bytes as u128
+            + self.resource_attributes.value_bytes as u128
+            + self.resource_schema_url_bytes as u128
+            + self.scope_attributes.key_bytes as u128
+            + self.scope_attributes.value_bytes as u128
+            + self.scope_name_bytes as u128
+            + self.scope_version_bytes as u128
+            + self.service_name_bytes as u128
+            + self.severity_text_bytes as u128
+            + self.span_id_bytes as u128
+            + self.trace_id_bytes as u128
+    }
+
+    /// Return aggregate entries across all map builders.
+    fn map_entries(&self) -> u128 {
+        self.log_attributes.entries as u128
+            + self.resource_attributes.entries as u128
+            + self.scope_attributes.entries as u128
+    }
+}
+
+/// Scale one observed capacity by the ratio between two encoded request sizes.
+fn scale_capacity(value: usize, numerator: usize, denominator: usize) -> usize {
+    if denominator == 0 {
+        return 0;
+    }
+    let scaled = (value as u128)
+        .saturating_mul(numerator as u128)
+        .checked_div(denominator as u128)
+        .unwrap_or_default();
+    usize::try_from(scaled).unwrap_or(usize::MAX)
+}
+
+/// Scale one capacity against an aggregate that may exceed `usize`.
+fn scale_capacity_u128(value: usize, numerator: usize, denominator: u128) -> usize {
+    if denominator == 0 {
+        return 0;
+    }
+    let scaled = (value as u128)
+        .saturating_mul(numerator as u128)
+        .checked_div(denominator)
+        .unwrap_or_default();
+    usize::try_from(scaled).unwrap_or(usize::MAX)
+}
+
+/// Proportionally bound a set of capacity hints by their aggregate reservation.
+fn bound_aggregate_capacities(capacities: &mut [&mut usize], maximum: usize, aggregate: u128) {
+    for capacity in capacities {
+        **capacity = scale_capacity_u128(**capacity, maximum, aggregate);
     }
 }
 
@@ -405,38 +794,48 @@ struct LogsBuilders {
 }
 
 impl LogsBuilders {
-    /// Create all builders using a bounded estimate of the request's eventual row count.
+    /// Create builders from bounded row, map, and payload-size projections.
     ///
-    /// String payload capacity uses a small per-row estimate. Map child builders intentionally
-    /// start without a value-count estimate because attribute cardinality is independent of log
-    /// row count.
-    fn new(row_capacity: usize) -> Self {
-        let row_capacity = bounded_row_capacity(row_capacity);
-        let string_capacity = row_capacity.saturating_mul(INITIAL_STRING_BYTES_PER_ROW);
-        let string_builder = || StringBuilder::with_capacity(row_capacity, string_capacity);
-        let map_builder = || {
-            MapBuilder::with_capacity(
-                None,
-                StringBuilder::new(),
-                StringBuilder::new(),
-                row_capacity,
-            )
-        };
+    /// The projections come from the previous non-empty request. Builders still grow normally
+    /// when the current request differs, so these values affect allocation behavior only.
+    fn new(capacities: &LogsBuilderCapacities) -> Self {
         Self {
-            body: string_builder(),
-            event_name: string_builder(),
-            log_attributes: map_builder(),
-            resource_attributes: map_builder(),
-            resource_schema_url: string_builder(),
-            scope_attributes: map_builder(),
-            scope_name: string_builder(),
-            scope_version: string_builder(),
-            service_name: string_builder(),
-            severity_number: UInt8Builder::with_capacity(row_capacity),
-            severity_text: string_builder(),
-            span_id: string_builder(),
-            timestamp: TimestampNanosecondBuilder::with_capacity(row_capacity),
-            trace_id: string_builder(),
+            body: string_builder(capacities.rows, capacities.body_bytes),
+            event_name: string_builder(capacities.rows, capacities.event_name_bytes),
+            log_attributes: map_builder(capacities.rows, &capacities.log_attributes),
+            resource_attributes: map_builder(capacities.rows, &capacities.resource_attributes),
+            resource_schema_url: string_builder(
+                capacities.rows,
+                capacities.resource_schema_url_bytes,
+            ),
+            scope_attributes: map_builder(capacities.rows, &capacities.scope_attributes),
+            scope_name: string_builder(capacities.rows, capacities.scope_name_bytes),
+            scope_version: string_builder(capacities.rows, capacities.scope_version_bytes),
+            service_name: string_builder(capacities.rows, capacities.service_name_bytes),
+            severity_number: UInt8Builder::with_capacity(capacities.rows),
+            severity_text: string_builder(capacities.rows, capacities.severity_text_bytes),
+            span_id: string_builder(capacities.rows, capacities.span_id_bytes),
+            timestamp: TimestampNanosecondBuilder::with_capacity(capacities.rows),
+            trace_id: string_builder(capacities.rows, capacities.trace_id_bytes),
+        }
+    }
+
+    /// Capture the logical sizes needed to seed builders for a later request.
+    fn capacities(&mut self) -> LogsBuilderCapacities {
+        LogsBuilderCapacities {
+            rows: self.timestamp.len(),
+            body_bytes: self.body.values_slice().len(),
+            event_name_bytes: self.event_name.values_slice().len(),
+            log_attributes: map_capacities(&mut self.log_attributes),
+            resource_attributes: map_capacities(&mut self.resource_attributes),
+            resource_schema_url_bytes: self.resource_schema_url.values_slice().len(),
+            scope_attributes: map_capacities(&mut self.scope_attributes),
+            scope_name_bytes: self.scope_name.values_slice().len(),
+            scope_version_bytes: self.scope_version.values_slice().len(),
+            service_name_bytes: self.service_name.values_slice().len(),
+            severity_text_bytes: self.severity_text.values_slice().len(),
+            span_id_bytes: self.span_id.values_slice().len(),
+            trace_id_bytes: self.trace_id.values_slice().len(),
         }
     }
 
@@ -528,49 +927,32 @@ impl LogsBuilders {
     }
 }
 
-/// Materialize one resource's string map and extract its first `service.name` value.
-///
-/// Resource attributes must be replayed for every descendant log, so they are owned here rather
-/// than repeatedly traversed through borrowed protobuf views. Attribute order and duplicate keys
-/// are preserved. The first `service.name` wins to match the generic ClickHouse transformation.
-fn collect_resource_attributes<R: ResourceView>(
-    resource: R,
-    scratch: &mut Vec<u8>,
-) -> Result<(Vec<(String, String)>, String), ClickhouseExporterError> {
-    let mut attributes = Vec::new();
-    let mut service_name = None;
-    for attribute in resource.attributes() {
-        let key_bytes = attribute.key();
-        let key = utf8(key_bytes)?.to_owned();
-        stringify_optional_any_value(attribute.value(), scratch)?;
-        let value = utf8(scratch)?.to_owned();
-        if service_name.is_none() && key_bytes == SERVICE_NAME_KEY {
-            service_name = Some(value.clone());
-        }
-        attributes.push((key, value));
-    }
-    Ok((attributes, service_name.unwrap_or_default()))
+/// Create a string builder with separate row and payload-byte capacities.
+fn string_builder(rows: usize, bytes: usize) -> StringBuilder {
+    StringBuilder::with_capacity(rows, bytes)
 }
 
-/// Materialize a reusable string-map representation of parent-level attributes.
-///
-/// This is used for scope attributes, which are converted once per scope and copied into every
-/// descendant log row. Attribute order and duplicate keys are preserved.
-fn collect_attributes<I, A>(
-    attributes: I,
-    scratch: &mut Vec<u8>,
-) -> Result<Vec<(String, String)>, ClickhouseExporterError>
-where
-    I: Iterator<Item = A>,
-    A: AttributeView,
-{
-    let mut collected = Vec::new();
-    for attribute in attributes {
-        let key = utf8(attribute.key())?.to_owned();
-        stringify_optional_any_value(attribute.value(), scratch)?;
-        collected.push((key, utf8(scratch)?.to_owned()));
+/// Create a map builder with observed row, entry, key-byte, and value-byte capacities.
+fn map_builder(
+    rows: usize,
+    capacities: &MapBuilderCapacities,
+) -> MapBuilder<StringBuilder, StringBuilder> {
+    MapBuilder::with_capacity(
+        None,
+        StringBuilder::with_capacity(capacities.entries, capacities.key_bytes),
+        StringBuilder::with_capacity(capacities.entries, capacities.value_bytes),
+        rows,
+    )
+}
+
+/// Capture the logical entry and payload sizes from a completed map builder.
+fn map_capacities(builder: &mut MapBuilder<StringBuilder, StringBuilder>) -> MapBuilderCapacities {
+    let (keys, values) = builder.entries();
+    MapBuilderCapacities {
+        entries: keys.len(),
+        key_bytes: keys.values_slice().len(),
+        value_bytes: values.values_slice().len(),
     }
-    Ok(collected)
 }
 
 /// Append one borrowed attribute to the current map row without an intermediate owned pair.
@@ -583,25 +965,57 @@ fn append_attribute<A: AttributeView>(
     scratch: &mut Vec<u8>,
 ) -> Result<(), ClickhouseExporterError> {
     builder.keys().append_value(utf8(attribute.key())?);
-    stringify_optional_any_value(attribute.value(), scratch)?;
-    builder.values().append_value(utf8(scratch)?);
+    match attribute.value() {
+        Some(value) => append_any_value(builder.values(), value, scratch)?,
+        None => builder.values().append_value(""),
+    }
     Ok(())
 }
 
-/// Replay a materialized parent attribute map and close exactly one Arrow map row.
+/// Append one OTLP value directly to a string builder when its representation is scalar.
 ///
-/// Calling this with an empty slice appends a valid empty map, not a null map. That distinction
-/// keeps all builders aligned while request-wide presence tracking decides whether the complete
-/// column is emitted.
-fn append_attribute_map(
-    builder: &mut MapBuilder<StringBuilder, StringBuilder>,
-    attributes: &[(String, String)],
+/// Bytes and nested values still use `scratch` because base64 and JSON serialization need a
+/// contiguous representation before Arrow can append them.
+fn append_any_value<'a, V: AnyValueView<'a> + 'a>(
+    builder: &mut StringBuilder,
+    value: V,
+    scratch: &mut Vec<u8>,
 ) -> Result<(), ClickhouseExporterError> {
-    for (key, value) in attributes {
-        builder.keys().append_value(key);
-        builder.values().append_value(value);
+    match value.value_type() {
+        ValueType::Empty => builder.append_value(""),
+        ValueType::String => builder.append_value(utf8(
+            value
+                .as_string()
+                .ok_or_else(|| invalid_any_value("string"))?,
+        )?),
+        ValueType::Bool => builder.append_value(
+            if value.as_bool().ok_or_else(|| invalid_any_value("bool"))? {
+                "true"
+            } else {
+                "false"
+            },
+        ),
+        ValueType::Int64 => {
+            let mut buffer = itoa::Buffer::new();
+            builder.append_value(
+                buffer.format(value.as_int64().ok_or_else(|| invalid_any_value("int64"))?),
+            );
+        }
+        ValueType::Double => {
+            let mut buffer = ryu::Buffer::new();
+            builder.append_value(
+                buffer.format(
+                    value
+                        .as_double()
+                        .ok_or_else(|| invalid_any_value("double"))?,
+                ),
+            );
+        }
+        ValueType::Bytes | ValueType::Array | ValueType::KeyValueList => {
+            stringify_any_value(value, scratch)?;
+            builder.append_value(utf8(scratch)?);
+        }
     }
-    builder.append(true)?;
     Ok(())
 }
 
@@ -665,9 +1079,19 @@ fn stringify_any_value<'a, V: AnyValueView<'a> + 'a>(
             );
         }
         ValueType::Bytes => {
-            let encoded = base64::engine::general_purpose::STANDARD
-                .encode(value.as_bytes().ok_or_else(|| invalid_any_value("bytes"))?);
-            scratch.extend_from_slice(encoded.as_bytes());
+            let value = value.as_bytes().ok_or_else(|| invalid_any_value("bytes"))?;
+            let encoded_len = base64::encoded_len(value.len(), true).ok_or_else(|| {
+                ClickhouseExporterError::CoercionError {
+                    error: "OTLP byte value is too large to base64 encode".to_string(),
+                }
+            })?;
+            scratch.resize(encoded_len, 0);
+            let written = base64::engine::general_purpose::STANDARD
+                .encode_slice(value, scratch.as_mut_slice())
+                .map_err(|error| ClickhouseExporterError::CoercionError {
+                    error: format!("failed to base64 encode OTLP byte value: {error}"),
+                })?;
+            scratch.truncate(written);
         }
         ValueType::Array | ValueType::KeyValueList => {
             serde_json::to_writer(&mut *scratch, &AnyValueSerializerWrapper(value)).map_err(
@@ -773,11 +1197,9 @@ where
     }
 }
 
-/// Validate and own an optional protobuf string that must outlive its borrowed parent view.
-fn optional_utf8(value: Option<&[u8]>) -> Result<Option<String>, ClickhouseExporterError> {
-    value
-        .map(|value| utf8(value).map(ToOwned::to_owned))
-        .transpose()
+/// Validate an optional protobuf string while retaining its borrowed representation.
+fn optional_utf8(value: Option<&[u8]>) -> Result<Option<&str>, ClickhouseExporterError> {
+    value.map(utf8).transpose()
 }
 
 /// Interpret protobuf string bytes as UTF-8 and normalize failures to an exporter coercion error.
@@ -851,17 +1273,17 @@ mod tests {
     use arrow::array::Array;
     use arrow::util::display::array_value_to_string;
     use bytes::Bytes;
-    use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-    use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
-    use otap_df_pdata::proto::opentelemetry::common::v1::{
+    use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{
         AnyValue, InstrumentationScope, KeyValue,
     };
-    use otap_df_pdata::proto::opentelemetry::logs::v1::{
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{
         LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber,
     };
-    use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
-    use otap_df_pdata::testing::{fixtures, round_trip::encode_logs};
-    use otap_df_pdata::{OtapArrowRecords, OtapPayload, OtlpProtoBytes, TryIntoWithOptions};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
+    use otel_arrow_dfe_pdata::testing::{fixtures, round_trip::encode_logs};
+    use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayload, OtlpProtoBytes, TryIntoWithOptions};
     use prost::Message;
 
     use crate::exporters::clickhouse_exporter::transform::logs_fast::{
@@ -945,13 +1367,7 @@ mod tests {
             .collect()
     }
 
-    fn assert_matches_legacy(logs: LogsData) {
-        let bytes = request_bytes(logs);
-        let expected = legacy_batch(&bytes);
-        let actual = OtlpLogsTransformer::default()
-            .transform(&bytes)
-            .expect("transform raw OTLP logs directly");
-
+    fn assert_batches_match(actual: Option<RecordBatch>, expected: Option<RecordBatch>) {
         match (actual, expected) {
             (Some(actual), Some(expected)) => {
                 let actual_names = actual
@@ -982,6 +1398,15 @@ mod tests {
                 expected.is_some()
             ),
         }
+    }
+
+    fn assert_matches_legacy(logs: LogsData) {
+        let bytes = request_bytes(logs);
+        let expected = legacy_batch(&bytes);
+        let actual = OtlpLogsTransformer::default()
+            .transform(&bytes)
+            .expect("transform raw OTLP logs directly");
+        assert_batches_match(actual, expected);
     }
 
     fn logs_with_all_value_types() -> LogsData {
@@ -1097,6 +1522,85 @@ mod tests {
         }
     }
 
+    /// Scenario: one transformer processes attributed, sparse, and attributed batches in sequence.
+    /// Guarantees: reused attribute storage and capacity history never leak values across requests.
+    #[test]
+    fn reusable_state_is_cleared_between_requests() {
+        let mut transformer = OtlpLogsTransformer::default();
+        for logs in [
+            logs_with_all_value_types(),
+            fixtures::logs_with_no_attributes(),
+            logs_with_all_value_types(),
+        ] {
+            let bytes = request_bytes(logs);
+            let expected = legacy_batch(&bytes);
+            let actual = transformer
+                .transform(&bytes)
+                .expect("transform sequential raw OTLP logs");
+            assert_batches_match(actual, expected);
+        }
+    }
+
+    /// Scenario: oversized resource and scope attribute arenas are followed by a small request.
+    /// Guarantees: oversized allocations are released and the small request retains correct data.
+    #[test]
+    fn oversized_attribute_arenas_are_released_before_small_request() {
+        let oversized_attributes = || {
+            (0..=MAX_RETAINED_ATTRIBUTE_ARENA_ENTRIES)
+                .map(|index| {
+                    KeyValue::new(
+                        format!("oversized.key.{index}"),
+                        AnyValue::new_string("x".repeat(128)),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let oversized_logs = LogsData::new(vec![ResourceLogs::new(
+            Resource::build()
+                .attributes(oversized_attributes())
+                .finish(),
+            vec![ScopeLogs::new(
+                InstrumentationScope::build()
+                    .attributes(oversized_attributes())
+                    .finish(),
+                vec![
+                    LogRecord::build()
+                        .body(AnyValue::new_string("oversized"))
+                        .finish(),
+                ],
+            )],
+        )]);
+        let mut transformer = OtlpLogsTransformer::default();
+        let oversized_batch = transformer
+            .transform(&request_bytes(oversized_logs))
+            .expect("transform oversized raw OTLP attributes")
+            .expect("oversized logs batch");
+
+        assert_eq!(oversized_batch.num_rows(), 1);
+        assert!(
+            transformer.resource_attributes.storage.capacity()
+                <= MAX_RETAINED_ATTRIBUTE_ARENA_BYTES
+        );
+        assert!(
+            transformer.resource_attributes.entries.capacity()
+                <= MAX_RETAINED_ATTRIBUTE_ARENA_ENTRIES
+        );
+        assert!(
+            transformer.scope_attributes.storage.capacity() <= MAX_RETAINED_ATTRIBUTE_ARENA_BYTES
+        );
+        assert!(
+            transformer.scope_attributes.entries.capacity() <= MAX_RETAINED_ATTRIBUTE_ARENA_ENTRIES
+        );
+
+        let small_bytes = request_bytes(fixtures::logs_with_full_resource_and_scope());
+        let expected = legacy_batch(&small_bytes);
+        let actual = transformer
+            .transform(&small_bytes)
+            .expect("transform small raw OTLP request after oversized attributes");
+
+        assert_batches_match(actual, expected);
+    }
+
     /// Scenario: a raw OTLP log attribute contains an arbitrary byte sequence.
     /// Guarantees: the direct path stores the attribute using standard base64 encoding.
     #[test]
@@ -1171,16 +1675,108 @@ mod tests {
         assert!(batch.is_none());
     }
 
-    /// Scenario: the previous OTLP request reports an arbitrarily large row count.
-    /// Guarantees: speculative Arrow builder capacity remains capped at a bounded row count.
+    /// Scenario: a length-delimited OTLP string contains an invalid UTF-8 byte.
+    /// Guarantees: borrowed string decoding reports a coercion error instead of emitting bad data.
     #[test]
-    fn reusable_row_preallocation_is_bounded() {
-        assert_eq!(bounded_row_capacity(8_192), 8_192);
+    fn invalid_utf8_string_is_rejected() {
+        let mut bytes = request_bytes(logs_with_all_value_types()).to_vec();
+        let scope_name = b"raw-scope";
+        let offset = bytes
+            .windows(scope_name.len())
+            .position(|window| window == scope_name)
+            .expect("encoded request contains scope name");
+        bytes[offset] = 0xff;
+
+        let error = OtlpLogsTransformer::default()
+            .transform(&bytes)
+            .expect_err("invalid UTF-8 must be rejected");
+
+        assert!(matches!(
+            error,
+            ClickhouseExporterError::CoercionError { .. }
+        ));
+    }
+
+    /// Scenario: capacity hints are projected across equal, larger, and smaller request sizes.
+    /// Guarantees: projections preserve proportions without changing a same-sized batch.
+    #[test]
+    fn capacity_projection_scales_with_request_size() {
+        assert_eq!(scale_capacity(17, 11, 11), 17);
+        assert_eq!(scale_capacity(10, 3, 2), 15);
+        assert_eq!(scale_capacity(10, 1, 2), 5);
+    }
+
+    /// Scenario: capacity projection receives a zero baseline or values whose product exceeds usize.
+    /// Guarantees: projection returns zero without a baseline and saturates oversized results safely.
+    #[test]
+    fn capacity_projection_handles_zero_and_overflow() {
+        assert_eq!(scale_capacity(42, 1, 0), 0);
+        assert_eq!(scale_capacity(usize::MAX, usize::MAX, 1), usize::MAX);
+        assert_eq!(scale_capacity(usize::MAX, 2, usize::MAX), 2);
+    }
+
+    /// Scenario: observed capacity history represents more than 16K output rows.
+    /// Guarantees: every projected capacity is bounded to the same 16K-row equivalent.
+    #[test]
+    fn capacity_projection_is_bounded() {
+        let capacities = LogsBuilderCapacities {
+            rows: 2 * MAX_PREALLOCATED_ROWS,
+            body_bytes: 4 * MAX_PREALLOCATED_ROWS,
+            log_attributes: MapBuilderCapacities {
+                entries: 6 * MAX_PREALLOCATED_ROWS,
+                key_bytes: 8 * MAX_PREALLOCATED_ROWS,
+                value_bytes: 10 * MAX_PREALLOCATED_ROWS,
+            },
+            ..LogsBuilderCapacities::default()
+        };
+
+        let projected = capacities.scaled(1, 1);
+
+        assert_eq!(projected.rows, MAX_PREALLOCATED_ROWS);
+        assert_eq!(projected.body_bytes, 2 * MAX_PREALLOCATED_ROWS);
+        assert_eq!(projected.log_attributes.entries, 3 * MAX_PREALLOCATED_ROWS);
         assert_eq!(
-            bounded_row_capacity(MAX_PREALLOCATED_ROWS),
-            MAX_PREALLOCATED_ROWS
+            projected.log_attributes.key_bytes,
+            4 * MAX_PREALLOCATED_ROWS
         );
-        assert_eq!(bounded_row_capacity(usize::MAX), MAX_PREALLOCATED_ROWS);
+        assert_eq!(
+            projected.log_attributes.value_bytes,
+            5 * MAX_PREALLOCATED_ROWS
+        );
+    }
+
+    /// Scenario: a low-row history contains oversized strings, map values, and map entry counts.
+    /// Guarantees: speculative reservations have absolute byte and entry bounds independent of rows.
+    #[test]
+    fn capacity_projection_has_absolute_allocation_bounds() {
+        let oversized_map = MapBuilderCapacities {
+            entries: usize::MAX,
+            key_bytes: usize::MAX,
+            value_bytes: usize::MAX,
+        };
+        let capacities = LogsBuilderCapacities {
+            rows: 1,
+            body_bytes: usize::MAX,
+            event_name_bytes: usize::MAX,
+            log_attributes: oversized_map.clone(),
+            resource_attributes: oversized_map.clone(),
+            resource_schema_url_bytes: usize::MAX,
+            scope_attributes: oversized_map,
+            scope_name_bytes: usize::MAX,
+            scope_version_bytes: usize::MAX,
+            service_name_bytes: usize::MAX,
+            severity_text_bytes: usize::MAX,
+            span_id_bytes: usize::MAX,
+            trace_id_bytes: usize::MAX,
+        };
+
+        let projected = capacities.scaled(1, 1);
+
+        assert_eq!(projected.rows, 1);
+        assert!(projected.body_bytes > 0);
+        assert!(projected.log_attributes.entries > 0);
+        assert!(projected.data_bytes() <= MAX_PREALLOCATED_DATA_BYTES as u128);
+        assert!(projected.map_entries() <= MAX_PREALLOCATED_MAP_ENTRIES as u128);
     }
 
     #[derive(clickhouse::Row, serde::Deserialize)]
@@ -1195,7 +1791,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires a live ClickHouse; run with --ignored e2e"]
     async fn e2e_raw_otlp_logs_insert_roundtrips_through_clickhouse_schema() {
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let endpoint =
             std::env::var("CLICKHOUSE_URL").unwrap_or_else(|_| "http://localhost:8123".into());
         let username = std::env::var("CLICKHOUSE_USER").unwrap_or_else(|_| "default".into());

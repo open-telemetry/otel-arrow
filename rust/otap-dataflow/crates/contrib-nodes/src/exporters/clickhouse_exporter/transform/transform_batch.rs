@@ -29,9 +29,9 @@ use arrow::{
 use arrow_array::builder::FixedSizeBinaryBuilder;
 use arrow_array::{MapArray, StringArray, TimestampNanosecondArray, UInt32Array};
 use arrow_schema::{DataType, TimeUnit};
-use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otap_df_pdata::schema::consts;
+use otel_arrow_dfe_pdata::OtapArrowRecords;
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_dfe_pdata::schema::consts;
 
 use crate::exporters::clickhouse_exporter::arrays::get_u16_array_opt;
 use crate::exporters::clickhouse_exporter::error::ClickhouseExporterError;
@@ -993,30 +993,30 @@ mod multi_plus_single_tests {
 mod realistic_otap_tests {
     #![allow(unused_results)]
 
-    use otap_df_pdata::TryIntoWithOptions;
+    use otel_arrow_dfe_pdata::TryIntoWithOptions;
     use std::collections::HashMap;
 
     use arrow::array::{Array, ListArray, MapArray, RecordBatch, StringArray, UInt64Array};
     use arrow::datatypes::DataType;
     use bytes::Bytes;
-    use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-    use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
-    use otap_df_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
-    use otap_df_pdata::proto::opentelemetry::common::v1::{
+    use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{
         AnyValue, InstrumentationScope, KeyValue,
     };
-    use otap_df_pdata::proto::opentelemetry::logs::v1::{
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{
         LogRecord, ResourceLogs, ScopeLogs, SeverityNumber,
     };
-    use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
-    use otap_df_pdata::proto::opentelemetry::trace::v1::{
+    use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::{
         ResourceSpans, ScopeSpans, Span, Status,
         span::{Event, Link, SpanKind},
         status::StatusCode,
     };
-    use otap_df_pdata::schema::consts;
-    use otap_df_pdata::testing::fixtures;
-    use otap_df_pdata::{OtapArrowRecords, OtapPayload, OtlpProtoBytes};
+    use otel_arrow_dfe_pdata::schema::consts;
+    use otel_arrow_dfe_pdata::testing::fixtures;
+    use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayload, OtlpProtoBytes};
     use prost::Message;
 
     use super::BatchTransformer;
@@ -1122,7 +1122,7 @@ mod realistic_otap_tests {
                             key: "service.name".to_string(),
                             value: Some(AnyValue {
                                 value: Some(
-                                    otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(
+                                    otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(
                                         "checkout".to_string(),
                                     ),
                                 ),
@@ -1132,7 +1132,7 @@ mod realistic_otap_tests {
                             key: "deployment.environment".to_string(),
                             value: Some(AnyValue {
                                 value: Some(
-                                    otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(
+                                    otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(
                                         "prod".to_string(),
                                     ),
                                 ),
@@ -1152,7 +1152,7 @@ mod realistic_otap_tests {
                                 key: "scope.attr".to_string(),
                                 value: Some(AnyValue {
                                     value: Some(
-                                        otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(
+                                        otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(
                                             "scope-value".to_string(),
                                         ),
                                     ),
@@ -1170,7 +1170,7 @@ mod realistic_otap_tests {
                                 event_name: "http.request".to_string(),
                                 body: Some(AnyValue {
                                     value: Some(
-                                        otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(
+                                        otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(
                                             "request completed".to_string(),
                                         ),
                                     ),
@@ -1179,7 +1179,7 @@ mod realistic_otap_tests {
                                     key: "http.method".to_string(),
                                     value: Some(AnyValue {
                                         value: Some(
-                                            otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(
+                                            otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(
                                                 "GET".to_string(),
                                             ),
                                         ),
@@ -1195,7 +1195,7 @@ mod realistic_otap_tests {
                                 event_name: "cache.miss".to_string(),
                                 body: Some(AnyValue {
                                     value: Some(
-                                        otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(
+                                        otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(
                                             "cache miss".to_string(),
                                         ),
                                     ),
@@ -1218,7 +1218,7 @@ mod realistic_otap_tests {
                             key: "service.name".to_string(),
                             value: Some(AnyValue {
                                 value: Some(
-                                    otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(
+                                    otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(
                                         "payments".to_string(),
                                     ),
                                 ),
@@ -1228,7 +1228,7 @@ mod realistic_otap_tests {
                             key: "cloud.region".to_string(),
                             value: Some(AnyValue {
                                 value: Some(
-                                    otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(
+                                    otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(
                                         "us-east-1".to_string(),
                                     ),
                                 ),
@@ -1260,7 +1260,7 @@ mod realistic_otap_tests {
                             key: "http.route".to_string(),
                             value: Some(AnyValue {
                                 value: Some(
-                                    otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(
+                                    otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(
                                         "/charge".to_string(),
                                     ),
                                 ),
@@ -1274,7 +1274,7 @@ mod realistic_otap_tests {
                                     key: "db.system".to_string(),
                                     value: Some(AnyValue {
                                         value: Some(
-                                            otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(
+                                            otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(
                                                 "clickhouse".to_string(),
                                             ),
                                         ),
@@ -1289,7 +1289,7 @@ mod realistic_otap_tests {
                                     key: "db.statement".to_string(),
                                     value: Some(AnyValue {
                                         value: Some(
-                                            otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(
+                                            otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(
                                                 "INSERT INTO traces".to_string(),
                                             ),
                                         ),
@@ -1306,7 +1306,7 @@ mod realistic_otap_tests {
                                 key: "link.kind".to_string(),
                                 value: Some(AnyValue {
                                     value: Some(
-                                        otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(
+                                        otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(
                                             "causal".to_string(),
                                         ),
                                     ),
@@ -1685,7 +1685,7 @@ mod realistic_otap_tests {
         #[tokio::test]
         #[ignore = "requires a live ClickHouse; run with --ignored e2e"]
         async fn e2e_logs_insert_roundtrips_through_clickhouse_schema() {
-            otap_df_otap::crypto::ensure_crypto_provider();
+            otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
             let config = e2e_config("otap_e2e_logs");
             reset_database(&config).await;
 
@@ -1809,7 +1809,7 @@ mod realistic_otap_tests {
         #[tokio::test]
         #[ignore = "requires a live ClickHouse; run with --ignored e2e"]
         async fn e2e_traces_insert_roundtrips_through_clickhouse_schema() {
-            otap_df_otap::crypto::ensure_crypto_provider();
+            otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
             let config = e2e_config("otap_e2e_traces");
             reset_database(&config).await;
 
@@ -1960,7 +1960,7 @@ mod realistic_otap_tests {
         #[tokio::test]
         #[ignore = "requires a live ClickHouse; run with --ignored e2e"]
         async fn e2e_unknown_column_errors_on_insert_end() {
-            otap_df_otap::crypto::ensure_crypto_provider();
+            otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
             let config = e2e_config("otap_e2e_errors");
             reset_database(&config).await;
 

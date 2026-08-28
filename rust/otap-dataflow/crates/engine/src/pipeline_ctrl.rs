@@ -4,15 +4,14 @@
 //! Runtime-control manager for handling timer-based operations.
 //!
 //! This module provides the `RuntimeCtrlMsgManager` which is responsible for managing
-//! timers for nodes in the pipeline. It handles scheduling, cancellation, and expiration
-//! of recurring timers, using a priority queue for efficient timer management.
+//! runtime timers, shutdown orchestration, and completion dispatch coordination.
 //!
 //! Note 1: This manager is designed for single-threaded async execution.
-//! Note 2: Other runtime-control messages can be added in the future, but currently only timers
-//! are supported.
+//! Note 2: Other runtime-control messages coordinate shutdown and completion flow.
 
 use crate::channel_metrics::{
-    ConsumedItemMetrics, ConsumedMetrics, ProducedItemMetrics, ProducedMetrics,
+    NodeInputItemMetrics, NodeInputMetrics, NodeInputSizeMetrics, NodeOutputItemMetrics,
+    NodeOutputMetrics, NodeOutputSizeMetrics,
 };
 use crate::clock;
 use crate::completion_emission_metrics::CompletionEmissionMetricsHandle;
@@ -29,17 +28,17 @@ use crate::memory_limiter::MemoryPressureChanged;
 use crate::pipeline_metrics::PipelineMetricsMonitor;
 use crate::terminal_state::TerminalMetricsDeadline;
 use crate::{Interests, RequestOutcome, Unwindable};
-use otap_df_config::DeployedPipelineKey;
-use otap_df_config::MetricLevel;
-use otap_df_config::SignalType;
-use otap_df_config::policy::TelemetryPolicy;
-use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
-use otap_df_telemetry::error::Error as TelemetryError;
-use otap_df_telemetry::event::{EngineEvent, ObservedEventReporter};
-use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
-use otap_df_telemetry::registry::TelemetryRegistryHandle;
-use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry::{otel_debug, otel_warn};
+use otel_arrow_dfe_config::DeployedPipelineKey;
+use otel_arrow_dfe_config::MetricLevel;
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::policy::TelemetryPolicy;
+use otel_arrow_dfe_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
+use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
+use otel_arrow_dfe_telemetry::event::{EngineEvent, ObservedEventReporter};
+use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
+use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_telemetry::{otel_debug, otel_warn};
 use std::cell::RefCell;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
@@ -54,39 +53,6 @@ const PENDING_SENDS_WARN_THRESHOLD: usize = 100;
 /// Maximum number of consecutive runtime-control messages handled before the
 /// manager forces one due expiry pass.
 const RUNTIME_CTRL_BURST: usize = 64;
-
-/// Represents delayed data with scheduling information.
-#[derive(Debug)]
-struct Delayed<PData> {
-    /// When to resume processing this data.
-    when: Instant,
-    /// Target node ID for the delayed data.
-    node_id: usize,
-    /// The delayed data payload.
-    data: Box<PData>,
-}
-
-/// For BinaryHeap ordering - earlier times have higher priority (min-heap behavior).
-impl<PData> Ord for Delayed<PData> {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        // Reverse ordering for min-heap (earlier times first)
-        other.when.cmp(&self.when)
-    }
-}
-
-impl<PData> PartialOrd for Delayed<PData> {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl<PData> PartialEq for Delayed<PData> {
-    fn eq(&self, other: &Self) -> bool {
-        self.when == other.when
-    }
-}
-
-impl<PData> Eq for Delayed<PData> {}
 
 /// Timer state for a node.
 struct TimerState {
@@ -199,13 +165,17 @@ pub(crate) struct NodeMetricHandles {
     /// Registry handle for automatic unregistration on drop.
     pub(crate) registry: TelemetryRegistryHandle,
     /// Consumed-message metrics for the node's input channel.
-    pub(crate) input: Option<MeasurementMetricSet<ConsumedMetrics>>,
+    pub(crate) input: Option<MeasurementMetricSet<NodeInputMetrics>>,
     /// Optional consumed-item metrics for the node's input channel.
-    pub(crate) input_items: Option<MeasurementMetricSet<ConsumedItemMetrics>>,
+    pub(crate) input_items: Option<MeasurementMetricSet<NodeInputItemMetrics>>,
+    /// Optional consumed-size metrics for the node's input channel.
+    pub(crate) input_size: Option<MeasurementMetricSet<NodeInputSizeMetrics>>,
     /// Produced-message metrics indexed by output port.
-    pub(crate) outputs: Vec<MeasurementMetricSet<ProducedMetrics>>,
+    pub(crate) outputs: Vec<MeasurementMetricSet<NodeOutputMetrics>>,
     /// Optional produced-item metrics indexed by output port.
-    pub(crate) output_items: Vec<MeasurementMetricSet<ProducedItemMetrics>>,
+    pub(crate) output_items: Vec<MeasurementMetricSet<NodeOutputItemMetrics>>,
+    /// Optional produced-size metrics indexed by output port.
+    pub(crate) output_size: Vec<MeasurementMetricSet<NodeOutputSizeMetrics>>,
     /// Completion-emission metrics for completions routed by the node.
     pub(crate) completion_emission: Option<CompletionEmissionMetricsHandle>,
 }
@@ -222,11 +192,17 @@ pub(crate) fn report_node_metrics_with_handles(
         if let Some(input_items) = &mut handles.input_items {
             metrics_reporter.report_measurement(input_items)?;
         }
+        if let Some(input_size) = &mut handles.input_size {
+            metrics_reporter.report_measurement(input_size)?;
+        }
         for output in &mut handles.outputs {
             metrics_reporter.report_measurement(output)?;
         }
         for output_items in &mut handles.output_items {
             metrics_reporter.report_measurement(output_items)?;
+        }
+        for output_size in &mut handles.output_size {
+            metrics_reporter.report_measurement(output_size)?;
         }
         if let Some(completion_emission) = &handles.completion_emission {
             let mut completion_emission = completion_emission
@@ -251,11 +227,17 @@ pub(crate) fn snapshot_node_metrics_with_handles(
         if let Some(input_items) = &mut handles.input_items {
             snapshots.extend(input_items.terminal_snapshots());
         }
+        if let Some(input_size) = &mut handles.input_size {
+            snapshots.extend(input_size.terminal_snapshots());
+        }
         for output in &mut handles.outputs {
             snapshots.extend(output.terminal_snapshots());
         }
         for output_items in &mut handles.output_items {
             snapshots.extend(output_items.terminal_snapshots());
+        }
+        for output_size in &mut handles.output_size {
+            snapshots.extend(output_size.terminal_snapshots());
         }
         if let Some(completion_emission) = &handles.completion_emission
             && let Some(snapshot) = completion_emission
@@ -279,6 +261,11 @@ impl Drop for NodeMetricHandles {
                 .registry
                 .unregister_metric_set(input_items.metric_set_key());
         }
+        if let Some(input_size) = self.input_size.take() {
+            let _ = self
+                .registry
+                .unregister_metric_set(input_size.metric_set_key());
+        }
         for output in self.outputs.drain(..) {
             let _ = self.registry.unregister_metric_set(output.metric_set_key());
         }
@@ -286,6 +273,11 @@ impl Drop for NodeMetricHandles {
             let _ = self
                 .registry
                 .unregister_metric_set(output_items.metric_set_key());
+        }
+        for output_size in self.output_size.drain(..) {
+            let _ = self
+                .registry
+                .unregister_metric_set(output_size.metric_set_key());
         }
     }
 }
@@ -310,8 +302,6 @@ pub struct RuntimeCtrlMsgManager<PData> {
     tick_timers: TimerSet,
     /// Repeating timers for telemetry collection (CollectTelemetry).
     telemetry_timers: TimerSet,
-    /// Delayed data in activation order.
-    delayed_data: BinaryHeap<Delayed<PData>>,
     /// Event reporter used to report major events influencing the pipeline's behavior.
     event_reporter: ObservedEventReporter,
     /// Global metrics reporter.
@@ -364,7 +354,6 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                 telemetry_policy.runtime_metrics,
                 0,
                 0,
-                0,
             ),
             pipeline_key,
             pipeline_context,
@@ -373,7 +362,6 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
             control_senders,
             tick_timers: TimerSet::new(),
             telemetry_timers: TimerSet::new(),
-            delayed_data: BinaryHeap::new(),
             event_reporter,
             metrics_reporter,
             control_plane_metrics_flush_interval,
@@ -402,7 +390,7 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
     ///
     /// The loop has three important responsibilities:
     ///
-    /// - schedule and fire timers / delayed-data wakeups
+    /// - schedule and fire runtime and telemetry timers
     /// - orchestrate receiver-first shutdown by sending `DrainIngress` before
     ///   downstream `Shutdown`
     /// - keep the single-threaded runtime live by buffering control sends that
@@ -488,13 +476,12 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
             } else {
                 let next_expiry = self.tick_timers.next_expiry();
                 let next_tel_expiry = self.telemetry_timers.next_expiry();
-                let next_delay_expiry = self.delayed_data.peek().map(|d| d.when);
-                opt_min(opt_min(next_expiry, next_tel_expiry), next_delay_expiry)
+                opt_min(next_expiry, next_tel_expiry)
             };
 
             // Runtime-control traffic can burst during shutdown or completion
             // churn. Force a due-event pass once the burst limit is reached so
-            // timer and delayed-data wakeups still make progress.
+            // timer and telemetry wakeups still make progress.
             if consecutive_runtime_ctrl >= RUNTIME_CTRL_BURST
                 && next_earliest.is_some_and(|when| when <= now)
             {
@@ -526,25 +513,15 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                             self.runtime_control_metrics
                                 .record_shutdown_received(now, pending_receivers.len());
                             // Receiver-first shutdown freezes timer-driven work
-                            // and flushes queued delayed data back to their
-                            // origin nodes before any downstream Shutdown is
-                            // sent. Receivers get DrainIngress first so they stop
-                            // admitting new work at the pipeline boundary.
+                            // before any downstream Shutdown is sent. Receivers
+                            // get DrainIngress first so they stop admitting new
+                            // work at the pipeline boundary.
                             self.tick_timers.cancel_all();
                             self.telemetry_timers.cancel_all();
                             self.runtime_control_metrics.set_timer_counts(
                                 self.tick_timers.timer_states.len(),
                                 self.telemetry_timers.timer_states.len(),
                             );
-                            let flushed = self.flush_delayed_data_now(now);
-                            self.runtime_control_metrics
-                                .set_delayed_data_queued(self.delayed_data.len());
-                            if flushed > 0 {
-                                for _ in 0..flushed {
-                                    self.runtime_control_metrics
-                                        .record_delay_data_returned_during_drain();
-                                }
-                            }
 
                             for node_id in pending_receivers.iter().copied() {
                                 self.send(
@@ -688,30 +665,6 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                                 );
                             }
                         }
-                        RuntimeControlMsg::DelayData { node_id, when, data } => {
-                            self.runtime_control_metrics.record_delay_data_received();
-                            if is_draining_ingress {
-                                // Once drain has started, newly requested delayed
-                                // data must not stay queued behind the shutdown
-                                // boundary. Return it immediately so the owning
-                                // node can resolve or discard it inside its
-                                // shutdown path.
-                                self.send(
-                                    node_id,
-                                    NodeControlMsg::DelayedData {
-                                        when: now,
-                                        data,
-                                    },
-                                );
-                                self.runtime_control_metrics
-                                    .record_delay_data_returned_during_drain();
-                            } else {
-                                let delayed = Delayed { node_id, when, data };
-                                self.delayed_data.push(delayed);
-                                self.runtime_control_metrics
-                                    .set_delayed_data_queued(self.delayed_data.len());
-                            }
-                        }
                     }
                 }
                 changed = self.memory_pressure_rx.changed(), if memory_pressure_updates_open => {
@@ -837,21 +790,6 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
         Ok(())
     }
 
-    fn flush_delayed_data_now(&mut self, when: Instant) -> usize {
-        let mut flushed = 0;
-        while let Some(delayed) = self.delayed_data.pop() {
-            self.send(
-                delayed.node_id,
-                NodeControlMsg::DelayedData {
-                    when,
-                    data: delayed.data,
-                },
-            );
-            flushed += 1;
-        }
-        flushed
-    }
-
     fn handle_due_events(
         &mut self,
         now: Instant,
@@ -864,7 +802,6 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
         let mut to_send: Vec<(usize, NodeControlMsg<PData>)> = Vec::new();
         let mut timer_tick_count = 0usize;
         let mut collect_telemetry_count = 0usize;
-        let mut delayed_data_count = 0usize;
 
         self.tick_timers.fire_due(now, |node_id| {
             to_send.push((*node_id, NodeControlMsg::TimerTick {}));
@@ -882,34 +819,12 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
             collect_telemetry_count += 1;
         });
 
-        while self
-            .delayed_data
-            .peek()
-            .map(|d| d.when <= now)
-            .unwrap_or(false)
-        {
-            let delayed = self.delayed_data.pop().expect("ok");
-            to_send.push((
-                delayed.node_id,
-                NodeControlMsg::DelayedData {
-                    when: delayed.when,
-                    data: delayed.data,
-                },
-            ));
-            delayed_data_count += 1;
-        }
-
         self.runtime_control_metrics.set_timer_counts(
             self.tick_timers.timer_states.len(),
             self.telemetry_timers.timer_states.len(),
         );
         self.runtime_control_metrics
-            .set_delayed_data_queued(self.delayed_data.len());
-        self.runtime_control_metrics.record_due_events(
-            timer_tick_count,
-            collect_telemetry_count,
-            delayed_data_count,
-        );
+            .record_due_events(timer_tick_count, collect_telemetry_count);
 
         if let Some(pipeline_metrics_monitor) = pipeline_metrics_monitor.as_mut() {
             if self.telemetry.pipeline_metrics {
@@ -973,7 +888,7 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
         if let Some(sender) = self.control_senders.get(node_id) {
             match sender.try_send(msg) {
                 Ok(()) => {}
-                Err(otap_df_channel::error::SendError::Full(msg)) => {
+                Err(otel_arrow_dfe_channel::error::SendError::Full(msg)) => {
                     self.pending_sends.push_back((node_id, msg));
                     self.runtime_control_metrics
                         .set_pending_sends_buffered(self.pending_sends.len());
@@ -986,7 +901,7 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                         );
                     }
                 }
-                Err(otap_df_channel::error::SendError::Closed(_)) => {
+                Err(otel_arrow_dfe_channel::error::SendError::Closed(_)) => {
                     // Ignore closed channel
                 }
             }
@@ -1004,10 +919,10 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
             if let Some(sender) = self.control_senders.get(node_id) {
                 match sender.try_send(msg) {
                     Ok(()) => {}
-                    Err(otap_df_channel::error::SendError::Full(msg)) => {
+                    Err(otel_arrow_dfe_channel::error::SendError::Full(msg)) => {
                         self.pending_sends.push_back((node_id, msg));
                     }
-                    Err(otap_df_channel::error::SendError::Closed(_)) => {
+                    Err(otel_arrow_dfe_channel::error::SendError::Closed(_)) => {
                         // Drop message for closed channel
                     }
                 }
@@ -1077,7 +992,7 @@ impl<PData> PipelineCompletionMsgDispatcher<PData> {
                         self.completion_metrics.record_nack_delivered();
                     }
                 }
-                Err(otap_df_channel::error::SendError::Full(msg)) => {
+                Err(otel_arrow_dfe_channel::error::SendError::Full(msg)) => {
                     // Completion delivery cannot block the dispatcher for the
                     // same reason runtime-control cannot: a full node-control
                     // inbox would otherwise stall unwinding for unrelated
@@ -1093,7 +1008,7 @@ impl<PData> PipelineCompletionMsgDispatcher<PData> {
                         );
                     }
                 }
-                Err(otap_df_channel::error::SendError::Closed(_)) => {}
+                Err(otel_arrow_dfe_channel::error::SendError::Closed(_)) => {}
             }
         }
     }
@@ -1115,10 +1030,10 @@ impl<PData> PipelineCompletionMsgDispatcher<PData> {
                             self.completion_metrics.record_nack_delivered();
                         }
                     }
-                    Err(otap_df_channel::error::SendError::Full(msg)) => {
+                    Err(otel_arrow_dfe_channel::error::SendError::Full(msg)) => {
                         self.pending_sends.push_back((node_id, msg));
                     }
-                    Err(otap_df_channel::error::SendError::Closed(_)) => {}
+                    Err(otel_arrow_dfe_channel::error::SendError::Closed(_)) => {}
                 }
             }
         }
@@ -1134,6 +1049,8 @@ impl<PData> PipelineCompletionMsgDispatcher<PData> {
         signal: Option<SignalType>,
         produced_items: u32,
         consumed_items: u32,
+        produced_size: u64,
+        consumed_size: u64,
         outcome: RequestOutcome,
         now_ns: u64,
     ) {
@@ -1148,18 +1065,28 @@ impl<PData> PipelineCompletionMsgDispatcher<PData> {
                             RequestOutcome::Refused => Outcome::Refused,
                         };
                         let input = input.with(SignalOutcomeAttributes { signal, outcome });
-                        input.consumed_messages.inc();
+                        input.messages.inc();
                         if consumed_items > 0
                             && let Some(input_items) = &mut handles.input_items
                         {
                             input_items
                                 .with(SignalOutcomeAttributes { signal, outcome })
-                                .consumed_items
+                                .items
                                 .add(consumed_items as u64);
+                        }
+                        if consumed_size > 0
+                            && let Some(input_size) = &mut handles.input_size
+                        {
+                            input_size
+                                .with(SignalOutcomeAttributes { signal, outcome })
+                                .size
+                                .add(consumed_size);
                         }
                         if route.entry_time_ns > 0 && now_ns > 0 {
                             let duration_ns = now_ns.saturating_sub(route.entry_time_ns);
-                            input.consumed_duration_ns.record(duration_ns as f64);
+                            input
+                                .duration
+                                .record(Duration::from_nanos(duration_ns).as_secs_f64());
                         }
                     }
                 }
@@ -1174,21 +1101,31 @@ impl<PData> PipelineCompletionMsgDispatcher<PData> {
                             RequestOutcome::Refused => Outcome::Refused,
                         };
                         let output = output.with(SignalOutcomeAttributes { signal, outcome });
-                        output.produced_messages.inc();
+                        output.messages.inc();
                         if produced_items > 0
                             && let Some(output_items) = handles.output_items.get_mut(port)
                         {
                             output_items
                                 .with(SignalOutcomeAttributes { signal, outcome })
-                                .produced_items
+                                .items
                                 .add(produced_items as u64);
+                        }
+                        if produced_size > 0
+                            && let Some(output_size) = handles.output_size.get_mut(port)
+                        {
+                            output_size
+                                .with(SignalOutcomeAttributes { signal, outcome })
+                                .size
+                                .add(produced_size);
                         }
                         if !interests.contains(Interests::CONSUMER_METRICS)
                             && route.entry_time_ns > 0
                             && now_ns > 0
                         {
                             let duration_ns = now_ns.saturating_sub(route.entry_time_ns);
-                            output.produced_duration_ns.record(duration_ns as f64);
+                            output
+                                .duration
+                                .record(Duration::from_nanos(duration_ns).as_secs_f64());
                         }
                     }
                 }
@@ -1312,6 +1249,8 @@ impl<PData: Unwindable> PipelineCompletionMsgDispatcher<PData> {
                             signal,
                             frame.produced_items,
                             frame.consumed_items,
+                            frame.produced_size,
+                            frame.consumed_size,
                             outcome,
                             now_ns,
                         );
@@ -1410,7 +1349,7 @@ mod tests {
     use super::*;
     use crate::attributes::{ChannelImplementation, ChannelKind, ChannelMode, ChannelType};
     use crate::channel_metrics::{
-        ConsumedItemMetrics, ConsumedMetrics, ProducedItemMetrics, ProducedMetrics,
+        NodeInputItemMetrics, NodeInputMetrics, NodeOutputItemMetrics, NodeOutputMetrics,
     };
     use crate::context::{ControllerContext, PipelineContextParams};
     use crate::control::{AckMsg, Frame, NackMsg, RouteData, nanos_since_birth};
@@ -1422,17 +1361,17 @@ mod tests {
     use crate::node::{NodeId, NodeType};
     use crate::shared::message::{SharedReceiver, SharedSender};
     use crate::testing::test_nodes;
-    use otap_df_channel::error::RecvError;
-    use otap_df_config::observed_state::{ObservedStateSettings, SendPolicy};
-    use otap_df_config::{PipelineGroupId, PipelineId};
-    use otap_df_state::store::ObservedStateStore;
-    use otap_df_telemetry::event::{
+    use otel_arrow_dfe_channel::error::RecvError;
+    use otel_arrow_dfe_config::observed_state::{ObservedStateSettings, SendPolicy};
+    use otel_arrow_dfe_config::{PipelineGroupId, PipelineId};
+    use otel_arrow_dfe_state::store::ObservedStateStore;
+    use otel_arrow_dfe_telemetry::event::{
         EngineEvent, ErrorEvent as TelemetryErrorEvent, EventType, ObservedEventReporter,
         RequestEvent as TelemetryRequestEvent, SuccessEvent as TelemetrySuccessEvent,
     };
-    use otap_df_telemetry::metrics::{MetricSetSnapshot, MetricValue};
-    use otap_df_telemetry::registry::MetricSetKey;
-    use otap_df_telemetry::reporter::MetricsReporter;
+    use otel_arrow_dfe_telemetry::metrics::{MetricSetSnapshot, MetricValue};
+    use otel_arrow_dfe_telemetry::registry::MetricSetKey;
+    use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
     use std::cell::RefCell;
     use std::collections::HashMap;
     use std::rc::Rc;
@@ -1472,7 +1411,7 @@ mod tests {
 
     fn create_test_pipeline_context()
     -> (PipelineContext, crate::entity_context::PipelineEntityScope) {
-        let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
+        let metrics_system = otel_arrow_dfe_telemetry::InternalTelemetrySystem::default();
         let controller_context = ControllerContext::new(metrics_system.registry());
         let pipeline_context_params = PipelineContextParams {
             pipeline_group_id: Default::default(),
@@ -1523,7 +1462,7 @@ mod tests {
         let (_memory_pressure_tx, memory_pressure_rx) =
             watch::channel(MemoryPressureChanged::initial());
 
-        let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
+        let metrics_system = otel_arrow_dfe_telemetry::InternalTelemetrySystem::default();
         let metrics_reporter = metrics_system.reporter();
         let observed_state_store =
             ObservedStateStore::new(&ObservedStateSettings::default(), metrics_system.registry());
@@ -1997,7 +1936,7 @@ mod tests {
             .run_until(async {
                 let (pipeline_tx, pipeline_rx) = runtime_ctrl_msg_channel(10);
                 // Create a dummy MetricsReporter for testing
-                let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
+                let metrics_system = otel_arrow_dfe_telemetry::InternalTelemetrySystem::default();
                 let metrics_reporter = metrics_system.reporter();
                 let observed_state_store = ObservedStateStore::new(
                     &ObservedStateSettings::default(),
@@ -2268,108 +2207,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_delayed_data_heap_ordering() {
-        let now = Instant::now();
-        let mut delayed_heap = BinaryHeap::new();
-
-        let data1 = Box::new("data1".to_string());
-        let data2 = Box::new("data2".to_string());
-        let data3 = Box::new("data3".to_string());
-
-        let delayed1 = Delayed {
-            when: now + Duration::from_millis(300),
-            node_id: 1,
-            data: data1.clone(),
-        };
-        let delayed2 = Delayed {
-            when: now + Duration::from_millis(100),
-            node_id: 2,
-            data: data2.clone(),
-        };
-        let delayed3 = Delayed {
-            when: now + Duration::from_millis(200),
-            node_id: 3,
-            data: data3.clone(),
-        };
-
-        // Insert in non-chronological order to test heap behavior
-        delayed_heap.push(delayed1);
-        delayed_heap.push(delayed2);
-        delayed_heap.push(delayed3);
-
-        assert_eq!(delayed_heap.len(), 3,);
-
-        let first = delayed_heap.pop().expect("should exist");
-        assert_eq!(first.when, now + Duration::from_millis(100));
-        assert_eq!(first.node_id, 2,);
-        assert_eq!(*first.data, *data2);
-
-        let second = delayed_heap.pop().expect("should exist");
-        assert_eq!(second.when, now + Duration::from_millis(200));
-        assert_eq!(second.node_id, 3,);
-        assert_eq!(*second.data, *data3);
-
-        let third = delayed_heap.pop().expect("should exist");
-        assert_eq!(third.when, now + Duration::from_millis(300));
-        assert_eq!(third.node_id, 1,);
-        assert_eq!(*third.data, *data1);
-
-        assert!(delayed_heap.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_delay_data_integration() {
-        let local = LocalSet::new();
-
-        local
-            .run_until(async {
-                let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
-                    setup_test_manager::<String>();
-
-                let node = nodes.first().expect("ok");
-                let delay_duration = Duration::from_millis(100);
-                let test_data = Box::new("test_delayed_data".to_string());
-                let delay_time = Instant::now() + delay_duration;
-
-                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
-
-                let delay_msg = RuntimeControlMsg::DelayData {
-                    node_id: node.index,
-                    when: delay_time,
-                    data: test_data.clone(),
-                };
-                pipeline_tx.send(delay_msg).await.unwrap();
-
-                // Wait for delayed data to be delivered
-                let mut receiver = control_receivers.remove(&node.index).unwrap();
-                let delayed_result = async { receiver.recv().await };
-
-                match delayed_result.await {
-                    Ok(NodeControlMsg::DelayedData { when, data }) => {
-                        assert_eq!(*data, *test_data);
-                        assert_eq!(when, delay_time);
-                    }
-                    Ok(other) => panic!("Expected DelayedData, got {other:?}"),
-                    Err(e) => panic!("Failed to receive message: {e:?}"),
-                }
-
-                pipeline_tx
-                    .send(RuntimeControlMsg::Shutdown {
-                        deadline: Instant::now() + Duration::from_secs(1),
-                        reason: "".to_owned(),
-                    })
-                    .await
-                    .unwrap();
-
-                // Drop the sender to let the manager exit draining mode
-                drop(pipeline_tx);
-
-                let _ = manager_handle.await;
-            })
-            .await;
-    }
-
     // A due timer tick must still reach its node while the runtime-control lane
     // is busy with unrelated requests. This guards against control traffic
     // starving timer expiry handling inside the manager loop.
@@ -2464,61 +2301,6 @@ mod tests {
                     .expect("CollectTelemetry should make progress under runtime control burst")
                     .expect("target control channel should stay open");
                 assert!(matches!(msg, NodeControlMsg::CollectTelemetry { .. }));
-
-                drop(pipeline_tx);
-                let shutdown_result = timeout(Duration::from_millis(200), manager_handle).await;
-                assert!(shutdown_result.is_ok(), "Manager should shutdown cleanly");
-            })
-            .await;
-    }
-
-    // DelayedData wakeups are another due event handled by the manager.
-    // This test ensures they are still dispatched promptly even when unrelated
-    // runtime-control requests keep arriving in a burst.
-    #[tokio::test]
-    async fn test_due_delayed_data_progress_under_runtime_ctrl_burst() {
-        let local = LocalSet::new();
-
-        local
-            .run_until(async {
-                let (
-                    mut manager,
-                    pipeline_tx,
-                    _control_senders,
-                    mut control_receivers,
-                    nodes,
-                    _pipeline_entity_guard,
-                ) = setup_test_manager_with_capacities::<String>(128, 10);
-
-                let noisy_node = nodes[0].clone();
-                let target = nodes[1].clone();
-                manager.delayed_data.push(Delayed {
-                    node_id: target.index,
-                    when: Instant::now(),
-                    data: Box::new("burst_delayed".to_owned()),
-                });
-
-                for _ in 0..96 {
-                    pipeline_tx
-                        .send(RuntimeControlMsg::StartTimer {
-                            node_id: noisy_node.index,
-                            duration: Duration::from_secs(60),
-                        })
-                        .await
-                        .unwrap();
-                }
-
-                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
-
-                let mut receiver = control_receivers.remove(&target.index).unwrap();
-                let msg = timeout(Duration::from_millis(500), receiver.recv())
-                    .await
-                    .expect("DelayedData should make progress under runtime control burst")
-                    .expect("target control channel should stay open");
-                assert!(matches!(
-                    msg,
-                    NodeControlMsg::DelayedData { ref data, .. } if **data == "burst_delayed"
-                ));
 
                 drop(pipeline_tx);
                 let shutdown_result = timeout(Duration::from_millis(200), manager_handle).await;
@@ -3026,132 +2808,6 @@ mod tests {
             .await;
     }
 
-    // DelayData submitted after draining begins represents retry work that
-    // should not stay hidden behind the delayed-data heap. The manager returns
-    // it to the origin node immediately so the node can decide what to do next.
-    #[tokio::test]
-    async fn test_new_delay_data_returned_immediately_during_draining() {
-        let local = LocalSet::new();
-
-        local
-            .run_until(async {
-                let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
-                    setup_test_manager::<String>();
-
-                let node = nodes.first().expect("ok");
-                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
-
-                pipeline_tx
-                    .send(RuntimeControlMsg::Shutdown {
-                        deadline: Instant::now() + Duration::from_secs(1),
-                        reason: "test shutdown".to_owned(),
-                    })
-                    .await
-                    .unwrap();
-
-                let mut receiver = control_receivers.remove(&node.index).unwrap();
-                let shutdown = timeout(Duration::from_millis(100), receiver.recv())
-                    .await
-                    .expect("processor should receive shutdown during draining")
-                    .expect("processor control channel should stay open");
-                assert!(matches!(shutdown, NodeControlMsg::Shutdown { .. }));
-
-                let original_when = Instant::now() + Duration::from_secs(30);
-                pipeline_tx
-                    .send(RuntimeControlMsg::DelayData {
-                        node_id: node.index,
-                        when: original_when,
-                        data: Box::new("drain_retry".to_owned()),
-                    })
-                    .await
-                    .unwrap();
-
-                let msg = timeout(Duration::from_millis(100), receiver.recv())
-                    .await
-                    .expect("DelayedData should be returned immediately during draining")
-                    .expect("processor control channel should stay open");
-
-                match msg {
-                    NodeControlMsg::DelayedData { when, data } => {
-                        assert_eq!(*data, "drain_retry");
-                        assert!(
-                            when < original_when,
-                            "DelayedData should be returned immediately, not at its original wake time"
-                        );
-                    }
-                    other => panic!("Expected DelayedData, got {other:?}"),
-                }
-
-                drop(pipeline_tx);
-                let shutdown_result = timeout(Duration::from_millis(100), manager_handle).await;
-                assert!(shutdown_result.is_ok(), "Manager should shutdown cleanly");
-            })
-            .await;
-    }
-
-    // Draining must also flush retry work that was already queued before
-    // shutdown. Once draining starts, delayed data is returned immediately
-    // rather than waiting for its original wake time.
-    #[tokio::test]
-    async fn test_queued_delayed_data_flushed_when_draining_begins() {
-        let local = LocalSet::new();
-
-        local
-            .run_until(async {
-                let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
-                    setup_test_manager::<String>();
-
-                let node = nodes.first().expect("ok");
-                let original_when = Instant::now() + Duration::from_secs(30);
-                pipeline_tx
-                    .send(RuntimeControlMsg::DelayData {
-                        node_id: node.index,
-                        when: original_when,
-                        data: Box::new("queued_retry".to_owned()),
-                    })
-                    .await
-                    .unwrap();
-
-                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
-                tokio::time::sleep(Duration::from_millis(10)).await;
-
-                pipeline_tx
-                    .send(RuntimeControlMsg::Shutdown {
-                        deadline: Instant::now() + Duration::from_secs(1),
-                        reason: "test shutdown".to_owned(),
-                    })
-                    .await
-                    .unwrap();
-
-                let mut receiver = control_receivers.remove(&node.index).unwrap();
-                let msg = timeout(Duration::from_millis(100), receiver.recv())
-                    .await
-                    .expect("Queued delayed data should flush when draining begins")
-                    .expect("processor control channel should stay open");
-                match msg {
-                    NodeControlMsg::DelayedData { when, data } => {
-                        assert_eq!(*data, "queued_retry");
-                        assert!(
-                            when < original_when,
-                            "Queued delayed data should be flushed immediately during shutdown"
-                        );
-                    }
-                    other => panic!("Expected DelayedData, got {other:?}"),
-                }
-
-                let shutdown = timeout(Duration::from_millis(100), receiver.recv())
-                    .await
-                    .expect("processor should receive shutdown after delayed-data flush")
-                    .expect("processor control channel should stay open");
-                assert!(matches!(shutdown, NodeControlMsg::Shutdown { .. }));
-
-                drop(pipeline_tx);
-                let shutdown_result = timeout(Duration::from_millis(100), manager_handle).await;
-                assert!(shutdown_result.is_ok(), "Manager should shutdown cleanly");
-            })
-            .await;
-    }
-
     /// A test PData type that carries a real frame stack, allowing the
     /// controller's `unwind_ack`/`unwind_nack` to pop frames and record metrics.
     #[derive(Debug, Clone)]
@@ -3195,12 +2851,16 @@ mod tests {
     enum MetricLabel {
         RecvProduced,
         RecvProducedItems,
+        RecvProducedSize,
         ProcConsumed,
         ProcConsumedItems,
+        ProcConsumedSize,
         ProcProduced,
         ProcProducedItems,
+        ProcProducedSize,
         ExpConsumed,
         ExpConsumedItems,
+        ExpConsumedSize,
     }
 
     /// Return value from setup_test_manager_with_metrics.
@@ -3235,7 +2895,7 @@ mod tests {
             control_senders.register(node.clone(), *nt, sender);
         }
 
-        let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
+        let metrics_system = otel_arrow_dfe_telemetry::InternalTelemetrySystem::default();
         // Create a reporter with a receiver so tests can collect snapshots.
         let (snapshot_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(64);
         let observed_state_store =
@@ -3293,21 +2953,29 @@ mod tests {
             ChannelImplementation::Internal,
         );
 
-        let recv_produced: MeasurementMetricSet<ProducedMetrics> =
+        let recv_produced: MeasurementMetricSet<NodeOutputMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(recv_out_key);
-        let recv_produced_items: MeasurementMetricSet<ProducedItemMetrics> =
+        let recv_produced_items: MeasurementMetricSet<NodeOutputItemMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(recv_out_key);
-        let proc_consumed: MeasurementMetricSet<ConsumedMetrics> =
+        let recv_produced_size: MeasurementMetricSet<NodeOutputSizeMetrics> =
+            registry.register_metric_set_with_measurement_attributes_for_entity(recv_out_key);
+        let proc_consumed: MeasurementMetricSet<NodeInputMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(proc_in_key);
-        let proc_consumed_items: MeasurementMetricSet<ConsumedItemMetrics> =
+        let proc_consumed_items: MeasurementMetricSet<NodeInputItemMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(proc_in_key);
-        let proc_produced: MeasurementMetricSet<ProducedMetrics> =
+        let proc_consumed_size: MeasurementMetricSet<NodeInputSizeMetrics> =
+            registry.register_metric_set_with_measurement_attributes_for_entity(proc_in_key);
+        let proc_produced: MeasurementMetricSet<NodeOutputMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(proc_out_key);
-        let proc_produced_items: MeasurementMetricSet<ProducedItemMetrics> =
+        let proc_produced_items: MeasurementMetricSet<NodeOutputItemMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(proc_out_key);
-        let exp_consumed: MeasurementMetricSet<ConsumedMetrics> =
+        let proc_produced_size: MeasurementMetricSet<NodeOutputSizeMetrics> =
+            registry.register_metric_set_with_measurement_attributes_for_entity(proc_out_key);
+        let exp_consumed: MeasurementMetricSet<NodeInputMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(exp_in_key);
-        let exp_consumed_items: MeasurementMetricSet<ConsumedItemMetrics> =
+        let exp_consumed_items: MeasurementMetricSet<NodeInputItemMetrics> =
+            registry.register_metric_set_with_measurement_attributes_for_entity(exp_in_key);
+        let exp_consumed_size: MeasurementMetricSet<NodeInputSizeMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(exp_in_key);
 
         // Save metric set keys for snapshot identification.
@@ -3317,20 +2985,36 @@ mod tests {
             recv_produced_items.metric_set_key(),
             MetricLabel::RecvProducedItems,
         );
+        let _ = key_labels.insert(
+            recv_produced_size.metric_set_key(),
+            MetricLabel::RecvProducedSize,
+        );
         let _ = key_labels.insert(proc_consumed.metric_set_key(), MetricLabel::ProcConsumed);
         let _ = key_labels.insert(
             proc_consumed_items.metric_set_key(),
             MetricLabel::ProcConsumedItems,
+        );
+        let _ = key_labels.insert(
+            proc_consumed_size.metric_set_key(),
+            MetricLabel::ProcConsumedSize,
         );
         let _ = key_labels.insert(proc_produced.metric_set_key(), MetricLabel::ProcProduced);
         let _ = key_labels.insert(
             proc_produced_items.metric_set_key(),
             MetricLabel::ProcProducedItems,
         );
+        let _ = key_labels.insert(
+            proc_produced_size.metric_set_key(),
+            MetricLabel::ProcProducedSize,
+        );
         let _ = key_labels.insert(exp_consumed.metric_set_key(), MetricLabel::ExpConsumed);
         let _ = key_labels.insert(
             exp_consumed_items.metric_set_key(),
             MetricLabel::ExpConsumedItems,
+        );
+        let _ = key_labels.insert(
+            exp_consumed_size.metric_set_key(),
+            MetricLabel::ExpConsumedSize,
         );
 
         let mut node_metric_handles: Vec<Option<NodeMetricHandles>> = Vec::new();
@@ -3342,24 +3026,30 @@ mod tests {
             registry: registry.clone(),
             input: None,
             input_items: None,
+            input_size: None,
             outputs: vec![recv_produced],
             output_items: vec![recv_produced_items],
+            output_size: vec![recv_produced_size],
             completion_emission: None,
         });
         node_metric_handles[nodes[1].index] = Some(NodeMetricHandles {
             registry: registry.clone(),
             input: Some(proc_consumed),
             input_items: Some(proc_consumed_items),
+            input_size: Some(proc_consumed_size),
             outputs: vec![proc_produced],
             output_items: vec![proc_produced_items],
+            output_size: vec![proc_produced_size],
             completion_emission: None,
         });
         node_metric_handles[nodes[2].index] = Some(NodeMetricHandles {
             registry: registry.clone(),
             input: Some(exp_consumed),
             input_items: Some(exp_consumed_items),
+            input_size: Some(exp_consumed_size),
             outputs: Vec::new(),
             output_items: Vec::new(),
+            output_size: Vec::new(),
             completion_emission: None,
         });
 
@@ -3451,12 +3141,43 @@ mod tests {
         values: &[MetricValue],
         index: usize,
         msg: &str,
-    ) -> otap_df_telemetry::instrument::Mmsc {
+    ) -> otel_arrow_dfe_telemetry::instrument::Mmsc {
         match &values[index] {
-            MetricValue::Distribution(otap_df_telemetry::instrument::DistributionValue::Basic(
-                mmsc,
-            )) => **mmsc,
+            MetricValue::Distribution(
+                otel_arrow_dfe_telemetry::instrument::DistributionValue::Basic(mmsc),
+            ) => **mmsc,
             other => panic!("{msg}: expected a basic-tier distribution, got {other:?}"),
+        }
+    }
+
+    /// Extract a normal-tier histogram summary from a MetricValue.
+    fn assert_dist_is_normal_histogram(
+        values: &[MetricValue],
+        index: usize,
+        msg: &str,
+    ) -> (u64, f64, f64, f64) {
+        match &values[index] {
+            MetricValue::Distribution(distribution) => {
+                assert_eq!(
+                    distribution.tier_name(),
+                    "normal",
+                    "{msg}: expected a normal-tier histogram"
+                );
+                distribution.summary()
+            }
+            other => panic!("{msg}: expected a distribution, got {other:?}"),
+        }
+    }
+
+    /// Assert that a normal-tier histogram contains one expected duration in seconds.
+    fn assert_duration_seconds(values: &[MetricValue], index: usize, expected: f64, msg: &str) {
+        let (count, sum, min, max) = assert_dist_is_normal_histogram(values, index, msg);
+        assert_eq!(count, 1, "{msg}: expected one duration observation");
+        for (name, actual) in [("sum", sum), ("min", min), ("max", max)] {
+            assert!(
+                (actual - expected).abs() < f64::EPSILON,
+                "{msg}: expected {name}={expected}, got {actual}"
+            );
         }
     }
 
@@ -3468,27 +3189,25 @@ mod tests {
     const PRODUCER_REQUESTS: usize = 1;
     // Item metric set field index:
     const ITEMS: usize = 0;
+    // Size metric set field index:
+    const SIZE: usize = 0;
 
     const RUNTIME_DRAIN_ACTIVE: usize = 0;
     const RUNTIME_DRAIN_PENDING_RECEIVERS: usize = 1;
     const RUNTIME_PENDING_SENDS_BUFFERED: usize = 2;
     const RUNTIME_TIMERS_ACTIVE: usize = 3;
     const RUNTIME_TELEMETRY_TIMERS_ACTIVE: usize = 4;
-    const RUNTIME_DELAYED_DATA_QUEUED: usize = 5;
-    const RUNTIME_SHUTDOWN_RECEIVED: usize = 6;
-    const RUNTIME_DRAIN_INGRESS_SENT: usize = 7;
-    const RUNTIME_RECEIVER_DRAINED_RECEIVED: usize = 8;
-    const RUNTIME_DOWNSTREAM_SHUTDOWN_SENT: usize = 9;
-    const RUNTIME_SHUTDOWN_DEADLINE_FORCED: usize = 10;
-    const RUNTIME_START_TIMER_RECEIVED: usize = 11;
-    const RUNTIME_START_TELEMETRY_TIMER_RECEIVED: usize = 13;
-    const RUNTIME_DELAY_DATA_RECEIVED: usize = 15;
-    const RUNTIME_DELAY_DATA_RETURNED_DURING_DRAIN: usize = 16;
-    const RUNTIME_TIMER_TICK_SENT: usize = 17;
-    const RUNTIME_COLLECT_TELEMETRY_SENT: usize = 18;
-    const RUNTIME_DELAYED_DATA_SENT: usize = 19;
-    const RUNTIME_DRAIN_RECEIVER_PHASE_DURATION_NS: usize = 20;
-    const RUNTIME_DRAIN_TOTAL_DURATION_NS: usize = 21;
+    const RUNTIME_SHUTDOWN_RECEIVED: usize = 5;
+    const RUNTIME_DRAIN_INGRESS_SENT: usize = 6;
+    const RUNTIME_RECEIVER_DRAINED_RECEIVED: usize = 7;
+    const RUNTIME_DOWNSTREAM_SHUTDOWN_SENT: usize = 8;
+    const RUNTIME_SHUTDOWN_DEADLINE_FORCED: usize = 9;
+    const RUNTIME_START_TIMER_RECEIVED: usize = 10;
+    const RUNTIME_START_TELEMETRY_TIMER_RECEIVED: usize = 12;
+    const RUNTIME_TIMER_TICK_SENT: usize = 14;
+    const RUNTIME_COLLECT_TELEMETRY_SENT: usize = 15;
+    const RUNTIME_DRAIN_RECEIVER_PHASE_DURATION_NS: usize = 16;
+    const RUNTIME_DRAIN_TOTAL_DURATION_NS: usize = 17;
 
     const COMPLETION_PENDING_SENDS_BUFFERED: usize = 0;
     const COMPLETION_DELIVER_ACK_RECEIVED: usize = 1;
@@ -3579,7 +3298,7 @@ mod tests {
         flush_interval: Duration,
     ) -> RuntimeControlTelemetryHarness<PData> {
         let (pipeline_tx, pipeline_rx) = runtime_ctrl_msg_channel(16);
-        let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
+        let metrics_system = otel_arrow_dfe_telemetry::InternalTelemetrySystem::default();
         let (snapshot_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(64);
         let controller_context = ControllerContext::new(metrics_system.registry());
         let pipeline_group_id: PipelineGroupId = Default::default();
@@ -3660,7 +3379,7 @@ mod tests {
         node_specs: Vec<(&'static str, NodeType, usize)>,
     ) -> MemoryPressureFanoutHarness<PData> {
         let (pipeline_tx, pipeline_rx) = runtime_ctrl_msg_channel(16);
-        let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
+        let metrics_system = otel_arrow_dfe_telemetry::InternalTelemetrySystem::default();
         let metrics_reporter = metrics_system.reporter();
         let controller_context = ControllerContext::new(metrics_system.registry());
         let pipeline_group_id: PipelineGroupId = Default::default();
@@ -3785,7 +3504,7 @@ mod tests {
         reporter_channel_size: usize,
     ) -> CompletionTelemetryHarness {
         let (completion_tx, completion_rx) = pipeline_completion_msg_channel(16);
-        let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
+        let metrics_system = otel_arrow_dfe_telemetry::InternalTelemetrySystem::default();
         let (snapshot_rx, metrics_reporter) =
             MetricsReporter::create_new_and_receiver(reporter_channel_size);
         let controller_context = ControllerContext::new(metrics_system.registry());
@@ -3866,6 +3585,8 @@ mod tests {
             },
             produced_items: 10,
             consumed_items: 0,
+            produced_size: 100,
+            consumed_size: 0,
         });
 
         // Node 1 (processor): consumer + producer metrics + acks/nacks
@@ -3888,6 +3609,8 @@ mod tests {
             },
             produced_items: 7,
             consumed_items: 10,
+            produced_size: 70,
+            consumed_size: 100,
         });
 
         // Node 2 (exporter): consumer metrics only (no acks subscription -- terminal node)
@@ -3906,6 +3629,8 @@ mod tests {
             },
             produced_items: 0,
             consumed_items: 7,
+            produced_size: 0,
+            consumed_size: 70,
         });
 
         pdata
@@ -3935,6 +3660,8 @@ mod tests {
             },
             produced_items: 10,
             consumed_items: 0,
+            produced_size: 100,
+            consumed_size: 0,
         });
 
         // Node 1 (processor): consumer + producer metrics, no ACKS/NACKS.
@@ -3955,6 +3682,8 @@ mod tests {
             },
             produced_items: 7,
             consumed_items: 10,
+            produced_size: 70,
+            consumed_size: 100,
         });
 
         // Node 2 (exporter): consumer metrics only.
@@ -3973,6 +3702,8 @@ mod tests {
             },
             produced_items: 0,
             consumed_items: 7,
+            produced_size: 0,
+            consumed_size: 70,
         });
 
         pdata
@@ -4124,87 +3855,109 @@ mod tests {
         assert_u64(proc_p, PRODUCER_REQUESTS, 1, "Processor produced requests");
     }
 
-    /// Verify that consumed_duration_ns, an Mmsc histogram, is recorded
-    /// when entry_time_ns > 0 and return_time_ns > 0.
+    /// Scenario: An acknowledgement unwinds frames with valid entry and return timestamps.
+    /// Guarantees: Consumed durations are recorded as normal-tier histograms in seconds.
     #[tokio::test]
     async fn test_ack_lifecycle_duration_histogram() {
+        const ENTRY_TIME_NS: u64 = 1_000_000_000;
+        const RETURN_TIME_NS: u64 = 1_250_000_000;
+        const EXPECTED_DURATION_SECONDS: f64 = 0.25;
+
         let harness = setup_test_manager_with_metrics();
         let snapshots = run_and_collect(harness, |nodes| {
-            let pdata = build_3node_pdata(nodes, true);
+            let mut pdata = build_3node_pdata(nodes, true);
+            for frame in &mut pdata.frames {
+                if frame.route.entry_time_ns > 0 {
+                    frame.route.entry_time_ns = ENTRY_TIME_NS;
+                }
+            }
             let mut ack = AckMsg::new(pdata);
-            ack.unwind.return_time_ns = nanos_since_birth();
+            ack.unwind.return_time_ns = RETURN_TIME_NS;
             vec![PipelineCompletionMsg::DeliverAck { ack }]
         })
         .await;
 
-        // Exporter consumed duration: 1 observation, min > 0
         let exp = &snapshots[&MetricLabel::ExpConsumed];
-        let snap = assert_dist_is_mmsc(exp, CONSUMER_DURATION, "Exporter duration");
-        assert_eq!(snap.count, 1, "Exporter should have 1 duration observation");
-        assert!(snap.min > 0.0, "Duration min should be > 0");
-        assert!(snap.max >= snap.min, "Duration max >= min");
-
-        // Processor consumed duration: 1 observation, min > 0
-        let proc_c = &snapshots[&MetricLabel::ProcConsumed];
-        let snap = assert_dist_is_mmsc(proc_c, CONSUMER_DURATION, "Processor consumed duration");
-        assert_eq!(
-            snap.count, 1,
-            "Processor should have 1 consumed duration observation"
+        assert_duration_seconds(
+            exp,
+            CONSUMER_DURATION,
+            EXPECTED_DURATION_SECONDS,
+            "Exporter consumed duration",
         );
-        assert!(snap.min > 0.0, "Processor consumed duration should be > 0");
+
+        let proc_c = &snapshots[&MetricLabel::ProcConsumed];
+        assert_duration_seconds(
+            proc_c,
+            CONSUMER_DURATION,
+            EXPECTED_DURATION_SECONDS,
+            "Processor consumed duration",
+        );
 
         // Processor produced duration: should be 0 observations because the
-        // processor frame has CONSUMER_METRICS, so produced_duration_ns is
+        // processor frame has CONSUMER_METRICS, so produced duration is
         // suppressed.
         let proc_p = &snapshots[&MetricLabel::ProcProduced];
-        let snap = assert_dist_is_mmsc(proc_p, PRODUCER_DURATION, "Processor produced duration");
+        let (count, _, _, _) = assert_dist_is_normal_histogram(
+            proc_p,
+            PRODUCER_DURATION,
+            "Processor produced duration",
+        );
         assert_eq!(
-            snap.count, 0,
+            count, 0,
             "Processor should have 0 produced duration observations (suppressed by CONSUMER_METRICS)"
         );
     }
 
-    /// Verify that produced_duration_ns is recorded for producer-only frames
-    /// (receiver) but NOT for frames that also have CONSUMER_METRICS (processor).
-    /// Uses a no-subscriber pipeline so all frames are popped in a single unwind.
+    /// Scenario: An acknowledgement unwinds receiver-only and processor frames.
+    /// Guarantees: Produced duration is recorded only when no consumed duration owns the frame.
     #[tokio::test]
     async fn test_ack_lifecycle_produced_duration_histogram() {
+        const ENTRY_TIME_NS: u64 = 1_000_000_000;
+        const RETURN_TIME_NS: u64 = 1_250_000_000;
+        const EXPECTED_DURATION_SECONDS: f64 = 0.25;
+
         let harness = setup_test_manager_with_metrics();
         let snapshots = run_and_collect(harness, |nodes| {
-            let pdata = build_3node_pdata_no_subscribers(nodes, true);
+            let mut pdata = build_3node_pdata_no_subscribers(nodes, true);
+            for frame in &mut pdata.frames {
+                frame.route.entry_time_ns = ENTRY_TIME_NS;
+            }
             let mut ack = AckMsg::new(pdata);
-            ack.unwind.return_time_ns = nanos_since_birth();
+            ack.unwind.return_time_ns = RETURN_TIME_NS;
             vec![PipelineCompletionMsg::DeliverAck { ack }]
         })
         .await;
 
-        // Receiver produced duration: 1 observation, min > 0
         let recv_p = &snapshots[&MetricLabel::RecvProduced];
-        let snap = assert_dist_is_mmsc(recv_p, PRODUCER_DURATION, "Receiver produced duration");
-        assert_eq!(
-            snap.count, 1,
-            "Receiver should have 1 produced duration observation"
-        );
-        assert!(snap.min > 0.0, "Receiver produced duration should be > 0");
-        assert!(
-            snap.max >= snap.min,
-            "Receiver produced duration max >= min"
+        assert_duration_seconds(
+            recv_p,
+            PRODUCER_DURATION,
+            EXPECTED_DURATION_SECONDS,
+            "Receiver produced duration",
         );
 
         // Processor produced duration: 0 observations
         // (merged frame has CONSUMER_METRICS -> produced_duration suppressed)
         let proc_p = &snapshots[&MetricLabel::ProcProduced];
-        let snap = assert_dist_is_mmsc(proc_p, PRODUCER_DURATION, "Processor produced duration");
+        let (count, _, _, _) = assert_dist_is_normal_histogram(
+            proc_p,
+            PRODUCER_DURATION,
+            "Processor produced duration",
+        );
         assert_eq!(
-            snap.count, 0,
+            count, 0,
             "Processor should have 0 produced duration observations"
         );
 
         // Processor consumed duration: 1 observation (still works)
         let proc_c = &snapshots[&MetricLabel::ProcConsumed];
-        let snap = assert_dist_is_mmsc(proc_c, CONSUMER_DURATION, "Processor consumed duration");
+        let (count, _, _, _) = assert_dist_is_normal_histogram(
+            proc_c,
+            CONSUMER_DURATION,
+            "Processor consumed duration",
+        );
         assert_eq!(
-            snap.count, 1,
+            count, 1,
             "Processor should have 1 consumed duration observation"
         );
     }
@@ -4235,6 +3988,31 @@ mod tests {
         // Exporter consumed 7 log records.
         let exp = &snapshots[&MetricLabel::ExpConsumedItems];
         assert_u64(exp, ITEMS, 7, "Exporter consumed logs");
+    }
+
+    /// Scenario: a logs batch flows through receiver, processor, and exporter nodes.
+    /// Guarantees: each node reports its produced or consumed logical payload size in the `signal=logs` bucket.
+    #[tokio::test]
+    async fn test_per_signal_payload_size() {
+        let harness = setup_test_manager_with_metrics();
+        let snapshots = run_and_collect(harness, |nodes| {
+            let pdata = build_3node_pdata_no_subscribers(nodes, false);
+            vec![PipelineCompletionMsg::DeliverAck {
+                ack: AckMsg::new(pdata),
+            }]
+        })
+        .await;
+
+        let recv_p = &snapshots[&MetricLabel::RecvProducedSize];
+        assert_u64(recv_p, SIZE, 100, "Receiver produced size");
+
+        let proc_c = &snapshots[&MetricLabel::ProcConsumedSize];
+        assert_u64(proc_c, SIZE, 100, "Processor consumed size");
+        let proc_p = &snapshots[&MetricLabel::ProcProducedSize];
+        assert_u64(proc_p, SIZE, 70, "Processor produced size");
+
+        let exp = &snapshots[&MetricLabel::ExpConsumedSize];
+        assert_u64(exp, SIZE, 70, "Exporter consumed size");
     }
 
     /// Scenario: request metrics are enabled while per-signal item counting is not.
@@ -4273,6 +4051,42 @@ mod tests {
         );
     }
 
+    /// Scenario: request metrics are enabled while logical payload sizing is not.
+    /// Guarantees: request series are emitted but no zero-valued size series are reported.
+    #[tokio::test]
+    async fn node_metrics_omit_size_without_optin() {
+        let harness = setup_test_manager_with_metrics();
+        for handles in harness
+            .node_metric_handles
+            .borrow_mut()
+            .iter_mut()
+            .flatten()
+        {
+            let _ = handles.input_size.take();
+            handles.output_size.clear();
+        }
+
+        let snapshots = run_and_collect(harness, |nodes| {
+            let pdata = build_3node_pdata_no_subscribers(nodes, false);
+            vec![PipelineCompletionMsg::DeliverAck {
+                ack: AckMsg::new(pdata),
+            }]
+        })
+        .await;
+
+        assert!(
+            snapshots.contains_key(&MetricLabel::RecvProduced),
+            "Request metrics should remain enabled"
+        );
+        assert!(
+            !snapshots.contains_key(&MetricLabel::RecvProducedSize)
+                && !snapshots.contains_key(&MetricLabel::ProcConsumedSize)
+                && !snapshots.contains_key(&MetricLabel::ProcProducedSize)
+                && !snapshots.contains_key(&MetricLabel::ExpConsumedSize),
+            "Size metrics should be absent when payload sizing is disabled"
+        );
+    }
+
     /// Scenario: one processor records successful logs and failed traces.
     /// Guarantees: produced and consumed request and item snapshots retain distinct `signal` and `outcome` datapoint attributes.
     #[test]
@@ -4300,6 +4114,8 @@ mod tests {
             Some(SignalType::Logs),
             4,
             5,
+            0,
+            0,
             RequestOutcome::Success,
             0,
         );
@@ -4310,6 +4126,8 @@ mod tests {
             Some(SignalType::Traces),
             6,
             7,
+            0,
+            0,
             RequestOutcome::Failure,
             0,
         );
@@ -4449,7 +4267,8 @@ mod tests {
         assert_u64(&produced_traces, ITEMS, 6, "traces failure produced items");
     }
 
-    /// Verify that produced_duration_ns is NOT recorded when entry_time_ns is 0.
+    /// Scenario: A producer-only frame has no entry timestamp.
+    /// Guarantees: No produced duration observation is recorded.
     #[tokio::test]
     async fn test_produced_duration_not_recorded_without_timestamp() {
         let harness = setup_test_manager_with_metrics();
@@ -4463,14 +4282,19 @@ mod tests {
 
         // Receiver produced duration: 0 observations (no timestamp)
         let recv_p = &snapshots[&MetricLabel::RecvProduced];
-        let snap = assert_dist_is_mmsc(recv_p, PRODUCER_DURATION, "Receiver produced duration");
+        let (count, _, _, _) = assert_dist_is_normal_histogram(
+            recv_p,
+            PRODUCER_DURATION,
+            "Receiver produced duration",
+        );
         assert_eq!(
-            snap.count, 0,
+            count, 0,
             "No produced duration should be recorded when entry_time_ns == 0"
         );
     }
 
-    /// Verify that when entry_time_ns is 0 (or return_time_ns is 0), no duration histogram is recorded.
+    /// Scenario: An acknowledgement unwinds frames without entry timestamps.
+    /// Guarantees: No consumed duration observations are recorded.
     #[tokio::test]
     async fn test_ack_lifecycle_no_duration_without_timestamp() {
         let harness = setup_test_manager_with_metrics();
@@ -4483,16 +4307,18 @@ mod tests {
         .await;
 
         let exp = &snapshots[&MetricLabel::ExpConsumed];
-        let snap = assert_dist_is_mmsc(exp, CONSUMER_DURATION, "Exporter duration");
+        let (count, _, _, _) =
+            assert_dist_is_normal_histogram(exp, CONSUMER_DURATION, "Exporter duration");
         assert_eq!(
-            snap.count, 0,
+            count, 0,
             "No duration should be recorded when entry_time_ns == 0"
         );
 
         let proc_c = &snapshots[&MetricLabel::ProcConsumed];
-        let snap = assert_dist_is_mmsc(proc_c, CONSUMER_DURATION, "Processor duration");
+        let (count, _, _, _) =
+            assert_dist_is_normal_histogram(proc_c, CONSUMER_DURATION, "Processor duration");
         assert_eq!(
-            snap.count, 0,
+            count, 0,
             "No duration should be recorded when entry_time_ns == 0"
         );
     }
@@ -4603,6 +4429,8 @@ mod tests {
                 },
                 produced_items: 0,
                 consumed_items: 0,
+                produced_size: 0,
+                consumed_size: 0,
             });
             let mut ack2 = AckMsg::new(pdata_recv_only);
             ack2.unwind.return_time_ns = nanos_since_birth();
@@ -4617,14 +4445,19 @@ mod tests {
         // From pass 1: exporter and processor consumer metrics are recorded.
         let exp = &snapshots[&MetricLabel::ExpConsumed];
         assert_u64(exp, CONSUMER_REQUESTS, 1, "Exporter consumed requests");
-        let snap = assert_dist_is_mmsc(exp, CONSUMER_DURATION, "Exporter consumed duration");
-        assert_eq!(snap.count, 1, "Exporter should have 1 consumed duration");
-        assert!(snap.min > 0.0, "Exporter consumed duration > 0");
+        let (count, _, min, _) =
+            assert_dist_is_normal_histogram(exp, CONSUMER_DURATION, "Exporter consumed duration");
+        assert_eq!(count, 1, "Exporter should have 1 consumed duration");
+        assert!(min > 0.0, "Exporter consumed duration > 0");
 
         let proc_c = &snapshots[&MetricLabel::ProcConsumed];
         assert_u64(proc_c, CONSUMER_REQUESTS, 1, "Processor consumed requests");
-        let snap = assert_dist_is_mmsc(proc_c, CONSUMER_DURATION, "Processor consumed duration");
-        assert_eq!(snap.count, 1, "Processor should have 1 consumed duration");
+        let (count, _, _, _) = assert_dist_is_normal_histogram(
+            proc_c,
+            CONSUMER_DURATION,
+            "Processor consumed duration",
+        );
+        assert_eq!(count, 1, "Processor should have 1 consumed duration");
 
         // From pass 1: processor produced counter recorded.
         let proc_p = &snapshots[&MetricLabel::ProcProduced];
@@ -4633,12 +4466,16 @@ mod tests {
         // From pass 2: receiver produced counter AND duration recorded.
         let recv_p = &snapshots[&MetricLabel::RecvProduced];
         assert_u64(recv_p, PRODUCER_REQUESTS, 1, "Receiver produced requests");
-        let snap = assert_dist_is_mmsc(recv_p, PRODUCER_DURATION, "Receiver produced duration");
+        let (count, _, min, _) = assert_dist_is_normal_histogram(
+            recv_p,
+            PRODUCER_DURATION,
+            "Receiver produced duration",
+        );
         assert_eq!(
-            snap.count, 1,
+            count, 1,
             "Receiver should have 1 produced duration observation from two-pass unwind"
         );
-        assert!(snap.min > 0.0, "Receiver produced duration should be > 0");
+        assert!(min > 0.0, "Receiver produced duration should be > 0");
     }
 
     // Shutdown of a receiver+processor pipeline should first stop ingress, then
@@ -4756,7 +4593,6 @@ mod tests {
                         RUNTIME_PENDING_SENDS_BUFFERED,
                         RUNTIME_TIMERS_ACTIVE,
                         RUNTIME_TELEMETRY_TIMERS_ACTIVE,
-                        RUNTIME_DELAYED_DATA_QUEUED,
                     ],
                 )
                 .expect("runtime-control metrics should be exported");
@@ -4812,7 +4648,6 @@ mod tests {
                         RUNTIME_PENDING_SENDS_BUFFERED,
                         RUNTIME_TIMERS_ACTIVE,
                         RUNTIME_TELEMETRY_TIMERS_ACTIVE,
-                        RUNTIME_DELAYED_DATA_QUEUED,
                     ],
                 )
                 .expect("runtime-control metrics should export receiver-drained transition");
@@ -4913,7 +4748,6 @@ mod tests {
                         RUNTIME_PENDING_SENDS_BUFFERED,
                         RUNTIME_TIMERS_ACTIVE,
                         RUNTIME_TELEMETRY_TIMERS_ACTIVE,
-                        RUNTIME_DELAYED_DATA_QUEUED,
                     ],
                 )
                 .expect("runtime-control metrics should export forced-deadline snapshot");
@@ -5001,8 +4835,8 @@ mod tests {
             .await;
     }
 
-    // Timer ticks, telemetry ticks, and delayed-data resumptions should all be
-    // reflected in runtime-control counters when they become due.
+    /// Scenario: due runtime and telemetry timers become ready while the runtime-control manager is running.
+    /// Guarantees: runtime-control metrics record at least one timer tick and one telemetry dispatch when they become due.
     #[tokio::test]
     async fn test_runtime_control_metrics_track_due_work_dispatch() {
         let local = LocalSet::new();
@@ -5040,29 +4874,15 @@ mod tests {
                     })
                     .await
                     .unwrap();
-                pipeline_tx
-                    .send(RuntimeControlMsg::DelayData {
-                        node_id: processor.index,
-                        when: Instant::now() + Duration::from_millis(5),
-                        data: Box::new("retry".to_owned()),
-                    })
-                    .await
-                    .unwrap();
 
                 let mut processor_ctrl = control_receivers.remove(&processor.index).unwrap();
                 let mut timer_tick = false;
                 let mut collect_telemetry = false;
-                let mut delayed_data = false;
                 let deadline = tokio::time::Instant::now() + Duration::from_millis(250);
-                while !(timer_tick && collect_telemetry && delayed_data)
-                    && tokio::time::Instant::now() < deadline
-                {
+                while !(timer_tick && collect_telemetry) && tokio::time::Instant::now() < deadline {
                     match timeout(Duration::from_millis(100), processor_ctrl.recv()).await {
                         Ok(Ok(NodeControlMsg::TimerTick {})) => timer_tick = true,
                         Ok(Ok(NodeControlMsg::CollectTelemetry { .. })) => collect_telemetry = true,
-                        Ok(Ok(NodeControlMsg::DelayedData { data, .. })) => {
-                            delayed_data = *data == "retry"
-                        }
                         Ok(Ok(_)) => {}
                         Ok(Err(_)) | Err(_) => break,
                     }
@@ -5072,7 +4892,6 @@ mod tests {
                     collect_telemetry,
                     "due telemetry timer should reach the processor"
                 );
-                assert!(delayed_data, "due delayed data should be resumed");
 
                 drop(pipeline_tx);
                 let manager_result = timeout(Duration::from_millis(200), manager_handle).await;
@@ -5087,7 +4906,6 @@ mod tests {
                         RUNTIME_PENDING_SENDS_BUFFERED,
                         RUNTIME_TIMERS_ACTIVE,
                         RUNTIME_TELEMETRY_TIMERS_ACTIVE,
-                        RUNTIME_DELAYED_DATA_QUEUED,
                     ],
                 )
                 .expect("runtime-control metrics should export due-work counters");
@@ -5105,23 +4923,10 @@ mod tests {
                     1,
                     "start_telemetry_timer.received should count telemetry timer requests",
                 );
-                assert_u64(
-                    &due_metrics,
-                    RUNTIME_DELAY_DATA_RECEIVED,
-                    1,
-                    "delay_data.received should count delayed-data requests",
-                );
-                assert_u64(
-                    &due_metrics,
-                    RUNTIME_DELAYED_DATA_SENT,
-                    1,
-                    "delayed_data.sent should count due delayed-data dispatches",
-                );
                 // Recurring timers reschedule immediately after firing, so
                 // the 5ms timer may fire more than once before `drop(pipeline_tx)`
-                // closes the manager. Unlike delayed data (one-shot), these are
-                // inherently non-deterministic -- we only require at least one
-                // dispatch was recorded.
+                // closes the manager. These are inherently non-deterministic,
+                // so we only require at least one dispatch was recorded.
                 assert_u64_gte(
                     &due_metrics,
                     RUNTIME_TIMER_TICK_SENT,
@@ -5133,99 +4938,6 @@ mod tests {
                     RUNTIME_COLLECT_TELEMETRY_SENT,
                     1,
                     "collect_telemetry.sent should count due telemetry dispatches",
-                );
-            })
-            .await;
-    }
-
-    // Once shutdown is latched, newly submitted DelayData requests should be
-    // returned immediately and counted separately from ordinary delayed-data
-    // scheduling.
-    #[tokio::test]
-    async fn test_runtime_control_metrics_track_delay_data_returned_during_drain() {
-        let local = LocalSet::new();
-
-        local
-            .run_until(async {
-                let RuntimeControlTelemetryHarness {
-                    manager,
-                    pipeline_tx,
-                    mut control_receivers,
-                    nodes,
-                    runtime_metrics_key,
-                    snapshot_rx,
-                    engine_rx: _engine_rx,
-                    ..
-                } = setup_runtime_control_telemetry_harness::<String>(
-                    vec![("processor", NodeType::Processor, 16)],
-                    MetricLevel::Normal,
-                );
-
-                let processor = nodes[0].clone();
-                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
-
-                pipeline_tx
-                    .send(RuntimeControlMsg::Shutdown {
-                        deadline: Instant::now() + Duration::from_secs(1),
-                        reason: "drain retry".to_owned(),
-                    })
-                    .await
-                    .unwrap();
-                pipeline_tx
-                    .send(RuntimeControlMsg::DelayData {
-                        node_id: processor.index,
-                        when: Instant::now() + Duration::from_secs(30),
-                        data: Box::new("retry".to_owned()),
-                    })
-                    .await
-                    .unwrap();
-
-                let mut processor_ctrl = control_receivers.remove(&processor.index).unwrap();
-                let first = timeout(Duration::from_millis(100), processor_ctrl.recv())
-                    .await
-                    .expect("processor should get first control message")
-                    .expect("processor control channel should stay open");
-                let second = timeout(Duration::from_millis(100), processor_ctrl.recv())
-                    .await
-                    .expect("processor should get delayed data during drain")
-                    .expect("processor control channel should stay open");
-                assert!(
-                    matches!(first, NodeControlMsg::Shutdown { .. })
-                        || matches!(second, NodeControlMsg::Shutdown { .. })
-                );
-                assert!(
-                    matches!(first, NodeControlMsg::DelayedData { .. })
-                        || matches!(second, NodeControlMsg::DelayedData { .. })
-                );
-
-                drop(pipeline_tx);
-                let manager_result = timeout(Duration::from_millis(200), manager_handle).await;
-                assert!(manager_result.is_ok(), "manager should stop cleanly");
-
-                let drain_metrics = collect_metric_set_snapshots(
-                    &snapshot_rx,
-                    runtime_metrics_key,
-                    &[
-                        RUNTIME_DRAIN_ACTIVE,
-                        RUNTIME_DRAIN_PENDING_RECEIVERS,
-                        RUNTIME_PENDING_SENDS_BUFFERED,
-                        RUNTIME_TIMERS_ACTIVE,
-                        RUNTIME_TELEMETRY_TIMERS_ACTIVE,
-                        RUNTIME_DELAYED_DATA_QUEUED,
-                    ],
-                )
-                .expect("runtime-control metrics should export drain-time delay-data counters");
-                assert_u64(
-                    &drain_metrics,
-                    RUNTIME_DELAY_DATA_RECEIVED,
-                    1,
-                    "delay_data.received should count the drain-time request",
-                );
-                assert_u64(
-                    &drain_metrics,
-                    RUNTIME_DELAY_DATA_RETURNED_DURING_DRAIN,
-                    1,
-                    "delay_data.returned_during_drain should count immediate drain returns",
                 );
             })
             .await;
@@ -5281,7 +4993,6 @@ mod tests {
                         RUNTIME_PENDING_SENDS_BUFFERED,
                         RUNTIME_TIMERS_ACTIVE,
                         RUNTIME_TELEMETRY_TIMERS_ACTIVE,
-                        RUNTIME_DELAYED_DATA_QUEUED,
                     ],
                 )
                 .expect("dirty runtime-control state should flush on the configured interval");
@@ -5309,7 +5020,6 @@ mod tests {
                             RUNTIME_PENDING_SENDS_BUFFERED,
                             RUNTIME_TIMERS_ACTIVE,
                             RUNTIME_TELEMETRY_TIMERS_ACTIVE,
-                            RUNTIME_DELAYED_DATA_QUEUED,
                         ],
                     )
                     .is_none(),
@@ -5376,7 +5086,6 @@ mod tests {
                         RUNTIME_PENDING_SENDS_BUFFERED,
                         RUNTIME_TIMERS_ACTIVE,
                         RUNTIME_TELEMETRY_TIMERS_ACTIVE,
-                        RUNTIME_DELAYED_DATA_QUEUED,
                     ],
                 )
                 .expect("shutdown latch should flush without waiting for the full interval");
@@ -5508,7 +5217,6 @@ mod tests {
                         RUNTIME_PENDING_SENDS_BUFFERED,
                         RUNTIME_TIMERS_ACTIVE,
                         RUNTIME_TELEMETRY_TIMERS_ACTIVE,
-                        RUNTIME_DELAYED_DATA_QUEUED,
                     ],
                 )
                 .expect("basic runtime-control metrics should be exported");
@@ -5601,7 +5309,6 @@ mod tests {
                         RUNTIME_PENDING_SENDS_BUFFERED,
                         RUNTIME_TIMERS_ACTIVE,
                         RUNTIME_TELEMETRY_TIMERS_ACTIVE,
-                        RUNTIME_DELAYED_DATA_QUEUED,
                     ],
                 )
                 .expect("normal runtime-control metrics should be exported");
@@ -6393,6 +6100,8 @@ mod tests {
                 },
                 produced_items: 0,
                 consumed_items: 0,
+                produced_size: 0,
+                consumed_size: 0,
             });
             pdata
         }
@@ -6525,6 +6234,8 @@ mod tests {
                 },
                 produced_items: 0,
                 consumed_items: 0,
+                produced_size: 0,
+                consumed_size: 0,
             });
             pdata
         }
@@ -6662,6 +6373,8 @@ mod tests {
                 },
                 produced_items: 0,
                 consumed_items: 0,
+                produced_size: 0,
+                consumed_size: 0,
             });
             pdata
         }

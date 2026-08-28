@@ -6,7 +6,7 @@
 #   kubectl apply -f integration-fixtures.yaml
 #   K8S_SAT_TOKEN="$(kubectl create token sat-tester -n sat-authz-test \
 #     --audience=https://sat-authz-test.example --duration=3600s)" \
-#   cargo test -p otap-df-contrib-extensions \
+#   cargo test -p otel-arrow-dfe-contrib-extensions \
 #     --features k8s-service-account-token-auth-extension \
 #     k8s_service_account_token_auth -- --ignored --nocapture
 #

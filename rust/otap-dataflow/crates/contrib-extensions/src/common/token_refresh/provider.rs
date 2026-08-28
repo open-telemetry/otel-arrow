@@ -10,17 +10,17 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use futures::StreamExt;
-use otap_df_engine::capability::auth::BearerToken;
-use otap_df_engine::capability::auth::bearer_token_provider::{
+use otel_arrow_dfe_engine::capability::auth::BearerToken;
+use otel_arrow_dfe_engine::capability::auth::bearer_token_provider::{
     BearerTokenProvider as BearerTokenProviderCap, TOKEN_USABLE_MARGIN, TokenStream,
 };
-use otap_df_engine::capability::{CapabilityError, CapabilityErrorSource};
-use otap_df_engine::control::ExtensionControlMsg;
-use otap_df_engine::error::Error as EngineError;
-use otap_df_engine::extension::EffectHandler;
-use otap_df_engine::shared::capability::auth::bearer_token_provider::BearerTokenProvider as SharedBearerTokenProvider;
-use otap_df_engine::shared::extension::{ControlChannel, Extension as SharedExtension};
-use otap_df_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_engine::capability::{CapabilityError, CapabilityErrorSource};
+use otel_arrow_dfe_engine::control::ExtensionControlMsg;
+use otel_arrow_dfe_engine::error::Error as EngineError;
+use otel_arrow_dfe_engine::extension::EffectHandler;
+use otel_arrow_dfe_engine::shared::capability::auth::bearer_token_provider::BearerTokenProvider as SharedBearerTokenProvider;
+use otel_arrow_dfe_engine::shared::extension::{ControlChannel, Extension as SharedExtension};
+use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use rand::RngExt;
 use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;

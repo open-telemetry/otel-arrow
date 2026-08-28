@@ -51,35 +51,54 @@ impl PartitionTracker {
     ///
     /// The stored generation is advanced to `generation` when it is newer, so a
     /// partition reassigned to this consumer adopts the new ownership period.
-    fn track(&mut self, offset: i64, generation: u64) {
+    ///
+    /// Returns the signed change in this partition's pending count so the
+    /// enclosing [`OffsetTracker`] can maintain an O(1) aggregate without
+    /// rescanning: `0` for a stale-generation no-op or a duplicate offset, `+1`
+    /// for a fresh insert, and `1 - old_len` for a newer-generation reset (the
+    /// prior `old_len` pending offsets are cleared and one new offset inserted).
+    fn track(&mut self, offset: i64, generation: u64) -> isize {
         if generation < self.generation {
             // Stale ownership period -- do not touch current-period state.
-            return;
+            return 0;
         }
+        let mut delta: isize = 0;
         if generation > self.generation {
             self.generation = generation;
+            // The reset drops every currently-pending offset.
+            delta -= self.pending.len() as isize;
             self.pending.clear();
             self.high_water_mark = None;
             self.last_lowest = None;
         }
-        let _ = self.pending.insert(offset);
+        if self.pending.insert(offset) {
+            delta += 1;
+        }
         // Update cached lowest if this is lower or first entry.
         match self.last_lowest {
             None => self.last_lowest = Some(offset),
             Some(prev) if offset < prev => self.last_lowest = Some(offset),
             _ => {}
         }
+        delta
     }
 
     /// Mark an offset as acknowledged.
     ///
-    /// Returns `true` if the lowest pending offset changed (i.e., the
-    /// committable watermark advanced), signalling that a commit may be
-    /// warranted.
-    fn acknowledge(&mut self, offset: i64) -> bool {
+    /// Returns `(removed, advanced)`:
+    /// - `removed` is `true` when the offset was pending and has now been
+    ///   removed, so the enclosing [`OffsetTracker`] can decrement its O(1)
+    ///   aggregate pending count by one.
+    /// - `advanced` is `true` when the lowest pending offset changed (i.e., the
+    ///   committable watermark advanced), signalling that a commit may be
+    ///   warranted.
+    ///
+    /// A spurious ack (offset never tracked or already acked) returns
+    /// `(false, false)`.
+    fn acknowledge(&mut self, offset: i64) -> (bool, bool) {
         if !self.pending.remove(&offset) {
             // Offset was never tracked (or already acked) -- no-op.
-            return false;
+            return (false, false);
         }
 
         // Update high-water mark.
@@ -93,7 +112,7 @@ impl PartitionTracker {
         let new_lowest = self.pending.first().copied();
         let advanced = new_lowest != self.last_lowest;
         self.last_lowest = new_lowest;
-        advanced
+        (true, advanced)
     }
 
     /// The lowest un-acknowledged offset, if any.
@@ -170,6 +189,13 @@ pub struct OffsetTracker {
     /// [`revoke`](Self::revoke) (rebuilds); [`committable_tpl`](Self::committable_tpl)
     /// updates offsets in place.
     tpl: TopicPartitionList,
+    /// O(1) aggregate of pending offsets across every tracked partition.
+    ///
+    /// Maintained incrementally at the three mutation sites ([`track`](Self::track),
+    /// [`acknowledge`](Self::acknowledge), [`revoke`](Self::revoke)) so
+    /// [`total_pending`](Self::total_pending) never rescans partitions on the
+    /// hot receive path.
+    total_pending: usize,
 }
 
 impl OffsetTracker {
@@ -179,7 +205,18 @@ impl OffsetTracker {
         Self {
             partitions: HashMap::new(),
             tpl: TopicPartitionList::new(),
+            total_pending: 0,
         }
+    }
+
+    /// Apply a signed per-partition pending-count delta to the cached
+    /// aggregate. `delta` originates from [`PartitionTracker::track`] (fresh
+    /// insert, duplicate, or newer-generation reset) or an acknowledge/revoke
+    /// removal.
+    fn apply_pending_delta(&mut self, delta: isize) {
+        // A correct delta never drives the aggregate negative; a saturating
+        // signed add keeps the counter well-defined even if it somehow did.
+        self.total_pending = self.total_pending.saturating_add_signed(delta);
     }
 
     /// Record a message offset as pending (in-flight).
@@ -192,7 +229,7 @@ impl OffsetTracker {
     /// Only allocates a `String` when a topic is seen for the first time;
     /// subsequent calls for the same topic use `&str` lookups.
     pub fn track(&mut self, topic: &str, partition: i32, offset: i64, generation: u64) {
-        if let Some(partitions) = self.partitions.get_mut(topic) {
+        let delta = if let Some(partitions) = self.partitions.get_mut(topic) {
             // Known topic -- zero allocation.
             let entry = partitions.entry(partition);
             if matches!(&entry, std::collections::hash_map::Entry::Vacant(_)) {
@@ -201,16 +238,18 @@ impl OffsetTracker {
             }
             entry
                 .or_insert_with(|| PartitionTracker::new(generation))
-                .track(offset, generation);
+                .track(offset, generation)
         } else {
             // New topic -- allocate once and register the partition in the TPL.
             let _ = self.tpl.add_partition(topic, partition);
             let mut tracker = PartitionTracker::new(generation);
-            tracker.track(offset, generation);
+            let delta = tracker.track(offset, generation);
             let mut partitions = HashMap::new();
             let _ = partitions.insert(partition, tracker);
             let _ = self.partitions.insert(topic.to_string(), partitions);
-        }
+            delta
+        };
+        self.apply_pending_delta(delta);
     }
 
     /// The assignment generation the given partition's tracked state belongs to,
@@ -265,13 +304,17 @@ impl OffsetTracker {
             // Unknown topic -- nothing tracked, TPL already excludes it.
             return;
         };
-        if partitions.remove(&partition).is_none() {
+        let Some(removed) = partitions.remove(&partition) else {
             // Unknown partition -- TPL already excludes it.
             return;
-        }
+        };
+        // Dropping the partition removes all of its pending offsets from the
+        // aggregate. Capture the count before releasing the `partitions` borrow.
+        let removed_pending = removed.pending_count();
         if partitions.is_empty() {
             let _ = self.partitions.remove(topic);
         }
+        self.apply_pending_delta(-(removed_pending as isize));
         self.rebuild_tpl();
     }
 
@@ -296,11 +339,17 @@ impl OffsetTracker {
     /// Returns `true` if the lowest pending offset for this partition changed,
     /// indicating the committable watermark advanced.
     pub fn acknowledge(&mut self, topic: &str, partition: i32, offset: i64) -> bool {
-        self.partitions
+        let (removed, advanced) = self
+            .partitions
             .get_mut(topic)
             .and_then(|parts| parts.get_mut(&partition))
             .map(|tracker| tracker.acknowledge(offset))
-            .unwrap_or(false)
+            .unwrap_or((false, false));
+        if removed {
+            // A successful ack retires exactly one pending offset.
+            self.apply_pending_delta(-1);
+        }
+        advanced
     }
 
     /// Check whether an offset has already been seen for this topic+partition.
@@ -403,13 +452,14 @@ impl OffsetTracker {
     /// This is the receiver's in-flight depth: records that have been delivered
     /// downstream and are awaiting an Ack/Nack whose commit has not yet advanced
     /// past them. Exposed for the `records_in_flight` up/down counter.
+    ///
+    /// O(1): returns the aggregate maintained incrementally at the mutation
+    /// sites rather than rescanning every partition on the hot receive path. The
+    /// invariant that this cached value equals a full O(n) rescan is verified by
+    /// the unit tests after every mutation.
     #[must_use]
     pub fn total_pending(&self) -> usize {
-        self.partitions
-            .values()
-            .flat_map(|parts| parts.values())
-            .map(|t| t.pending_count())
-            .sum()
+        self.total_pending
     }
 }
 
@@ -464,15 +514,15 @@ mod tests {
     fn partition_basic_track_and_ack() {
         let mut pt = PartitionTracker::new(0);
 
-        pt.track(100, 0);
-        pt.track(101, 0);
-        pt.track(102, 0);
+        assert_eq!(pt.track(100, 0), 1);
+        assert_eq!(pt.track(101, 0), 1);
+        assert_eq!(pt.track(102, 0), 1);
 
         assert_eq!(pt.pending_count(), 3);
         assert_eq!(pt.lowest_pending(), Some(100));
 
         // Ack the lowest -- should advance.
-        assert!(pt.acknowledge(100));
+        assert_eq!(pt.acknowledge(100), (true, true));
         assert_eq!(pt.pending_count(), 2);
         assert_eq!(pt.lowest_pending(), Some(101));
         assert_eq!(pt.high_water_mark(), Some(100));
@@ -485,27 +535,27 @@ mod tests {
     fn partition_out_of_order_acks() {
         let mut pt = PartitionTracker::new(0);
 
-        pt.track(100, 0);
-        pt.track(101, 0);
-        pt.track(102, 0);
-        pt.track(103, 0);
-        pt.track(104, 0);
+        let _ = pt.track(100, 0);
+        let _ = pt.track(101, 0);
+        let _ = pt.track(102, 0);
+        let _ = pt.track(103, 0);
+        let _ = pt.track(104, 0);
 
         // Ack 102, 104 -- lowest stays at 100.
-        assert!(!pt.acknowledge(102));
-        assert!(!pt.acknowledge(104));
+        assert!(!pt.acknowledge(102).1);
+        assert!(!pt.acknowledge(104).1);
         assert_eq!(pt.lowest_pending(), Some(100));
 
         // Ack 100 -- lowest moves to 101.
-        assert!(pt.acknowledge(100));
+        assert!(pt.acknowledge(100).1);
         assert_eq!(pt.lowest_pending(), Some(101));
 
         // Ack 101 -- lowest moves to 103 (102 already acked).
-        assert!(pt.acknowledge(101));
+        assert!(pt.acknowledge(101).1);
         assert_eq!(pt.lowest_pending(), Some(103));
 
         // Ack 103 -- all clear.
-        assert!(pt.acknowledge(103));
+        assert!(pt.acknowledge(103).1);
         assert_eq!(pt.lowest_pending(), None);
         assert_eq!(pt.pending_count(), 0);
         assert_eq!(pt.high_water_mark(), Some(104));
@@ -518,12 +568,12 @@ mod tests {
     fn partition_duplicate_track_is_idempotent() {
         let mut pt = PartitionTracker::new(0);
 
-        pt.track(100, 0);
-        pt.track(100, 0);
-        pt.track(100, 0);
+        assert_eq!(pt.track(100, 0), 1, "first insert adds one pending offset");
+        assert_eq!(pt.track(100, 0), 0, "duplicate track is a no-op delta");
+        assert_eq!(pt.track(100, 0), 0, "duplicate track is a no-op delta");
 
         assert_eq!(pt.pending_count(), 1);
-        assert!(pt.acknowledge(100));
+        assert!(pt.acknowledge(100).1);
         assert_eq!(pt.pending_count(), 0);
     }
 
@@ -533,9 +583,9 @@ mod tests {
     fn partition_ack_unknown_offset_is_noop() {
         let mut pt = PartitionTracker::new(0);
 
-        pt.track(100, 0);
+        let _ = pt.track(100, 0);
         // Ack a non-existent offset -- nothing should change.
-        assert!(!pt.acknowledge(999));
+        assert_eq!(pt.acknowledge(999), (false, false));
         assert_eq!(pt.pending_count(), 1);
         assert_eq!(pt.lowest_pending(), Some(100));
         // HWM must not be set by an untracked offset.
@@ -549,9 +599,9 @@ mod tests {
     fn partition_high_water_mark_after_all_acked() {
         let mut pt = PartitionTracker::new(0);
 
-        pt.track(100, 0);
-        pt.track(101, 0);
-        pt.track(102, 0);
+        let _ = pt.track(100, 0);
+        let _ = pt.track(101, 0);
+        let _ = pt.track(102, 0);
 
         let _ = pt.acknowledge(100);
         let _ = pt.acknowledge(101);
@@ -571,7 +621,7 @@ mod tests {
 
         // Generation 1: own offsets 100..=104 and ack them all.
         for offset in 100..=104 {
-            pt.track(offset, 1);
+            let _ = pt.track(offset, 1);
         }
         for offset in 100..=104 {
             let _ = pt.acknowledge(offset);
@@ -582,7 +632,9 @@ mod tests {
         // Generation 2 (reacquired): the first fetched offset is lower than the
         // prior high-water mark. The stale state must be discarded so the
         // committable offset follows the new ownership period, not the old HWM.
-        pt.track(50, 2);
+        // All pending were already acked (pending_count 0), so the reset delta
+        // is 1 - 0 = 1.
+        assert_eq!(pt.track(50, 2), 1);
         assert_eq!(pt.generation, 2);
         assert_eq!(pt.pending_count(), 1);
         assert_eq!(pt.high_water_mark(), None);
@@ -598,13 +650,14 @@ mod tests {
         let mut pt = PartitionTracker::new(1);
 
         // Establish current ownership period (generation 2) with one offset.
-        pt.track(200, 2);
+        let _ = pt.track(200, 2);
         assert_eq!(pt.generation, 2);
         assert_eq!(pt.pending_count(), 1);
         assert_eq!(pt.lowest_pending(), Some(200));
 
-        // A stale generation-1 track must not touch any current-period state.
-        pt.track(100, 1);
+        // A stale generation-1 track must not touch any current-period state,
+        // and reports a zero delta.
+        assert_eq!(pt.track(100, 1), 0);
         assert_eq!(
             pt.generation, 2,
             "stale track must not lower the generation"
@@ -1415,5 +1468,115 @@ mod tests {
         // An untracked partition is never known, regardless of generation.
         assert!(!tracker.is_known_offset_for_generation("traces", 9, 100, 1));
         assert!(!tracker.is_known_offset_for_generation("traces", 9, 100, 2));
+    }
+
+    // ---- Aggregate in-flight (total_pending) ----
+
+    /// O(n) reference rescan of the aggregate pending count, summed directly
+    /// from every partition's pending set. This is the linear-scan baseline the
+    /// production O(1) [`OffsetTracker::total_pending`] cache must always agree
+    /// with; it is defined only in tests so the production path never rescans.
+    fn scan_total_pending(tracker: &OffsetTracker) -> usize {
+        tracker
+            .partitions
+            .values()
+            .flat_map(|parts| parts.values())
+            .map(PartitionTracker::pending_count)
+            .sum()
+    }
+
+    /// Assert the O(1) cached aggregate equals the O(n) full rescan and both
+    /// equal `expected`.
+    ///
+    /// This is the core behavior-preserving check: the constant-time counter
+    /// returned by [`OffsetTracker::total_pending`] must always match a fresh
+    /// linear scan over every partition's pending set.
+    fn assert_in_flight_agrees(tracker: &OffsetTracker, expected: usize) {
+        let full_scan = scan_total_pending(tracker); // O(n) over all partitions.
+        let constant_time = tracker.total_pending(); // O(1) cached aggregate.
+        assert_eq!(
+            full_scan, expected,
+            "O(n) full scan diverged from the expected in-flight count",
+        );
+        assert_eq!(
+            constant_time, full_scan,
+            "O(1) cached total_pending diverged from the O(n) full scan",
+        );
+    }
+
+    /// Scenario (runtime and performance): the aggregate in-flight count is
+    /// driven through track, duplicate track, stale-generation track, ack,
+    /// unknown ack, revoke, newer-generation reset, and a full drain to zero.
+    /// Guarantees: after every mutation the O(1) cached `total_pending` exactly
+    /// equals an O(n) full rescan of all partitions and the expected value, so
+    /// the constant-time counter never drifts from the true in-flight depth and
+    /// the metric stays behavior-preserving relative to a full rescan.
+    #[test]
+    fn total_pending_cache_matches_scan_across_mutations() {
+        let mut tracker = OffsetTracker::new();
+
+        // in flight: {} => total 0
+        assert_in_flight_agrees(&tracker, 0);
+
+        // Fresh inserts across two topics/partitions raise the aggregate.
+        // in flight: traces/0={100,101}, traces/1={200}, metrics/0={300} => total 4
+        tracker.track("traces", 0, 100, 1);
+        tracker.track("traces", 0, 101, 1);
+        tracker.track("traces", 1, 200, 1);
+        tracker.track("metrics", 0, 300, 1);
+        assert_in_flight_agrees(&tracker, 4);
+
+        // A duplicate offset does not change the aggregate.
+        // duplicate insert, in flight unchanged => total 4
+        tracker.track("traces", 0, 100, 1);
+        assert_in_flight_agrees(&tracker, 4);
+
+        // A stale-generation track is a no-op for the aggregate.
+        // stale-gen no-op, in flight unchanged => total 4
+        tracker.track("traces", 0, 50, 0);
+        assert_in_flight_agrees(&tracker, 4);
+
+        // Acking a pending offset decrements by one.
+        // in flight: traces/0={101}, traces/1={200}, metrics/0={300} => total 3
+        assert!(tracker.acknowledge("traces", 0, 100));
+        assert_in_flight_agrees(&tracker, 3);
+
+        // Acking an unknown offset/partition leaves the aggregate unchanged.
+        // unknown acks are no-ops, in flight unchanged => total 3
+        assert!(!tracker.acknowledge("traces", 0, 999));
+        assert!(!tracker.acknowledge("unknown", 7, 1));
+        assert_in_flight_agrees(&tracker, 3);
+
+        // Revoking a partition subtracts its remaining pending offsets.
+        // traces/0 still has offset 101 pending (100 was acked).
+        // drop traces/0={101}; in flight: traces/1={200}, metrics/0={300} => total 2
+        tracker.revoke("traces", 0);
+        assert_in_flight_agrees(&tracker, 2);
+
+        // A newer-generation track on an existing partition resets its pending
+        // set: metrics/0 drops its single old-generation offset (300) and adds
+        // one new offset (400), a net zero change for that partition.
+        // reset metrics/0 {300}->{400}; in flight: traces/1={200}, metrics/0={400} => total 2
+        tracker.track("metrics", 0, 400, 2);
+        assert_in_flight_agrees(&tracker, 2);
+
+        // Grow traces/1 to two generation-1 pending offsets (200, 201) so the
+        // upcoming newer-generation reset must remove more than it adds,
+        // exercising the negative-delta path (delta = 1 - old_len = 1 - 2 = -1).
+        // in flight: traces/1={200,201}, metrics/0={400} => total 3
+        tracker.track("traces", 1, 201, 1);
+        assert_in_flight_agrees(&tracker, 3);
+
+        // A newer-generation track on traces/1 clears its two pending offsets
+        // (200, 201) and inserts one (210): net -1, so the aggregate shrinks.
+        // reset traces/1 {200,201}->{210}; in flight: traces/1={210}, metrics/0={400} => total 2
+        tracker.track("traces", 1, 210, 2);
+        assert_in_flight_agrees(&tracker, 2);
+
+        // Drain everything to zero via acks; the cache must land exactly at 0.
+        // ack metrics/0 400 and traces/1 210; in flight: {} => total 0
+        assert!(tracker.acknowledge("metrics", 0, 400));
+        assert!(tracker.acknowledge("traces", 1, 210));
+        assert_in_flight_agrees(&tracker, 0);
     }
 }
