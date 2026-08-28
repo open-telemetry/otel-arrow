@@ -399,7 +399,10 @@ fn test_optional_shared_rejects_local_only_binding() {
     )
     .unwrap();
 
-    let error = caps.optional_shared::<TestCap>().unwrap_err();
+    let error = match caps.optional_shared::<TestCap>() {
+        Err(error) => error,
+        Ok(_) => panic!("expected execution model mismatch"),
+    };
     match error {
         Error::CapabilityExecutionModelMismatch {
             capability,
