@@ -549,6 +549,11 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
 
                             (Uncompressed::InProtoBuffer, otap_batch.into())
                         }
+                        PayloadData::Encoded(_) => {
+                            unreachable!(
+                                "encoded payloads are not admitted during the storage transition"
+                            )
+                        }
                     };
 
                     let body = match compression {

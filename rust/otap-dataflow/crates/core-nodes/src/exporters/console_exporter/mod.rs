@@ -317,6 +317,9 @@ impl ConsoleExporter {
                     Err(ConsoleExportErrorType::OtapViewCreation)
                 }
             },
+            PayloadData::Encoded(_) => {
+                unreachable!("encoded payloads are not admitted during the storage transition")
+            }
         }
     }
 
@@ -346,6 +349,9 @@ impl ConsoleExporter {
                     Err(ConsoleExportErrorType::OtapViewCreation)
                 }
             },
+            PayloadData::Encoded(_) => {
+                unreachable!("encoded payloads are not admitted during the storage transition")
+            }
         }
     }
 

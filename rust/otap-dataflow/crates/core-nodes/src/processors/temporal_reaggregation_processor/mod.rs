@@ -641,6 +641,9 @@ impl TemporalReaggregationProcessor {
                 let view = RawMetricsData::new(otlp.as_bytes());
                 self.process_view(effect_handler, &view).await
             }
+            PayloadData::Encoded(_) => {
+                unreachable!("encoded payloads are not admitted during the storage transition")
+            }
         };
 
         match result {

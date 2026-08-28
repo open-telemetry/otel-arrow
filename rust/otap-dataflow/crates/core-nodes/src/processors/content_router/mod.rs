@@ -604,6 +604,9 @@ impl ContentRouter {
                     },
                 }
             }
+            PayloadData::Encoded(_) => {
+                unreachable!("encoded payloads are not admitted during the storage transition")
+            }
         }
     }
 

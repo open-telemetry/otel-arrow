@@ -24,12 +24,14 @@ pub mod encode;
 pub(crate) mod payload;
 
 pub use codec::{
-    CodecDirection, CodecState, CodecView, EncodeOutput, EncodingPlan, PdataCodec,
+    CodecDirection, CodecState, CodecView, EncodeOutput, EncodedPdata, EncodingPlan, PdataCodec,
     PdataCodecMetadata, PdataCodecRegistration, PdataEncoding, ResolvedCodec,
 };
 pub use otap::OtapArrowRecords;
 pub use otlp::OtlpProtoBytes;
-pub use payload::{OtapPayload, OtapPayloadHelpers, PayloadData};
+pub use payload::{
+    OtapPayload, OtapPayloadDecodeError, OtapPayloadHelpers, PayloadData, PdataFormat,
+};
 
 /// Testing support
 #[cfg(any(test, feature = "testing"))]

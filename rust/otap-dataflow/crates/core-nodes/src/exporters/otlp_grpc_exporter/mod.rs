@@ -631,6 +631,11 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             let future = make_export_future(prepared, client);
                             inflight_exports.push(future);
                         }
+                        (_, PayloadData::Encoded(_)) => {
+                            unreachable!(
+                                "encoded payloads are not admitted during the storage transition"
+                            )
+                        }
                     }
                 }
                 _ => {

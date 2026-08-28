@@ -73,6 +73,8 @@ pub enum SignalFormat {
     OtapRecords,
     /// OTLP protobuf bytes
     OtlpBytes,
+    /// Independently encoded bytes identified by a registered pdata codec.
+    Encoded,
     // TODO: maybe add types not included in OtapPdata including
     // OtlpProtoMessage, OtapArrowBytes, and possible opaque.
 }

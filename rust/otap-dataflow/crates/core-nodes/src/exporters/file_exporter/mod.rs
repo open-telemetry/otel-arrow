@@ -403,6 +403,9 @@ fn encode_payload(
                 encode_traces(&view, frame, max_frame_bytes)?;
             }
         },
+        PayloadData::Encoded(_) => {
+            unreachable!("encoded payloads are not admitted during the storage transition")
+        }
     }
     Ok(())
 }

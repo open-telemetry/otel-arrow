@@ -31,7 +31,7 @@ use otel_arrow_dfe_engine::{
     MessageSourceLocalEffectHandlerExtension, MessageSourceSharedEffectHandlerExtension,
     ProducerEffectHandlerExtension,
 };
-use otel_arrow_dfe_pdata::OtapPayload;
+use otel_arrow_dfe_pdata::{CodecState, OtapArrowRecords, OtapPayload};
 
 use crate::transport_headers::TransportHeaders;
 
@@ -605,6 +605,95 @@ pub struct OtapPdata {
     payload: OtapPayload,
 }
 
+/// Owned capability proving that pdata is available as native Arrow records.
+#[derive(Clone, Debug)]
+pub struct OtapArrowPdata {
+    context: Context,
+    records: OtapArrowRecords,
+}
+
+impl OtapArrowPdata {
+    /// Constructs native pdata from its delivery context and records.
+    #[must_use]
+    pub const fn new(context: Context, records: OtapArrowRecords) -> Self {
+        Self { context, records }
+    }
+
+    /// Borrows the delivery context.
+    #[must_use]
+    pub const fn context(&self) -> &Context {
+        &self.context
+    }
+
+    /// Returns a mutable delivery context.
+    pub const fn context_mut(&mut self) -> &mut Context {
+        &mut self.context
+    }
+
+    /// Borrows native records.
+    #[must_use]
+    pub const fn records(&self) -> &OtapArrowRecords {
+        &self.records
+    }
+
+    /// Returns mutable native records.
+    pub const fn records_mut(&mut self) -> &mut OtapArrowRecords {
+        &mut self.records
+    }
+
+    /// Splits delivery context and native records without cloning.
+    #[must_use]
+    pub fn into_parts(self) -> (Context, OtapArrowRecords) {
+        (self.context, self.records)
+    }
+
+    /// Converts back to dynamically represented pipeline pdata.
+    #[must_use]
+    pub fn into_pdata(self) -> OtapPdata {
+        OtapPdata::new(self.context, self.records.into())
+    }
+}
+
+impl From<OtapArrowPdata> for OtapPdata {
+    fn from(value: OtapArrowPdata) -> Self {
+        value.into_pdata()
+    }
+}
+
+/// A failed codec conversion carrying the exact original pdata for Nack or retry.
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+pub struct OtapPdataDecodeError(Box<OtapPdataDecodeErrorInner>);
+
+#[derive(Debug, thiserror::Error)]
+#[error("{source}")]
+struct OtapPdataDecodeErrorInner {
+    #[source]
+    source: otel_arrow_dfe_pdata::encode::Error,
+    pdata: OtapPdata,
+}
+
+impl OtapPdataDecodeError {
+    /// Returns the codec or conversion error.
+    #[must_use]
+    pub const fn error(&self) -> &otel_arrow_dfe_pdata::encode::Error {
+        &self.0.source
+    }
+
+    /// Borrows the exact original pdata retained for recovery.
+    #[must_use]
+    pub const fn pdata(&self) -> &OtapPdata {
+        &self.0.pdata
+    }
+
+    /// Splits the error and recoverable original pdata.
+    #[must_use]
+    pub fn into_parts(self) -> (otel_arrow_dfe_pdata::encode::Error, OtapPdata) {
+        let inner = *self.0;
+        (inner.source, inner.pdata)
+    }
+}
+
 /* -------- Signal type -------- */
 
 impl OtapPdata {
@@ -633,6 +722,25 @@ impl OtapPdata {
     #[must_use]
     pub const fn new(context: Context, payload: OtapPayload) -> Self {
         Self { context, payload }
+    }
+
+    /// Extracts native records through reusable codec state while retaining
+    /// the exact original pdata on failure.
+    pub fn try_into_otap(
+        self,
+        state: &mut CodecState,
+    ) -> Result<OtapArrowPdata, OtapPdataDecodeError> {
+        let Self { context, payload } = self;
+        match payload.try_into_otap(state) {
+            Ok(records) => Ok(OtapArrowPdata::new(context, records)),
+            Err(error) => {
+                let (source, payload) = error.into_parts();
+                Err(OtapPdataDecodeError(Box::new(OtapPdataDecodeErrorInner {
+                    source,
+                    pdata: Self { context, payload },
+                })))
+            }
+        }
     }
 
     /// Returns the type of signal represented by this `OtapPdata` instance.
@@ -1175,12 +1283,48 @@ mod test {
     use std::mem::size_of;
     use tokio::sync::mpsc;
 
-    /// Scenario: Queued OTAP pdata is built for a 64-bit target before codec integration.
-    /// Guarantees: The baseline queued-message layout remains fixed for later comparisons.
+    /// Scenario: Queued and native-capability pdata are built for a 64-bit target.
+    /// Guarantees: Transitional encoded storage reduces the queue below the 152-byte baseline.
     #[test]
     #[cfg(target_pointer_width = "64")]
     fn legacy_otap_pdata_layout_is_stable() {
-        assert_eq!(size_of::<OtapPdata>(), 152);
+        assert_eq!(size_of::<OtapPdata>(), 144);
+        assert!(size_of::<OtapArrowPdata>() <= size_of::<OtapPdata>());
+    }
+
+    /// Scenario: Malformed encoded pdata carries delivery context through failed conversion.
+    /// Guarantees: Recovery preserves peer address, codec identity, bytes, signal, and item count.
+    #[test]
+    fn encoded_conversion_failure_preserves_delivery_ownership() {
+        use bytes::Bytes;
+        use otel_arrow_dfe_pdata::{PdataFormat, ResolvedCodec};
+
+        let peer = "127.0.0.1:4317".parse().expect("peer address");
+        let bytes = Bytes::from_static(&[0x0a, 0x05, 0x01]);
+        let pointer = bytes.as_ptr();
+        let payload = OtapPayload::from_encoded(
+            ResolvedCodec::OTLP
+                .admit(SignalType::Logs, bytes)
+                .expect("lazy admission"),
+        )
+        .with_item_count(9);
+        let pdata = OtapPdata::new(Context::default(), payload).with_peer_addr(peer);
+
+        let error = pdata
+            .try_into_otap(&mut CodecState::default())
+            .expect_err("malformed OTLP must fail");
+        let (_, recovered) = error.into_parts();
+        assert_eq!(recovered.peer_addr(), Some(peer));
+        assert_eq!(
+            recovered.payload_ref().format(),
+            PdataFormat::encoded(ResolvedCodec::OTLP)
+        );
+        assert_eq!(recovered.payload_ref().known_item_count(), Some(9));
+        assert_eq!(
+            recovered.payload_ref().encoded_bytes().unwrap().as_ptr(),
+            pointer
+        );
+        assert_eq!(recovered.signal_type(), SignalType::Logs);
     }
 
     fn create_test() -> (TestCallData, OtapPdata) {

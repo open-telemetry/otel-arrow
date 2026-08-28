@@ -68,6 +68,67 @@ impl fmt::Display for PdataEncoding {
     }
 }
 
+/// Inline envelope for an independently encoded telemetry batch.
+///
+/// It contains immutable codec identity, signal, and shared bytes only. Item
+/// counts and other measurements remain in the owning payload wrapper so this
+/// envelope stays compact enough for allocation-free admission.
+#[derive(Clone, Debug)]
+pub struct EncodedPdata {
+    codec: ResolvedCodec,
+    signal: SignalType,
+    bytes: Bytes,
+}
+
+impl EncodedPdata {
+    /// Resolves and admits bytes without parsing their contents.
+    pub fn new(encoding: &PdataEncoding, signal: SignalType, bytes: Bytes) -> Result<Self, Error> {
+        resolve(encoding, signal, CodecDirection::Decode)?.admit(signal, bytes)
+    }
+
+    pub(crate) const fn from_resolved(
+        codec: ResolvedCodec,
+        signal: SignalType,
+        bytes: Bytes,
+    ) -> Self {
+        Self {
+            codec,
+            signal,
+            bytes,
+        }
+    }
+
+    /// Stable representation identity.
+    #[must_use]
+    pub fn encoding(&self) -> &PdataEncoding {
+        &self.codec.metadata().encoding
+    }
+
+    /// Resolved codec identity.
+    #[must_use]
+    pub const fn codec(&self) -> ResolvedCodec {
+        self.codec
+    }
+
+    /// Signal carried outside the encoded bytes.
+    #[must_use]
+    pub const fn signal_type(&self) -> SignalType {
+        self.signal
+    }
+
+    /// Borrows the original shared buffer.
+    #[must_use]
+    pub const fn bytes(&self) -> &Bytes {
+        &self.bytes
+    }
+
+    /// Takes ownership of the shared buffer without copying it.
+    #[must_use]
+    pub fn into_bytes(self) -> Bytes {
+        self.bytes
+    }
+}
+
 /// Immutable capabilities advertised by a codec extension.
 #[derive(Debug)]
 pub struct PdataCodecMetadata {
@@ -220,6 +281,12 @@ impl ResolvedCodec {
             .count_items
             .and_then(|counter| counter(signal, bytes))
     }
+
+    /// Admits supported input without decoding or creating mutable codec state.
+    pub fn admit(self, signal: SignalType, bytes: Bytes) -> Result<EncodedPdata, Error> {
+        self.require(signal, CodecDirection::Decode)?;
+        Ok(EncodedPdata::from_resolved(self, signal, bytes))
+    }
 }
 
 /// Startup-resolved output representation and output-specific options.
@@ -308,6 +375,14 @@ impl CodecState {
         Ok(records)
     }
 
+    /// Decodes an admitted envelope using reusable runtime state.
+    pub fn decode_encoded(
+        &mut self,
+        encoded: &EncodedPdata,
+    ) -> Result<OtapArrowRecords, crate::encode::Error> {
+        self.decode(encoded.codec, encoded.signal, &encoded.bytes)
+    }
+
     /// Creates a view through the same reusable codec instance.
     pub fn view<'a>(
         &mut self,
@@ -326,6 +401,14 @@ impl CodecState {
             );
         }
         Ok(view)
+    }
+
+    /// Creates a view over an admitted envelope.
+    pub fn view_encoded<'a>(
+        &mut self,
+        encoded: &'a EncodedPdata,
+    ) -> Result<CodecView<'a>, crate::encode::Error> {
+        self.view(encoded.codec, encoded.signal, &encoded.bytes)
     }
 
     /// Encodes with a startup-resolved output plan.
