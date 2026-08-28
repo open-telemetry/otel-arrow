@@ -597,6 +597,7 @@ mod test {
         context: Context,
         signal_type: SignalType,
         reason: &str,
+        cause: NackCause,
     ) -> Result<(), otel_arrow_dfe_engine::error::Error> {
         let nack = next_nack(NackMsg::new(
             reason,
@@ -1183,6 +1184,7 @@ mod test {
                     outbound_contexts.pop().unwrap(),
                     SignalType::Logs,
                     "error happened",
+                    NackCause::Refused,
                 )
                 .await
                 .unwrap();
@@ -1193,7 +1195,8 @@ mod test {
                     PipelineCompletionMsg::DeliverNack { nack } => {
                         let (node_id, nack) = next_nack(nack).expect("expected ack subscriber");
                         assert_eq!(node_id, upstream_node_id);
-                        assert_eq!(nack.reason, "error happened")
+                        assert_eq!(nack.reason, "error happened");
+                        assert_eq!(nack.cause, NackCause::Refused);
                     }
                     other => {
                         panic!("got unexpected pipeline ctrl message {other:?}")
