@@ -36,8 +36,8 @@ use otel_arrow_dfe_engine::{
 };
 use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayloadHelpers};
 use otel_arrow_dfe_pdata_codec::{
-    CodecError, CodecService, EncodingPlan, OtapPayload, PdataPayloadDecodeError, PdataView,
-    InspectionPlan,
+    CodecError, CodecService, EncodePolicy, EncodingPlan, OtapPayload, PdataEncoding,
+    InspectionPlan, PdataPayloadDecodeError, PdataView,
 };
 
 use crate::transport_headers::TransportHeaders;
@@ -1068,7 +1068,25 @@ impl_consumer_ext!(otel_arrow_dfe_engine::shared::exporter::EffectHandler<OtapPd
 /// be added later without storing codec state in nodes. The current operations
 /// scope their synchronous state borrow entirely before returning.
 #[allow(async_fn_in_trait)]
-pub trait PdataEffectHandlerExtension {
+pub trait PdataEffectHandlerExtension: CodecEffectHandler {
+    /// Resolves an output plan once while starting the consuming node.
+    fn resolve_encoding_plan(
+        &self,
+        encoding: &PdataEncoding,
+        policy: EncodePolicy,
+    ) -> Result<EncodingPlan, CodecError> {
+        EncodingPlan::resolve(self.codec_service().registry(), encoding, policy)
+    }
+
+    /// Resolves accepted encoded identities once while starting a read-only node.
+    fn resolve_inspection_plan(&self, encodings: &[PdataEncoding]) -> Result<InspectionPlan, CodecError> {
+        let codecs = encodings
+            .iter()
+            .map(|encoding| self.codec_service().registry().resolve(encoding))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(InspectionPlan::accept_encoded(codecs))
+    }
+
     /// Moves native records or decodes encoded pdata with recoverable failure.
     async fn try_into_otap(&self, pdata: OtapPdata)
     -> Result<OtapArrowPdata, OtapPdataDecodeError>;
@@ -1475,13 +1493,18 @@ mod test {
     #[test]
     fn encoded_conversion_failure_preserves_delivery_ownership() {
         use bytes::Bytes;
-        use otel_arrow_dfe_pdata::{PdataFormat, ResolvedCodec};
+        use otel_arrow_dfe_pdata_codec::{CodecService, PdataEncoding, PdataFormat};
 
         let peer = "127.0.0.1:4317".parse().expect("peer address");
         let bytes = Bytes::from_static(&[0x0a, 0x05, 0x01]);
         let pointer = bytes.as_ptr();
+        let service = CodecService::new().expect("valid codec registry");
+        let codec = service
+            .registry()
+            .resolve(&PdataEncoding::OTLP)
+            .expect("OTLP codec");
         let payload = OtapPayload::from_encoded(
-            ResolvedCodec::OTLP
+            codec
                 .admit(SignalType::Logs, bytes)
                 .expect("lazy admission"),
         )
@@ -1489,13 +1512,13 @@ mod test {
         let pdata = OtapPdata::new(Context::default(), payload).with_peer_addr(peer);
 
         let error = pdata
-            .try_into_otap(&mut CodecState::default())
+            .try_into_otap(&service)
             .expect_err("malformed OTLP must fail");
         let (_, recovered) = error.into_parts();
         assert_eq!(recovered.peer_addr(), Some(peer));
         assert_eq!(
             recovered.payload_ref().format(),
-            PdataFormat::encoded(ResolvedCodec::OTLP)
+            PdataFormat::encoded(codec)
         );
         assert_eq!(recovered.payload_ref().known_item_count(), Some(9));
         assert_eq!(

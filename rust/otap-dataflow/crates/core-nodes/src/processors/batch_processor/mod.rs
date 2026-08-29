@@ -916,7 +916,7 @@ impl Batcher<OtlpProtoBytes> for SignalBuffer<OtlpProtoBytes> {
     }
 }
 
-impl<'a, T: OtapPayloadHelpers> BatchProcessorSignal<'a, T>
+impl<'a, T: OtapPayloadHelpers + Into<OtapPayload>> BatchProcessorSignal<'a, T>
 where
     SignalBuffer<T>: Batcher<T>,
 {

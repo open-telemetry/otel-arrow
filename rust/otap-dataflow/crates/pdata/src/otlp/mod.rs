@@ -113,6 +113,16 @@ impl OtlpProtoBytes {
         }
     }
 
+    /// Takes ownership of the shared encoded buffer.
+    #[must_use]
+    pub fn into_bytes(self) -> Bytes {
+        match self {
+            Self::ExportLogsRequest(bytes)
+            | Self::ExportMetricsRequest(bytes)
+            | Self::ExportTracesRequest(bytes) => bytes,
+        }
+    }
+
     /// Return the byte-size of this message.
     #[must_use]
     pub fn num_bytes(&self) -> usize {

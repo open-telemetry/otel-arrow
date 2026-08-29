@@ -7,6 +7,7 @@
 //! extension identities do not create a dependency cycle with this low-level
 //! data model crate.
 
+use crate::TryFromWithOptions;
 use crate::encode::{encode_logs_otap_batch, encode_metrics_otap_batch, encode_spans_otap_batch};
 use crate::error::Error;
 use crate::otap::{OtapArrowRecords, OtapBatchStore};
@@ -17,7 +18,6 @@ use crate::otlp::{OtlpProtoBytes, ProtoBuffer, ProtoBytesEncoder};
 use crate::views::otlp::bytes::logs::RawLogsData;
 use crate::views::otlp::bytes::metrics::RawMetricsData;
 use crate::views::otlp::bytes::traces::RawTraceData;
-use crate::TryFromWithOptions;
 use otel_arrow_dfe_config::{ConversionOptions, SignalType};
 
 /// Common measurements and ownership operations for low-level pdata forms.

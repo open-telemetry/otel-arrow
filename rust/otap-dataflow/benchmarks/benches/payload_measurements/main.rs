@@ -11,6 +11,7 @@ use std::hint::black_box;
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_otap::compression::CompressionMethod;
 use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
+use otel_arrow_dfe_pdata::TryIntoWithOptions;
 use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
 use otel_arrow_dfe_pdata::otap::batching::make_item_batches;
 use otel_arrow_dfe_pdata::otlp::OtlpProtoBytes;
@@ -20,7 +21,7 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::*;
 use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::*;
 use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::*;
 use otel_arrow_dfe_pdata::testing::round_trip::{otlp_message_to_bytes, otlp_to_otap};
-use otel_arrow_dfe_pdata::{OtapPayload, TryIntoWithOptions};
+use otel_arrow_dfe_pdata_codec::OtapPayload;
 use otel_arrow_dfe_pdata_codec::{
     CodecService, CodecServiceBuilder, DecodePolicy, DecodeValidation, EncodePolicy, EncodingPlan,
     InspectionPlan, PdataEncoding,
@@ -308,7 +309,7 @@ fn direct_codec_paths(c: &mut Criterion) {
         let encoded = codec
             .admit(SignalType::Logs, encoded)
             .expect("OTLP admission");
-        let view_plan = InspectionPlan::accept_encoded([codec]);
+        let inspection_plan = InspectionPlan::accept_encoded([codec]);
         let encoding_plan = EncodingPlan::resolve(
             service.registry(),
             &PdataEncoding::OTLP,
@@ -321,7 +322,7 @@ fn direct_codec_paths(c: &mut Criterion) {
         });
 
         _ = group.bench_function(BenchmarkId::new("OTLP/view", record_count), |b| {
-            b.iter(|| black_box(service.view(&encoded, &view_plan).expect("OTLP codec view")))
+            b.iter(|| black_box(service.view(&encoded, &inspection_plan).expect("OTLP codec view")))
         });
 
         _ = group.bench_function(

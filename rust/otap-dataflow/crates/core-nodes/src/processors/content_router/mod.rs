@@ -90,14 +90,14 @@ use otel_arrow_dfe_engine::{
     ProcessorRuntimeRequirements, RouteAdmission, WakeupError,
 };
 use otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES;
-use otel_arrow_dfe_otap::pdata::OtapPdata;
-use otel_arrow_dfe_pdata_codec::PayloadData;
+use otel_arrow_dfe_otap::pdata::{OtapPdata, PdataEffectHandlerExtension};
 use otel_arrow_dfe_pdata::TryFromWithOptions;
 use otel_arrow_dfe_pdata::otlp::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::views::otap::OtapLogsView;
 use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
 use otel_arrow_dfe_pdata::views::otlp::bytes::metrics::RawMetricsData;
 use otel_arrow_dfe_pdata::views::otlp::bytes::traces::RawTraceData;
+use otel_arrow_dfe_pdata_codec::{PdataEncoding, PdataView, InspectionPlan};
 use otel_arrow_dfe_pdata_views::views::common::{AnyValueView, AttributeView, ValueType};
 use otel_arrow_dfe_pdata_views::views::logs::{LogsDataView, ResourceLogsView};
 use otel_arrow_dfe_pdata_views::views::metrics::{MetricsView, ResourceMetricsView};
@@ -386,6 +386,8 @@ pub struct ContentRouter {
     admission: ExclusiveRouteScheduler<OtapPdata, SelectedRouteKind>,
     /// Telemetry metrics.
     metrics: Option<ContentRouterMetrics>,
+    /// Read-only representations resolved from the injected runtime service.
+    inspection_plan: Option<InspectionPlan>,
 }
 
 impl ContentRouter {
@@ -400,6 +402,7 @@ impl ContentRouter {
             case_sensitive: config.case_sensitive,
             admission: ExclusiveRouteScheduler::new(config.admission_policy),
             metrics: None,
+            inspection_plan: None,
         }
     }
 
@@ -563,34 +566,40 @@ impl ContentRouter {
     }
 
     /// Resolves the output port for a given message payload.
-    fn resolve_route(&self, pdata: &OtapPdata) -> RouteResolution {
+    async fn resolve_route(
+        &self,
+        effect_handler: &local::EffectHandler<OtapPdata>,
+        pdata: &OtapPdata,
+        inspection_plan: &InspectionPlan,
+    ) -> RouteResolution {
         let signal_type = pdata.signal_type();
 
-        match pdata.payload_ref().data() {
-            PayloadData::OtlpBytes(otlp_bytes) => match (signal_type, otlp_bytes) {
-                (SignalType::Logs, OtlpProtoBytes::ExportLogsRequest(bytes)) => {
-                    let data = RawLogsData::new(bytes.as_ref());
+        let view = match effect_handler.view(pdata.payload_ref(), inspection_plan).await {
+            Ok(view) => view,
+            Err(_) => return RouteResolution::ConversionError,
+        };
+        match view {
+            PdataView::Encoded(view) => match view.signal_type() {
+                SignalType::Logs => {
+                    let data = RawLogsData::new(view.bytes());
                     self.resolve_logs_route(&data)
                 }
-                (SignalType::Metrics, OtlpProtoBytes::ExportMetricsRequest(bytes)) => {
-                    let data = RawMetricsData::new(bytes.as_ref());
+                SignalType::Metrics => {
+                    let data = RawMetricsData::new(view.bytes());
                     self.resolve_metrics_route(&data)
                 }
-                (SignalType::Traces, OtlpProtoBytes::ExportTracesRequest(bytes)) => {
-                    let data = RawTraceData::new(bytes.as_ref());
+                SignalType::Traces => {
+                    let data = RawTraceData::new(view.bytes());
                     self.resolve_traces_route(&data)
                 }
-                // Defensive: signal_type/payload mismatch cannot occur for OtlpBytes
-                // since signal_type() is derived from the OtlpProtoBytes variant itself.
-                _ => RouteResolution::ConversionError,
             },
-            PayloadData::OtapArrowRecords(arrow_records) => {
+            PdataView::Native(arrow_records) => {
                 match signal_type {
                     // Use native OTAP Arrow view for logs (avoids clone + OTLP round-trip)
-                    SignalType::Logs => self.resolve_arrow_logs_route(arrow_records),
+                    SignalType::Logs => self.resolve_arrow_logs_route(arrow_records.as_ref()),
                     // Metrics/Traces Arrow views not yet available -- convert to OTLP.
                     // TODO: Use OtapMetricsView/OtapTracesView when available.
-                    _ => match OtlpProtoBytes::try_from_with_default(arrow_records.clone()) {
+                    _ => match OtlpProtoBytes::try_from_with_default(arrow_records.into_owned()) {
                         Ok(OtlpProtoBytes::ExportMetricsRequest(bytes)) => {
                             let data = RawMetricsData::new(bytes.as_ref());
                             self.resolve_metrics_route(&data)
@@ -602,9 +611,6 @@ impl ContentRouter {
                         _ => RouteResolution::ConversionError,
                     },
                 }
-            }
-            PayloadData::Encoded(_) => {
-                unreachable!("encoded payloads are not admitted during the storage transition")
             }
         }
     }
@@ -871,9 +877,14 @@ impl local::Processor<OtapPdata> for ContentRouter {
                 _ => Ok(()),
             },
             Message::PData(data) => {
+                if self.inspection_plan.is_none() {
+                    self.inspection_plan =
+                        Some(effect_handler.resolve_inspection_plan(&[PdataEncoding::OTLP])?);
+                }
+                let inspection_plan = self.inspection_plan.as_ref().expect("view plan initialized");
                 // Resolve routing once up front, then handle route-selection
                 // failures separately from downstream admission failures.
-                let resolution = self.resolve_route(&data);
+                let resolution = self.resolve_route(effect_handler, &data, inspection_plan).await;
 
                 match resolution {
                     RouteResolution::Matched(port) => {

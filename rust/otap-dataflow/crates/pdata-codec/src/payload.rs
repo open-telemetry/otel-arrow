@@ -220,6 +220,16 @@ impl PdataPayload {
         }
     }
 
+    /// Consumes an encoded payload and returns its shared byte buffer.
+    #[must_use]
+    pub fn into_encoded_bytes(self) -> Option<Bytes> {
+        match self.storage {
+            PayloadStorage::OtlpBytes(bytes) => Some(bytes.into_bytes()),
+            PayloadStorage::Encoded(encoded) => Some(encoded.into_bytes()),
+            PayloadStorage::OtapArrowRecords(_) => None,
+        }
+    }
+
     /// Borrows native records only when already materialized.
     #[must_use]
     pub fn otap_ref(&self) -> Option<&OtapArrowRecords> {
@@ -390,9 +400,12 @@ impl PdataPayload {
         plan: &InspectionPlan,
     ) -> Result<PdataView<'a>, CodecError> {
         match &self.storage {
-            PayloadStorage::OtlpBytes(bytes) => {
-                codecs.view_parts(otlp_codec(bytes.signal_type()), bytes.signal_type(), bytes.bytes(), plan)
-            }
+            PayloadStorage::OtlpBytes(bytes) => codecs.view_parts(
+                otlp_codec(bytes.signal_type()),
+                bytes.signal_type(),
+                bytes.bytes(),
+                plan,
+            ),
             PayloadStorage::Encoded(encoded) => codecs.view(encoded, plan),
             PayloadStorage::OtapArrowRecords(records) => {
                 Ok(PdataView::Native(Cow::Borrowed(records)))
@@ -409,9 +422,7 @@ impl PdataPayload {
     ) -> Result<R, CodecError> {
         plan.codec().require_encoder(self.signal_type())?;
         match &mut self.storage {
-            PayloadStorage::OtlpBytes(bytes)
-                if otlp_codec(bytes.signal_type()) == plan.codec() =>
-            {
+            PayloadStorage::OtlpBytes(bytes) if otlp_codec(bytes.signal_type()) == plan.codec() => {
                 Ok(consume(EncodeOutput::bytes(bytes.clone_bytes())))
             }
             PayloadStorage::Encoded(encoded) if encoded.codec() == plan.codec() => {
@@ -483,6 +494,72 @@ fn otlp_codec(signal: SignalType) -> ResolvedCodec {
 impl From<OtapArrowRecords> for PdataPayload {
     fn from(records: OtapArrowRecords) -> Self {
         Self::from_otap(records)
+    }
+}
+
+#[cfg(any(test, feature = "testing"))]
+#[derive(Debug, thiserror::Error)]
+pub enum CompatibilityConversionError {
+    /// Low-level OTLP-to-OTAP conversion failed.
+    #[error(transparent)]
+    Decode(#[from] otel_arrow_dfe_pdata::encode::Error),
+    /// Low-level OTAP-to-OTLP conversion failed.
+    #[error(transparent)]
+    Encode(#[from] otel_arrow_dfe_pdata::error::Error),
+    /// A generalized encoded payload could not be decoded.
+    #[error(transparent)]
+    Codec(#[from] CodecError),
+}
+
+#[cfg(any(test, feature = "testing"))]
+impl otel_arrow_dfe_pdata::TryFromWithOptions<PdataPayload> for OtapArrowRecords {
+    type Error = CompatibilityConversionError;
+
+    fn try_from_with_options(
+        value: PdataPayload,
+        options: otel_arrow_dfe_config::ConversionOptions,
+    ) -> Result<Self, Self::Error> {
+        match value.into_storage() {
+            PayloadStorage::OtapArrowRecords(records) => Ok(records),
+            PayloadStorage::OtlpBytes(bytes) => {
+                Ok(<Self as otel_arrow_dfe_pdata::TryFromWithOptions<
+                    OtlpProtoBytes,
+                >>::try_from_with_options(bytes, options)?)
+            }
+            PayloadStorage::Encoded(encoded) => {
+                let service = CodecService::new().map_err(CodecError::from)?;
+                Ok(service.decode(&encoded)?)
+            }
+        }
+    }
+}
+
+#[cfg(any(test, feature = "testing"))]
+impl otel_arrow_dfe_pdata::TryFromWithOptions<PdataPayload> for OtlpProtoBytes {
+    type Error = CompatibilityConversionError;
+
+    fn try_from_with_options(
+        value: PdataPayload,
+        options: otel_arrow_dfe_config::ConversionOptions,
+    ) -> Result<Self, Self::Error> {
+        match value.into_storage() {
+            PayloadStorage::OtlpBytes(bytes) => Ok(bytes),
+            PayloadStorage::Encoded(encoded) if encoded.encoding() == &PdataEncoding::OTLP => Ok(
+                Self::new_from_bytes(encoded.signal_type(), encoded.into_bytes()),
+            ),
+            PayloadStorage::Encoded(encoded) => {
+                let service = CodecService::new().map_err(CodecError::from)?;
+                let records = service.decode(&encoded)?;
+                Ok(<Self as otel_arrow_dfe_pdata::TryFromWithOptions<
+                    OtapArrowRecords,
+                >>::try_from_with_options(records, options)?)
+            }
+            PayloadStorage::OtapArrowRecords(records) => {
+                Ok(<Self as otel_arrow_dfe_pdata::TryFromWithOptions<
+                    OtapArrowRecords,
+                >>::try_from_with_options(records, options)?)
+            }
+        }
     }
 }
 

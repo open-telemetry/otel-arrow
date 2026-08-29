@@ -24,6 +24,7 @@ use otel_arrow_dfe_engine::node::NodeWithPDataSender;
 use otel_arrow_dfe_engine::processor::{ProcessorWrapper, ProcessorWrapperRuntime};
 use otel_arrow_dfe_engine::testing::node::test_node;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
 use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::InstrumentationScope;
 use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
 use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::summary_data_point::ValueAtQuantile;
@@ -33,7 +34,6 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
 };
 use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
 use otel_arrow_dfe_pdata::testing::round_trip::{otlp_message_to_bytes, otlp_to_otap};
-use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
 use otel_arrow_dfe_pdata_codec::OtapPayload;
 use otel_arrow_dfe_telemetry::InternalTelemetrySystem;
 use serde_json::json;

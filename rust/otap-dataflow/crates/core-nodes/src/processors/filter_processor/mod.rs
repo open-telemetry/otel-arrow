@@ -275,7 +275,6 @@ mod tests {
     use otel_arrow_dfe_otap::pdata::OtapPdata;
     use otel_arrow_dfe_pdata::OtlpProtoBytes;
     use otel_arrow_dfe_pdata::TryIntoWithOptions;
-    use otel_arrow_dfe_pdata_codec::ResolvedCodec;
     use otel_arrow_dfe_pdata::otap::filter::{
         AnyValue as AnyValueFilter, KeyValue as KeyValueFilter, MatchType,
         logs::{LogFilter, LogMatchProperties, LogSeverityNumberMatchProperties},
@@ -296,6 +295,7 @@ mod tests {
             status::StatusCode,
         },
     };
+    use otel_arrow_dfe_pdata_codec::{CodecRegistry, PdataEncoding};
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use prost::Message as _;
     use serde_json::json;
@@ -950,17 +950,17 @@ mod tests {
         );
         let bytes = Bytes::from_static(&[0x0a, 0x05, 0x01]);
         let pointer = bytes.as_ptr();
-        let pdata = OtapPdata::new_default(
-            ResolvedCodec::OTLP
-                .admit(SignalType::Logs, bytes.clone())
-                .unwrap()
-                .into(),
-        )
-        .test_subscribe_to(
-            Interests::NACKS | Interests::RETURN_DATA,
-            CallData::new(),
-            11,
-        );
+        let codec = CodecRegistry::global()
+            .unwrap()
+            .resolve(&PdataEncoding::OTLP)
+            .unwrap();
+        let pdata =
+            OtapPdata::new_default(codec.admit(SignalType::Logs, bytes.clone()).unwrap().into())
+                .test_subscribe_to(
+                    Interests::NACKS | Interests::RETURN_DATA,
+                    CallData::new(),
+                    11,
+                );
 
         test_runtime
             .set_processor(processor)

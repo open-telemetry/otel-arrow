@@ -37,12 +37,14 @@ use otel_arrow_dfe_engine::processor::{ProcessorRuntimeRequirements, ProcessorWr
 use otel_arrow_dfe_engine::{ConsumerEffectHandlerExtension, Interests};
 use otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES;
 use otel_arrow_dfe_otap::accessory::slots::{Key as SlotKey, State as SlotState};
-use otel_arrow_dfe_otap::pdata::{Context, OtapPdata, PeerAddrMerger};
+use otel_arrow_dfe_otap::pdata::{Context, OtapPdata, PdataEffectHandlerExtension, PeerAddrMerger};
+use otel_arrow_dfe_pdata::OtapPayloadHelpers;
 use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
 use otel_arrow_dfe_pdata::views::otap::OtapMetricsView;
 use otel_arrow_dfe_pdata::views::otlp::bytes::metrics::RawMetricsData;
-use otel_arrow_dfe_pdata::OtapPayloadHelpers;
-use otel_arrow_dfe_pdata_codec::{OtapPayload, PayloadData};
+#[cfg(test)]
+use otel_arrow_dfe_pdata_codec::PayloadData;
+use otel_arrow_dfe_pdata_codec::{OtapPayload, PdataEncoding, PdataView, InspectionPlan};
 use otel_arrow_dfe_pdata_views::views::common::InstrumentationScopeView;
 use otel_arrow_dfe_pdata_views::views::metrics::{
     AggregationTemporality, DataType, DataView, ExponentialHistogramDataPointView,
@@ -261,6 +263,9 @@ pub struct TemporalReaggregationProcessor {
     /// The CallData inside the entry points to every associated otap batch in
     /// [Self::inbound_batches] so that we can operate on the ref counts there.
     outbound_batches: SlotState<Vec<CallData>>,
+
+    /// Read-only representations resolved from the injected runtime service.
+    inspection_plan: Option<InspectionPlan>,
 }
 
 struct InboundTracker {
@@ -284,7 +289,17 @@ impl local::Processor<OtapPdata> for TemporalReaggregationProcessor {
             Message::PData(pdata) => {
                 match pdata.signal_type() {
                     SignalType::Metrics => {
-                        self.process_metric_pdata(effect_handler, pdata).await?;
+                        if self.inspection_plan.is_none() {
+                            self.inspection_plan =
+                                Some(effect_handler.resolve_inspection_plan(&[PdataEncoding::OTLP])?);
+                        }
+                        let inspection_plan = self
+                            .inspection_plan
+                            .as_ref()
+                            .expect("view plan initialized")
+                            .clone();
+                        self.process_metric_pdata(effect_handler, pdata, &inspection_plan)
+                            .await?;
                     }
                     // Non-metrics signals pass through unchanged.
                     SignalType::Logs | SignalType::Traces => {
@@ -370,6 +385,7 @@ impl TemporalReaggregationProcessor {
             pending_flush: Vec::new(),
             outbound_batches: SlotState::new(config.outbound_request_limit.get()),
             aggregated_peer: PeerAddrMerger::new(),
+            inspection_plan: None,
         })
     }
 
@@ -625,9 +641,20 @@ impl TemporalReaggregationProcessor {
         &mut self,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
         pdata: OtapPdata,
+        inspection_plan: &InspectionPlan,
     ) -> Result<(), Error> {
-        let result = match pdata.payload_ref().data() {
-            PayloadData::OtapArrowRecords(records) => match OtapMetricsView::try_from(records) {
+        let view = match effect_handler.view(pdata.payload_ref(), inspection_plan).await {
+            Ok(view) => view,
+            Err(error) => {
+                self.metrics.record_failure(ErrorType::ViewCreation);
+                effect_handler
+                    .notify_nack(NackMsg::new_permanent(error.to_string(), pdata))
+                    .await?;
+                return Ok(());
+            }
+        };
+        let result = match view {
+            PdataView::Native(records) => match OtapMetricsView::try_from(records.as_ref()) {
                 Ok(view) => self.process_view(effect_handler, &view).await,
                 Err(e) => {
                     otel_warn!(telemetry::VIEW_CREATION_FAILED_EVENT, error = %e);
@@ -641,12 +668,9 @@ impl TemporalReaggregationProcessor {
                     return Ok(());
                 }
             },
-            PayloadData::OtlpBytes(otlp) => {
-                let view = RawMetricsData::new(otlp.as_bytes());
+            PdataView::Encoded(view) => {
+                let view = RawMetricsData::new(view.bytes());
                 self.process_view(effect_handler, &view).await
-            }
-            PayloadData::Encoded(_) => {
-                unreachable!("encoded payloads are not admitted during the storage transition")
             }
         };
 

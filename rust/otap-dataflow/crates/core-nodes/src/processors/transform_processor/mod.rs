@@ -65,13 +65,16 @@ use otel_arrow_dfe_otap::{
         context::split_contexts::{Contexts, OutboundError},
         slots::Key,
     },
-    pdata::{Context, OtapPdata},
+    pdata::{Context, OtapPdata, PdataEffectHandlerExtension},
 };
+#[cfg(test)]
 use otel_arrow_dfe_pdata::TryIntoWithOptions;
 use otel_arrow_dfe_pdata::{
     OtapArrowRecords, OtapPayloadHelpers, otap::transform::sanitize::sanitize_otap_batch,
 };
-use otel_arrow_dfe_pdata_codec::{OtapPayload, PayloadData};
+use otel_arrow_dfe_pdata_codec::OtapPayload;
+#[cfg(test)]
+use otel_arrow_dfe_pdata_codec::PayloadData;
 use otel_arrow_dfe_query_engine::{
     parser::default_parser_options,
     pipeline::{
@@ -664,18 +667,24 @@ impl Processor<OtapPdata> for TransformProcessor {
                     // convert payload to OTAP & remove delta encoded IDs.
                     // safety: we know payload will have been initialized to Some either, before
                     // entering the loop, or during the previous iteration.
-                    let conversion_result: Result<OtapArrowRecords, _> = payload
-                        .take()
-                        .expect("payload initialized")
-                        .try_into_with_default();
+                    let conversion_result = effect_handler
+                        .try_payload_into_otap(payload.take().expect("payload initialized"))
+                        .await;
                     let mut otap_batch = match conversion_result {
                         Ok(otap_batch) => otap_batch,
                         Err(error) => {
-                            transform_error = Some(TransformOperationError::new(
+                            self.metrics.record_failure(
+                                pdata_signal_type,
                                 TransformErrorType::PayloadConversion,
-                                error.into(),
-                            ));
-                            break;
+                            );
+                            let (error, payload) = error.into_parts();
+                            effect_handler
+                                .notify_nack(NackMsg::new_permanent(
+                                    error.to_string(),
+                                    OtapPdata::new(context, payload),
+                                ))
+                                .await?;
+                            return Ok(());
                         }
                     };
                     if let Err(error) = otap_batch.decode_transport_optimized_ids() {
@@ -720,17 +729,22 @@ impl Processor<OtapPdata> for TransformProcessor {
                         None => {
                             // safety: since error is `None`, we know payload must be `Some` based
                             // on the logic in the loop above, so it is safe to expect here
-                            match payload
-                                .take()
-                                .expect("payload option initialized")
-                                .into_data()
+                            match effect_handler
+                                .try_payload_into_otap(
+                                    payload.take().expect("payload option initialized"),
+                                )
+                                .await
                             {
-                                PayloadData::OtapArrowRecords(otap_batch) => Ok(otap_batch),
-                                _ => {
-                                    // safety: if any transform applied then we'll have converted
-                                    // the payload the OTAP, so we know here that it must be this
-                                    // variant of OtapPayload
-                                    unreachable!("expected OTAP payload variant")
+                                Ok(otap_batch) => Ok(otap_batch),
+                                Err(error) => {
+                                    let (error, payload) = error.into_parts();
+                                    effect_handler
+                                        .notify_nack(NackMsg::new_permanent(
+                                            error.to_string(),
+                                            OtapPdata::new(context, payload),
+                                        ))
+                                        .await?;
+                                    return Ok(());
                                 }
                             }
                         }

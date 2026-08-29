@@ -39,16 +39,13 @@ use otel_arrow_dfe_otap::otap_grpc::client_settings::GrpcClientSettings;
 use otel_arrow_dfe_otap::otap_grpc::otlp::client::{
     LogsServiceClient, MetricsServiceClient, TraceServiceClient,
 };
-use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
+use otel_arrow_dfe_otap::pdata::{Context, OtapPdata, PdataEffectHandlerExtension};
 use otel_arrow_dfe_otap::transport_headers::ValueKind;
-use otel_arrow_dfe_pdata::otlp::logs::LogsProtoBytesEncoder;
-use otel_arrow_dfe_pdata::otlp::metrics::MetricsProtoBytesEncoder;
-use otel_arrow_dfe_pdata::otlp::traces::TracesProtoBytesEncoder;
-use otel_arrow_dfe_pdata::otlp::{ProtoBuffer, ProtoBytesEncoder};
-use otel_arrow_dfe_pdata::{
-    OtapArrowRecords, OtapPayloadHelpers, OtlpProtoBytes,
-};
-use otel_arrow_dfe_pdata_codec::{OtapPayload, PayloadData};
+#[cfg(test)]
+use otel_arrow_dfe_pdata::OtlpProtoBytes;
+#[cfg(test)]
+use otel_arrow_dfe_pdata_codec::PayloadData;
+use otel_arrow_dfe_pdata_codec::{EncodePolicy, OtapPayload, PdataEncoding};
 use serde::Deserialize;
 use std::collections::VecDeque;
 use std::future::Future;
@@ -205,6 +202,8 @@ impl Exporter<OtapPdata> for OTLPExporter {
         self.config.grpc.log_proxy_info();
 
         let exporter_id = effect_handler.exporter_id();
+        let encoding_plan =
+            effect_handler.resolve_encoding_plan(&PdataEncoding::OTLP, EncodePolicy::default())?;
 
         // Run the optional startup check (dns resolution or eager connect) before creating the
         // lazy channels used for normal runtime traffic.
@@ -251,15 +250,6 @@ impl Exporter<OtapPdata> for OTLPExporter {
         // Returns `None` when no static headers are configured, which preserves
         // the zero-allocation fast path in `build_grpc_metadata`.
         let static_metadata = self.config.grpc.build_static_metadata();
-
-        // reuse the encoder and the buffer across pdatas
-        let mut logs_proto_encoder = LogsProtoBytesEncoder::new();
-        let mut metrics_proto_encoder = MetricsProtoBytesEncoder::new();
-        let mut traces_proto_encoder = TracesProtoBytesEncoder::new();
-
-        let mut logs_proto_buffer = ProtoBuffer::with_capacity(8 * 1024);
-        let mut metrics_proto_buffer = ProtoBuffer::with_capacity(8 * 1024);
-        let mut traces_proto_buffer = ProtoBuffer::with_capacity(8 * 1024);
 
         let mut grpc_clients = GrpcClientPool::new(max_in_flight, channels, compression);
         grpc_clients.prepopulate_clients();
@@ -503,7 +493,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     }
 
                     let signal_type = pdata.signal_type();
-                    let (context, payload) = pdata.into_parts();
+                    let (context, mut payload) = pdata.into_parts();
 
                     // The cached bearer header, together with the generation of the
                     // token it was built from. The generation is echoed back on
@@ -530,114 +520,47 @@ impl Exporter<OtapPdata> for OTLPExporter {
                         token_generation,
                     };
 
-                    // Dispatch based on signal type and the concrete payload representation.
-                    match (signal_type, payload.into_data()) {
-                        (SignalType::Logs, PayloadData::OtapArrowRecords(otap_batch)) => {
-                            dispatch_otap_export(
-                                otap_batch,
-                                context,
-                                metadata,
-                                SignalType::Logs,
-                                export_started_at,
-                                &exporter_id,
-                                &mut logs_proto_buffer,
-                                &mut logs_proto_encoder,
-                                |encoded| {
-                                    let client = SignalClient::Logs(grpc_clients.take_logs());
-                                    make_export_future(encoded, client)
-                                },
-                                &mut inflight_exports,
-                                &mut self.metrics,
-                                &effect_handler,
-                            )
-                            .await;
+                    let bytes = match effect_handler
+                        .encode_owned(&mut payload, &encoding_plan)
+                        .await
+                    {
+                        Ok(bytes) => bytes,
+                        Err(error) => {
+                            _ = effect_handler
+                                .notify_nack(NackMsg::new_permanent(
+                                    error.to_string(),
+                                    OtapPdata::new(context, payload),
+                                ))
+                                .await;
+                            self.metrics.record_failure(
+                                signal_type,
+                                OtlpGrpcExporterErrorType::Encoding,
+                                export_started_at.elapsed(),
+                            );
+                            continue;
                         }
-                        (SignalType::Metrics, PayloadData::OtapArrowRecords(otap_batch)) => {
-                            dispatch_otap_export(
-                                otap_batch,
-                                context,
-                                metadata,
-                                SignalType::Metrics,
-                                export_started_at,
-                                &exporter_id,
-                                &mut metrics_proto_buffer,
-                                &mut metrics_proto_encoder,
-                                |encoded| {
-                                    let client = SignalClient::Metrics(grpc_clients.take_metrics());
-                                    make_export_future(encoded, client)
-                                },
-                                &mut inflight_exports,
-                                &mut self.metrics,
-                                &effect_handler,
-                            )
-                            .await;
-                        }
-                        (SignalType::Traces, PayloadData::OtapArrowRecords(otap_batch)) => {
-                            dispatch_otap_export(
-                                otap_batch,
-                                context,
-                                metadata,
-                                SignalType::Traces,
-                                export_started_at,
-                                &exporter_id,
-                                &mut traces_proto_buffer,
-                                &mut traces_proto_encoder,
-                                |encoded| {
-                                    let client = SignalClient::Traces(grpc_clients.take_traces());
-                                    make_export_future(encoded, client)
-                                },
-                                &mut inflight_exports,
-                                &mut self.metrics,
-                                &effect_handler,
-                            )
-                            .await;
-                        }
-                        (_, PayloadData::OtlpBytes(service_req)) => {
-                            let prepared = match service_req {
-                                OtlpProtoBytes::ExportLogsRequest(bytes) => prepare_otlp_export(
-                                    bytes,
-                                    context,
-                                    metadata,
-                                    SignalType::Logs,
-                                    export_started_at,
-                                    |b| OtlpProtoBytes::ExportLogsRequest(b).into(),
-                                ),
-                                OtlpProtoBytes::ExportMetricsRequest(bytes) => prepare_otlp_export(
-                                    bytes,
-                                    context,
-                                    metadata,
-                                    SignalType::Metrics,
-                                    export_started_at,
-                                    |b| OtlpProtoBytes::ExportMetricsRequest(b).into(),
-                                ),
-                                OtlpProtoBytes::ExportTracesRequest(bytes) => prepare_otlp_export(
-                                    bytes,
-                                    context,
-                                    metadata,
-                                    SignalType::Traces,
-                                    export_started_at,
-                                    |b| OtlpProtoBytes::ExportTracesRequest(b).into(),
-                                ),
-                            };
-
-                            let client = match signal_type {
-                                SignalType::Logs => SignalClient::Logs(grpc_clients.take_logs()),
-                                SignalType::Metrics => {
-                                    SignalClient::Metrics(grpc_clients.take_metrics())
-                                }
-                                SignalType::Traces => {
-                                    SignalClient::Traces(grpc_clients.take_traces())
-                                }
-                            };
-                            let future = make_export_future(prepared, client);
-                            inflight_exports.push(future);
-                        }
-                        (_, PayloadData::Encoded(_)) => {
-                            unreachable!(
-                                "encoded payloads are not admitted during the storage transition"
-                            )
-                        }
-                    }
+                    };
+                    let saved_payload = if context.may_return_payload() {
+                        payload
+                    } else {
+                        // Release input buffers before allocating the in-flight export.
+                        drop(payload);
+                        OtapPayload::empty(signal_type)
+                    };
+                    let prepared = EncodedExport {
+                        bytes,
+                        context,
+                        metadata,
+                        signal_type,
+                        export_started_at,
+                        saved_payload,
+                    };
+                    let client = match signal_type {
+                        SignalType::Logs => SignalClient::Logs(grpc_clients.take_logs()),
+                        SignalType::Metrics => SignalClient::Metrics(grpc_clients.take_metrics()),
+                        SignalType::Traces => SignalClient::Traces(grpc_clients.take_traces()),
+                    };
+                    inflight_exports.push(make_export_future(prepared, client));
                 }
                 _ => {
                     // ignore unhandled messages
@@ -813,154 +736,6 @@ struct RequestMetadata {
     /// Generation of the bearer token stamped into `metadata`. `None` when no
     /// token provider is bound.
     token_generation: Option<u64>,
-}
-
-/// Encoding failed before the request was sent; we still need to surface a Nack with payload.
-struct EncodingFailure {
-    error: Error,
-    context: Context,
-    saved_payload: OtapPayload,
-}
-
-fn prepare_otap_export<Enc: ProtoBytesEncoder>(
-    mut otap_batch: OtapArrowRecords,
-    context: Context,
-    metadata: RequestMetadata,
-    proto_buffer: &mut ProtoBuffer,
-    encoder: &mut Enc,
-    exporter: &NodeId,
-    signal_type: SignalType,
-    export_started_at: Instant,
-) -> Result<EncodedExport, Box<EncodingFailure>> {
-    proto_buffer.clear();
-    if let Err(e) = encoder.encode(&mut otap_batch, proto_buffer) {
-        let error = Error::ExporterError {
-            exporter: exporter.clone(),
-            kind: ExporterErrorKind::Other,
-            error: format!("encoding error: {}", e),
-            source_detail: "".to_string(),
-        };
-
-        if !context.may_return_payload() {
-            let _drop = otap_batch.take_payload();
-        }
-        let saved_payload: OtapPayload = otap_batch.into();
-
-        return Err(Box::new(EncodingFailure {
-            error,
-            context,
-            saved_payload,
-        }));
-    }
-
-    // Maintain the buffer's capacity across repeated calls.
-    let (bytes, next_capacity) = proto_buffer.take_into_bytes();
-    proto_buffer.ensure_capacity(next_capacity);
-
-    if !context.may_return_payload() {
-        // drop before the export, payload not requested
-        let _drop = otap_batch.take_payload();
-    }
-    let saved_payload: OtapPayload = otap_batch.into();
-
-    Ok(EncodedExport {
-        bytes,
-        context,
-        saved_payload,
-        signal_type,
-        export_started_at,
-        metadata,
-    })
-}
-
-fn prepare_otlp_export(
-    bytes: Bytes,
-    context: Context,
-    metadata: RequestMetadata,
-    signal_type: SignalType,
-    export_started_at: Instant,
-    save_payload_fn: impl FnOnce(Bytes) -> OtapPayload,
-) -> EncodedExport {
-    let saved_payload = if context.may_return_payload() {
-        save_payload_fn(bytes.clone())
-    } else {
-        save_payload_fn(Bytes::new())
-    };
-
-    EncodedExport {
-        bytes,
-        context,
-        saved_payload,
-        signal_type,
-        export_started_at,
-        metadata,
-    }
-}
-
-/// Encode an OTAP Arrow batch and enqueue the export task; on encoding failure, emit a Nack.
-#[allow(clippy::too_many_arguments)]
-async fn dispatch_otap_export<Enc, Fut, MakeFuture>(
-    otap_batch: OtapArrowRecords,
-    context: Context,
-    metadata: RequestMetadata,
-    signal_type: SignalType,
-    export_started_at: Instant,
-    exporter_id: &NodeId,
-    proto_buffer: &mut ProtoBuffer,
-    encoder: &mut Enc,
-    make_future: MakeFuture,
-    inflight: &mut InFlightExports<Fut, CompletedExport>,
-    metrics: &mut OtlpGrpcExporterMetrics,
-    effect_handler: &EffectHandler<OtapPdata>,
-) where
-    Enc: ProtoBytesEncoder,
-    Fut: Future<Output = CompletedExport>,
-    MakeFuture: FnOnce(EncodedExport) -> Fut,
-{
-    match prepare_otap_export(
-        otap_batch,
-        context,
-        metadata,
-        proto_buffer,
-        encoder,
-        exporter_id,
-        signal_type,
-        export_started_at,
-    ) {
-        Ok(encoded) => {
-            inflight.push(make_future(encoded));
-        }
-        Err(error) => {
-            metrics.record_failure(
-                signal_type,
-                OtlpGrpcExporterErrorType::Encoding,
-                export_started_at.elapsed(),
-            );
-            _ = notify_prepare_error(error, effect_handler).await;
-        }
-    }
-}
-
-async fn notify_prepare_error(
-    error: Box<EncodingFailure>,
-    effect_handler: &EffectHandler<OtapPdata>,
-) -> Result<(), Error> {
-    let EncodingFailure {
-        error,
-        context,
-        saved_payload,
-    } = *error;
-
-    // Encoding failures are permanent: the data is malformed and retrying the
-    // same payload will not succeed.
-    effect_handler
-        .notify_nack(NackMsg::new_permanent(
-            error.to_string(),
-            OtapPdata::new(context, saved_payload),
-        ))
-        .await?;
-
-    Ok(())
 }
 
 /// Whether a completed export failed because the server rejected the bearer
