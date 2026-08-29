@@ -1122,7 +1122,7 @@ mod tests {
         let mut headers = http::HeaderMap::new();
         _ = headers.insert(
             http::header::AUTHORIZATION,
-            http::HeaderValue::from_static("******"),
+            http::HeaderValue::from_static("Bearer pending"),
         );
 
         let response = authorize_request(
