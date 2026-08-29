@@ -58,7 +58,8 @@ extensions:
   k8s_authz:
     type: extension:k8s_service_account_token_auth
     config:
-      audiences: ["otlp-collector"]
+      audiences:
+        - audience: "otlp-collector"
 
 nodes:
   otlp_in:
