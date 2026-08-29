@@ -40,6 +40,8 @@ humantime-serde = { workspace = true, optional = true }
 itoa = { workspace = true, optional = true }
 geneva-uploader = { workspace = true, optional = true }
 opentelemetry-proto = { workspace = true, optional = true }
+oracle = { workspace = true, optional = true }
+blake3 = { workspace = true, optional = true }
 futures-channel = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 otel-arrow-contrib-data-engine-expressions = { workspace = true, optional = true }
@@ -97,6 +99,11 @@ kafka-receiver = [
     "dep:smallvec",
     "dep:regex",
     "dep:tokio-util",
+]
+oracle-receiver = [
+    "dep:oracle",
+    "dep:humantime-serde",
+    "dep:blake3",
 ]
 kafka-exporter = [
     "dep:rdkafka",
@@ -219,6 +226,7 @@ rand.workspace = true
 serde_yaml.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true, features = ["fmt", "std", "env-filter"] }
+tempfile.workspace = true
 wiremock.workspace = true
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
@@ -278,3 +286,8 @@ required-features = ["user_events-receiver"]
 name = "user_events_eventheader_producer"
 path = "src/receivers/user_events_receiver/examples/eventheader_producer.rs"
 required-features = ["user_events-eventheader"]
+
+[[example]]
+name = "oracle_load_generator"
+path = "examples/oracle_load_generator.rs"
+required-features = ["oracle-receiver"]

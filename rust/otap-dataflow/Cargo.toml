@@ -168,6 +168,7 @@ opentelemetry-proto = { version = "0.32", default-features = false, features = [
 # slimming in opentelemetry-rust #3593 (unreleased).
 opentelemetry = { version = "0.32.0", default-features = false }
 opentelemetry_sdk = { version = "0.32.1", default-features = false }
+oracle = "0.6.3"
 
 parking_lot = "0.12.5"
 paste = "1"
