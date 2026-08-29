@@ -1,5 +1,5 @@
 [package]
-name = "otap-df-ctl"
+name = "otel-arrow-dfe-ctl"
 description = "Control CLI for the OTAP dataflow engine admin SDK"
 version.workspace = true
 authors.workspace = true
@@ -21,14 +21,14 @@ rustls-symcrypt = { workspace = true, optional = true }
 
 [features]
 default = ["crypto-ring"]
-crypto-ring = ["otap-df-admin-api/crypto-ring", "dep:rustls", "rustls/ring"]
-crypto-aws-lc = ["otap-df-admin-api/crypto-aws-lc", "dep:rustls", "rustls/aws_lc_rs"]
-crypto-openssl = ["otap-df-admin-api/crypto-openssl", "dep:rustls", "dep:rustls-openssl"]
-crypto-symcrypt = ["otap-df-admin-api/crypto-symcrypt", "dep:rustls", "dep:rustls-symcrypt"]
+crypto-ring = ["otel-arrow-dfe-admin-api/crypto-ring", "dep:rustls", "rustls/ring"]
+crypto-aws-lc = ["otel-arrow-dfe-admin-api/crypto-aws-lc", "dep:rustls", "rustls/aws_lc_rs"]
+crypto-openssl = ["otel-arrow-dfe-admin-api/crypto-openssl", "dep:rustls", "dep:rustls-openssl"]
+crypto-symcrypt = ["otel-arrow-dfe-admin-api/crypto-symcrypt", "dep:rustls", "dep:rustls-symcrypt"]
 
 [dependencies]
-otap-df-admin-api = { path = "../admin-api", default-features = false, features = ["http-client"] }
-otap-df-config = { workspace = true }
+otel-arrow-dfe-admin-api = { path = "../admin-api", default-features = false, features = ["http-client"] }
+otel-arrow-dfe-config = { workspace = true }
 
 clap = { workspace = true, features = ["derive", "env"] }
 clap_complete = { workspace = true }

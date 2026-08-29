@@ -7,7 +7,7 @@
 //! Structs and filters defined here are dead on other platforms by design.
 #![cfg_attr(not(target_os = "linux"), allow(dead_code))]
 
-otap_df_telemetry::otel_component_scope!(
+otel_arrow_dfe_telemetry::otel_component_scope!(
     urn = HOST_METRICS_RECEIVER_URN,
     target = "otel.receiver.host_metrics",
 );
@@ -15,31 +15,31 @@ otap_df_telemetry::otel_component_scope!(
 #[cfg(target_os = "linux")]
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::node::NodeUserConfig;
+use otel_arrow_dfe_config::node::NodeUserConfig;
 #[cfg(target_os = "linux")]
-use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
-use otap_df_engine::ReceiverFactory;
-use otap_df_engine::config::ReceiverConfig;
-use otap_df_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::MessageSourceLocalEffectHandlerExtension;
+use otel_arrow_dfe_engine::ReceiverFactory;
+use otel_arrow_dfe_engine::config::ReceiverConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
 #[cfg(target_os = "linux")]
-use otap_df_engine::control::NodeControlMsg;
+use otel_arrow_dfe_engine::control::NodeControlMsg;
 #[cfg(target_os = "linux")]
-use otap_df_engine::error::{Error, ReceiverErrorKind, TypedError};
+use otel_arrow_dfe_engine::error::{Error, ReceiverErrorKind, TypedError};
 #[cfg(target_os = "linux")]
-use otap_df_engine::local::receiver as local;
-use otap_df_engine::node::NodeId;
-use otap_df_engine::receiver::ReceiverWrapper;
+use otel_arrow_dfe_engine::local::receiver as local;
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
 #[cfg(target_os = "linux")]
-use otap_df_engine::terminal_state::TerminalState;
-use otap_df_otap::OTAP_RECEIVER_FACTORIES;
+use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES;
 #[cfg(target_os = "linux")]
-use otap_df_otap::pdata::Context;
-use otap_df_otap::pdata::OtapPdata;
-use otap_df_telemetry::instrument::{Counter, Mmsc};
-use otap_df_telemetry::metrics::MetricSet;
+use otel_arrow_dfe_otap::pdata::Context;
+use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_telemetry::instrument::{Counter, Mmsc};
+use otel_arrow_dfe_telemetry::metrics::MetricSet;
 #[cfg(target_os = "linux")]
-use otap_df_telemetry::metrics::MetricSetSnapshot;
-use otap_df_telemetry_macros::metric_set;
+use otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot;
+use otel_arrow_dfe_telemetry_macros::metric_set;
 #[cfg(target_os = "linux")]
 use serde_json::Value;
 use std::collections::HashSet;
@@ -138,19 +138,20 @@ pub struct HostMetricsReceiver {
 }
 
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Receiver)]
+#[otel_arrow_dfe_engine::component_inventory(category = Receiver)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 /// Declares the host metrics receiver as a local receiver factory.
 pub static HOST_METRICS_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: HOST_METRICS_RECEIVER_URN,
-    create: |pipeline: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             receiver_config: &ReceiverConfig,
-             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
-        create_host_metrics_receiver(pipeline, node, node_config, receiver_config)
-    },
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    create:
+        |pipeline: PipelineContext,
+         node: NodeId,
+         node_config: Arc<NodeUserConfig>,
+         receiver_config: &ReceiverConfig,
+         _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
+            create_host_metrics_receiver(pipeline, node, node_config, receiver_config)
+        },
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: validate_host_metrics_config,
 };
 
@@ -160,9 +161,9 @@ fn create_host_metrics_receiver(
     node: NodeId,
     node_config: Arc<NodeUserConfig>,
     receiver_config: &ReceiverConfig,
-) -> Result<ReceiverWrapper<OtapPdata>, otap_df_config::error::Error> {
+) -> Result<ReceiverWrapper<OtapPdata>, otel_arrow_dfe_config::error::Error> {
     if pipeline.num_cores() > 1 {
-        return Err(otap_df_config::error::Error::InvalidUserConfig {
+        return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
             error: "host-wide collection must run in a one-core source pipeline; use receiver:host_metrics -> exporter:topic and fan out downstream".to_owned(),
         });
     }
@@ -182,14 +183,14 @@ fn create_host_metrics_receiver(
     _node: NodeId,
     _node_config: Arc<NodeUserConfig>,
     _receiver_config: &ReceiverConfig,
-) -> Result<ReceiverWrapper<OtapPdata>, otap_df_config::error::Error> {
+) -> Result<ReceiverWrapper<OtapPdata>, otel_arrow_dfe_config::error::Error> {
     Err(unsupported_platform_error())
 }
 
 #[cfg(target_os = "linux")]
-fn validate_host_metrics_config(config: &Value) -> Result<(), otap_df_config::error::Error> {
+fn validate_host_metrics_config(config: &Value) -> Result<(), otel_arrow_dfe_config::error::Error> {
     let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
-        otap_df_config::error::Error::InvalidUserConfig {
+        otel_arrow_dfe_config::error::Error::InvalidUserConfig {
             error: e.to_string(),
         }
     })?;
@@ -199,14 +200,14 @@ fn validate_host_metrics_config(config: &Value) -> Result<(), otap_df_config::er
 #[cfg(not(target_os = "linux"))]
 fn validate_host_metrics_config(
     _config: &serde_json::Value,
-) -> Result<(), otap_df_config::error::Error> {
+) -> Result<(), otel_arrow_dfe_config::error::Error> {
     Err(unsupported_platform_error())
 }
 
 #[cfg(target_os = "linux")]
 impl HostMetricsReceiver {
     /// Creates a new host metrics receiver.
-    pub fn new(config: Config) -> Result<Self, otap_df_config::error::Error> {
+    pub fn new(config: Config) -> Result<Self, otel_arrow_dfe_config::error::Error> {
         let root_path = normalized_root_path(Some(effective_root_path(&config)?))?;
         let lease = HostMetricsLease::acquire(root_path)?;
         let config = RuntimeConfig::try_from(config)?;
@@ -218,9 +219,9 @@ impl HostMetricsReceiver {
     }
 
     /// Creates a host metrics receiver from JSON config.
-    pub fn from_config(config: &Value) -> Result<Self, otap_df_config::error::Error> {
+    pub fn from_config(config: &Value) -> Result<Self, otel_arrow_dfe_config::error::Error> {
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
-            otap_df_config::error::Error::InvalidUserConfig {
+            otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
             }
         })?;
@@ -230,8 +231,8 @@ impl HostMetricsReceiver {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn unsupported_platform_error() -> otap_df_config::error::Error {
-    otap_df_config::error::Error::InvalidUserConfig {
+fn unsupported_platform_error() -> otel_arrow_dfe_config::error::Error {
+    otel_arrow_dfe_config::error::Error::InvalidUserConfig {
         error: "host_metrics receiver is supported only on Linux".to_owned(),
     }
 }
@@ -473,14 +474,14 @@ struct HostMetricsLease {
 }
 
 impl HostMetricsLease {
-    fn acquire(key: PathBuf) -> Result<Self, otap_df_config::error::Error> {
+    fn acquire(key: PathBuf) -> Result<Self, otel_arrow_dfe_config::error::Error> {
         let mut leases = HOST_METRICS_LEASES.lock().map_err(|_| {
-            otap_df_config::error::Error::InvalidUserConfig {
+            otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: "host metrics lease registry is unavailable".to_owned(),
             }
         })?;
         if !leases.insert(key.clone()) {
-            return Err(otap_df_config::error::Error::InvalidUserConfig {
+            return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: format!(
                     "another host_metrics receiver already collects host root {}",
                     key.display()
@@ -774,7 +775,7 @@ mod tests {
 
         assert!(matches!(
             validate_config(&config),
-            Err(otap_df_config::error::Error::InvalidUserConfig { .. })
+            Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig { .. })
         ));
     }
 
@@ -824,7 +825,7 @@ mod tests {
 
         assert!(matches!(
             validate_config(&config),
-            Err(otap_df_config::error::Error::InvalidUserConfig { .. })
+            Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig { .. })
         ));
     }
 
@@ -843,7 +844,7 @@ mod tests {
 
         assert!(matches!(
             validate_config(&config),
-            Err(otap_df_config::error::Error::InvalidUserConfig { .. })
+            Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig { .. })
         ));
     }
 
@@ -862,7 +863,7 @@ mod tests {
 
         assert!(matches!(
             validate_config(&config),
-            Err(otap_df_config::error::Error::InvalidUserConfig { .. })
+            Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig { .. })
         ));
     }
 
@@ -996,7 +997,7 @@ mod tests {
 
         assert!(matches!(
             validate_config(&config),
-            Err(otap_df_config::error::Error::InvalidUserConfig { .. })
+            Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig { .. })
         ));
     }
 
@@ -1067,7 +1068,7 @@ mod tests {
 
         assert!(matches!(
             validate_config(&config),
-            Err(otap_df_config::error::Error::InvalidUserConfig { .. })
+            Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig { .. })
         ));
     }
 
@@ -1078,7 +1079,7 @@ mod tests {
 
         assert!(matches!(
             HostMetricsLease::acquire(root.clone()),
-            Err(otap_df_config::error::Error::InvalidUserConfig { .. })
+            Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig { .. })
         ));
 
         drop(lease);
@@ -1098,7 +1099,7 @@ mod tests {
 
         assert!(matches!(
             validate_config(&config),
-            Err(otap_df_config::error::Error::InvalidUserConfig { .. })
+            Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig { .. })
         ));
     }
 
@@ -1296,7 +1297,7 @@ mod tests {
 
         assert!(matches!(
             (HOST_METRICS_RECEIVER.validate_config)(&config),
-            Err(otap_df_config::error::Error::InvalidUserConfig { .. })
+            Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig { .. })
         ));
     }
 }

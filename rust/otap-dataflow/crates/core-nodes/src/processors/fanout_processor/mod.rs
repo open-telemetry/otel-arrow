@@ -18,7 +18,7 @@
 //!
 //! See `processors/fanout_processor/README.md` for detailed diagrams and examples.
 
-otap_df_telemetry::otel_component_scope!(
+otel_arrow_dfe_telemetry::otel_component_scope!(
     urn = FANOUT_PROCESSOR_URN,
     target = "otel.processor.fanout",
 );
@@ -27,18 +27,22 @@ mod metrics;
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::PortName;
-use otap_df_config::error::Error as ConfigError;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::config::ProcessorConfig;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::{AckMsg, CallData, Context8u8, NackMsg, NodeControlMsg, UnwindData};
-use otap_df_engine::error::{Error, TypedError};
-use otap_df_engine::local::processor::{EffectHandler, Processor};
-use otap_df_engine::message::Message;
-use otap_df_engine::node::NodeId;
-use otap_df_engine::{ConsumerEffectHandlerExtension, Interests, ProducerEffectHandlerExtension};
-use otap_df_engine::{ProcessorFactory, processor::ProcessorWrapper};
+use otel_arrow_dfe_config::PortName;
+use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_engine::config::ProcessorConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::control::{
+    AckMsg, CallData, Context8u8, NackCause, NackMsg, NodeControlMsg, UnwindData,
+};
+use otel_arrow_dfe_engine::error::{Error, TypedError};
+use otel_arrow_dfe_engine::local::processor::{EffectHandler, Processor};
+use otel_arrow_dfe_engine::message::Message;
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::{
+    ConsumerEffectHandlerExtension, Interests, ProducerEffectHandlerExtension,
+};
+use otel_arrow_dfe_engine::{ProcessorFactory, processor::ProcessorWrapper};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use smallvec::{SmallVec, smallvec};
@@ -48,7 +52,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use metrics::FanoutMetrics;
-use otap_df_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
+use otel_arrow_dfe_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
 
 /// URN for the fan-out processor.
 pub const FANOUT_PROCESSOR_URN: &str = "urn:otel:processor:fanout";
@@ -559,7 +563,7 @@ impl FanoutProcessor {
         inflight: &mut Inflight,
         destinations: &[DestinationConfig],
         effect_handler: &EffectHandler<OtapPdata>,
-    ) -> Result<DeadlineVec, TypedError<OtapPdata>> {
+    ) -> Result<DeadlineVec, Box<TypedError<OtapPdata>>> {
         let mut to_send = DestinationIndexQueue::new();
         let mut new_deadlines = DeadlineVec::new();
         match inflight.mode {
@@ -590,7 +594,8 @@ impl FanoutProcessor {
                 }
                 effect_handler
                     .send_message_to(destinations[idx].port.clone(), payload)
-                    .await?;
+                    .await
+                    .map_err(Box::new)?;
             }
         }
         Ok(new_deadlines)
@@ -613,6 +618,10 @@ impl FanoutProcessor {
         dest_index: usize,
         reason: String,
         is_timeout: bool,
+        // Classification for the terminal upstream NACK: a propagated downstream
+        // NACK carries its own permanence/cause; a fanout timeout stays transient.
+        permanent: bool,
+        cause: NackCause,
     ) -> Option<NackMsg<OtapPdata>> {
         let inflight = self.inflight.get_mut(&request_id)?;
         // Mark as TimedOut for timeouts, Nacked for explicit nacks.
@@ -650,8 +659,8 @@ impl FanoutProcessor {
             reason,
             unwind: UnwindData::default(),
             refused: Box::new(inflight.original_pdata.clone()),
-            permanent: false, // Timeout is retriable
-            cause: otap_df_engine::control::NackCause::Unspecified,
+            permanent,
+            cause,
         })
     }
 
@@ -703,7 +712,9 @@ impl FanoutProcessor {
                 req,
                 idx,
                 format!("fanout: timeout on {}", self.config.destinations[idx].port),
-                true, // is_timeout
+                true,  // is_timeout
+                false, // timeouts are retriable
+                NackCause::Unspecified,
             ) {
                 Some(nack) => {
                     // Ignore non-primary timeouts when awaiting primary only.
@@ -726,7 +737,8 @@ impl FanoutProcessor {
             if let Some(inflight) = self.inflight.get_mut(&req) {
                 let deadlines =
                     Self::dispatch_ready(req, inflight, &self.config.destinations, effect_handler)
-                        .await?;
+                        .await
+                        .map_err(|error| *error)?;
                 for d in deadlines {
                     self.deadline_heap.push(Reverse(d));
                 }
@@ -823,7 +835,8 @@ impl FanoutProcessor {
                     &self.config.destinations,
                     effect_handler,
                 )
-                .await?;
+                .await
+                .map_err(|error| *error)?;
                 for d in deadlines {
                     self.deadline_heap.push(Reverse(d));
                 }
@@ -878,9 +891,14 @@ impl FanoutProcessor {
             return Ok(());
         }
 
-        if let Some(nackmsg) =
-            self.handle_failure(request_id, dest_index, nack.reason.clone(), false)
-        {
+        if let Some(nackmsg) = self.handle_failure(
+            request_id,
+            dest_index,
+            nack.reason.clone(),
+            false,
+            nack.permanent,
+            nack.cause,
+        ) {
             let _ = self.inflight.remove(&request_id);
             effect_handler.notify_nack(nackmsg).await?;
             return Ok(());
@@ -894,7 +912,8 @@ impl FanoutProcessor {
                 &self.config.destinations,
                 effect_handler,
             )
-            .await?;
+            .await
+            .map_err(|error| *error)?;
             for d in deadlines {
                 self.deadline_heap.push(Reverse(d));
             }
@@ -1126,7 +1145,8 @@ impl Processor<OtapPdata> for FanoutProcessor {
                         &self.config.destinations,
                         effect_handler,
                     )
-                    .await?;
+                    .await
+                    .map_err(|error| *error)?;
                     for d in deadlines {
                         self.deadline_heap.push(Reverse(d));
                     }
@@ -1158,43 +1178,44 @@ pub fn create_fanout_processor(
 
 /// Register the fan-out processor as an OTAP processor factory.
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Processor)]
+#[otel_arrow_dfe_engine::component_inventory(category = Processor)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static FANOUT_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: FANOUT_PROCESSOR_URN,
-    create: |pipeline_ctx: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             proc_cfg: &ProcessorConfig,
-             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
-        create_fanout_processor(pipeline_ctx, node, node_config, proc_cfg)
+    create:
+        |pipeline_ctx: PipelineContext,
+         node: NodeId,
+         node_config: Arc<NodeUserConfig>,
+         proc_cfg: &ProcessorConfig,
+         _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
+            create_fanout_processor(pipeline_ctx, node, node_config, proc_cfg)
+        },
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract {
+        output_fanout: otel_arrow_dfe_engine::wiring_contract::OutputFanoutRule::AtMostPerOutput(1),
     },
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract {
-        output_fanout: otap_df_engine::wiring_contract::OutputFanoutRule::AtMostPerOutput(1),
-    },
-    validate_config: otap_df_config::validation::validate_typed_config::<FanoutConfig>,
+    validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<FanoutConfig>,
 };
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_config::SignalType;
-    use otap_df_config::node::NodeUserConfig;
-    use otap_df_engine::context::ControllerContext;
-    use otap_df_engine::control::{
+    use otel_arrow_dfe_config::SignalType;
+    use otel_arrow_dfe_config::node::NodeUserConfig;
+    use otel_arrow_dfe_engine::context::ControllerContext;
+    use otel_arrow_dfe_engine::control::{
         NodeControlMsg, PipelineCompletionMsg, RuntimeControlMsg, pipeline_completion_msg_channel,
         runtime_ctrl_msg_channel,
     };
-    use otap_df_engine::local::message::{LocalReceiver, LocalSender};
-    use otap_df_engine::local::processor::EffectHandler;
-    use otap_df_engine::message::Message;
-    use otap_df_engine::message::Sender;
-    use otap_df_engine::testing::processor::TEST_OUT_PORT_NAME;
-    use otap_df_engine::testing::test_node;
-    use otap_df_otap::pdata::Context;
-    use otap_df_otap::testing::{next_ack, next_nack};
-    use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
-    use otap_df_telemetry::InternalTelemetrySystem;
+    use otel_arrow_dfe_engine::local::message::{LocalReceiver, LocalSender};
+    use otel_arrow_dfe_engine::local::processor::EffectHandler;
+    use otel_arrow_dfe_engine::message::Message;
+    use otel_arrow_dfe_engine::message::Sender;
+    use otel_arrow_dfe_engine::testing::processor::TEST_OUT_PORT_NAME;
+    use otel_arrow_dfe_engine::testing::test_node;
+    use otel_arrow_dfe_otap::pdata::Context;
+    use otel_arrow_dfe_otap::testing::{next_ack, next_nack};
+    use otel_arrow_dfe_pdata::{OtapPayload, OtlpProtoBytes};
+    use otel_arrow_dfe_telemetry::InternalTelemetrySystem;
     use serde_json::{Value, json};
     use std::collections::HashMap;
     use std::time::Duration;
@@ -1221,9 +1242,10 @@ mod tests {
         effect: EffectHandler<OtapPdata>,
         outputs: HashMap<String, LocalReceiver<OtapPdata>>,
         _runtime_ctrl_rx:
-            otap_df_engine::shared::message::SharedReceiver<RuntimeControlMsg<OtapPdata>>,
-        pipeline_completion_rx:
-            otap_df_engine::shared::message::SharedReceiver<PipelineCompletionMsg<OtapPdata>>,
+            otel_arrow_dfe_engine::shared::message::SharedReceiver<RuntimeControlMsg<OtapPdata>>,
+        pipeline_completion_rx: otel_arrow_dfe_engine::shared::message::SharedReceiver<
+            PipelineCompletionMsg<OtapPdata>,
+        >,
     }
 
     fn build_harness(destinations: Value, mode: &str, await_ack: &str) -> FanoutHarness {
@@ -1263,7 +1285,7 @@ mod tests {
         let mut outputs = HashMap::new();
         let mut senders = HashMap::new();
         for port in &node_cfg.outputs {
-            let (tx, rx) = otap_df_channel::mpsc::Channel::new(4);
+            let (tx, rx) = otel_arrow_dfe_channel::mpsc::Channel::new(4);
             let _ = senders.insert(port.clone(), Sender::Local(LocalSender::mpsc(tx)));
             let _ = outputs.insert(port.to_string(), LocalReceiver::mpsc(rx));
         }
@@ -1321,7 +1343,7 @@ mod tests {
     const TEST_UPSTREAM_NODE_ID: usize = 12345;
 
     fn make_pdata() -> OtapPdata {
-        let payload = OtapPayload::OtlpBytes(OtlpProtoBytes::empty(SignalType::Logs));
+        let payload = OtapPayload::from(OtlpProtoBytes::empty(SignalType::Logs));
         // Simulate an upstream subscriber (e.g., receiver) so acks/nacks route correctly.
         OtapPdata::new(Context::default(), payload).test_subscribe_to(
             Interests::ACKS | Interests::NACKS,
@@ -1804,6 +1826,58 @@ mod tests {
         }
         assert_eq!(delivered_ack, 0, "should not ack upstream");
         assert_eq!(delivered_nack, 1, "should nack upstream immediately");
+    }
+
+    /// Scenario: a permanent, `Refused` downstream NACK propagates through the
+    /// fanout full path (no fallback) to the upstream subscriber.
+    /// Guarantees: the upstream NACK preserves `permanent` and `cause` so the
+    /// receiver can still map it to a client error, while fanout timeouts stay
+    /// transient.
+    #[tokio::test]
+    async fn nack_permanence_and_cause_are_preserved_upstream() {
+        let mut h = build_harness(
+            json!([
+                make_dest("p1", true, None, None),
+                make_dest("p2", false, None, None)
+            ]),
+            "parallel",
+            "all",
+        );
+        h.fanout
+            .process(Message::PData(make_pdata()), &mut h.effect)
+            .await
+            .expect("process ok");
+
+        let mut p1 = drain(h.outputs.get_mut("p1").expect("p1"));
+        let _p2 = drain(h.outputs.get_mut("p2").expect("p2"));
+        assert_eq!(p1.len(), 1);
+
+        // Permanent, client-caused refusal from p1 (no fallback -> fail-fast).
+        let mut nack =
+            NackMsg::new_permanent_with_cause("p1 refused", p1.pop().unwrap(), NackCause::Refused);
+        nack.unwind.route = nack.refused.source_route().unwrap();
+        h.fanout
+            .process(Message::Control(NodeControlMsg::Nack(nack)), &mut h.effect)
+            .await
+            .expect("nack ok");
+
+        let mut upstream_nacks = Vec::new();
+        while let Ok(Ok(msg)) =
+            tokio::time::timeout(Duration::from_millis(50), h.pipeline_completion_rx.recv()).await
+        {
+            if let PipelineCompletionMsg::DeliverNack { nack } = msg {
+                upstream_nacks.push(nack);
+            }
+        }
+
+        assert_eq!(upstream_nacks.len(), 1, "should nack upstream once");
+        let upstream = &upstream_nacks[0];
+        assert!(upstream.permanent, "propagated NACK must remain permanent");
+        assert_eq!(
+            upstream.cause,
+            NackCause::Refused,
+            "propagated NACK must preserve the downstream cause"
+        );
     }
 
     #[tokio::test]
@@ -2383,7 +2457,7 @@ mod tests {
     /// 4. Fanout should propagate the ack to the original receiver (not to itself)
     #[tokio::test]
     async fn upstream_ack_routes_to_receiver_not_fanout() {
-        use otap_df_otap::testing::TestCallData;
+        use otel_arrow_dfe_otap::testing::TestCallData;
 
         let mut h = build_harness(
             json!([make_dest(TEST_OUT_PORT_NAME, true, None, None)]),
@@ -2456,7 +2530,7 @@ mod tests {
     /// Test that verifies upstream nack is routed to the correct node with correct calldata.
     #[tokio::test]
     async fn upstream_nack_routes_to_receiver_not_fanout() {
-        use otap_df_otap::testing::TestCallData;
+        use otel_arrow_dfe_otap::testing::TestCallData;
 
         let mut h = build_harness(
             json!([make_dest(TEST_OUT_PORT_NAME, true, None, None)]),
@@ -2573,7 +2647,7 @@ mod tests {
         let mut outputs = HashMap::new();
         let mut senders = HashMap::new();
         for port in &node_cfg.outputs {
-            let (tx, rx) = otap_df_channel::mpsc::Channel::new(4);
+            let (tx, rx) = otel_arrow_dfe_channel::mpsc::Channel::new(4);
             let _ = senders.insert(port.clone(), Sender::Local(LocalSender::mpsc(tx)));
             let _ = outputs.insert(port.to_string(), LocalReceiver::mpsc(rx));
         }

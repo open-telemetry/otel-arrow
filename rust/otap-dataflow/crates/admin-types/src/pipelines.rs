@@ -3,7 +3,7 @@
 
 //! Shared pipeline-scoped admin models.
 
-use otap_df_config::{PipelineGroupId, PipelineId, pipeline::PipelineConfig};
+use otel_arrow_dfe_config::{PipelineGroupId, PipelineId, pipeline::PipelineConfig};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -194,6 +194,26 @@ pub struct ShutdownCoreStatus {
     pub detail: Option<String>,
 }
 
+/// Stable, low-cardinality source of an explicit pipeline shutdown request.
+///
+/// This is best-effort attribution derived from HTTP client metadata, not an
+/// authenticated identity.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PipelineShutdownInitiator {
+    /// A request from an unidentified admin API client.
+    AdminApi,
+    /// A request from the `dfctl` client.
+    Dfctl,
+    // Planned follow-up initiators:
+    // Opamp,
+    // OsSignal,
+    /// An initiator value introduced by a newer server.
+    #[serde(other)]
+    Unknown,
+}
+
 /// Snapshot of one pipeline shutdown operation.
 ///
 /// This describes the current state of a specific shutdown id. It is operation
@@ -210,6 +230,9 @@ pub struct ShutdownStatus {
     pub pipeline_id: PipelineId,
     /// Current shutdown lifecycle state.
     pub state: String,
+    /// Best-effort external initiator for an explicit admin shutdown, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initiator: Option<PipelineShutdownInitiator>,
     /// RFC3339 timestamp for shutdown creation.
     pub started_at: String,
     /// RFC3339 timestamp for the latest shutdown transition.
@@ -933,6 +956,7 @@ mod tests {
             "pipelineGroupId": "default",
             "pipelineId": "main",
             "state": "failed",
+            "initiator": "dfctl",
             "startedAt": "2026-01-01T00:00:00Z",
             "updatedAt": "2026-01-01T00:00:05Z",
             "failureReason": "drain deadline exceeded",
@@ -945,6 +969,25 @@ mod tests {
                 }
             ]
         }));
+    }
+
+    /// Scenario: an older SDK receives a shutdown initiator added by a newer server.
+    /// Guarantees: unknown initiator values remain deserializable for rolling upgrades.
+    #[test]
+    fn pipeline_shutdown_status_accepts_future_initiator() {
+        let status: ShutdownStatus = serde_json::from_value(json!({
+            "shutdownId": "shutdown-1",
+            "pipelineGroupId": "default",
+            "pipelineId": "main",
+            "state": "running",
+            "initiator": "opamp",
+            "startedAt": "2026-01-01T00:00:00Z",
+            "updatedAt": "2026-01-01T00:00:05Z",
+            "cores": []
+        }))
+        .expect("future initiator should deserialize");
+
+        assert_eq!(status.initiator, Some(PipelineShutdownInitiator::Unknown));
     }
 
     /// Scenario: the SDK receives a waited reconfigure result that completed

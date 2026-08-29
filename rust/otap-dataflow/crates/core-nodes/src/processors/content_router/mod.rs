@@ -64,48 +64,50 @@
 //! The processor still returns `Ok(())` after those route-local rejections so a
 //! blocked route cannot fail the router task itself.
 
-otap_df_telemetry::otel_component_scope!(
+otel_arrow_dfe_telemetry::otel_component_scope!(
     urn = CONTENT_ROUTER_URN,
     target = "otel.processor.content_router",
 );
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::PortName;
-use otap_df_config::SignalType;
-use otap_df_config::error::Error as ConfigError;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::config::ProcessorConfig;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::{NackCause, NackMsg, NodeControlMsg, WakeupRevision, WakeupSlot};
-use otap_df_engine::error::{Error as EngineError, ProcessorErrorKind};
-use otap_df_engine::local::processor as local;
-use otap_df_engine::message::Message;
-use otap_df_engine::node::NodeId;
-use otap_df_engine::processor::ProcessorWrapper;
-use otap_df_engine::{
+use otel_arrow_dfe_config::PortName;
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_engine::config::ProcessorConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::control::{
+    NackCause, NackMsg, NodeControlMsg, WakeupRevision, WakeupSlot,
+};
+use otel_arrow_dfe_engine::error::{Error as EngineError, ProcessorErrorKind};
+use otel_arrow_dfe_engine::local::processor as local;
+use otel_arrow_dfe_engine::message::Message;
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::processor::ProcessorWrapper;
+use otel_arrow_dfe_engine::{
     ConsumerEffectHandlerExtension, MessageSourceLocalEffectHandlerExtension, ProcessorFactory,
     ProcessorRuntimeRequirements, RouteAdmission, WakeupError,
 };
-use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
-use otap_df_otap::pdata::OtapPdata;
-use otap_df_pdata::OtapPayload;
-use otap_df_pdata::TryFromWithOptions;
-use otap_df_pdata::otlp::OtlpProtoBytes;
-use otap_df_pdata::views::otap::OtapLogsView;
-use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
-use otap_df_pdata::views::otlp::bytes::metrics::RawMetricsData;
-use otap_df_pdata::views::otlp::bytes::traces::RawTraceData;
-use otap_df_pdata_views::views::common::{AnyValueView, AttributeView, ValueType};
-use otap_df_pdata_views::views::logs::{LogsDataView, ResourceLogsView};
-use otap_df_pdata_views::views::metrics::{MetricsView, ResourceMetricsView};
-use otap_df_pdata_views::views::resource::ResourceView;
-use otap_df_pdata_views::views::trace::{ResourceSpansView, TracesView};
-use otap_df_telemetry::common_attributes::Outcome;
-use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry::metrics::MeasurementMetricSet;
-use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
+use otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES;
+use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_pdata::PayloadData;
+use otel_arrow_dfe_pdata::TryFromWithOptions;
+use otel_arrow_dfe_pdata::otlp::OtlpProtoBytes;
+use otel_arrow_dfe_pdata::views::otap::OtapLogsView;
+use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
+use otel_arrow_dfe_pdata::views::otlp::bytes::metrics::RawMetricsData;
+use otel_arrow_dfe_pdata::views::otlp::bytes::traces::RawTraceData;
+use otel_arrow_dfe_pdata_views::views::common::{AnyValueView, AttributeView, ValueType};
+use otel_arrow_dfe_pdata_views::views::logs::{LogsDataView, ResourceLogsView};
+use otel_arrow_dfe_pdata_views::views::metrics::{MetricsView, ResourceMetricsView};
+use otel_arrow_dfe_pdata_views::views::resource::ResourceView;
+use otel_arrow_dfe_pdata_views::views::trace::{ResourceSpansView, TracesView};
+use otel_arrow_dfe_telemetry::common_attributes::Outcome;
+use otel_arrow_dfe_telemetry::instrument::Counter;
+use otel_arrow_dfe_telemetry::metrics::MeasurementMetricSet;
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -204,7 +206,7 @@ impl ContentRouterMetrics {
     pub fn report(
         &mut self,
         reporter: &mut MetricsReporter,
-    ) -> Result<(), otap_df_telemetry::error::Error> {
+    ) -> Result<(), otel_arrow_dfe_telemetry::error::Error> {
         reporter.report_measurement(&mut self.metrics)
     }
 
@@ -509,7 +511,7 @@ impl ContentRouter {
     /// Resolves the route for Arrow logs data using native OTAP view (no OTLP conversion).
     fn resolve_arrow_logs_route(
         &self,
-        arrow_records: &otap_df_pdata::OtapArrowRecords,
+        arrow_records: &otel_arrow_dfe_pdata::OtapArrowRecords,
     ) -> RouteResolution {
         let logs_view = match OtapLogsView::try_from(arrow_records) {
             Ok(view) => view,
@@ -565,8 +567,8 @@ impl ContentRouter {
     fn resolve_route(&self, pdata: &OtapPdata) -> RouteResolution {
         let signal_type = pdata.signal_type();
 
-        match pdata.payload_ref() {
-            OtapPayload::OtlpBytes(otlp_bytes) => match (signal_type, otlp_bytes) {
+        match pdata.payload_ref().data() {
+            PayloadData::OtlpBytes(otlp_bytes) => match (signal_type, otlp_bytes) {
                 (SignalType::Logs, OtlpProtoBytes::ExportLogsRequest(bytes)) => {
                     let data = RawLogsData::new(bytes.as_ref());
                     self.resolve_logs_route(&data)
@@ -583,7 +585,7 @@ impl ContentRouter {
                 // since signal_type() is derived from the OtlpProtoBytes variant itself.
                 _ => RouteResolution::ConversionError,
             },
-            OtapPayload::OtapArrowRecords(arrow_records) => {
+            PayloadData::OtapArrowRecords(arrow_records) => {
                 match signal_type {
                     // Use native OTAP Arrow view for logs (avoids clone + OTLP round-trip)
                     SignalType::Logs => self.resolve_arrow_logs_route(arrow_records),
@@ -1018,35 +1020,38 @@ pub fn create_content_router(
 
 /// Register ContentRouter as an OTAP processor factory
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Processor)]
+#[otel_arrow_dfe_engine::component_inventory(category = Processor)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static CONTENT_ROUTER_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: CONTENT_ROUTER_URN,
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    validate_config: otap_df_config::validation::validate_typed_config::<ContentRouterConfig>,
-    create: |pipeline: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             proc_cfg: &ProcessorConfig,
-             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
-        let router_config: ContentRouterConfig = serde_json::from_value(node_config.config.clone())
-            .map_err(|e| ConfigError::InvalidUserConfig {
-                error: format!("Failed to parse ContentRouter configuration: {e}"),
-            })?;
-        router_config.validate(&node_config.outputs)?;
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<ContentRouterConfig>,
+    create:
+        |pipeline: PipelineContext,
+         node: NodeId,
+         node_config: Arc<NodeUserConfig>,
+         proc_cfg: &ProcessorConfig,
+         _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
+            let router_config: ContentRouterConfig =
+                serde_json::from_value(node_config.config.clone()).map_err(|e| {
+                    ConfigError::InvalidUserConfig {
+                        error: format!("Failed to parse ContentRouter configuration: {e}"),
+                    }
+                })?;
+            router_config.validate(&node_config.outputs)?;
 
-        let router = ContentRouter::with_pipeline_ctx(pipeline, router_config);
+            let router = ContentRouter::with_pipeline_ctx(pipeline, router_config);
 
-        Ok(ProcessorWrapper::local(router, node, node_config, proc_cfg))
-    },
+            Ok(ProcessorWrapper::local(router, node, node_config, proc_cfg))
+        },
 };
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use bytes::Bytes;
-    use otap_df_engine::testing::{processor::TestRuntime, test_node};
-    use otap_df_pdata::proto::opentelemetry::{
+    use otel_arrow_dfe_engine::testing::{processor::TestRuntime, test_node};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::{
         collector::logs::v1::ExportLogsServiceRequest,
         common::v1::{AnyValue, InstrumentationScope, KeyValue},
         logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
@@ -1128,7 +1133,7 @@ mod tests {
     }
 
     fn create_metrics_with_resource_attr(key: &str, value: &str) -> Bytes {
-        use otap_df_pdata::proto::opentelemetry::{
+        use otel_arrow_dfe_pdata::proto::opentelemetry::{
             collector::metrics::v1::ExportMetricsServiceRequest,
             metrics::v1::{Gauge, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics},
         };
@@ -1145,10 +1150,10 @@ mod tests {
                     metrics: vec![Metric {
                         name: "test_metric".to_string(),
                         data: Some(
-                            otap_df_pdata::proto::opentelemetry::metrics::v1::metric::Data::Gauge(
+                            otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::metric::Data::Gauge(
                                 Gauge {
                                     data_points: vec![NumberDataPoint {
-                                        value: Some(otap_df_pdata::proto::opentelemetry::metrics::v1::number_data_point::Value::AsInt(42)),
+                                        value: Some(otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::number_data_point::Value::AsInt(42)),
                                         ..Default::default()
                                     }],
                                 },
@@ -1167,7 +1172,7 @@ mod tests {
     }
 
     fn create_traces_with_resource_attr(key: &str, value: &str) -> Bytes {
-        use otap_df_pdata::proto::opentelemetry::{
+        use otel_arrow_dfe_pdata::proto::opentelemetry::{
             collector::trace::v1::ExportTraceServiceRequest,
             trace::v1::{ResourceSpans, ScopeSpans, Span},
         };
@@ -1728,17 +1733,17 @@ mod tests {
     mod admission_policy {
         use super::*;
         use crate::processors::exclusive_router_admission::OnFullPolicy;
-        use otap_df_channel::error::RecvError;
-        use otap_df_channel::mpsc;
-        use otap_df_engine::Interests;
-        use otap_df_engine::control::{
+        use otel_arrow_dfe_channel::error::RecvError;
+        use otel_arrow_dfe_channel::mpsc;
+        use otel_arrow_dfe_engine::Interests;
+        use otel_arrow_dfe_engine::control::{
             NackCause, NodeControlMsg, PipelineCompletionMsg, PipelineCompletionMsgReceiver,
             pipeline_completion_msg_channel,
         };
-        use otap_df_engine::local::message::LocalSender;
-        use otap_df_engine::message::Sender;
-        use otap_df_engine::node::NodeWithPDataSender;
-        use otap_df_otap::testing::{TestCallData, next_nack};
+        use otel_arrow_dfe_engine::local::message::LocalSender;
+        use otel_arrow_dfe_engine::message::Sender;
+        use otel_arrow_dfe_engine::node::NodeWithPDataSender;
+        use otel_arrow_dfe_otap::testing::{TestCallData, next_nack};
         use std::sync::Arc;
 
         fn logs_pdata(route_value: &str) -> OtapPdata {
@@ -2139,25 +2144,25 @@ mod tests {
 
     mod telemetry {
         use super::*;
-        use otap_df_channel::error::RecvError;
-        use otap_df_channel::mpsc;
-        use otap_df_engine::Interests;
-        use otap_df_engine::context::ControllerContext;
-        use otap_df_engine::control::{
+        use otel_arrow_dfe_channel::error::RecvError;
+        use otel_arrow_dfe_channel::mpsc;
+        use otel_arrow_dfe_engine::Interests;
+        use otel_arrow_dfe_engine::context::ControllerContext;
+        use otel_arrow_dfe_engine::control::{
             NodeControlMsg, PipelineCompletionMsg, PipelineCompletionMsgReceiver,
             pipeline_completion_msg_channel,
         };
-        use otap_df_engine::local::message::LocalSender;
-        use otap_df_engine::local::processor::{
+        use otel_arrow_dfe_engine::local::message::LocalSender;
+        use otel_arrow_dfe_engine::local::processor::{
             EffectHandler as LocalEffectHandler, Processor as _,
         };
-        use otap_df_engine::message::{Message, Sender};
-        use otap_df_engine::testing::setup_test_runtime;
-        use otap_df_otap::pdata::OtapPdata;
-        use otap_df_otap::testing::{TestCallData, next_nack};
-        use otap_df_telemetry::InternalTelemetrySystem;
-        use otap_df_telemetry::registry::TelemetryRegistryHandle;
-        use otap_df_telemetry::reporter::MetricsReporter;
+        use otel_arrow_dfe_engine::message::{Message, Sender};
+        use otel_arrow_dfe_engine::testing::setup_test_runtime;
+        use otel_arrow_dfe_otap::pdata::OtapPdata;
+        use otel_arrow_dfe_otap::testing::{TestCallData, next_nack};
+        use otel_arrow_dfe_telemetry::InternalTelemetrySystem;
+        use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+        use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
         use std::collections::HashMap;
         use std::time::Duration;
         use tokio::task::JoinHandle;

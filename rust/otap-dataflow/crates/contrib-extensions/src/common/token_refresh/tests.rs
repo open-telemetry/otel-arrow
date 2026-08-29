@@ -5,7 +5,7 @@
 
 use std::time::{Duration, Instant};
 
-use otap_df_engine::capability::auth::BearerToken;
+use otel_arrow_dfe_engine::capability::auth::BearerToken;
 
 use super::provider::{
     jitter_refresh, negative_cache_window_secs, retry_backoff_secs, schedule_next,

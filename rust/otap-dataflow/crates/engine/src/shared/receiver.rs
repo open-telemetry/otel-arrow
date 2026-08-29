@@ -43,12 +43,12 @@ use crate::output_router::OutputRouter;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::terminal_state::TerminalState;
 use async_trait::async_trait;
-use otap_df_channel::error::RecvError;
-use otap_df_config::PortName;
-use otap_df_config::transport_headers_policy::HeaderCapturePolicy;
-use otap_df_telemetry::error::Error as TelemetryError;
-use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
-use otap_df_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_channel::error::RecvError;
+use otel_arrow_dfe_config::PortName;
+use otel_arrow_dfe_config::transport_headers_policy::HeaderCapturePolicy;
+use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
+use otel_arrow_dfe_telemetry::metrics::{MetricSet, MetricSetHandler};
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -289,8 +289,8 @@ mod tests {
     use crate::control::runtime_ctrl_msg_channel;
     use crate::shared::message::SharedSender;
     use crate::testing::test_node;
-    use otap_df_channel::error::SendError;
-    use otap_df_telemetry::reporter::MetricsReporter;
+    use otel_arrow_dfe_channel::error::SendError;
+    use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
     use std::collections::HashMap;
 
     #[test]

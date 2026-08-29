@@ -9,50 +9,53 @@
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 //!
 
-otap_df_telemetry::otel_component_scope!(urn = OTAP_RECEIVER_URN, target = "otel.receiver.otap",);
+otel_arrow_dfe_telemetry::otel_component_scope!(
+    urn = OTAP_RECEIVER_URN,
+    target = "otel.receiver.otap",
+);
 
-use otap_df_config::tls::TlsServerConfig;
-use otap_df_otap::OTAP_RECEIVER_FACTORIES;
-use otap_df_otap::compression::CompressionMethod;
-use otap_df_otap::memory_pressure_layer::{MemoryPressureLayer, ReceiverRejectionMetrics};
-use otap_df_otap::otap_grpc::middleware::zstd_header::ZstdRequestHeaderAdapter;
-use otap_df_otap::otap_grpc::otlp::server::{RouteResponse, SharedState};
-use otap_df_otap::otap_grpc::{
+use otel_arrow_dfe_config::tls::TlsServerConfig;
+use otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES;
+use otel_arrow_dfe_otap::compression::CompressionMethod;
+use otel_arrow_dfe_otap::memory_pressure_layer::{MemoryPressureLayer, ReceiverRejectionMetrics};
+use otel_arrow_dfe_otap::otap_grpc::middleware::zstd_header::ZstdRequestHeaderAdapter;
+use otel_arrow_dfe_otap::otap_grpc::otlp::server::{RouteResponse, SharedState};
+use otel_arrow_dfe_otap::otap_grpc::{
     ArrowLogsServiceImpl, ArrowMetricsServiceImpl, ArrowTracesServiceImpl, OtapReceiverTelemetry,
     OtapStreamTaskManager, Settings,
 };
-use otap_df_otap::pdata::OtapPdata;
-use otap_df_otap::tls_utils::{build_tls_acceptor, create_tls_stream};
+use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_otap::tls_utils::{build_tls_acceptor, create_tls_stream};
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::SignalType;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::ReceiverFactory;
-use otap_df_engine::clock;
-use otap_df_engine::config::ReceiverConfig;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
-use otap_df_engine::error::{Error, ReceiverErrorKind, format_error_sources};
-use otap_df_engine::memory_limiter::SharedReceiverAdmissionState;
-use otap_df_engine::node::NodeId;
-use otap_df_engine::receiver::ReceiverWrapper;
-use otap_df_engine::shared::receiver as shared;
-use otap_df_engine::terminal_state::TerminalState;
-use otap_df_pdata::proto::opentelemetry::arrow::v1::{
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_engine::ReceiverFactory;
+use otel_arrow_dfe_engine::clock;
+use otel_arrow_dfe_engine::config::ReceiverConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
+use otel_arrow_dfe_engine::error::{Error, ReceiverErrorKind, format_error_sources};
+use otel_arrow_dfe_engine::memory_limiter::SharedReceiverAdmissionState;
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
+use otel_arrow_dfe_engine::shared::receiver as shared;
+use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::{
     arrow_logs_service_server::ArrowLogsServiceServer,
     arrow_metrics_service_server::ArrowMetricsServiceServer,
     arrow_traces_service_server::ArrowTracesServiceServer,
 };
-use otap_df_telemetry::common_attributes::{
+use otel_arrow_dfe_telemetry::common_attributes::{
     Outcome, ReceiverRejectionAttributes, ReceiverRejectionErrorType, SignalAttributes,
     SignalOutcomeAttributes,
 };
-use otap_df_telemetry::error::Error as TelemetryError;
-use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
-use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry_macros::metric_set;
+use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
+use otel_arrow_dfe_telemetry::instrument::Counter;
+use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_telemetry_macros::metric_set;
 use parking_lot::Mutex;
 use serde::de::Error as SerdeError;
 use serde::{Deserialize, Deserializer};
@@ -161,24 +164,25 @@ pub struct OTAPReceiver {
 /// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
 /// This macro is part of the `linkme` crate which is considered safe and well maintained.
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Receiver)]
+#[otel_arrow_dfe_engine::component_inventory(category = Receiver)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static OTAP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: OTAP_RECEIVER_URN,
-    create: |pipeline: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             receiver_config: &ReceiverConfig,
-             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
-        Ok(ReceiverWrapper::shared(
-            OTAPReceiver::from_config(pipeline, &node_config.config)?,
-            node,
-            node_config,
-            receiver_config,
-        ))
-    },
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    validate_config: otap_df_config::validation::validate_typed_config::<Config>,
+    create:
+        |pipeline: PipelineContext,
+         node: NodeId,
+         node_config: Arc<NodeUserConfig>,
+         receiver_config: &ReceiverConfig,
+         _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
+            Ok(ReceiverWrapper::shared(
+                OTAPReceiver::from_config(pipeline, &node_config.config)?,
+                node,
+                node_config,
+                receiver_config,
+            ))
+        },
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<Config>,
 };
 
 impl OTAPReceiver {
@@ -186,9 +190,9 @@ impl OTAPReceiver {
     pub fn from_config(
         pipeline_ctx: PipelineContext,
         config: &Value,
-    ) -> Result<Self, otap_df_config::error::Error> {
+    ) -> Result<Self, otel_arrow_dfe_config::error::Error> {
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
-            otap_df_config::error::Error::InvalidUserConfig {
+            otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
             }
         })?;
@@ -797,29 +801,29 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
 mod tests {
     use crate::receivers::otap_receiver::{OTAP_RECEIVER_URN, OTAPReceiver, OtapReceiverMetrics};
     use async_stream::stream;
-    use otap_df_config::SignalType;
-    use otap_df_config::node::NodeUserConfig;
-    use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
-    use otap_df_engine::receiver::ReceiverWrapper;
-    use otap_df_engine::testing::{
+    use otel_arrow_dfe_config::SignalType;
+    use otel_arrow_dfe_config::node::NodeUserConfig;
+    use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
+    use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
+    use otel_arrow_dfe_engine::testing::{
         receiver::{NotSendValidateContext, TestContext, TestRuntime},
         test_node,
     };
-    use otap_df_otap::memory_pressure_layer::ReceiverRejectionMetrics;
-    use otap_df_otap::otap_mock::create_otap_batch;
-    use otap_df_otap::pdata::OtapPdata;
-    use otap_df_otap::testing::{next_ack, next_nack};
-    use otap_df_pdata::Producer;
-    use otap_df_pdata::TryIntoWithOptions;
-    use otap_df_pdata::otap::OtapArrowRecords;
-    use otap_df_pdata::proto::opentelemetry::arrow::v1::{
+    use otel_arrow_dfe_otap::memory_pressure_layer::ReceiverRejectionMetrics;
+    use otel_arrow_dfe_otap::otap_mock::create_otap_batch;
+    use otel_arrow_dfe_otap::pdata::OtapPdata;
+    use otel_arrow_dfe_otap::testing::{next_ack, next_nack};
+    use otel_arrow_dfe_pdata::Producer;
+    use otel_arrow_dfe_pdata::TryIntoWithOptions;
+    use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::{
         ArrowPayloadType, arrow_logs_service_client::ArrowLogsServiceClient,
         arrow_metrics_service_client::ArrowMetricsServiceClient,
         arrow_traces_service_client::ArrowTracesServiceClient,
     };
-    use otap_df_telemetry::common_attributes::{Outcome, ReceiverRejectionErrorType};
-    use otap_df_telemetry::metrics::MetricSetSnapshot;
-    use otap_df_telemetry::reporter::MetricsReporter;
+    use otel_arrow_dfe_telemetry::common_attributes::{Outcome, ReceiverRejectionErrorType};
+    use otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot;
+    use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
     use std::collections::HashSet;
     use std::future::Future;
     use std::net::SocketAddr;
@@ -1198,7 +1202,7 @@ mod tests {
     ) where
         S: futures::Stream<
                 Item = Result<
-                    otap_df_pdata::proto::opentelemetry::arrow::v1::BatchStatus,
+                    otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::BatchStatus,
                     tonic::Status,
                 >,
             > + Unpin,
@@ -1418,7 +1422,7 @@ mod tests {
 
         // addr and port for the server to run at
         let grpc_addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
         let response_stream_channel_size = 100;
@@ -1427,8 +1431,8 @@ mod tests {
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTAP_RECEIVER_URN));
 
         // Create a proper pipeline context for the test
-        use otap_df_engine::context::ControllerContext;
-        use otap_df_telemetry::registry::TelemetryRegistryHandle;
+        use otel_arrow_dfe_engine::context::ControllerContext;
+        use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
         use serde_json::json;
 
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
@@ -1463,13 +1467,14 @@ mod tests {
     fn invalid_batch_emits_rejection_without_lifecycle_metrics() {
         let test_runtime = TestRuntime::new();
         let grpc_addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTAP_RECEIVER_URN));
-        let telemetry_registry_handle = otap_df_telemetry::registry::TelemetryRegistryHandle::new();
+        let telemetry_registry_handle =
+            otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new();
         let controller_ctx =
-            otap_df_engine::context::ControllerContext::new(telemetry_registry_handle);
+            otel_arrow_dfe_engine::context::ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let config = serde_json::json!({
@@ -1489,10 +1494,10 @@ mod tests {
                     .await
                     .expect("connect to OTAP receiver");
                 let invalid_stream = stream! {
-                    yield otap_df_pdata::proto::opentelemetry::arrow::v1::BatchArrowRecords {
+                    yield otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::BatchArrowRecords {
                         batch_id: 17,
                         arrow_payloads: vec![
-                            otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayload {
+                            otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayload {
                                 schema_id: "invalid".to_owned(),
                                 r#type: ArrowPayloadType::Logs as i32,
                                 record: vec![1, 2, 3],
@@ -1532,23 +1537,24 @@ mod tests {
     fn memory_pressure_stream_rejection_has_no_batch_lifecycle_metrics() {
         let test_runtime = TestRuntime::new();
         let grpc_addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTAP_RECEIVER_URN));
-        let telemetry_registry_handle = otap_df_telemetry::registry::TelemetryRegistryHandle::new();
+        let telemetry_registry_handle =
+            otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new();
         let controller_ctx =
-            otap_df_engine::context::ControllerContext::new(telemetry_registry_handle);
+            otel_arrow_dfe_engine::context::ControllerContext::new(telemetry_registry_handle);
         let pressure_state = controller_ctx.memory_pressure_state();
         pressure_state.configure(
-            otap_df_engine::memory_limiter::MemoryPressureBehaviorConfig {
+            otel_arrow_dfe_engine::memory_limiter::MemoryPressureBehaviorConfig {
                 retry_after_secs: 1,
                 fail_readiness_on_hard: true,
-                mode: otap_df_config::policy::MemoryLimiterMode::Enforce,
+                mode: otel_arrow_dfe_config::policy::MemoryLimiterMode::Enforce,
             },
         );
         pressure_state
-            .set_level_for_tests(otap_df_engine::memory_limiter::MemoryPressureLevel::Hard);
+            .set_level_for_tests(otel_arrow_dfe_engine::memory_limiter::MemoryPressureLevel::Hard);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let config = serde_json::json!({
@@ -1601,13 +1607,14 @@ mod tests {
     fn pipeline_send_failure_completes_lifecycle_without_rejection() {
         let test_runtime = TestRuntime::new();
         let grpc_addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTAP_RECEIVER_URN));
-        let telemetry_registry_handle = otap_df_telemetry::registry::TelemetryRegistryHandle::new();
+        let telemetry_registry_handle =
+            otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new();
         let controller_ctx =
-            otap_df_engine::context::ControllerContext::new(telemetry_registry_handle);
+            otel_arrow_dfe_engine::context::ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let config = serde_json::json!({
@@ -1669,13 +1676,14 @@ mod tests {
     fn concurrency_rejection_excludes_rejected_batch_from_lifecycle() {
         let test_runtime = TestRuntime::new();
         let grpc_addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTAP_RECEIVER_URN));
-        let telemetry_registry_handle = otap_df_telemetry::registry::TelemetryRegistryHandle::new();
+        let telemetry_registry_handle =
+            otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new();
         let controller_ctx =
-            otap_df_engine::context::ControllerContext::new(telemetry_registry_handle);
+            otel_arrow_dfe_engine::context::ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let config = serde_json::json!({
@@ -1785,12 +1793,13 @@ mod tests {
 
     #[test]
     fn test_config_parsing() {
-        use otap_df_otap::compression::CompressionMethod;
+        use otel_arrow_dfe_otap::compression::CompressionMethod;
         use serde_json::json;
 
-        let telemetry_registry_handle = otap_df_telemetry::registry::TelemetryRegistryHandle::new();
+        let telemetry_registry_handle =
+            otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new();
         let controller_ctx =
-            otap_df_engine::context::ControllerContext::new(telemetry_registry_handle);
+            otel_arrow_dfe_engine::context::ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
 
@@ -1901,9 +1910,10 @@ mod tests {
     fn receiver_metrics_are_partitioned_by_context() {
         use serde_json::json;
 
-        let telemetry_registry_handle = otap_df_telemetry::registry::TelemetryRegistryHandle::new();
+        let telemetry_registry_handle =
+            otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new();
         let controller_ctx =
-            otap_df_engine::context::ControllerContext::new(telemetry_registry_handle);
+            otel_arrow_dfe_engine::context::ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
 
@@ -1978,9 +1988,10 @@ mod tests {
     /// Guarantees: Touched lifecycle, acknowledgement, and rejection buckets emit once.
     #[test]
     fn terminal_snapshots_preserve_enum_attribute_values_once() {
-        let telemetry_registry_handle = otap_df_telemetry::registry::TelemetryRegistryHandle::new();
+        let telemetry_registry_handle =
+            otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new();
         let controller_ctx =
-            otap_df_engine::context::ControllerContext::new(telemetry_registry_handle);
+            otel_arrow_dfe_engine::context::ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let mut metrics = OtapReceiverMetrics::register(&pipeline_ctx);
@@ -2015,14 +2026,14 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let grpc_addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTAP_RECEIVER_URN));
 
-        use otap_df_engine::context::ControllerContext;
-        use otap_df_telemetry::registry::TelemetryRegistryHandle;
+        use otel_arrow_dfe_engine::context::ControllerContext;
+        use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
         use serde_json::json;
 
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
@@ -2057,14 +2068,14 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let grpc_addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTAP_RECEIVER_URN));
 
-        use otap_df_engine::context::ControllerContext;
-        use otap_df_telemetry::registry::TelemetryRegistryHandle;
+        use otel_arrow_dfe_engine::context::ControllerContext;
+        use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
         use serde_json::json;
 
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
@@ -2100,14 +2111,14 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let grpc_addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTAP_RECEIVER_URN));
 
-        use otap_df_engine::context::ControllerContext;
-        use otap_df_telemetry::registry::TelemetryRegistryHandle;
+        use otel_arrow_dfe_engine::context::ControllerContext;
+        use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
         use serde_json::json;
 
         let telemetry_registry_handle = TelemetryRegistryHandle::new();

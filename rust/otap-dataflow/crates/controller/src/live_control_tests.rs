@@ -3,30 +3,30 @@
 
 use super::*;
 use async_trait::async_trait;
-use otap_df_config::engine::ResolvedPipelineRole;
-use otap_df_config::observed_state::ObservedStateSettings;
-use otap_df_config::settings::telemetry::logs::LogLevel;
-use otap_df_engine::config::{ExporterConfig, ProcessorConfig, ReceiverConfig};
-use otap_df_engine::control::{
+use otel_arrow_dfe_config::engine::ResolvedPipelineRole;
+use otel_arrow_dfe_config::observed_state::ObservedStateSettings;
+use otel_arrow_dfe_config::settings::telemetry::logs::LogLevel;
+use otel_arrow_dfe_engine::config::{ExporterConfig, ProcessorConfig, ReceiverConfig};
+use otel_arrow_dfe_engine::control::{
     NodeControlMsg, RuntimeControlMsg, RuntimeCtrlMsgReceiver, runtime_ctrl_msg_channel,
 };
-use otap_df_engine::error::Error as EngineError;
-use otap_df_engine::exporter::ExporterWrapper;
-use otap_df_engine::listener_group::ListenerProtocol;
-use otap_df_engine::local::{exporter, receiver};
-use otap_df_engine::message::{ExporterInbox, Message};
-use otap_df_engine::processor::ProcessorWrapper;
-use otap_df_engine::receiver::ReceiverWrapper;
-use otap_df_engine::terminal_state::TerminalState;
-use otap_df_engine::topology::NumaTopology;
-use otap_df_engine::wiring_contract::WiringContract;
-use otap_df_engine::{ExporterFactory, ProcessorFactory, ReceiverFactory};
-use otap_df_state::pipeline_status::PipelineStatus;
-use otap_df_telemetry::TracingSetup;
-use otap_df_telemetry::event::EngineEvent;
-use otap_df_telemetry::log_filter::{RuntimeLogFilter, RuntimeLogFilterHandle};
-use otap_df_telemetry::metrics::MetricSetSnapshot;
-use otap_df_telemetry::tracing_init::ProviderSetup;
+use otel_arrow_dfe_engine::error::Error as EngineError;
+use otel_arrow_dfe_engine::exporter::ExporterWrapper;
+use otel_arrow_dfe_engine::listener_group::ListenerProtocol;
+use otel_arrow_dfe_engine::local::{exporter, receiver};
+use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
+use otel_arrow_dfe_engine::processor::ProcessorWrapper;
+use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
+use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_engine::topology::NumaTopology;
+use otel_arrow_dfe_engine::wiring_contract::WiringContract;
+use otel_arrow_dfe_engine::{ExporterFactory, ProcessorFactory, ReceiverFactory};
+use otel_arrow_dfe_state::pipeline_status::PipelineStatus;
+use otel_arrow_dfe_telemetry::TracingSetup;
+use otel_arrow_dfe_telemetry::event::EngineEvent;
+use otel_arrow_dfe_telemetry::log_filter::{RuntimeLogFilter, RuntimeLogFilterHandle};
+use otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot;
+use otel_arrow_dfe_telemetry::tracing_init::ProviderSetup;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio_util::sync::CancellationToken;
 use tracing::{Event, Subscriber};
@@ -54,37 +54,39 @@ fn available_core_ids() -> Vec<CoreId> {
     ]
 }
 
-fn test_validate_config(_config: &serde_json::Value) -> Result<(), otap_df_config::error::Error> {
+fn test_validate_config(
+    _config: &serde_json::Value,
+) -> Result<(), otel_arrow_dfe_config::error::Error> {
     Ok(())
 }
 
 fn test_receiver_create(
     _pipeline_ctx: PipelineContext,
-    _node: otap_df_engine::node::NodeId,
+    _node: otel_arrow_dfe_engine::node::NodeId,
     _node_config: Arc<NodeUserConfig>,
     _receiver_config: &ReceiverConfig,
-    _capabilities: &otap_df_engine::capability::registry::Capabilities,
-) -> Result<ReceiverWrapper<()>, otap_df_config::error::Error> {
+    _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+) -> Result<ReceiverWrapper<()>, otel_arrow_dfe_config::error::Error> {
     panic!("test receiver factory should not be constructed")
 }
 
 fn test_exporter_create(
     _pipeline_ctx: PipelineContext,
-    _node: otap_df_engine::node::NodeId,
+    _node: otel_arrow_dfe_engine::node::NodeId,
     _node_config: Arc<NodeUserConfig>,
     _exporter_config: &ExporterConfig,
-    _capabilities: &otap_df_engine::capability::registry::Capabilities,
-) -> Result<ExporterWrapper<()>, otap_df_config::error::Error> {
+    _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+) -> Result<ExporterWrapper<()>, otel_arrow_dfe_config::error::Error> {
     panic!("test exporter factory should not be constructed")
 }
 
 fn test_processor_create(
     _pipeline_ctx: PipelineContext,
-    _node: otap_df_engine::node::NodeId,
+    _node: otel_arrow_dfe_engine::node::NodeId,
     _node_config: Arc<NodeUserConfig>,
     _processor_config: &ProcessorConfig,
-    _capabilities: &otap_df_engine::capability::registry::Capabilities,
-) -> Result<ProcessorWrapper<()>, otap_df_config::error::Error> {
+    _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+) -> Result<ProcessorWrapper<()>, otel_arrow_dfe_config::error::Error> {
     panic!("test processor factory should not be constructed")
 }
 
@@ -133,11 +135,11 @@ impl exporter::Exporter<()> for RecoveryTestExporter {
 
 fn recovery_test_receiver_create(
     _pipeline_ctx: PipelineContext,
-    node: otap_df_engine::node::NodeId,
+    node: otel_arrow_dfe_engine::node::NodeId,
     node_config: Arc<NodeUserConfig>,
     receiver_config: &ReceiverConfig,
-    _capabilities: &otap_df_engine::capability::registry::Capabilities,
-) -> Result<ReceiverWrapper<()>, otap_df_config::error::Error> {
+    _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+) -> Result<ReceiverWrapper<()>, otel_arrow_dfe_config::error::Error> {
     Ok(ReceiverWrapper::local(
         RecoveryTestReceiver,
         node,
@@ -148,11 +150,11 @@ fn recovery_test_receiver_create(
 
 fn recovery_test_exporter_create(
     _pipeline_ctx: PipelineContext,
-    node: otap_df_engine::node::NodeId,
+    node: otel_arrow_dfe_engine::node::NodeId,
     node_config: Arc<NodeUserConfig>,
     exporter_config: &ExporterConfig,
-    _capabilities: &otap_df_engine::capability::registry::Capabilities,
-) -> Result<ExporterWrapper<()>, otap_df_config::error::Error> {
+    _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+) -> Result<ExporterWrapper<()>, otel_arrow_dfe_config::error::Error> {
     Ok(ExporterWrapper::local(
         RecoveryTestExporter,
         node,
@@ -798,6 +800,7 @@ fn terminal_shutdown_record(
         shutdown_id.to_owned(),
         pipeline_group_id.to_owned().into(),
         pipeline_id.to_owned().into(),
+        None,
         Vec::new(),
     );
     shutdown.state = ShutdownLifecycleState::Succeeded;
@@ -3743,6 +3746,46 @@ fn delete_pipeline_rejects_active_operation_conflict() {
     assert_eq!(err, ControlPlaneError::RolloutConflict);
 }
 
+/// Scenario: deletion drains an active pipeline before removing it.
+/// Guarantees: the nested engine-owned shutdown status has no external initiator.
+#[test]
+fn delete_pipeline_shutdown_has_no_external_initiator() {
+    let config = engine_config_with_pipeline(simple_pipeline_yaml());
+    let runtime = test_runtime(&config);
+    register_existing_pipeline(&runtime, &config);
+    let mut notifications =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+    let delete_runtime = Arc::clone(&runtime);
+    let delete = thread::spawn(move || delete_runtime.request_delete_pipeline("g1", "p1", 5));
+
+    assert!(matches!(
+        wait_for_shutdown_message(&mut notifications),
+        RuntimeControlMsg::Shutdown { .. }
+    ));
+    runtime.note_instance_exit(
+        DeployedPipelineKey {
+            pipeline_group_id: "g1".into(),
+            pipeline_id: "p1".into(),
+            core_id: 0,
+            deployment_generation: 0,
+        },
+        RuntimeInstanceExit::Success,
+    );
+
+    let status = delete
+        .join()
+        .expect("delete worker should not panic")
+        .expect("pipeline should be deleted");
+    assert_eq!(status.state, "succeeded");
+    assert_eq!(
+        status
+            .shutdown
+            .expect("active pipeline delete should include shutdown status")
+            .initiator,
+        None
+    );
+}
+
 /// Scenario: an engine-scoped lifecycle operation is already active.
 /// Guarantees: public config mutation entry points reject instead of
 /// interleaving with the active full-engine operation.
@@ -4517,6 +4560,7 @@ fn request_shutdown_pipeline_rejects_active_shutdown() {
         "shutdown-0".to_owned(),
         "g1".into(),
         "p1".into(),
+        None,
         vec![ShutdownCoreProgress {
             core_id: 0,
             deployment_generation: 0,
@@ -4569,6 +4613,63 @@ fn request_shutdown_pipeline_rejects_already_stopped_pipeline() {
         }
         other => panic!("unexpected error: {other:?}"),
     }
+}
+
+/// Scenario: dfctl explicitly requests shutdown of an active logical pipeline.
+/// Guarantees: immediate, polled, and terminal shutdown status retain the dfctl initiator.
+#[test]
+fn explicit_shutdown_retains_initiator_in_status() {
+    let config = engine_config_with_pipeline(
+        r#"
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    );
+    let runtime = test_runtime(&config);
+    register_existing_pipeline(&runtime, &config);
+    let mut notifications =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+    let control_plane = runtime.control_plane();
+
+    let initial = control_plane
+        .shutdown_pipeline("g1", "p1", 5, PipelineShutdownInitiator::Dfctl)
+        .expect("shutdown request should be accepted");
+
+    assert_eq!(initial.initiator, Some(PipelineShutdownInitiator::Dfctl));
+    assert_eq!(
+        control_plane
+            .shutdown_status("g1", "p1", &initial.shutdown_id)
+            .expect("shutdown status lookup should succeed")
+            .expect("shutdown status should be retained")
+            .initiator,
+        Some(PipelineShutdownInitiator::Dfctl)
+    );
+    assert!(matches!(
+        wait_for_shutdown_message(&mut notifications),
+        RuntimeControlMsg::Shutdown { .. }
+    ));
+
+    runtime.note_instance_exit(
+        DeployedPipelineKey {
+            pipeline_group_id: "g1".into(),
+            pipeline_id: "p1".into(),
+            core_id: 0,
+            deployment_generation: 0,
+        },
+        RuntimeInstanceExit::Success,
+    );
+    assert_eq!(
+        wait_for_shutdown_state(&runtime, &initial.shutdown_id, "succeeded").initiator,
+        Some(PipelineShutdownInitiator::Dfctl)
+    );
 }
 
 /// Scenario: a shutdown request targets one logical pipeline while other
@@ -5363,6 +5464,86 @@ fn register_launched_instance_reconciles_early_exit_without_leaking_active_count
     assert_eq!(state.active_instances, 0);
     assert!(!state.pending_instance_exits.contains_key(&deployed_key));
     assert!(!state.runtime_instances.contains_key(&deployed_key));
+}
+
+/// Scenario: a controller extension fails at runtime while a pipeline instance
+/// is still active and never drains (e.g. the graceful shutdown request stalls).
+/// Guarantees: `release_instance_wait` unblocks `wait_until_all_instances_exit`
+/// unconditionally, so the main controller thread proceeds to teardown instead
+/// of hanging. Regression test for the removed `thread::park`/`unpark` escape
+/// hatch -- the condvar wait is now the only wake path and must honor the latch.
+#[test]
+fn release_instance_wait_unblocks_wait_with_active_instances() {
+    let runtime = test_runtime(&empty_engine_config());
+
+    // Simulate a launched, still-active pipeline instance that never exits.
+    runtime.register_launched_instance(launched_runtime_instance("g1", "p1", 0, 0));
+    assert_eq!(
+        runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .active_instances,
+        1
+    );
+
+    let waiter = {
+        let runtime = Arc::clone(&runtime);
+        thread::spawn(move || runtime.wait_until_all_instances_exit())
+    };
+
+    // The waiter must stay blocked while the instance is active and unreleased.
+    thread::sleep(Duration::from_millis(100));
+    assert!(
+        !waiter.is_finished(),
+        "waiter should block while an instance is active"
+    );
+
+    // Fatal-shutdown escape hatch: release the wait without the instance draining.
+    runtime.release_instance_wait();
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !waiter.is_finished() {
+        assert!(
+            Instant::now() < deadline,
+            "release_instance_wait did not unblock wait_until_all_instances_exit"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+    waiter.join().expect("waiter thread should not panic");
+
+    let state = runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert_eq!(
+        state.active_instances, 1,
+        "release must not fabricate an instance exit"
+    );
+    assert!(state.instance_wait_released);
+}
+
+/// Scenario: standard engine mode has no active pipeline instances and has not received shutdown.
+/// Guarantees: the lifecycle wait remains blocked until an explicit global shutdown is requested.
+#[test]
+fn global_shutdown_wait_keeps_an_empty_engine_alive() {
+    let runtime = test_runtime(&empty_engine_config());
+
+    let waiter = {
+        let runtime = Arc::clone(&runtime);
+        thread::spawn(move || runtime.wait_until_global_shutdown_drains_or_released())
+    };
+
+    thread::sleep(Duration::from_millis(100));
+    assert!(
+        !waiter.is_finished(),
+        "an empty engine should remain alive before global shutdown"
+    );
+
+    runtime
+        .request_shutdown_all(1)
+        .expect("empty engine should accept global shutdown");
+    waiter.join().expect("lifecycle waiter should not panic");
 }
 
 /// Scenario: a completed rollout has advanced the committed active generation,
@@ -6242,9 +6423,10 @@ fn runtime_recovery_exhaustion_fails_process_after_bounded_attempts() {
 }
 
 /// Scenario: a regular pipeline disables in-process runtime recovery and its
-/// serving core exits unexpectedly.
-/// Guarantees: no replacement generation is allocated and the controller
-/// immediately requests fatal coordinated shutdown.
+/// serving core exits unexpectedly while another active instance never drains.
+/// Guarantees: no replacement generation is allocated, fatal coordinated
+/// shutdown is requested, and the global lifecycle wait is released without
+/// fabricating an exit for the non-draining instance.
 #[test]
 fn disabled_runtime_recovery_fails_without_launching_replacement() {
     let config = engine_config_with_pipeline(
@@ -6268,16 +6450,44 @@ fn disabled_runtime_recovery_fails_without_launching_replacement() {
     register_existing_pipeline(&runtime, &config);
     let _rx =
         register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+    let _non_draining =
+        register_runtime_instance(&runtime, "g2", "p2", 1, 0, RuntimeInstanceLifecycle::Active);
+
+    let waiter = {
+        let runtime = Arc::clone(&runtime);
+        thread::spawn(move || runtime.wait_until_global_shutdown_drains_or_released())
+    };
+
+    thread::sleep(Duration::from_millis(100));
+    assert!(
+        !waiter.is_finished(),
+        "global lifecycle wait should block before fatal recovery"
+    );
 
     runtime.note_instance_exit(
         deployed_key("g1", "p1", 0, 0),
         RuntimeInstanceExit::Error(RuntimeInstanceError::runtime("boom".to_owned())),
     );
 
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !waiter.is_finished() {
+        assert!(
+            Instant::now() < deadline,
+            "fatal runtime recovery did not release the global lifecycle wait"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+    waiter.join().expect("lifecycle waiter should not panic");
+
     let state = runtime
         .state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert_eq!(
+        state.active_instances, 1,
+        "fatal recovery must not fabricate an instance exit"
+    );
+    assert!(state.instance_wait_released);
     assert!(state.global_shutdown_requested);
     assert_eq!(
         state

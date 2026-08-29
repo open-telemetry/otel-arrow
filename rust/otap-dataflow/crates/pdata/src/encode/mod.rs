@@ -27,20 +27,20 @@ use crate::{
     otlp::attributes::parent_id::ParentId,
     proto::opentelemetry::arrow::v1::ArrowPayloadType,
 };
-use otap_df_pdata_views::views::common::{
+use otel_arrow_dfe_pdata_views::views::common::{
     AnyValueView, AttributeView, InstrumentationScopeView, ValueType,
 };
-use otap_df_pdata_views::views::logs::{
+use otel_arrow_dfe_pdata_views::views::logs::{
     LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView,
 };
-use otap_df_pdata_views::views::metrics::{
+use otel_arrow_dfe_pdata_views::views::metrics::{
     self, BucketsView, DataView, ExemplarView, ExponentialHistogramDataPointView,
     ExponentialHistogramView, GaugeView, HistogramDataPointView, HistogramView, MetricView,
     MetricsView, NumberDataPointView, ResourceMetricsView, ScopeMetricsView, SumView,
     SummaryDataPointView, SummaryView, ValueAtQuantileView,
 };
-use otap_df_pdata_views::views::resource::ResourceView;
-use otap_df_pdata_views::views::trace::{
+use otel_arrow_dfe_pdata_views::views::resource::ResourceView;
+use otel_arrow_dfe_pdata_views::views::trace::{
     EventView, LinkView, ResourceSpansView, ScopeSpansView, SpanView, StatusView, TracesView,
 };
 
@@ -3078,9 +3078,9 @@ mod test {
     where
         T: MetricsView,
     {
-        use otap_df_pdata_views::views::common::InstrumentationScopeView;
-        use otap_df_pdata_views::views::metrics::*;
-        use otap_df_pdata_views::views::resource::ResourceView;
+        use otel_arrow_dfe_pdata_views::views::common::InstrumentationScopeView;
+        use otel_arrow_dfe_pdata_views::views::metrics::*;
+        use otel_arrow_dfe_pdata_views::views::resource::ResourceView;
 
         let resources: Vec<_> = metrics_view.resources().collect();
         assert_eq!(resources.len(), 1, "expected 1 resource");

@@ -7,7 +7,7 @@ use crate::args::{BundleOutput, MutationOutput, ReadOutput, StreamOutput};
 use crate::branding;
 use crate::error::CliError;
 use crate::style::HumanStyle;
-use otap_df_admin_api::telemetry;
+use otel_arrow_dfe_admin_api::telemetry;
 use serde::Serialize;
 use serde_json::json;
 use std::io::Write;

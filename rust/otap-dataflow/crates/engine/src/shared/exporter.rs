@@ -41,11 +41,11 @@ use crate::shared::message::SharedReceiver;
 use crate::terminal_state::TerminalState;
 use crate::{Interests, ReceivedAtNode};
 use async_trait::async_trait;
-use otap_df_channel::error::RecvError;
-use otap_df_config::transport_headers_policy::HeaderPropagationPolicy;
-use otap_df_telemetry::error::Error as TelemetryError;
-use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
-use otap_df_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_channel::error::RecvError;
+use otel_arrow_dfe_config::transport_headers_policy::HeaderPropagationPolicy;
+use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
+use otel_arrow_dfe_telemetry::metrics::{MetricSet, MetricSetHandler};
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use std::marker::PhantomData;
 use std::time::Duration;
 

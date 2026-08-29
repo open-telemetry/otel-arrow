@@ -17,41 +17,44 @@
 //! Periodic telemetry snapshots partition request lifecycle, rejection, acknowledgement, and
 //! transport counters by bounded signal, protocol, outcome, and error-type attributes.
 
-otap_df_telemetry::otel_component_scope!(urn = OTLP_RECEIVER_URN, target = "otel.receiver.otlp",);
+otel_arrow_dfe_telemetry::otel_component_scope!(
+    urn = OTLP_RECEIVER_URN,
+    target = "otel.receiver.otlp",
+);
 
-use otap_df_otap::OTAP_RECEIVER_FACTORIES;
-use otap_df_otap::otap_grpc::otlp::server_new::{
+use otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES;
+use otel_arrow_dfe_otap::otap_grpc::otlp::server_new::{
     LogsServiceServer, MetricsServiceServer, OtlpServerSettings, RouteResponse, TraceServiceServer,
 };
-use otap_df_otap::pdata::OtapPdata;
-use otap_df_otap::tls_utils::{build_tls_acceptor, create_tls_stream};
+use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_otap::tls_utils::{build_tls_acceptor, create_tls_stream};
 #[cfg(test)]
-use otap_df_pdata::TryIntoWithOptions;
+use otel_arrow_dfe_pdata::TryIntoWithOptions;
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::ReceiverFactory;
-use otap_df_engine::admission::{AdmissionDimension, SharedAdmissionGate};
-use otap_df_engine::clock;
-use otap_df_engine::config::ReceiverConfig;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
-use otap_df_engine::error::{Error, ReceiverErrorKind, format_error_sources};
-use otap_df_engine::memory_limiter::SharedReceiverAdmissionState;
-use otap_df_engine::node::NodeId;
-use otap_df_engine::receiver::ReceiverWrapper;
-use otap_df_engine::shared::receiver as shared;
-use otap_df_engine::terminal_state::TerminalState;
-use otap_df_otap::memory_pressure_layer::MemoryPressureLayer;
-use otap_df_otap::otap_grpc::common;
-use otap_df_otap::otap_grpc::common::AckRegistry;
-use otap_df_otap::otap_grpc::server_settings::GrpcServerSettings;
-use otap_df_otap::otlp_http::HttpServerSettings;
-use otap_df_otap::otlp_metrics::{OtlpProtocol, OtlpReceiverMetrics};
-use otap_df_otap::rate_limit_layer::RateLimitLayer;
-use otap_df_otap::shared_concurrency::SharedConcurrencyLayer;
-use otap_df_telemetry::common_attributes::Outcome;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_engine::ReceiverFactory;
+use otel_arrow_dfe_engine::admission::{AdmissionDimension, SharedAdmissionGate};
+use otel_arrow_dfe_engine::clock;
+use otel_arrow_dfe_engine::config::ReceiverConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
+use otel_arrow_dfe_engine::error::{Error, ReceiverErrorKind, format_error_sources};
+use otel_arrow_dfe_engine::memory_limiter::SharedReceiverAdmissionState;
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
+use otel_arrow_dfe_engine::shared::receiver as shared;
+use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_otap::memory_pressure_layer::MemoryPressureLayer;
+use otel_arrow_dfe_otap::otap_grpc::common;
+use otel_arrow_dfe_otap::otap_grpc::common::AckRegistry;
+use otel_arrow_dfe_otap::otap_grpc::server_settings::GrpcServerSettings;
+use otel_arrow_dfe_otap::otlp_http::HttpServerSettings;
+use otel_arrow_dfe_otap::otlp_metrics::{OtlpProtocol, OtlpReceiverMetrics};
+use otel_arrow_dfe_otap::rate_limit_layer::RateLimitLayer;
+use otel_arrow_dfe_otap::shared_concurrency::SharedConcurrencyLayer;
+use otel_arrow_dfe_telemetry::common_attributes::Outcome;
 use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_json::Value;
@@ -197,33 +200,36 @@ pub struct OTLPReceiver {
 
 /// Declares the OTLP receiver as a shared receiver factory.
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Receiver)]
+#[otel_arrow_dfe_engine::component_inventory(category = Receiver)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static OTLP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: OTLP_RECEIVER_URN,
-    create: |pipeline: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             receiver_config: &ReceiverConfig,
-             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
-        let admission = pipeline.admission().clone();
-        let mut receiver = OTLPReceiver::from_config(pipeline, &node_config.config)?;
-        receiver.rate_limiter = admission
-            .bind_shared(AdmissionDimension::Bytes, receiver.admission_state.clone())
-            .map_err(|error| otap_df_config::error::Error::InvalidUserConfig {
-                error: error.to_string(),
-            })?;
-        receiver.tune_max_concurrent_requests(receiver_config.output_pdata_channel.capacity);
+    create:
+        |pipeline: PipelineContext,
+         node: NodeId,
+         node_config: Arc<NodeUserConfig>,
+         receiver_config: &ReceiverConfig,
+         _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
+            let admission = pipeline.admission().clone();
+            let mut receiver = OTLPReceiver::from_config(pipeline, &node_config.config)?;
+            receiver.rate_limiter = admission
+                .bind_shared(AdmissionDimension::Bytes, receiver.admission_state.clone())
+                .map_err(
+                    |error| otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                        error: error.to_string(),
+                    },
+                )?;
+            receiver.tune_max_concurrent_requests(receiver_config.output_pdata_channel.capacity);
 
-        Ok(ReceiverWrapper::shared(
-            receiver,
-            node,
-            node_config,
-            receiver_config,
-        ))
-    },
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    validate_config: otap_df_config::validation::validate_typed_config::<Config>,
+            Ok(ReceiverWrapper::shared(
+                receiver,
+                node,
+                node_config,
+                receiver_config,
+            ))
+        },
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<Config>,
 };
 
 impl OTLPReceiver {
@@ -235,16 +241,16 @@ impl OTLPReceiver {
     pub fn from_config(
         pipeline_ctx: PipelineContext,
         config: &Value,
-    ) -> Result<Self, otap_df_config::error::Error> {
+    ) -> Result<Self, otel_arrow_dfe_config::error::Error> {
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
-            otap_df_config::error::Error::InvalidUserConfig {
+            otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
             }
         })?;
 
         // Validate that at least one protocol is configured.
         if !config.protocols.is_valid() {
-            return Err(otap_df_config::error::Error::InvalidUserConfig {
+            return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: "At least one protocol (grpc or http) must be configured under 'protocols'"
                     .to_string(),
             });
@@ -260,7 +266,7 @@ impl OTLPReceiver {
                 let g_ip = grpc.listening_addr.ip();
                 let h_ip = http.listening_addr.ip();
                 if g_ip.is_unspecified() || h_ip.is_unspecified() || g_ip == h_ip {
-                    return Err(otap_df_config::error::Error::InvalidUserConfig {
+                    return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                         error: format!(
                             "gRPC and HTTP protocols have conflicting listening addresses ({} and {})",
                             grpc.listening_addr, http.listening_addr
@@ -294,7 +300,7 @@ impl OTLPReceiver {
             common::tune_max_concurrent_requests(grpc, downstream_capacity);
         }
         if let Some(http) = self.config.protocols.http.as_mut() {
-            otap_df_otap::otlp_http::tune_max_concurrent_requests(http, downstream_capacity);
+            otel_arrow_dfe_otap::otlp_http::tune_max_concurrent_requests(http, downstream_capacity);
         }
     }
 
@@ -333,13 +339,13 @@ impl OTLPReceiver {
         };
 
         let logs_slot = wait_for_result_any.then(|| {
-            otap_df_otap::otap_grpc::otlp::server_new::AckSlot::new(shared_ack_slot_capacity)
+            otel_arrow_dfe_otap::otap_grpc::otlp::server_new::AckSlot::new(shared_ack_slot_capacity)
         });
         let metrics_slot = wait_for_result_any.then(|| {
-            otap_df_otap::otap_grpc::otlp::server_new::AckSlot::new(shared_ack_slot_capacity)
+            otel_arrow_dfe_otap::otap_grpc::otlp::server_new::AckSlot::new(shared_ack_slot_capacity)
         });
         let traces_slot = wait_for_result_any.then(|| {
-            otap_df_otap::otap_grpc::otlp::server_new::AckSlot::new(shared_ack_slot_capacity)
+            otel_arrow_dfe_otap::otap_grpc::otlp::server_new::AckSlot::new(shared_ack_slot_capacity)
         });
 
         // Build gRPC service servers only if gRPC is enabled.
@@ -630,7 +636,7 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
         let http_shutdown = CancellationToken::new();
         let http_task: Option<HttpServerTask> =
             if let Some(http_config) = self.config.protocols.http.clone() {
-                Some(Box::pin(otap_df_otap::otlp_http::serve(
+                Some(Box::pin(otel_arrow_dfe_otap::otlp_http::serve(
                     effect_handler.clone(),
                     http_config,
                     ack_registry.clone(),
@@ -852,58 +858,58 @@ impl OTLPReceiver {
 mod tests {
     use super::*;
 
-    use otap_df_channel::error::RecvError;
-    use otap_df_config::SignalType;
-    use otap_df_config::node::NodeUserConfig;
-    use otap_df_config::policy::{
+    use otel_arrow_dfe_channel::error::RecvError;
+    use otel_arrow_dfe_config::SignalType;
+    use otel_arrow_dfe_config::node::NodeUserConfig;
+    use otel_arrow_dfe_config::policy::{
         MemoryLimiterMode, RateLimitAggregation, RateLimitEnforcement, RateLimitPressure,
         RateLimitUnit, RateLimiterPolicy, TokenBucketPolicy,
     };
-    use otap_df_config::transport_headers_policy::{
+    use otel_arrow_dfe_config::transport_headers_policy::{
         CaptureDefaults, CaptureRule, HeaderCapturePolicy,
     };
-    use otap_df_engine::Interests;
-    use otap_df_engine::MessageSourceSharedEffectHandlerExtension;
-    use otap_df_engine::ProducerEffectHandlerExtension;
-    use otap_df_engine::admission::{AdmissionBinder, AdmissionContext, AdmissionDecision};
-    use otap_df_engine::clock;
-    use otap_df_engine::context::ControllerContext;
-    use otap_df_engine::control::NackMsg;
-    use otap_df_engine::control::{
+    use otel_arrow_dfe_engine::Interests;
+    use otel_arrow_dfe_engine::MessageSourceSharedEffectHandlerExtension;
+    use otel_arrow_dfe_engine::ProducerEffectHandlerExtension;
+    use otel_arrow_dfe_engine::admission::{AdmissionBinder, AdmissionContext, AdmissionDecision};
+    use otel_arrow_dfe_engine::clock;
+    use otel_arrow_dfe_engine::context::ControllerContext;
+    use otel_arrow_dfe_engine::control::NackMsg;
+    use otel_arrow_dfe_engine::control::{
         AckMsg, NodeControlMsg, RuntimeControlMsg, runtime_ctrl_msg_channel,
     };
-    use otap_df_engine::receiver::ReceiverWrapper;
-    use otap_df_engine::shared::message::{SharedReceiver, SharedSender};
-    use otap_df_engine::shared::receiver as shared_receiver;
-    use otap_df_engine::testing::{
+    use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
+    use otel_arrow_dfe_engine::shared::message::{SharedReceiver, SharedSender};
+    use otel_arrow_dfe_engine::shared::receiver as shared_receiver;
+    use otel_arrow_dfe_engine::testing::{
         dst::{SimClock, dst_seeds},
         receiver::{NotSendValidateContext, TestContext, TestRuntime},
         test_node,
     };
-    use otap_df_otap::compression::CompressionMethod;
-    use otap_df_otap::otap_grpc::otlp::server_new::AckSlot;
-    use otap_df_otap::otlp_http::RpcStatus;
-    use otap_df_otap::testing::{next_ack, next_nack};
-    use otap_df_pdata::OtlpProtoBytes;
-    use otap_df_pdata::proto::opentelemetry::collector::logs::v1::logs_service_client::LogsServiceClient;
-    use otap_df_pdata::proto::opentelemetry::collector::logs::v1::{
+    use otel_arrow_dfe_otap::compression::CompressionMethod;
+    use otel_arrow_dfe_otap::otap_grpc::otlp::server_new::AckSlot;
+    use otel_arrow_dfe_otap::otlp_http::RpcStatus;
+    use otel_arrow_dfe_otap::testing::{next_ack, next_nack};
+    use otel_arrow_dfe_pdata::OtlpProtoBytes;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::logs_service_client::LogsServiceClient;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::{
         ExportLogsServiceRequest, ExportLogsServiceResponse,
     };
-    use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::metrics_service_client::MetricsServiceClient;
-    use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::{
+    use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::metrics_service_client::MetricsServiceClient;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::{
         ExportMetricsServiceRequest, ExportMetricsServiceResponse,
     };
-    use otap_df_pdata::proto::opentelemetry::collector::trace::v1::trace_service_client::TraceServiceClient;
-    use otap_df_pdata::proto::opentelemetry::collector::trace::v1::{
+    use otel_arrow_dfe_pdata::proto::opentelemetry::collector::trace::v1::trace_service_client::TraceServiceClient;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::collector::trace::v1::{
         ExportTraceServiceRequest, ExportTraceServiceResponse,
     };
-    use otap_df_pdata::proto::opentelemetry::common::v1::{InstrumentationScope, KeyValue};
-    use otap_df_pdata::proto::opentelemetry::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
-    use otap_df_pdata::proto::opentelemetry::metrics::v1::{ResourceMetrics, ScopeMetrics};
-    use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
-    use otap_df_pdata::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans};
-    use otap_df_telemetry::common_attributes::ReceiverRejectionErrorType;
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{InstrumentationScope, KeyValue};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{ResourceMetrics, ScopeMetrics};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans};
+    use otel_arrow_dfe_telemetry::common_attributes::ReceiverRejectionErrorType;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use prost::Message;
     use std::collections::HashMap;
     use std::net::SocketAddr;
@@ -1104,7 +1110,7 @@ mod tests {
     async fn run_wait_for_result_dst_seed(seed: u64) {
         let sim_clock = SimClock::new();
         let _clock_guard = sim_clock.install();
-        let (rt, local_tasks) = otap_df_engine::testing::setup_test_runtime();
+        let (rt, local_tasks) = otel_arrow_dfe_engine::testing::setup_test_runtime();
 
         rt.block_on(local_tasks.run_until(async move {
             let scenario = seed % 4;
@@ -1128,7 +1134,7 @@ mod tests {
             receiver.tune_max_concurrent_requests(16);
 
             let (runtime_ctrl_tx, mut runtime_ctrl_rx) = runtime_ctrl_msg_channel(16);
-            let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
+            let metrics_system = otel_arrow_dfe_telemetry::InternalTelemetrySystem::default();
             let metrics_reporter = metrics_system.reporter();
 
             let (output_tx, mut output_rx) = tokio::sync::mpsc::channel(16);
@@ -1920,7 +1926,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let grpc_addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
 
@@ -1958,10 +1964,10 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let grpc_addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
 
-        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{grpc_addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -2058,7 +2064,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -2148,10 +2154,10 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
 
-        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -2212,10 +2218,10 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
 
-        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -2286,10 +2292,10 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
 
-        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -2376,10 +2382,10 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
 
-        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -2443,10 +2449,10 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
 
-        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -2510,10 +2516,10 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
 
-        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -2621,7 +2627,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let grpc_addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let grpc_listen: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
 
@@ -2705,7 +2711,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -2790,10 +2796,10 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
 
-        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -2870,10 +2876,10 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
 
-        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -2937,10 +2943,10 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
 
-        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -3017,7 +3023,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let grpc_addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
 
@@ -3092,7 +3098,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let grpc_addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
 
@@ -3103,9 +3109,9 @@ mod tests {
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let memory_pressure_state = pipeline_ctx.memory_pressure_state();
         memory_pressure_state
-            .set_level_for_tests(otap_df_engine::memory_limiter::MemoryPressureLevel::Soft);
+            .set_level_for_tests(otel_arrow_dfe_engine::memory_limiter::MemoryPressureLevel::Soft);
         memory_pressure_state.configure(
-            otap_df_engine::memory_limiter::MemoryPressureBehaviorConfig {
+            otel_arrow_dfe_engine::memory_limiter::MemoryPressureBehaviorConfig {
                 retry_after_secs: 7,
                 fail_readiness_on_hard: true,
                 mode: MemoryLimiterMode::Enforce,
@@ -3220,7 +3226,7 @@ mod tests {
 
     fn run_otlp_grpc_under_capacity_rate_limit_test(enforcement: RateLimitEnforcement) {
         let test_runtime = TestRuntime::new();
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://127.0.0.1:{grpc_port}");
         let grpc_listen: SocketAddr = format!("127.0.0.1:{grpc_port}").parse().unwrap();
 
@@ -3231,7 +3237,7 @@ mod tests {
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let memory_pressure_state = pipeline_ctx.memory_pressure_state();
         memory_pressure_state
-            .set_level_for_tests(otap_df_engine::memory_limiter::MemoryPressureLevel::Soft);
+            .set_level_for_tests(otel_arrow_dfe_engine::memory_limiter::MemoryPressureLevel::Soft);
         let admission_state =
             SharedReceiverAdmissionState::from_process_state(&memory_pressure_state);
 
@@ -3362,7 +3368,7 @@ mod tests {
 
     fn run_otlp_http_under_capacity_rate_limit_test(enforcement: RateLimitEnforcement) {
         let test_runtime = TestRuntime::new();
-        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("127.0.0.1:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -3372,7 +3378,7 @@ mod tests {
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let memory_pressure_state = pipeline_ctx.memory_pressure_state();
         memory_pressure_state
-            .set_level_for_tests(otap_df_engine::memory_limiter::MemoryPressureLevel::Soft);
+            .set_level_for_tests(otel_arrow_dfe_engine::memory_limiter::MemoryPressureLevel::Soft);
         let admission_state =
             SharedReceiverAdmissionState::from_process_state(&memory_pressure_state);
 
@@ -3492,7 +3498,7 @@ mod tests {
     #[test]
     fn test_otlp_http_oversized_rate_limit_rejection() {
         let test_runtime = TestRuntime::new();
-        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("127.0.0.1:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -3502,7 +3508,7 @@ mod tests {
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let memory_pressure_state = pipeline_ctx.memory_pressure_state();
         memory_pressure_state
-            .set_level_for_tests(otap_df_engine::memory_limiter::MemoryPressureLevel::Soft);
+            .set_level_for_tests(otel_arrow_dfe_engine::memory_limiter::MemoryPressureLevel::Soft);
         let admission_state =
             SharedReceiverAdmissionState::from_process_state(&memory_pressure_state);
 
@@ -3597,10 +3603,10 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
 
-        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -3700,10 +3706,10 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let grpc_addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
 
-        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{grpc_addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -3782,10 +3788,10 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let grpc_addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
 
-        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{grpc_addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -3874,9 +3880,9 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
-        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -3933,9 +3939,9 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
-        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -3992,11 +3998,11 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let grpc_addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let grpc_listen: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
 
-        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{grpc_addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -4100,11 +4106,11 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{addr}:{grpc_port}");
         let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
 
-        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -4289,7 +4295,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let grpc_addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
 
@@ -4402,7 +4408,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let grpc_addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
 
@@ -4518,7 +4524,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let grpc_addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
 
@@ -4615,9 +4621,9 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
-        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -4719,7 +4725,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));

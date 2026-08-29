@@ -19,11 +19,15 @@ use arrow_array::RecordBatch;
 use arrow_array::builder::{Int64Builder, StringBuilder};
 use arrow_schema::{DataType, Field, Schema};
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use quiver::budget::DiskBudget;
-use quiver::config::{DurabilityMode, QuiverConfig, RetentionConfig, SegmentConfig, WalConfig};
-use quiver::engine::{QuiverEngine, WalItemCounter};
-use quiver::record_bundle::{BundleDescriptor, PayloadRef, RecordBundle, SlotDescriptor, SlotId};
-use quiver::segment::{OpenSegment, SegmentSeq, SegmentWriter};
+use otel_arrow_dfe_quiver::budget::DiskBudget;
+use otel_arrow_dfe_quiver::config::{
+    DurabilityMode, QuiverConfig, RetentionConfig, SegmentConfig, WalConfig,
+};
+use otel_arrow_dfe_quiver::engine::{QuiverEngine, WalItemCounter};
+use otel_arrow_dfe_quiver::record_bundle::{
+    BundleDescriptor, PayloadRef, RecordBundle, SlotDescriptor, SlotId,
+};
+use otel_arrow_dfe_quiver::segment::{OpenSegment, SegmentSeq, SegmentWriter};
 use tempfile::TempDir;
 use tokio::runtime::Runtime;
 

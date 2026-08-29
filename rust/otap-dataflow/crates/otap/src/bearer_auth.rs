@@ -23,8 +23,10 @@ use std::time::Instant;
 use futures::StreamExt;
 use http::HeaderValue;
 use http::header::InvalidHeaderValue;
-use otap_df_engine::capability::auth::bearer_token_provider::{TOKEN_USABLE_MARGIN, TokenStream};
-use otap_df_engine::local::capability::auth::bearer_token_provider::BearerTokenProvider;
+use otel_arrow_dfe_engine::capability::auth::bearer_token_provider::{
+    TOKEN_USABLE_MARGIN, TokenStream,
+};
+use otel_arrow_dfe_engine::local::capability::auth::bearer_token_provider::BearerTokenProvider;
 
 /// The warnings this adapter can raise, supplied by the owning exporter so each
 /// event name is namespaced to that exporter (e.g. `otlp.exporter.grpc.*`)
@@ -205,10 +207,10 @@ pub mod test_support {
 
     use async_trait::async_trait;
     use futures::StreamExt;
-    use otap_df_engine::capability::CapabilityError;
-    use otap_df_engine::capability::auth::BearerToken;
-    use otap_df_engine::capability::auth::bearer_token_provider::TokenStream;
-    use otap_df_engine::local::capability::auth::bearer_token_provider::BearerTokenProvider;
+    use otel_arrow_dfe_engine::capability::CapabilityError;
+    use otel_arrow_dfe_engine::capability::auth::BearerToken;
+    use otel_arrow_dfe_engine::capability::auth::bearer_token_provider::TokenStream;
+    use otel_arrow_dfe_engine::local::capability::auth::bearer_token_provider::BearerTokenProvider;
     use std::time::Instant;
 
     /// Test double for the `BearerTokenProvider` capability with configurable
@@ -281,7 +283,7 @@ pub mod test_support {
 mod tests {
     use super::*;
     use futures::stream;
-    use otap_df_engine::capability::auth::BearerToken;
+    use otel_arrow_dfe_engine::capability::auth::BearerToken;
     use std::cell::Cell;
 
     thread_local! {

@@ -39,14 +39,14 @@ use crate::{
     ControllerExtensionFactory, ControllerExtensionRegistry, ControllerExtensionTaskFactory,
     distributed_slice,
 };
-use otap_df_config::ExtensionId;
-use otap_df_config::error::Error as ConfigError;
-use otap_df_config::extension::ExtensionUserConfig;
-use otap_df_state::store::ObservedStateHandle;
-use otap_df_telemetry::instrument::Gauge;
-use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::registry::TelemetryRegistryHandle;
-use otap_df_telemetry_macros::{attribute_set, metric_set};
+use otel_arrow_dfe_config::ExtensionId;
+use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_config::extension::ExtensionUserConfig;
+use otel_arrow_dfe_state::store::ObservedStateHandle;
+use otel_arrow_dfe_telemetry::instrument::Gauge;
+use otel_arrow_dfe_telemetry::metrics::MetricSet;
+use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+use otel_arrow_dfe_telemetry_macros::{attribute_set, metric_set};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use thiserror::Error;
@@ -56,7 +56,7 @@ use tokio_util::sync::CancellationToken;
 /// Built-in controller monitor extension type URN.
 pub const CONTROLLER_MONITOR_EXTENSION_URN: &str = "urn:otel:extension:controller_monitor";
 
-otap_df_telemetry::otel_component_scope!(
+otel_arrow_dfe_telemetry::otel_component_scope!(
     urn = CONTROLLER_MONITOR_EXTENSION_URN,
     target = "otel.extension.controller_monitor",
 );
@@ -319,8 +319,8 @@ impl Drop for ControllerMonitor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_config::observed_state::ObservedStateSettings;
-    use otap_df_state::store::ObservedStateStore;
+    use otel_arrow_dfe_config::observed_state::ObservedStateSettings;
+    use otel_arrow_dfe_state::store::ObservedStateStore;
     use std::collections::HashMap;
 
     fn extension_config(config: serde_json::Value) -> ExtensionUserConfig {

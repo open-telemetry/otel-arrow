@@ -627,7 +627,9 @@ fn build_http_client(settings: &HttpAdminClientSettings) -> Result<reqwest::Clie
                 details: "user_agent must be non-empty when set".to_string(),
             });
         }
-        if HeaderValue::from_bytes(user_agent.as_bytes()).is_err() {
+        if !user_agent.bytes().all(|byte| (0x20..=0x7e).contains(&byte))
+            || HeaderValue::from_bytes(user_agent.as_bytes()).is_err()
+        {
             return Err(Error::ClientConfig {
                 details: "user_agent contains characters that cannot be represented as an HTTP header value (must be visible ASCII)".to_string(),
             });
@@ -844,7 +846,7 @@ mod tests {
     use super::*;
     use crate::config::tls::{TlsClientConfig, TlsConfig};
     use crate::{AdminClient, engine, groups, operations, pipelines, telemetry};
-    use otap_test_tls_certs::{ExtendedKeyUsage, generate_ca};
+    use otel_arrow_dfe_test_tls_certs::{ExtendedKeyUsage, generate_ca};
     use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
     use serde_json::json;
     use std::sync::Arc;
@@ -999,6 +1001,10 @@ mod tests {
             ("   ", "user_agent must be non-empty when set"),
             (
                 "bad\nvalue",
+                "user_agent contains characters that cannot be represented as an HTTP header value (must be visible ASCII)",
+            ),
+            (
+                "dfctl/\u{e9}",
                 "user_agent contains characters that cannot be represented as an HTTP header value (must be visible ASCII)",
             ),
         ];

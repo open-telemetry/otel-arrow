@@ -10,14 +10,14 @@
 #![allow(missing_docs)]
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use otap_df_config::policy::{
+use otel_arrow_dfe_config::policy::{
     RateLimitAggregation, RateLimitEnforcement, RateLimitPressure, RateLimitUnit,
     RateLimiterPolicy, TokenBucketPolicy,
 };
-use otap_df_engine::admission::{
+use otel_arrow_dfe_engine::admission::{
     AdmissionBinder, AdmissionContext, AdmissionDimension, LocalAdmissionGate, SharedAdmissionGate,
 };
-use otap_df_engine::memory_limiter::{
+use otel_arrow_dfe_engine::memory_limiter::{
     LocalReceiverAdmissionState, MemoryPressureState, SharedReceiverAdmissionState,
 };
 use std::hint::black_box;

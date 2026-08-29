@@ -25,11 +25,11 @@ use crate::node::{Node, NodeId, NodeWithPDataReceiver};
 use crate::shared::exporter as shared;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::terminal_state::TerminalState;
-use otap_df_channel::error::SendError;
-use otap_df_channel::mpsc;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_config::transport_headers_policy::HeaderPropagationPolicy;
-use otap_df_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_channel::error::SendError;
+use otel_arrow_dfe_channel::mpsc;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_config::transport_headers_policy::HeaderPropagationPolicy;
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use std::sync::Arc;
 
 /// A wrapper for the exporter that allows for both `Send` and `!Send` effect handlers.
@@ -521,9 +521,9 @@ mod tests {
     use crate::testing::exporter::TestRuntime;
     use crate::testing::{CtrlMsgCounters, TestMsg, test_node};
     use async_trait::async_trait;
-    use otap_df_channel::error::RecvError;
-    use otap_df_channel::mpsc;
-    use otap_df_config::node::NodeUserConfig;
+    use otel_arrow_dfe_channel::error::RecvError;
+    use otel_arrow_dfe_channel::mpsc;
+    use otel_arrow_dfe_config::node::NodeUserConfig;
     use serde_json::Value;
     use std::future::Future;
     use std::ops::Add;
@@ -1398,7 +1398,7 @@ mod tests {
 
     // -- with_propagation_policy tests ----------------------------------------
 
-    use otap_df_config::transport_headers_policy::HeaderPropagationPolicy;
+    use otel_arrow_dfe_config::transport_headers_policy::HeaderPropagationPolicy;
 
     #[test]
     fn test_with_propagation_policy_none_by_default() {

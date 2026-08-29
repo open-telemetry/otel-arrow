@@ -44,60 +44,60 @@
 use crate::error::Error;
 use crate::thread_task::{ThreadLocalTaskHandle, spawn_thread_local_task};
 use core_affinity::CoreId;
-use otap_df_admin::ControlPlane;
-use otap_df_config::engine::{
+use otel_arrow_dfe_admin::ControlPlane;
+use otel_arrow_dfe_config::engine::{
     OtelDataflowSpec, ResolvedPipelineConfig, ResolvedPipelineRole,
     SYSTEM_OBSERVABILITY_PIPELINE_ID, SYSTEM_PIPELINE_GROUP_ID,
 };
-use otap_df_config::extension::{ExtensionUrn, ExtensionUserConfig};
-use otap_df_config::node::{NodeKind, NodeUserConfig};
-use otap_df_config::pipeline::telemetry::AttributeValue;
-use otap_df_config::pipeline_group::PipelineGroupConfig;
-use otap_df_config::policy::MemoryLimiterMode;
-use otap_df_config::policy::{
+use otel_arrow_dfe_config::extension::{ExtensionUrn, ExtensionUserConfig};
+use otel_arrow_dfe_config::node::{NodeKind, NodeUserConfig};
+use otel_arrow_dfe_config::pipeline::telemetry::AttributeValue;
+use otel_arrow_dfe_config::pipeline_group::PipelineGroupConfig;
+use otel_arrow_dfe_config::policy::MemoryLimiterMode;
+use otel_arrow_dfe_config::policy::{
     ChannelCapacityPolicy, CoreAllocation, CoreAllocationStrategy, RateLimiterPolicy,
     RuntimeRecoveryPolicy, TelemetryPolicy,
 };
-use otap_df_config::topic::{
+use otel_arrow_dfe_config::topic::{
     TopicAckPropagationMode, TopicBackendKind, TopicBroadcastAckMode, TopicBroadcastOnLagPolicy,
     TopicImplSelectionPolicy, TopicSpec,
 };
-use otap_df_config::transport_headers_policy::TransportHeadersPolicy;
-use otap_df_config::{
+use otel_arrow_dfe_config::transport_headers_policy::TransportHeadersPolicy;
+use otel_arrow_dfe_config::{
     DeployedPipelineKey, ExtensionId, PipelineGroupId, PipelineId, PipelineKey,
     SubscriptionGroupName, TopicName, pipeline::PipelineConfig,
 };
-use otap_df_engine::PipelineFactory;
-use otap_df_engine::ReceivedAtNode;
-use otap_df_engine::Unwindable;
-use otap_df_engine::context::{ControllerContext, PipelineContext};
-use otap_df_engine::control::{
+use otel_arrow_dfe_engine::PipelineFactory;
+use otel_arrow_dfe_engine::ReceivedAtNode;
+use otel_arrow_dfe_engine::Unwindable;
+use otel_arrow_dfe_engine::context::{ControllerContext, PipelineContext};
+use otel_arrow_dfe_engine::control::{
     PipelineAdminSender, PipelineCompletionMsgReceiver, PipelineCompletionMsgSender,
     RuntimeCtrlMsgReceiver, RuntimeCtrlMsgSender, pipeline_completion_msg_channel,
     runtime_ctrl_msg_channel,
 };
-use otap_df_engine::entity_context::{
+use otel_arrow_dfe_engine::entity_context::{
     node_entity_key, pipeline_entity_key, set_pipeline_entity_key,
 };
-use otap_df_engine::error::Error as EngineError;
-use otap_df_engine::listener_group::ListenerGroupSnapshot;
-use otap_df_engine::memory_limiter::{
+use otel_arrow_dfe_engine::error::Error as EngineError;
+use otel_arrow_dfe_engine::listener_group::ListenerGroupSnapshot;
+use otel_arrow_dfe_engine::memory_limiter::{
     EffectiveMemoryLimiter, MemoryLimiterTick, MemoryPressureBehaviorConfig, MemoryPressureChanged,
     MemoryPressureLevel,
 };
-use otap_df_engine::processor::FlowMetricHook;
-use otap_df_engine::topic::{
+use otel_arrow_dfe_engine::processor::FlowMetricHook;
+use otel_arrow_dfe_engine::topic::{
     InMemoryBackend, PipelineTopicBinding, TopicBroker, TopicOptions, TopicPublishOutcomeConfig,
     TopicSet,
 };
-use otap_df_engine::topology::NumaTopology;
-use otap_df_state::store::{ObservedStateHandle, ObservedStateStore};
-use otap_df_telemetry::event::{EngineEvent, ErrorSummary, ObservedEventReporter};
-use otap_df_telemetry::registry::TelemetryRegistryHandle;
-use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry::{
+use otel_arrow_dfe_engine::topology::NumaTopology;
+use otel_arrow_dfe_state::store::{ObservedStateHandle, ObservedStateStore};
+use otel_arrow_dfe_telemetry::event::{EngineEvent, ErrorSummary, ObservedEventReporter};
+use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_telemetry::{
     InternalTelemetrySettings, InternalTelemetrySystem, TracingSetup,
-    log_filter::RuntimeLogFilterHandle, otel_info_span, resource_detectors,
+    log_filter::RuntimeLogFilterHandle, otel_info_span, raw_error, resource_detectors,
     self_tracing::LogContext,
 };
 use smallvec::smallvec;
@@ -125,7 +125,10 @@ mod listener_group;
 /// URN of the built-in dataflow controller.
 pub const CONTROLLER_URN: &str = "urn:otel:controller:main";
 
-otap_df_telemetry::otel_component_scope!(urn = CONTROLLER_URN, target = "otel.controller.main",);
+otel_arrow_dfe_telemetry::otel_component_scope!(
+    urn = CONTROLLER_URN,
+    target = "otel.controller.main",
+);
 
 mod live_control;
 mod placement;
@@ -145,7 +148,7 @@ use live_control::{
 };
 use placement::{CorePlacement, PipelinePlacement, PlacementPlanner, PlacementSnapshot};
 
-use otap_df_engine::component_inventory;
+use otel_arrow_dfe_engine::component_inventory;
 
 /// Controller for managing pipelines in a thread-per-core model.
 ///
@@ -182,7 +185,7 @@ pub type ControllerExtensionTaskFactory =
 
 /// Static validator for controller extension user configuration.
 pub type ControllerExtensionValidateFn =
-    fn(config: &serde_json::Value) -> Result<(), otap_df_config::error::Error>;
+    fn(config: &serde_json::Value) -> Result<(), otel_arrow_dfe_config::error::Error>;
 
 type ControllerExtensionStartFn = dyn Fn(
         ControllerExtensionContext,
@@ -319,6 +322,10 @@ pub struct ControllerRunOptions {
     /// Build-time identity of the binary, used to seed default self-telemetry resource
     /// attributes. Populate from the binary crate (e.g. `CARGO_BIN_NAME`/`CARGO_PKG_VERSION`).
     pub build_info: BuildInfo,
+    /// Whether the controller handles process-wide OS termination signals.
+    /// Defaults to `false` so embedding hosts retain signal ownership. Standalone
+    /// binaries that own the process can opt in explicitly.
+    pub handle_os_signals: bool,
 }
 
 /// Build-time identity of the collector binary.
@@ -480,7 +487,7 @@ enum TopicWiringVertex {
     PipelineNode {
         pipeline_group_id: PipelineGroupId,
         pipeline_id: PipelineId,
-        node_id: otap_df_config::NodeId,
+        node_id: otel_arrow_dfe_config::NodeId,
     },
     Topic {
         declared_name: TopicName,
@@ -1045,7 +1052,7 @@ impl<
     fn validate_topic_runtime_support_with_capabilities(
         topic: &TopicName,
         backend: TopicBackendKind,
-        policies: &otap_df_config::topic::TopicPolicies,
+        policies: &otel_arrow_dfe_config::topic::TopicPolicies,
         selected_mode: InferredTopicMode,
         capabilities: TopicBackendCapabilities,
     ) -> Result<(), Error> {
@@ -1276,7 +1283,7 @@ impl<
         options: ControllerRunOptions,
     ) -> Result<(), Error> {
         engine_config.validate().map_err(|error| match error {
-            otap_df_config::error::Error::InvalidConfiguration { errors } => {
+            otel_arrow_dfe_config::error::Error::InvalidConfiguration { errors } => {
                 Error::InvalidConfiguration { errors }
             }
             other => Error::InvalidConfiguration {
@@ -1307,7 +1314,7 @@ impl<
         // config > detectors > build-info defaults.
         let detected = resource_detectors::detect(&engine.telemetry.detectors).map_err(|e| {
             Error::InvalidConfiguration {
-                errors: vec![otap_df_config::error::Error::InvalidUserConfig {
+                errors: vec![otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                     error: format!("engine.telemetry.detectors: {e}"),
                 }],
             }
@@ -1338,7 +1345,7 @@ impl<
             .logs
             .tap
             .enabled
-            .then(|| otap_df_telemetry::log_tap::build(&telemetry_config.logs.tap));
+            .then(|| otel_arrow_dfe_telemetry::log_tap::build(&telemetry_config.logs.tap));
 
         // Create the observed state store for the telemetry system.
         let obs_state_store = ObservedStateStore::new_with_log_tap(
@@ -1435,7 +1442,7 @@ impl<
                     loop {
                         tokio::select! {
                             _ = cancellation_token.cancelled() => {
-                                return Ok::<(), otap_df_telemetry::error::Error>(());
+                                return Ok::<(), otel_arrow_dfe_telemetry::error::Error>(());
                             }
                             _ = ticker.tick() => {
                                 match limiter.tick(&limiter_state) {
@@ -1549,7 +1556,7 @@ impl<
             },
         )?;
         collector_ready_rx.recv().map_err(|_| {
-            Error::from(otap_df_telemetry::error::Error::MetricsCollectorNotRunning)
+            Error::from(otel_arrow_dfe_telemetry::error::Error::MetricsCollectorNotRunning)
         })?;
 
         // Pipeline threads receive only a Weak handle back to the controller runtime. That lets
@@ -1597,7 +1604,7 @@ impl<
             "engine-metrics",
             admin_tracing_setup.clone(),
             move |cancellation_token| async move {
-                use otap_df_engine::engine_metrics::EngineMetricsMonitor;
+                use otel_arrow_dfe_engine::engine_metrics::EngineMetricsMonitor;
                 use std::time::{Duration, Instant};
                 use tokio::time::{MissedTickBehavior, interval};
 
@@ -1624,7 +1631,7 @@ impl<
                                     error = err.to_string()
                                 );
                             }
-                            return Ok::<(), otap_df_telemetry::error::Error>(());
+                            return Ok::<(), otel_arrow_dfe_telemetry::error::Error>(());
                         }
                         _ = ticker.tick() => {
                             monitor.update();
@@ -1727,11 +1734,19 @@ impl<
 
         drop(metrics_reporter);
 
+        // Wake handle for a fatal controller-extension failure: release the main
+        // thread's `wait_until_all_instances_exit` even if the graceful drain
+        // stalls, so the controller always proceeds to teardown and surfaces the
+        // error instead of hanging.
+        let release_instance_wait: Arc<dyn Fn() + Send + Sync> = {
+            let runtime = Arc::clone(&runtime);
+            Arc::new(move || runtime.release_instance_wait())
+        };
         let controller_extension_handles = match Self::spawn_controller_extensions(
             prepared_controller_extensions,
             admin_tracing_setup.clone(),
             Arc::clone(&control_plane),
-            thread::current(),
+            release_instance_wait,
         ) {
             Ok(handles) => handles,
             Err(err) => {
@@ -1767,12 +1782,13 @@ impl<
             }
         };
 
+        let signal_control_plane = Arc::clone(&control_plane);
         let admin_control_plane = Arc::clone(&control_plane);
         let admin_server_handle = spawn_thread_local_task(
             "http-admin",
             admin_tracing_setup,
             move |cancellation_token| {
-                otap_df_admin::run(
+                otel_arrow_dfe_admin::run(
                     admin_settings,
                     obs_state_handle,
                     admin_control_plane,
@@ -1789,9 +1805,20 @@ impl<
             runtime.wait_until_all_producer_instances_exit();
         }
 
-        // In standard engine mode we keep the main thread parked after startup.
+        // In standard engine mode, keep the main thread blocked until an explicit
+        // engine-wide shutdown drains every pipeline. An empty engine, or one whose
+        // last pipeline stops independently, must remain available for live control.
+        let shutdown_signal_listener =
+            if run_mode == RunMode::ParkMainThread && options.handle_os_signals {
+                // Listen for SIGINT/SIGTERM and trigger graceful shutdown via the
+                // control plane.
+                Some(Self::spawn_shutdown_signal_listener(signal_control_plane)?)
+            } else {
+                None
+            };
+
         if run_mode == RunMode::ParkMainThread {
-            thread::park();
+            runtime.wait_until_global_shutdown_drains_or_released();
         }
 
         // Stop controller-owned metric producers before waiting for the phased
@@ -1844,6 +1871,9 @@ impl<
         metrics_agg_handle.shutdown_and_join()?;
         obs_state_join_handle.shutdown_and_join()?;
         drop(telemetry_system);
+        if let Some(listener) = shutdown_signal_listener {
+            listener.shutdown_and_join()?;
+        }
 
         if let Some(err) = controller_extension_error {
             return Err(err);
@@ -1908,7 +1938,7 @@ impl<
         prepared_extensions: Vec<PreparedControllerExtension>,
         tracing_setup: TracingSetup,
         control_plane: Arc<dyn ControlPlane>,
-        controller_thread: thread::Thread,
+        release_instance_wait: Arc<dyn Fn() + Send + Sync>,
     ) -> Result<Vec<ThreadLocalTaskHandle<(), Error>>, Error> {
         let mut handles = Vec::new();
         for prepared_extension in prepared_extensions {
@@ -1919,7 +1949,7 @@ impl<
             let thread_name = format!("controller-extension-{}", extension_id.as_ref());
             let runtime_extension_id = extension_id.to_string();
             let extension_control_plane = Arc::clone(&control_plane);
-            let extension_controller_thread = controller_thread.clone();
+            let extension_release_instance_wait = Arc::clone(&release_instance_wait);
             handles.push(spawn_thread_local_task(
                 thread_name,
                 tracing_setup.clone(),
@@ -1945,7 +1975,10 @@ impl<
                                         message = "Failed to shut down pipelines after controller extension runtime failure"
                                     );
                                 }
-                                extension_controller_thread.unpark();
+                                // Release the main thread's instance wait so the
+                                // controller proceeds to teardown even if the drain
+                                // requested above stalls or failed.
+                                extension_release_instance_wait();
                                 Err(Error::ControllerExtensionRuntimeError {
                                 extension_id: runtime_extension_id,
                                 source,
@@ -2026,6 +2059,129 @@ impl<
                 );
             }
         }
+    }
+
+    /// Spawns a dedicated background thread that listens for OS termination
+    /// signals (SIGINT / SIGTERM on Unix; Ctrl-C, Ctrl-Break, console close, and
+    /// system shutdown on Windows) and initiates a graceful pipeline shutdown
+    /// via the control plane.
+    ///
+    /// Uses a double-signal convention:
+    /// - **First signal** -> initiates graceful shutdown (drain pipelines).
+    /// - **Second signal** -> forces immediate process exit (`std::process::exit(1)`).
+    ///
+    /// This allows Kubernetes (or any process manager that sends SIGTERM, or
+    /// CTRL_SHUTDOWN_EVENT on Windows) to trigger an orderly drain of in-flight
+    /// telemetry data before the pod is killed. If the graceful drain hangs, a
+    /// second signal provides an escape hatch.
+    ///
+    /// On Windows, CTRL_CLOSE_EVENT and CTRL_SHUTDOWN_EVENT are subject to an
+    /// OS-imposed grace period (a few seconds by default) after which the
+    /// process is force-terminated regardless of the drain deadline; the drain
+    /// is best-effort in that case and the second-signal escape hatch does not
+    /// apply.
+    ///
+    /// The returned handle cancels and joins the listener during controller teardown.
+    fn spawn_shutdown_signal_listener(
+        control_plane: Arc<dyn ControlPlane>,
+    ) -> Result<ShutdownSignalListenerHandle, Error> {
+        // Construct the runtime and register handlers before spawning the waiter.
+        // This closes the window in which the thread existed but the process still
+        // had the platform's default termination behavior. Registration failures
+        // are also surfaced synchronously on the controller thread.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("failed to create signal-handler runtime");
+        let mut signals = {
+            let _runtime_guard = rt.enter();
+            TerminationSignals::register()
+        };
+        let cancellation_token = CancellationToken::new();
+        let listener_cancellation_token = cancellation_token.clone();
+
+        let join_handle = thread::Builder::new()
+            .name("os-signal-handler".into())
+            .spawn(move || {
+                rt.block_on(async {
+                    // First signal: graceful shutdown.
+                    let signal_name = tokio::select! {
+                        _ = listener_cancellation_token.cancelled() => return,
+                        signal_name = signals.recv() => signal_name,
+                    };
+
+                    otel_info!(
+                        "shutdown.signal_received",
+                        signal = signal_name,
+                        message = "OS termination signal received, initiating graceful shutdown. Send the signal again to force immediate exit."
+                    );
+
+                        // Give pipelines a generous deadline to drain (60 s by default).
+                        // Note: this exceeds the default Kubernetes
+                        // terminationGracePeriodSeconds (30 s), so under stock pod
+                        // settings the kubelet's SIGKILL -- not this deadline -- is the
+                        // binding constraint. This value only bounds the drain when the
+                        // supervisor grants at least that much time.
+                        // TODO: make this configurable via engine config.
+                        const SHUTDOWN_TIMEOUT_SECS: u64 = 60;
+
+                        // Retry a few times if the control channel is full under
+                        // backpressure -- avoids silently dropping the shutdown request.
+                        const MAX_RETRIES: u32 = 3;
+                        const RETRY_INTERVAL: Duration = Duration::from_millis(500);
+
+                    let mut last_err = None;
+                    for attempt in 0..MAX_RETRIES {
+                        match control_plane.shutdown_all(SHUTDOWN_TIMEOUT_SECS) {
+                            Ok(()) => {
+                                otel_info!(
+                                    "shutdown.signal_dispatched",
+                                    message = "Shutdown requested for all pipelines"
+                                );
+                                last_err = None;
+                                break;
+                            }
+                            Err(e) => {
+                                last_err = Some(e);
+                                if attempt + 1 < MAX_RETRIES {
+                                    tokio::select! {
+                                        _ = listener_cancellation_token.cancelled() => return,
+                                        _ = tokio::time::sleep(RETRY_INTERVAL) => {}
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if let Some(e) = last_err {
+                        otel_error!(
+                            "shutdown.signal_dispatch_failed",
+                            error = ?e,
+                            message = "Failed to request shutdown via control plane after retries"
+                        );
+                    }
+
+                    // Second signal: force exit.
+                    let signal_name = tokio::select! {
+                        _ = listener_cancellation_token.cancelled() => return,
+                        signal_name = signals.recv() => signal_name,
+                    };
+                    raw_error!(
+                        "shutdown.force_exit",
+                        signal = signal_name,
+                        message = "Second termination signal received, forcing immediate exit"
+                    );
+                    std::process::exit(1);
+                });
+            })
+            .map_err(|source| Error::ThreadSpawnError {
+                thread_name: "os-signal-handler".to_owned(),
+                source,
+            })?;
+
+        Ok(ShutdownSignalListenerHandle {
+            cancellation_token,
+            join_handle: Some(join_handle),
+        })
     }
 
     /// Selects which CPU cores to use based on the given allocation.
@@ -2389,7 +2545,7 @@ impl<
         telemetry_policy: TelemetryPolicy,
         transport_headers_policy: Option<TransportHeadersPolicy>,
         rate_limiter_policies: BTreeMap<String, RateLimiterPolicy>,
-        rate_limiter_scope: Option<otap_df_config::policy::RateLimiterDeclarationScope>,
+        rate_limiter_scope: Option<otel_arrow_dfe_config::policy::RateLimiterDeclarationScope>,
         controller_ctx: ControllerContext,
         metrics_reporter: MetricsReporter,
         engine_evt_reporter: ObservedEventReporter,
@@ -2591,7 +2747,7 @@ impl<
         telemetry_policy: TelemetryPolicy,
         transport_headers_policy: Option<TransportHeadersPolicy>,
         rate_limiter_policies: BTreeMap<String, RateLimiterPolicy>,
-        rate_limiter_scope: Option<otap_df_config::policy::RateLimiterDeclarationScope>,
+        rate_limiter_scope: Option<otel_arrow_dfe_config::policy::RateLimiterDeclarationScope>,
         telemetry_reporting_interval: Duration,
         pipeline_factory: &'static PipelineFactory<PData>,
         pipeline_context: PipelineContext,
@@ -2711,12 +2867,140 @@ impl<
     }
 }
 
+/// OS termination-signal streams registered once and reused across waits.
+///
+/// The streams are created a single time and held for the lifetime of the
+/// signal handler so the same registration serves both the first (graceful
+/// shutdown) and second (force-exit) signal. Recreating them between waits
+/// would drop a signal delivered while the shutdown request is in flight,
+/// because tokio only delivers a signal to streams that already exist when it
+/// arrives -- which would defeat the "second signal forces exit" escape hatch.
+struct TerminationSignals {
+    #[cfg(unix)]
+    sigterm: tokio::signal::unix::Signal,
+    #[cfg(unix)]
+    sigint: tokio::signal::unix::Signal,
+    #[cfg(windows)]
+    ctrl_c: tokio::signal::windows::CtrlC,
+    #[cfg(windows)]
+    ctrl_break: tokio::signal::windows::CtrlBreak,
+    // CTRL_CLOSE (console window closed) and CTRL_SHUTDOWN (system shutdown /
+    // container stop) are the Windows equivalents of SIGTERM: Docker,
+    // containerd, and Kubernetes deliver CTRL_SHUTDOWN_EVENT to a Windows
+    // container's process on stop. Without these, orchestrated shutdown would
+    // skip the graceful drain on Windows.
+    //
+    // Note: for these three events Windows enforces its own grace period (a few
+    // seconds by default) and then force-terminates the process regardless of
+    // the 60 s drain deadline. The drain is therefore best-effort under
+    // CTRL_CLOSE/CTRL_SHUTDOWN, and the "second signal forces exit" escape hatch
+    // does not apply because the OS reaps the process itself.
+    #[cfg(windows)]
+    ctrl_close: tokio::signal::windows::CtrlClose,
+    #[cfg(windows)]
+    ctrl_shutdown: tokio::signal::windows::CtrlShutdown,
+}
+
+impl TerminationSignals {
+    /// Registers the platform's termination-signal streams.
+    ///
+    /// On Unix this listens for both SIGINT and SIGTERM; on Windows for Ctrl-C,
+    /// Ctrl-Break, console close, and system shutdown; elsewhere only Ctrl-C
+    /// (SIGINT equivalent) is supported.
+    fn register() -> Self {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{SignalKind, signal};
+
+            Self {
+                sigterm: signal(SignalKind::terminate())
+                    .expect("failed to register SIGTERM handler"),
+                sigint: signal(SignalKind::interrupt()).expect("failed to register SIGINT handler"),
+            }
+        }
+
+        #[cfg(windows)]
+        {
+            use tokio::signal::windows::{ctrl_break, ctrl_c, ctrl_close, ctrl_shutdown};
+
+            Self {
+                ctrl_c: ctrl_c().expect("failed to register Ctrl-C handler"),
+                ctrl_break: ctrl_break().expect("failed to register Ctrl-Break handler"),
+                ctrl_close: ctrl_close().expect("failed to register Ctrl-Close handler"),
+                ctrl_shutdown: ctrl_shutdown().expect("failed to register Ctrl-Shutdown handler"),
+            }
+        }
+
+        #[cfg(not(any(unix, windows)))]
+        {
+            Self {}
+        }
+    }
+
+    /// Awaits the next OS termination signal and returns its name.
+    async fn recv(&mut self) -> &'static str {
+        #[cfg(unix)]
+        {
+            tokio::select! {
+                _ = self.sigterm.recv() => "SIGTERM",
+                _ = self.sigint.recv() => "SIGINT",
+            }
+        }
+
+        #[cfg(windows)]
+        {
+            tokio::select! {
+                _ = self.ctrl_break.recv() => "CTRL_BREAK",
+                _ = self.ctrl_c.recv() => "CTRL_C",
+                _ = self.ctrl_close.recv() => "CTRL_CLOSE",
+                _ = self.ctrl_shutdown.recv() => "CTRL_SHUTDOWN",
+            }
+        }
+
+        #[cfg(not(any(unix, windows)))]
+        {
+            tokio::signal::ctrl_c()
+                .await
+                .expect("failed to listen for Ctrl-C");
+            "Ctrl-C"
+        }
+    }
+}
+
+struct ShutdownSignalListenerHandle {
+    cancellation_token: CancellationToken,
+    join_handle: Option<thread::JoinHandle<()>>,
+}
+
+impl ShutdownSignalListenerHandle {
+    fn shutdown_and_join(mut self) -> Result<(), Error> {
+        self.cancellation_token.cancel();
+        self.join_handle
+            .take()
+            .expect("signal listener join handle missing")
+            .join()
+            .map_err(|panic| Error::ThreadJoinPanic {
+                thread_name: "os-signal-handler".to_owned(),
+                panic_message: format!("{panic:?}"),
+            })
+    }
+}
+
+impl Drop for ShutdownSignalListenerHandle {
+    fn drop(&mut self) {
+        self.cancellation_token.cancel();
+        if let Some(join_handle) = self.join_handle.take() {
+            let _ = join_handle.join();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use otap_df_config::engine::{ResolvedPipelineConfig, ResolvedPipelineRole};
-    use otap_df_config::node::NodeUserConfig;
+    use otel_arrow_dfe_config::engine::{ResolvedPipelineConfig, ResolvedPipelineRole};
+    use otel_arrow_dfe_config::node::NodeUserConfig;
     /// Scenario: `BuildInfo::seed_attrs` runs with a mix of set, empty, and absent fields.
     /// Guarantees: it yields typed pairs for non-empty values only, skipping empty and `None`.
     #[test]
@@ -2733,6 +3017,13 @@ mod tests {
             )]
         );
         assert!(BuildInfo::default().seed_attrs().is_empty());
+    }
+
+    /// Scenario: an embedding host starts from default controller run options.
+    /// Guarantees: process-wide OS signal handling remains disabled unless explicitly enabled.
+    #[test]
+    fn controller_run_options_disable_os_signals_by_default() {
+        assert!(!ControllerRunOptions::default().handle_os_signals);
     }
 
     /// Scenario: `merge_resource_defaults` runs with a config-provided `service.name`, a detector
@@ -2804,20 +3095,20 @@ mod tests {
         );
     }
 
-    use otap_df_config::policy::{CoreRange, ResolvedPolicies, ResolvedResourcesPolicy};
-    use otap_df_config::topic::{TopicAckPropagationMode, TopicBroadcastOnLagPolicy};
-    use otap_df_engine::config::{ExporterConfig, ProcessorConfig, ReceiverConfig};
-    use otap_df_engine::control::NodeControlMsg;
-    use otap_df_engine::exporter::ExporterWrapper;
-    use otap_df_engine::local::{exporter, processor, receiver};
-    use otap_df_engine::message::{ExporterInbox, Message};
-    use otap_df_engine::processor::ProcessorWrapper;
-    use otap_df_engine::receiver::ReceiverWrapper;
-    use otap_df_engine::terminal_state::TerminalState;
-    use otap_df_engine::topology::{NumaTopology, TopologyCompleteness};
-    use otap_df_engine::wiring_contract::WiringContract;
-    use otap_df_engine::{ExporterFactory, ProcessorFactory, ReceiverFactory};
-    use otap_df_telemetry::metrics::MetricSetSnapshot;
+    use otel_arrow_dfe_config::policy::{CoreRange, ResolvedPolicies, ResolvedResourcesPolicy};
+    use otel_arrow_dfe_config::topic::{TopicAckPropagationMode, TopicBroadcastOnLagPolicy};
+    use otel_arrow_dfe_engine::config::{ExporterConfig, ProcessorConfig, ReceiverConfig};
+    use otel_arrow_dfe_engine::control::NodeControlMsg;
+    use otel_arrow_dfe_engine::exporter::ExporterWrapper;
+    use otel_arrow_dfe_engine::local::{exporter, processor, receiver};
+    use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
+    use otel_arrow_dfe_engine::processor::ProcessorWrapper;
+    use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
+    use otel_arrow_dfe_engine::terminal_state::TerminalState;
+    use otel_arrow_dfe_engine::topology::{NumaTopology, TopologyCompleteness};
+    use otel_arrow_dfe_engine::wiring_contract::WiringContract;
+    use otel_arrow_dfe_engine::{ExporterFactory, ProcessorFactory, ReceiverFactory};
+    use otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot;
     use std::collections::{BTreeMap, BTreeSet};
 
     fn available_core_ids() -> Vec<CoreId> {
@@ -2875,7 +3166,7 @@ connections:
             self: Box<Self>,
             mut ctrl_chan: receiver::ControlChannel<()>,
             effect_handler: receiver::EffectHandler<()>,
-        ) -> Result<TerminalState, otap_df_engine::error::Error> {
+        ) -> Result<TerminalState, otel_arrow_dfe_engine::error::Error> {
             loop {
                 let msg = ctrl_chan.recv().await?;
                 match msg {
@@ -2900,7 +3191,7 @@ connections:
             &mut self,
             _msg: Message<()>,
             _effect_handler: &mut processor::EffectHandler<()>,
-        ) -> Result<(), otap_df_engine::error::Error> {
+        ) -> Result<(), otel_arrow_dfe_engine::error::Error> {
             Ok(())
         }
     }
@@ -2913,7 +3204,7 @@ connections:
             self: Box<Self>,
             mut inbox: ExporterInbox<()>,
             _effect_handler: exporter::EffectHandler<()>,
-        ) -> Result<TerminalState, otap_df_engine::error::Error> {
+        ) -> Result<TerminalState, otel_arrow_dfe_engine::error::Error> {
             loop {
                 if let Message::Control(NodeControlMsg::Shutdown { deadline, .. }) =
                     inbox.recv().await?
@@ -2926,11 +3217,11 @@ connections:
 
     fn create_test_observability_receiver(
         _pipeline_ctx: PipelineContext,
-        node: otap_df_engine::node::NodeId,
+        node: otel_arrow_dfe_engine::node::NodeId,
         node_config: Arc<NodeUserConfig>,
         receiver_config: &ReceiverConfig,
-        _capabilities: &otap_df_engine::capability::registry::Capabilities,
-    ) -> Result<ReceiverWrapper<()>, otap_df_config::error::Error> {
+        _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+    ) -> Result<ReceiverWrapper<()>, otel_arrow_dfe_config::error::Error> {
         Ok(ReceiverWrapper::local(
             TestObservabilityReceiver,
             node,
@@ -2941,11 +3232,11 @@ connections:
 
     fn create_test_observability_processor(
         _pipeline_ctx: PipelineContext,
-        node: otap_df_engine::node::NodeId,
+        node: otel_arrow_dfe_engine::node::NodeId,
         node_config: Arc<NodeUserConfig>,
         processor_config: &ProcessorConfig,
-        _capabilities: &otap_df_engine::capability::registry::Capabilities,
-    ) -> Result<ProcessorWrapper<()>, otap_df_config::error::Error> {
+        _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+    ) -> Result<ProcessorWrapper<()>, otel_arrow_dfe_config::error::Error> {
         Ok(ProcessorWrapper::local(
             TestObservabilityProcessor,
             node,
@@ -2956,11 +3247,11 @@ connections:
 
     fn create_test_observability_exporter(
         _pipeline_ctx: PipelineContext,
-        node: otap_df_engine::node::NodeId,
+        node: otel_arrow_dfe_engine::node::NodeId,
         node_config: Arc<NodeUserConfig>,
         exporter_config: &ExporterConfig,
-        _capabilities: &otap_df_engine::capability::registry::Capabilities,
-    ) -> Result<ExporterWrapper<()>, otap_df_config::error::Error> {
+        _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+    ) -> Result<ExporterWrapper<()>, otel_arrow_dfe_config::error::Error> {
         Ok(ExporterWrapper::local(
             TestObservabilityExporter,
             node,
@@ -3017,13 +3308,13 @@ connections:
 
     fn validate_test_linked_controller_extension_config(
         config: &serde_json::Value,
-    ) -> Result<(), otap_df_config::error::Error> {
-        otap_df_config::validation::no_config(config)
+    ) -> Result<(), otel_arrow_dfe_config::error::Error> {
+        otel_arrow_dfe_config::validation::no_config(config)
     }
 
     fn accept_any_test_config(
         _config: &serde_json::Value,
-    ) -> Result<(), otap_df_config::error::Error> {
+    ) -> Result<(), otel_arrow_dfe_config::error::Error> {
         Ok(())
     }
 
@@ -3136,7 +3427,7 @@ groups: {{}}
     fn global_topic_handle(
         declared: &DeclaredTopics<()>,
         topic_name: &str,
-    ) -> otap_df_engine::topic::TopicHandle<()> {
+    ) -> otel_arrow_dfe_engine::topic::TopicHandle<()> {
         let declared_name = declared
             .global_names
             .get(topic_name)
@@ -3151,7 +3442,7 @@ groups: {{}}
         declared: &DeclaredTopics<()>,
         group_id: &str,
         topic_name: &str,
-    ) -> otap_df_engine::topic::TopicHandle<()> {
+    ) -> otel_arrow_dfe_engine::topic::TopicHandle<()> {
         let key = (
             PipelineGroupId::from(group_id.to_owned()),
             TopicName::parse(topic_name).expect("topic name must parse"),
@@ -3363,7 +3654,7 @@ groups: {{}}
         registry.register(
             extension_type.clone(),
             start_test_linked_controller_extension,
-            otap_df_config::validation::no_config,
+            otel_arrow_dfe_config::validation::no_config,
         );
         registry.register(
             extension_type.clone(),
@@ -3394,7 +3685,7 @@ groups: {{}}
                     .push(context.extension_id.to_string());
                 Ok(Box::new(|_cancellation_token| Box::pin(async { Ok(()) })))
             },
-            otap_df_config::validation::no_config,
+            otel_arrow_dfe_config::validation::no_config,
         );
 
         let controller = Controller::new(test_pipeline_factory());
@@ -3421,7 +3712,7 @@ groups: {{}}
     #[test]
     fn controller_run_validates_rate_limit_requires_memory_source() {
         let config: OtelDataflowSpec = serde_json::from_value(serde_json::json!({
-            "version": otap_df_config::engine::ENGINE_CONFIG_VERSION_V1,
+            "version": otel_arrow_dfe_config::engine::ENGINE_CONFIG_VERSION_V1,
             "policies": {
                 "resources": {
                     "rate_limiters": {
@@ -3582,7 +3873,7 @@ groups: {{}}
                     std::io::Error::other("simulated controller extension start failure"),
                 ))
             },
-            otap_df_config::validation::no_config,
+            otel_arrow_dfe_config::validation::no_config,
         );
 
         let err = controller
@@ -3622,6 +3913,10 @@ groups: {{}}
         );
     }
 
+    /// Scenario: a controller extension fails while `run_forever_with_options` is parked with OS
+    /// signal handling enabled.
+    /// Guarantees: controller execution returns the extension error and releases the signal
+    /// listener's control-plane reference before returning to the embedding host.
     #[test]
     fn controller_extension_runtime_error_stops_parked_controller() {
         const FAILING_CONTROLLER_EXTENSION_URN: &str = "urn:test:extension:failing";
@@ -3642,10 +3937,16 @@ groups: {{}}
         ))
         .expect("failing controller extension config should parse");
 
+        let retained_control_plane = Arc::new(std::sync::Mutex::new(None));
+        let retained_control_plane_for_factory = Arc::clone(&retained_control_plane);
         let mut registry = ControllerExtensionRegistry::empty();
         registry.register(
             FAILING_CONTROLLER_EXTENSION_URN.into(),
-            |_context| {
+            move |context| {
+                *retained_control_plane_for_factory
+                    .lock()
+                    .expect("retained control-plane mutex should not be poisoned") =
+                    Some(Arc::downgrade(&context.control_plane));
                 Ok(Box::new(|_cancellation_token| {
                     Box::pin(async {
                         Err::<(), ControllerExtensionError>(Box::new(std::io::Error::other(
@@ -3654,7 +3955,7 @@ groups: {{}}
                     })
                 }))
             },
-            otap_df_config::validation::no_config,
+            otel_arrow_dfe_config::validation::no_config,
         );
 
         let (result_tx, result_rx) = std_mpsc::channel();
@@ -3665,6 +3966,13 @@ groups: {{}}
                     engine_config,
                     ControllerRunOptions {
                         extensions: registry,
+                        // Enabling OS signal handling is what makes this test cover
+                        // the listener lifecycle: with the default of `false` no
+                        // listener is spawned and the control-plane assertion below
+                        // would pass vacuously. Note that tokio's signal registration
+                        // is process-wide and permanent, so this test binary stops
+                        // honoring SIGTERM/SIGINT for the remainder of the run.
+                        handle_os_signals: true,
                         ..Default::default()
                     },
                 )
@@ -3676,7 +3984,7 @@ groups: {{}}
 
         let err = result_rx
             .recv_timeout(Duration::from_secs(5))
-            .expect("controller extension runtime error should unpark the controller")
+            .expect("controller extension runtime error should release the controller")
             .expect_err("controller should fail when a controller extension fails at runtime");
         controller_thread
             .join()
@@ -3684,6 +3992,16 @@ groups: {{}}
 
         assert!(err.contains("Controller extension `failing` failed"));
         assert!(err.contains("simulated controller extension failure"));
+        assert!(
+            retained_control_plane
+                .lock()
+                .expect("retained control-plane mutex should not be poisoned")
+                .as_ref()
+                .expect("controller extension should observe the control plane")
+                .upgrade()
+                .is_none(),
+            "controller teardown should release the signal listener's control plane"
+        );
     }
 
     #[test]
@@ -4384,19 +4702,19 @@ groups:
         assert!(
             topic
                 .subscribe(
-                    otap_df_engine::topic::SubscriptionMode::Balanced {
+                    otel_arrow_dfe_engine::topic::SubscriptionMode::Balanced {
                         group: "workers".into(),
                     },
-                    otap_df_engine::topic::SubscriberOptions::default(),
+                    otel_arrow_dfe_engine::topic::SubscriberOptions::default(),
                 )
                 .is_ok()
         );
         assert!(matches!(
             topic.subscribe(
-                otap_df_engine::topic::SubscriptionMode::Broadcast,
-                otap_df_engine::topic::SubscriberOptions::default(),
+                otel_arrow_dfe_engine::topic::SubscriptionMode::Broadcast,
+                otel_arrow_dfe_engine::topic::SubscriberOptions::default(),
             ),
-            Err(otap_df_engine::error::Error::SubscribeBroadcastNotSupported)
+            Err(otel_arrow_dfe_engine::error::Error::SubscribeBroadcastNotSupported)
         ));
     }
 
@@ -4430,17 +4748,17 @@ groups:
         assert!(
             topic
                 .subscribe(
-                    otap_df_engine::topic::SubscriptionMode::Broadcast,
-                    otap_df_engine::topic::SubscriberOptions::default(),
+                    otel_arrow_dfe_engine::topic::SubscriptionMode::Broadcast,
+                    otel_arrow_dfe_engine::topic::SubscriberOptions::default(),
                 )
                 .is_ok()
         );
         assert!(matches!(
             topic.subscribe(
-                otap_df_engine::topic::SubscriptionMode::Balanced { group: "g1".into() },
-                otap_df_engine::topic::SubscriberOptions::default(),
+                otel_arrow_dfe_engine::topic::SubscriptionMode::Balanced { group: "g1".into() },
+                otel_arrow_dfe_engine::topic::SubscriberOptions::default(),
             ),
-            Err(otap_df_engine::error::Error::SubscribeBalancedNotSupported)
+            Err(otel_arrow_dfe_engine::error::Error::SubscribeBalancedNotSupported)
         ));
     }
 
@@ -4492,16 +4810,16 @@ groups:
         assert!(
             topic
                 .subscribe(
-                    otap_df_engine::topic::SubscriptionMode::Broadcast,
-                    otap_df_engine::topic::SubscriberOptions::default(),
+                    otel_arrow_dfe_engine::topic::SubscriptionMode::Broadcast,
+                    otel_arrow_dfe_engine::topic::SubscriberOptions::default(),
                 )
                 .is_ok()
         );
         assert!(
             topic
                 .subscribe(
-                    otap_df_engine::topic::SubscriptionMode::Balanced { group: "g3".into() },
-                    otap_df_engine::topic::SubscriberOptions::default(),
+                    otel_arrow_dfe_engine::topic::SubscriptionMode::Balanced { group: "g3".into() },
+                    otel_arrow_dfe_engine::topic::SubscriberOptions::default(),
                 )
                 .is_ok()
         );
@@ -4536,16 +4854,16 @@ groups:
         assert!(
             topic
                 .subscribe(
-                    otap_df_engine::topic::SubscriptionMode::Broadcast,
-                    otap_df_engine::topic::SubscriberOptions::default(),
+                    otel_arrow_dfe_engine::topic::SubscriptionMode::Broadcast,
+                    otel_arrow_dfe_engine::topic::SubscriberOptions::default(),
                 )
                 .is_ok()
         );
         assert!(
             topic
                 .subscribe(
-                    otap_df_engine::topic::SubscriptionMode::Balanced { group: "g1".into() },
-                    otap_df_engine::topic::SubscriberOptions::default(),
+                    otel_arrow_dfe_engine::topic::SubscriptionMode::Balanced { group: "g1".into() },
+                    otel_arrow_dfe_engine::topic::SubscriberOptions::default(),
                 )
                 .is_ok()
         );
@@ -4587,17 +4905,17 @@ groups:
         assert!(
             global_topic
                 .subscribe(
-                    otap_df_engine::topic::SubscriptionMode::Broadcast,
-                    otap_df_engine::topic::SubscriberOptions::default(),
+                    otel_arrow_dfe_engine::topic::SubscriptionMode::Broadcast,
+                    otel_arrow_dfe_engine::topic::SubscriberOptions::default(),
                 )
                 .is_ok()
         );
         assert!(matches!(
             group_topic.subscribe(
-                otap_df_engine::topic::SubscriptionMode::Broadcast,
-                otap_df_engine::topic::SubscriberOptions::default(),
+                otel_arrow_dfe_engine::topic::SubscriptionMode::Broadcast,
+                otel_arrow_dfe_engine::topic::SubscriberOptions::default(),
             ),
-            Err(otap_df_engine::error::Error::SubscribeBroadcastNotSupported)
+            Err(otel_arrow_dfe_engine::error::Error::SubscribeBroadcastNotSupported)
         ));
     }
 
@@ -4637,18 +4955,18 @@ groups:
         assert!(
             topic
                 .subscribe(
-                    otap_df_engine::topic::SubscriptionMode::Broadcast,
-                    otap_df_engine::topic::SubscriberOptions::default(),
+                    otel_arrow_dfe_engine::topic::SubscriptionMode::Broadcast,
+                    otel_arrow_dfe_engine::topic::SubscriberOptions::default(),
                 )
                 .is_ok()
         );
         assert!(
             topic
                 .subscribe(
-                    otap_df_engine::topic::SubscriptionMode::Balanced {
+                    otel_arrow_dfe_engine::topic::SubscriptionMode::Balanced {
                         group: "workers".into(),
                     },
-                    otap_df_engine::topic::SubscriberOptions::default(),
+                    otel_arrow_dfe_engine::topic::SubscriberOptions::default(),
                 )
                 .is_ok()
         );
@@ -4690,18 +5008,18 @@ groups:
 
         assert!(matches!(
             topic.subscribe(
-                otap_df_engine::topic::SubscriptionMode::Broadcast,
-                otap_df_engine::topic::SubscriberOptions::default(),
+                otel_arrow_dfe_engine::topic::SubscriptionMode::Broadcast,
+                otel_arrow_dfe_engine::topic::SubscriberOptions::default(),
             ),
-            Err(otap_df_engine::error::Error::SubscribeBroadcastNotSupported)
+            Err(otel_arrow_dfe_engine::error::Error::SubscribeBroadcastNotSupported)
         ));
         assert!(
             topic
                 .subscribe(
-                    otap_df_engine::topic::SubscriptionMode::Balanced {
+                    otel_arrow_dfe_engine::topic::SubscriptionMode::Balanced {
                         group: "workers".into(),
                     },
-                    otap_df_engine::topic::SubscriberOptions::default(),
+                    otel_arrow_dfe_engine::topic::SubscriberOptions::default(),
                 )
                 .is_ok()
         );
@@ -4784,15 +5102,15 @@ groups:
             .expect("local_block topic must exist");
         assert_eq!(
             local_block.default_queue_on_full(),
-            otap_df_config::topic::TopicQueueOnFullPolicy::Block
+            otel_arrow_dfe_config::topic::TopicQueueOnFullPolicy::Block
         );
         assert_eq!(
             local_block.default_ack_propagation_mode(),
-            otap_df_config::topic::TopicAckPropagationMode::Disabled
+            otel_arrow_dfe_config::topic::TopicAckPropagationMode::Disabled
         );
         assert_eq!(
             local_block.broadcast_on_lag_policy(),
-            otap_df_config::topic::TopicBroadcastOnLagPolicy::DropOldest
+            otel_arrow_dfe_config::topic::TopicBroadcastOnLagPolicy::DropOldest
         );
         assert_eq!(
             local_block.default_publish_outcome_config().max_in_flight,
@@ -4809,15 +5127,15 @@ groups:
             .expect("overridden topic must exist");
         assert_eq!(
             overridden.default_queue_on_full(),
-            otap_df_config::topic::TopicQueueOnFullPolicy::Block
+            otel_arrow_dfe_config::topic::TopicQueueOnFullPolicy::Block
         );
         assert_eq!(
             overridden.default_ack_propagation_mode(),
-            otap_df_config::topic::TopicAckPropagationMode::Disabled
+            otel_arrow_dfe_config::topic::TopicAckPropagationMode::Disabled
         );
         assert_eq!(
             overridden.broadcast_on_lag_policy(),
-            otap_df_config::topic::TopicBroadcastOnLagPolicy::DropOldest
+            otel_arrow_dfe_config::topic::TopicBroadcastOnLagPolicy::DropOldest
         );
         assert_eq!(
             overridden.default_publish_outcome_config().max_in_flight,
@@ -4884,16 +5202,16 @@ groups:
 
         let mut balanced = topic
             .subscribe(
-                otap_df_engine::topic::SubscriptionMode::Balanced {
+                otel_arrow_dfe_engine::topic::SubscriptionMode::Balanced {
                     group: "workers".into(),
                 },
-                otap_df_engine::topic::SubscriberOptions::default(),
+                otel_arrow_dfe_engine::topic::SubscriberOptions::default(),
             )
             .expect("balanced subscription should succeed");
         let mut broadcast = topic
             .subscribe(
-                otap_df_engine::topic::SubscriptionMode::Broadcast,
-                otap_df_engine::topic::SubscriberOptions::default(),
+                otel_arrow_dfe_engine::topic::SubscriptionMode::Broadcast,
+                otel_arrow_dfe_engine::topic::SubscriberOptions::default(),
             )
             .expect("broadcast subscription should succeed");
 
@@ -4901,31 +5219,31 @@ groups:
             topic
                 .try_publish(Arc::new(()))
                 .expect("publish should succeed"),
-            otap_df_engine::topic::PublishOutcome::Published
+            otel_arrow_dfe_engine::topic::PublishOutcome::Published
         );
         assert_eq!(
             topic
                 .try_publish(Arc::new(()))
                 .expect("publish should report backpressure once balanced is full"),
-            otap_df_engine::topic::PublishOutcome::DroppedOnFull
+            otel_arrow_dfe_engine::topic::PublishOutcome::DroppedOnFull
         );
         assert_eq!(
             topic
                 .try_publish(Arc::new(()))
                 .expect("publish should keep reporting backpressure while balanced is full"),
-            otap_df_engine::topic::PublishOutcome::DroppedOnFull
+            otel_arrow_dfe_engine::topic::PublishOutcome::DroppedOnFull
         );
         assert_eq!(
             topic.broadcast_on_lag_policy(),
-            otap_df_config::topic::TopicBroadcastOnLagPolicy::Disconnect
+            otel_arrow_dfe_config::topic::TopicBroadcastOnLagPolicy::Disconnect
         );
         topic.close();
 
         let mut balanced_messages = 0usize;
         while let Ok(item) = balanced.recv().await {
             match item {
-                otap_df_engine::topic::RecvItem::Message(_) => balanced_messages += 1,
-                otap_df_engine::topic::RecvItem::Lagged { missed } => {
+                otel_arrow_dfe_engine::topic::RecvItem::Message(_) => balanced_messages += 1,
+                otel_arrow_dfe_engine::topic::RecvItem::Lagged { missed } => {
                     panic!("unexpected lag for balanced subscription: missed={missed}");
                 }
             }
@@ -4935,12 +5253,53 @@ groups:
         let mut broadcast_messages = 0usize;
         while let Ok(item) = broadcast.recv().await {
             match item {
-                otap_df_engine::topic::RecvItem::Message(_) => broadcast_messages += 1,
-                otap_df_engine::topic::RecvItem::Lagged { missed } => {
+                otel_arrow_dfe_engine::topic::RecvItem::Message(_) => broadcast_messages += 1,
+                otel_arrow_dfe_engine::topic::RecvItem::Lagged { missed } => {
                     panic!("unexpected lag with broadcast capacity 3: missed={missed}");
                 }
             }
         }
         assert_eq!(broadcast_messages, 1);
+    }
+
+    /// Scenario: termination-signal streams are registered inside a Tokio runtime in a child process.
+    /// Guarantees: every platform signal source registers without altering the parent test process.
+    #[test]
+    fn termination_signals_register_on_current_platform() {
+        const CHILD_ENV: &str = "OTAP_DF_SIGNAL_REGISTRATION_TEST_CHILD";
+
+        if std::env::var_os(CHILD_ENV).is_none() {
+            let output = std::process::Command::new(
+                std::env::current_exe().expect("current test executable should be available"),
+            )
+            .args([
+                "--exact",
+                "tests::termination_signals_register_on_current_platform",
+                "--nocapture",
+            ])
+            .env(CHILD_ENV, "1")
+            .output()
+            .expect("signal-registration child process should start");
+
+            assert!(
+                output.status.success(),
+                "signal-registration child failed:\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("failed to build signal-handler runtime");
+
+        rt.block_on(async {
+            // `register()` panics on failure, so a successful return is the
+            // assertion. Any process-global handlers disappear with this child.
+            let signals = TerminationSignals::register();
+            drop(signals);
+        });
     }
 }

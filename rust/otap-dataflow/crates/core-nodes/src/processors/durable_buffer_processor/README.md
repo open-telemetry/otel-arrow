@@ -110,8 +110,16 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | `processor.durable_buffer.bundles` | `resolved` | `outcome=acked\|deferred\|permanently_rejected` |
 | `processor.durable_buffer.ingest` | `failures` | `failure=error\|backpressure` |
 | `processor.durable_buffer.items` | `rejected`, `consumed`, `produced`, `requeued`, `queued` | `signal=traces\|metrics\|logs` |
-| `processor.durable_buffer.loss` | `segments`, `bundles`, `bytes` | `reason=drop_oldest\|expired` |
+| `processor.durable_buffer.reclaimed` | `segments`, `bytes` | `reason=drop_oldest\|expired` |
+| `processor.durable_buffer.loss` | `bundles`, `bytes` | `reason=drop_oldest\|expired` |
 | `processor.durable_buffer.loss` | `items` | `signal=traces\|metrics\|logs`, `reason=drop_oldest\|expired` |
+
+Reclaimed `segments` and `bytes` describe physical segment files and persisted
+storage removed by retention. Loss `bundles`, `bytes`, and `items` describe only
+unresolved logical telemetry in those files. Logical bytes use the payload's
+current representation: active Arrow ranges for OTAP and protobuf wire length
+for OTLP pass-through. Expiry excludes bundles that every subscriber had already
+resolved.
 
 ### Events
 
@@ -128,7 +136,6 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | `durable_buffer.shutdown.*` | `info`, `warn`, `error` | Shutdown flush, drain, deadline, and engine termination progress or failure. |
 | `durable_buffer.timer.started` | `debug` | Periodic poll timer started on first processed message. |
 | `durable_buffer.config.update` | `debug` | Runtime config update received. |
-| `durable_buffer.delayed_data.unexpected` | `warn` | Unexpected delayed data was received and discarded. |
 
 See [telemetry.md](telemetry.md) for maintenance notes and the expanded event inventory.
 

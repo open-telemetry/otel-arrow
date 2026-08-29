@@ -10,7 +10,7 @@
 use crate::event::{LogEvent, ObservedEventReporter};
 use crate::log_filter::RuntimeLogFilter;
 use crate::self_tracing::{ConsoleWriter, LogContextFn, LogRecord};
-use otap_df_config::settings::telemetry::logs::LogLevel;
+use otel_arrow_dfe_config::settings::telemetry::logs::LogLevel;
 use std::time::SystemTime;
 use tracing::{Dispatch, Event, Subscriber};
 #[cfg(test)]
@@ -225,7 +225,7 @@ mod tests {
     use crate::log_filter::{RuntimeLogFilter, create_env_filter};
     use crate::self_tracing::LogContext;
     use crate::{otel_debug, otel_error, otel_info, otel_warn};
-    use otap_df_config::observed_state::SendPolicy;
+    use otel_arrow_dfe_config::observed_state::SendPolicy;
 
     fn test_reporter() -> (ObservedEventReporter, flume::Receiver<ObservedEvent>) {
         let (tx, rx) = flume::bounded(16);
@@ -563,9 +563,9 @@ mod tests {
             // exporter).
             use crate::self_tracing::{ScopeToBytesMap, encode_export_logs_request};
             use bytes::Bytes;
-            use otap_df_pdata::otlp::ProtoBuffer;
-            use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
-            use otap_df_pdata_views::views::logs::{
+            use otel_arrow_dfe_pdata::otlp::ProtoBuffer;
+            use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
+            use otel_arrow_dfe_pdata_views::views::logs::{
                 LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView,
             };
 

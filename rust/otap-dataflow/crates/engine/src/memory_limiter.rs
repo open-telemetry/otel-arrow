@@ -3,7 +3,7 @@
 
 //! Process-wide memory limiter state and sampling.
 
-use otap_df_config::policy::{MemoryLimiterMode, MemoryLimiterPolicy, MemoryLimiterSource};
+use otel_arrow_dfe_config::policy::{MemoryLimiterMode, MemoryLimiterPolicy, MemoryLimiterSource};
 use std::cell::Cell;
 #[cfg(all(not(windows), feature = "jemalloc"))]
 use std::ffi::c_char;

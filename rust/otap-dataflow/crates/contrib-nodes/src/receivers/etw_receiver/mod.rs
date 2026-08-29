@@ -58,7 +58,10 @@
 //!       max_duration: "100ms"
 //! ```
 
-otap_df_telemetry::otel_component_scope!(urn = ETW_RECEIVER_URN, target = "otel.receiver.etw",);
+otel_arrow_dfe_telemetry::otel_component_scope!(
+    urn = ETW_RECEIVER_URN,
+    target = "otel.receiver.etw",
+);
 
 mod arrow_records_encoder;
 mod session;
@@ -68,25 +71,25 @@ use session::EtwEventData;
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::ReceiverFactory;
-use otap_df_engine::config::ReceiverConfig;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::NodeControlMsg;
-use otap_df_engine::node::NodeId;
-use otap_df_engine::receiver::ReceiverWrapper;
-use otap_df_engine::terminal_state::TerminalState;
-use otap_df_engine::{
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_engine::ReceiverFactory;
+use otel_arrow_dfe_engine::config::ReceiverConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::control::NodeControlMsg;
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
+use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_engine::{
     MessageSourceLocalEffectHandlerExtension,
     effect_handler::TelemetryTimerCancelHandle,
     error::{Error, ReceiverErrorKind, format_error_sources},
     local::receiver as local,
 };
-use otap_df_otap::OTAP_RECEIVER_FACTORIES;
-use otap_df_otap::pdata::OtapPdata;
-use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry_macros::metric_set;
+use otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES;
+use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_telemetry::instrument::Counter;
+use otel_arrow_dfe_telemetry::metrics::MetricSet;
+use otel_arrow_dfe_telemetry_macros::metric_set;
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::time::{self, MissedTickBehavior};
@@ -238,10 +241,10 @@ impl Config {
     ///
     /// # Errors
     ///
-    /// Returns [`otap_df_config::error::Error::InvalidUserConfig`] when a rule is violated.
-    fn validate(&self) -> Result<(), otap_df_config::error::Error> {
+    /// Returns [`otel_arrow_dfe_config::error::Error::InvalidUserConfig`] when a rule is violated.
+    fn validate(&self) -> Result<(), otel_arrow_dfe_config::error::Error> {
         if self.providers.is_empty() {
-            return Err(otap_df_config::error::Error::InvalidUserConfig {
+            return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: "at least one ETW provider must be configured".to_string(),
             });
         }
@@ -249,14 +252,14 @@ impl Config {
         for (i, provider) in self.providers.iter().enumerate() {
             match (&provider.name, &provider.guid) {
                 (Some(_), Some(_)) => {
-                    return Err(otap_df_config::error::Error::InvalidUserConfig {
+                    return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                         error: format!(
                             "provider[{i}]: 'name' and 'guid' are mutually exclusive - specify one, not both"
                         ),
                     });
                 }
                 (None, None) => {
-                    return Err(otap_df_config::error::Error::InvalidUserConfig {
+                    return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                         error: format!("provider[{i}]: either 'name' or 'guid' must be specified"),
                     });
                 }
@@ -270,7 +273,7 @@ impl Config {
             // automatic path).
             if let Some(name) = &provider.name {
                 if name.trim().is_empty() {
-                    return Err(otap_df_config::error::Error::InvalidUserConfig {
+                    return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                         error: format!(
                             "provider[{i}]: 'name' must not be empty or whitespace-only"
                         ),
@@ -279,7 +282,7 @@ impl Config {
             }
             if let Some(guid) = &provider.guid {
                 if guid.trim().is_empty() {
-                    return Err(otap_df_config::error::Error::InvalidUserConfig {
+                    return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                         error: format!(
                             "provider[{i}]: 'guid' must not be empty or whitespace-only"
                         ),
@@ -291,7 +294,7 @@ impl Config {
             // GUID (which is used verbatim). Reject the combination rather than
             // silently ignoring `kind`.
             if provider.guid.is_some() && provider.kind.is_some() {
-                return Err(otap_df_config::error::Error::InvalidUserConfig {
+                return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                     error: format!(
                         "provider[{i}]: 'kind' applies to name-based providers only - remove 'kind' when specifying a 'guid'"
                     ),
@@ -301,7 +304,7 @@ impl Config {
 
         if let Some(ref batching) = self.batching {
             if batching.max_duration.is_zero() {
-                return Err(otap_df_config::error::Error::InvalidUserConfig {
+                return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                     error: "ETW receiver `batching.max_duration` must be greater than zero"
                         .to_string(),
                 });
@@ -353,9 +356,9 @@ impl EtwReceiver {
     fn from_config(
         pipeline: PipelineContext,
         config: &Value,
-    ) -> Result<Self, otap_df_config::error::Error> {
+    ) -> Result<Self, otel_arrow_dfe_config::error::Error> {
         let cfg: Config = serde_json::from_value(config.clone()).map_err(|e| {
-            otap_df_config::error::Error::InvalidUserConfig {
+            otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
             }
         })?;
@@ -373,7 +376,7 @@ impl EtwReceiver {
         // folds into its own metric set.
         let (event_rx, session_wide_metrics) =
             session::subscribe(&cfg, num_cores).map_err(|e| {
-                otap_df_config::error::Error::InvalidUserConfig {
+                otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                     error: format!("ETW session initialization failed: {e}"),
                 }
             })?;
@@ -824,24 +827,25 @@ impl EtwReceiver {
 
 /// Register the ETW receiver in the pipeline factory.
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Receiver)]
+#[otel_arrow_dfe_engine::component_inventory(category = Receiver)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static ETW_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: ETW_RECEIVER_URN,
-    create: |pipeline: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             receiver_config: &ReceiverConfig,
-             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
-        Ok(ReceiverWrapper::local(
-            EtwReceiver::from_config(pipeline, &node_config.config)?,
-            node,
-            node_config,
-            receiver_config,
-        ))
-    },
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    validate_config: otap_df_config::validation::validate_typed_config::<Config>,
+    create:
+        |pipeline: PipelineContext,
+         node: NodeId,
+         node_config: Arc<NodeUserConfig>,
+         receiver_config: &ReceiverConfig,
+         _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
+            Ok(ReceiverWrapper::local(
+                EtwReceiver::from_config(pipeline, &node_config.config)?,
+                node,
+                node_config,
+                receiver_config,
+            ))
+        },
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<Config>,
 };
 
 // -- Receiver trait implementation --------------------------------------------

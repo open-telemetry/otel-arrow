@@ -16,7 +16,7 @@
 //! failure (transient vs. permanent nack) by matching one enum.
 
 use crate::common::kafka::sanitize_for_log;
-use otap_df_config::SignalType;
+use otel_arrow_dfe_config::SignalType;
 use rdkafka::error::KafkaError;
 use rdkafka::types::RDKafkaErrorCode;
 

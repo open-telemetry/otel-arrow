@@ -21,8 +21,8 @@ use crate::effect_handler::SourceTagging;
 use crate::entity_context::NodeTelemetryGuard;
 use crate::error::{Error, ProcessorErrorKind};
 use crate::flow_metrics::{
-    FlowConsumedItemsMetrics, FlowDroppedItemsMetrics, FlowDurationMetrics,
-    FlowProducedItemsMetrics,
+    FlowDroppedItemsMetrics, FlowDurationMetrics, FlowInputItemsMetrics, FlowInputMessageMetrics,
+    FlowInputSizeMetrics, FlowOutputItemsMetrics, FlowOutputMessageMetrics, FlowOutputSizeMetrics,
 };
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::processor as local;
@@ -32,12 +32,12 @@ use crate::node_local_scheduler::NodeLocalSchedulerHandle;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::shared::processor as shared;
 use crate::terminal_state::TerminalMetricsDeadline;
-use otap_df_channel::error::SendError;
-use otap_df_channel::mpsc;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_config::{PortName, SignalType};
-use otap_df_telemetry::metrics::MeasurementMetricSet;
-use otap_df_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_channel::error::SendError;
+use otel_arrow_dfe_channel::mpsc;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_config::{PortName, SignalType};
+use otel_arrow_dfe_telemetry::metrics::MeasurementMetricSet;
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -52,6 +52,8 @@ pub trait FlowMetricEffectHandler {
     fn is_flow_start(&self) -> bool;
     /// Whether this node is the end of a flow_metric range.
     fn is_flow_end(&self) -> bool;
+    /// Measurements enabled at this node.
+    fn flow_metric_interests(&self) -> crate::flow_metrics::FlowMetricInterests;
     /// Read elapsed nanoseconds since the last send-marker advance and
     /// advance the marker to "now". Returns 0 when no marker is armed
     /// (e.g. flow_metrics inactive on this pipeline).
@@ -59,10 +61,18 @@ pub trait FlowMetricEffectHandler {
     /// Record a complete flow_metric transit total (nanoseconds) into the
     /// stop node's local accumulator.
     fn record_flow_duration(&self, signal: SignalType, total: u64);
-    /// Record consumed items into the start node's local accumulator.
-    fn record_flow_consumed_items(&self, signal: SignalType, items: u64);
-    /// Record produced items into the stop node's local accumulator.
-    fn record_flow_produced_items(&self, signal: SignalType, items: u64);
+    /// Record input items into the start node's local accumulator.
+    fn record_flow_input_items(&self, signal: SignalType, items: u64);
+    /// Record a message entering the flow.
+    fn record_flow_input_message(&self, signal: SignalType);
+    /// Record logical payload bytes entering the flow.
+    fn record_flow_input_size(&self, signal: SignalType, size: u64);
+    /// Record output items into the stop node's local accumulator.
+    fn record_flow_output_items(&self, signal: SignalType, items: u64);
+    /// Record a message leaving the flow.
+    fn record_flow_output_message(&self, signal: SignalType);
+    /// Record logical payload bytes leaving the flow.
+    fn record_flow_output_size(&self, signal: SignalType, size: u64);
 }
 
 /// Per-`PData` hooks straddling a processor's `process()` call: an
@@ -95,6 +105,16 @@ pub trait FlowMetricHook: Sized {
     /// Invoked once per message immediately before the processor handler
     /// forwards it to the output router.
     fn before_processor_send<H: FlowMetricEffectHandler>(&mut self, _handler: &H) {}
+
+    /// Finalizes processor-side bookkeeping when processing completes without
+    /// forwarding an output message.
+    ///
+    /// Call this instead of [`Self::before_processor_send`] when a processor
+    /// intentionally consumes a message, such as when filtering removes every
+    /// item. The default uses the same bookkeeping as the send path.
+    fn complete_processor_without_output<H: FlowMetricEffectHandler>(&mut self, handler: &H) {
+        self.before_processor_send(handler);
+    }
 
     /// Invoked once per `Message::PData` immediately after it is dequeued
     /// by a processor's run loop and before `process()` runs. Lets PData
@@ -586,6 +606,10 @@ impl<PData> ProcessorWrapper<PData> {
             None,
             None,
             None,
+            None,
+            None,
+            None,
+            None,
             false,
             false,
             TerminalMetricsDeadline::default(),
@@ -602,9 +626,13 @@ impl<PData> ProcessorWrapper<PData> {
         completion_emission_metrics: Option<CompletionEmissionMetricsHandle>,
         flow_is_start: bool,
         flow_is_end: bool,
-        flow_consumed_items_metric: Option<MeasurementMetricSet<FlowConsumedItemsMetrics>>,
+        flow_input_message_metric: Option<MeasurementMetricSet<FlowInputMessageMetrics>>,
+        flow_input_items_metric: Option<MeasurementMetricSet<FlowInputItemsMetrics>>,
+        flow_input_size_metric: Option<MeasurementMetricSet<FlowInputSizeMetrics>>,
         flow_duration_metric: Option<MeasurementMetricSet<FlowDurationMetrics>>,
-        flow_produced_items_metric: Option<MeasurementMetricSet<FlowProducedItemsMetrics>>,
+        flow_output_items_metric: Option<MeasurementMetricSet<FlowOutputItemsMetrics>>,
+        flow_output_message_metric: Option<MeasurementMetricSet<FlowOutputMessageMetrics>>,
+        flow_output_size_metric: Option<MeasurementMetricSet<FlowOutputSizeMetrics>>,
         flow_dropped_items_metric: Option<MeasurementMetricSet<FlowDroppedItemsMetrics>>,
         flow_metrics_active: bool,
         flow_needs_timing: bool,
@@ -636,9 +664,13 @@ impl<PData> ProcessorWrapper<PData> {
                 effect_handler.set_flow_roles(
                     flow_is_start,
                     flow_is_end,
-                    flow_consumed_items_metric,
+                    flow_input_message_metric,
+                    flow_input_items_metric,
+                    flow_input_size_metric,
                     flow_duration_metric,
-                    flow_produced_items_metric,
+                    flow_output_items_metric,
+                    flow_output_message_metric,
+                    flow_output_size_metric,
                     flow_dropped_items_metric,
                     flow_metrics_active,
                     flow_needs_timing,
@@ -679,7 +711,7 @@ impl<PData> ProcessorWrapper<PData> {
                         .report_flow_metrics_reliably(terminal_metrics_deadline)
                         .await
                     {
-                        otap_df_telemetry::otel_warn!(
+                        otel_arrow_dfe_telemetry::otel_warn!(
                             "processor.flow_metrics.final_reporting.fail",
                             error = error.to_string()
                         );
@@ -700,7 +732,7 @@ impl<PData> ProcessorWrapper<PData> {
                         .report_snapshot_reliably_until(snapshot, terminal_metrics_deadline)
                         .await
                     {
-                        otap_df_telemetry::otel_warn!(
+                        otel_arrow_dfe_telemetry::otel_warn!(
                             "processor.metrics.final_reporting.fail",
                             error = error.to_string()
                         );
@@ -731,9 +763,13 @@ impl<PData> ProcessorWrapper<PData> {
                 effect_handler.set_flow_roles(
                     flow_is_start,
                     flow_is_end,
-                    flow_consumed_items_metric,
+                    flow_input_message_metric,
+                    flow_input_items_metric,
+                    flow_input_size_metric,
                     flow_duration_metric,
-                    flow_produced_items_metric,
+                    flow_output_items_metric,
+                    flow_output_message_metric,
+                    flow_output_size_metric,
                     flow_dropped_items_metric,
                     flow_metrics_active,
                     flow_needs_timing,
@@ -774,7 +810,7 @@ impl<PData> ProcessorWrapper<PData> {
                         .report_flow_metrics_reliably(terminal_metrics_deadline)
                         .await
                     {
-                        otap_df_telemetry::otel_warn!(
+                        otel_arrow_dfe_telemetry::otel_warn!(
                             "processor.flow_metrics.final_reporting.fail",
                             error = error.to_string()
                         );
@@ -795,7 +831,7 @@ impl<PData> ProcessorWrapper<PData> {
                         .report_snapshot_reliably_until(snapshot, terminal_metrics_deadline)
                         .await
                     {
-                        otap_df_telemetry::otel_warn!(
+                        otel_arrow_dfe_telemetry::otel_warn!(
                             "processor.metrics.final_reporting.fail",
                             error = error.to_string()
                         );
@@ -968,8 +1004,8 @@ mod tests {
     };
     use crate::error::ProcessorErrorKind;
     use crate::flow_metrics::{
-        FlowAttributeSet, FlowConsumedItemsMetrics, FlowDroppedItemsMetrics, FlowDurationMetrics,
-        FlowProducedItemsMetrics,
+        FlowAttributeSet, FlowDroppedItemsMetrics, FlowDurationMetrics, FlowInputItemsMetrics,
+        FlowOutputItemsMetrics,
     };
     use crate::local::message::{LocalReceiver, LocalSender};
     use crate::local::processor as local;
@@ -984,9 +1020,9 @@ mod tests {
     use crate::testing::processor::{TestContext, ValidateContext};
     use crate::testing::{CtrlMsgCounters, TestMsg, test_node};
     use async_trait::async_trait;
-    use otap_df_config::{SignalType, node::NodeUserConfig};
-    use otap_df_telemetry::common_attributes::SignalAttributes;
-    use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricValue};
+    use otel_arrow_dfe_config::{SignalType, node::NodeUserConfig};
+    use otel_arrow_dfe_telemetry::common_attributes::SignalAttributes;
+    use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricValue};
     use serde_json::Value;
     use std::ops::Add;
     use std::pin::Pin;
@@ -1233,7 +1269,7 @@ mod tests {
 
             if handler.is_flow_end() && self.flow_metric_active && self.flow_compute_ns > 0 {
                 handler.record_flow_duration(SignalType::Logs, self.flow_compute_ns);
-                handler.record_flow_produced_items(SignalType::Logs, 1);
+                handler.record_flow_output_items(SignalType::Logs, 1);
                 self.flow_compute_ns = 0;
                 self.flow_metric_active = false;
             }
@@ -1244,7 +1280,7 @@ mod tests {
             handler: &H,
         ) {
             if handler.is_flow_start() {
-                handler.record_flow_consumed_items(SignalType::Logs, 1);
+                handler.record_flow_input_items(SignalType::Logs, 1);
             }
         }
     }
@@ -1274,19 +1310,19 @@ mod tests {
         }
     }
 
-    /// Scenario: a flow is configured to collect only consumed items at its start node.
-    /// Guarantees: telemetry reports the consumed-items counter and no end-node metrics.
+    /// Scenario: a flow is configured to collect only input items at its start node.
+    /// Guarantees: telemetry reports the input-items counter and no end-node metrics.
     #[test]
-    fn flow_opt_in_consumed_items_reports_only_start_metric() {
+    fn flow_opt_in_input_items_reports_only_start_metric() {
         let (pipeline_ctx, _) = crate::testing::test_pipeline_ctx();
         let entity_key = pipeline_ctx
             .metrics_registry()
             .register_entity(FlowAttributeSet::default());
-        let incoming_metric = FlowConsumedItemsMetrics::register(
+        let incoming_metric = FlowInputItemsMetrics::register(
             &pipeline_ctx.metric_set_registrar_for_entity(entity_key),
         );
         let (metrics_rx, metrics_reporter) =
-            otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(4);
+            otel_arrow_dfe_telemetry::reporter::MetricsReporter::create_new_and_receiver(4);
         let mut handler = local::EffectHandler::<TestMsg>::new(
             test_node("proc"),
             std::collections::HashMap::new(),
@@ -1296,7 +1332,11 @@ mod tests {
         handler.set_flow_roles(
             true,
             false,
+            None,
             Some(incoming_metric),
+            None,
+            None,
+            None,
             None,
             None,
             None,
@@ -1304,34 +1344,34 @@ mod tests {
             false,
         );
 
-        handler.record_flow_consumed_items(SignalType::Logs, 3);
+        handler.record_flow_input_items(SignalType::Logs, 3);
         handler.record_flow_duration(SignalType::Logs, 10);
-        handler.record_flow_produced_items(SignalType::Logs, 4);
+        handler.record_flow_output_items(SignalType::Logs, 4);
         handler.report_flow_metrics();
 
         let snapshot = metrics_rx
             .try_recv()
             .expect("incoming metric should report");
-        let [MetricValue::U64(consumed_items)] = snapshot.get_metrics() else {
-            panic!("expected consumed item metric only");
+        let [MetricValue::U64(input_items)] = snapshot.get_metrics() else {
+            panic!("expected input item metric only");
         };
-        assert_eq!(*consumed_items, 3);
+        assert_eq!(*input_items, 3);
         assert!(metrics_rx.try_recv().is_err());
     }
 
-    /// Scenario: a flow is configured to collect duration and produced items at its end node.
-    /// Guarantees: telemetry reports the duration and produced-items metrics without a start-node metric.
+    /// Scenario: a flow is configured to collect duration and output items at its end node.
+    /// Guarantees: telemetry reports the duration and output-items metrics without a start-node metric.
     #[test]
-    fn flow_opt_in_duration_and_produced_items_reports_only_end_metrics() {
+    fn flow_opt_in_duration_and_output_items_reports_only_end_metrics() {
         let (pipeline_ctx, _) = crate::testing::test_pipeline_ctx();
         let entity_key = pipeline_ctx
             .metrics_registry()
             .register_entity(FlowAttributeSet::default());
         let registrar = pipeline_ctx.metric_set_registrar_for_entity(entity_key);
         let duration_metric = FlowDurationMetrics::register(&registrar);
-        let produced_items_metric = FlowProducedItemsMetrics::register(&registrar);
+        let output_items_metric = FlowOutputItemsMetrics::register(&registrar);
         let (metrics_rx, metrics_reporter) =
-            otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(4);
+            otel_arrow_dfe_telemetry::reporter::MetricsReporter::create_new_and_receiver(4);
         let mut handler = local::EffectHandler::<TestMsg>::new(
             test_node("proc"),
             std::collections::HashMap::new(),
@@ -1342,37 +1382,36 @@ mod tests {
             false,
             true,
             None,
+            None,
+            None,
             Some(duration_metric),
-            Some(produced_items_metric),
+            Some(output_items_metric),
+            None,
+            None,
             None,
             true,
             true,
         );
 
-        handler.record_flow_consumed_items(SignalType::Logs, 3);
+        handler.record_flow_input_items(SignalType::Logs, 3);
         handler.record_flow_duration(SignalType::Logs, 10);
-        handler.record_flow_produced_items(SignalType::Logs, 4);
+        handler.record_flow_output_items(SignalType::Logs, 4);
         handler.report_flow_metrics();
 
         let duration_snapshot = metrics_rx
             .try_recv()
             .expect("duration metric should report");
-        let [
-            MetricValue::Distribution(otap_df_telemetry::instrument::DistributionValue::Basic(
-                duration,
-            )),
-        ] = duration_snapshot.get_metrics()
-        else {
+        let [MetricValue::Distribution(duration)] = duration_snapshot.get_metrics() else {
             panic!("expected duration metric");
         };
-        assert_eq!(duration.count, 1);
-        let produced_items_snapshot = metrics_rx
+        assert_eq!(duration.summary().0, 1);
+        let output_items_snapshot = metrics_rx
             .try_recv()
-            .expect("produced item metric should report");
-        let [MetricValue::U64(produced_items)] = produced_items_snapshot.get_metrics() else {
-            panic!("expected produced item metric");
+            .expect("output item metric should report");
+        let [MetricValue::U64(output_items)] = output_items_snapshot.get_metrics() else {
+            panic!("expected output item metric");
         };
-        assert_eq!(*produced_items, 4);
+        assert_eq!(*output_items, 4);
         assert!(metrics_rx.try_recv().is_err());
     }
 
@@ -1386,7 +1425,7 @@ mod tests {
             &pipeline_ctx.metric_set_registrar_for_entity(entity_key),
         );
         let (metrics_rx, metrics_reporter) =
-            otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(4);
+            otel_arrow_dfe_telemetry::reporter::MetricsReporter::create_new_and_receiver(4);
         let mut handler = local::EffectHandler::<TestMsg>::new(
             test_node("proc"),
             std::collections::HashMap::new(),
@@ -1401,6 +1440,10 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
+            None,
+            None,
             Some(dropped_metric),
             true,
             false,
@@ -1408,9 +1451,9 @@ mod tests {
         assert!(handler.is_flow_decision());
 
         handler.record_flow_dropped_items(SignalType::Logs, 3);
-        // Recording consumed/produced items here must be a no-op (not a start/end node).
-        handler.record_flow_consumed_items(SignalType::Logs, 99);
-        handler.record_flow_produced_items(SignalType::Logs, 99);
+        // Recording input/output items here must be a no-op (not a start/end node).
+        handler.record_flow_input_items(SignalType::Logs, 99);
+        handler.record_flow_output_items(SignalType::Logs, 99);
         handler.report_flow_metrics();
 
         let dropped_snapshot = metrics_rx.try_recv().expect("dropped metric should report");
@@ -1434,9 +1477,9 @@ mod tests {
         };
         let entity_key = pipeline_ctx.metrics_registry().register_entity(attrs);
         let registrar = pipeline_ctx.metric_set_registrar_for_entity(entity_key);
-        let start_metric_set = FlowConsumedItemsMetrics::register(&registrar);
+        let start_metric_set = FlowInputItemsMetrics::register(&registrar);
         let duration_metric_set = FlowDurationMetrics::register(&registrar);
-        let outgoing_metric_set = FlowProducedItemsMetrics::register(&registrar);
+        let outgoing_metric_set = FlowOutputItemsMetrics::register(&registrar);
 
         let config = ProcessorConfig::new("auto_measure_processor");
         let node_id = test_node(config.name.clone());
@@ -1450,7 +1493,7 @@ mod tests {
             &config,
         );
 
-        let (input_tx, input_rx) = otap_df_channel::mpsc::Channel::new(1);
+        let (input_tx, input_rx) = otel_arrow_dfe_channel::mpsc::Channel::new(1);
         processor
             .set_pdata_receiver(
                 node_id.clone(),
@@ -1458,7 +1501,7 @@ mod tests {
             )
             .expect("input receiver should be accepted");
 
-        let (output_tx, output_rx) = otap_df_channel::mpsc::Channel::new(1);
+        let (output_tx, output_rx) = otel_arrow_dfe_channel::mpsc::Channel::new(1);
         processor
             .set_pdata_sender(
                 node_id,
@@ -1469,7 +1512,7 @@ mod tests {
 
         let control_sender = processor.control_sender();
         let (metrics_rx, metrics_reporter) =
-            otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(8);
+            otel_arrow_dfe_telemetry::reporter::MetricsReporter::create_new_and_receiver(8);
         let collect_metrics_reporter = metrics_reporter.clone();
         let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(1);
         let (completion_tx, _completion_rx) = pipeline_completion_msg_channel(1);
@@ -1487,9 +1530,13 @@ mod tests {
                             None,
                             true,
                             true,
+                            None,
                             Some(start_metric_set),
+                            None,
                             Some(duration_metric_set),
                             Some(outgoing_metric_set),
+                            None,
+                            None,
                             None,
                             true,
                             true,
@@ -1521,7 +1568,7 @@ mod tests {
                 let _ = processor_task.await;
 
                 let [MetricValue::U64(consumed_items)] = snapshot.get_metrics() else {
-                    panic!("expected one start flow consumed-item metric");
+                    panic!("expected one flow input-item metric");
                 };
                 assert_eq!(*consumed_items, 1);
 
@@ -1530,29 +1577,25 @@ mod tests {
                         .await
                         .expect("flow_metric stop metric should be reported")
                         .expect("metrics channel should remain open");
-                let [
-                    MetricValue::Distribution(
-                        otap_df_telemetry::instrument::DistributionValue::Basic(compute_duration),
-                    ),
-                ] = snapshot.get_metrics()
-                else {
-                    panic!("expected flow duration MMSC metric");
+                let [MetricValue::Distribution(compute_duration)] = snapshot.get_metrics() else {
+                    panic!("expected flow duration histogram");
                 };
+                let (count, sum, _, _) = compute_duration.summary();
                 assert!(
-                    compute_duration.count >= 1,
+                    count >= 1,
                     "flow_metric compute duration should have at least one observation"
                 );
                 assert!(
-                    compute_duration.sum > 0.0,
+                    sum > 0.0,
                     "flow_metric compute duration sum should be non-zero"
                 );
                 let snapshot =
                     tokio::time::timeout(Duration::from_secs(1), metrics_rx.recv_async())
                         .await
-                        .expect("flow produced-item metric should be reported")
+                        .expect("flow output-item metric should be reported")
                         .expect("metrics channel should remain open");
                 let [MetricValue::U64(produced_items)] = snapshot.get_metrics() else {
-                    panic!("expected flow produced-item metric");
+                    panic!("expected flow output-item metric");
                 };
                 assert_eq!(*produced_items, 1);
             })
@@ -1568,7 +1611,7 @@ mod tests {
         node_id: String,
         // The snapshot_metric is registered externally and shared with the test
         // so the test can verify a snapshot was delivered to metrics_rx.
-        snapshot_metric: MeasurementMetricSet<FlowConsumedItemsMetrics>,
+        snapshot_metric: MeasurementMetricSet<FlowInputItemsMetrics>,
     }
 
     #[async_trait(?Send)]
@@ -1589,7 +1632,7 @@ mod tests {
                         .with(SignalAttributes {
                             signal: SignalType::Logs,
                         })
-                        .consumed_items
+                        .items
                         .add(7);
                     metrics_reporter
                         .report_measurement(&mut self.snapshot_metric)
@@ -1623,7 +1666,7 @@ mod tests {
                         .with(SignalAttributes {
                             signal: SignalType::Logs,
                         })
-                        .consumed_items
+                        .items
                         .add(7);
                     metrics_reporter
                         .report_measurement(&mut self.snapshot_metric)
@@ -1647,10 +1690,10 @@ mod tests {
     /// the snapshots that arrive on metrics_rx.
     async fn run_error_on_pdata_scenario(
         processor: ProcessorWrapper<FlowMetricTestPData>,
-        consumed_metric: MeasurementMetricSet<FlowConsumedItemsMetrics>,
+        input_metric: MeasurementMetricSet<FlowInputItemsMetrics>,
     ) -> (
         Error,
-        flume::Receiver<otap_df_telemetry::metrics::MetricSetSnapshot>,
+        flume::Receiver<otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot>,
     ) {
         let config = ProcessorConfig::new("test_processor");
         let node_id = test_node(config.name.clone());
@@ -1658,8 +1701,8 @@ mod tests {
         let is_shared = p.is_shared();
 
         if !is_shared {
-            let (tx, rx) = otap_df_channel::mpsc::Channel::new(4);
-            let (out_tx, _out_rx) = otap_df_channel::mpsc::Channel::new(4);
+            let (tx, rx) = otel_arrow_dfe_channel::mpsc::Channel::new(4);
+            let (out_tx, _out_rx) = otel_arrow_dfe_channel::mpsc::Channel::new(4);
             p.set_pdata_receiver(node_id.clone(), Receiver::Local(LocalReceiver::mpsc(rx)))
                 .expect("set pdata receiver");
             p.set_pdata_sender(
@@ -1689,7 +1732,7 @@ mod tests {
         }
 
         let (metrics_rx, metrics_reporter) =
-            otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(16);
+            otel_arrow_dfe_telemetry::reporter::MetricsReporter::create_new_and_receiver(16);
         let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (completion_tx, _completion_rx) = pipeline_completion_msg_channel(4);
 
@@ -1702,9 +1745,13 @@ mod tests {
                 metrics_reporter,
                 crate::Interests::empty(),
                 None,
-                true, // flow_is_start: pending consumed items are tracked
+                true, // flow_is_start: pending input items are tracked
                 false,
-                Some(consumed_metric),
+                None,
+                Some(input_metric),
+                None,
+                None,
+                None,
                 None,
                 None,
                 None,
@@ -1723,7 +1770,7 @@ mod tests {
     /// after_processor_receive has already recorded one pending consumed-item;
     /// the processor emits a processor-local snapshot on final CollectTelemetry.
     /// Guarantees: (1) the original processing error is returned; (2) the pending
-    /// flow consumed-items snapshot arrives on metrics_rx; (3) the processor-local
+    /// flow input-items snapshot arrives on metrics_rx; (3) the processor-local
     /// snapshot from final CollectTelemetry also arrives on metrics_rx.
     #[tokio::test]
     async fn local_processor_error_flushes_flow_and_local_metrics() {
@@ -1732,10 +1779,10 @@ mod tests {
             .metrics_registry()
             .register_entity(FlowAttributeSet::default());
         let registrar = pipeline_ctx.metric_set_registrar_for_entity(entity_key);
-        let consumed_metric = FlowConsumedItemsMetrics::register(&registrar);
+        let input_metric = FlowInputItemsMetrics::register(&registrar);
         // A second registration for the processor-local snapshot emitted on
         // CollectTelemetry.
-        let local_metric = FlowConsumedItemsMetrics::register(&registrar);
+        let local_metric = FlowInputItemsMetrics::register(&registrar);
 
         let config = ProcessorConfig::new("test_processor");
         let user_config = Arc::new(NodeUserConfig::new_processor_config("test_processor"));
@@ -1746,7 +1793,7 @@ mod tests {
         let wrapper =
             ProcessorWrapper::local(proc, test_node(config.name.clone()), user_config, &config);
 
-        let (err, metrics_rx) = run_error_on_pdata_scenario(wrapper, consumed_metric).await;
+        let (err, metrics_rx) = run_error_on_pdata_scenario(wrapper, input_metric).await;
 
         let Error::ProcessorError { error, .. } = err else {
             panic!("expected ProcessorError, got {err:?}");
@@ -1756,20 +1803,17 @@ mod tests {
             "original error must be returned"
         );
 
-        // The pending flow consumed-items snapshot flushed during finalization.
+        // The pending flow input-items snapshot flushed during finalization.
         let flow_snapshot = metrics_rx
             .try_recv()
-            .expect("flow consumed-items snapshot must be delivered after error");
-        let [MetricValue::U64(consumed)] = flow_snapshot.get_metrics() else {
+            .expect("flow input-items snapshot must be delivered after error");
+        let [MetricValue::U64(input)] = flow_snapshot.get_metrics() else {
             panic!(
-                "expected U64 consumed-items metric, got {:?}",
+                "expected U64 input-items metric, got {:?}",
                 flow_snapshot.get_metrics()
             );
         };
-        assert_eq!(
-            *consumed, 1,
-            "one PData message was consumed before the error"
-        );
+        assert_eq!(*input, 1, "one PData message entered before the error");
 
         // The processor-local snapshot emitted during final CollectTelemetry.
         let local_snapshot = metrics_rx
@@ -1796,7 +1840,7 @@ mod tests {
     /// after_processor_receive has already recorded one pending consumed-item;
     /// the processor emits a processor-local snapshot on final CollectTelemetry.
     /// Guarantees: (1) the original processing error is returned; (2) the pending
-    /// flow consumed-items snapshot arrives on metrics_rx; (3) the processor-local
+    /// flow input-items snapshot arrives on metrics_rx; (3) the processor-local
     /// snapshot from final CollectTelemetry also arrives on metrics_rx.
     #[tokio::test]
     async fn shared_processor_error_flushes_flow_and_local_metrics() {
@@ -1805,8 +1849,8 @@ mod tests {
             .metrics_registry()
             .register_entity(FlowAttributeSet::default());
         let registrar = pipeline_ctx.metric_set_registrar_for_entity(entity_key);
-        let consumed_metric = FlowConsumedItemsMetrics::register(&registrar);
-        let local_metric = FlowConsumedItemsMetrics::register(&registrar);
+        let input_metric = FlowInputItemsMetrics::register(&registrar);
+        let local_metric = FlowInputItemsMetrics::register(&registrar);
 
         let config = ProcessorConfig::new("test_processor");
         let user_config = Arc::new(NodeUserConfig::new_processor_config("test_processor"));
@@ -1817,7 +1861,7 @@ mod tests {
         let wrapper =
             ProcessorWrapper::shared(proc, test_node(config.name.clone()), user_config, &config);
 
-        let (err, metrics_rx) = run_error_on_pdata_scenario(wrapper, consumed_metric).await;
+        let (err, metrics_rx) = run_error_on_pdata_scenario(wrapper, input_metric).await;
 
         let Error::ProcessorError { error, .. } = err else {
             panic!("expected ProcessorError, got {err:?}");
@@ -1829,17 +1873,14 @@ mod tests {
 
         let flow_snapshot = metrics_rx
             .try_recv()
-            .expect("flow consumed-items snapshot must be delivered after error");
-        let [MetricValue::U64(consumed)] = flow_snapshot.get_metrics() else {
+            .expect("flow input-items snapshot must be delivered after error");
+        let [MetricValue::U64(input)] = flow_snapshot.get_metrics() else {
             panic!(
-                "expected U64 consumed-items metric, got {:?}",
+                "expected U64 input-items metric, got {:?}",
                 flow_snapshot.get_metrics()
             );
         };
-        assert_eq!(
-            *consumed, 1,
-            "one PData message was consumed before the error"
-        );
+        assert_eq!(*input, 1, "one PData message entered before the error");
 
         let local_snapshot = metrics_rx
             .try_recv()
@@ -1900,15 +1941,15 @@ mod tests {
         let entity_key = pipeline_ctx
             .metrics_registry()
             .register_entity(FlowAttributeSet::default());
-        let consumed_metric = FlowConsumedItemsMetrics::register(
+        let input_metric = FlowInputItemsMetrics::register(
             &pipeline_ctx.metric_set_registrar_for_entity(entity_key),
         );
 
         let config = ProcessorConfig::new("test_processor");
         let node_id = test_node(config.name.clone());
         let user_config = Arc::new(NodeUserConfig::new_processor_config("test_processor"));
-        let (input_tx, input_rx) = otap_df_channel::mpsc::Channel::new(4);
-        let (out_tx, _out_rx) = otap_df_channel::mpsc::Channel::new(4);
+        let (input_tx, input_rx) = otel_arrow_dfe_channel::mpsc::Channel::new(4);
+        let (out_tx, _out_rx) = otel_arrow_dfe_channel::mpsc::Channel::new(4);
         let mut p = ProcessorWrapper::local(
             ErrorOnPDataAndCollectProcessor,
             node_id.clone(),
@@ -1928,7 +1969,7 @@ mod tests {
         .expect("set pdata sender");
 
         let (metrics_rx, metrics_reporter) =
-            otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(4);
+            otel_arrow_dfe_telemetry::reporter::MetricsReporter::create_new_and_receiver(4);
         let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (completion_tx, _completion_rx) = pipeline_completion_msg_channel(4);
 
@@ -1947,10 +1988,14 @@ mod tests {
                 None,
                 true,
                 false,
-                Some(consumed_metric),
-                None,
-                None,
-                None,
+                None,               // input messages
+                Some(input_metric), // input items
+                None,               // input size
+                None,               // compute duration
+                None,               // output items
+                None,               // output messages
+                None,               // output size
+                None,               // dropped items
                 true,
                 false,
                 crate::terminal_state::TerminalMetricsDeadline::default(),
@@ -1958,21 +2003,18 @@ mod tests {
             .await;
 
         drop(_ctrl_keepalive);
-        // The finalization block still flushes the flow consumed-items snapshot
+        // The finalization block still flushes the flow input-items snapshot
         // that was accumulated by after_processor_receive before the error.
         let flow_snapshot = metrics_rx
             .try_recv()
-            .expect("flow consumed-items snapshot must still be delivered");
-        let [MetricValue::U64(consumed)] = flow_snapshot.get_metrics() else {
+            .expect("flow input-items snapshot must still be delivered");
+        let [MetricValue::U64(input)] = flow_snapshot.get_metrics() else {
             panic!(
-                "expected U64 consumed-items metric, got {:?}",
+                "expected U64 input-items metric, got {:?}",
                 flow_snapshot.get_metrics()
             );
         };
-        assert_eq!(
-            *consumed, 1,
-            "one PData message was consumed before the error"
-        );
+        assert_eq!(*input, 1, "one PData message entered before the error");
         // CollectTelemetry returned an error before emitting any processor-local
         // snapshot, so no additional snapshots should be present.
         assert!(

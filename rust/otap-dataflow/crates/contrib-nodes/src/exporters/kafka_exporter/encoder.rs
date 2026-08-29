@@ -4,8 +4,8 @@
 //! Encoding logic for converting OTAP payloads to bytes for Kafka.
 
 use super::error::KafkaExporterError;
-use otap_df_pdata::{OtapArrowRecords, Producer as PdataProducer};
-use otap_df_pdata::{OtapPayload, OtlpProtoBytes, TryIntoWithOptions};
+use otel_arrow_dfe_pdata::{OtapArrowRecords, Producer as PdataProducer};
+use otel_arrow_dfe_pdata::{OtapPayload, OtlpProtoBytes, TryIntoWithOptions};
 
 use prost::Message as ProstMessage;
 
@@ -72,7 +72,7 @@ mod tests {
         // Basic smoke test: OtlpProtoBytes should pass through unchanged
         let bytes = vec![1, 2, 3, 4, 5];
         let otlp_bytes = OtlpProtoBytes::ExportTracesRequest(bytes.clone().into());
-        let payload = OtapPayload::OtlpBytes(otlp_bytes);
+        let payload = OtapPayload::from(otlp_bytes);
 
         let result = encode_to_otlp_bytes(payload).expect("encoding should succeed");
         assert_eq!(result, bytes);

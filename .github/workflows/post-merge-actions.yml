@@ -1,4 +1,5 @@
 name: Post-Merge Actions
+# See README.md in this directory for CI event, status, and cache strategy.
 permissions:
   contents: read
 
@@ -6,6 +7,11 @@ on:
   push:
     branches:
       - main
+    paths:
+      - "rust/**"
+      - ".github/workflows/rust-ci.yml"
+      - ".github/workflows/post-merge-actions.yml"
+      - ".github/actions/install-symcrypt/**"
   workflow_dispatch:
 
 env:
@@ -28,24 +34,31 @@ jobs:
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: stable
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Initialize required build cache
+        id: rust-cache
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           prefix-key: v1-rust
           shared-key: build_required
           workspaces: ./rust/otap-dataflow
           cache-bin: false
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      # Exact hits already contain the reusable dependency artifacts. A miss
+      # or fallback restore must compile so the post step can save the new key.
       - name: Free disk space
+        if: steps.rust-cache.outputs.cache-hit != 'true'
         run: |
           sudo rm -rf /usr/lib/jvm /usr/share/dotnet /usr/share/swift /usr/local/.ghcup
           sudo rm -rf /usr/local/julia* /usr/local/lib/android /usr/local/share/chromium
           sudo rm -rf /opt/microsoft /opt/google /opt/az /usr/local/share/powershell
-      - name: install nextest
+      - name: Install nextest
+        if: steps.rust-cache.outputs.cache-hit != 'true'
         uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
         with:
           tool: cargo-nextest
       - name: Warm required build cache
-        run: cargo nextest archive --locked --all-features --workspace --archive-file nextest-archive.tar.zst
+        if: steps.rust-cache.outputs.cache-hit != 'true'
+        run: cargo nextest list --locked --all-features --workspace --list-type binaries-only --message-format json
         working-directory: ./rust/otap-dataflow
 
   warm-windows:
@@ -57,25 +70,34 @@ jobs:
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: stable
-      - name: Install SymCrypt
-        uses: ./.github/actions/install-symcrypt
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Initialize required build cache
+        id: rust-cache
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           prefix-key: v1-rust
           shared-key: build_required
           workspaces: ./rust/otap-dataflow
           cache-bin: false
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      # Exact hits already contain the reusable dependency artifacts. A miss
+      # or fallback restore must compile so the post step can save the new key.
+      - name: Install SymCrypt
+        if: steps.rust-cache.outputs.cache-hit != 'true'
+        uses: ./.github/actions/install-symcrypt
       - name: Free disk space
+        if: steps.rust-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           if (Test-Path "C:\Android") { Remove-Item -Recurse -Force "C:\Android" }
           if (Test-Path "C:\SeleniumWebDrivers") { Remove-Item -Recurse -Force "C:\SeleniumWebDrivers" }
           if (Test-Path "C:\imagemagick") { Remove-Item -Recurse -Force "C:\imagemagick" }
-      - name: install nextest
+      - name: Install nextest
+        if: steps.rust-cache.outputs.cache-hit != 'true'
         uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
         with:
           tool: cargo-nextest
       - name: Warm required build cache
-        run: cargo nextest archive --locked --no-default-features --features=crypto-symcrypt,mimalloc,azure,aws,azure-monitor-exporter,geneva-exporter,contrib-processors,unsafe-optimizations --workspace --archive-file nextest-archive.tar.zst
+        if: steps.rust-cache.outputs.cache-hit != 'true'
+        # Keep the feature set synchronized with rust-ci.yml's required Windows build.
+        run: cargo nextest list --locked --no-default-features --features=crypto-symcrypt,mimalloc,azure,aws,azure-monitor-exporter,geneva-exporter,contrib-processors,unsafe-optimizations --workspace --list-type binaries-only --message-format json
         working-directory: ./rust/otap-dataflow

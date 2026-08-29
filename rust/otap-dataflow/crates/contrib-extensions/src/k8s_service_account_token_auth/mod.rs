@@ -30,15 +30,15 @@ mod tests;
 use std::sync::Arc;
 
 use linkme::distributed_slice;
-use otap_df_config::error::Error as ConfigError;
-use otap_df_config::extension::ExtensionUserConfig;
-use otap_df_engine::ExtensionFactory;
-use otap_df_engine::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer;
-use otap_df_engine::config::ExtensionConfig;
-use otap_df_engine::context::ExtensionContext;
-use otap_df_engine::extension::{ExtensionBundle, ExtensionWrapper};
-use otap_df_engine::extension_capabilities;
-use otap_df_otap::OTAP_EXTENSION_FACTORIES;
+use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_config::extension::ExtensionUserConfig;
+use otel_arrow_dfe_engine::ExtensionFactory;
+use otel_arrow_dfe_engine::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer;
+use otel_arrow_dfe_engine::config::ExtensionConfig;
+use otel_arrow_dfe_engine::context::ExtensionContext;
+use otel_arrow_dfe_engine::extension::{ExtensionBundle, ExtensionWrapper};
+use otel_arrow_dfe_engine::extension_capabilities;
+use otel_arrow_dfe_otap::OTAP_EXTENSION_FACTORIES;
 
 use self::authorizer::{LocalK8sServiceAccountTokenAuth, SharedK8sServiceAccountTokenAuth};
 use self::config::Config;
@@ -67,7 +67,7 @@ fn validate_config(config: &serde_json::Value) -> Result<(), ConfigError> {
 /// Builds the dual-variant authorizer bundle.
 fn create(
     _ext_ctx: &ExtensionContext,
-    name: otap_df_config::ExtensionId,
+    name: otel_arrow_dfe_config::ExtensionId,
     ext_config: Arc<ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
 ) -> Result<ExtensionBundle, ConfigError> {
@@ -107,7 +107,7 @@ fn create(
 
 /// Factory registration for the Kubernetes service-account-token auth extension.
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Extension)]
+#[otel_arrow_dfe_engine::component_inventory(category = Extension)]
 #[distributed_slice(OTAP_EXTENSION_FACTORIES)]
 pub static K8S_SERVICE_ACCOUNT_TOKEN_AUTH_EXTENSION: ExtensionFactory = ExtensionFactory {
     name: K8S_SERVICE_ACCOUNT_TOKEN_AUTH_URN,

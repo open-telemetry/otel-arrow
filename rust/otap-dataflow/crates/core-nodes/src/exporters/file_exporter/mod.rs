@@ -22,29 +22,31 @@ use metrics::{
     FileExporterExportMetrics, FileFailureMetrics, FileOperation, FileSignalMetrics,
     SignalOperationAttributes,
 };
-use otap_df_config::SignalType;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::config::ExporterConfig;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
-use otap_df_engine::error::{Error, ExporterErrorKind};
-use otap_df_engine::exporter::ExporterWrapper;
-use otap_df_engine::local::exporter::{EffectHandler, Exporter};
-use otap_df_engine::message::{ExporterInbox, Message};
-use otap_df_engine::node::NodeId;
-use otap_df_engine::terminal_state::TerminalState;
-use otap_df_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
-use otap_df_otap::OTAP_EXPORTER_FACTORIES;
-use otap_df_otap::pdata::OtapPdata;
-use otap_df_pdata::views::otap::{OtapLogsView, OtapMetricsView, OtapTracesView};
-use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
-use otap_df_pdata::views::otlp::bytes::metrics::RawMetricsData;
-use otap_df_pdata::views::otlp::bytes::traces::RawTraceData;
-use otap_df_pdata::{OtapPayload, OtapPayloadHelpers};
-use otap_df_telemetry::attributes::AttributeEnum as _;
-use otap_df_telemetry::common_attributes::{Outcome, SignalAttributes, SignalOutcomeAttributes};
-use otap_df_telemetry::metrics::MeasurementMetricSet;
-use otap_df_telemetry::{otel_error, otel_info, otel_warn};
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_engine::config::ExporterConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
+use otel_arrow_dfe_engine::error::{Error, ExporterErrorKind};
+use otel_arrow_dfe_engine::exporter::ExporterWrapper;
+use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
+use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
+use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
+use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_pdata::views::otap::{OtapLogsView, OtapMetricsView, OtapTracesView};
+use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
+use otel_arrow_dfe_pdata::views::otlp::bytes::metrics::RawMetricsData;
+use otel_arrow_dfe_pdata::views::otlp::bytes::traces::RawTraceData;
+use otel_arrow_dfe_pdata::{OtapPayload, OtapPayloadHelpers, PayloadData};
+use otel_arrow_dfe_telemetry::attributes::AttributeEnum as _;
+use otel_arrow_dfe_telemetry::common_attributes::{
+    Outcome, SignalAttributes, SignalOutcomeAttributes,
+};
+use otel_arrow_dfe_telemetry::metrics::MeasurementMetricSet;
+use otel_arrow_dfe_telemetry::{otel_error, otel_info, otel_warn};
 use std::sync::Arc;
 use tokio::time::Instant;
 use writer::{SignalWriter, WriterFailure};
@@ -66,35 +68,37 @@ pub struct FileExporter {
 
 /// Declares the file exporter as a local exporter factory.
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Exporter)]
+#[otel_arrow_dfe_engine::component_inventory(category = Exporter)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static FILE_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: FILE_EXPORTER_URN,
-    create: |pipeline: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             exporter_config: &ExporterConfig,
-             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
-        let config = FileExporterConfig::parse(&node_config.config)?;
-        let paths = config.render_paths(pipeline.core_id(), pipeline.deployment_generation())?;
-        let exporter = FileExporter {
-            frame: Vec::with_capacity(config.max_frame_bytes.min(8 * 1024)),
-            config,
-            paths,
-            writers: std::array::from_fn(|_| None),
-            failure_active: [false; 3],
-            export_metrics: FileExporterExportMetrics::register(&pipeline),
-            signal_metrics: FileSignalMetrics::register(&pipeline),
-            failure_metrics: FileFailureMetrics::register(&pipeline),
-        };
-        Ok(ExporterWrapper::local(
-            exporter,
-            node,
-            node_config,
-            exporter_config,
-        ))
-    },
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    create:
+        |pipeline: PipelineContext,
+         node: NodeId,
+         node_config: Arc<NodeUserConfig>,
+         exporter_config: &ExporterConfig,
+         _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
+            let config = FileExporterConfig::parse(&node_config.config)?;
+            let paths =
+                config.render_paths(pipeline.core_id(), pipeline.deployment_generation())?;
+            let exporter = FileExporter {
+                frame: Vec::with_capacity(config.max_frame_bytes.min(8 * 1024)),
+                config,
+                paths,
+                writers: std::array::from_fn(|_| None),
+                failure_active: [false; 3],
+                export_metrics: FileExporterExportMetrics::register(&pipeline),
+                signal_metrics: FileSignalMetrics::register(&pipeline),
+                failure_metrics: FileFailureMetrics::register(&pipeline),
+            };
+            Ok(ExporterWrapper::local(
+                exporter,
+                node,
+                node_config,
+                exporter_config,
+            ))
+        },
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: |value| FileExporterConfig::parse(value).map(|_| ()),
 };
 
@@ -147,7 +151,7 @@ impl Exporter<OtapPdata> for FileExporter {
 impl FileExporter {
     async fn export_pdata(
         &mut self,
-        pdata: OtapPdata,
+        mut pdata: OtapPdata,
         effect_handler: &EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         let signal = pdata.signal_type();
@@ -223,7 +227,7 @@ impl FileExporter {
         self.signal_metrics
             .with(SignalAttributes { signal })
             .items
-            .add(pdata.payload_ref().num_items() as u64);
+            .add(pdata.num_items() as u64);
         self.signal_metrics
             .with(SignalAttributes { signal })
             .bytes
@@ -364,25 +368,25 @@ fn encode_payload(
     max_frame_bytes: usize,
 ) -> Result<(), EncodeFailure> {
     frame.clear();
-    match payload {
-        OtapPayload::OtlpBytes(bytes) => match bytes {
-            otap_df_pdata::OtlpProtoBytes::ExportLogsRequest(_) => {
+    match payload.data() {
+        PayloadData::OtlpBytes(bytes) => match bytes {
+            otel_arrow_dfe_pdata::OtlpProtoBytes::ExportLogsRequest(_) => {
                 let view = RawLogsData::try_from(bytes)
                     .map_err(|error| EncodeFailure::View(error.to_string()))?;
                 encode_logs(&view, frame, max_frame_bytes)?;
             }
-            otap_df_pdata::OtlpProtoBytes::ExportMetricsRequest(bytes) => {
+            otel_arrow_dfe_pdata::OtlpProtoBytes::ExportMetricsRequest(bytes) => {
                 let view = RawMetricsData::try_new(bytes)
                     .map_err(|error| EncodeFailure::View(error.to_string()))?;
                 encode_metrics(&view, frame, max_frame_bytes)?;
             }
-            otap_df_pdata::OtlpProtoBytes::ExportTracesRequest(bytes) => {
+            otel_arrow_dfe_pdata::OtlpProtoBytes::ExportTracesRequest(bytes) => {
                 let view = RawTraceData::try_new(bytes)
                     .map_err(|error| EncodeFailure::View(error.to_string()))?;
                 encode_traces(&view, frame, max_frame_bytes)?;
             }
         },
-        OtapPayload::OtapArrowRecords(records) => match records.signal_type() {
+        PayloadData::OtapArrowRecords(records) => match records.signal_type() {
             SignalType::Logs => {
                 let view = OtapLogsView::try_from(records)
                     .map_err(|error| EncodeFailure::View(error.to_string()))?;
@@ -427,22 +431,26 @@ fn exporter_error(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_engine::Interests;
-    use otap_df_engine::control::PipelineCompletionMsg;
-    use otap_df_engine::testing::exporter::{
+    use otel_arrow_dfe_engine::Interests;
+    use otel_arrow_dfe_engine::control::PipelineCompletionMsg;
+    use otel_arrow_dfe_engine::testing::exporter::{
         TestContext, TestRuntime, create_exporter_from_factory,
     };
-    use otap_df_otap::testing::{TestCallData, create_empty_test_pdata};
-    use otap_df_pdata::OtlpProtoBytes;
-    use otap_df_pdata::encode::{
+    use otel_arrow_dfe_otap::testing::{TestCallData, create_empty_test_pdata};
+    use otel_arrow_dfe_pdata::OtlpProtoBytes;
+    use otel_arrow_dfe_pdata::encode::{
         encode_logs_otap_batch, encode_metrics_otap_batch, encode_spans_otap_batch,
     };
-    use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
-    use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
-    use otap_df_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
-    use otap_df_pdata::proto::opentelemetry::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
-    use otap_df_pdata::proto::opentelemetry::metrics::v1::{Metric, ResourceMetrics, ScopeMetrics};
-    use otap_df_pdata::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans, Span};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{
+        LogRecord, ResourceLogs, ScopeLogs,
+    };
+    use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
+        Metric, ResourceMetrics, ScopeMetrics,
+    };
+    use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans, Span};
     use serde_json::json;
     use std::time::{Duration, Instant as StdInstant};
     use tempfile::tempdir;
@@ -541,9 +549,9 @@ mod tests {
         let metrics = RawMetricsData::try_new(&metrics_bytes).unwrap();
         let traces = RawTraceData::try_new(&traces_bytes).unwrap();
         let payloads = [
-            OtapPayload::OtapArrowRecords(encode_logs_otap_batch(&logs).unwrap()),
-            OtapPayload::OtapArrowRecords(encode_metrics_otap_batch(&metrics).unwrap()),
-            OtapPayload::OtapArrowRecords(encode_spans_otap_batch(&traces).unwrap()),
+            OtapPayload::from(encode_logs_otap_batch(&logs).unwrap()),
+            OtapPayload::from(encode_metrics_otap_batch(&metrics).unwrap()),
+            OtapPayload::from(encode_spans_otap_batch(&traces).unwrap()),
         ];
         let expected_fields = ["resourceLogs", "resourceMetrics", "resourceSpans"];
         let mut frame = Vec::new();
@@ -559,7 +567,7 @@ mod tests {
     #[test]
     fn malformed_otlp_payload_clears_the_reusable_frame() {
         let payload =
-            OtapPayload::OtlpBytes(OtlpProtoBytes::new_from_bytes(SignalType::Logs, vec![0x80]));
+            OtapPayload::from(OtlpProtoBytes::new_from_bytes(SignalType::Logs, vec![0x80]));
         let mut frame = b"previous telemetry\n".to_vec();
         assert!(encode_payload(&payload, &mut frame, 4096).is_err());
         assert!(frame.is_empty());

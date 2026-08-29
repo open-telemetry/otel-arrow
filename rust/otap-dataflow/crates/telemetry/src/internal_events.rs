@@ -108,7 +108,7 @@ pub mod _private {
 ///
 /// # Example:
 /// ```ignore
-/// use otap_df_telemetry::otel_info;
+/// use otel_arrow_dfe_telemetry::otel_info;
 /// otel_info!("receiver.start", version = "1.0.0");
 /// ```
 #[macro_export]
@@ -141,7 +141,7 @@ macro_rules! otel_info {
 ///
 /// # Example:
 /// ```ignore
-/// use otap_df_telemetry::otel_warn;
+/// use otel_arrow_dfe_telemetry::otel_warn;
 /// otel_warn!("channel.full", dropped_count = 10);
 /// ```
 #[macro_export]
@@ -172,7 +172,7 @@ macro_rules! otel_warn {
 ///
 /// # Example:
 /// ```ignore
-/// use otap_df_telemetry::otel_debug;
+/// use otel_arrow_dfe_telemetry::otel_debug;
 /// otel_debug!("processing.batch", batch_size = 100);
 /// ```
 #[macro_export]
@@ -203,7 +203,7 @@ macro_rules! otel_debug {
 ///
 /// # Example:
 /// ```ignore
-/// use otap_df_telemetry::otel_error;
+/// use otel_arrow_dfe_telemetry::otel_error;
 /// otel_error!("export.failure", error_code = 500);
 /// ```
 #[macro_export]
@@ -241,7 +241,7 @@ macro_rules! otel_error {
 ///
 /// # Example:
 /// ```ignore
-/// use otap_df_telemetry::otel_event;
+/// use otel_arrow_dfe_telemetry::otel_event;
 /// use tracing::Level;
 ///
 /// let level = Level::DEBUG;
@@ -310,7 +310,7 @@ macro_rules! otel_event {
 /// where ? signifies debug and % signifies display.
 ///
 /// ```ignore
-/// use otap_df_telemetry::raw_error;
+/// use otel_arrow_dfe_telemetry::raw_error;
 /// raw_error!("logging.write.failed", error = ?err, thing = %display);
 /// ```
 #[macro_export]

@@ -81,7 +81,7 @@ pub enum Error {
     },
 
     /// Unexpected HTTP status.
-    #[error("Unexpected status ({status})")]
+    #[error("Unexpected status ({status}): {body}")]
     UnexpectedStatus {
         /// The HTTP status code.
         status: StatusCode,
@@ -118,12 +118,12 @@ pub enum Error {
     LogsViewCreationFailed {
         /// The underlying error.
         #[source]
-        source: otap_df_pdata::error::Error,
+        source: otel_arrow_dfe_pdata::error::Error,
     },
 
     /// Channel receive error.
     #[error("Channel receive error")]
-    ChannelRecv(#[source] otap_df_channel::error::RecvError),
+    ChannelRecv(#[source] otel_arrow_dfe_channel::error::RecvError),
 
     /// Client pool initialization failed.
     #[error("Client pool initialization failed")]
@@ -361,10 +361,13 @@ mod tests {
     fn test_unexpected_status_message() {
         let error = Error::UnexpectedStatus {
             status: StatusCode::IM_A_TEAPOT,
-            body: "I'm a teapot".to_string(),
+            body: "hello from the teapot".to_string(),
         };
         // Note: http crate canonical_reason() returns "I'm a teapot" (lowercase)
-        assert_eq!(error.to_string(), "Unexpected status (418 I'm a teapot)");
+        assert_eq!(
+            error.to_string(),
+            "Unexpected status (418 I'm a teapot): hello from the teapot"
+        );
     }
 
     // ==================== Export Error Tests ====================
@@ -509,7 +512,7 @@ mod tests {
     #[test]
     fn test_logs_view_creation_failed_message() {
         let error = Error::LogsViewCreationFailed {
-            source: otap_df_pdata::error::Error::ColumnNotFound {
+            source: otel_arrow_dfe_pdata::error::Error::ColumnNotFound {
                 name: "test_column".to_string(),
             },
         };
@@ -519,7 +522,7 @@ mod tests {
 
     #[test]
     fn test_channel_recv_message() {
-        let recv_error = otap_df_channel::error::RecvError::Closed;
+        let recv_error = otel_arrow_dfe_channel::error::RecvError::Closed;
         let error = Error::ChannelRecv(recv_error);
         assert_eq!(error.to_string(), "Channel receive error");
         assert!(error.source().is_some());

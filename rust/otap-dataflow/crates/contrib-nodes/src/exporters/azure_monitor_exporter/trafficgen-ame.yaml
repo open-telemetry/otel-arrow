@@ -18,7 +18,7 @@ policies:
 engine:
   telemetry:
     logs:
-      level: "info,typespec_client_core=warn,otap-df-contrib-nodes=debug"
+      level: "info,typespec_client_core=warn,otel-arrow-dfe-contrib-nodes=debug"
 
 groups:
   default:

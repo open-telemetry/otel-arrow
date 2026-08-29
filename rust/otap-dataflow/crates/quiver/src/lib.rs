@@ -40,7 +40,7 @@
 //! another task to wake waiting consumers immediately.
 //!
 //! ```no_run
-//! use quiver::{QuiverEngine, QuiverConfig, DiskBudget, RetentionPolicy, SubscriberId, CancellationToken};
+//! use otel_arrow_dfe_quiver::{QuiverEngine, QuiverConfig, DiskBudget, RetentionPolicy, SubscriberId, CancellationToken};
 //! use std::sync::Arc;
 //! use std::time::Duration;
 //! use std::path::PathBuf;
@@ -134,7 +134,7 @@ pub use config::{
 };
 pub use engine::{
     MaintenanceStats, QuiverEngine, QuiverEngineBuilder, RetentionLossCounts,
-    RetentionLossSnapshot, WalItemCounter,
+    RetentionLossSnapshot, WalByteCounter, WalItemCounter,
 };
 pub use error::{QuiverError, Result};
 

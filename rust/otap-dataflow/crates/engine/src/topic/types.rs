@@ -3,9 +3,9 @@
 
 //! Core value types shared across the topic crate.
 
-use otap_df_config::SubscriptionGroupName;
-use otap_df_config::topic::{TopicBroadcastAckMode, TopicBroadcastOnLagPolicy};
-use otap_df_telemetry::otel_warn;
+use otel_arrow_dfe_config::SubscriptionGroupName;
+use otel_arrow_dfe_config::topic::{TopicBroadcastAckMode, TopicBroadcastOnLagPolicy};
+use otel_arrow_dfe_telemetry::otel_warn;
 use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;

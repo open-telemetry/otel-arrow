@@ -39,8 +39,8 @@ Exception rule (traces):
 ## How to emit events in code
 
 All events MUST be emitted using the `otel_*` macros from the
-`otap_df_telemetry` crate. **Do not** use `tracing::info!`, `log::info!`, or
-`println!` directly. This rule is enforced by
+`otel_arrow_dfe_telemetry` crate. **Do not** use `tracing::info!`,
+`log::info!`, or `println!` directly. This rule is enforced by
 `scripts/check-direct-telemetry-macros.sh` (run in CI).
 
 **Why wrappers instead of raw `tracing` macros?**
@@ -73,7 +73,7 @@ The first argument is always the **event name** (a string literal). Optional
 key-value pairs follow as structured attributes.
 
 ```rust
-use otap_df_telemetry::otel_info;
+use otel_arrow_dfe_telemetry::otel_info;
 
 // Event name only (no attributes):
 otel_info!("pipeline.run.start");

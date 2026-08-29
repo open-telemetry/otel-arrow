@@ -3,8 +3,8 @@
 
 //! Telemetry definitions for the temporal reaggregation processor.
 
-use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry_macros::metric_set;
+use otel_arrow_dfe_telemetry::instrument::Counter;
+use otel_arrow_dfe_telemetry_macros::metric_set;
 
 /// Emitted when creating a view fails so we cannot process the data
 pub const VIEW_CREATION_FAILED_EVENT: &str = "temporal_reaggregation.view.creation_failed";

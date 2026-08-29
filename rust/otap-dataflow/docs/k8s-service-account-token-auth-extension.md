@@ -82,7 +82,7 @@ its first production implementation.
 
 The extension registers into `OTAP_EXTENSION_FACTORIES` via `linkme` when the
 `k8s-service-account-token-auth-extension` feature is enabled, and advertises the
-`bearer_token_authorizer` capability as a **dual variant** -- a `Send` shared
+`bearer_token_authorizer` capability as a **dual variant** -- a `Send + Sync` shared
 variant and a `!Send` local variant -- sharing one common implementation:
 
 ```rust
@@ -98,9 +98,9 @@ client on demand. Both variants live side by side in `authorizer.rs` over common
 `core`, `config`, and `reviewer` logic, each holding its own cache:
 
 - **Shared variant** (`SharedK8sServiceAccountTokenAuth`): state shared across clones
-  lives behind an `Arc` (required by the shared instance factory's `Send` bound)
-  and the decision cache is guarded by a `std::sync::Mutex`. Served to `Send`
-  consumers, and to local consumers when no local variant exists (the
+  lives behind an `Arc` (required by the shared capability's `Send + Sync`
+  contract) and the decision cache is guarded by a `std::sync::Mutex`. Served
+  to shared consumers, and to local consumers when no local variant exists (the
   `SharedAsLocal` fallback).
 - **Local variant** (`LocalK8sServiceAccountTokenAuth`): state lives behind an `Rc`
   (the local instance factory has no `Send` bound) and the cache is a `RefCell`.

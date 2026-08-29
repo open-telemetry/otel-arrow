@@ -19,7 +19,7 @@
 //! # Example
 //!
 //! ```rust
-//! use otap_df_config::env_substitution::substitute_env_vars;
+//! use otel_arrow_dfe_config::env_substitution::substitute_env_vars;
 //!
 //! // With the environment variable ENDPOINT=localhost:4317
 //! let result = substitute_env_vars("endpoint: ${env:ENDPOINT:-localhost:4317}").unwrap();

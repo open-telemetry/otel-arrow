@@ -11,11 +11,11 @@
 //!
 //! Gauges are instantaneous values that are set via `set`.
 
-use otap_df_expohisto::{Error as HistogramError, HistogramNN};
+use otel_arrow_dfe_expohisto::{Error as HistogramError, HistogramNN};
 
 /// Bucket totals recovered by [`DistributionValue::scan_buckets`], re-exported so
-/// callers need not depend on `otap_df_expohisto` directly.
-pub use otap_df_expohisto::BucketTotals;
+/// callers need not depend on `otel_arrow_dfe_expohisto` directly.
+pub use otel_arrow_dfe_expohisto::BucketTotals;
 use std::fmt::Debug;
 use std::ops::{AddAssign, SubAssign};
 use std::time::Instant;

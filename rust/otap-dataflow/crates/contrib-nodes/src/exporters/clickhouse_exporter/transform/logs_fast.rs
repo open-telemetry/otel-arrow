@@ -89,8 +89,8 @@ use arrow::array::{
 };
 use arrow::compute::cast;
 use arrow::datatypes::{DataType, Field, Schema, UInt8Type, UInt16Type};
-use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otap_df_pdata::{OtapArrowRecords, schema::consts};
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_dfe_pdata::{OtapArrowRecords, schema::consts};
 
 use crate::exporters::clickhouse_exporter::arrays::{StructColumnAccessor, get_u16_array_opt};
 use crate::exporters::clickhouse_exporter::consts as ch_consts;
@@ -422,14 +422,14 @@ fn inline_attributes(
 mod tests {
     use super::*;
     use arrow::array::UInt32Builder;
-    use otap_df_pdata::proto::opentelemetry::common::v1::{
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{
         AnyValue, InstrumentationScope, KeyValue,
     };
-    use otap_df_pdata::proto::opentelemetry::logs::v1::{
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{
         LogRecord, LogRecordFlags, LogsData, ResourceLogs, ScopeLogs, SeverityNumber,
     };
-    use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
-    use otap_df_pdata::testing::{fixtures, round_trip::encode_logs};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
+    use otel_arrow_dfe_pdata::testing::{fixtures, round_trip::encode_logs};
 
     use crate::exporters::clickhouse_exporter::transform::transform_batch::BatchTransformer;
 

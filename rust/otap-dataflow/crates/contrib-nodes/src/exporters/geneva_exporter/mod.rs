@@ -21,39 +21,41 @@
 //!       environment: "production"
 //!       account: "my-account"
 //!       namespace: "my-namespace"
+//!       account_routing:
+//!         default_group: "my-account-group"
 //!       # ... additional config
 //! ```
 
-otap_df_telemetry::otel_component_scope!(
+otel_arrow_dfe_telemetry::otel_component_scope!(
     urn = GENEVA_EXPORTER_URN,
     target = "microsoft.exporter.geneva",
 );
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::SignalType;
-use otap_df_config::error::Error as ConfigError;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::ConsumerEffectHandlerExtension;
-use otap_df_engine::ExporterFactory;
-use otap_df_engine::config::ExporterConfig;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::NodeControlMsg;
-use otap_df_engine::control::{AckMsg, NackMsg};
-use otap_df_engine::error::Error;
-use otap_df_engine::exporter::ExporterWrapper;
-use otap_df_engine::local::exporter::{EffectHandler, Exporter};
-use otap_df_engine::message::{ExporterInbox, Message};
-use otap_df_engine::node::NodeId;
-use otap_df_engine::terminal_state::TerminalState;
-use otap_df_pdata::TryIntoWithOptions;
-use otap_df_pdata::otlp::OtlpProtoBytes;
-use otap_df_pdata::views::otap::OtapLogsView;
-use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
-use otap_df_pdata::{OtapArrowRecords, OtapPayload};
-use otap_df_telemetry::instrument::{Counter, Mmsc};
-use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet};
-use otap_df_telemetry_macros::metric_set;
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_engine::ConsumerEffectHandlerExtension;
+use otel_arrow_dfe_engine::ExporterFactory;
+use otel_arrow_dfe_engine::config::ExporterConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::control::NodeControlMsg;
+use otel_arrow_dfe_engine::control::{AckMsg, NackMsg};
+use otel_arrow_dfe_engine::error::Error;
+use otel_arrow_dfe_engine::exporter::ExporterWrapper;
+use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
+use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_pdata::TryIntoWithOptions;
+use otel_arrow_dfe_pdata::otlp::OtlpProtoBytes;
+use otel_arrow_dfe_pdata::views::otap::OtapLogsView;
+use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
+use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayload, PayloadData};
+use otel_arrow_dfe_telemetry::instrument::{Counter, Mmsc};
+use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet};
+use otel_arrow_dfe_telemetry_macros::metric_set;
 use serde::{Deserialize, Deserializer};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -63,7 +65,7 @@ use std::time::Instant;
 use futures::StreamExt;
 use geneva_uploader::AuthMethod;
 use geneva_uploader::client::{
-    EncodedBatch, GenevaClient, GenevaClientConfig, OboEventConfig, OboEventMap,
+    AccountRouting, EncodedBatch, GenevaClient, GenevaClientConfig, OboEventConfig, OboEventMap,
 };
 use geneva_uploader::{
     LogsEventNameMapping, LogsEventNameRoutingKey, SpanEventNameMapping, SpanEventNameRoutingKey,
@@ -72,17 +74,17 @@ use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use prost::Message as ProstMessage;
 
 // Use crate-relative paths since we're now a module within otap
-use otap_df_otap::OTAP_EXPORTER_FACTORIES;
-use otap_df_otap::metrics::ExporterExportMetrics;
-use otap_df_otap::pdata::OtapPdata;
-use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
+use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
+use otel_arrow_dfe_otap::metrics::ExporterExportMetrics;
+use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
 
 mod agent_fed_source;
 
 use agent_fed_source::AgentFedGenevaSource;
-use otap_df_engine::capability::ExtensionCapability;
-use otap_df_engine::capability::auth::agent_fed_credential_provider::AgentFedCredentialProvider as AgentFedCredentialProviderCap;
-use otap_df_engine::capability::registry::Capabilities;
+use otel_arrow_dfe_engine::capability::ExtensionCapability;
+use otel_arrow_dfe_engine::capability::auth::agent_fed_credential_provider::AgentFedCredentialProvider as AgentFedCredentialProviderCap;
+use otel_arrow_dfe_engine::capability::registry::Capabilities;
 
 /// The URN for the Geneva exporter
 pub const GENEVA_EXPORTER_URN: &str = "urn:microsoft:exporter:geneva";
@@ -625,6 +627,68 @@ impl From<OboConfig> for OboEventMap {
     }
 }
 
+/// Routes final Geneva event/table names to logical GCS account groups.
+///
+/// Event overrides are keyed by the destination event/table name after
+/// `event_name_mapping` has run. Events without an override use
+/// `default_group`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(try_from = "AccountRoutingConfigRaw")]
+pub struct AccountRoutingConfig {
+    /// Logical account group used when no event-specific override matches.
+    pub default_group: String,
+    /// Optional destination event/table name -> logical account group map.
+    #[serde(default)]
+    pub events: std::collections::HashMap<String, String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AccountRoutingConfigRaw {
+    default_group: String,
+    #[serde(default)]
+    events: std::collections::HashMap<String, String>,
+}
+
+impl TryFrom<AccountRoutingConfigRaw> for AccountRoutingConfig {
+    type Error = String;
+
+    fn try_from(raw: AccountRoutingConfigRaw) -> Result<Self, Self::Error> {
+        if raw.default_group.trim().is_empty() {
+            return Err("account_routing.default_group must not be empty".to_owned());
+        }
+        if raw.default_group.trim() != raw.default_group {
+            return Err(
+                "account_routing.default_group must not have surrounding whitespace".to_owned(),
+            );
+        }
+        for (event_name, account_group) in &raw.events {
+            if event_name.trim().is_empty() || account_group.trim().is_empty() {
+                return Err(
+                    "account_routing event/table names and account groups must not be empty"
+                        .to_owned(),
+                );
+            }
+            if event_name.trim() != event_name || account_group.trim() != account_group {
+                return Err(
+                    "account_routing event/table names and account groups must not have surrounding whitespace"
+                        .to_owned(),
+                );
+            }
+        }
+        Ok(Self {
+            default_group: raw.default_group,
+            events: raw.events,
+        })
+    }
+}
+
+impl From<AccountRoutingConfig> for AccountRouting {
+    fn from(config: AccountRoutingConfig) -> Self {
+        Self::new(config.default_group).with_event_groups(config.events)
+    }
+}
+
 /// Configuration for the Geneva Exporter
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
@@ -638,6 +702,9 @@ pub struct Config {
     pub account: String,
     /// Geneva namespace
     pub namespace: String,
+    /// Logical account-group routing used to select the physical moniker for
+    /// each final event/table name.
+    pub account_routing: AccountRoutingConfig,
     /// Azure region (required except for agent-fed auth)
     #[serde(default)]
     pub region: String,
@@ -707,9 +774,6 @@ impl Config {
             );
         }
         let is_agent_fed = matches!(self.auth, AuthConfig::AgentFed);
-        if is_agent_fed && self.account.trim().is_empty() {
-            return Err("account must not be empty".to_owned());
-        }
         if !is_agent_fed {
             if self.endpoint.trim().is_empty() {
                 return Err("endpoint is required unless auth.type is agentfed".to_owned());
@@ -836,6 +900,7 @@ impl Config {
             environment: self.environment.clone(),
             account: self.account.clone(),
             namespace: self.namespace.clone(),
+            account_routing: self.account_routing.clone().into(),
             region: self.region.clone(),
             config_major_version: self.config_major_version,
             auth_method: self.auth.uploader_auth_method(),
@@ -1052,7 +1117,7 @@ fn validate_agent_fed_capability_binding(node_config: &NodeUserConfig) -> Result
 }
 
 fn ensure_crypto_provider() -> Result<(), ConfigError> {
-    if otap_df_otap::crypto::is_crypto_provider_installed() {
+    if otel_arrow_dfe_otap::crypto::is_crypto_provider_installed() {
         return Ok(());
     }
 
@@ -1060,7 +1125,7 @@ fn ensure_crypto_provider() -> Result<(), ConfigError> {
         error: "Geneva exporter requires a rustls CryptoProvider, but none is installed. \
                 Build with exactly one of the crypto-* features \
                 (crypto-ring, crypto-aws-lc, crypto-openssl, crypto-symcrypt) and ensure \
-                otap_df_otap::crypto::install_crypto_provider() runs at startup."
+                otel_arrow_dfe_otap::crypto::install_crypto_provider() runs at startup."
             .to_string(),
     })
 }
@@ -1079,7 +1144,6 @@ fn validate_geneva_client_prerequisites(
 }
 
 fn resolve_agent_fed_source(
-    config: &Config,
     capabilities: &Capabilities,
 ) -> Result<AgentFedGenevaSource, ConfigError> {
     let credential_provider = capabilities
@@ -1092,10 +1156,7 @@ fn resolve_agent_fed_source(
             ),
         })?;
 
-    Ok(AgentFedGenevaSource::new(
-        credential_provider,
-        config.account.clone(),
-    ))
+    Ok(AgentFedGenevaSource::new(credential_provider))
 }
 
 fn create_geneva_client(
@@ -1108,7 +1169,7 @@ fn create_geneva_client(
 
     match &config.auth {
         AuthConfig::AgentFed => {
-            let source = resolve_agent_fed_source(config, capabilities)?;
+            let source = resolve_agent_fed_source(capabilities)?;
             GenevaClient::with_agent_fed_source(client_config, Arc::new(source)).map_err(|error| {
                 ConfigError::InvalidUserConfig {
                     error: format!("Failed to initialize agent-fed Geneva client: {error}"),
@@ -1335,9 +1396,9 @@ impl GenevaExporter {
         }
 
         // Handle based on payload type
-        match payload {
+        match payload.into_data() {
             // OTAP Arrow path: encode logs through LogsDataView without converting back to OTLP.
-            OtapPayload::OtapArrowRecords(otap_records) => {
+            PayloadData::OtapArrowRecords(otap_records) => {
                 match otap_records {
                     mut otap_records @ OtapArrowRecords::Logs(_) => {
                         otel_info!(
@@ -1385,7 +1446,7 @@ impl GenevaExporter {
                         );
 
                         let otlp_bytes: OtlpProtoBytes =
-                            OtapPayload::OtapArrowRecords(OtapArrowRecords::Traces(otap_records))
+                            OtapPayload::from(OtapArrowRecords::Traces(otap_records))
                                 .try_into_with_default()
                                 .map_err(|e| {
                                     self.metrics.conversion_errors.inc();
@@ -1434,7 +1495,7 @@ impl GenevaExporter {
             }
 
             // OTLP path: Direct OTLP bytes from receivers without OTAP conversion (e.g., OTLP receiver -> Geneva exporter without batch processor)
-            OtapPayload::OtlpBytes(otlp_bytes) => {
+            PayloadData::OtlpBytes(otlp_bytes) => {
                 match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(bytes) => {
                         otel_info!(
@@ -1525,7 +1586,7 @@ fn validate_geneva_config(config: &serde_json::Value) -> Result<(), ConfigError>
 /// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
 /// This macro is part of the `linkme` crate which is considered safe and well maintained.
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Exporter)]
+#[otel_arrow_dfe_engine::component_inventory(category = Exporter)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static GENEVA_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: GENEVA_EXPORTER_URN,
@@ -1541,7 +1602,7 @@ pub static GENEVA_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
             exporter_config,
         ))
     },
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: validate_geneva_config,
 };
 
@@ -1665,28 +1726,28 @@ mod tests {
 
     use bytes::Bytes;
     use geneva_uploader::client::AgentFedCredentialSource;
-    use otap_df_engine::Interests;
-    use otap_df_engine::capability::auth::BearerToken;
-    use otap_df_engine::capability::auth::agent_fed_credential_provider::AgentFedCredentialSnapshot;
-    use otap_df_engine::capability::registry::CapabilityRegistry;
-    use otap_df_engine::capability::{
+    use otel_arrow_dfe_engine::Interests;
+    use otel_arrow_dfe_engine::capability::auth::BearerToken;
+    use otel_arrow_dfe_engine::capability::auth::agent_fed_credential_provider::AgentFedCredentialSnapshot;
+    use otel_arrow_dfe_engine::capability::registry::CapabilityRegistry;
+    use otel_arrow_dfe_engine::capability::{
         CapabilityError, ExtensionCapability, LocalInstanceFactory, SharedInstanceFactory,
     };
-    use otap_df_engine::control::PipelineCompletionMsg;
-    use otap_df_engine::extension_capabilities;
-    use otap_df_engine::local::capability::auth::agent_fed_credential_provider::AgentFedCredentialProvider as LocalAgentFedCredentialProvider;
-    use otap_df_engine::shared::capability::auth::agent_fed_credential_provider::AgentFedCredentialProvider as SharedAgentFedCredentialProvider;
-    use otap_df_engine::testing::capability::resolve_bindings_for_test;
-    use otap_df_engine::testing::exporter::{
+    use otel_arrow_dfe_engine::control::PipelineCompletionMsg;
+    use otel_arrow_dfe_engine::extension_capabilities;
+    use otel_arrow_dfe_engine::local::capability::auth::agent_fed_credential_provider::AgentFedCredentialProvider as LocalAgentFedCredentialProvider;
+    use otel_arrow_dfe_engine::shared::capability::auth::agent_fed_credential_provider::AgentFedCredentialProvider as SharedAgentFedCredentialProvider;
+    use otel_arrow_dfe_engine::testing::capability::resolve_bindings_for_test;
+    use otel_arrow_dfe_engine::testing::exporter::{
         TestRuntime, create_exporter_from_factory, create_test_pipeline_context,
     };
-    use otap_df_engine::testing::test_node;
-    use otap_df_otap::testing::{TestCallData, next_ack, next_nack};
-    use otap_df_pdata::otap::OtapArrowRecords;
-    use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-    use otap_df_pdata::schema::{FieldExt, consts};
-    use otap_df_pdata::views::otap::OtapLogsView;
-    use otap_df_pdata_views::views::logs::{LogsDataView, ResourceLogsView, ScopeLogsView};
+    use otel_arrow_dfe_engine::testing::test_node;
+    use otel_arrow_dfe_otap::testing::{TestCallData, next_ack, next_nack};
+    use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+    use otel_arrow_dfe_pdata::schema::{FieldExt, consts};
+    use otel_arrow_dfe_pdata::views::otap::OtapLogsView;
+    use otel_arrow_dfe_pdata_views::views::logs::{LogsDataView, ResourceLogsView, ScopeLogsView};
     use std::any::Any;
     use std::collections::HashSet;
     use std::time::{Duration, Instant};
@@ -1818,6 +1879,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -1843,6 +1905,7 @@ mod tests {
         serde_json::json!({
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "config_major_version": 1,
             "tenant": "test-tenant",
@@ -1927,7 +1990,8 @@ mod tests {
         let mut registry = CapabilityRegistry::new();
         (extension_capabilities.register_shared)("agent".into(), instance_factory, &mut registry)
             .expect("register capabilities");
-        let known_extensions = HashSet::<otap_df_config::ExtensionId>::from(["agent".into()]);
+        let known_extensions =
+            HashSet::<otel_arrow_dfe_config::ExtensionId>::from(["agent".into()]);
         let capabilities =
             resolve_bindings_for_test(&node_config.capabilities, &registry, &known_extensions)
                 .expect("resolve capabilities");
@@ -1943,7 +2007,8 @@ mod tests {
         let mut registry = CapabilityRegistry::new();
         (extension_capabilities.register_local)("agent".into(), instance_factory, &mut registry)
             .expect("register local capabilities");
-        let known_extensions = HashSet::<otap_df_config::ExtensionId>::from(["agent".into()]);
+        let known_extensions =
+            HashSet::<otel_arrow_dfe_config::ExtensionId>::from(["agent".into()]);
         resolve_bindings_for_test(&node_config.capabilities, &registry, &known_extensions)
             .expect("resolve local-only capabilities")
     }
@@ -1954,7 +2019,7 @@ mod tests {
     fn geneva_exporter_emits_ack_for_empty_payload() {
         // The Geneva uploader uses rustls (tls-rustls); reqwest needs a
         // process-wide crypto provider, which production installs at startup.
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let test_runtime = TestRuntime::new();
         let exporter = create_exporter_from_factory(&GENEVA_EXPORTER, test_config()).unwrap();
 
@@ -1979,7 +2044,8 @@ mod tests {
                 loop {
                     match pipeline_rx.recv().await.unwrap() {
                         PipelineCompletionMsg::DeliverAck { ack } => {
-                            let (node_id, ack) = next_ack(ack).expect("expected ack subscriber");
+                            let (node_id, mut ack) =
+                                next_ack(ack).expect("expected ack subscriber");
                             assert_eq!(node_id, 4242);
                             let got: TestCallData = ack.unwind.route.calldata.try_into().unwrap();
                             assert_eq!(TestCallData::default(), got);
@@ -1998,7 +2064,7 @@ mod tests {
     fn geneva_exporter_emits_nack_for_decode_failure() {
         // The Geneva uploader uses rustls (tls-rustls); reqwest needs a
         // process-wide crypto provider, which production installs at startup.
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let test_runtime = TestRuntime::new();
         let exporter = create_exporter_from_factory(&GENEVA_EXPORTER, test_config()).unwrap();
 
@@ -2025,7 +2091,7 @@ mod tests {
                 loop {
                     match pipeline_rx.recv().await.unwrap() {
                         PipelineCompletionMsg::DeliverNack { nack } => {
-                            let (node_id, nack) =
+                            let (node_id, mut nack) =
                                 next_nack(nack).expect("expected nack subscriber");
                             assert_eq!(node_id, 777);
                             let got: TestCallData = nack.unwind.route.calldata.try_into().unwrap();
@@ -2088,6 +2154,7 @@ mod tests {
             "endpoint": "https://geneva.example.com",
             "environment": "production",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "westus2",
             "config_major_version": 1,
@@ -2155,6 +2222,7 @@ mod tests {
             "endpoint": "https://geneva.example.com",
             "environment": "production",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "westus2",
             "config_major_version": 1,
@@ -2185,6 +2253,7 @@ mod tests {
             "endpoint": "https://geneva.example.com",
             "environment": "production",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "westus2",
             "config_major_version": 1,
@@ -2290,17 +2359,6 @@ mod tests {
         assert!(error.to_string().contains("region is required"));
     }
 
-    /// Scenario: An existing non-agent-fed configuration contains a blank account value.
-    /// Guarantees: Agent-fed-specific validation does not tighten legacy config parsing.
-    #[test]
-    fn non_agent_fed_config_preserves_blank_account_parsing() {
-        let mut config = test_config();
-        config["account"] = serde_json::Value::String("   ".to_owned());
-
-        let parsed = Config::parse(&config).expect("legacy config should still parse");
-        assert_eq!(parsed.account, "   ");
-    }
-
     /// Scenario: A configuration carries a field the exporter does not define.
     /// Guarantees: Unknown configuration fields stay rejected after validation
     /// moved out of the `Deserialize` implementation.
@@ -2311,16 +2369,6 @@ mod tests {
 
         let error = Config::parse(&config).expect_err("unknown fields must be rejected");
         assert!(error.to_string().contains("unexpected_field"));
-    }
-
-    /// Scenario: Agent-fed configuration provides an empty account.
-    /// Guarantees: Moniker selection cannot start without a non-empty account.
-    #[test]
-    fn agent_fed_config_requires_account_for_moniker_selection() {
-        let mut config = agent_fed_test_config();
-        config["account"] = serde_json::Value::String(String::new());
-        let error = Config::parse(&config).expect_err("account must be required");
-        assert!(error.to_string().contains("account must not be empty"));
     }
 
     /// Scenario: The required agent-fed credential-provider binding is absent.
@@ -2392,8 +2440,7 @@ mod tests {
         let node_config = agent_fed_node_config(Some("agent"));
         validate_agent_fed_capability_binding(&node_config).expect("binding should be present");
         let capabilities = resolved_local_only_agent_fed_capabilities(&node_config);
-        let config = Config::parse(&agent_fed_test_config()).expect("valid agent-fed config");
-        let error = resolve_agent_fed_source(&config, &capabilities)
+        let error = resolve_agent_fed_source(&capabilities)
             .expect_err("shared capability implementation must be required");
 
         assert!(
@@ -2412,12 +2459,18 @@ mod tests {
         let credential_provider = capabilities
             .require_shared::<AgentFedCredentialProviderCap>()
             .expect("agent-fed credential provider");
-        let source = AgentFedGenevaSource::new(credential_provider, "test-account".to_owned());
+        let source = AgentFedGenevaSource::new(credential_provider);
 
         let initial = source.current().await.expect("initial credential");
         assert_eq!(initial.expose_token(), "test-token");
         assert_eq!(initial.endpoint, "https://ep/");
-        assert_eq!(initial.moniker, "test-moniker");
+        assert_eq!(
+            initial
+                .primary_monikers
+                .get("test-account")
+                .map(String::as_str),
+            Some("test-moniker")
+        );
 
         let rotated_attributes = serde_json::json!({
             "endpoint": "https://rotated-ep",
@@ -2435,14 +2488,20 @@ mod tests {
         let rotated = source.current().await.expect("rotated credential");
         assert_eq!(rotated.expose_token(), "rotated-token");
         assert_eq!(rotated.endpoint, "https://rotated-ep/");
-        assert_eq!(rotated.moniker, "rotated-moniker");
+        assert_eq!(
+            rotated
+                .primary_monikers
+                .get("test-account")
+                .map(String::as_str),
+            Some("rotated-moniker")
+        );
     }
 
     /// Scenario: A valid binding resolves the combined capability from a shared extension.
     /// Guarantees: The factory constructs an agent-fed exporter successfully.
     #[test]
     fn creates_agent_fed_exporter_with_bound_capabilities() {
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let node_config = agent_fed_node_config(Some("agent"));
         let (capabilities, _snapshot) = resolved_agent_fed_capabilities(&node_config);
         let exporter_config = ExporterConfig::new("test-exporter");
@@ -2530,11 +2589,12 @@ mod tests {
     fn create_exporter_with_user_managed_identity_by_arm_resource_id() {
         // The Geneva uploader uses rustls (tls-rustls); reqwest needs a
         // process-wide crypto provider, which production installs at startup.
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let config = serde_json::json!({
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -2572,6 +2632,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -2623,6 +2684,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -2678,6 +2740,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -2728,6 +2791,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -2792,6 +2856,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -2846,6 +2911,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -2909,6 +2975,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -2956,6 +3023,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -2999,6 +3067,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -3043,6 +3112,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -3091,6 +3161,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -3144,6 +3215,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -3197,6 +3269,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -3309,6 +3382,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -3336,6 +3410,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -3375,6 +3450,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -3414,6 +3490,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -3456,6 +3533,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -3500,6 +3578,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -3544,6 +3623,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -3587,6 +3667,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -3633,6 +3714,7 @@ mod tests {
                 "endpoint": "https://localhost",
                 "environment": "test",
                 "account": "test-account",
+                "account_routing": { "default_group": "test-group" },
                 "namespace": "test-namespace",
                 "region": "test-region",
                 "config_major_version": 1,
@@ -3676,6 +3758,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -3712,6 +3795,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -3742,6 +3826,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -3787,6 +3872,10 @@ mod tests {
             "endpoint": "https://geneva.example",
             "environment": "prod-env",
             "account": "acct-1",
+            "account_routing": {
+                "default_group": "default-group",
+                "events": { "AuditLogs": "audit-group" }
+            },
             "namespace": "ns-1",
             "region": "westus2",
             "config_major_version": 3,
@@ -3815,6 +3904,15 @@ mod tests {
         });
 
         let parsed: Config = serde_json::from_value(config).expect("config should parse");
+        assert_eq!(parsed.account_routing.default_group, "default-group");
+        assert_eq!(
+            parsed
+                .account_routing
+                .events
+                .get("AuditLogs")
+                .map(String::as_str),
+            Some("audit-group")
+        );
         let client_config = parsed.to_geneva_client_config();
 
         // Scalar fields propagate unchanged.
@@ -3872,6 +3970,57 @@ mod tests {
         assert_eq!(spans_mapping.events.get("CLIENT"), Some(&None));
     }
 
+    /// Scenario: Account routing has a blank default group, event name, or mapped group.
+    /// Guarantees: Invalid logical routing is rejected while parsing user configuration.
+    #[test]
+    fn test_account_routing_rejects_blank_names() {
+        let mut blank_default = test_config();
+        blank_default["account_routing"]["default_group"] =
+            serde_json::Value::String("   ".to_owned());
+        let error = Config::parse(&blank_default).expect_err("blank default group must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("default_group must not be empty")
+        );
+
+        for (event_name, account_group) in [("", "group"), ("Event", " ")] {
+            let mut config = test_config();
+            config["account_routing"]["events"] = serde_json::json!({ event_name: account_group });
+            let error = Config::parse(&config).expect_err("blank routing name must fail");
+            assert!(error.to_string().contains("must not be empty"));
+        }
+    }
+
+    /// Scenario: Account routing identifiers contain leading or trailing whitespace.
+    /// Guarantees: Exact-match routing cannot accept identifiers that will miss valid groups.
+    #[test]
+    fn test_account_routing_rejects_surrounding_whitespace() {
+        for default_group in [" default-group", "default-group "] {
+            let mut config = test_config();
+            config["account_routing"]["default_group"] =
+                serde_json::Value::String(default_group.to_owned());
+            let error = Config::parse(&config)
+                .expect_err("default group with surrounding whitespace must fail");
+            assert!(error.to_string().contains("surrounding whitespace"));
+        }
+
+        for (event_name, account_group) in [
+            (" Event", "group"),
+            ("Event ", "group"),
+            ("Event", " group"),
+            ("Event", "group "),
+        ] {
+            let mut config = test_config();
+            config["account_routing"]["events"] = serde_json::json!({
+                event_name: account_group
+            });
+            let error = Config::parse(&config)
+                .expect_err("routing identifier with surrounding whitespace must fail");
+            assert!(error.to_string().contains("surrounding whitespace"));
+        }
+    }
+
     /// Scenario: A `Config` with an `obo` block mapping two event/table names to
     /// customer identities - one with an annotations recipe, one without - is
     /// converted through `Config::to_geneva_client_config`.
@@ -3885,6 +4034,7 @@ mod tests {
             "endpoint": "https://geneva.example",
             "environment": "prod-env",
             "account": "acct-1",
+            "account_routing": { "default_group": "default-group" },
             "namespace": "ns-1",
             "region": "westus2",
             "config_major_version": 3,
@@ -3950,6 +4100,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -3988,6 +4139,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -4024,6 +4176,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -4064,6 +4217,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -4100,6 +4254,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -4138,6 +4293,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -4176,6 +4332,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -4216,6 +4373,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -4258,6 +4416,7 @@ mod tests {
                 "endpoint": "https://localhost",
                 "environment": "test",
                 "account": "test-account",
+                "account_routing": { "default_group": "test-group" },
                 "namespace": "test-namespace",
                 "region": "test-region",
                 "config_major_version": 1,
@@ -4301,6 +4460,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -4337,6 +4497,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,
@@ -4377,6 +4538,7 @@ mod tests {
             "endpoint": "https://localhost",
             "environment": "test",
             "account": "test-account",
+            "account_routing": { "default_group": "test-group" },
             "namespace": "test-namespace",
             "region": "test-region",
             "config_major_version": 1,

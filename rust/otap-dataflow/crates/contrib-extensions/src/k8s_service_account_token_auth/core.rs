@@ -12,10 +12,12 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use otap_df_engine::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer as BearerTokenAuthorizerCap;
-use otap_df_engine::capability::auth::{AuthorizedIdentity, AuthzDecision, ClaimValue, DenyReason};
-use otap_df_engine::capability::{CapabilityError, CapabilityErrorSource};
-use otap_df_telemetry::otel_debug;
+use otel_arrow_dfe_engine::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer as BearerTokenAuthorizerCap;
+use otel_arrow_dfe_engine::capability::auth::{
+    AuthorizedIdentity, AuthzDecision, ClaimValue, DenyReason,
+};
+use otel_arrow_dfe_engine::capability::{CapabilityError, CapabilityErrorSource};
+use otel_arrow_dfe_telemetry::otel_debug;
 use tokio::sync::OnceCell;
 
 #[cfg(test)]

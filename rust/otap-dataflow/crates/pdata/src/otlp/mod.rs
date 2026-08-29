@@ -7,14 +7,14 @@
 use crate::proto::opentelemetry::common::v1::{AnyValue, ArrayValue, KeyValue, KeyValueList};
 use crate::{error::Result, otap::OtapArrowRecords};
 use bytes::Bytes;
-use otap_df_config::SignalType;
+use otel_arrow_dfe_config::SignalType;
 
 pub use common::{
     BoundedBuf, Checkpoint, ProtoBuffer, StackProtoBuffer, TRUNCATION_SUFFIX,
     encode_len_placeholder, patch_len_placeholder,
 };
-pub use otap_df_pdata_otlp_macros::Message; // Required for derived code
-pub use otap_df_pdata_otlp_macros::qualified; // Required for derived code
+pub use otel_arrow_dfe_pdata_otlp_macros::Message; // Required for derived code
+pub use otel_arrow_dfe_pdata_otlp_macros::qualified; // Required for derived code
 
 /// Common methods for OTLP/OTAP attributes.
 pub mod attributes;

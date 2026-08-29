@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use crate::exporters::clickhouse_exporter::SUPPORTED_ARROW_PAYLOAD_TYPES;
 use crate::exporters::clickhouse_exporter::transform::transform_plan::TransformationPlan;
-use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
 pub(crate) mod logs_fast;
 pub(crate) mod logs_otlp;

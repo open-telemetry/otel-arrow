@@ -27,14 +27,14 @@ use crate::views::otap::common::{
     Otap32AttributeIter, OtapAttributeIter, OtapAttributeView, RowGroup, RowGroupIter,
     build_attribute_index, group_by_resource_id, group_by_scope_id,
 };
-use otap_df_pdata_views::views::common::{InstrumentationScopeView, Str};
-use otap_df_pdata_views::views::metrics::{
+use otel_arrow_dfe_pdata_views::views::common::{InstrumentationScopeView, Str};
+use otel_arrow_dfe_pdata_views::views::metrics::{
     AggregationTemporality, BucketsView, DataPointFlags, DataType, DataView, ExemplarView,
     ExponentialHistogramDataPointView, ExponentialHistogramView, GaugeView, HistogramDataPointView,
     HistogramView, MetricView, MetricsView, NumberDataPointView, ResourceMetricsView,
     ScopeMetricsView, SumView, SummaryDataPointView, SummaryView, Value, ValueAtQuantileView,
 };
-use otap_df_pdata_views::views::resource::ResourceView;
+use otel_arrow_dfe_pdata_views::views::resource::ResourceView;
 
 // ===== Index Helpers =====
 

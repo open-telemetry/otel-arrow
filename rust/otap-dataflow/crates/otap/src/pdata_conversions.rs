@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::pdata::OtapPdata;
-use otap_df_engine::error::Error;
-use otap_df_pdata::proto::OtlpProtoMessage;
+use otel_arrow_dfe_engine::error::Error;
+use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
 
 impl TryFrom<OtlpProtoMessage> for OtapPdata {
     type Error = Error;

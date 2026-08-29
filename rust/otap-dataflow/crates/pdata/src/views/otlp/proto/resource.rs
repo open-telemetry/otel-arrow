@@ -5,7 +5,7 @@
 //! from otlp resources.proto.
 
 use crate::views::otlp::proto::common::{KeyValueIter, ObjKeyValue};
-use otap_df_pdata_views::views::resource::ResourceView;
+use otel_arrow_dfe_pdata_views::views::resource::ResourceView;
 
 use crate::proto::opentelemetry::resource::v1::Resource;
 

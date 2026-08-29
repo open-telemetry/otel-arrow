@@ -18,22 +18,22 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::error::Error as ConfigError;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::ConsumerEffectHandlerExtension;
-use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
-use otap_df_engine::config::ProcessorConfig;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::{AckMsg, NodeControlMsg};
-use otap_df_engine::error::{Error as EngineError, ProcessorErrorKind};
-use otap_df_engine::local::processor as local;
-use otap_df_engine::message::Message;
-use otap_df_engine::node::NodeId;
-use otap_df_engine::processor::ProcessorWrapper;
-use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
-use otap_df_otap::pdata::OtapPdata;
-use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::OtapPayload;
+use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_engine::ConsumerEffectHandlerExtension;
+use otel_arrow_dfe_engine::MessageSourceLocalEffectHandlerExtension;
+use otel_arrow_dfe_engine::config::ProcessorConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::control::{AckMsg, NodeControlMsg};
+use otel_arrow_dfe_engine::error::{Error as EngineError, ProcessorErrorKind};
+use otel_arrow_dfe_engine::local::processor as local;
+use otel_arrow_dfe_engine::message::Message;
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::processor::ProcessorWrapper;
+use otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES;
+use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_pdata::OtapArrowRecords;
+use otel_arrow_dfe_pdata::OtapPayload;
 use serde::{Deserialize, Serialize};
 use wasmtime::component::{Component, HasSelf, Linker};
 use wasmtime::{Engine, Store};
@@ -46,7 +46,7 @@ use crate::metrics::WasmProcessorAllMetrics;
 /// URN identifying the WASM processor component.
 pub const WASM_PROCESSOR_URN: &str = "urn:otel:processor:wasm_processor";
 
-otap_df_telemetry::otel_component_scope!(
+otel_arrow_dfe_telemetry::otel_component_scope!(
     urn = WASM_PROCESSOR_URN,
     target = "otel.processor.wasm_processor",
 );
@@ -266,20 +266,20 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use otap_df_config::SignalType;
-    use otap_df_engine::Interests;
-    use otap_df_engine::ProducerEffectHandlerExtension;
-    use otap_df_engine::config::ProcessorConfig;
-    use otap_df_engine::context::ControllerContext;
-    use otap_df_engine::control::{
+    use otel_arrow_dfe_config::SignalType;
+    use otel_arrow_dfe_engine::Interests;
+    use otel_arrow_dfe_engine::ProducerEffectHandlerExtension;
+    use otel_arrow_dfe_engine::config::ProcessorConfig;
+    use otel_arrow_dfe_engine::context::ControllerContext;
+    use otel_arrow_dfe_engine::control::{
         CallData, NodeControlMsg, PipelineCompletionMsg, pipeline_completion_msg_channel,
     };
-    use otap_df_engine::local::processor::Processor;
-    use otap_df_engine::message::Message;
-    use otap_df_engine::testing::node::test_node;
-    use otap_df_engine::testing::processor::TestRuntime;
-    use otap_df_otap::pdata::Context;
-    use otap_df_pdata::OtapPayload;
+    use otel_arrow_dfe_engine::local::processor::Processor;
+    use otel_arrow_dfe_engine::message::Message;
+    use otel_arrow_dfe_engine::testing::node::test_node;
+    use otel_arrow_dfe_engine::testing::processor::TestRuntime;
+    use otel_arrow_dfe_otap::pdata::Context;
+    use otel_arrow_dfe_pdata::OtapPayload;
     use tokio::time::timeout;
 
     struct DropAllProcessor;
@@ -313,8 +313,9 @@ mod tests {
         let mut node_config = NodeUserConfig::new_processor_config(WASM_PROCESSOR_URN);
         node_config.config = serde_json::json!("not an object");
         let processor_config = ProcessorConfig::new("wasm-test");
-        let controller_ctx =
-            ControllerContext::new(otap_df_telemetry::registry::TelemetryRegistryHandle::new());
+        let controller_ctx = ControllerContext::new(
+            otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new(),
+        );
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
 
@@ -336,8 +337,9 @@ mod tests {
             "wasm_path": "/definitely/missing/wasm-host-plugin.wasm"
         });
         let processor_config = ProcessorConfig::new("wasm-test");
-        let controller_ctx =
-            ControllerContext::new(otap_df_telemetry::registry::TelemetryRegistryHandle::new());
+        let controller_ctx = ControllerContext::new(
+            otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new(),
+        );
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
 
@@ -402,8 +404,9 @@ mod tests {
     /// type accumulates independently and increments are observable.
     #[test]
     fn metrics_records_for_partitions_by_signal_type() {
-        let controller_ctx =
-            ControllerContext::new(otap_df_telemetry::registry::TelemetryRegistryHandle::new());
+        let controller_ctx = ControllerContext::new(
+            otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new(),
+        );
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let mut metrics = WasmProcessorAllMetrics::new(&pipeline_ctx);
@@ -443,19 +446,21 @@ mod tests {
 }
 
 /// Register [`WasmProcessor`] as an OTAP processor factory.
-#[otap_df_engine::component_inventory(category = Processor)]
+#[otel_arrow_dfe_engine::component_inventory(category = Processor)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
-pub static WASM_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> =
-    otap_df_engine::ProcessorFactory {
+pub static WASM_PROCESSOR_FACTORY: otel_arrow_dfe_engine::ProcessorFactory<OtapPdata> =
+    otel_arrow_dfe_engine::ProcessorFactory {
         name: WASM_PROCESSOR_URN,
         create:
             |pipeline: PipelineContext,
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
              proc_cfg: &ProcessorConfig,
-             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
+             _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
                 create_wasm_processor(pipeline, node, node_config, proc_cfg)
             },
-        wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-        validate_config: otap_df_config::validation::validate_typed_config::<WasmProcessorConfig>,
+        wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
+        validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
+            WasmProcessorConfig,
+        >,
     };

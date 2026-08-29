@@ -10,7 +10,7 @@
 //! integration test so the process-global branding does not affect other tests.
 
 use clap::Parser;
-use otap_df_ctl::{Branding, Cli, run_with_terminal_and_diagnostics_branded};
+use otel_arrow_dfe_ctl::{Branding, Cli, run_with_terminal_and_diagnostics_branded};
 
 #[tokio::test]
 async fn branded_entrypoint_overrides_schema_version() {
