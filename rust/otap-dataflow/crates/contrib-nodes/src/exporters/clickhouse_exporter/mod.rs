@@ -35,9 +35,9 @@ otel_arrow_dfe_telemetry::otel_component_scope!(
 use async_trait::async_trait;
 use futures::future::LocalBoxFuture;
 use linkme::distributed_slice;
+use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_config::validation::validate_typed_config;
-use otel_arrow_dfe_config::{SignalFormat, SignalType};
 use otel_arrow_dfe_engine::config::ExporterConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
@@ -50,12 +50,12 @@ use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
 use otel_arrow_dfe_otap::metrics::ExporterExportMetrics;
-use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_otap::pdata::{OtapPdata, PdataEffectHandlerExtension};
+#[cfg(test)]
+use otel_arrow_dfe_pdata::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::error::Error as PdataError;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otel_arrow_dfe_pdata::{
-    OtapArrowRecords, OtapPayload, OtlpProtoBytes, PayloadData, TryIntoWithOptions,
-};
+use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayload};
 use otel_arrow_dfe_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
 use otel_arrow_dfe_telemetry::metrics::MetricSetHandler;
 use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet};
@@ -208,11 +208,19 @@ fn transform_raw_otlp_logs(
     payload: &OtapPayload,
     transformer: &mut OtlpLogsTransformer,
 ) -> Option<Result<Option<arrow::array::RecordBatch>, error::ClickhouseExporterError>> {
-    match payload.data() {
-        PayloadData::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(bytes)) => {
-            Some(transformer.transform(bytes))
-        }
-        _ => None,
+    if payload.signal_type() == SignalType::Logs
+        && payload.format()
+            == otel_arrow_dfe_pdata::PdataFormat::encoded(otel_arrow_dfe_pdata::ResolvedCodec::OTLP)
+    {
+        Some(
+            transformer.transform(
+                payload
+                    .encoded_bytes()
+                    .expect("OTLP format has encoded bytes"),
+            ),
+        )
+    } else {
+        None
     }
 }
 
@@ -358,7 +366,8 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                 Message::PData(pdata) => {
                     let export_started_at = Instant::now();
                     let signal_type = pdata.signal_type();
-                    let signal_format = pdata.signal_format();
+                    let input_was_native =
+                        pdata.payload_ref().format() == otel_arrow_dfe_pdata::PdataFormat::OTAP;
 
                     if is_unsupported_non_empty_signal(&pdata) {
                         let reason =
@@ -428,8 +437,9 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                     let write_batches = if let Some(batches) = direct_otlp_batches {
                         batches
                     } else {
-                        let mut arrow_records: OtapArrowRecords = match payload
-                            .try_into_with_default()
+                        let mut arrow_records: OtapArrowRecords = match effect_handler
+                            .try_payload_into_otap(payload)
+                            .await
                         {
                             Ok(arrow_records) => arrow_records,
                             Err(e) => {
@@ -470,26 +480,25 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                             continue;
                         }
 
-                        let transform_result = if signal_type == SignalType::Logs
-                            && signal_format == SignalFormat::OtapRecords
-                        {
-                            match logs_fast_transformer.try_apply(&arrow_records) {
-                                Ok(LogsFastTransform::Applied(batch)) => {
-                                    self.ch_metrics.record_log_fast_path();
-                                    Ok(HashMap::from([(ArrowPayloadType::Logs, batch)]))
+                        let transform_result =
+                            if signal_type == SignalType::Logs && input_was_native {
+                                match logs_fast_transformer.try_apply(&arrow_records) {
+                                    Ok(LogsFastTransform::Applied(batch)) => {
+                                        self.ch_metrics.record_log_fast_path();
+                                        Ok(HashMap::from([(ArrowPayloadType::Logs, batch)]))
+                                    }
+                                    Ok(LogsFastTransform::NotApplicable(_)) => {
+                                        self.ch_metrics.record_log_transform_fallback();
+                                        batch_transformer.apply_plan(arrow_records)
+                                    }
+                                    Err(error) => Err(error),
                                 }
-                                Ok(LogsFastTransform::NotApplicable(_)) => {
+                            } else {
+                                if signal_type == SignalType::Logs {
                                     self.ch_metrics.record_log_transform_fallback();
-                                    batch_transformer.apply_plan(arrow_records)
                                 }
-                                Err(error) => Err(error),
-                            }
-                        } else {
-                            if signal_type == SignalType::Logs {
-                                self.ch_metrics.record_log_transform_fallback();
-                            }
-                            batch_transformer.apply_plan(arrow_records)
-                        };
+                                batch_transformer.apply_plan(arrow_records)
+                            };
 
                         match transform_result {
                             Ok(batches) => batches,

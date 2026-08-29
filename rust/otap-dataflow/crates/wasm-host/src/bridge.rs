@@ -10,9 +10,8 @@
 //! delivery semantics as unmodified data.
 
 use otel_arrow_dfe_engine::error::Error as EngineError;
-use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_otap::pdata::{OtapArrowPdata, OtapPdata};
 use otel_arrow_dfe_pdata::OtapArrowRecords;
-use otel_arrow_dfe_pdata::TryIntoWithOptions;
 
 /// Run `run` on `pdata` converted to OTAP records, preserving the pdata context.
 ///
@@ -29,14 +28,13 @@ use otel_arrow_dfe_pdata::TryIntoWithOptions;
 /// OTAP records; add native OTLP handling and explicit per-`ArrowPayloadType`
 /// processing paths.
 pub(crate) fn run_on_otap_records<F>(
-    pdata: OtapPdata,
+    pdata: OtapArrowPdata,
     run: F,
 ) -> Result<Option<OtapPdata>, EngineError>
 where
     F: FnOnce(OtapArrowRecords) -> Result<Option<OtapArrowRecords>, EngineError>,
 {
-    let (context, payload) = pdata.into_parts();
-    let records: OtapArrowRecords = payload.try_into_with_default()?;
+    let (context, records) = pdata.into_parts();
     if records.root_record_batch().is_none() {
         // Nothing to process; forward unchanged (context preserved).
         return Ok(Some(OtapPdata::new(context, records.into())));
@@ -61,7 +59,7 @@ mod tests {
     use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogRecord;
     use otel_arrow_dfe_pdata::testing::round_trip::{otap_to_otlp, to_otap_logs};
 
-    fn logs_pdata_with_severities(severities: &[&str]) -> OtapPdata {
+    fn logs_pdata_with_severities(severities: &[&str]) -> OtapArrowPdata {
         let records = to_otap_logs(
             severities
                 .iter()
@@ -77,14 +75,14 @@ mod tests {
                 })
                 .collect(),
         );
-        OtapPdata::new(Context::default(), records.into())
+        OtapArrowPdata::new(Context::default(), records)
     }
 
     fn severities_of(pdata: OtapPdata) -> Vec<String> {
-        let (_ctx, payload) = pdata.into_parts();
-        let records: OtapArrowRecords = payload
-            .try_into_with_default()
+        let arrow_pdata = pdata
+            .try_into_otap(&mut otel_arrow_dfe_pdata::codec::CodecState::default())
             .expect("convert payload to otap records");
+        let records = arrow_pdata.records();
         let batch = records
             .get(ArrowPayloadType::Logs)
             .expect("logs root record batch");
@@ -106,22 +104,19 @@ mod tests {
     /// Guarantees: The bridge forwards the payload unchanged and does not call the guest closure.
     #[test]
     fn skips_guest_call_when_root_batch_is_missing() {
-        let input = OtapPdata::new(
-            Context::default(),
-            OtapArrowRecords::Logs(Logs::default()).into(),
-        );
+        let input =
+            OtapArrowPdata::new(Context::default(), OtapArrowRecords::Logs(Logs::default()));
         let output = run_on_otap_records(input, |_records| {
             panic!("closure should not be called for empty/rootless payload")
         })
         .expect("run_on_otap_records should pass through empty payloads")
         .expect("empty payload should be forwarded, not dropped");
 
-        let (_ctx, payload) = output.into_parts();
-        let records: OtapArrowRecords = payload
-            .try_into_with_default()
+        let records = output
+            .try_into_otap(&mut otel_arrow_dfe_pdata::codec::CodecState::default())
             .expect("convert payload to otap records");
         assert!(
-            records.get(ArrowPayloadType::Logs).is_none(),
+            records.records().get(ArrowPayloadType::Logs).is_none(),
             "empty logs payload should remain empty"
         );
     }
@@ -186,11 +181,10 @@ mod tests {
             .expect("bridge run succeeds")
             .expect("payload is not dropped");
 
-        let (_ctx, payload) = output.into_parts();
-        let records: OtapArrowRecords = payload
-            .try_into_with_default()
+        let records = output
+            .try_into_otap(&mut otel_arrow_dfe_pdata::codec::CodecState::default())
             .expect("convert payload to otap records");
-        let otlp = otap_to_otlp(&records);
+        let otlp = otap_to_otlp(records.records());
 
         let OtlpProtoMessage::Logs(logs) = otlp else {
             panic!("expected logs payload");

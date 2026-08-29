@@ -34,6 +34,7 @@ use otel_arrow_dfe_engine::message::Message;
 use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_engine::process_duration::ComputeDuration;
 use otel_arrow_dfe_engine::processor::ProcessorWrapper;
+#[cfg(test)]
 use otel_arrow_dfe_pdata::TryIntoWithOptions;
 use otel_arrow_dfe_pdata::encode::record::attributes::StrKeysAttributesRecordBatchBuilder;
 use otel_arrow_dfe_pdata::otlp::attributes::AttributeValueType;
@@ -45,7 +46,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES;
-use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_otap::pdata::{OtapPdata, PdataEffectHandlerExtension};
 
 /// URN identifier for the Condense Attributes processor
 pub const CONDENSE_ATTRIBUTES_PROCESSOR_URN: &str = "urn:otel:processor:condense_attributes";
@@ -644,16 +645,26 @@ impl local::Processor<OtapPdata> for CondenseAttributesProcessor {
                     _ => Ok(()),
                 }
             }
-            Message::PData(pdata) => {
+            Message::PData(mut pdata) => {
                 let signal = pdata.signal_type();
-                let (context, payload) = pdata.into_parts();
-                let saved_payload = if context.may_return_payload() {
-                    payload.clone()
+                let may_return_payload = pdata.context_mut().may_return_payload();
+                let saved_payload = if may_return_payload {
+                    pdata.payload_ref().clone()
                 } else {
                     OtapPayload::empty(signal)
                 };
 
-                let mut records: OtapArrowRecords = payload.try_into_with_default()?;
+                let arrow_pdata = match effect_handler.try_into_otap(pdata).await {
+                    Ok(arrow_pdata) => arrow_pdata,
+                    Err(error) => {
+                        let (error, pdata) = error.into_parts();
+                        effect_handler
+                            .notify_nack(NackMsg::new_permanent(error.to_string(), pdata))
+                            .await?;
+                        return Ok(());
+                    }
+                };
+                let (context, mut records) = arrow_pdata.into_parts();
 
                 let input_items = records.num_items() as u64;
 
