@@ -36,6 +36,7 @@ use otel_arrow_dfe_channel::error::SendError;
 use otel_arrow_dfe_channel::mpsc;
 use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_config::{PortName, SignalType};
+use otel_arrow_dfe_pdata::codec::CodecExecutor;
 use otel_arrow_dfe_telemetry::metrics::MeasurementMetricSet;
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
@@ -613,6 +614,7 @@ impl<PData> ProcessorWrapper<PData> {
             false,
             false,
             TerminalMetricsDeadline::default(),
+            CodecExecutor::default(),
         )
         .await
     }
@@ -637,6 +639,7 @@ impl<PData> ProcessorWrapper<PData> {
         flow_metrics_active: bool,
         flow_needs_timing: bool,
         terminal_metrics_deadline: TerminalMetricsDeadline,
+        codec_executor: CodecExecutor,
     ) -> Result<(), Error>
     where
         PData: ReceivedAtNode + FlowMetricHook,
@@ -651,6 +654,7 @@ impl<PData> ProcessorWrapper<PData> {
                 mut inbox,
                 mut effect_handler,
             } => {
+                effect_handler.set_codec_executor(codec_executor.clone());
                 effect_handler
                     .core
                     .set_runtime_ctrl_msg_sender(runtime_ctrl_msg_tx);
@@ -750,6 +754,7 @@ impl<PData> ProcessorWrapper<PData> {
                 mut inbox,
                 mut effect_handler,
             } => {
+                effect_handler.set_codec_executor(codec_executor);
                 effect_handler
                     .core
                     .set_runtime_ctrl_msg_sender(runtime_ctrl_msg_tx);
@@ -1021,6 +1026,7 @@ mod tests {
     use crate::testing::{CtrlMsgCounters, TestMsg, test_node};
     use async_trait::async_trait;
     use otel_arrow_dfe_config::{SignalType, node::NodeUserConfig};
+    use otel_arrow_dfe_pdata::codec::CodecExecutor;
     use otel_arrow_dfe_telemetry::common_attributes::SignalAttributes;
     use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricValue};
     use serde_json::Value;
@@ -1541,6 +1547,7 @@ mod tests {
                             true,
                             true,
                             crate::terminal_state::TerminalMetricsDeadline::default(),
+                            CodecExecutor::default(),
                         )
                         .await
                 });
@@ -1758,6 +1765,7 @@ mod tests {
                 true, // flow_metrics_active
                 false,
                 crate::terminal_state::TerminalMetricsDeadline::default(),
+                CodecExecutor::default(),
             )
             .await;
 
@@ -1999,6 +2007,7 @@ mod tests {
                 true,
                 false,
                 crate::terminal_state::TerminalMetricsDeadline::default(),
+                CodecExecutor::default(),
             )
             .await;
 

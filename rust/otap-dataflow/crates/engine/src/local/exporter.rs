@@ -42,6 +42,7 @@ use crate::node::NodeId;
 use crate::terminal_state::TerminalState;
 use async_trait::async_trait;
 use otel_arrow_dfe_config::transport_headers_policy::HeaderPropagationPolicy;
+use otel_arrow_dfe_pdata::codec::CodecExecutor;
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
 use otel_arrow_dfe_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
@@ -96,6 +97,7 @@ pub trait Exporter<PData> {
 #[derive(Clone)]
 pub struct EffectHandler<PData> {
     pub(crate) core: EffectHandlerCore<PData>,
+    codec_executor: CodecExecutor,
     _pd: PhantomData<PData>,
     /// Propagation policy for filtering captured headers on egress.
     /// `None` when no propagation policy is configured (zero overhead).
@@ -109,9 +111,21 @@ impl<PData> EffectHandler<PData> {
     pub fn new(node_id: NodeId, metrics_reporter: MetricsReporter) -> Self {
         EffectHandler {
             core: EffectHandlerCore::new(node_id, metrics_reporter),
+            codec_executor: CodecExecutor::default(),
             _pd: PhantomData,
             propagation_policy: None,
         }
+    }
+
+    /// Returns the runtime-owned pdata codec service.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn codec_executor(&self) -> &CodecExecutor {
+        &self.codec_executor
+    }
+
+    pub(crate) fn set_codec_executor(&mut self, codec_executor: CodecExecutor) {
+        self.codec_executor = codec_executor;
     }
 
     /// Returns the id of the exporter associated with this handler.

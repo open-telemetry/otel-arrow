@@ -29,6 +29,7 @@ use otel_arrow_dfe_channel::error::SendError;
 use otel_arrow_dfe_channel::mpsc;
 use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_config::transport_headers_policy::HeaderPropagationPolicy;
+use otel_arrow_dfe_pdata::codec::CodecExecutor;
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use std::sync::Arc;
 
@@ -297,6 +298,7 @@ impl<PData> ExporterWrapper<PData> {
             metrics_reporter,
             node_interests,
             None,
+            CodecExecutor::default(),
         )
         .await
     }
@@ -308,6 +310,7 @@ impl<PData> ExporterWrapper<PData> {
         metrics_reporter: MetricsReporter,
         node_interests: Interests,
         completion_emission_metrics: Option<CompletionEmissionMetricsHandle>,
+        codec_executor: CodecExecutor,
     ) -> Result<TerminalState, Error> {
         match (self, metrics_reporter) {
             (
@@ -323,6 +326,7 @@ impl<PData> ExporterWrapper<PData> {
             ) => {
                 let mut effect_handler =
                     local::EffectHandler::new(node_id.clone(), metrics_reporter);
+                effect_handler.set_codec_executor(codec_executor.clone());
                 let pdata_rx = pdata_receiver.ok_or_else(|| Error::ExporterError {
                     exporter: effect_handler.exporter_id(),
                     kind: ExporterErrorKind::Configuration,
@@ -361,6 +365,7 @@ impl<PData> ExporterWrapper<PData> {
             ) => {
                 let mut effect_handler =
                     shared::EffectHandler::new(node_id.clone(), metrics_reporter);
+                effect_handler.set_codec_executor(codec_executor);
                 let pdata_rx = pdata_receiver.ok_or_else(|| Error::ExporterError {
                     exporter: effect_handler.exporter_id(),
                     kind: ExporterErrorKind::Configuration,

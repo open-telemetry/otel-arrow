@@ -30,6 +30,7 @@ use otel_arrow_dfe_channel::mpsc;
 use otel_arrow_dfe_config::PortName;
 use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_config::transport_headers_policy::HeaderCapturePolicy;
+use otel_arrow_dfe_pdata::codec::CodecExecutor;
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -323,6 +324,24 @@ impl<PData> ReceiverWrapper<PData> {
         metrics_reporter: MetricsReporter,
         node_interests: Interests,
     ) -> Result<TerminalState, Error> {
+        self.start_with_codec_executor(
+            runtime_ctrl_msg_tx,
+            pipeline_completion_msg_tx,
+            metrics_reporter,
+            node_interests,
+            CodecExecutor::default(),
+        )
+        .await
+    }
+
+    pub(crate) async fn start_with_codec_executor(
+        self,
+        runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<PData>,
+        pipeline_completion_msg_tx: PipelineCompletionMsgSender<PData>,
+        metrics_reporter: MetricsReporter,
+        node_interests: Interests,
+        codec_executor: CodecExecutor,
+    ) -> Result<TerminalState, Error> {
         match (self, metrics_reporter) {
             (
                 ReceiverWrapper::Local {
@@ -356,6 +375,7 @@ impl<PData> ReceiverWrapper<PData> {
                     runtime_ctrl_msg_tx,
                     metrics_reporter,
                 );
+                effect_handler.set_codec_executor(codec_executor.clone());
                 effect_handler.set_source_tagging(source_tag);
                 effect_handler.set_capture_policy(capture_policy);
                 effect_handler
@@ -396,6 +416,7 @@ impl<PData> ReceiverWrapper<PData> {
                     runtime_ctrl_msg_tx,
                     metrics_reporter,
                 );
+                effect_handler.set_codec_executor(codec_executor);
                 effect_handler.set_source_tagging(source_tag);
                 effect_handler.set_capture_policy(capture_policy);
                 effect_handler
