@@ -343,6 +343,10 @@ while their semantic and format definitions remain normative from version 1.
 | Configuration | `batch.max_records` is zero or exceeds 65,535 | Rejected |
 | Configuration | `batch.max_bytes` equals the target `usize` representability bound | Accepted if every dependent size formula is representable |
 | Configuration | `batch.max_bytes` exceeds target `usize` or dependent size arithmetic overflows | Rejected |
+| Configuration | `checkpoint.id` is exactly 127 ASCII bytes | Accepted; lowercase-hex path component is exactly 254 bytes |
+| Configuration | `checkpoint.id` is 128 ASCII bytes | Rejected before namespace creation |
+| Configuration | `checkpoint.id` values `AppLogs` and `applogs` | Distinct lowercase-hex components `4170704c6f6773` and `6170706c6f6773`, including on case-insensitive filesystems |
+| Configuration | `checkpoint.id` is `.` or `..` | Accepted as raw logical ID and safely encoded as `2e` or `2e2e`; never interpreted as a path component |
 | Configuration | Identity-reconciliation or checkpoint-recovery formula equals its named provisional ceiling | Accepted if representable |
 | Configuration | A formula exceeds its named provisional ceiling or any admission arithmetic overflows | Rejected with actionable knobs |
 | Configuration | Framer, reader, batch, or carry-over formula has no named provisional ceiling | Checked and reported; no invented per-model limit |
@@ -497,6 +501,7 @@ while their semantic and format definitions remain normative from version 1.
 | Checkpoint | More new identities than one non-progress transaction permits | Registration split into independently durable bounded chunks; each file reads only after its chunk is durable |
 | Checkpoint | Non-progress transaction exceeds 256 operations or 16 MiB body | Rejected before allocation/application and split by the writer |
 | Checkpoint | Transaction mixes `update_progress` with another operation class | Fail closed; progress and non-progress transactions are separate |
+| Checkpoint | Zero-delta `update_progress` changes stored guard or framing resume | Fail closed with the complete record unchanged |
 | Checkpoint | Crash after send before Ack | Reconstruct and duplicate if bytes survive |
 | Checkpoint | Crash after Ack before delayed sync with missing or allowed torn suffix | Duplicate replay; no skipped unacknowledged bytes |
 | Checkpoint | Power/storage failure exposes non-tail damage inside an unsynced WAL region | Namespace fails closed; supported inspect/backup/reset procedure required, never automatic prefix salvage |
@@ -513,6 +518,7 @@ while their semantic and format definitions remain normative from version 1.
 | Checkpoint | Valid `CURRENT` names missing generation file | Distinct missing-authoritative-generation error; no fallback |
 | Checkpoint | Valid `CURRENT` names unreadable or incomplete authoritative generation | Distinct fail-closed recovery error; no fallback |
 | Checkpoint | Genuinely absent namespace | Exact first-generation publish order and sync before read |
+| Checkpoint | A direct-`checkpoint.id` sibling directory exists outside `filelog/@v1/<hex>` | Not searched, selected, or migrated; v1 recognizes only the versioned lowercase-hex namespace |
 | Checkpoint | Artifacts exist without valid `CURRENT` | Repair only recognized interrupted first publication; otherwise fail closed |
 | Checkpoint | WAL append writes no bytes | Retry from known boundary |
 | Checkpoint | WAL append is partial | Validate, truncate/sync exact torn suffix, then retry |
@@ -551,7 +557,7 @@ while their semantic and format definitions remain normative from version 1.
 | Rotation | Late write after finalization | Documented possible miss |
 | Rotation | Final record remains in open or retained batch | Descriptor stays pinned; no finalizing transaction yet |
 | Rotation | Matching Ack reaches final source frontier | Ack transaction may finalize; sync precedes descriptor release |
-| Rotation | Zero-delta finalization | Permitted only after all finalization preconditions; sync precedes release |
+| Rotation | Zero-delta finalization | Permitted only when stored resume is already `Clean`; update repeats stored guard and resume exactly, and sync precedes release |
 | Rotation | Aggregate Nack while retry remains | Batch and descriptor retained; no finalization |
 | Rotation | Retry exhaustion under `fail` | Receiver terminal; identity remains unfinalized |
 | Rotation | `drop_and_continue` final delta | Explicit-loss transaction applies and syncs before finalization/release |

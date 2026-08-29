@@ -196,6 +196,7 @@ accepted compromises:
 | D16 | Fail closed on corrupt durable state and persist fail-policy quarantine | Ambiguous recovery never silently inherits progress, and restart cannot bypass failure |
 | D17 | At confirmed permanent rotation EOF, emit a nonempty pending frame with bounded terminal-unterminated evidence | This preserves terminal bytes without silently claiming normal newline or multiline completion; deterministic decode-fail and corrupt-state conditions can still quarantine |
 | D18 | Require a nonempty, ready required-subscriber snapshot before a publication can Ack | Zero required membership is backpressure or explicit non-success, never vacuous Ack; this is an engine/topic release dependency |
+| D19 | Map the exact raw checkpoint ID into a versioned lowercase-hex filesystem namespace | `${engine.state_dir}/filelog/@v1/<checkpoint-id-hex>/` is injective on case-insensitive filesystems, avoids reserved-name and path-normalization hazards, and keeps the raw ID unchanged in namespace digests and administrative records |
 
 ## Responsibility boundaries
 

@@ -234,7 +234,7 @@ receivers:
 | `batch.max_flush_period` | `1s` | Nonzero first-record batch deadline |
 | `rotation.rotate_wait` | `5s` | Nonzero post-EOF inactivity interval |
 | `rotation.on_truncate` | `fail` | `fail` durably quarantines; `read_new` accepts an explicit reported gap and continues at epoch-reset offset zero |
-| `checkpoint.id` | Derived logical receiver key | Optional stable namespace name of 1 to 255 ASCII bytes; set explicitly to preserve continuity across logical-key renames |
+| `checkpoint.id` | Derived logical receiver key | Optional stable namespace name of 1 to 127 ASCII bytes; set explicitly to preserve continuity across logical-key renames |
 | `checkpoint.sync_interval` | `0s` | Zero syncs every Ack transaction before release; nonzero permits duplicate replay and, after storage/power failure, possible fail-closed recovery of a damaged unsynced WAL region |
 | `checkpoint.compact_after_bytes` | `64MiB` | Nonzero WAL compaction threshold |
 | `checkpoint.compact_after_transactions` | `10000` | Nonzero transaction threshold |
@@ -268,6 +268,27 @@ pipeline, or receiver node ID changes the default. A receiver component name, co
 URN, deployment generation, CPU count, core ID, and runtime instance ID do not. Each
 encoded input length must fit `u32`; otherwise validation fails.
 
+The exact validated `checkpoint.id` remains the logical namespace identity used
+by the namespace digest and administrative WAL fields. Its filesystem
+namespace is:
+
+```text
+${engine.state_dir}/filelog/@v1/<checkpoint-id-hex>/
+```
+
+`<checkpoint-id-hex>` is the lowercase hexadecimal encoding of the exact UTF-8
+bytes of `checkpoint.id`, with two ASCII hex digits per byte and no prefix or
+separator inside the encoded component. For example, `AppLogs` maps to
+`4170704c6f6773`, while `applogs` maps to `6170706c6f6773`. The mapping is
+injective even on case-insensitive filesystems and never exposes a raw ID as a
+Windows reserved name or path-normalized component. The literal `@v1`
+directory is the version boundary for this namespace-layout contract.
+
+The configured raw ID is limited to 127 bytes, so its encoded component is at
+most 254 bytes and fits the common 255-byte filesystem component bound. A
+filesystem with a smaller actual component bound still fails before creating
+an unusable namespace.
+
 Continuity across any logical-key rename requires an explicit ID from initial
 deployment, an explicit ID equal to the current effective derived value before the
 rename, or an explicit namespace migration. Startup opens only the selected ID. If it
@@ -278,6 +299,10 @@ event, and applies new-file admission policy. Existing artifacts without valid
 namespaces. Changing the ID therefore selects different existing state or a
 genuinely new namespace and can cause replay or intentional `start_at`
 exclusion.
+
+Version 1 has no released predecessor namespace layout. The versioned
+lowercase-hex path above is the first supported v1 layout. The receiver does
+not search for, import, or migrate a direct-`checkpoint.id` sibling directory.
 
 ### Configuration variants
 
@@ -384,10 +409,10 @@ The following relationships are enforced:
 43. Every UTF-8 input to the derived checkpoint-ID recipe has a length representable
     as `u32`.
 44. `checkpoint.id` is nonempty after defaulting.
-45. `checkpoint.id` is neither `.` nor `..`.
-46. `checkpoint.id` contains only ASCII alphanumerics, `_`, `-`, and `.`.
-47. Its ASCII byte length is at most 255, and those exact bytes are its namespace path
-    component.
+45. `checkpoint.id` contains only ASCII alphanumerics, `_`, `-`, and `.`.
+46. Its ASCII byte length is at most 127.
+47. Two lowercase hexadecimal digits per exact ID byte fit in a path component
+    of at most 254 bytes under the `@v1` namespace-layout version directory.
 48. The maximum logical size of any single emitted record permitted by the
     framing configuration, including its worst-case enabled attributes and
     conservative fixed record overhead, is representable and does not exceed
@@ -857,9 +882,10 @@ the same validated handle before persisting the initial anchor.
 Each progress transaction updates offset, committed-frontier guard, and framing
 resume atomically. The runtime derives the guard from source bytes already owned
 by the reader; it does not reread mutable path content after Ack. A zero-delta
-finalization preserves the existing guard. Reset-to-beginning and truncate
-reset install the empty guard; reset-to-end supplies the validated current-EOF
-guard.
+update preserves both the existing guard and framing resume bit-for-bit.
+Zero-delta finalization therefore requires the stored resume to already be
+`Clean`. Reset-to-beginning and truncate reset install the empty guard;
+reset-to-end supplies the validated current-EOF guard.
 
 Registration, reopen, and recovery retain the validated trailing window as the
 seed of one rolling 64-byte raw-source window. Each later source read updates
@@ -2321,10 +2347,11 @@ only when every precondition below holds:
 When the final record is in the retained batch, the matching Ack transaction may
 carry its `update_progress` with `finalize = 0x01`. If the committed offset is
 already current, a zero-delta finalization operation with
-`new_committed_offset == expected_committed_offset` is permitted. In either
-case, the finalization transaction is filesystem-synced before the descriptor
-is closed and the runtime lease is released, even when ordinary Ack progress
-uses a nonzero sync interval.
+`new_committed_offset == expected_committed_offset` is permitted only when it
+repeats the stored committed-frontier guard and already-`Clean` framing resume
+bit-for-bit. In either case, the finalization transaction is
+filesystem-synced before the descriptor is closed and the runtime lease is
+released, even when ordinary Ack progress uses a nonzero sync interval.
 
 The ordering around non-Ack outcomes is:
 

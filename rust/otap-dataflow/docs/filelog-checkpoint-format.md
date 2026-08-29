@@ -89,7 +89,7 @@ The on-disk namespace layout implements the
 [Phase 1 checkpoint semantic contract](filelog-receiver-phase1-spec.md#checkpoint-semantic-contract):
 
 ```text
-${engine.state_dir}/filelog/<checkpoint.id>/
+${engine.state_dir}/filelog/@v1/<checkpoint-id-hex>/
   CURRENT
   offsets-<generation>.snapshot
   offsets-<generation>.wal
@@ -101,13 +101,25 @@ Later-generation compaction uses only the bounded temporary names
 `offsets-<generation>.wal.compact.tmp`, and `CURRENT.compact.tmp` defined by
 the behavioral compaction state machine. They are never authoritative.
 
-- `<checkpoint.id>` is the final explicit or derived namespace ID produced by
-  the [Phase 1 contract](filelog-receiver-phase1-spec.md#fields-defaults-and-variants).
-  This format treats it as opaque: different ID strings are different
-  namespaces and no file-format recovery searches sibling IDs. In version 1 it
-  contains 1 to 255 ASCII bytes, is neither `.` nor `..`, and uses only ASCII
-  alphanumerics, `_`, `-`, and `.`. Those bytes are copied unchanged as the
-  namespace path component; version 1 performs no escaping or percent-encoding.
+- `@v1` is the literal namespace-layout version directory. The `@` byte is not
+  in the configured checkpoint-ID alphabet, so this component cannot be
+  confused with an encoded ID.
+- `<checkpoint-id-hex>` is the lowercase hexadecimal encoding of the exact
+  UTF-8 bytes of the final explicit or derived `checkpoint.id` produced by the
+  [Phase 1 contract](filelog-receiver-phase1-spec.md#fields-defaults-and-variants).
+  Each raw byte becomes exactly two ASCII digits `0-9` or `a-f`, with no
+  prefix, separator, Unicode normalization, or case folding before encoding.
+  For example, `AppLogs` becomes `4170704c6f6773` and `applogs` becomes
+  `6170706c6f6773`.
+- The raw `checkpoint.id` contains 1 to 127 ASCII bytes and uses only ASCII
+  alphanumerics, `_`, `-`, and `.`. Values such as `.` and `..` are logical
+  IDs, not path components; they encode as `2e` and `2e2e`. The encoded
+  component is therefore 2 to 254 bytes and fits the common 255-byte
+  filesystem component bound.
+- The mapping is byte-wise injective even on case-insensitive filesystems and
+  avoids interpreting the raw ID as a Windows reserved name or
+  path-normalized component. Different raw IDs are different namespaces, and
+  recovery never searches sibling encodings.
 - `<generation>` is the ASCII decimal rendering of a `u64` generation number
   with no leading zeros (`0`, `1`, `2`, ... `18446744073709551615`). A
   generation number becomes assigned when a durable `CURRENT` first publishes
@@ -147,6 +159,12 @@ post-crash `CURRENT` names either the complete old or complete new generation;
 unnamed generation artifacts are never authoritative, a published generation
 is never reused, and generation overflow fails before wrap.
 
+Version 1 has no released predecessor namespace layout. The path above is the
+first supported v1 layout and matches the existing pre-release implementation.
+Recovery does not search for or migrate a direct-`checkpoint.id` directory.
+The raw ID remains unchanged in the namespace digest and administrative
+operation fields; only its filesystem path component is lowercase-hex encoded.
+
 ## Namespace digest
 
 Snapshot and WAL headers bind an artifact to the selected opaque
@@ -160,11 +178,13 @@ namespace_digest = SHA-256(
 )
 ```
 
-`checkpoint_id_len` is the exact byte length in `1..=255`; no Unicode
-normalization, case folding, path escaping, or other transformation occurs.
-The digest is stored in both the snapshot and WAL headers. It is deliberately
-not added to `CURRENT`, whose sole authority function remains selecting a
-generation.
+The format can represent `checkpoint_id_len` in `1..=255`, matching the
+administrative namespace-ID field bound. A conforming Phase 1 runtime supplies
+only a configured ID in `1..=127` because of the lowercase-hex filesystem
+component bound. No Unicode normalization, case folding, path escaping, or
+other transformation occurs before hashing. The digest is stored in both the
+snapshot and WAL headers. It is deliberately not added to `CURRENT`, whose
+sole authority function remains selecting a generation.
 
 Recovery derives the expected digest from the selected namespace before
 loading records. After validating each header's own CRC, it requires the
@@ -1075,6 +1095,10 @@ registration transaction is all-or-nothing.
 - `new_committed_frontier_guard.window_len` MUST equal
   `min(new_committed_offset, COMMITTED_FRONTIER_GUARD_WINDOW_BYTES)`. For a
   zero-delta update it MUST equal the stored guard bit-for-bit.
+- For a zero-delta update, `new_framing_resume` MUST also equal the stored
+  framing resume bit-for-bit. Therefore zero-delta finalization is valid only
+  when the stored resume is already `Clean`; it cannot discard a
+  `Continuation`.
 - When `new_framing_resume` is `Continuation`, it MUST satisfy
   `record_start_offset < new_committed_offset`, `next_fragment_index >= 1`,
   and either `record_end_offset == 0` or
@@ -1513,6 +1537,9 @@ permanent audit retention requires a separate audit sink.
   [architecture](filelog-receiver.md#goals-and-non-goals) treats such an
   importer, if any, as a separate, explicitly versioned tool outside the
   receiver.
+- The `@v1/<checkpoint-id-hex>` namespace path is the first supported v1
+  namespace layout. No released direct-ID layout exists, and version 1 defines
+  no migration, fallback search, or automatic import from such a directory.
 
 ## Required conformance vectors
 
@@ -1536,6 +1563,8 @@ Castagnoli CRC-32C, first checking
 | Item | Expected value |
 | --- | --- |
 | Namespace digest for exact `checkpoint.id` bytes `app-logs` | `400aa7032f9128c39cc7e1403b8745dcccf6c9a5acfc665e908f15e798ac9531` |
+| Namespace path segment for exact `checkpoint.id` bytes `AppLogs` | `4170704c6f6773` |
+| Namespace path segment for exact `checkpoint.id` bytes `applogs` | `6170706c6f6773` |
 | Unix path digest for `/var/log/app.log` | `337a8fdfc197d2f02179162dccb0e86c430452449e51368104bbd5cc98fca49b` |
 | Windows UTF-16LE path digest for `C:\logs\app.log` | `eaf5f1242c984fbf5c1ec523bd5dd9d1fa8c21b7f09a9394ee7b74b3ecdb8357` |
 | Unix `UnixBytes` digest for 5,000 bytes of `0x78` (digest covers all bytes; stored path is the final 4,096-byte suffix) | `4edffb8c0486f5658b188d349af1b47270dc02bc0459b60dbfd3c314d9ecffa2` |
