@@ -316,6 +316,27 @@ fn warn_tcp_rate_limit_drop_once(peer_addr: SocketAddr, warned: &mut bool) {
     }
 }
 
+enum TcpSendOutcome {
+    Success,
+    Refused,
+    Shutdown,
+}
+
+async fn send_tcp_batch(
+    effect_handler: &local::EffectHandler<OtapPdata>,
+    shutdown_rx: &mut tokio::sync::watch::Receiver<bool>,
+    data: OtapPdata,
+) -> TcpSendOutcome {
+    tokio::select! {
+        biased;
+        _ = shutdown_rx.changed() => TcpSendOutcome::Shutdown,
+        result = effect_handler.send_message_with_source_node(data) => match result {
+            Ok(()) => TcpSendOutcome::Success,
+            Err(_) => TcpSendOutcome::Refused,
+        },
+    }
+}
+
 #[cfg(test)]
 fn local_rate_gate(
     policy: otel_arrow_dfe_config::policy::RateLimiterPolicy,
@@ -458,11 +479,20 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                 Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
                                     flush_on_shutdown.set(false);
                                     let _ = shutdown_tx.send_replace(true);
-                                    let _ = tokio::time::timeout(MAX_TASK_DRAIN_WAIT, async {
+                                    let time_until_deadline = deadline.saturating_duration_since(Instant::now());
+                                    let shutdown_wait = std::cmp::min(time_until_deadline * 9 / 10, MAX_TASK_DRAIN_WAIT);
+                                    let shutdown_result = tokio::time::timeout(shutdown_wait, async {
                                         while active_task_count.get() > 0 {
                                             tokio::task::yield_now().await;
                                         }
                                     }).await;
+                                    if shutdown_result.is_err() {
+                                        otel_warn!(
+                                            "syslog_cef_receiver.shutdown.timeout",
+                                            active_tasks = active_task_count.get(),
+                                            message = "Shutdown deadline expired with tasks still active"
+                                        );
+                                    }
                                     let snapshots = self.metrics.borrow_mut().terminal_snapshots();
                                     return Ok(TerminalState::new(deadline, snapshots));
                                 }
@@ -656,26 +686,26 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                     );
                                                                     metrics.borrow_mut().record_connection_rejection();
                                                                     task_active_count.set(task_active_count.get() - 1);
-                                                metrics.borrow_mut().record_connection_active(false);
+                                                                    metrics.borrow_mut().record_connection_active(false);
                                                                     break;
                                                                 } else {
                                                                     if !admit_syslog_message(&rate_limiter) {
-                                    metrics.borrow_mut().record_rejection(
-                                        SyslogCefProtocol::Tcp,
-                                        ReceiverRejectionErrorType::RateLimit,
-                                        1,
-                                    );
-                                    metrics.borrow_mut().record_received(
-                                        received_message,
-                                        Outcome::Refused,
-                                    );
-                                    warn_tcp_rate_limit_drop_once(
-                                        peer_addr,
-                                        &mut warned_rate_limit_drop,
-                                    );
-                                    line_bytes.clear();
-                                    continue;
-                                }
+                                                                        metrics.borrow_mut().record_rejection(
+                                                                            SyslogCefProtocol::Tcp,
+                                                                            ReceiverRejectionErrorType::RateLimit,
+                                                                            1,
+                                                                        );
+                                                                        metrics.borrow_mut().record_received(
+                                                                            received_message,
+                                                                            Outcome::Refused,
+                                                                        );
+                                                                        warn_tcp_rate_limit_drop_once(
+                                                                            peer_addr,
+                                                                            &mut warned_rate_limit_drop,
+                                                                        );
+                                                                        line_bytes.clear();
+                                                                        continue;
+                                                                    }
 
                                                                     match parser::parse(message_bytes) {
                                                                         Ok(parsed_message) => {
@@ -694,12 +724,14 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             if arrow_records_builder.len() > 0 {
                                                                 match arrow_records_builder.build() {
                                                                     Ok(arrow_records) => {
-                                                                        let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into()).with_peer_addr(peer_addr)).await;
-
-                                                                        match &res {
-                                                                                Ok(_) => metrics.borrow_mut().record_received_batch(&mut pending_messages, Outcome::Success),
-                                                                                Err(_) => metrics.borrow_mut().record_received_batch(&mut pending_messages, Outcome::Refused),
-                                                                            }
+                                                                        match send_tcp_batch(
+                                                                            &effect_handler,
+                                                                            &mut task_shutdown_rx,
+                                                                            OtapPdata::new_todo_context(arrow_records.into()).with_peer_addr(peer_addr),
+                                                                        ).await {
+                                                                            TcpSendOutcome::Success => metrics.borrow_mut().record_received_batch(&mut pending_messages, Outcome::Success),
+                                                                            TcpSendOutcome::Refused | TcpSendOutcome::Shutdown => metrics.borrow_mut().record_received_batch(&mut pending_messages, Outcome::Refused),
+                                                                        }
                                                                     }
                                                                     Err(e) => {
                                                                         otel_warn!("syslog_cef_receiver.arrow_records.build_failed", error = %e, message = "Failed to build Arrow records, dropping batch");
@@ -710,7 +742,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 
                                                             // Decrement active connections on EOF
                                                             task_active_count.set(task_active_count.get() - 1);
-                                                metrics.borrow_mut().record_connection_active(false);
+                                                            metrics.borrow_mut().record_connection_active(false);
                                                             break;
                                                         }
                                                         Ok(bounded_result) => {
@@ -767,7 +799,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                 );
                                                                 metrics.borrow_mut().record_connection_rejection();
                                                                 task_active_count.set(task_active_count.get() - 1);
-                                                metrics.borrow_mut().record_connection_active(false);
+                                                                metrics.borrow_mut().record_connection_active(false);
                                                                 break;
                                                             }
 
@@ -820,11 +852,14 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                         // Reset the timer since we already built an arrow record batch due to size constraint
                                                                         interval.reset();
 
-                                                                        let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into()).with_peer_addr(peer_addr)).await;
-                                                                        match &res {
-                                                                            Ok(_) => metrics.borrow_mut().record_received_batch(&mut pending_messages, Outcome::Success),
-                                                                            Err(_) => metrics.borrow_mut().record_received_batch(&mut pending_messages, Outcome::Refused),
-                                                                            }
+                                                                        match send_tcp_batch(
+                                                                            &effect_handler,
+                                                                            &mut task_shutdown_rx,
+                                                                            OtapPdata::new_todo_context(arrow_records.into()).with_peer_addr(peer_addr),
+                                                                        ).await {
+                                                                            TcpSendOutcome::Success => metrics.borrow_mut().record_received_batch(&mut pending_messages, Outcome::Success),
+                                                                            TcpSendOutcome::Refused | TcpSendOutcome::Shutdown => metrics.borrow_mut().record_received_batch(&mut pending_messages, Outcome::Refused),
+                                                                        }
                                                                     }
                                                                     Err(e) => {
                                                                         otel_warn!("syslog_cef_receiver.arrow_records.build_failed", error = %e, message = "Failed to build Arrow records, dropping batch");
@@ -840,12 +875,14 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             if arrow_records_builder.len() > 0 {
                                                                 match arrow_records_builder.build() {
                                                                     Ok(arrow_records) => {
-                                                                        let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into()).with_peer_addr(peer_addr)).await;
-
-                                                                        match &res {
-                                                                            Ok(_) => metrics.borrow_mut().record_received_batch(&mut pending_messages, Outcome::Success),
-                                                                            Err(_) => metrics.borrow_mut().record_received_batch(&mut pending_messages, Outcome::Refused),
-                                                                            }
+                                                                        match send_tcp_batch(
+                                                                            &effect_handler,
+                                                                            &mut task_shutdown_rx,
+                                                                            OtapPdata::new_todo_context(arrow_records.into()).with_peer_addr(peer_addr),
+                                                                        ).await {
+                                                                            TcpSendOutcome::Success => metrics.borrow_mut().record_received_batch(&mut pending_messages, Outcome::Success),
+                                                                            TcpSendOutcome::Refused | TcpSendOutcome::Shutdown => metrics.borrow_mut().record_received_batch(&mut pending_messages, Outcome::Refused),
+                                                                        }
                                                                     }
                                                                     Err(e) => {
                                                                         otel_warn!("syslog_cef_receiver.arrow_records.build_failed", error = %e, message = "Failed to build Arrow records, dropping batch");
@@ -871,11 +908,14 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                 // Reset the builder for the next batch
                                                                 arrow_records_builder = ArrowRecordsBuilder::new();
 
-                                                                let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into()).with_peer_addr(peer_addr)).await;
-                                                                match &res {
-                                                                                Ok(_) => metrics.borrow_mut().record_received_batch(&mut pending_messages, Outcome::Success),
-                                                                                Err(_) => metrics.borrow_mut().record_received_batch(&mut pending_messages, Outcome::Refused),
-                                                                            }
+                                                                match send_tcp_batch(
+                                                                    &effect_handler,
+                                                                    &mut task_shutdown_rx,
+                                                                    OtapPdata::new_todo_context(arrow_records.into()).with_peer_addr(peer_addr),
+                                                                ).await {
+                                                                    TcpSendOutcome::Success => metrics.borrow_mut().record_received_batch(&mut pending_messages, Outcome::Success),
+                                                                    TcpSendOutcome::Refused | TcpSendOutcome::Shutdown => metrics.borrow_mut().record_received_batch(&mut pending_messages, Outcome::Refused),
+                                                                }
                                                             }
                                                             Err(e) => {
                                                                 otel_warn!("syslog_cef_receiver.arrow_records.build_failed", error = %e, message = "Failed to build Arrow records, dropping batch");
@@ -2932,6 +2972,97 @@ mod telemetry_tests {
                 pipe_rx.recv().await,
                 Ok(otel_arrow_dfe_engine::control::RuntimeControlMsg::ReceiverDrained { .. })
             ));
+        }));
+    }
+
+    /// Scenario: TCP batch handoff is blocked by a full downstream channel when shutdown begins.
+    /// Guarantees: shutdown interrupts the send and reports the pending message once as refused.
+    #[test]
+    fn tcp_shutdown_interrupts_blocked_downstream_send() {
+        let (rt, local) = setup_test_runtime();
+        rt.block_on(local.run_until(async move {
+            let telemetry_registry = TelemetryRegistryHandle::new();
+            let controller = ControllerContext::new(telemetry_registry.clone());
+            let pipeline = controller.pipeline_context_with(
+                otel_arrow_dfe_config::PipelineGroupId::from("grp".to_string()),
+                otel_arrow_dfe_config::PipelineId::from("pipe".to_string()),
+                0,
+                1,
+                0,
+            );
+            let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
+            let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+            let receiver = SyslogCefReceiver::with_pipeline(
+                pipeline,
+                Config {
+                    protocol: Protocol::Tcp(TcpConfig {
+                        listening_addr: addr,
+                        tls: None,
+                    }),
+                    batch: Some(BatchConfig {
+                        max_batch_duration_ms: NonZeroU64::new(10_000),
+                        max_size: NonZeroU16::new(1),
+                    }),
+                },
+            );
+
+            let (out_tx, out_rx) = otel_arrow_dfe_channel::mpsc::Channel::new(1);
+            let mut blocker_builder = ArrowRecordsBuilder::new();
+            blocker_builder.append_syslog(
+                parser::parse(b"<34>1 2024-01-15T10:30:45.123Z host app - ID0 blocker").unwrap(),
+            );
+            out_tx
+                .send(OtapPdata::new_todo_context(
+                    blocker_builder.build().unwrap().into(),
+                ))
+                .unwrap();
+            let mut senders = std::collections::HashMap::new();
+            let _ = senders.insert(
+                "".into(),
+                Sender::Local(otel_arrow_dfe_engine::local::message::LocalSender::mpsc(
+                    out_tx,
+                )),
+            );
+            let (pipe_tx, _pipe_rx) = otel_arrow_dfe_engine::control::runtime_ctrl_msg_channel(10);
+            let (_metrics_rx, reporter) = MetricsReporter::create_new_and_receiver(2);
+            let effect_handler = otel_arrow_dfe_engine::local::receiver::EffectHandler::new(
+                test_node("syslog_tcp_blocked_shutdown"),
+                senders,
+                None,
+                pipe_tx,
+                reporter,
+            );
+            let (ctrl_tx, ctrl_rx) = otel_arrow_dfe_channel::mpsc::Channel::new(8);
+            let ctrl_rx = otel_arrow_dfe_engine::message::Receiver::Local(
+                otel_arrow_dfe_engine::local::message::LocalReceiver::mpsc(ctrl_rx),
+            );
+            let ctrl_chan = otel_arrow_dfe_engine::local::receiver::ControlChannel::new(ctrl_rx);
+            let handle = tokio::task::spawn_local(async move {
+                Box::new(receiver).start(ctrl_chan, effect_handler).await
+            });
+
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let mut stream = TcpStream::connect(addr).await.unwrap();
+            stream
+                .write_all(b"<34>1 2024-01-15T10:30:45.123Z host app - ID1 msg\n")
+                .await
+                .unwrap();
+            stream.flush().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+
+            let _ = ctrl_tx.send(NodeControlMsg::Shutdown {
+                deadline: Instant::now() + Duration::from_secs(1),
+                reason: "test".into(),
+            });
+            let terminal_state = tokio::time::timeout(Duration::from_millis(500), handle)
+                .await
+                .expect("shutdown should interrupt the blocked send")
+                .unwrap()
+                .unwrap();
+
+            assert_eq!(received_count(terminal_state.metrics(), Some("refused")), 1);
+            assert!(out_rx.recv().await.is_ok());
+            assert!(out_rx.try_recv().is_err());
         }));
     }
 
