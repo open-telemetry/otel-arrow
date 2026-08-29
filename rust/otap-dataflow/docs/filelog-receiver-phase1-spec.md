@@ -236,9 +236,9 @@ receivers:
 | `rotation.on_truncate` | `fail` | `fail` durably quarantines; `read_new` accepts an explicit reported gap and continues at epoch-reset offset zero |
 | `checkpoint.id` | Derived logical receiver key | Optional stable namespace name of 1 to 127 ASCII bytes; set explicitly to preserve continuity across logical-key renames |
 | `checkpoint.sync_interval` | `0s` | Zero syncs every Ack transaction before release; nonzero permits duplicate replay and, after storage/power failure, possible fail-closed recovery of a damaged unsynced WAL region |
-| `checkpoint.compact_after_bytes` | `64MiB` | Nonzero WAL compaction threshold |
+| `checkpoint.compact_after_bytes` | `64MiB` | Complete-WAL byte threshold, including the 56-byte header; at least one maximum transaction plus the header |
 | `checkpoint.compact_after_transactions` | `10000` | Nonzero transaction threshold |
-| `checkpoint.retention` | `7d` | Zero retains eligible inactive records indefinitely; removal loses durable association, so later re-admission follows ordinary `start_at` |
+| `checkpoint.retention` | `7d` | Continuous runtime-proven absence interval before eligibility; restart or incomplete evidence resets it, zero disables removal, and removal loses durable association |
 | `checkpoint.ownership_timeout` | `30s` | Nonzero bounded ownership wait |
 | `checkpoint.max_consecutive_failures` | `5` | Nonzero store-failure budget |
 | `retry.max_attempts` | `8` | Nonzero total sends, including the first |
@@ -404,8 +404,10 @@ The following relationships are enforced:
     `checkpoint.ownership_timeout`, and `drain_timeout` are nonzero.
 40. `retry.max_attempts` is nonzero.
 41. `retry.max_backoff >= retry.initial_backoff`.
-42. Both checkpoint compaction thresholds and the consecutive-failure budget are
-    nonzero.
+42. `checkpoint.compact_after_bytes` is at least
+    `WAL_HEADER_BYTES + WAL_MAX_TX_FRAME_BYTES = 16,777,312` bytes;
+    `checkpoint.compact_after_transactions` and the consecutive-failure budget
+    are nonzero.
 43. Every UTF-8 input to the derived checkpoint-ID recipe has a length representable
     as `u32`.
 44. `checkpoint.id` is nonempty after defaulting.
@@ -940,7 +942,9 @@ For an exact-locator evidence mismatch, after satisfying the
 checkpoint transaction removes the superseded `Active` record and registers
 the new `file_id` at the selected anchor. Under `fail`, that transaction
 registers the replacement at offset zero and quarantines it before any read.
-The store never leaves two `Active` records claiming the same exact locator.
+The store never leaves two live-matchable records (`Active` or `Quarantined`)
+claiming the same exact locator. `RotatedFinalized` history is exempt so a new
+identity can legitimately reuse the native locator.
 For a changed-locator copy or ambiguity, the old record is not removed because
 its original locator may still exist independently; only the new candidate is
 registered.
@@ -1520,6 +1524,17 @@ It then:
 8. installs `Clean` resume only after the final fragment's matching Ack and
    checkpoint application.
 
+Checkpoint application relates each new resume to the stored resume. While an
+advancing offset remains below a stored nonzero `record_end_offset`, it must
+preserve that record's start and end, advance the fragment index, and remain a
+continuation. The codec rejects early `Clean` or unrelated continuation state.
+From `Clean`, a new continuation starts at or after the prior committed
+frontier. After a known record end, a later continuation starts at or after
+that end. For the zero-ended scan-to-LF form, source framing establishes the
+boundary at runtime; a nonzero-delta update preserves the same start and mode
+until that proof exists, and any later continuation starts at or after the
+prior committed frontier. Zero-delta updates remain bit-for-bit preserving.
+
 The committed prefix is neither reread nor re-emitted. For a nonzero stored end,
 a current source size below `record_end_offset` is detected truncation and
 follows `rotation.on_truncate` before any continuation byte is emitted. For the
@@ -2045,11 +2060,11 @@ conflicting, impossible, unknown, or overflowing transitions fail closed.
 
 | Operation | Preconditions | Effect and timing |
 | --- | --- | --- |
-| `register_file` | `file_id` absent, or exactly identical Active idempotent replay | Create active identity, initial offset, guard, clean resume, evidence, and metadata; durable before read |
+| `register_file` | `file_id` absent, or exactly identical Active idempotent replay; no other live record claims its locator | Create active identity, initial offset, guard, clean resume, evidence, and metadata; durable before read |
 | `update_progress` | Active; expected offset and epoch match | Atomically append and apply Acked offset, committed-frontier guard, and framing resume; may finalize rotation; sync follows policy |
-| `reset_after_truncate` | Active; expected epoch matches; `read_new` selected | Increment epoch, reset offset, guard, and framing; sync before reading replacement stream |
-| `update_fingerprint` | Active; expected evidence and epoch match | Extend/replace guarded evidence without changing identity or progress |
-| `update_metadata` | Active or quarantined | Update allowed advisory fields; quarantine evidence remains immutable |
+| `reset_after_truncate` | Active; expected epoch matches; `read_new` selected | Increment epoch and atomically reset offset, guard, framing, and replacement-stream fingerprint; sync before reading replacement bytes |
+| `update_fingerprint` | Active; expected evidence and epoch match | Strictly extend same-stream evidence without changing identity or progress |
+| `update_metadata` | Expected Active or quarantined lifecycle and epoch match | Update allowed advisory fields; quarantine evidence remains immutable |
 | `quarantine_file` | Active at expected epoch, or identical idempotent replay | Enter durable quarantine; sync before reporting durable state |
 | `reset_quarantined_file` | Matching quarantined record | Apply `reset_to_beginning`, `reset_to_end`, or `keep_failed`; sync before release/report |
 | `remove_file` | Exact matching prior state and epoch | Ordinary removal for vetted active/finalized records, or audited administrative removal |
@@ -2060,6 +2075,9 @@ Registration contains the initial identity evidence, initial offset, epoch, comp
 framing profile, clean resume, active lifecycle state, and bounded advisory metadata.
 
 Newly generated IDs are checked for collision. A conflicting existing ID fails closed.
+The staged table also enforces one `Active` or `Quarantined` claimant per exact
+locator. A supersede transaction removes the old live claim before registering
+its replacement; `RotatedFinalized` history does not block locator reuse.
 A reconciliation batch may register multiple new identities, but registration
 is chunked into format-bounded non-progress transactions. Each chunk contains
 at most `WAL_MAX_NON_PROGRESS_OPS_PER_TX` operations and fits
@@ -2088,8 +2106,9 @@ valid prefix that survived.
 
 `reset_after_truncate` is the only non-administrative operation that increments file
 epoch. It records observed truncation and explicit `read_new` intent, resets to source
-offset zero with the empty committed-frontier guard and clean resume, and is synced
-before replacement bytes are read.
+offset zero with the empty committed-frontier guard and clean resume, atomically
+replaces the prior stream's fingerprint with bounded evidence from the validated
+replacement stream, and is synced before replacement bytes are read.
 
 After the unresolved-delta invariant made every prior-epoch current attempt
 terminal, later duplicate/superseded deltas fail their epoch guard and cannot
@@ -2098,14 +2117,24 @@ advance the new stream.
 ### Fingerprint and metadata updates
 
 Fingerprint growth changes initial matching evidence only. The expected old
-evidence must match. Evidence cannot shrink or conflict silently. Progress
+evidence must match, and the new value must be a strict byte-prefix extension.
+Evidence cannot shrink, remain a no-op, or conflict silently. Epoch-changing
+reset operations own atomic replacement-stream fingerprint rebasing. Progress
 correctness does not depend on a separately timed fingerprint-growth operation;
 the committed-frontier guard changes atomically with progress.
 
+Registration, compatible snapshot recovery, same-stream extension, truncate
+reset, and quarantine reset all require the resulting fingerprint length to be
+no greater than configured `identity.fingerprint_bytes`. A compatible durable
+record exceeding that window fails closed rather than exceeding its admitted
+identity-evidence allocation.
+
 Active and quarantined metadata may update bounded advisory path and last-seen
-time only. A runtime locator is immutable checkpoint evidence for the lifetime
-of one `file_id`; a different locator requires a new identity. Quarantine
-evidence remains immutable.
+time only when the expected lifecycle and file epoch still match. A stale
+reconciliation result cannot cross truncation, quarantine, or administrative
+reset. A runtime locator is immutable checkpoint evidence for the lifetime of
+one `file_id`; a different locator requires a new identity. Quarantine evidence
+remains immutable.
 
 ### Quarantine and administrative recovery
 
@@ -2119,8 +2148,8 @@ reason, locator, observed-size, and time evidence before accepting an action.
 
 | Action | Effect |
 | --- | --- |
-| `reset_to_beginning` | Increment epoch, offset zero, empty committed-frontier guard, clean resume, Active |
-| `reset_to_end` | Validate current same-locator stream EOF and preceding guard window, increment epoch, store that offset and guard, clean resume, Active |
+| `reset_to_beginning` | Validate and atomically install replacement-stream fingerprint evidence, increment epoch, offset zero, empty committed-frontier guard, clean resume, Active |
+| `reset_to_end` | Validate current same-locator stream fingerprint, EOF, and preceding guard window; atomically install that evidence, increment epoch, store the EOF offset and guard, clean resume, Active |
 | `keep_failed` | Append only the audited decision; preserve every operational field and all quarantine evidence bit-for-bit |
 
 A configuration change is not an administrative action.
@@ -2128,6 +2157,11 @@ A configuration change is not an administrative action.
 Administrative removal names the exact namespace and `file_id`, matches prior state and
 epoch, and carries an audit reason. It can remove quarantined state. Ordinary retention
 cannot.
+
+Every quarantine reset carries the same exact raw `checkpoint.id` guard as an
+administrative removal. The store validates it against the selected namespace
+before record lookup, so opening or targeting the wrong namespace cannot mutate
+a coincidentally matching cloned `file_id`.
 
 This specification defines operation semantics, not a complete administrative CLI or
 API. An operable Phase 1 release with durable quarantine must provide a
@@ -2159,8 +2193,30 @@ separate protected audit sink rather than the checkpoint namespace.
 
 ### Retention
 
-Retention is evaluated during bounded compaction. Persisted age is necessary but never
-sufficient.
+Retention is applied through bounded compaction, but it does not depend on WAL
+traffic reaching a compaction threshold. When retention is nonzero, each
+durable record has runtime-only `absence_since` evidence. Recovery initializes
+it as unknown; persisted `last_seen_time_unix_nano` never proves continuous
+absence across downtime. The first complete post-recovery inventory that
+proves the record absent sets `absence_since` to that observation's monotonic
+time. Observing the source clears it. An incomplete inventory that cannot
+preserve the continuous-absence proof also clears it rather than aging through
+uncertainty.
+
+The worker maintains one checked maintenance deadline for the earliest future
+`absence_since + checkpoint.retention` crossing. It recomputes that deadline
+after complete reconciliation, record removal, every compaction, and every
+transition that adds or removes a veto listed below. Reaching the deadline
+wakes an otherwise idle worker and revalidates the complete removal set. An
+already age-eligible but vetoed record is parked without scheduling its expired
+deadline again. Clearing its last veto schedules one immediate bounded
+maintenance pass; if no future crossing or newly unvetoed eligible record
+exists, the timer is disarmed. An empty vetted removal set does not publish an
+identical compaction generation. A full tracked table therefore cannot remain
+blocked solely because its WAL is quiet, and a permanent veto cannot create a
+compaction loop.
+
+Runtime-proven continuous absence is necessary but never sufficient.
 
 The runtime supplies an explicitly vetted removal set. A record is eligible only when
 it has been absent for the retention interval from:
@@ -2179,10 +2235,10 @@ An excluded-but-present source fails the first absence condition and is not
 eligible. Exclusion is configuration policy, not proof that the source ceased
 to exist.
 
-Quarantined records are never ordinary retention candidates. A large forward wall-clock
-jump can make old inactive records age-eligible; the runtime-vetted absence checks still
-apply. Returning after removal can cause duplicate ingestion or `start_at: end`
-exclusion, which is the explicit retention tradeoff.
+Quarantined records are never ordinary retention candidates. Wall-clock jumps
+do not advance the runtime monotonic absence interval. Returning after removal
+can cause duplicate ingestion or `start_at: end` exclusion, which is the
+explicit retention tradeoff.
 
 ### Publication, compaction, cleanup, and recovery
 
@@ -2192,7 +2248,58 @@ A namespace is new only when its directory and artifacts are absent. Existing
 artifacts without valid `CURRENT` are recovered only as the exact recognized
 interrupted-first-publication state; every other authority gap fails closed.
 No source is registered or read before snapshot, WAL, and `CURRENT` publication
-and required syncs complete.
+and required syncs complete. Required syncs include durable creation of every
+new namespace path component in its immediate parent as defined by the format
+state machine; syncing only the new child directory is insufficient.
+
+For compaction accounting, `wal_bytes` is the complete current WAL file length,
+including its 56-byte header, and `wal_transactions` is the number of complete
+transactions following that header. Configuration guarantees that a fresh WAL
+plus any one valid transaction fits `checkpoint.compact_after_bytes`.
+
+Before every append, the worker computes with checked arithmetic:
+
+```text
+prospective_wal_bytes = wal_bytes + transaction_frame_bytes
+prospective_wal_transactions = wal_transactions + 1
+```
+
+If either prospective value would exceed its configured threshold, the worker
+synchronously compacts the current state before appending. The fresh WAL then
+accepts the complete transaction. Equality is allowed and there is no
+post-threshold overshoot. Because either threshold may bind first, checked
+conservative upper bounds are:
+
+```text
+maximum_wal_bytes =
+  min(
+    checkpoint.compact_after_bytes,
+    WAL_HEADER_BYTES
+      + checkpoint.compact_after_transactions * WAL_MAX_TX_FRAME_BYTES
+  )
+
+maximum_wal_transactions =
+  min(
+    checkpoint.compact_after_transactions,
+    floor(
+      (checkpoint.compact_after_bytes - WAL_HEADER_BYTES)
+        / TX_MIN_FRAME_BYTES
+    )
+  )
+```
+
+These are allocation and recovery bounds, not claims that every byte/count
+combination is reachable. An append that cannot satisfy the preconditions is
+refused before live state advances.
+
+For an Ack-authorized transaction that requires pre-append compaction, the
+retained batch remains owned and unresolved while compaction publishes the new
+generation. Only then does the worker append and apply the progress transaction,
+perform the sync required by policy, and release the batch. Compaction failure
+enters the checkpoint-store failure path without appending the transaction,
+advancing progress, or releasing the batch. A transaction that lands exactly
+on a threshold need not trigger immediate second compaction; compaction occurs
+before the next append or at the independently scheduled retention deadline.
 
 Compaction proposes `new_generation = current_generation + 1` with checked
 arithmetic; overflow fails before writing. A generation becomes assigned only
@@ -2452,12 +2559,16 @@ The receiver:
 2. Seals and resolves every open, retained, or carry-over old-epoch delta under
    the [unresolved-delta invariant](#universal-unresolved-delta-ordering).
 3. Invalidates only speculative state not owned by a resolved delta.
-4. Increments file epoch with checked arithmetic.
-5. Persists and syncs `reset_after_truncate`.
-6. Resets offset to zero and framing to clean.
+4. Computes the next file epoch with checked arithmetic without applying it.
+5. Uses an evidence-only handle probe to derive the bounded fingerprint from
+   the validated replacement stream; these bytes do not enter decoding,
+   framing, or a batch.
+6. Persists and syncs one `reset_after_truncate` that atomically installs the
+   new epoch, zero offset, empty guard, clean framing, and replacement
+   fingerprint.
 7. Treats offset zero as a new stream for BOM handling.
 8. Emits a high-severity intentional-reset event.
-9. Reads replacement bytes only after durable reset.
+9. Begins collection reads for replacement bytes only after durable reset.
 
 Only a completion from an attempt that was already terminal before the epoch
 reset is stale. The receiver never increments the epoch merely to reject the
@@ -2673,6 +2784,9 @@ locator evidence. Non-following opens reject final symlinks when
 instead of applying `O_NOFOLLOW` unconditionally. `fstat` or equivalent must
 prove a regular file. Open unlinked files remain readable through resident descriptors.
 Checkpoint publication uses same-directory atomic rename and file and directory sync.
+Opening or creating a namespace path component additionally syncs its immediate
+parent before relying on that component; syncing the new child alone does not
+make its name durable after an earlier creator crashes before its parent sync.
 
 Validation covers FIFO and device candidates, rename, unlink, late writes, inode
 reuse guards, both symlink policies, cycle handling, permission failures, torn
@@ -2686,7 +2800,8 @@ rules as Linux. APFS and platform path behavior receive native validation
 rather than being assumed from Linux results.
 
 Validation covers rename/unlink continuity, symlink aliases, native path bytes,
-descriptor eviction, checkpoint replacement, and crash-recovery fault points.
+descriptor eviction, durable namespace-parent creation, checkpoint replacement,
+and crash-recovery fault points.
 
 ### Windows
 

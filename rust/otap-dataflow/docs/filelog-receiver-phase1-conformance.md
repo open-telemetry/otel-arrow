@@ -112,13 +112,15 @@ does not assume the carry-over shares mutable source or batch storage.
 Durable artifact maxima are derived from:
 
 - `checkpoint.compact_after_bytes`;
+- `checkpoint.compact_after_transactions`;
 - `limits.max_tracked_files`; and
 - `identity.fingerprint_bytes`.
 
 The store derives:
 
 - maximum snapshot bytes;
-- maximum WAL bytes;
+- conservative maximum WAL bytes and transaction count using the checked
+  interacting-threshold formulas from the behavioral specification;
 - maximum transaction bytes; and
 - maximum snapshot-record bytes.
 
@@ -326,6 +328,8 @@ while their semantic and format definitions remain normative from version 1.
 | Configuration | Either interval causing clock overflow | Rejected before startup |
 | Configuration | Nonzero checkpoint sync interval with unrepresentable duration or deadline | Rejected before startup |
 | Configuration | Checkpoint retention outside zero or representable positive `u64` nanoseconds | Rejected before startup |
+| Configuration | `checkpoint.compact_after_bytes == WAL_HEADER_BYTES + WAL_MAX_TX_FRAME_BYTES` | Accepted |
+| Configuration | `checkpoint.compact_after_bytes < WAL_HEADER_BYTES + WAL_MAX_TX_FRAME_BYTES` | Rejected before startup |
 | Configuration | Nonzero `force_flush_period >= rotation.rotate_wait` | Rejected before startup |
 | Configuration | Both multiline patterns | Rejected |
 | Configuration | Unsupported regex construct/profile | Rejected |
@@ -392,6 +396,8 @@ while their semantic and format definitions remain normative from version 1.
 | Identity | Growing evidence | Same `file_id`, evidence extends |
 | Identity | Stored framing-profile mismatch | Per-file fail closed; no new identity or `skip_to_end` |
 | Identity | Locator/inode reused after `RotatedFinalized` | New identity; finalized state never reconnects |
+| Identity | Snapshot or staged WAL result has two Active/Quarantined records claiming one exact locator | Complete snapshot/transaction fails closed before candidate matching or state publication |
+| Identity | `RotatedFinalized` record and one new Active record share a reused locator | Accepted; only the new Active record is candidate-eligible |
 | Identity | `start_at: beginning` new file | Durable offset zero before read |
 | Identity | `start_at: end` new file | Durable handle-derived EOF before read |
 | Identity | Existing checkpoint with different `start_at` | Checkpoint wins |
@@ -444,6 +450,11 @@ while their semantic and format definitions remain normative from version 1.
 | Framing | Restart mid-split end-pattern multiline | Existing sequence continues without re-evaluating end pattern; stored end determines `is_last` |
 | Framing | Restart continuation committed inside a physical line | Safe-unit fragments continue from committed offset without rereading the prefix |
 | Framing | Continuation source shorter than stored record end | Detect truncation and apply configured truncate policy before emitting; no fabricated fragment |
+| Framing | Advancing progress remains below a stored known continuation end but supplies `Clean`, a changed start/end, or a non-advanced fragment index | Complete update fails closed; stored continuation remains unchanged |
+| Framing | Advancing scan-to-LF continuation before runtime establishes LF boundary | Same start and zero-ended mode retained with advanced fragment index |
+| Framing | Zero-delta update against stored continuation | Complete guard and resume, including fragment index, remain bit-for-bit unchanged |
+| Framing | New continuation from `Clean` starts before prior committed offset | Complete update fails closed |
+| Framing | Later continuation after known record end starts before that end | Complete update fails closed |
 | Framing | Resume continuation at empty EOF | No fabricated fragment |
 | Framing | Truncate malformed discarded tail | Malformation counted |
 | Framing | Truncate tail malformed under decode `fail` | Same-record prefix not emitted; quarantine before malformed unit |
@@ -501,7 +512,13 @@ while their semantic and format definitions remain normative from version 1.
 | Checkpoint | More new identities than one non-progress transaction permits | Registration split into independently durable bounded chunks; each file reads only after its chunk is durable |
 | Checkpoint | Non-progress transaction exceeds 256 operations or 16 MiB body | Rejected before allocation/application and split by the writer |
 | Checkpoint | Transaction mixes `update_progress` with another operation class | Fail closed; progress and non-progress transactions are separate |
+| Checkpoint | Progress transaction contains two operations for one `file_id` | Entire transaction fails closed before application |
 | Checkpoint | Zero-delta `update_progress` changes stored guard or framing resume | Fail closed with the complete record unchanged |
+| Checkpoint | Same-epoch fingerprint update strictly extends the stored prefix | Accepted atomically |
+| Checkpoint | Same-epoch fingerprint update is a no-op, shrink, or conflicting replacement | Complete operation fails closed |
+| Checkpoint | Compatible registration, snapshot, extension, or reset fingerprint exceeds configured evidence window | Structurally bounded parsing may complete, but semantic application fails closed before state publication |
+| Checkpoint | Crash immediately after durable truncate reset | New epoch recovers with replacement-stream fingerprint, zero offset, empty guard, and clean resume; old fingerprint is never paired with new epoch |
+| Checkpoint | Stale metadata update crosses truncate, quarantine, or administrative reset | Expected lifecycle/epoch mismatch fails closed; current metadata remains unchanged |
 | Checkpoint | Crash after send before Ack | Reconstruct and duplicate if bytes survive |
 | Checkpoint | Crash after Ack before delayed sync with missing or allowed torn suffix | Duplicate replay; no skipped unacknowledged bytes |
 | Checkpoint | Power/storage failure exposes non-tail damage inside an unsynced WAL region | Namespace fails closed; supported inspect/backup/reset procedure required, never automatic prefix salvage |
@@ -518,6 +535,9 @@ while their semantic and format definitions remain normative from version 1.
 | Checkpoint | Valid `CURRENT` names missing generation file | Distinct missing-authoritative-generation error; no fallback |
 | Checkpoint | Valid `CURRENT` names unreadable or incomplete authoritative generation | Distinct fail-closed recovery error; no fallback |
 | Checkpoint | Genuinely absent namespace | Exact first-generation publish order and sync before read |
+| Checkpoint | Crash before or during parent sync for a newly created namespace path component | Namespace is absent or recognized as interrupted publication; no source was registered or read |
+| Checkpoint | Parent sync for newly created namespace entry fails | Publication remains incomplete and source reading is prohibited |
+| Checkpoint | Process A creates a shared ancestor and crashes before parent sync; process B observes it and publishes another namespace | B unconditionally syncs each ancestor parent before publication; later power loss cannot remove the shared tree |
 | Checkpoint | A direct-`checkpoint.id` sibling directory exists outside `filelog/@v1/<hex>` | Not searched, selected, or migrated; v1 recognizes only the versioned lowercase-hex namespace |
 | Checkpoint | Artifacts exist without valid `CURRENT` | Repair only recognized interrupted first publication; otherwise fail closed |
 | Checkpoint | WAL append writes no bytes | Retry from known boundary |
@@ -525,6 +545,9 @@ while their semantic and format definitions remain normative from version 1.
 | Checkpoint | WAL append result is ambiguous | Accept complete valid expected sequence, repair exact torn suffix, otherwise fail |
 | Checkpoint | WAL append succeeds and sync fails | Validate transaction and retry sync without duplicate append |
 | Checkpoint | Compaction fault before publication | Previous generation authoritative |
+| Checkpoint | Next transaction would exceed byte or transaction compaction threshold | Current state compacts before append; resulting WAL plus transaction remains within both configured maxima |
+| Checkpoint | Transaction lands exactly on compaction threshold | Append is accepted without overshoot; compaction occurs before the next append or at an earlier retention deadline |
+| Checkpoint | Byte threshold binds before transaction threshold, or transaction threshold binds first | Recovery admission uses the checked interacting conservative bounds rather than claiming both configured thresholds are simultaneously reachable |
 | Checkpoint | Compaction crash during `CURRENT` replacement | Valid marker names complete old or complete new generation; never partial authority |
 | Checkpoint | Abandoned unpublished `G+1` generation after crash | Never authoritative; exact artifacts removed and directory-synced before the number is proposed again |
 | Checkpoint | New compaction collides with an uncleared proposed-generation artifact | Exclusive/no-replace creation fails; cleanup must complete before retry |
@@ -535,11 +558,13 @@ while their semantic and format definitions remain normative from version 1.
 | Checkpoint | Retention age without runtime absence | Not removed |
 | Checkpoint | Quarantined retention candidate | Not removed |
 | Checkpoint | Administrative removal wrong namespace | Fail closed |
+| Checkpoint | Administrative quarantine reset or `keep_failed` names wrong namespace | Namespace mismatch before record lookup; no state change |
 | Checkpoint | Administrative removal wrong namespace and absent `file_id` | Namespace mismatch before absent idempotency |
 | Checkpoint | Quarantine administration available | Exclusive, audited inspect/reset/remove path operates without manual byte edits |
 | Checkpoint | Build can quarantine but has no administration mechanism | Phase 1 conformance rejected |
 | Checkpoint | `keep_failed` exact stored resume/epoch/offset | Audit operation appended; operational state byte-identical |
 | Checkpoint | `keep_failed` attempts resume/epoch/offset change | Fail closed with no state change |
+| Checkpoint | Quarantine reset to beginning or end | New epoch, offset, guard, clean resume, and replacement-stream fingerprint become durable atomically before release |
 | Checkpoint | `register_file` replay against Quarantined or RotatedFinalized record | Fail closed; idempotency requires identical Active epoch-1 state |
 | Checkpoint | `update_metadata` attempts locator mutation | Unencodable in v1; changed locator requires new identity |
 | Checkpoint | Reserved quarantine reason `0x0004` | Decoder accepts opaque value; version-1 encoder never emits it |
@@ -587,6 +612,12 @@ while their semantic and format definitions remain normative from version 1.
 | Telemetry | Many unique paths/file IDs | No metric-cardinality growth |
 | Telemetry | Repeated identical failure | Event sampling/rate limit bounds output |
 | Retention | Removed state later returns with `start_at: end` | Existing contents may be intentionally excluded; prior removal and loss of association are diagnosable without claiming same-source proof |
+| Retention | Quiet namespace is full and records reach retention eligibility below both WAL compaction thresholds | Maintenance deadline wakes the worker, revalidates absence, and performs bounded compaction so eligible capacity is reclaimed |
+| Retention | Recovery sees a record absent whose persisted last-seen time is older than retention | Absence age begins at the first complete post-recovery inventory; persisted time alone cannot authorize removal |
+| Retention | Permanently absent record restarts repeatedly before one continuous retention interval elapses | Each recovery resets runtime absence proof; removal may be deferred indefinitely and no cross-restart wall-clock bound is claimed |
+| Retention | Previously absent record is observed, or its relevant inventory becomes incomplete | Runtime absence proof is cleared; uncertain time does not accrue toward removal |
+| Retention | Age-eligible record remains vetoed in an otherwise quiet namespace | No expired-deadline or identical-compaction loop; record is parked until a relevant veto transition |
+| Retention | Last veto clears for an already age-eligible record | One immediate bounded maintenance pass is scheduled and capacity is reclaimed if all checks still pass |
 | Platform | Unix directory-sync fault | Publication guarantee validated |
 | Platform | Unix link following enabled/disabled | Follow policy selects open primitive; handle must be regular |
 | Platform | Windows reparse following enabled/disabled | `OPEN_REPARSE_POINT` only on non-following path; handle must be regular |

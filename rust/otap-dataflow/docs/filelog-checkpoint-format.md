@@ -266,31 +266,43 @@ CURRENT.create.tmp
 
 Under least-privilege permissions, first publication is:
 
-1. Atomically create the namespace directory. An already-existing path enters
-   recovery rather than creation.
-2. Create/acquire `ownership.lock` and hold exclusive ownership.
-3. Inventory the directory. A fresh creation contains only `ownership.lock`.
-4. Write a complete empty snapshot to `offsets-0.snapshot.create.tmp`, sync the
+1. Require `engine.state_dir` to be an already durable engine-owned root.
+   Open or create `filelog`, validate that it is a directory, and sync
+   `engine.state_dir` unconditionally. Then open or create `@v1`, validate it,
+   and sync `filelog` unconditionally. These parent syncs are required even
+   when another process created the visible ancestor.
+2. Open or atomically create the namespace directory, validate it, and sync
+   the `@v1` parent unconditionally before creation or recovery continues. An
+   already-existing path enters recovery rather than creation.
+3. Create/acquire `ownership.lock` and hold exclusive ownership.
+4. Inventory the directory. A fresh creation contains only `ownership.lock`.
+5. Write a complete empty snapshot to `offsets-0.snapshot.create.tmp`, sync the
    file, and close it.
-5. Write the complete 56-byte WAL header to
+6. Write the complete 56-byte WAL header to
    `offsets-0.wal.create.tmp`, sync the file, and close it.
-6. Rename both temporary generation files to `offsets-0.snapshot` and
+7. Rename both temporary generation files to `offsets-0.snapshot` and
    `offsets-0.wal`, then sync the namespace directory where the platform
    supports directory sync.
-7. Write and sync a complete generation-zero marker to `CURRENT.create.tmp`.
-8. Atomically rename it to `CURRENT`, then sync the namespace directory where
+8. Write and sync a complete generation-zero marker to `CURRENT.create.tmp`.
+9. Atomically rename it to `CURRENT`, then sync the namespace directory where
    supported.
 
-No source is registered or read before step 8 completes.
+No source is registered or read before step 9 and every required ancestor sync
+complete. A platform cannot claim the Phase 1 durable-publication guarantee if
+it cannot provide the required parent-directory durability.
 
-With no valid `CURRENT`, recovery may classify an interrupted first publication
-only when, under exclusive ownership, the directory contains
+With no valid `CURRENT`, an empty namespace directory is recognized as an
+interruption after durable directory creation but before lock-file creation.
+Recovery creates/acquires `ownership.lock`, then inventories again under that
+exclusive ownership. Repair proceeds only when the directory contains
 `ownership.lock` plus a subset of the three exact temporary names and the two
-generation-zero final names, and contains no other artifact. It reports the
-interruption, removes that recognized set, syncs the directory where supported,
-and restarts creation from step 3. This is explicit interrupted-publication
-repair, not treatment as an empty namespace. Any other artifact set without a
-valid `CURRENT` is `AuthorityMissingOrAmbiguous` and fails closed.
+generation-zero final names, and contains no other artifact. Recovery reports
+the interruption, removes the recognized temporary and generation artifacts
+while retaining the held lock, syncs the namespace directory where supported,
+ensures the namespace entry is durable in its parent, and restarts from the
+step 4 inventory. This is explicit interrupted-publication repair, not
+treatment as an empty namespace. Any other artifact set without a valid
+`CURRENT` is `AuthorityMissingOrAmbiguous` and fails closed.
 
 Once valid `CURRENT` exists, it alone selects authority. A leftover
 `CURRENT.create.tmp` or generation temporary is never authoritative and may be
@@ -372,6 +384,13 @@ single snapshot file. An encoder MUST refuse to write two records sharing a
 last-seen record for that key) if it encounters two records sharing a
 `file_id`.
 
+The exact locator is also a global live-state key. At most one record whose
+state is `Active` or `Quarantined` may carry a given non-`Unspecified`
+`Locator`. `RotatedFinalized` records do not participate in this uniqueness
+rule because a later identity may legitimately reuse their native locator.
+Snapshot encoders and decoders enforce the rule across the complete record
+set; a conflict is `InvalidSnapshotState`, never an iteration-order choice.
+
 `quarantine_evidence` (present only when `lifecycle_state == Quarantined`;
 entirely absent from the byte stream for `Active` and `RotatedFinalized`
 records -- there is no placeholder or presence flag because
@@ -404,6 +423,8 @@ following before WAL replay:
 
 - `file_epoch >= 1`;
 - `file_id` is unique in the snapshot;
+- every non-`Unspecified` locator has at most one `Active` or `Quarantined`
+  claimant across the snapshot;
 - `locator` is a recognized non-`Unspecified` kind;
 - `committed_frontier_guard.window_len ==
   min(committed_offset, COMMITTED_FRONTIER_GUARD_WINDOW_BYTES)`;
@@ -430,6 +451,13 @@ for repair or record omission. The same invariants constrain compaction output,
 so a snapshot encoder cannot serialize an in-memory state that replay could
 never produce.
 
+After the stored framing profile is established as compatible with the
+selected runtime configuration, every record fingerprint length MUST also be
+no greater than configured `identity.fingerprint_bytes`. A compatible record
+exceeding that evidence window fails closed rather than weakening the
+configuration-derived recovery admission model. An incompatible profile
+remains the distinct per-file `FramingProfileIncompatible` condition.
+
 ### Snapshot footer (24 bytes)
 
 | Offset | Size | Field | Value |
@@ -452,6 +480,7 @@ no leniency, even if it is the physical end of the file:
 - fewer than `record_count` complete, individually CRC-valid records available;
 - a record whose declared `record_len` exceeds the remaining buffer;
 - two records declaring the same `file_id`;
+- two `Active`/`Quarantined` records claiming the same exact locator;
 - a CRC-valid record violating any reachable-state invariant;
 - the 24-byte footer missing, truncated, or CRC-invalid;
 - `record_count_echo` or `total_record_bytes` inconsistent with what was actually parsed;
@@ -752,16 +781,19 @@ the operation body.
   matches the behavioral requirement that one transaction contains a
   [bounded set of operations](filelog-receiver-phase1-spec.md#logical-operations).
 - `TX_MIN_BODY_BYTES = 34` and `TX_MIN_FRAME_BYTES = 74`; the minimum body is
-  one `update_metadata` operation with no optional fields.
+  one `update_fingerprint` operation that strictly extends an empty
+  fingerprint by one byte.
 - `body_len` MUST be within
   `TX_MIN_BODY_BYTES..=WAL_MAX_TX_BODY_BYTES`. Recovery never scans inner
   operations to reinterpret an invalid outer envelope.
 - After operation parsing, a transaction is either progress-only (every
   operation is `update_progress`) or non-progress (no operation is
   `update_progress`). Mixed transactions fail replay closed. Progress-only
-  transactions may contain up to `WAL_MAX_OPS_PER_TX`; non-progress
-  transactions may contain at most `WAL_MAX_NON_PROGRESS_OPS_PER_TX`. Both
-  classes remain subject to `WAL_MAX_TX_BODY_BYTES` before allocation.
+  transactions may contain up to `WAL_MAX_OPS_PER_TX` and MUST contain at
+  most one operation for each `file_id`; a duplicate progress key fails the
+  complete transaction closed before application. Non-progress transactions
+  may contain at most `WAL_MAX_NON_PROGRESS_OPS_PER_TX`. Both classes remain
+  subject to `WAL_MAX_TX_BODY_BYTES` before allocation.
 
 ### Operation framing (self-delimiting)
 
@@ -847,8 +879,10 @@ and [`FramingResume`](#framingresume-encoding) encodings above.
 | 4 | `resulting_epoch` | `u32` BE |
 | 5 | `new_committed_offset` | `u64` BE |
 | 6 | `new_framing_resume` | `FramingResume` |
-| 7 | `reset_time_unix_nano` | `u64` BE |
-| 8 | `reason_code` | `u16` BE (opaque; see [reason codes](#reason-codes-are-not-structural)) |
+| 7 | `new_fingerprint_len` | `u16` BE |
+| 8 | `new_fingerprint_bytes` | `[u8; new_fingerprint_len]`; maximum `FINGERPRINT_MAX_BYTES` |
+| 9 | `reset_time_unix_nano` | `u64` BE |
+| 10 | `reason_code` | `u16` BE (opaque; see [reason codes](#reason-codes-are-not-structural)) |
 
 #### `update_fingerprint` (`0x04`)
 
@@ -866,9 +900,11 @@ and [`FramingResume`](#framingresume-encoding) encodings above.
 | # | Field | Encoding | Presence |
 | --- | --- | --- | --- |
 | 1 | `file_id` | `[u8; 16]` | always |
-| 2 | `presence_flags` | `u8` bitfield: bit 0 (`0x01`) = `PATH_PRESENT`; other bits reserved, MUST be `0` | always |
-| 3 | `last_seen_time_unix_nano` | `u64` BE | always |
-| 4 | `advisory_path` | `AdvisoryPath` | only if `PATH_PRESENT` |
+| 2 | `expected_prior_state` | `u8`: `0x01` `Active` or `0x03` `Quarantined`; other values fail decoding closed | always |
+| 3 | `expected_file_epoch` | `u32` BE | always |
+| 4 | `presence_flags` | `u8` bitfield: bit 0 (`0x01`) = `PATH_PRESENT`; other bits reserved, MUST be `0` | always |
+| 5 | `last_seen_time_unix_nano` | `u64` BE | always |
+| 6 | `advisory_path` | `AdvisoryPath` | only if `PATH_PRESENT` |
 
 A field marked "only if" is entirely absent from the byte stream when its
 presence bit is clear. `PATH_PRESENT` distinguishes "do not update path" from
@@ -897,9 +933,13 @@ an explicit `AdvisoryPath::Unavailable`.
 | 5 | `resulting_offset` | `u64` BE | fixed |
 | 6 | `new_committed_frontier_guard` | `CommittedFrontierGuard` | 34 bytes |
 | 7 | `new_framing_resume` | `FramingResume` | see above |
-| 8 | `action_time_unix_nano` | `u64` BE; audit event time, applied to operational state only for a reset action | fixed |
-| 9 | `audit_reason_len` | `u16` BE | fixed |
-| 10 | `audit_reason_bytes` | `[u8; audit_reason_len]`, UTF-8 | `AUDIT_REASON_MAX_BYTES = 1024`; MUST be non-empty (`audit_reason_len >= 1`) |
+| 8 | `new_fingerprint_len` | `u16` BE | fixed |
+| 9 | `new_fingerprint_bytes` | `[u8; new_fingerprint_len]` | `FINGERPRINT_MAX_BYTES` |
+| 10 | `action_time_unix_nano` | `u64` BE; audit event time, applied to operational state only for a reset action | fixed |
+| 11 | `namespace_id_len` | `u16` BE | fixed |
+| 12 | `namespace_id_bytes` | `[u8; namespace_id_len]`, UTF-8 | `NAMESPACE_ID_MAX_BYTES`; MUST be non-empty |
+| 13 | `audit_reason_len` | `u16` BE | fixed |
+| 14 | `audit_reason_bytes` | `[u8; audit_reason_len]`, UTF-8 | `AUDIT_REASON_MAX_BYTES = 1024`; MUST be non-empty (`audit_reason_len >= 1`) |
 
 `action` is structural (its meaning determines which apply-time invariant
 governs `resulting_epoch`/`resulting_offset`, see
@@ -908,6 +948,9 @@ unrecognized value fails decoding closed. `audit_reason` is always present
 and always non-empty in this operation, because every quarantine reset is by
 definition an operator-authorized administrative action (the
 [Phase 1 administrative reset path](filelog-receiver-phase1-spec.md#quarantine-and-administrative-recovery)).
+`namespace_id_bytes` carries the exact `checkpoint.id` selected by the
+administrative caller and is validated before record lookup, matching the
+administrative `remove_file` guard below.
 
 #### `remove_file` (`0x08`)
 
@@ -944,11 +987,14 @@ file-path convention alone.
 | `SNAPSHOT_MAX_RECORD_FRAME_BYTES` | `69862` | Length + maximum snapshot payload + CRC |
 | `WAL_MAX_OPS_PER_TX` | `4096` | `op_count` per transaction |
 | `WAL_MAX_NON_PROGRESS_OPS_PER_TX` | `256` | operation count for registration, metadata, fingerprint, reset, quarantine, and removal transactions |
+| `WAL_HEADER_BYTES` | `56` | Fixed WAL generation header included in artifact-size accounting |
 | `TX_HEADER_BYTES` | `36` | Fixed transaction envelope header |
-| `TX_MIN_BODY_BYTES` | `34` | One minimum `update_metadata` operation frame |
+| `TX_MIN_BODY_BYTES` | `34` | One minimum strict fingerprint-extension operation frame |
 | `TX_MIN_FRAME_BYTES` | `74` | Header + minimum body + frame CRC |
-| `MAX_OPERATION_PAYLOAD_BYTES` | `131095` | Maximum `update_fingerprint` payload |
-| `MAX_OPERATION_FRAME_BYTES` | `131103` | Length + maximum operation payload + operation CRC |
+| `MAX_OPERATION_PAYLOAD_BYTES` | `131095` | Structural decode/allocation ceiling for an `update_fingerprint` payload |
+| `MAX_OPERATION_FRAME_BYTES` | `131103` | Length + structural payload ceiling + operation CRC |
+| `MAX_VALID_UPDATE_FINGERPRINT_PAYLOAD_BYTES` | `131094` | Maximum semantically valid strict fingerprint-extension payload |
+| `MAX_VALID_UPDATE_FINGERPRINT_FRAME_BYTES` | `131102` | Length + maximum valid strict-extension payload + operation CRC |
 | `REGISTER_FILE_MAX_OP_PAYLOAD_BYTES` | `69812` | Maximum `register_file` payload with guard and required `Clean` resume |
 | `WAL_MAX_TX_BODY_BYTES` | `16777216` | Hard 16 MiB body cap for every transaction class |
 | `WAL_MAX_TX_FRAME_BYTES` | `16777256` | 36-byte header + maximum body + frame CRC |
@@ -978,9 +1024,22 @@ maximum progress transaction frame =
   36 header + 446464 body + 4 frame CRC
   = 446504 bytes
 
-maximum operation payload =
+structural maximum operation payload =
   update_fingerprint fixed fields + two 65535-byte fingerprints
   = 131095 bytes
+
+maximum valid strict fingerprint-extension payload =
+  fixed fields + 65534 expected bytes + 65535 new bytes
+  = 131094 bytes
+
+maximum valid strict fingerprint-extension frame =
+  4 op length + 131094 payload + 4 op CRC
+  = 131102 bytes
+
+minimum transaction body =
+  one update_fingerprint frame extending an empty fingerprint by one byte
+  = 4 op length + 26 payload + 4 op CRC
+  = 34 bytes
 
 maximum snapshot record payload =
   maximum fixed/quarantine fields + 65535 fingerprint
@@ -997,8 +1056,12 @@ WAL_MAX_TX_BODY_BYTES = 16 * 1024 * 1024 = 16777216 bytes
 WAL_MAX_TX_FRAME_BYTES = 36 + 16777216 + 4 = 16777256 bytes
 ```
 
-These include all field-specific and transaction-envelope maxima. The remaining
-length-typed fields (`record_count: u32`, `body_len: u32`, `op_len: u32`) are
+`MAX_OPERATION_PAYLOAD_BYTES` and `MAX_OPERATION_FRAME_BYTES` are structural
+decode/allocation ceilings: parsing must bound both length fields before the
+strict-extension relationship can be evaluated, so they include the
+semantically invalid equal-maximum pair. The separate maximum-valid constants
+describe encoder output. The remaining length-typed fields (`record_count:
+u32`, `body_len: u32`, `op_len: u32`) are
 validated against these constants and the bytes actually present before
 allocation or slicing. Higher layers additionally constrain tracked files and
 artifact sizes through configuration.
@@ -1042,6 +1105,13 @@ A general restriction that holds for every operation: identity fields
 that is not `register_file` never creates a record, and an operation that is
 not `remove_file` never deletes one.
 
+Every transaction is first applied to a staged copy or equivalent reversible
+view. Before the transaction becomes visible, the resulting complete table
+MUST satisfy the snapshot reachable-state invariants, including global live
+locator uniqueness. No operation order may expose a successful prefix, and a
+transaction that would leave two `Active`/`Quarantined` records claiming one
+locator fails closed as a whole.
+
 Before encoding any lifecycle, epoch, interpretation, reset, or removal
 transition, the runtime must satisfy the behavioral
 [unresolved-delta invariant](filelog-receiver-phase1-spec.md#universal-unresolved-delta-ordering).
@@ -1068,6 +1138,12 @@ ordering proof.
   [snapshot reachable-state invariants](#snapshot-reachable-state-invariants),
   including guard, locator, framing profile, fingerprint arithmetic, and
   `AdvisoryPath`.
+- After profile compatibility is established, `fingerprint_len` MUST be no
+  greater than configured `identity.fingerprint_bytes`.
+- No other `Active` or `Quarantined` record may claim the registration's
+  locator in the staged transaction state. A replacement transition removes
+  the prior live claim before registering the new `file_id`; a
+  `RotatedFinalized` record with that locator does not conflict.
 - Effect: creates the record as `Active` with the operation's fields.
 
 The encoder preflights and encodes a complete registration operation and
@@ -1103,6 +1179,25 @@ registration transaction is all-or-nothing.
   `record_start_offset < new_committed_offset`, `next_fragment_index >= 1`,
   and either `record_end_offset == 0` or
   `new_committed_offset < record_end_offset`.
+- For a nonzero-delta update, if the stored resume is `Continuation` with a
+  nonzero `record_end_offset` and the new offset remains below that end, the
+  new resume MUST remain `Continuation` for the same `record_start_offset`
+  and `record_end_offset`, and `next_fragment_index` MUST be greater than the
+  stored index. Installing `Clean` or unrelated continuation coordinates
+  before reaching the known end fails replay closed.
+- Reaching or passing a stored nonzero record end may install `Clean`, or may
+  install a valid continuation for a later record when one coalesced progress
+  delta spans both transitions. A later continuation's
+  `record_start_offset` MUST be at least the completed stored
+  `record_end_offset`.
+- From stored `Clean`, a new continuation's `record_start_offset` MUST be at
+  least `expected_committed_offset`.
+- For a stored scan-to-LF continuation whose `record_end_offset == 0`, the
+  codec cannot prove the source-derived LF boundary. A nonzero-delta update
+  before that proof MUST preserve the same start and zero-ended mode with an
+  advanced fragment index. After framing establishes the boundary, `Clean`
+  may be encoded; a later continuation MUST start at or after
+  `expected_committed_offset`.
 - `new_committed_offset`, `new_committed_frontier_guard`, and
   `new_framing_resume` are applied atomically: all are updated together or the
   whole operation is rejected; there is no partially-applied state.
@@ -1129,13 +1224,20 @@ registration transaction is all-or-nothing.
   beginning of the replacement stream; there is no partial-offset truncate
   recovery policy yet). The resulting committed-frontier guard is the
   format-defined empty guard and therefore is not carried redundantly.
+- The carried new fingerprint MUST be the bounded evidence derived
+  from the validated replacement stream under the stored fingerprint
+  configuration. It replaces the old stream's fingerprint atomically with
+  the epoch, offset, guard, and framing reset; no durable new epoch may retain
+  the prior stream's fingerprint. Its length MUST be no greater than the
+  compatible configured `identity.fingerprint_bytes`.
 - `reason_code` MUST equal `TRUNCATE_RESET_REASON_READ_NEW = 0x0001`; any
   other value fails replay closed (business-rule check, not a decode-time
   structural check -- see [reason codes](#reason-codes-are-not-structural)).
 - Effect: sets `file_epoch = resulting_epoch`, `committed_offset = 0`,
   `committed_frontier_guard` to the required empty guard,
-  `framing_resume = Clean`, `last_seen_time_unix_nano = reset_time_unix_nano`;
-  `lifecycle_state` remains `Active`. The behavioral unresolved-delta
+  `framing_resume = Clean`, fingerprint to the carried replacement evidence,
+  and `last_seen_time_unix_nano = reset_time_unix_nano`; `lifecycle_state`
+  remains `Active`. The behavioral unresolved-delta
   invariant guarantees that every current old-epoch attempt was terminal
   before this operation was encoded; only later duplicate/superseded
   completions are stale.
@@ -1146,15 +1248,24 @@ registration transaction is all-or-nothing.
   stored `file_epoch == expected_file_epoch`, and the stored
   `(fingerprint_len, fingerprint_bytes)` exactly equal
   `(expected_fingerprint_len, expected_fingerprint_bytes)`.
-- Effect: replaces `(fingerprint_len, fingerprint_bytes)` with
+- `new_fingerprint_len` MUST be greater than `expected_fingerprint_len`, and
+  `new_fingerprint_bytes` MUST begin with the complete expected fingerprint.
+  Shrink, same-length no-op, or conflicting replacement fails replay closed.
+  `new_fingerprint_len` MUST also be no greater than the compatible configured
+  `identity.fingerprint_bytes`.
+  Epoch-changing reset operations, not this operation, own replacement-stream
+  fingerprint rebasing.
+- Effect: strictly extends `(fingerprint_len, fingerprint_bytes)` to
   `(new_fingerprint_len, new_fingerprint_bytes)`. Never changes `file_id`,
   `committed_offset`, `file_epoch`, `framing_resume`, or `lifecycle_state`.
 
 ### `update_metadata`
 
-- Precondition: `file_id` is present and `lifecycle_state` is `Active` or
-  `Quarantined`. `RotatedFinalized` and absent both fail replay closed (a
-  finalized record's metadata is no longer mutable in v1).
+- Precondition: `file_id` is present, its `lifecycle_state` equals
+  `expected_prior_state`, its `file_epoch == expected_file_epoch`, and the
+  expected state is `Active` or `Quarantined`. `RotatedFinalized`, an epoch or
+  state mismatch, and absent state fail replay closed (a finalized record's
+  metadata is no longer mutable in v1).
 - For either lifecycle, `PATH_PRESENT` replaces the stored `advisory_path` and
   `last_seen_time_unix_nano` is always replaced. Locator is not carried and
   cannot be changed by this operation. A different locator requires a new
@@ -1192,6 +1303,9 @@ registration transaction is all-or-nothing.
 
 ### `reset_quarantined_file`
 
+- Before table lookup, `namespace_id_bytes` MUST exactly equal the selected
+  containing namespace's raw `checkpoint.id`. A mismatch fails
+  `NamespaceMismatch`, even when `file_id` is absent.
 - Precondition: `file_id` is present, `lifecycle_state == Quarantined`, and
   the stored `quarantine_epoch == expected_quarantine_epoch`. Any other state
   fails replay closed.
@@ -1200,11 +1314,13 @@ registration transaction is all-or-nothing.
   `quarantine_epoch`; `resulting_offset` MUST equal stored
   `committed_offset`; and `new_framing_resume` MUST be bit-for-bit equal to
   stored `framing_resume`. `new_committed_frontier_guard` MUST be bit-for-bit
-  equal to the stored guard. `action_time_unix_nano` is audit-event data in the
-  WAL and MUST NOT update `last_seen_time_unix_nano`. Locator, fingerprint,
-  advisory metadata, framing profile, quarantine evidence, and every other
-  operational field remain byte-identical. Any attempted difference fails
-  closed with `KeepFailedStateChange`.
+  equal to the stored guard. The carried new fingerprint MUST be
+  bit-for-bit equal to the stored fingerprint. `action_time_unix_nano` is
+  audit-event data in the WAL and MUST NOT update
+  `last_seen_time_unix_nano`. Locator, fingerprint, advisory metadata,
+  framing profile, quarantine evidence, and every other operational field
+  remain byte-identical. Any attempted difference fails closed with
+  `KeepFailedStateChange`.
 - `action == reset_to_beginning` (`0x01`): `resulting_epoch` MUST equal
   `expected_quarantine_epoch + 1` (checked addition) and `resulting_offset`
   MUST equal exactly `0`; `new_committed_frontier_guard` MUST be the required
@@ -1217,10 +1333,18 @@ registration transaction is all-or-nothing.
   `min(resulting_offset, COMMITTED_FRONTIER_GUARD_WINDOW_BYTES)`, and its
   digest MUST cover exactly that final raw-source window. Supplying the
   correct offset and digest is a Phase 1 runtime responsibility.
+- For either reset action, the carried new fingerprint MUST be the bounded
+  evidence derived by the administrative caller from the validated current
+  same-locator source stream and is installed atomically with the new epoch.
+  Its length MUST be no greater than the compatible configured
+  `identity.fingerprint_bytes`. The codec validates its structural bound; the
+  supported administrative tool owns the handle-based source-correspondence
+  proof before encoding.
 - For either reset action: `new_framing_resume` MUST be `Clean`. Effect:
   `lifecycle_state` transitions to `Active`, `file_epoch = resulting_epoch`,
   `committed_offset = resulting_offset`, `committed_frontier_guard =
-  new_committed_frontier_guard`, `framing_resume = Clean`,
+  new_committed_frontier_guard`, `framing_resume = Clean`, fingerprint becomes
+  the carried replacement-stream evidence,
   `last_seen_time_unix_nano = action_time_unix_nano`; the quarantine evidence
   fields are cleared (no longer part of an `Active` record's persisted
   shape).
@@ -1451,7 +1575,7 @@ declaration; after first release, the cross-version policy is mandatory.
 | nonzero file/transaction flags or reserved fields, nonzero reserved `AdvisoryPath` flags, or a nonzero reserved bit in `update_metadata.presence_flags` | fail closed |
 | snapshot or WAL `namespace_digest` differs from the expected selected-namespace digest or from its peer | fail closed with `NamespaceMismatch` before applying any record or transaction |
 | valid `CURRENT` names a missing, unreadable, or incomplete authoritative generation | fail closed with the corresponding distinct authoritative-generation error; never select another generation |
-| unknown `locator.kind`, `AdvisoryPath.path_kind`, `framing_resume.kind`, `lifecycle_state`, `op_code`, `reset_quarantined_file.action`, or `remove_file.expected_prior_state` | fail closed; these are all structural discriminants |
+| unknown `locator.kind`, `AdvisoryPath.path_kind`, `framing_resume.kind`, `lifecycle_state`, `op_code`, `update_metadata.expected_prior_state`, `reset_quarantined_file.action`, or `remove_file.expected_prior_state` | fail closed; these are all structural discriminants |
 | unknown `reason_code` / `removal_reason` value | accepted at decode time (opaque, non-structural); may still be rejected by apply-time business rules for specific operations |
 | a declared length exceeding either its documented maximum or the bytes actually remaining | fail closed before allocating or slicing |
 | complete transaction header with invalid length complement or header CRC | corruption, never torn-tail classification |
@@ -1480,9 +1604,10 @@ auditor or migration tool can scan a WAL and find every administrative
 action without ambiguity:
 
 - **`reset_quarantined_file`** (`0x07`) is unconditionally administrative:
-  every instance carries a mandatory, non-empty `audit_reason`. There is no
-  "ordinary" variant of this operation; releasing quarantine is always an
-  explicit, audited action, whether the caller chooses
+  every instance carries a mandatory, non-empty `namespace_id` and
+  `audit_reason`. Replay validates the exact namespace before record lookup.
+  There is no "ordinary" variant of this operation; releasing quarantine is
+  always an explicit, audited action, whether the caller chooses
   `reset_to_beginning`, `reset_to_end`, or `keep_failed`.
 - **`remove_file`** (`0x08`) is conditionally administrative, distinguished
   by its `administrative` byte. When `administrative == 0x01`, it MUST also

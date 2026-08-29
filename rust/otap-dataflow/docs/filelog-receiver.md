@@ -554,9 +554,12 @@ complete configuration contract. They also encode deliberate tradeoffs.
 `rotation.on_truncate: fail` preserves the no-silent-skip posture by requiring
 administration after detected truncation; operators that knowingly prefer
 continued collection with an explicit gap select `read_new`.
-`checkpoint.retention: 7d` bounds inactive durable state, but after removal a
-returning source is unrelated and can have existing contents intentionally
-excluded by `start_at: end`.
+`checkpoint.retention: 7d` makes inactive durable state eligible for removal
+only after a continuous runtime-proven absence interval. Restart or incomplete
+discovery resets that proof, so repeated restarts can defer reclamation
+indefinitely; retention is not a wall-clock upper bound across downtime. After
+removal, a returning source is unrelated and can have existing contents
+intentionally excluded by `start_at: end`.
 Pinned rotated handles can occupy every open-file slot and pause descriptor
 admission for new/live files until finalization succeeds or capacity is raised;
 Phase 1 does not hide that condition behind a deadline-triggered loss policy.
