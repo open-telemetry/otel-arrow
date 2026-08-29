@@ -5,7 +5,7 @@
 
 use super::adapter::{OracleAdapter, OracleAdapterConfig};
 use crate::receivers::database::{
-    CompiledQuery, DatabaseReceiver, ErrorPolicy, OutputConfig, PollingConfig, QueryError,
+    CompiledQuery, DatabaseReceiver, OutputConfig, PollingConfig, QueryError,
 };
 use serde::Deserialize;
 
@@ -20,7 +20,8 @@ pub struct OracleReceiverConfig {
     connection: OracleConnectionConfig,
     authentication: OracleAuthenticationConfig,
     query: OracleQueryConfig,
-    query_name: String,
+    event_timestamp_column: Option<String>,
+    validation_columns: Vec<String>,
 }
 
 impl OracleReceiverConfig {
@@ -40,8 +41,11 @@ impl OracleReceiverConfig {
                 fetch_size: self.query.fetch_size,
                 max_rows_per_poll: self.query.max_rows_per_poll,
             },
-            self.query.output,
-            self.query.error_policy,
+            OutputConfig {
+                timestamp_column: self.event_timestamp_column,
+                validation_columns: self.validation_columns,
+                ..OutputConfig::default()
+            },
         )?;
         let adapter = OracleAdapter::new(OracleAdapterConfig {
             connect_string: self.connection.connect_string,
@@ -49,19 +53,14 @@ impl OracleReceiverConfig {
             username_file: self.authentication.username_file,
             password_file: self.authentication.password_file,
         });
-        Ok(DatabaseReceiver::new(
-            adapter,
-            query,
-            self.source_id,
-            self.query_name,
-        ))
+        Ok(DatabaseReceiver::new(adapter, query, self.source_id))
     }
 }
 
 impl TryFrom<RawOracleConfig> for OracleReceiverConfig {
     type Error = OracleConfigError;
 
-    fn try_from(mut config: RawOracleConfig) -> Result<Self, Self::Error> {
+    fn try_from(config: RawOracleConfig) -> Result<Self, Self::Error> {
         required("source_id", &config.source_id)?;
         required(
             "connection.connect_string",
@@ -81,14 +80,8 @@ impl TryFrom<RawOracleConfig> for OracleReceiverConfig {
         )?;
         required("query.statement", &config.query.statement)?;
         config.query.polling().validate()?;
-        let query_name = config
-            .query
-            .name
-            .clone()
-            .unwrap_or_else(|| config.source_id.clone());
-        required("query.name", &query_name)?;
-
-        if let Some(watermark) = config.watermark {
+        let (event_timestamp_column, validation_columns) = if let Some(watermark) = config.watermark
+        {
             required("watermark.timestamp_column", &watermark.timestamp_column)?;
             required(
                 "watermark.tie_breaker_column",
@@ -98,22 +91,15 @@ impl TryFrom<RawOracleConfig> for OracleReceiverConfig {
                 return Err(OracleConfigError::new("watermark.timezone must be UTC"));
             }
             _ = watermark.start_at;
-            if let Some(configured) = &config.query.output.timestamp_column
-                && !configured.eq_ignore_ascii_case(&watermark.timestamp_column)
-            {
-                return Err(OracleConfigError::new(
-                    "query.output.timestamp_column must match watermark.timestamp_column",
-                ));
-            }
             // Watermark progression is intentionally absent, but these columns
             // still define event time and must be checked against live metadata.
-            config.query.output.timestamp_column = Some(watermark.timestamp_column);
-            config
-                .query
-                .output
-                .validation_columns
-                .push(watermark.tie_breaker_column);
-        }
+            (
+                Some(watermark.timestamp_column),
+                vec![watermark.tie_breaker_column],
+            )
+        } else {
+            (None, Vec::new())
+        };
         if let Some(checkpoint) = config.checkpoint {
             required("checkpoint.directory", &checkpoint.directory)?;
             if checkpoint.max_consecutive_failures == 0 {
@@ -129,7 +115,8 @@ impl TryFrom<RawOracleConfig> for OracleReceiverConfig {
             connection: config.connection,
             authentication: config.authentication,
             query: config.query,
-            query_name,
+            event_timestamp_column,
+            validation_columns,
         })
     }
 }
@@ -164,9 +151,6 @@ struct OracleAuthenticationConfig {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct OracleQueryConfig {
-    /// Stable query identity emitted on every log record.
-    #[serde(default)]
-    name: Option<String>,
     statement: String,
     #[serde(with = "humantime_serde")]
     interval: std::time::Duration,
@@ -174,12 +158,6 @@ struct OracleQueryConfig {
     max_rows_per_poll: usize,
     #[serde(with = "humantime_serde")]
     timeout: std::time::Duration,
-    /// Database-neutral OTLP body, attribute, and resource mapping.
-    #[serde(default)]
-    output: OutputConfig,
-    /// Permanent conversion failure scope; batch failure is the safe default.
-    #[serde(default)]
-    error_policy: ErrorPolicy,
 }
 
 impl OracleQueryConfig {
@@ -327,5 +305,26 @@ mod tests {
             serde_json::from_value(value).expect("shape should deserialize");
 
         assert!(config.build().is_err());
+    }
+
+    /// Scenario: Configuration adds a query field that is not defined by the Oracle design.
+    /// Guarantees: The public schema stays closed and rejects invented output or policy controls.
+    #[test]
+    fn rejects_undocumented_query_fields() {
+        for (field, value) in [
+            ("name", serde_json::json!("audit-query")),
+            ("error_policy", serde_json::json!("fail_batch")),
+            (
+                "output",
+                serde_json::json!({"include_columns": ["AUDIT_ID"]}),
+            ),
+        ] {
+            let mut config = config();
+            config["query"][field] = value;
+            assert!(
+                serde_json::from_value::<OracleReceiverConfig>(config).is_err(),
+                "undocumented query field '{field}' must be rejected"
+            );
+        }
     }
 }

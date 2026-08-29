@@ -13,6 +13,7 @@ pub(crate) struct QueryScheduler {
 }
 
 impl QueryScheduler {
+    /// Creates a schedule that runs immediately on receiver startup.
     pub(crate) fn new(interval: Duration) -> Self {
         Self {
             interval,
@@ -20,10 +21,12 @@ impl QueryScheduler {
         }
     }
 
+    /// Waits for the current deadline without modifying the next deadline.
     pub(crate) async fn wait(&self) {
         sleep_until(self.next_due).await;
     }
 
+    /// Starts a full delay interval after the previous poll has completed.
     pub(crate) fn complete(&mut self) {
         self.next_due = Instant::now() + self.interval;
     }

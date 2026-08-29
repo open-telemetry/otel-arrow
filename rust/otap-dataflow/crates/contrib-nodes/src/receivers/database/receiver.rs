@@ -7,7 +7,6 @@ use super::driver::{DriverAdapter, QueryResult};
 use super::otlp::{rows_to_pdata, validate_mapping};
 use super::query::CompiledQuery;
 use super::scheduler::QueryScheduler;
-use super::ErrorPolicy;
 use async_trait::async_trait;
 use otel_arrow_dfe_engine::control::NodeControlMsg;
 use otel_arrow_dfe_engine::error::{Error, ReceiverErrorKind};
@@ -23,7 +22,6 @@ pub struct DatabaseReceiver<A> {
     query: CompiledQuery,
     scheduler: QueryScheduler,
     source_id: String,
-    query_name: String,
 }
 
 impl<A> DatabaseReceiver<A>
@@ -32,19 +30,13 @@ where
 {
     /// Creates a receiver with delay-based, non-overlapping scheduling.
     #[must_use]
-    pub fn new(
-        adapter: A,
-        query: CompiledQuery,
-        source_id: String,
-        query_name: String,
-    ) -> Self {
+    pub fn new(adapter: A, query: CompiledQuery, source_id: String) -> Self {
         let scheduler = QueryScheduler::new(query.interval());
         Self {
             adapter,
             query,
             scheduler,
             source_id,
-            query_name,
         }
     }
 
@@ -72,6 +64,8 @@ where
         mut ctrl_msg_recv: local::ControlChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
+        // Prepare the live query before entering the ingestion loop. Selecting
+        // over control messages keeps slow database startup drainable.
         let columns = {
             let validation = self.adapter.validate_query(&self.query);
             tokio::pin!(validation);
@@ -92,102 +86,62 @@ where
             .map_err(|error| receiver_error(&effect_handler, error))?;
 
         loop {
-            tokio::select! {
-                control = ctrl_msg_recv.recv() => {
-                    match control {
-                        Ok(NodeControlMsg::DrainIngress { deadline, .. }) => {
-                            effect_handler.notify_receiver_drained().await?;
-                            return Ok(TerminalState::new::<[MetricSetSnapshot; 0]>(deadline, []));
-                        }
-                        Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
-                            return Ok(TerminalState::new::<[MetricSetSnapshot; 0]>(deadline, []));
-                        }
-                        Err(error) => return Err(Error::ChannelRecvError(error)),
-                        _ => {}
-                    }
-                }
-                result = self.next_poll() => {
-                    match result {
-                        Ok(result) if !result.rows.is_empty() => {
-                            let observed_time = observed_time_unix_nano()
-                                .map_err(|error| receiver_error(&effect_handler, error))?;
-                            match rows_to_pdata(
-                                result,
-                                self.adapter.system(),
-                                &self.source_id,
-                                &self.query_name,
-                                self.query.output(),
-                                observed_time,
-                            ) {
-                                Ok(pdata) => effect_handler.send_message(pdata).await?,
-                                Err(error) => {
-                                    if let Some(terminal) = apply_error_policy(
-                                        self.query.error_policy(),
-                                        "OTLP conversion",
-                                        error,
-                                        &mut ctrl_msg_recv,
-                                        &effect_handler,
-                                    ).await? {
-                                        return Ok(terminal);
-                                    }
-                                }
-                            }
-                        }
-                        Ok(_) => {}
-                        Err(error) if self.adapter.is_batch_error(&error) => {
-                            if let Some(terminal) = apply_error_policy(
-                                self.query.error_policy(),
-                                "database row conversion",
-                                error,
-                                &mut ctrl_msg_recv,
-                                &effect_handler,
-                            ).await? {
+            let result = {
+                // Keep this future pinned across non-terminal control messages.
+                // Dropping it could detach its spawn_blocking Oracle worker and
+                // let the next loop iteration start an overlapping query.
+                let poll = self.next_poll();
+                tokio::pin!(poll);
+                loop {
+                    tokio::select! {
+                        control = ctrl_msg_recv.recv() => {
+                            if let Some(terminal) =
+                                startup_control(control, &effect_handler).await?
+                            {
                                 return Ok(terminal);
                             }
                         }
+                        result = &mut poll => break result,
+                    }
+                }
+            };
+
+            match result {
+                Ok(result) if !result.rows.is_empty() => {
+                    let observed_time = observed_time_unix_nano()
+                        .map_err(|error| receiver_error(&effect_handler, error))?;
+                    match rows_to_pdata(
+                        result,
+                        self.adapter.system(),
+                        &self.source_id,
+                        self.query.output(),
+                        observed_time,
+                    ) {
+                        Ok(pdata) => effect_handler.send_message(pdata).await?,
                         Err(error) => {
-                            return Err(receiver_error(&effect_handler, error));
+                            // The design defines fail-batch as the default but
+                            // does not define a public policy field yet.
+                            tracing::error!(
+                                error = %error,
+                                "database receiver discarded one failed conversion batch"
+                            );
                         }
                     }
                 }
-            }
-        }
-    }
-}
-
-async fn apply_error_policy(
-    policy: ErrorPolicy,
-    operation: &'static str,
-    error: impl std::fmt::Display,
-    ctrl_msg_recv: &mut local::ControlChannel<OtapPdata>,
-    effect_handler: &local::EffectHandler<OtapPdata>,
-) -> Result<Option<TerminalState>, Error> {
-    match policy {
-        ErrorPolicy::FailBatch => {
-            tracing::error!(
-                operation,
-                error = %error,
-                "database receiver discarded one failed batch"
-            );
-            Ok(None)
-        }
-        ErrorPolicy::StopQuery => {
-            tracing::error!(
-                operation,
-                error = %error,
-                "database receiver stopped polling after a permanent query failure"
-            );
-            // This foundation has one query per receiver. Keeping the node
-            // alive lets orchestration still drain or shut it down cleanly.
-            loop {
-                if let Some(terminal) =
-                    startup_control(ctrl_msg_recv.recv().await, effect_handler).await?
-                {
-                    return Ok(Some(terminal));
+                Ok(_) => {}
+                Err(error) if self.adapter.is_batch_error(&error) => {
+                    // Driver normalization errors follow the same fixed
+                    // first-slice fail-batch behavior.
+                    tracing::error!(
+                        error = %error,
+                        "database receiver discarded one failed batch"
+                    );
+                }
+                Err(error) => {
+                    return Err(receiver_error(&effect_handler, error));
                 }
             }
         }
-        ErrorPolicy::StopReceiver => Err(receiver_error(effect_handler, error)),
     }
 }
 
@@ -211,10 +165,21 @@ async fn startup_control(
     }
 }
 
-fn observed_time_unix_nano() -> Result<u64, std::time::SystemTimeError> {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos().try_into().unwrap_or(u64::MAX))
+fn observed_time_unix_nano() -> Result<u64, ObservationTimeError> {
+    let duration = SystemTime::now().duration_since(UNIX_EPOCH)?;
+    // OTLP uses u64 nanoseconds. Reject an unrepresentable clock value rather
+    // than silently saturating and emitting a misleading timestamp.
+    Ok(duration.as_nanos().try_into()?)
+}
+
+#[derive(Debug, thiserror::Error)]
+enum ObservationTimeError {
+    /// The system clock is earlier than the Unix epoch.
+    #[error("system clock is earlier than the Unix epoch")]
+    BeforeUnixEpoch(#[from] std::time::SystemTimeError),
+    /// Nanoseconds since the epoch do not fit OTLP's unsigned 64-bit field.
+    #[error("observation time is outside the supported OTLP range")]
+    OutOfRange(#[from] std::num::TryFromIntError),
 }
 
 fn receiver_error(
@@ -233,12 +198,19 @@ fn receiver_error(
 mod tests {
     use super::DatabaseReceiver;
     use crate::receivers::database::{
-        ColumnMetadata, CompiledQuery, DatabaseSystem, DriverAdapter, ErrorPolicy, OutputConfig,
-        PollingConfig, QueryResult,
+        ColumnMetadata, CompiledQuery, DatabaseSystem, DriverAdapter, OutputConfig, PollingConfig,
+        QueryResult,
     };
     use async_trait::async_trait;
+    use otel_arrow_dfe_config::node::NodeUserConfig;
+    use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
+    use otel_arrow_dfe_engine::testing::{receiver::TestRuntime, test_node};
+    use otel_arrow_dfe_otap::pdata::OtapPdata;
+    use std::cell::Cell;
     use std::convert::Infallible;
-    use std::time::Duration;
+    use std::rc::Rc;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
 
     struct FakeAdapter;
 
@@ -266,30 +238,103 @@ mod tests {
         }
     }
 
-    /// Scenario: A database-neutral adapter is connected to the shared receiver core.
-    /// Guarantees: A requested poll executes successfully through the adapter contract.
-    #[tokio::test]
-    async fn poll_once_executes_adapter() {
-        let query = CompiledQuery::compile(
+    struct DelayedAdapter {
+        started: Rc<Cell<usize>>,
+        completed: Rc<Cell<usize>>,
+    }
+
+    #[async_trait(?Send)]
+    impl DriverAdapter for DelayedAdapter {
+        type Error = Infallible;
+
+        fn system(&self) -> DatabaseSystem {
+            DatabaseSystem::Oracle
+        }
+
+        async fn validate_query(
+            &mut self,
+            _query: &CompiledQuery,
+        ) -> Result<Vec<ColumnMetadata>, Self::Error> {
+            Ok(Vec::new())
+        }
+
+        async fn execute(&mut self, _query: &CompiledQuery) -> Result<QueryResult, Self::Error> {
+            self.started.set(self.started.get() + 1);
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            self.completed.set(self.completed.get() + 1);
+            Ok(QueryResult {
+                columns: Vec::new(),
+                rows: Vec::new(),
+                normalized_bytes: 0,
+            })
+        }
+    }
+
+    fn compiled_query(interval: Duration) -> CompiledQuery {
+        CompiledQuery::compile(
             "SELECT 1".to_owned(),
             PollingConfig {
-                interval: Duration::from_secs(30),
+                interval,
                 timeout: Duration::from_secs(5),
                 fetch_size: 1,
                 max_rows_per_poll: 1,
             },
             OutputConfig::default(),
-            ErrorPolicy::default(),
         )
-        .expect("query should compile");
-        let mut receiver = DatabaseReceiver::new(
-            FakeAdapter,
-            query,
-            "test-source".to_owned(),
-            "test-query".to_owned(),
-        );
+        .expect("query should compile")
+    }
+
+    /// Scenario: A database-neutral adapter is connected to the shared receiver core.
+    /// Guarantees: A requested poll executes successfully through the adapter contract.
+    #[tokio::test]
+    async fn poll_once_executes_adapter() {
+        let query = compiled_query(Duration::from_secs(30));
+        let mut receiver = DatabaseReceiver::new(FakeAdapter, query, "test-source".to_owned());
 
         let result = receiver.poll_once().await.expect("poll should succeed");
         assert!(result.rows.is_empty());
+    }
+
+    /// Scenario: A timer control message arrives while a database poll is awaiting completion.
+    /// Guarantees: Non-terminal control traffic does not cancel or overlap the in-flight query.
+    #[test]
+    fn control_message_does_not_restart_in_flight_poll() {
+        let started = Rc::new(Cell::new(0));
+        let completed = Rc::new(Cell::new(0));
+        let receiver = DatabaseReceiver::new(
+            DelayedAdapter {
+                started: Rc::clone(&started),
+                completed: Rc::clone(&completed),
+            },
+            compiled_query(Duration::from_secs(30)),
+            "test-source".to_owned(),
+        );
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(
+            "test-database-receiver",
+        ));
+        let receiver_wrapper = ReceiverWrapper::local(
+            receiver,
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_receiver(receiver_wrapper)
+            .run_test(|ctx| async move {
+                ctx.sleep(Duration::from_millis(20)).await;
+                ctx.send_timer_tick()
+                    .await
+                    .expect("timer tick should enqueue");
+                ctx.sleep(Duration::from_millis(120)).await;
+                ctx.send_shutdown(Instant::now(), "test complete")
+                    .await
+                    .expect("shutdown should enqueue");
+            })
+            .run_validation(|_| async {});
+
+        assert_eq!(started.get(), 1);
+        assert_eq!(completed.get(), 1);
     }
 }

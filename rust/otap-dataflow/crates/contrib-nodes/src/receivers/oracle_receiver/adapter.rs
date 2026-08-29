@@ -11,8 +11,11 @@ use oracle::sql_type::{IntervalDS, IntervalYM, OracleType, Timestamp};
 use oracle::{Connection, Row as OracleRow};
 use std::sync::{Mutex, OnceLock};
 
+// Oracle client initialization is process-global. The mutex only serializes
+// the one-time directory choice when multiple pipeline instances start.
 static ORACLE_CLIENT_DIRECTORY: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
+#[derive(Clone)]
 pub(crate) struct OracleAdapterConfig {
     pub(crate) connect_string: String,
     pub(crate) instant_client_dir: String,
@@ -47,6 +50,8 @@ impl DriverAdapter for OracleAdapter {
         &mut self,
         query: &CompiledQuery,
     ) -> Result<Vec<ColumnMetadata>, Self::Error> {
+        // rust-oracle is synchronous. Moving native calls to the blocking pool
+        // keeps the engine's local async control loop responsive.
         let connection = self.connection.take();
         let config = self.config.clone();
         let query = query.clone();
@@ -64,6 +69,8 @@ impl DriverAdapter for OracleAdapter {
     }
 
     async fn execute(&mut self, query: &CompiledQuery) -> Result<QueryResult, Self::Error> {
+        // Ownership moves into the worker and returns only after the complete
+        // bounded poll, preventing concurrent use of one Oracle connection.
         let connection = self.connection.take();
         let config = self.config.clone();
         let query = query.clone();
@@ -93,22 +100,13 @@ impl DriverAdapter for OracleAdapter {
     }
 }
 
-impl Clone for OracleAdapterConfig {
-    fn clone(&self) -> Self {
-        Self {
-            connect_string: self.connect_string.clone(),
-            instant_client_dir: self.instant_client_dir.clone(),
-            username_file: self.username_file.clone(),
-            password_file: self.password_file.clone(),
-        }
-    }
-}
-
 fn validate_blocking(
     connection: Option<Connection>,
     config: &OracleAdapterConfig,
     query: &CompiledQuery,
 ) -> Result<(Connection, Vec<ColumnMetadata>), OracleAdapterError> {
+    // Executing the prepared SELECT is required because Oracle exposes result
+    // metadata on the result set. No row is fetched during startup validation.
     let connection = match connection {
         Some(connection) => connection,
         None => connect(config, query.timeout())?,
@@ -177,6 +175,8 @@ fn execute_blocking(
         .collect::<Vec<_>>();
     validate_types(&types)?;
 
+    // The iterator continues through every driver page. The extra row detects
+    // a result larger than the poll ceiling instead of silently truncating it.
     let mut rows = Vec::new();
     let mut normalized_bytes = 0_u64;
     for (index, row) in result_set
@@ -223,6 +223,8 @@ fn connect(
     timeout: std::time::Duration,
 ) -> Result<Connection, OracleAdapterError> {
     initialize_client(&config.instant_client_dir)?;
+    // Mounted files are read for each new connection so secret rotation takes
+    // effect after a reconnect without placing credentials in configuration.
     let username = read_credential(&config.username_file, "username")?;
     let password = read_credential(&config.password_file, "password")?;
     let connect_string = bounded_connect_string(&config.connect_string, timeout)?;
@@ -239,6 +241,8 @@ fn connect(
 }
 
 fn begin_read_only(connection: &Connection) -> Result<(), OracleAdapterError> {
+    // Static SQL inspection is intentionally conservative but cannot classify
+    // every Oracle function; the database enforces the final read-only boundary.
     _ = connection
         .execute("SET TRANSACTION READ ONLY", &[])
         .map_err(OracleAdapterError::Configure)?;
@@ -305,6 +309,8 @@ fn read_credential(path: &str, kind: &'static str) -> Result<String, OracleAdapt
 }
 
 fn validate_types(types: &[OracleType]) -> Result<(), OracleAdapterError> {
+    // There is no catch-all string fallback. Every admitted vendor type has an
+    // explicit, precision-preserving CellValue conversion below.
     for source_type in types {
         match source_type {
             OracleType::Varchar2(_)
@@ -348,6 +354,8 @@ fn normalize_cell(
     index: usize,
     source_type: &OracleType,
 ) -> Result<CellValue, OracleAdapterError> {
+    // rust-oracle returns conversion failures, including invalid text decoding,
+    // as explicit errors. The receiver's query error policy then scopes them.
     macro_rules! optional {
         ($rust_type:ty, $variant:expr) => {
             row.get::<_, Option<$rust_type>>(index)
@@ -496,7 +504,10 @@ pub enum OracleAdapterError {
 
 #[cfg(test)]
 mod tests {
-    use super::{CellValue, OracleAdapterError, bounded_connect_string, finite_float};
+    use super::{
+        CellValue, OracleAdapterError, OracleType, bounded_connect_string, finite_float,
+        validate_types,
+    };
     use std::time::Duration;
 
     /// Scenario: Oracle returns a non-finite binary floating-point value.
@@ -520,5 +531,15 @@ mod tests {
             connect_string,
             "database.contoso.com:1521/ORCL?connect_timeout=120&transport_connect_timeout=120"
         );
+    }
+
+    /// Scenario: Oracle result metadata contains a vendor type without bounded normalization.
+    /// Guarantees: Metadata validation fails explicitly instead of falling back to debug text.
+    #[test]
+    fn rejects_unsupported_vendor_type() {
+        assert!(matches!(
+            validate_types(&[OracleType::BLOB]),
+            Err(OracleAdapterError::UnsupportedType(_))
+        ));
     }
 }

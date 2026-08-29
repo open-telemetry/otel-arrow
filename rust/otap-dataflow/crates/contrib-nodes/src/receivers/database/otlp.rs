@@ -42,9 +42,6 @@ pub fn validate_mapping(
     for column in &output.include_columns {
         require_column(&available, column)?;
     }
-    for column in output.rename_columns.keys() {
-        require_column(&available, column)?;
-    }
     for column in output.attributes.keys() {
         require_column(&available, column)?;
     }
@@ -66,27 +63,12 @@ pub fn validate_mapping(
     for column in &output.validation_columns {
         require_column(&available, column)?;
     }
-
-    // Renaming happens before the body is emitted, so uniqueness must be
-    // checked against the actual selected result columns rather than only the
-    // configuration map.
-    let included = normalized_names(&output.include_columns);
-    let include_all = included.is_empty();
-    let mut body_names = BTreeSet::new();
-    for column in columns {
-        if include_all || included.contains(&column.name.to_ascii_lowercase()) {
-            let body_name = mapped_name(&output.rename_columns, &column.name);
-            if !body_names.insert(body_name.to_ascii_lowercase()) {
-                return Err(OtlpMappingError::DuplicateOutputName {
-                    name: body_name.to_owned(),
-                });
-            }
-        }
-    }
     Ok(())
 }
 
 fn supports_event_time(source_type: &str) -> bool {
+    // Adapters expose stable vendor type names, while row conversion provides
+    // the final value-level check and timestamp parser.
     let source_type = source_type.to_ascii_uppercase();
     source_type.starts_with("DATE")
         || source_type.starts_with("TIMESTAMP")
@@ -111,19 +93,11 @@ fn normalized_names(names: &[String]) -> BTreeSet<String> {
     names.iter().map(|name| name.to_ascii_lowercase()).collect()
 }
 
-fn mapped_name<'a>(mappings: &'a BTreeMap<String, String>, source: &str) -> &'a str {
-    mappings
-        .iter()
-        .find_map(|(column, target)| column.eq_ignore_ascii_case(source).then_some(target.as_str()))
-        .unwrap_or(source)
-}
-
 /// Converts one bounded result into one OTLP logs payload.
 pub fn rows_to_pdata(
     result: QueryResult,
     system: DatabaseSystem,
     source_id: &str,
-    query_name: &str,
     output: &OutputConfig,
     observed_time_unix_nano: u64,
 ) -> Result<OtapPdata, OtlpMappingError> {
@@ -145,19 +119,20 @@ pub fn rows_to_pdata(
                 },
                 KeyValue {
                     key: QUERY_NAME_ATTRIBUTE.to_owned(),
-                    value: Some(string_value(query_name)),
+                    // The Oracle foundation has one query per source, so its
+                    // stable source_id is also the unambiguous query identity.
+                    value: Some(string_value(source_id)),
                 },
             ];
             let mut event_time = None;
             for (column, value) in result.columns.iter().zip(&row.values) {
                 if include_all || included.contains(&column.name.to_ascii_lowercase()) {
                     body.push(KeyValue {
-                        key: mapped_name(&output.rename_columns, &column.name).to_owned(),
+                        key: column.name.clone(),
                         value: Some(cell_to_body(value)?),
                     });
                 }
-                if let Some(attribute_name) =
-                    configured_value(&output.attributes, &column.name)
+                if let Some(attribute_name) = configured_value(&output.attributes, &column.name)
                     && !matches!(value, CellValue::Null)
                 {
                     // Null attributes are omitted by policy; body fields retain
@@ -190,16 +165,18 @@ pub fn rows_to_pdata(
             })
         })
         .collect::<Result<Vec<_>, OtlpMappingError>>()?;
-    let mut resource_attributes = vec![KeyValue {
-        key: "db.system.name".to_owned(),
-        value: Some(string_value(system.as_str())),
-    }];
-    for (key, value) in &output.resource_attributes {
-        resource_attributes.push(KeyValue {
-            key: key.clone(),
-            value: Some(json_scalar_to_any(value)?),
-        });
-    }
+    let resource_attributes = vec![
+        KeyValue {
+            key: "db.system.name".to_owned(),
+            value: Some(string_value(system.as_str())),
+        },
+        KeyValue {
+            // source_id is already operator-authored and contains no endpoint
+            // or credential data, making it safe database source identity.
+            key: SOURCE_ID_ATTRIBUTE.to_owned(),
+            value: Some(string_value(source_id)),
+        },
+    ];
     let logs = LogsData {
         resource_logs: vec![ResourceLogs {
             resource: Some(Resource {
@@ -233,45 +210,18 @@ fn configured_value<'a>(
 }
 
 fn cell_to_body(value: &CellValue) -> Result<AnyValue, OtlpMappingError> {
+    // OTLP KeyValueList is the typed representation of the required JSON
+    // object body. JSON cells can therefore remain structured in the body.
     if let CellValue::Json(value) = value {
         return json_to_any(&serde_json::from_str(value)?);
     }
     cell_to_any(value)
 }
 
-fn json_scalar_to_any(value: &serde_json::Value) -> Result<AnyValue, OtlpMappingError> {
-    match value {
-        serde_json::Value::Bool(value) => Ok(AnyValue {
-            value: Some(any_value::Value::BoolValue(*value)),
-        }),
-        serde_json::Value::String(value) => Ok(string_value(value)),
-        serde_json::Value::Number(value) if value.is_i64() => {
-            Ok(int_value(value.as_i64().ok_or(
-                OtlpMappingError::InvalidResourceAttribute,
-            )?))
-        }
-        serde_json::Value::Number(value) if value.is_u64() => {
-            let value = value
-                .as_u64()
-                .ok_or(OtlpMappingError::InvalidResourceAttribute)?;
-            Ok(i64::try_from(value)
-                .map(int_value)
-                .unwrap_or_else(|_| string_value(value.to_string())))
-        }
-        serde_json::Value::Number(value) => {
-            let value = value
-                .as_f64()
-                .filter(|value| value.is_finite())
-                .ok_or(OtlpMappingError::InvalidResourceAttribute)?;
-            Ok(AnyValue {
-                value: Some(any_value::Value::DoubleValue(value)),
-            })
-        }
-        _ => Err(OtlpMappingError::InvalidResourceAttribute),
-    }
-}
-
 fn cell_to_any(value: &CellValue) -> Result<AnyValue, OtlpMappingError> {
+    // Precision-sensitive SQL values remain text unless OTLP has an exact
+    // scalar representation. In particular, OTLP has no unsigned integer or
+    // decimal attribute type.
     Ok(match value {
         CellValue::Null => AnyValue::default(),
         CellValue::Bool(value) => AnyValue {
@@ -349,6 +299,8 @@ fn json_to_any(value: &serde_json::Value) -> Result<AnyValue, OtlpMappingError> 
 }
 
 fn parse_event_time(value: &CellValue, column: &str) -> Result<u64, OtlpMappingError> {
+    // Timezone-aware text is normalized by chrono. Naive values are interpreted
+    // as UTC because Oracle sessions are configured to UTC by the adapter.
     let text = match value {
         CellValue::Date(value)
         | CellValue::Timestamp(value)
@@ -406,12 +358,6 @@ pub enum OtlpMappingError {
         /// Duplicate result column.
         name: String,
     },
-    /// Configured renaming causes two selected body fields to collide.
-    #[error("configured output contains duplicate renamed column '{name}'")]
-    DuplicateOutputName {
-        /// Colliding body field name.
-        name: String,
-    },
     /// Output configuration references an absent result column.
     #[error("configured output column '{name}' is not present in result metadata")]
     UnknownColumn {
@@ -430,9 +376,6 @@ pub enum OtlpMappingError {
     /// A JSON number cannot be represented.
     #[error("JSON number is outside the supported OTLP range")]
     InvalidJsonNumber,
-    /// Resource identity escaped static scalar validation.
-    #[error("resource attribute is not a supported scalar value")]
-    InvalidResourceAttribute,
     /// Configured event-time column has an unsupported type.
     #[error("event-time column '{column}' is not a date, timestamp, or string")]
     InvalidEventTimeType {
@@ -512,15 +455,8 @@ mod tests {
             ..OutputConfig::default()
         };
 
-        let pdata = rows_to_pdata(
-            result,
-            DatabaseSystem::Oracle,
-            "oracle-audit",
-            "audit-query",
-            &output,
-            123,
-        )
-        .expect("row should map");
+        let pdata = rows_to_pdata(result, DatabaseSystem::Oracle, "oracle-audit", &output, 123)
+            .expect("row should map");
         let PayloadData::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(bytes)) =
             pdata.payload().into_data()
         else {
@@ -542,6 +478,11 @@ mod tests {
             scope_logs.scope.as_ref().expect("scope").name,
             DATABASE_SCOPE
         );
+        assert_eq!(
+            scope_logs.scope.as_ref().expect("scope").version,
+            env!("CARGO_PKG_VERSION")
+        );
+        assert_eq!(scope_logs.log_records.len(), 1);
         let record = &scope_logs.log_records[0];
         assert_eq!(record.observed_time_unix_nano, 123);
         assert_eq!(record.time_unix_nano, 1_787_920_200_000_000_000);
@@ -553,7 +494,7 @@ mod tests {
             attribute.key == QUERY_NAME_ATTRIBUTE
                 && matches!(
                     attribute.value.as_ref().and_then(|value| value.value.as_ref()),
-                    Some(any_value::Value::StringValue(value)) if value == "audit-query"
+                    Some(any_value::Value::StringValue(value)) if value == "oracle-audit"
                 )
         }));
     }
@@ -591,10 +532,10 @@ mod tests {
         ));
     }
 
-    /// Scenario: Operators select and rename body fields, promote typed attributes, and add safe
-    /// database identity while a selected attribute contains SQL NULL.
-    /// Guarantees: Mapping is applied case-insensitively, body names are renamed, scalar types are
-    /// preserved, null attributes are omitted, and approved identity is attached to the resource.
+    /// Scenario: Operators select body fields and promote typed attributes while one selected
+    /// attribute contains SQL NULL.
+    /// Guarantees: Mapping is case-insensitive, scalar types are preserved, null attributes are
+    /// omitted, and the existing source identifier supplies safe resource and query identity.
     #[test]
     fn applies_configured_output_mapping() {
         let result = QueryResult {
@@ -610,30 +551,15 @@ mod tests {
         };
         let output = OutputConfig {
             include_columns: vec!["audit_id".to_owned(), "USER_NAME".to_owned()],
-            rename_columns: BTreeMap::from([(
-                "user_name".to_owned(),
-                "database.user.name".to_owned(),
-            )]),
             attributes: BTreeMap::from([
                 ("audit_id".to_owned(), "audit.id".to_owned()),
                 ("user_name".to_owned(), "user.name".to_owned()),
             ]),
-            resource_attributes: BTreeMap::from([(
-                "db.namespace".to_owned(),
-                serde_json::json!("audit"),
-            )]),
             ..OutputConfig::default()
         };
 
-        let pdata = rows_to_pdata(
-            result,
-            DatabaseSystem::Oracle,
-            "oracle-audit",
-            "audit-query",
-            &output,
-            123,
-        )
-        .expect("configured mapping should succeed");
+        let pdata = rows_to_pdata(result, DatabaseSystem::Oracle, "oracle-audit", &output, 123)
+            .expect("configured mapping should succeed");
         let PayloadData::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(bytes)) =
             pdata.payload().into_data()
         else {
@@ -641,54 +567,41 @@ mod tests {
         };
         let logs = LogsData::decode(bytes).expect("logs should decode");
         let resource_logs = &logs.resource_logs[0];
-        assert!(resource_logs
-            .resource
-            .as_ref()
-            .expect("resource")
-            .attributes
-            .iter()
-            .any(|attribute| attribute.key == "db.namespace"));
+        assert!(
+            resource_logs
+                .resource
+                .as_ref()
+                .expect("resource")
+                .attributes
+                .iter()
+                .any(|attribute| attribute.key == SOURCE_ID_ATTRIBUTE)
+        );
 
         let record = &resource_logs.scope_logs[0].log_records[0];
+        assert_eq!(record.time_unix_nano, 123);
         let Some(any_value::Value::KvlistValue(body)) =
             record.body.as_ref().and_then(|body| body.value.as_ref())
         else {
             panic!("expected object body");
         };
         assert_eq!(body.values.len(), 2);
-        assert!(body
-            .values
-            .iter()
-            .any(|field| field.key == "database.user.name"));
+        assert!(body.values.iter().any(|field| field.key == "USER_NAME"));
         assert!(record.attributes.iter().any(|attribute| {
             attribute.key == "audit.id"
                 && matches!(
-                    attribute.value.as_ref().and_then(|value| value.value.as_ref()),
+                    attribute
+                        .value
+                        .as_ref()
+                        .and_then(|value| value.value.as_ref()),
                     Some(any_value::Value::IntValue(42))
                 )
         }));
-        assert!(!record
-            .attributes
-            .iter()
-            .any(|attribute| attribute.key == "user.name"));
-    }
-
-    /// Scenario: Renaming two selected source columns produces the same case-normalized body key.
-    /// Guarantees: Live startup validation rejects the mapping before rows are ingested.
-    #[test]
-    fn rejects_duplicate_names_after_renaming() {
-        let output = OutputConfig {
-            rename_columns: BTreeMap::from([
-                ("AUDIT_ID".to_owned(), "record.id".to_owned()),
-                ("USER_NAME".to_owned(), "RECORD.ID".to_owned()),
-            ]),
-            ..OutputConfig::default()
-        };
-
-        assert!(matches!(
-            validate_mapping(&columns(), &output),
-            Err(OtlpMappingError::DuplicateOutputName { .. })
-        ));
+        assert!(
+            !record
+                .attributes
+                .iter()
+                .any(|attribute| attribute.key == "user.name")
+        );
     }
 
     /// Scenario: Every closed CellValue variant is converted to its required OTLP scalar form.
@@ -696,17 +609,20 @@ mod tests {
     /// typed, overflowing unsigned integers become strings, and non-finite floats fail explicitly.
     #[test]
     fn preserves_cell_value_conversion_contract() {
+        assert!(cell_to_any(&CellValue::Null).expect("null").value.is_none());
         assert!(matches!(
-            cell_to_any(&CellValue::Bool(true))
-                .expect("bool")
-                .value,
+            cell_to_any(&CellValue::Bool(true)).expect("bool").value,
             Some(any_value::Value::BoolValue(true))
         ));
         assert!(matches!(
-            cell_to_any(&CellValue::Int64(-42))
-                .expect("int")
-                .value,
+            cell_to_any(&CellValue::Int64(-42)).expect("int").value,
             Some(any_value::Value::IntValue(-42))
+        ));
+        assert!(matches!(
+            cell_to_any(&CellValue::UInt64(42))
+                .expect("safe uint")
+                .value,
+            Some(any_value::Value::IntValue(42))
         ));
         assert!(matches!(
             cell_to_any(&CellValue::UInt64(u64::MAX))
@@ -722,11 +638,46 @@ mod tests {
                 if value == "1.234567890123456789"
         ));
         assert!(matches!(
+            cell_to_any(&CellValue::Float64(1.5))
+                .expect("finite float")
+                .value,
+            Some(any_value::Value::DoubleValue(value)) if value == 1.5
+        ));
+        assert!(matches!(
             cell_to_any(&CellValue::Bytes(vec![0, 1, 2]))
                 .expect("bytes")
                 .value,
             Some(any_value::Value::StringValue(value)) if value == "AAEC"
         ));
+        for (cell, expected) in [
+            (CellValue::String("text".to_owned()), "text"),
+            (CellValue::Date("2026-08-28".to_owned()), "2026-08-28"),
+            (
+                CellValue::Timestamp("2026-08-28T12:30:00".to_owned()),
+                "2026-08-28T12:30:00",
+            ),
+            (
+                CellValue::TimestampTz("2026-08-28T12:30:00+00:00".to_owned()),
+                "2026-08-28T12:30:00+00:00",
+            ),
+            (
+                CellValue::Interval("+01 02:03:04".to_owned()),
+                "+01 02:03:04",
+            ),
+            (
+                CellValue::Json(r#"{"enabled":true}"#.to_owned()),
+                r#"{"enabled":true}"#,
+            ),
+            (
+                CellValue::Uuid("123e4567-e89b-12d3-a456-426614174000".to_owned()),
+                "123e4567-e89b-12d3-a456-426614174000",
+            ),
+        ] {
+            assert!(matches!(
+                cell_to_any(&cell).expect("string-like value").value,
+                Some(any_value::Value::StringValue(value)) if value == expected
+            ));
+        }
         assert!(matches!(
             cell_to_body(&CellValue::Json(r#"{"enabled":true}"#.to_owned()))
                 .expect("JSON")
@@ -736,6 +687,42 @@ mod tests {
         assert!(matches!(
             cell_to_any(&CellValue::Float64(f64::INFINITY)),
             Err(OtlpMappingError::NonFiniteFloat)
+        ));
+    }
+
+    /// Scenario: Live metadata contains two column names that differ only by case.
+    /// Guarantees: The identity body mapping rejects duplicate names before ingestion.
+    #[test]
+    fn rejects_duplicate_result_column_names() {
+        let columns = vec![
+            ColumnMetadata {
+                name: "AUDIT_ID".to_owned(),
+                source_type: "NUMBER".to_owned(),
+                nullable: false,
+            },
+            ColumnMetadata {
+                name: "audit_id".to_owned(),
+                source_type: "NUMBER".to_owned(),
+                nullable: false,
+            },
+        ];
+
+        assert!(matches!(
+            validate_mapping(&columns, &OutputConfig::default()),
+            Err(OtlpMappingError::DuplicateColumn { .. })
+        ));
+    }
+
+    /// Scenario: A configured event-time column contains malformed timestamp text.
+    /// Guarantees: Conversion returns an explicit row error instead of using observation time.
+    #[test]
+    fn rejects_malformed_event_time() {
+        assert!(matches!(
+            parse_event_time(
+                &CellValue::Timestamp("not-a-timestamp".to_owned()),
+                "LAST_UPDATED"
+            ),
+            Err(OtlpMappingError::InvalidEventTime { .. })
         ));
     }
 }

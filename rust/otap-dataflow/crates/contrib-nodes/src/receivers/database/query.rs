@@ -3,7 +3,7 @@
 
 //! Validated, database-neutral query plans.
 
-use super::config::{ConfigError, ErrorPolicy, OutputConfig, PollingConfig};
+use super::config::{ConfigError, OutputConfig, PollingConfig};
 use std::fmt;
 use std::time::Duration;
 
@@ -19,7 +19,6 @@ pub struct CompiledQuery {
     max_rows: usize,
     max_normalized_bytes: u64,
     output: OutputConfig,
-    error_policy: ErrorPolicy,
 }
 
 impl CompiledQuery {
@@ -28,7 +27,6 @@ impl CompiledQuery {
         sql: String,
         config: PollingConfig,
         output: OutputConfig,
-        error_policy: ErrorPolicy,
     ) -> Result<Self, QueryError> {
         config.validate()?;
         output.validate()?;
@@ -43,7 +41,6 @@ impl CompiledQuery {
             max_rows: config.max_rows_per_poll,
             max_normalized_bytes: DEFAULT_MAX_NORMALIZED_BYTES,
             output,
-            error_policy,
         })
     }
 
@@ -88,12 +85,6 @@ impl CompiledQuery {
     pub const fn output(&self) -> &OutputConfig {
         &self.output
     }
-
-    /// Returns the configured conversion failure scope.
-    #[must_use]
-    pub const fn error_policy(&self) -> ErrorPolicy {
-        self.error_policy
-    }
 }
 
 impl fmt::Debug for CompiledQuery {
@@ -107,12 +98,13 @@ impl fmt::Debug for CompiledQuery {
             .field("max_rows", &self.max_rows)
             .field("max_normalized_bytes", &self.max_normalized_bytes)
             .field("output", &self.output)
-            .field("error_policy", &self.error_policy)
             .finish()
     }
 }
 
 fn is_read_only(sql: &str) -> bool {
+    // This foundation intentionally avoids pretending to be a SQL parser.
+    // Runtime read-only transactions provide the final vendor-side guard.
     let first = sql.split_whitespace().next();
     first.is_some_and(|keyword| keyword.eq_ignore_ascii_case("select"))
         && !sql.to_ascii_uppercase().contains("FOR UPDATE")
@@ -132,7 +124,7 @@ pub enum QueryError {
 #[cfg(test)]
 mod tests {
     use super::{CompiledQuery, QueryError};
-    use crate::receivers::database::{ErrorPolicy, OutputConfig, PollingConfig};
+    use crate::receivers::database::{OutputConfig, PollingConfig};
     use std::time::Duration;
 
     fn polling_config() -> PollingConfig {
@@ -145,14 +137,13 @@ mod tests {
     }
 
     /// Scenario: Configuration contains a statement that can modify database state.
-    /// Guarantees: Query compilation accepts only SELECT and WITH statements.
+    /// Guarantees: Query compilation accepts only statements beginning with SELECT.
     #[test]
     fn rejects_modifying_statement() {
         let result = CompiledQuery::compile(
             "DELETE FROM audit_log".to_owned(),
             polling_config(),
             OutputConfig::default(),
-            ErrorPolicy::default(),
         );
         assert_eq!(
             result.expect_err("DELETE must be rejected"),
@@ -168,7 +159,6 @@ mod tests {
             "WITH rows AS (SELECT 1 AS id FROM dual) SELECT id FROM rows".to_owned(),
             polling_config(),
             OutputConfig::default(),
-            ErrorPolicy::default(),
         );
         assert_eq!(
             result.expect_err("WITH is not safely classified yet"),
@@ -184,7 +174,6 @@ mod tests {
             "SELECT id FROM audit_log FOR UPDATE".to_owned(),
             polling_config(),
             OutputConfig::default(),
-            ErrorPolicy::default(),
         );
         assert_eq!(
             result.expect_err("locking SELECT must be rejected"),
@@ -200,7 +189,6 @@ mod tests {
             "SELECT secret FROM audit_log".to_owned(),
             polling_config(),
             OutputConfig::default(),
-            ErrorPolicy::default(),
         )
         .expect("SELECT should compile");
 
