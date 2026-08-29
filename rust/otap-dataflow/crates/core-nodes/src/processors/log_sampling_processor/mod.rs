@@ -40,9 +40,9 @@ use otel_arrow_dfe_engine::processor::{
     FlowMetricHook, ProcessorRuntimeRequirements, ProcessorWrapper,
 };
 use otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES;
-use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_otap::pdata::{OtapPdata, PdataEffectHandlerExtension};
 use otel_arrow_dfe_pdata::OtapPayload;
-use otel_arrow_dfe_pdata::TryIntoWithOptions;
+#[cfg(test)]
 use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
 use otel_arrow_dfe_pdata::otap::filter::{IdBitmapPool, filter_otap_batch};
 use otel_arrow_dfe_telemetry::metrics::MetricSet;
@@ -108,15 +108,22 @@ impl LogSamplingProcessor {
     /// Processes a log payload: sample, filter, and forward or ack.
     async fn process_logs(
         &mut self,
-        mut pdata: OtapPdata,
+        pdata: OtapPdata,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
     ) -> Result<(), EngineError> {
-        let total = pdata.num_items();
-
-        // Convert to Arrow records (no-op if already Arrow)
-        let (context, payload) = pdata.into_parts();
-        let mut records: OtapArrowRecords = payload.try_into_with_default()?;
+        let arrow_pdata = match effect_handler.try_into_otap(pdata).await {
+            Ok(arrow_pdata) => arrow_pdata,
+            Err(error) => {
+                let (error, pdata) = error.into_parts();
+                effect_handler
+                    .notify_nack(NackMsg::new_permanent(error.to_string(), pdata))
+                    .await?;
+                return Ok(());
+            }
+        };
+        let (context, mut records) = arrow_pdata.into_parts();
         records.decode_transport_optimized_ids()?;
+        let total = records.num_items();
 
         // Prepare the filter buffer.
         //

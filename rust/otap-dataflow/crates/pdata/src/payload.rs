@@ -370,6 +370,25 @@ impl OtapPayload {
         }
     }
 
+    /// Takes existing encoded bytes without copying, returning the original
+    /// payload when it already contains native records.
+    pub fn into_encoded_bytes(self) -> Result<Bytes, Self> {
+        let Self {
+            data,
+            item_count,
+            size,
+        } = self;
+        match data {
+            PayloadData::OtlpBytes(bytes) => Ok(bytes.into_bytes()),
+            PayloadData::Encoded(encoded) => Ok(encoded.into_bytes()),
+            data @ PayloadData::OtapArrowRecords(_) => Err(Self {
+                data,
+                item_count,
+                size,
+            }),
+        }
+    }
+
     /// Borrows native records only when already materialized.
     #[must_use]
     pub fn otap_ref(&self) -> Option<&OtapArrowRecords> {

@@ -59,8 +59,8 @@ use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
 use otel_arrow_dfe_otap::metrics::ExporterExportMetrics;
-use otel_arrow_dfe_otap::pdata::OtapPdata;
-use otel_arrow_dfe_pdata::TryIntoWithOptions;
+use otel_arrow_dfe_otap::pdata::{OtapPdata, PdataEffectHandlerExtension};
+#[cfg(test)]
 use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
 use otel_arrow_dfe_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
 use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetHandler};
@@ -328,11 +328,9 @@ impl Exporter<OtapPdata> for ParquetExporter {
                     // Capture signal type before moving pdata into try_from
                     let signal_type = pdata.signal_type();
 
-                    // Note: context is not used
-                    let (_context, payload) = pdata.into_parts();
-
-                    let mut otap_batch: OtapArrowRecords =
-                        payload.try_into_with_default().inspect_err(|_| {
+                    let arrow_pdata = match effect_handler.try_into_otap(pdata).await {
+                        Ok(arrow_pdata) => arrow_pdata,
+                        Err(error) => {
                             if let Some(metrics) = self.pdata_metrics.as_mut() {
                                 metrics
                                     .with(SignalOutcomeAttributes {
@@ -341,7 +339,12 @@ impl Exporter<OtapPdata> for ParquetExporter {
                                     })
                                     .record(export_start.elapsed());
                             }
-                        })?;
+                            let (error, _pdata) = error.into_parts();
+                            return Err(error.into());
+                        }
+                    };
+                    // Note: context is not used by this terminal exporter.
+                    let (_context, mut otap_batch) = arrow_pdata.into_parts();
 
                     // decode the transport optimized IDs before converting
                     // to unvalidated parquet records

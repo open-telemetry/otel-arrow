@@ -35,9 +35,12 @@ use otel_arrow_dfe_engine::{
     ConsumerEffectHandlerExtension, MessageSourceLocalEffectHandlerExtension,
 };
 use otel_arrow_dfe_engine::{Interests, ProducerEffectHandlerExtension};
-use otel_arrow_dfe_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
+use otel_arrow_dfe_otap::{
+    OTAP_PROCESSOR_FACTORIES,
+    pdata::{OtapPdata, PdataEffectHandlerExtension},
+};
+use otel_arrow_dfe_pdata::EncodingPlan;
 use otel_arrow_dfe_pdata::OtlpProtoBytes;
-use otel_arrow_dfe_pdata::TryIntoWithOptions;
 use otel_arrow_dfe_pdata::proto::opentelemetry::{
     logs::v1::LogsData,
     metrics::v1::{MetricsData, metric::Data},
@@ -346,8 +349,12 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                         .await?;
                 }
 
-                let (_context, payload) = pdata.into_parts();
-                let otlp_bytes: OtlpProtoBytes = payload.try_into_with_default()?;
+                let (_context, mut payload) = pdata.into_parts();
+                let signal = payload.signal_type();
+                let bytes = effect_handler
+                    .encode_owned(&mut payload, &EncodingPlan::OTLP)
+                    .await?;
+                let otlp_bytes = OtlpProtoBytes::new_from_bytes(signal, bytes);
 
                 match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(bytes) => {
