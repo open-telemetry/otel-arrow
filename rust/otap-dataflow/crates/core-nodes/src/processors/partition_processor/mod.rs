@@ -35,7 +35,8 @@ use otel_arrow_dfe_otap::accessory::context::split_contexts::{Contexts, Outbound
 use otel_arrow_dfe_otap::accessory::slots::Key;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
 use otel_arrow_dfe_otap::transport_headers::{TransportHeader, ValueKind};
-use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayload, TryIntoWithOptions};
+use otel_arrow_dfe_pdata::{OtapArrowRecords, TryIntoWithOptions};
+use otel_arrow_dfe_pdata_codec::OtapPayload;
 use otel_arrow_dfe_query_engine::parser::default_parser_options;
 use otel_arrow_dfe_query_engine::pipeline::partition::{PartitionValue, Partitioner};
 use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;

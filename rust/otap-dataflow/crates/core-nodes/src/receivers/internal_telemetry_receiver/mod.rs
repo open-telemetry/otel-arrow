@@ -321,7 +321,8 @@ mod tests {
     use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
     use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::ResourceLogs;
     use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{metric, number_data_point};
-    use otel_arrow_dfe_pdata::{OtlpProtoBytes, PayloadData, Sizer};
+    use otel_arrow_dfe_pdata::{OtlpProtoBytes, Sizer};
+    use otel_arrow_dfe_pdata_codec::PayloadData;
     use otel_arrow_dfe_telemetry::event::{LogEvent, ObservedEvent};
     use otel_arrow_dfe_telemetry::instrument::Counter;
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;

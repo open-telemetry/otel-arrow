@@ -69,9 +69,9 @@ use otel_arrow_dfe_otap::{
 };
 use otel_arrow_dfe_pdata::TryIntoWithOptions;
 use otel_arrow_dfe_pdata::{
-    OtapArrowRecords, OtapPayload, OtapPayloadHelpers, PayloadData,
-    otap::transform::sanitize::sanitize_otap_batch,
+    OtapArrowRecords, OtapPayloadHelpers, otap::transform::sanitize::sanitize_otap_batch,
 };
+use otel_arrow_dfe_pdata_codec::{OtapPayload, PayloadData};
 use otel_arrow_dfe_query_engine::{
     parser::default_parser_options,
     pipeline::{

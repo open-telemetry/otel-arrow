@@ -381,6 +381,7 @@ mod test {
     use datafusion::catalog::streaming::StreamingTable;
     use datafusion::logical_expr::{col, lit};
     use otel_arrow_contrib_data_engine_parser_abstractions::Parser;
+    use otel_arrow_dfe_pdata::OtlpProtoBytes;
     use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
     use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{LogRecord, LogsData};
@@ -391,7 +392,7 @@ mod test {
     use otel_arrow_dfe_pdata::testing::round_trip::{
         otap_to_otlp, otlp_to_otap, to_otap_logs, to_otap_metrics, to_otap_traces,
     };
-    use otel_arrow_dfe_pdata::{OtapPayload, OtlpProtoBytes};
+    use otel_arrow_dfe_pdata_codec::OtapPayload;
     use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
     use prost::Message;
 

@@ -46,8 +46,9 @@ use otel_arrow_dfe_pdata::otlp::metrics::MetricsProtoBytesEncoder;
 use otel_arrow_dfe_pdata::otlp::traces::TracesProtoBytesEncoder;
 use otel_arrow_dfe_pdata::otlp::{ProtoBuffer, ProtoBytesEncoder};
 use otel_arrow_dfe_pdata::{
-    OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProtoBytes, PayloadData,
+    OtapArrowRecords, OtapPayloadHelpers, OtlpProtoBytes,
 };
+use otel_arrow_dfe_pdata_codec::{OtapPayload, PayloadData};
 use serde::Deserialize;
 use std::collections::VecDeque;
 use std::future::Future;
@@ -630,6 +631,11 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             };
                             let future = make_export_future(prepared, client);
                             inflight_exports.push(future);
+                        }
+                        (_, PayloadData::Encoded(_)) => {
+                            unreachable!(
+                                "encoded payloads are not admitted during the storage transition"
+                            )
                         }
                     }
                 }

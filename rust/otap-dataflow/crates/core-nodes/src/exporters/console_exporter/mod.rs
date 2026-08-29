@@ -33,7 +33,7 @@ use otel_arrow_dfe_otap::pdata::OtapPdata;
 use otel_arrow_dfe_pdata::views::otap::{OtapLogsView, OtapMetricsView};
 use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
 use otel_arrow_dfe_pdata::views::otlp::bytes::metrics::RawMetricsData;
-use otel_arrow_dfe_pdata::{OtapPayload, PayloadData};
+use otel_arrow_dfe_pdata_codec::{OtapPayload, PayloadData};
 use otel_arrow_dfe_pdata_views::views::common::InstrumentationScopeView;
 use otel_arrow_dfe_pdata_views::views::logs::{
     LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView,
@@ -324,6 +324,9 @@ impl ConsoleExporter {
                     Err(ConsoleExportErrorType::OtapViewCreation)
                 }
             },
+            PayloadData::Encoded(_) => {
+                unreachable!("encoded payloads are not admitted during the storage transition")
+            }
         }
     }
 
@@ -353,6 +356,9 @@ impl ConsoleExporter {
                     Err(ConsoleExportErrorType::OtapViewCreation)
                 }
             },
+            PayloadData::Encoded(_) => {
+                unreachable!("encoded payloads are not admitted during the storage transition")
+            }
         }
     }
 

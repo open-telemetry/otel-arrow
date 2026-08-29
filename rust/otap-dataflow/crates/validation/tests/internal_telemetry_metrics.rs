@@ -30,7 +30,8 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMe
 use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
     AggregationTemporality, metric, number_data_point,
 };
-use otel_arrow_dfe_pdata::{OtlpProtoBytes, PayloadData};
+use otel_arrow_dfe_pdata::OtlpProtoBytes;
+use otel_arrow_dfe_pdata_codec::PayloadData;
 use otel_arrow_dfe_state::store::ObservedStateStore;
 use otel_arrow_dfe_telemetry::instrument::Counter;
 use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;

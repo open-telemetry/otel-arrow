@@ -133,7 +133,8 @@ use otel_arrow_dfe_engine::{
     ConsumerEffectHandlerExtension, Interests, LocalWakeupRequirements, ProcessorFactory,
     ProcessorRuntimeRequirements, ProducerEffectHandlerExtension,
 };
-use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayload, PayloadData};
+use otel_arrow_dfe_pdata::OtapArrowRecords;
+use otel_arrow_dfe_pdata_codec::{OtapPayload, PayloadData};
 #[cfg(test)]
 use otel_arrow_dfe_telemetry::common_attributes::SignalAttributes;
 
@@ -1092,6 +1093,9 @@ impl DurableBuffer {
                     Err(e) => Err((e, OtapPayload::from(adapter.into_inner()))),
                 };
                 (result, num_items)
+            }
+            PayloadData::Encoded(_) => {
+                unreachable!("encoded payloads are not admitted during the storage transition")
             }
         };
 

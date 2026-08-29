@@ -34,8 +34,10 @@ use otel_arrow_dfe_engine::processor::{
 use otel_arrow_dfe_engine::{
     ConsumerEffectHandlerExtension, MessageSourceLocalEffectHandlerExtension,
 };
-use otel_arrow_dfe_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
-use otel_arrow_dfe_pdata::TryIntoWithOptions;
+use otel_arrow_dfe_otap::{
+    OTAP_PROCESSOR_FACTORIES,
+    pdata::{NativePdataProcessor, NativeProcessorAdapter, OtapArrowPdata, OtapPdata},
+};
 use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
 use otel_arrow_dfe_pdata::otap::filter::IdBitmapPool;
 use otel_arrow_dfe_telemetry::common_attributes::SignalAttributes;
@@ -131,9 +133,7 @@ impl FilterProcessor {
 #[async_trait(?Send)]
 impl local::Processor<OtapPdata> for FilterProcessor {
     fn runtime_requirements(&self) -> ProcessorRuntimeRequirements {
-        // The filter processor drops signal items, so it records
-        // `dropped.items` when it lies within a flow that enables it.
-        ProcessorRuntimeRequirements::none().with_drop_decisions()
+        NativePdataProcessor::runtime_requirements(self)
     }
 
     async fn process(
@@ -141,100 +141,116 @@ impl local::Processor<OtapPdata> for FilterProcessor {
         msg: Message<OtapPdata>,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
-        match msg {
-            Message::Control(control) => {
-                if let NodeControlMsg::CollectTelemetry {
-                    mut metrics_reporter,
-                } = control
-                {
-                    _ = metrics_reporter.report_measurement(&mut self.metrics);
-                    self.compute_duration.report(&mut metrics_reporter);
-                }
-                Ok(())
-            }
-            Message::PData(pdata) => {
-                let signal = pdata.signal_type();
-                // convert to arrow records
-                let (context, payload) = pdata.into_parts();
+        NativeProcessorAdapter::process(self, msg, effect_handler).await
+    }
+}
 
-                let mut arrow_records: OtapArrowRecords = payload.try_into_with_default()?;
-                arrow_records.decode_transport_optimized_ids()?;
+#[async_trait(?Send)]
+impl NativePdataProcessor for FilterProcessor {
+    fn runtime_requirements(&self) -> ProcessorRuntimeRequirements {
+        // The filter processor drops signal items, so it records
+        // `dropped.items` when it lies within a flow that enables it.
+        ProcessorRuntimeRequirements::none().with_drop_decisions()
+    }
 
-                let (filtered_arrow_records, _signals_consumed, dropped_items): (
-                    OtapArrowRecords,
-                    u64,
-                    u64,
-                ) =
-                    effect_handler.timed(&self.compute_duration, || -> Result<_, Error> {
-                        match signal {
-                            SignalType::Metrics => {
-                                let (filtered, consumed, filtered_count) = self
-                                    .config
-                                    .metric_filters()
-                                    .filter(arrow_records, &mut self.metric_id_pool)
-                                    .map_err(|e| {
-                                        let source_detail = format_error_sources(&e);
-                                        Error::ProcessorError {
-                                            processor: effect_handler.processor_id(),
-                                            kind: ProcessorErrorKind::Other,
-                                            error: format!("Filter error: {e}"),
-                                            source_detail,
-                                        }
-                                    })?;
-                                Ok((filtered, consumed, filtered_count))
-                            }
-                            SignalType::Logs => {
-                                let (filtered, consumed, filtered_count) =
-                                    self.config.log_filters().filter(arrow_records).map_err(
-                                        |e| {
-                                            let source_detail = format_error_sources(&e);
-                                            Error::ProcessorError {
-                                                processor: effect_handler.processor_id(),
-                                                kind: ProcessorErrorKind::Other,
-                                                error: format!("Filter error: {e}"),
-                                                source_detail,
-                                            }
-                                        },
-                                    )?;
-                                Ok((filtered, consumed, filtered_count))
-                            }
-                            SignalType::Traces => {
-                                let (filtered, consumed, filtered_count) =
-                                    self.config.trace_filters().filter(arrow_records).map_err(
-                                        |e| {
-                                            let source_detail = format_error_sources(&e);
-                                            Error::ProcessorError {
-                                                processor: effect_handler.processor_id(),
-                                                kind: ProcessorErrorKind::Other,
-                                                error: format!("Filter error: {e}"),
-                                                source_detail,
-                                            }
-                                        },
-                                    )?;
-                                Ok((filtered, consumed, filtered_count))
-                            }
-                        }
-                    })?;
-
-                let metric = self.metrics.with(SignalAttributes { signal });
-                metric.dropped_items.add(dropped_items);
-
-                // Record the drop flow-metric. A no-op unless this node is
-                // a decision node in a flow that enables `dropped.items`.
-                // `dropped_items` is the dropped count.
-                effect_handler.record_flow_dropped_items(signal, dropped_items);
-
-                let kept_items = filtered_arrow_records.num_items();
-                let mut pdata = OtapPdata::new(context, filtered_arrow_records.into());
-                if kept_items == 0 {
-                    pdata.complete_processor_without_output(effect_handler);
-                    effect_handler.notify_ack(AckMsg::new(pdata)).await?;
-                } else {
-                    effect_handler.send_message_with_source_node(pdata).await?;
-                }
-                Ok(())
-            }
+    async fn process_control(
+        &mut self,
+        control: NodeControlMsg<OtapPdata>,
+        _effect_handler: &mut local::EffectHandler<OtapPdata>,
+    ) -> Result<(), Error> {
+        if let NodeControlMsg::CollectTelemetry {
+            mut metrics_reporter,
+        } = control
+        {
+            _ = metrics_reporter.report_measurement(&mut self.metrics);
+            self.compute_duration.report(&mut metrics_reporter);
         }
+        Ok(())
+    }
+
+    async fn process_native(
+        &mut self,
+        arrow_pdata: OtapArrowPdata,
+        effect_handler: &mut local::EffectHandler<OtapPdata>,
+    ) -> Result<(), Error> {
+        let signal = arrow_pdata.signal_type();
+        let (context, mut arrow_records) = arrow_pdata.into_parts();
+        arrow_records.decode_transport_optimized_ids()?;
+
+        let (filtered_arrow_records, _signals_consumed, dropped_items): (
+            OtapArrowRecords,
+            u64,
+            u64,
+        ) = effect_handler.timed(&self.compute_duration, || -> Result<_, Error> {
+            match signal {
+                SignalType::Metrics => {
+                    let (filtered, consumed, filtered_count) = self
+                        .config
+                        .metric_filters()
+                        .filter(arrow_records, &mut self.metric_id_pool)
+                        .map_err(|e| {
+                            let source_detail = format_error_sources(&e);
+                            Error::ProcessorError {
+                                processor: effect_handler.processor_id(),
+                                kind: ProcessorErrorKind::Other,
+                                error: format!("Filter error: {e}"),
+                                source_detail,
+                            }
+                        })?;
+                    Ok((filtered, consumed, filtered_count))
+                }
+                SignalType::Logs => {
+                    let (filtered, consumed, filtered_count) = self
+                        .config
+                        .log_filters()
+                        .filter(arrow_records)
+                        .map_err(|e| {
+                            let source_detail = format_error_sources(&e);
+                            Error::ProcessorError {
+                                processor: effect_handler.processor_id(),
+                                kind: ProcessorErrorKind::Other,
+                                error: format!("Filter error: {e}"),
+                                source_detail,
+                            }
+                        })?;
+                    Ok((filtered, consumed, filtered_count))
+                }
+                SignalType::Traces => {
+                    let (filtered, consumed, filtered_count) = self
+                        .config
+                        .trace_filters()
+                        .filter(arrow_records)
+                        .map_err(|e| {
+                            let source_detail = format_error_sources(&e);
+                            Error::ProcessorError {
+                                processor: effect_handler.processor_id(),
+                                kind: ProcessorErrorKind::Other,
+                                error: format!("Filter error: {e}"),
+                                source_detail,
+                            }
+                        })?;
+                    Ok((filtered, consumed, filtered_count))
+                }
+            }
+        })?;
+
+        let metric = self.metrics.with(SignalAttributes { signal });
+        metric.dropped_items.add(dropped_items);
+
+        // Record the drop flow-metric. A no-op unless this node is
+        // a decision node in a flow that enables `dropped.items`.
+        // `dropped_items` is the dropped count.
+        effect_handler.record_flow_dropped_items(signal, dropped_items);
+
+        let kept_items = filtered_arrow_records.num_items();
+        let mut pdata = OtapPdata::new(context, filtered_arrow_records.into());
+        if kept_items == 0 {
+            pdata.complete_processor_without_output(effect_handler);
+            effect_handler.notify_ack(AckMsg::new(pdata)).await?;
+        } else {
+            effect_handler.send_message_with_source_node(pdata).await?;
+        }
+        Ok(())
     }
 }
 
@@ -243,6 +259,7 @@ mod tests {
     use crate::processors::filter_processor::{
         FILTER_PROCESSOR_URN, FilterProcessor, config::Config,
     };
+    use bytes::Bytes;
     use otel_arrow_dfe_config::SignalType;
     use otel_arrow_dfe_config::node::NodeUserConfig;
     use otel_arrow_dfe_engine::Interests;
@@ -258,6 +275,7 @@ mod tests {
     use otel_arrow_dfe_otap::pdata::OtapPdata;
     use otel_arrow_dfe_pdata::OtlpProtoBytes;
     use otel_arrow_dfe_pdata::TryIntoWithOptions;
+    use otel_arrow_dfe_pdata_codec::ResolvedCodec;
     use otel_arrow_dfe_pdata::otap::filter::{
         AnyValue as AnyValueFilter, KeyValue as KeyValueFilter, MatchType,
         logs::{LogFilter, LogMatchProperties, LogSeverityNumberMatchProperties},
@@ -914,6 +932,55 @@ mod tests {
                 assert_fully_filtered(&mut ctx, otlp_traces_bytes, SignalType::Traces).await;
             })
         }
+    }
+
+    /// Scenario: the native processor adapter receives malformed generalized OTLP input.
+    /// Guarantees: the filter permanently Nacks the exact bytes instead of returning a node error.
+    #[test]
+    fn malformed_encoded_input_is_recoverable() {
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let controller = ControllerContext::new(test_runtime.metrics_registry());
+        let pipeline_ctx =
+            controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let processor = ProcessorWrapper::local(
+            FilterProcessor::from_config(pipeline_ctx, &json!({})).unwrap(),
+            test_node(test_runtime.config().name.clone()),
+            Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN)),
+            test_runtime.config(),
+        );
+        let bytes = Bytes::from_static(&[0x0a, 0x05, 0x01]);
+        let pointer = bytes.as_ptr();
+        let pdata = OtapPdata::new_default(
+            ResolvedCodec::OTLP
+                .admit(SignalType::Logs, bytes.clone())
+                .unwrap()
+                .into(),
+        )
+        .test_subscribe_to(
+            Interests::NACKS | Interests::RETURN_DATA,
+            CallData::new(),
+            11,
+        );
+
+        test_runtime
+            .set_processor(processor)
+            .run_test(move |mut ctx| async move {
+                let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(1);
+                ctx.set_pipeline_completion_sender(completion_tx);
+                ctx.process(Message::PData(pdata)).await.unwrap();
+                assert!(ctx.drain_pdata().await.is_empty());
+                match completion_rx.recv().await.unwrap() {
+                    PipelineCompletionMsg::DeliverNack { nack } => {
+                        assert!(nack.permanent);
+                        assert!(nack.reason.contains("otlp-bytes"));
+                        let recovered = nack.refused.payload_ref().encoded_bytes().unwrap();
+                        assert_eq!(recovered.as_ptr(), pointer);
+                        assert_eq!(recovered, &bytes);
+                    }
+                    other => panic!("expected codec Nack, got {other:?}"),
+                }
+            })
+            .validate(|_| async {});
     }
 
     #[test]

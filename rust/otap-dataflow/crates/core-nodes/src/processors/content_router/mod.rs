@@ -91,7 +91,7 @@ use otel_arrow_dfe_engine::{
 };
 use otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
-use otel_arrow_dfe_pdata::PayloadData;
+use otel_arrow_dfe_pdata_codec::PayloadData;
 use otel_arrow_dfe_pdata::TryFromWithOptions;
 use otel_arrow_dfe_pdata::otlp::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::views::otap::OtapLogsView;
@@ -602,6 +602,9 @@ impl ContentRouter {
                         _ => RouteResolution::ConversionError,
                     },
                 }
+            }
+            PayloadData::Encoded(_) => {
+                unreachable!("encoded payloads are not admitted during the storage transition")
             }
         }
     }

@@ -33,7 +33,8 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
 };
 use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
 use otel_arrow_dfe_pdata::testing::round_trip::{otlp_message_to_bytes, otlp_to_otap};
-use otel_arrow_dfe_pdata::{OtapPayload, proto::OtlpProtoMessage};
+use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
+use otel_arrow_dfe_pdata_codec::OtapPayload;
 use otel_arrow_dfe_telemetry::InternalTelemetrySystem;
 use serde_json::json;
 

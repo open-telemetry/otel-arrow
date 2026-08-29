@@ -22,6 +22,7 @@ otel-arrow-dfe-engine = { workspace = true }
 otel-arrow-dfe-query-engine-languages = { workspace = true }
 otel-arrow-dfe-otap = { workspace = true }
 otel-arrow-dfe-pdata = { workspace = true }
+otel-arrow-dfe-pdata-codec = { workspace = true }
 otel-arrow-dfe-pdata-views = { workspace = true }
 otel-arrow-dfe-query-engine = { workspace = true }
 otel-arrow-dfe-quiver = { workspace = true }
@@ -89,6 +90,7 @@ otel-arrow-dfe-channel = { workspace = true }
 otel-arrow-dfe-engine = { workspace = true, features = ["test-utils"] }
 otel-arrow-dfe-otap = { workspace = true, features = ["test-utils", "crypto-ring"] }
 otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
+otel-arrow-dfe-pdata-codec = { workspace = true, features = ["testing"] }
 otel-arrow-dfe-telemetry = { workspace = true }
 flate2.workspace = true
 http-body-util.workspace = true

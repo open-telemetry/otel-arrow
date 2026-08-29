@@ -41,7 +41,7 @@ use otel_arrow_dfe_engine::processor::{
 };
 use otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
-use otel_arrow_dfe_pdata::OtapPayload;
+use otel_arrow_dfe_pdata_codec::OtapPayload;
 use otel_arrow_dfe_pdata::TryIntoWithOptions;
 use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
 use otel_arrow_dfe_pdata::otap::filter::{IdBitmapPool, filter_otap_batch};
@@ -263,7 +263,7 @@ mod tests {
     use otel_arrow_dfe_engine::testing::test_node;
     use otel_arrow_dfe_otap::pdata::Context;
     use otel_arrow_dfe_otap::testing::TestCallData;
-    use otel_arrow_dfe_pdata::PayloadData;
+    use otel_arrow_dfe_pdata_codec::PayloadData;
     use otel_arrow_dfe_pdata::encode::{encode_logs_otap_batch, encode_spans_otap_batch};
     use otel_arrow_dfe_pdata::otap::OtapBatchStore;
     use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
@@ -324,6 +324,7 @@ mod tests {
                 let output_otap = match output_payload.into_data() {
                     PayloadData::OtlpBytes(_) => panic!("Unexpected otlp bytes"),
                     PayloadData::OtapArrowRecords(otap_arrow_records) => otap_arrow_records,
+                    PayloadData::Encoded(_) => panic!("Unexpected encoded bytes"),
                 };
 
                 let output_attrs = output_otap.get(ArrowPayloadType::LogAttrs).unwrap();

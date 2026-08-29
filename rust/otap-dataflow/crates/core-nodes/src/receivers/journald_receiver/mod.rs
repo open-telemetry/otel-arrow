@@ -43,7 +43,7 @@ use otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES;
 use otel_arrow_dfe_otap::pdata::Context;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
 #[cfg(target_os = "linux")]
-use otel_arrow_dfe_pdata::OtapPayload;
+use otel_arrow_dfe_pdata_codec::OtapPayload;
 use otel_arrow_dfe_telemetry::instrument::Counter;
 use otel_arrow_dfe_telemetry::metrics::MetricSet;
 #[cfg(target_os = "linux")]

@@ -56,7 +56,8 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::{
 use otel_arrow_dfe_pdata::proto::opentelemetry::collector::trace::v1::{
     ExportTracePartialSuccess, ExportTraceServiceResponse,
 };
-use otel_arrow_dfe_pdata::{OtapPayload, OtapPayloadHelpers, PayloadData};
+use otel_arrow_dfe_pdata::OtapPayloadHelpers;
+use otel_arrow_dfe_pdata_codec::{OtapPayload, PayloadData};
 use prost::Message as _;
 use reqwest::{Client, Response};
 use secrecy::ExposeSecret;
@@ -695,6 +696,11 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                             }
 
                             (Uncompressed::InProtoBuffer, otap_batch.into())
+                        }
+                        PayloadData::Encoded(_) => {
+                            unreachable!(
+                                "encoded payloads are not admitted during the storage transition"
+                            )
                         }
                     };
 
