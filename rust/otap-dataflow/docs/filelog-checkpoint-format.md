@@ -1360,27 +1360,36 @@ registration transaction is all-or-nothing.
   operation validates that `namespace_id_bytes` exactly equals the selected
   containing namespace. A mismatch always fails `NamespaceMismatch`, even if
   `file_id` is absent.
-- After namespace validation, if `file_id` is absent from the table, replay
-  succeeds as an idempotent no-op.
+- After namespace validation, an absent administrative target succeeds as an
+  idempotent no-op. An absent non-administrative target fails closed because
+  the identity-supersede transition requires the existing locator evidence.
 - Precondition when `file_id` is present: the stored `lifecycle_state` MUST
   equal `expected_prior_state`.
-  - If the stored state is `Active` or `RotatedFinalized`: the stored
-    `file_epoch` MUST equal `expected_file_epoch`. `administrative` MAY be
-    `0x00` or `0x01`. Ordinary retention may remove either state, and an
-    exact-locator evidence mismatch may remove its superseded `Active` record
-    in the same transaction that registers the replacement.
+  - If the stored state is `Active`: the stored `file_epoch` MUST equal
+    `expected_file_epoch`. `administrative == 0x00` is valid only when this
+    transaction is the behavioral exact-locator mismatch transition: it
+    removes the superseded record and registers a new `file_id` for the same
+    staged locator atomically. The transaction preflight retains the removed
+    locator for that comparison. `administrative == 0x01` is also permitted.
+  - If the stored state is `RotatedFinalized`: the stored `file_epoch` MUST
+    equal `expected_file_epoch` and `administrative` MUST be `0x01`.
   - If the stored state is `Quarantined`: the stored `quarantine_epoch` MUST
     equal `expected_file_epoch` (the field is reused as "the epoch value the
     caller expects to match" regardless of lifecycle state, to keep the
     operation's shape uniform), `administrative` MUST be `0x01`, and
     `administrative == 0x00` against a `Quarantined` record fails replay
-    closed ("ordinary retention cannot remove quarantined state").
+    closed ("non-administrative removal cannot remove quarantined state").
   - The already-completed administrative namespace check applies identically
     to `Active`, `RotatedFinalized`, and `Quarantined` targets.
   - Any other mismatch (wrong `expected_prior_state`, wrong epoch, or a
     conflicting live record with different evidence) fails replay closed
     ("the operation removes only a matching record").
 - Effect: removes the record entirely from the table.
+
+Retention never encodes `remove_file`. It stages the complete vetted removal
+set in a filtered snapshot and makes that set authoritative only through
+durable compaction publication. This operation therefore has no retention
+chunking or partial-removal semantics.
 
 ## Torn-tail versus corruption
 
@@ -1598,10 +1607,9 @@ behavior this format is designed to avoid.
 
 ## Administrative reset and removal representation
 
-Two operations are exclusively administrative (operator-authorized) actions,
-and both are represented distinctly on the wire so that a checkpoint
-auditor or migration tool can scan a WAL and find every administrative
-action without ambiguity:
+Administrative operator actions use the two operations below and are
+represented distinctly on the wire so that a checkpoint auditor or migration
+tool can scan a WAL and find every administrative action without ambiguity:
 
 - **`reset_quarantined_file`** (`0x07`) is unconditionally administrative:
   every instance carries a mandatory, non-empty `namespace_id` and
@@ -1616,8 +1624,9 @@ action without ambiguity:
   supplied `namespace_id` against the namespace the WAL actually belongs to,
   so an administrative removal recorded in (or replayed against) the wrong
   checkpoint fails closed rather than silently applying. This is the only
-  path capable of removing a `Quarantined` record, matching the
-  [Phase 1 retention contract](filelog-receiver-phase1-spec.md#retention).
+  path capable of removing a `Quarantined` record. Its non-administrative form
+  is reserved for the exact-locator identity-supersede transition; retention
+  uses filtered compaction and never encodes this operation.
 
 These encodings do not define or authorize a CLI or API. A separately reviewed
 engine administrative interface or offline tool MUST acquire exclusive
@@ -1628,6 +1637,14 @@ provide such a surface with exact namespace, `file_id`, expected lifecycle and
 epoch, bounded evidence inspection, and all defined reset/removal actions.
 WAL administrative entries remain operational history only until compaction;
 permanent audit retention requires a separate audit sink.
+
+These operations also do not define whole-namespace corruption reset. That
+procedure requires a separate crash-safe operations design with exclusion
+independent of potentially corrupt namespace authority, durable evidence backup,
+namespace-incarnation and generation rules, no-replace publication, required
+parent syncs, and exhaustive interrupted-reset recovery. Until that design is
+approved, missing or corrupt authority remains fail closed and no tool is
+authorized to replace or recreate the namespace.
 
 ## Cross-version and migration behavior
 

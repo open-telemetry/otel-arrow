@@ -36,7 +36,7 @@ convention.
 | Candidate | An eligible opened regular file presented to identity resolution with stable evidence. |
 | Candidate inventory | The bounded population and multiplicity evidence used by one reconciliation pass. |
 | Clean resume | Durable framing state in which the next complete source unit begins a new logical record. |
-| Applied progress | An Ack-authorized transaction successfully appended to the WAL and applied atomically to the live checkpoint state; it may be newer than the durable frontier. |
+| Applied progress | An Ack-authorized or explicitly loss-authorized transaction successfully appended to the WAL and applied atomically to the live checkpoint state; it may be newer than the durable frontier. |
 | Committed offset | The source-byte offset in live applied checkpoint state; it becomes crash-durable only when covered by the durable frontier. |
 | Committed-frontier guard | A bounded SHA-256 digest over raw source bytes immediately preceding committed progress, persisted atomically with that progress and used to detect likely locator reuse or in-place replacement on recovery. |
 | Complete inventory | A reconciliation result that can prove both presence and absence and can establish fingerprint multiplicity over its bounded population. |
@@ -1996,8 +1996,19 @@ Retry exhaustion applies `on_nack`:
 | `fail` | Receiver terminates without advancing the retained batch |
 | `drop_and_continue` | Receiver records explicit loss, applies the same atomic delta set, and releases according to the configured sync policy |
 
-`drop_and_continue` is an intentional data-loss policy. It is counted and produces an
-operator-visible event.
+An aggregate Nack or pre-publication failure never directly authorizes progress.
+The default `fail` policy therefore preserves Ack-only advancement. An operator
+who explicitly selects `drop_and_continue` authorizes intentional loss only
+after the complete retry budget reaches terminal exhaustion; that policy, not
+the preceding Nack or `NoRoute`, authorizes the atomic progress transition.
+
+`drop_and_continue` is an intentional data-loss policy and an exception to the
+at-least-once delivery claim. After applying its progress, the receiver counts
+the loss and attempts a bounded operator-visible event. Metrics and health
+events are not durable audit state, so a crash after progress becomes durable
+can prevent that evidence from being emitted. A requirement for permanent loss
+attribution needs a separate durable audit sink; version 1 does not encode an
+Ack-versus-explicit-loss provenance field in `update_progress`.
 
 Drain or direct Shutdown interrupts retry backoff. Uncommitted progress remains
 unchanged.
@@ -2061,13 +2072,13 @@ conflicting, impossible, unknown, or overflowing transitions fail closed.
 | Operation | Preconditions | Effect and timing |
 | --- | --- | --- |
 | `register_file` | `file_id` absent, or exactly identical Active idempotent replay; no other live record claims its locator | Create active identity, initial offset, guard, clean resume, evidence, and metadata; durable before read |
-| `update_progress` | Active; expected offset and epoch match | Atomically append and apply Acked offset, committed-frontier guard, and framing resume; may finalize rotation; sync follows policy |
+| `update_progress` | Active; expected offset and epoch match | Atomically append and apply Ack- or explicit-loss-authorized offset, committed-frontier guard, and framing resume; may finalize rotation; sync follows policy |
 | `reset_after_truncate` | Active; expected epoch matches; `read_new` selected | Increment epoch and atomically reset offset, guard, framing, and replacement-stream fingerprint; sync before reading replacement bytes |
 | `update_fingerprint` | Active; expected evidence and epoch match | Strictly extend same-stream evidence without changing identity or progress |
 | `update_metadata` | Expected Active or quarantined lifecycle and epoch match | Update allowed advisory fields; quarantine evidence remains immutable |
 | `quarantine_file` | Active at expected epoch, or identical idempotent replay | Enter durable quarantine; sync before reporting durable state |
 | `reset_quarantined_file` | Matching quarantined record | Apply `reset_to_beginning`, `reset_to_end`, or `keep_failed`; sync before release/report |
-| `remove_file` | Exact matching prior state and epoch | Ordinary removal for vetted active/finalized records, or audited administrative removal |
+| `remove_file` | Exact matching prior state and epoch | Non-administrative removal only inside a named atomic identity-supersede transition, or audited administrative removal; retention is compaction-only |
 
 ### Registration
 
@@ -2231,6 +2242,17 @@ it has been absent for the retention interval from:
 - the carry-over record; and
 - rotation-finalization state.
 
+Retention has one persistence sequence: compaction only. After final
+revalidation, the worker stages one complete table with the entire nonempty
+vetted removal set omitted, while the current live table and generation remain
+unchanged. It writes and publishes the filtered snapshot and fresh WAL through
+the ordinary compaction state machine. The filtered table becomes live only
+after the replacement `CURRENT` is durably published. Failure before that
+point leaves the prior table and generation authoritative; recovery after
+publication observes the complete filtered set. The vetted set is therefore
+atomic regardless of its size and is never divided into `remove_file`
+transactions or partially durable chunks. An empty set does not compact.
+
 An excluded-but-present source fails the first absence condition and is not
 eligible. Exclusion is configuration policy, not proof that the source ceased
 to exist.
@@ -2329,10 +2351,27 @@ and completes before exclusive creation for the next attempt. Ambiguous
 authority or an invalid `CURRENT` fails closed rather than selecting by
 generation number or modification time.
 
-Recognized generations and temporary artifacts are bounded. A store with pending
-retired-generation cleanup does not start another compaction until cleanup succeeds.
-Cleanup rereads and validates `CURRENT` under exclusive namespace ownership and
-never deletes either file belonging to the generation it currently names.
+Recognized generations and temporary artifacts are bounded. After `CURRENT`
+durably publishes generation G with `G > 0`, the immediately prior generation
+G-1 is retired. Because another compaction cannot begin while retired cleanup is
+pending, restart recognizes exactly four states for that retired pair: both
+snapshot and WAL remain, snapshot only remains, WAL only remains, or neither
+remains. All four are valid cleanup states and none is authoritative.
+
+Each cleanup attempt rereads and validates `CURRENT` under exclusive namespace
+ownership. If it still names G, cleanup removes the retired WAL and then the
+retired snapshot, treating either already-absent file as idempotent success,
+and syncs the namespace directory after the deletion set. A crash or sync
+failure leaves one of the same recognized states and cleanup resumes from the
+remaining subset. Cleanup never deletes either file belonging to the generation
+currently named by `CURRENT`.
+
+Appends to the authoritative G WAL may continue while retired cleanup is
+pending only while its configured artifact bounds do not require another
+compaction. A later compaction remains blocked until retired cleanup and its
+directory sync succeed; inability to finish before the next required
+compaction enters the checkpoint-store failure/backpressure path rather than
+exceeding the WAL bound.
 
 Recovery:
 
@@ -2374,6 +2413,18 @@ reset the complete namespace with explicit replay or `start_at` consequences.
 Repointing `CURRENT` to an older generation is not a Phase 1 recovery operation;
 it requires separate review because it can roll progress back and duplicate
 previously delivered data.
+
+The whole-namespace reset procedure is a separately reviewed operations design,
+not an implicit extension of ordinary recovery or the version-1 codec. Before
+implementation it MUST define exclusion that does not depend on opening a
+possibly corrupt namespace lock, durable no-replace publication of the complete
+evidence backup before destructive action, preservation of the current
+namespace directory while any lock inside it is held, generation/incarnation
+rules that do not reuse published authority, required directory and parent
+syncs, and recognized recovery for every interrupted reset step. Until that
+design is approved and implemented, corruption remains fail closed and an
+operator may inspect or copy evidence but MUST NOT delete, replace, or recreate
+the namespace through an unsupported procedure.
 
 ### Checkpoint trust boundary
 

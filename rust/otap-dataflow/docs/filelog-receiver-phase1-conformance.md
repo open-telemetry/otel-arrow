@@ -503,6 +503,8 @@ while their semantic and format definitions remain normative from version 1.
 | Transition ordering | Administrative action while receiver owns delta | Exclusive tool cannot proceed until receiver releases ownership with no delta |
 | Nack | Any aggregate downstream Nack before attempt exhaustion | Same retained batch, bounded backoff, no reread |
 | Nack | `drop_and_continue` | Explicit loss and durable atomic advance |
+| Nack | Aggregate Nack or pre-publication `NoRoute` before retry exhaustion | Retained batch remains byte-identical and progress does not advance; the outcome itself never authorizes progress |
+| Nack | `drop_and_continue` exhausts retry and progress becomes durable before its health event | Progress remains intentionally advanced; event loss on crash is permitted because telemetry is not durable audit state |
 | Nack | Exhaustion | Configured `on_nack` policy |
 | Nack | Proposed default retry schedule | Approximately 11.3 seconds of scheduled backoff before exhaustion, excluding send/timeout time |
 | Nack | Supervisor restarts after default `fail` during persistent outage | Checkpoint/source reconstruction can duplicate; repeated failure can restart-loop without progress |
@@ -555,11 +557,15 @@ while their semantic and format definitions remain normative from version 1.
 | Checkpoint | Generation increment overflow | Fails before writing or wrapping |
 | Checkpoint | Cleanup interruption | Resumable, bounded artifacts |
 | Checkpoint | Cleanup sees current generation among retired candidates | Files named by `CURRENT` are retained |
+| Checkpoint | Retired generation restart has both files, snapshot only, WAL only, or neither | Every subset is recognized as non-authoritative; remaining files are removed idempotently and the directory is synced |
+| Checkpoint | Retired cleanup fails while current WAL remains below compaction thresholds | Current-generation appends may continue within bounds; another compaction remains blocked |
+| Checkpoint | Current WAL requires compaction while retired cleanup still cannot finish | Store failure/backpressure path; WAL bound is never exceeded |
 | Checkpoint | Retention age without runtime absence | Not removed |
 | Checkpoint | Quarantined retention candidate | Not removed |
 | Checkpoint | Administrative removal wrong namespace | Fail closed |
 | Checkpoint | Administrative quarantine reset or `keep_failed` names wrong namespace | Namespace mismatch before record lookup; no state change |
 | Checkpoint | Administrative removal wrong namespace and absent `file_id` | Namespace mismatch before absent idempotency |
+| Checkpoint | Non-administrative `remove_file` is absent or not paired with exact-locator replacement registration | Complete transaction fails closed; retention never uses this operation |
 | Checkpoint | Quarantine administration available | Exclusive, audited inspect/reset/remove path operates without manual byte edits |
 | Checkpoint | Build can quarantine but has no administration mechanism | Phase 1 conformance rejected |
 | Checkpoint | `keep_failed` exact stored resume/epoch/offset | Audit operation appended; operational state byte-identical |
@@ -569,7 +575,8 @@ while their semantic and format definitions remain normative from version 1.
 | Checkpoint | `update_metadata` attempts locator mutation | Unencodable in v1; changed locator requires new identity |
 | Checkpoint | Reserved quarantine reason `0x0004` | Decoder accepts opaque value; version-1 encoder never emits it |
 | Checkpoint | Unix 5,000-byte advisory path vector | Digest covers all bytes as `UnixBytes`; stored path is the final 4,096-byte suffix |
-| Checkpoint | Namespace corruption administration | Exclusive inspect/backup/reset procedure reports replay or `start_at` consequences; no automatic salvage |
+| Checkpoint | Corrupt namespace before separate crash-safe reset design is implemented | Recovery remains fail closed; supported inspection may copy evidence, but no tool deletes, replaces, or recreates the namespace |
+| Checkpoint | Product claims whole-namespace reset qualification | Separately reviewed design proves independent exclusion, durable evidence backup, namespace-incarnation/generation safety, no-replace publication, parent syncs, and every interrupted-reset outcome |
 | Rotation | POSIX rename/create | Old and replacement read independently |
 | Rotation | Broad include matches `app.log` and renamed `app.log.1` | Path rebound supplies replacement context while old locator remains active; a new B starts at zero |
 | Rotation | Path-rebound target B already has exact-locator Active state | B resumes its own state; no reset to zero and no inheritance from A |
@@ -613,6 +620,9 @@ while their semantic and format definitions remain normative from version 1.
 | Telemetry | Repeated identical failure | Event sampling/rate limit bounds output |
 | Retention | Removed state later returns with `start_at: end` | Existing contents may be intentionally excluded; prior removal and loss of association are diagnosable without claiming same-source proof |
 | Retention | Quiet namespace is full and records reach retention eligibility below both WAL compaction thresholds | Maintenance deadline wakes the worker, revalidates absence, and performs bounded compaction so eligible capacity is reclaimed |
+| Retention | Nonempty vetted removal set exceeds 256 records | One filtered compaction publishes the complete set atomically; no `remove_file` chunks or partial removal become durable |
+| Retention | Failure before filtered `CURRENT` publication | Previous generation and unfiltered live table remain authoritative |
+| Retention | Crash after filtered `CURRENT` publication | Recovery observes the complete vetted removal set omitted from the authoritative snapshot |
 | Retention | Recovery sees a record absent whose persisted last-seen time is older than retention | Absence age begins at the first complete post-recovery inventory; persisted time alone cannot authorize removal |
 | Retention | Permanently absent record restarts repeatedly before one continuous retention interval elapses | Each recovery resets runtime absence proof; removal may be deferred indefinitely and no cross-restart wall-clock bound is claimed |
 | Retention | Previously absent record is observed, or its relevant inventory becomes incomplete | Runtime absence proof is cleared; uncertain time does not accrue toward removal |
@@ -634,8 +644,8 @@ Source bytes:
 61 0d 0a
 ```
 
-The text body is `a\r`. The body range owns bytes 0 through 2. The frame range owns
-bytes 0 through 3. Acked progress advances to 3.
+The text body is `a\r`. The body range is `[0, 2)`. The frame range is
+`[0, 3)`. Acked progress advances to 3.
 
 ### Example 2: Empty line
 

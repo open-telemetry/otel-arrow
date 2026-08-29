@@ -27,11 +27,12 @@ aggregate downstream Ack latency, checkpoint transaction, failure policy, and
 drain.
 
 The receiver preserves ordering within each file and provides at-least-once
-delivery after emission. Crash recovery of uncommitted records requires both a
-valid durable checkpoint and the corresponding source bytes. The receiver is
-not a durable telemetry spool. Ordinary move/create rotation is supported;
-copytruncate remains best-effort because portable filesystem observation cannot
-close its destructive copy-to-truncate gap.
+delivery after emission when no explicitly configured loss policy authorizes
+progress. Crash recovery of uncommitted records requires both a valid durable
+checkpoint and the corresponding source bytes. The receiver is not a durable
+telemetry spool. Ordinary move/create rotation is supported; copytruncate
+remains best-effort because portable filesystem observation cannot close its
+destructive copy-to-truncate gap.
 
 Phase 2 may improve local throughput and discovery latency without changing
 ownership. Phase 3 is a conceptual target that adds shared identity resolution,
@@ -138,11 +139,11 @@ reading implementation detail first.
 | --- | --- |
 | Capture | Reads eligible complete records while their source bytes remain available; unread bytes destroyed by rotation or retention are unrecoverable |
 | Delivery | Retains and retries one emitted receiver-wide batch until Ack or terminal policy |
-| Progress | Applies progress only after matching aggregate Ack; releases after atomic WAL application and syncs the durable frontier according to policy |
+| Progress | A Nack never directly advances progress. Progress follows a matching aggregate Ack, or an explicit configured loss policy after terminal retry exhaustion, and is applied through one atomic WAL transaction |
 | Crash recovery | Reconstructs uncommitted records only when valid checkpoint state and corresponding source bytes survive |
 | Ordering | Preserves ordering within each file; defines no cross-file ordering |
 | Rotation | Supports move/create; a recognized replacement needing a new identity starts at zero, while its own existing durable state wins; copytruncate remains best-effort |
-| Delivery semantics | At least once after emission; retry or crash can produce duplicates |
+| Delivery semantics | At least once after emission when no intentional-loss policy is selected; retry or crash can produce duplicates |
 | Durability | Does not spool emitted OTAP batches to disk |
 | Resource behavior | Uses fixed workers, bounded state, bounded work turns, and backpressure |
 | Failure isolation | Most source failures are per-file; batch, ownership, runtime-lease integrity, and checkpoint failures can stop the receiver |
@@ -184,7 +185,7 @@ accepted compromises:
 | D4 | Key durable progress by an opaque persisted `file_id` | Paths, fingerprints, and native locators are matching evidence rather than permanent identity |
 | D5 | Allow an explicit checkpoint ID or derive one from the logical receiver key `(pipeline_group_id, pipeline_id, node_id)` | The derived value changes with those configured IDs; topology and runtime-instance values never affect source progress |
 | D6 | Reconnect ordinary progress only through a validated exact runtime locator, initial fingerprint, and committed-frontier continuity guard | A changed locator never transfers progress; the frontier guard also detects likely reuse of an `Active` locator whose common prefix still matches |
-| D7 | Advance source progress only after one matching aggregate downstream Ack for the batch attempt | The engine/topic runtime, not filelog, aggregates a nonempty required-subscriber membership; topology validation must reject a path that cannot provide all-required completion |
+| D7 | A Nack never authorizes progress. Advance after one matching aggregate Ack, except when an explicitly selected loss policy separately authorizes advancement after terminal retry exhaustion | The engine/topic runtime, not filelog, aggregates a nonempty required-subscriber membership; topology validation must reject a path that cannot provide all-required completion |
 | D8 | Run blocking filesystem and checkpoint work on fixed dedicated threads | Blocking work must not stall the current-thread runtime or create an unbounded worker pool |
 | D9 | Keep decoding and framing in the receiver; keep semantic interpretation in processors | Framing determines source progress; interpretation must remain reusable |
 | D10 | Emit raw OTAP logs with bounded source provenance | The receiver does not embed destination or Stanza-style operator logic |
@@ -370,10 +371,12 @@ preserves committed progress, prevents mixed ownership during cutover, and
 either completes or rolls back before a new owner reads.
 
 Checkpoint records remain keyed by stable `file_id`, independently of the
-current owner. A future measured assignment proposal may use direct sticky file
-assignment, rendezvous or consistent hashing, or fixed virtual partitions when
-assignment scale justifies that additional indirection. None is required for
-checkpoint continuity, and this design does not select among them.
+current owner. Issue #2844 currently selects fixed virtual partitions as its
+Phase 3 assignment target. Phase 1 neither implements nor depends on that
+mechanism because checkpoint continuity is topology-independent. Replacing the
+epic's target with direct sticky assignment, rendezvous or consistent hashing,
+or another mechanism requires a separately reviewed Phase 3 proposal and
+explicit maintainer agreement reflected in the epic.
 
 ## Delivery phases
 
@@ -381,7 +384,7 @@ checkpoint continuity, and this design does not select among them.
 | --- | --- | --- |
 | Phase 1 | One receiver; bounded periodic discovery, reading, decoding, framing, and batching; durable identity and quarantine; one retained batch; Ack-gated progress; move/create rotation; operable quarantine administration | Receiver-wide head-of-line coupling; no distributed fencing or lossless rollout readiness; checkpoint-format approval and engine D18 support required |
 | Phase 2 | Native discovery hints, bounded read-ahead or local shards, multiple in-flight batches, additional reviewed source metadata, measured background compaction | Ownership remains local and single-instance; new contiguous-commit and failure-isolation contracts required |
-| Phase 3 | Shared identity resolution, measured file assignment, fenced checkpoint persistence, revoke/assign and readiness coordination, explicit Phase 1 state migration | Requires shared coordination and storage semantics not provided by Phase 1 |
+| Phase 3 | Shared identity resolution, fixed-virtual-partition assignment under the current epic target, fenced checkpoint persistence, revoke/assign and readiness coordination, explicit Phase 1 state migration | Requires shared coordination and storage semantics not provided by Phase 1; changing the assignment target requires separate maintainer agreement |
 
 Phase 1 satisfies the single-instance subset of #2844. It demonstrates
 CPU-independent identity keys and restart continuity, but it does not satisfy
@@ -398,12 +401,10 @@ ownership boundary. Shared identity must precede file assignment because a
 receiver cannot be assigned by an opaque `file_id` that only it can create.
 The final scheme remains a future measured proposal.
 
-Issue #2844 should separately evaluate topology-independent identity,
-CPU-independent checkpoints, and fenced assignment without treating fixed
-virtual partitions as mandatory. Direct sticky assignment, rendezvous or
-consistent hashing, and virtual partitions remain alternatives. This Phase 1
-proposal does not close the multi-instance epic or add its coordination
-machinery.
+This Phase 1 proposal does not close the multi-instance epic or add its
+coordination machinery. It preserves the current fixed-virtual-partition target
+without preempting the detailed Phase 3 design needed to validate assignment
+scale, fencing, readiness, and handoff.
 
 ## Core architectural invariants for Phase 1
 
@@ -488,6 +489,16 @@ implementation:
 - Production qualification also requires a supported exclusive namespace
   inspection, evidence-backup, and explicit whole-namespace reset procedure;
   automatic salvage or rollback to an older generation is not implied.
+- Whole-namespace reset requires a separately reviewed crash-safe operations
+  design before implementation or production qualification. It must establish
+  exclusion independently of potentially corrupt namespace authority, finish
+  and durably publish an evidence backup before destructive action, avoid
+  generation reuse within an existing namespace incarnation, use no-replace
+  publication and required parent syncs, never replace a namespace directory
+  while holding a lock on an old inode, and define every interrupted-reset
+  recovery outcome. Until that design is approved, normal recovery remains
+  fail closed and no reset procedure is authorized to replace or recreate the
+  namespace.
 - Phase 1 release qualification is Linux-first. Portable macOS and Windows
   identity and durable representations remain fixed, while enabling either
   platform requires separate conformance and durability evidence.
