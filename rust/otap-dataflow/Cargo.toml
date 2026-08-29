@@ -148,6 +148,7 @@ memory-stats = "1"
 libc = "0.2"
 nix = { version = "0.31.0", features = ["process", "signal", "fs", "mman"] }
 notify = "8.0"  # Uses platform-native backend: inotify (Linux), kqueue (macOS), ReadDirectoryChanges (Windows)
+oracle = "0.6.3"
 num_enum = "0.7"
 oauth2 = { version = "5", default-features = false }
 object_store = {version = "0.13.2", default-features = false}
@@ -362,7 +363,9 @@ k8s-service-account-token-auth-extension = ["otel-arrow-dfe-contrib-extensions/k
 oauth2-client-auth-extension = ["otel-arrow-dfe-contrib-extensions/oauth2-client-auth-extension"]
 # Contrib receivers (opt-in) - now in contrib-nodes
 contrib-receivers = ["otel-arrow-dfe-contrib-nodes/contrib-receivers"]
+database-receiver = ["otel-arrow-dfe-contrib-nodes/database-receiver"]
 kafka-receiver = ["otel-arrow-dfe-contrib-nodes/kafka-receiver"]
+oracle-receiver = ["otel-arrow-dfe-contrib-nodes/oracle-receiver"]
 user_events-receiver = ["otel-arrow-dfe-contrib-nodes/user_events-receiver"]
 user_events-eventheader = ["otel-arrow-dfe-contrib-nodes/user_events-eventheader"]
 clickhouse-exporter = ["otel-arrow-dfe-contrib-nodes/clickhouse-exporter"]

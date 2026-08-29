@@ -58,6 +58,7 @@ flate2 = { workspace = true, optional = true }
 http = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 ryu = { workspace = true, optional = true }
+oracle = { workspace = true, optional = true }
 
 # ClickHouse exporter dependencies (optional, behind feature flag)
 clickhouse = { workspace = true, optional = true }
@@ -112,7 +113,17 @@ aws = [
 contrib-receivers = [
     "etw-receiver",
     "kafka-receiver",
+    "oracle-receiver",
     "user_events-receiver",
+]
+database-receiver = [
+    "dep:base64",
+    "dep:chrono",
+    "dep:humantime-serde",
+]
+oracle-receiver = [
+    "database-receiver",
+    "dep:oracle",
 ]
 user_events-receiver = [
     "dep:base64",

@@ -1,0 +1,49 @@
+version: otel_dataflow/v1
+engine: {}
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 1
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          oracle-audit:
+            type: urn:otel:receiver:oracle
+            config:
+              source_id: oracle-audit
+              connection:
+                connect_string: database.contoso.com:1521/ORCL
+                instant_client_dir: /opt/oracle/instantclient
+              authentication:
+                username_file: /var/run/secrets/oracle/oracle-audit/username
+                password_file: /var/run/secrets/oracle/oracle-audit/password
+              query:
+                statement: >
+                  SELECT AUDIT_ID, LAST_UPDATED, USER_NAME, ACTION
+                  FROM AUDIT_LOGS
+                interval: 5m
+                fetch_size: 1000
+                max_rows_per_poll: 10000
+                timeout: 2m
+              # Parsed for forward compatibility; stateful watermarking is not active.
+              watermark:
+                timestamp_column: LAST_UPDATED
+                tie_breaker_column: AUDIT_ID
+                timezone: UTC
+                start_at: beginning
+              # Parsed for forward compatibility; checkpoint persistence is not active.
+              checkpoint:
+                directory: ${engine.state_dir}/oracle
+                on_nack: rewind
+                max_consecutive_failures: 5
+          console:
+            type: exporter:console
+            config:
+              format: pretty
+
+        connections:
+          - from: oracle-audit
+            to: console

@@ -1,0 +1,6 @@
+change_type: new_component
+component: pipeline
+note: "Add an opt-in Oracle database receiver for bounded snapshot queries emitted as OTLP logs."
+issues: []
+subtext: |
+  Watermark progression and checkpoint persistence are not implemented in this initial receiver.
