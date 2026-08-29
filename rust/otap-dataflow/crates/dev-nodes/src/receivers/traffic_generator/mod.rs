@@ -770,7 +770,12 @@ fn traffic_generator_declarations(
     })?;
 
     let mut declarations = ContextDeclarationsBuilder::new();
-    for name in config.transport_headers().keys() {
+    let names = config
+        .transport_headers()
+        .keys()
+        .map(|name| name.to_ascii_lowercase())
+        .collect::<std::collections::BTreeSet<_>>();
+    for name in names {
         declarations.produce(name)?;
     }
     Ok(declarations.finish())
@@ -785,7 +790,7 @@ mod tests {
     use otel_arrow_dfe_config::node::NodeUserConfig;
     use otel_arrow_dfe_config::transport_headers::ValueKind;
     use otel_arrow_dfe_engine::context::ControllerContext;
-    use otel_arrow_dfe_engine::context_declaration::ContextDeclaration;
+    use otel_arrow_dfe_engine::context_declaration::{ContextAccessId, ContextDeclaration};
     use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
     use otel_arrow_dfe_engine::testing::{
         receiver::{NotSendValidateContext, TestContext, TestRuntime},
@@ -1960,9 +1965,9 @@ mod tests {
     }
 
     /// Scenario: Configured header names differ only by casing.
-    /// Guarantees: declaration compilation rejects ambiguous logical names.
+    /// Guarantees: one declaration represents the shared logical context register.
     #[test]
-    fn traffic_gen_declaration_rejects_duplicate_normalized_headers() {
+    fn traffic_gen_declaration_deduplicates_normalized_headers() {
         let config = serde_json::json!({
             "traffic_config": {
                 "signals_per_second": 10,
@@ -1979,6 +1984,12 @@ mod tests {
             }
         });
 
-        assert!(traffic_generator_declarations(&config).is_err());
+        assert_eq!(
+            traffic_generator_declarations(&config).unwrap(),
+            vec![ContextDeclaration::Produces {
+                access: ContextAccessId::new(0),
+                name: "x-tenant-id".into(),
+            }]
+        );
     }
 }
