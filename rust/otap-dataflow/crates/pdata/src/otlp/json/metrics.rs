@@ -11,7 +11,7 @@ use super::common::{
     AttributeIterJson, HexId, ProtoDouble, ProtoI64, ProtoU64, ResourceJson, ScopeJson, Utf8,
 };
 use super::{JsonEncodeError, write_json};
-use otap_df_pdata_views::views::metrics::{
+use otel_arrow_dfe_pdata_views::views::metrics::{
     AggregationTemporality, BucketsView, DataType, DataView, ExemplarView,
     ExponentialHistogramDataPointView, ExponentialHistogramView, GaugeView, HistogramDataPointView,
     HistogramView, MetricView, MetricsView, NumberDataPointView, ResourceMetricsView,

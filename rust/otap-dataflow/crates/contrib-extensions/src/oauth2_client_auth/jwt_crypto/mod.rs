@@ -86,7 +86,7 @@ pub(super) fn ensure_provider() {
     INIT.call_once(install);
 }
 
-// Selection order mirrors `otap_df_otap::crypto::install_crypto_provider`, so a
+// Selection order mirrors `otel_arrow_dfe_otap::crypto::install_crypto_provider`, so a
 // build that enables several `crypto-*` features signs with the same library it
 // uses for TLS. The features are documented as mutually exclusive, but CI builds
 // with `--all-features`, so an order has to be defined.

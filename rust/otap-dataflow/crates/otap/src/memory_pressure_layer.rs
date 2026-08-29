@@ -5,7 +5,7 @@
 
 use futures::future::BoxFuture;
 use http::{Request, Response};
-use otap_df_engine::memory_limiter::SharedReceiverAdmissionState;
+use otel_arrow_dfe_engine::memory_limiter::SharedReceiverAdmissionState;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -13,7 +13,7 @@ use tonic::{Code, Status, body::Body, metadata::MetadataMap};
 use tower::{Layer, Service};
 
 use crate::otlp_metrics::{OtlpProtocol, OtlpReceiverMetrics};
-use otap_df_telemetry::common_attributes::ReceiverRejectionErrorType;
+use otel_arrow_dfe_telemetry::common_attributes::ReceiverRejectionErrorType;
 
 /// Records request rejections before they enter the pipeline.
 pub trait ReceiverRejectionMetrics: Send + Sync {
@@ -153,8 +153,10 @@ where
 mod tests {
     use super::*;
     use http::{Request, Response, StatusCode};
-    use otap_df_config::policy::MemoryLimiterMode;
-    use otap_df_engine::memory_limiter::{MemoryPressureBehaviorConfig, MemoryPressureState};
+    use otel_arrow_dfe_config::policy::MemoryLimiterMode;
+    use otel_arrow_dfe_engine::memory_limiter::{
+        MemoryPressureBehaviorConfig, MemoryPressureState,
+    };
     use std::convert::Infallible;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -194,7 +196,7 @@ mod tests {
     #[test]
     fn hard_pressure_short_circuits_before_inner_readiness_and_call() {
         let state = MemoryPressureState::default();
-        state.set_level_for_tests(otap_df_engine::memory_limiter::MemoryPressureLevel::Hard);
+        state.set_level_for_tests(otel_arrow_dfe_engine::memory_limiter::MemoryPressureLevel::Hard);
         state.configure(MemoryPressureBehaviorConfig {
             retry_after_secs: 3,
             fail_readiness_on_hard: true,
@@ -238,7 +240,7 @@ mod tests {
     #[test]
     fn hard_rejection_decision_from_poll_ready_is_sticky_for_the_following_call() {
         let state = MemoryPressureState::default();
-        state.set_level_for_tests(otap_df_engine::memory_limiter::MemoryPressureLevel::Hard);
+        state.set_level_for_tests(otel_arrow_dfe_engine::memory_limiter::MemoryPressureLevel::Hard);
 
         let inner = CountingService::new();
         let poll_ready_calls = inner.poll_ready_calls.clone();
@@ -251,7 +253,9 @@ mod tests {
         let mut cx = Context::from_waker(waker);
 
         assert!(matches!(service.poll_ready(&mut cx), Poll::Ready(Ok(()))));
-        state.set_level_for_tests(otap_df_engine::memory_limiter::MemoryPressureLevel::Normal);
+        state.set_level_for_tests(
+            otel_arrow_dfe_engine::memory_limiter::MemoryPressureLevel::Normal,
+        );
 
         let response = futures::executor::block_on(service.call(Request::new(Body::empty())))
             .expect("memory pressure rejection should not error");
@@ -264,7 +268,7 @@ mod tests {
     #[test]
     fn soft_pressure_remains_advisory() {
         let state = MemoryPressureState::default();
-        state.set_level_for_tests(otap_df_engine::memory_limiter::MemoryPressureLevel::Soft);
+        state.set_level_for_tests(otel_arrow_dfe_engine::memory_limiter::MemoryPressureLevel::Soft);
 
         let inner = CountingService::new();
         let poll_ready_calls = inner.poll_ready_calls.clone();

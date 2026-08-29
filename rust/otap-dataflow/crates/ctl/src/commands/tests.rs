@@ -17,9 +17,11 @@ use crate::style::HumanStyle;
 use crate::troubleshoot::{LogFilters, MetricsFilters};
 use crate::{Cli, run, run_with_terminal, run_with_terminal_and_diagnostics};
 use clap::Parser;
-use otap_df_admin_api::config::pipeline::{PipelineConfig, PipelineConfigBuilder, PipelineType};
-use otap_df_admin_api::telemetry::MetricsOptions;
-use otap_df_admin_api::{AdminClient, AdminEndpoint, HttpAdminClientSettings};
+use otel_arrow_dfe_admin_api::config::pipeline::{
+    PipelineConfig, PipelineConfigBuilder, PipelineType,
+};
+use otel_arrow_dfe_admin_api::telemetry::MetricsOptions;
+use otel_arrow_dfe_admin_api::{AdminClient, AdminEndpoint, HttpAdminClientSettings};
 use serde_json::json;
 use std::fs;
 use std::time::Duration;

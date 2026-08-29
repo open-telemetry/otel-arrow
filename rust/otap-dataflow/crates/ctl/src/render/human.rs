@@ -14,7 +14,7 @@ use crate::troubleshoot::{
     DiagnosisFinding, DiagnosisReport, GroupShutdownWatchSnapshot, GroupsDescribeReport,
     NormalizedEvent, PipelineDescribeReport,
 };
-use otap_df_admin_api::{engine, groups, pipelines, telemetry};
+use otel_arrow_dfe_admin_api::{engine, groups, pipelines, telemetry};
 use std::collections::BTreeMap;
 
 /// Renders engine status as human-readable fields and a pipeline table.

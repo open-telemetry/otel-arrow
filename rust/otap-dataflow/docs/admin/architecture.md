@@ -3,7 +3,7 @@
 ## Scope
 
 This document describes the embedded single-page admin UI served by the
-`otap-df-admin` crate.
+`otel-arrow-dfe-admin` crate.
 
 The UI continuously polls metrics snapshots and renders:
 

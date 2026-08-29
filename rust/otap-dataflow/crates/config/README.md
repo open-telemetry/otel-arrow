@@ -1,4 +1,7 @@
-# `otap-df-config`
+# `otel-arrow-dfe-config`
+
+This crate is currently pre-1.0. Its public API may evolve between minor
+releases.
 
 Configuration model crate for the OTAP Dataflow Engine.
 
@@ -142,7 +145,7 @@ Telemetry policy note:
 
 - `policies.telemetry.runtime_metrics` accepts `none`, `basic`, `normal`, or
   `detailed`
-- it gates channel endpoint transport metrics, per-node produced/consumed
+- it gates channel endpoint transport metrics, per-node input/output
   outcome metrics, and the shared control-plane metric families exported on the
   pipeline entity (`pipeline.runtime_control` and `pipeline.completion`)
 

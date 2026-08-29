@@ -8,14 +8,18 @@ use crate::error::Error;
 use crate::phase::PipelinePhase;
 use crate::pipeline_rt_status::{ApplyOutcome, PipelineRuntimeStatus};
 use crate::pipeline_status::{PipelineRolloutSummary, PipelineStatus, RuntimeInstanceKey};
-use otap_df_config::PipelineKey;
-use otap_df_config::health::HealthPolicy;
-use otap_df_config::observed_state::{ObservedStateSettings, SendPolicy};
-use otap_df_telemetry::event::{EngineEvent, EventType, ObservedEvent, ObservedEventReporter};
-use otap_df_telemetry::log_tap::InternalLogTapHandle;
-use otap_df_telemetry::registry::TelemetryRegistryHandle;
-use otap_df_telemetry::self_tracing::{AnsiCode, ConsoleWriter, LogContext, StyledBufWriter};
-use otap_df_telemetry::{otel_error, otel_info};
+use otel_arrow_dfe_config::PipelineKey;
+use otel_arrow_dfe_config::health::HealthPolicy;
+use otel_arrow_dfe_config::observed_state::{ObservedStateSettings, SendPolicy};
+use otel_arrow_dfe_telemetry::event::{
+    EngineEvent, EventType, ObservedEvent, ObservedEventReporter,
+};
+use otel_arrow_dfe_telemetry::log_tap::InternalLogTapHandle;
+use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+use otel_arrow_dfe_telemetry::self_tracing::{
+    AnsiCode, ConsoleWriter, LogContext, StyledBufWriter,
+};
+use otel_arrow_dfe_telemetry::{otel_error, otel_info};
 use serde::Serialize;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -198,7 +202,7 @@ impl ObservedStateStore {
     /// Records the committed serving core footprint for a logical pipeline.
     pub fn set_pipeline_active_cores<I>(&self, pipeline_key: PipelineKey, core_ids: I)
     where
-        I: IntoIterator<Item = otap_df_config::CoreId>,
+        I: IntoIterator<Item = otel_arrow_dfe_config::CoreId>,
     {
         let mut pipelines = self.pipelines.lock().unwrap_or_else(|poisoned| {
             otel_error!(
@@ -217,7 +221,7 @@ impl ObservedStateStore {
     pub fn set_pipeline_serving_generation(
         &self,
         pipeline_key: PipelineKey,
-        core_id: otap_df_config::CoreId,
+        core_id: otel_arrow_dfe_config::CoreId,
         generation: u64,
     ) {
         let mut pipelines = self.pipelines.lock().unwrap_or_else(|poisoned| {
@@ -237,7 +241,7 @@ impl ObservedStateStore {
     pub fn clear_pipeline_serving_generation(
         &self,
         pipeline_key: PipelineKey,
-        core_id: otap_df_config::CoreId,
+        core_id: otel_arrow_dfe_config::CoreId,
     ) {
         let mut pipelines = self.pipelines.lock().unwrap_or_else(|poisoned| {
             otel_error!(
@@ -591,12 +595,14 @@ impl ObservedStateHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_config::observed_state::SendPolicy;
-    use otap_df_telemetry::event::{EngineEvent, ObservedEvent};
-    use otap_df_telemetry::log_tap;
-    use otap_df_telemetry::otel_info;
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
-    use otap_df_telemetry::self_tracing::{LOG_ARGUMENTS_ENCODE_INLINE, LogContext, LogRecord};
+    use otel_arrow_dfe_config::observed_state::SendPolicy;
+    use otel_arrow_dfe_telemetry::event::{EngineEvent, ObservedEvent};
+    use otel_arrow_dfe_telemetry::log_tap;
+    use otel_arrow_dfe_telemetry::otel_info;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_telemetry::self_tracing::{
+        LOG_ARGUMENTS_ENCODE_INLINE, LogContext, LogRecord,
+    };
     use std::time::Duration;
     use std::time::SystemTime;
     use tokio_util::sync::CancellationToken;
@@ -605,8 +611,8 @@ mod tests {
     use tracing_subscriber::layer::{Context, Layer};
     use tracing_subscriber::registry::LookupSpan;
 
-    fn make_key(core_id: usize) -> otap_df_config::DeployedPipelineKey {
-        otap_df_config::DeployedPipelineKey {
+    fn make_key(core_id: usize) -> otel_arrow_dfe_config::DeployedPipelineKey {
+        otel_arrow_dfe_config::DeployedPipelineKey {
             pipeline_group_id: Cow::Borrowed("group"),
             pipeline_id: Cow::Borrowed("pipeline"),
             core_id,
@@ -624,10 +630,11 @@ mod tests {
         S: Subscriber + for<'a> LookupSpan<'a>,
     {
         fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
-            self.reporter.log(otap_df_telemetry::event::LogEvent {
-                time: SystemTime::now(),
-                record: LogRecord::new(event, LogContext::default()),
-            });
+            self.reporter
+                .log(otel_arrow_dfe_telemetry::event::LogEvent {
+                    time: SystemTime::now(),
+                    record: LogRecord::new(event, LogContext::default()),
+                });
         }
     }
 
@@ -667,7 +674,7 @@ mod tests {
         let dispatch = tracing::Dispatch::new(
             tracing_subscriber::Registry::default().with(LogCaptureLayer { sender }),
         );
-        let key = otap_df_config::DeployedPipelineKey {
+        let key = otel_arrow_dfe_config::DeployedPipelineKey {
             pipeline_group_id: Cow::Borrowed("runtime_error_reproduction_pipeline_group"),
             pipeline_id: Cow::Borrowed("runtime_error_reproduction_pipeline"),
             core_id: 0,
@@ -683,7 +690,7 @@ mod tests {
                 .report_engine(EngineEvent::pipeline_runtime_error(
                     key,
                     "Pipeline encountered a runtime error.",
-                    otap_df_telemetry::event::ErrorSummary::Pipeline {
+                    otel_arrow_dfe_telemetry::event::ErrorSummary::Pipeline {
                         error_kind: "runtime".into(),
                         message: error,
                         source: None,
@@ -968,7 +975,7 @@ mod tests {
             },
         };
         let log_tap = log_tap::build(
-            &otap_df_config::settings::telemetry::logs::InternalLogTapConfig {
+            &otel_arrow_dfe_config::settings::telemetry::logs::InternalLogTapConfig {
                 enabled: true,
                 max_entries: 8,
                 max_bytes: 1024 * 1024,
@@ -1019,7 +1026,7 @@ mod tests {
             },
         };
         let log_tap = log_tap::build(
-            &otap_df_config::settings::telemetry::logs::InternalLogTapConfig {
+            &otel_arrow_dfe_config::settings::telemetry::logs::InternalLogTapConfig {
                 enabled: true,
                 max_entries: 8,
                 max_bytes: 1024 * 1024,

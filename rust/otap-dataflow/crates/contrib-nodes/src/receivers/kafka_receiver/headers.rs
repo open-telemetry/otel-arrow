@@ -9,20 +9,20 @@
 
 use super::config::{AttributeValueType, HeaderExtraction};
 use bytes::Bytes;
-use otap_df_engine::error::Error as EngineError;
-use otap_df_otap::pdata::{Context, OtapPdata};
-use otap_df_pdata::Consumer as PdataConsumer;
-use otap_df_pdata::OtlpProtoBytes;
-use otap_df_pdata::otap::transform::{
+use otel_arrow_dfe_engine::error::Error as EngineError;
+use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
+use otel_arrow_dfe_pdata::Consumer as PdataConsumer;
+use otel_arrow_dfe_pdata::OtlpProtoBytes;
+use otel_arrow_dfe_pdata::otap::transform::{
     AttributesTransform, LiteralValue, UpsertTransform, apply_attribute_transform,
 };
-use otap_df_pdata::otap::{OtapArrowRecords, from_record_messages};
-use otap_df_pdata::proto::opentelemetry::arrow::v1::{ArrowPayloadType, BatchArrowRecords};
-use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
-use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
-use otap_df_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
-use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue, any_value};
-use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
+use otel_arrow_dfe_pdata::otap::{OtapArrowRecords, from_record_messages};
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::{ArrowPayloadType, BatchArrowRecords};
+use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
+use otel_arrow_dfe_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
+use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue, any_value};
+use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
 use prost::Message;
 use rdkafka::Message as _;
 use rdkafka::message::{BorrowedMessage, Headers};
@@ -478,19 +478,21 @@ fn parse_literal_value(
 mod tests {
     use super::*;
     use bytes::Bytes;
-    use otap_df_pdata::otap::transform::UpsertTransform;
-    use otap_df_pdata::otap::{OtapArrowRecords, Traces};
-    use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
-    use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
-    use otap_df_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
-    use otap_df_pdata::proto::opentelemetry::common::v1::{InstrumentationScope, KeyValue};
-    use otap_df_pdata::proto::opentelemetry::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
-    use otap_df_pdata::proto::opentelemetry::metrics::v1::{
+    use otel_arrow_dfe_pdata::otap::transform::UpsertTransform;
+    use otel_arrow_dfe_pdata::otap::{OtapArrowRecords, Traces};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{InstrumentationScope, KeyValue};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{
+        LogRecord, ResourceLogs, ScopeLogs,
+    };
+    use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
         Metric, ResourceMetrics, ScopeMetrics, Sum,
     };
-    use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
-    use otap_df_pdata::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans, Span};
-    use otap_df_pdata::{OtapPayload, OtlpProtoBytes, Producer, TryIntoWithOptions};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans, Span};
+    use otel_arrow_dfe_pdata::{OtapPayload, OtlpProtoBytes, Producer, TryIntoWithOptions};
     use prost::Message;
     use std::collections::BTreeMap;
 
@@ -552,7 +554,7 @@ mod tests {
                     metrics: vec![Metric {
                         name: "test.counter".to_string(),
                         data: Some(
-                            otap_df_pdata::proto::opentelemetry::metrics::v1::metric::Data::Sum(
+                            otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::metric::Data::Sum(
                                 Sum::default(),
                             ),
                         ),

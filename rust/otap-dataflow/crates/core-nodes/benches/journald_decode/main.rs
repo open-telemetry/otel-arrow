@@ -27,14 +27,14 @@
 //! The `clone` arm was a validation-only comparison for this PR and is not part
 //! of the long-term benchmark, which times the current decode as it ships.
 //!
-//! Run: `cargo bench -p otap-df-core-nodes --features bench`
+//! Run: `cargo bench -p otel-arrow-dfe-core-nodes --features bench`
 
 #![allow(missing_docs)]
 
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use otap_df_core_nodes::receivers::journald_receiver::bench_reference_decode;
+use otel_arrow_dfe_core_nodes::receivers::journald_receiver::bench_reference_decode;
 
 /// A realistic entry: the metadata journald always attaches plus one `MESSAGE`
 /// whose size is the workload variable.

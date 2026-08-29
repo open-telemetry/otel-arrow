@@ -5,23 +5,23 @@
 //!
 //! Sends OpenTelemetry logs to Azure Monitor using the Data Collection Rules (DCR) API.
 
-otap_df_telemetry::otel_component_scope!(
+otel_arrow_dfe_telemetry::otel_component_scope!(
     urn = AZURE_MONITOR_EXPORTER_URN,
     target = "microsoft.exporter.azure_monitor",
 );
 
 use linkme::distributed_slice;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::ExporterFactory;
-use otap_df_engine::config::ExporterConfig;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::exporter::ExporterWrapper;
-use otap_df_engine::node::NodeId;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_engine::ExporterFactory;
+use otel_arrow_dfe_engine::config::ExporterConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::exporter::ExporterWrapper;
+use otel_arrow_dfe_engine::node::NodeId;
 use serde_json;
 use std::sync::Arc;
 
-use otap_df_otap::OTAP_EXPORTER_FACTORIES;
-use otap_df_otap::pdata::OtapPdata;
+use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
+use otel_arrow_dfe_otap::pdata::OtapPdata;
 
 mod client;
 /// Configuration types for the Azure Monitor Exporter.
@@ -49,7 +49,7 @@ pub use metrics::{
 };
 pub use transformer::Transformer;
 
-use otap_df_engine::capability::auth::bearer_token_provider::BearerTokenProvider;
+use otel_arrow_dfe_engine::capability::auth::bearer_token_provider::BearerTokenProvider;
 
 /// URN identifying the Azure Monitor Exporter in configuration pipelines.
 pub const AZURE_MONITOR_EXPORTER_URN: &str = "urn:microsoft:exporter:azure_monitor";
@@ -58,7 +58,7 @@ pub const AZURE_MONITOR_EXPORTER_URN: &str = "urn:microsoft:exporter:azure_monit
 ///
 /// Uses the `distributed_slice` macro for automatic discovery by the dataflow engine.
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Exporter)]
+#[otel_arrow_dfe_engine::component_inventory(category = Exporter)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static AZURE_MONITOR_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: AZURE_MONITOR_EXPORTER_URN,
@@ -66,10 +66,10 @@ pub static AZURE_MONITOR_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory 
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
              exporter_config: &ExporterConfig,
-             capabilities: &otap_df_engine::capability::registry::Capabilities| {
+             capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
         // Deserialize user config JSON into typed Config
         let cfg: Config = serde_json::from_value(node_config.config.clone()).map_err(|e| {
-            otap_df_config::error::Error::InvalidUserConfig {
+            otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
             }
         })?;
@@ -79,13 +79,13 @@ pub static AZURE_MONITOR_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory 
         // `bearer_token_provider` capability to acquire credentials.
         let token_provider = capabilities
             .require_local::<BearerTokenProvider>()
-            .map_err(|e| otap_df_config::error::Error::InvalidUserConfig {
+            .map_err(|e| otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
             })?;
 
         Ok(ExporterWrapper::local(
             AzureMonitorExporter::new(pipeline_ctx, cfg, token_provider).map_err(|e| {
-                otap_df_config::error::Error::InvalidUserConfig {
+                otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                     error: e.to_string(),
                 }
             })?,
@@ -94,8 +94,8 @@ pub static AZURE_MONITOR_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory 
             exporter_config,
         ))
     },
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    validate_config: otap_df_config::validation::validate_typed_config::<Config>,
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<Config>,
 };
 
 #[cfg(test)]

@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use arrow::datatypes::DataType;
 
 use crate::exporters::clickhouse_exporter::consts as ch_consts;
-use otap_df_pdata::{proto::opentelemetry::arrow::v1::ArrowPayloadType, schema::consts};
+use otel_arrow_dfe_pdata::{proto::opentelemetry::arrow::v1::ArrowPayloadType, schema::consts};
 
 const OTAP_SPAN_FLAGS: &str = "span_flags";
 

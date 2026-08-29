@@ -4,7 +4,7 @@
 //! Shared table and field-formatting helpers for human rendering.
 
 use crate::style::{HumanStyle, terminal_safe};
-use otap_df_admin_api::{pipelines, telemetry};
+use otel_arrow_dfe_admin_api::{pipelines, telemetry};
 use std::collections::BTreeMap;
 
 /// Formats one label/value line for human output.

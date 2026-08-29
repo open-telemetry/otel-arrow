@@ -7,7 +7,7 @@
 //! according to a configurable sampling strategy. Non-log signals
 //! (metrics and traces) pass through unchanged.
 
-otap_df_telemetry::otel_component_scope!(
+otel_arrow_dfe_telemetry::otel_component_scope!(
     urn = LOG_SAMPLING_PROCESSOR_URN,
     target = "otel.processor.log_sampling",
 );
@@ -24,47 +24,49 @@ use arrow::array::BooleanBufferBuilder;
 use arrow::buffer::MutableBuffer;
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::SignalType;
-use otap_df_config::error::Error as ConfigError;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::ConsumerEffectHandlerExtension;
-use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
-use otap_df_engine::config::ProcessorConfig;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
-use otap_df_engine::error::Error as EngineError;
-use otap_df_engine::local::processor as local;
-use otap_df_engine::message::Message;
-use otap_df_engine::node::NodeId;
-use otap_df_engine::processor::{ProcessorRuntimeRequirements, ProcessorWrapper};
-use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
-use otap_df_otap::pdata::OtapPdata;
-use otap_df_pdata::OtapPayload;
-use otap_df_pdata::TryIntoWithOptions;
-use otap_df_pdata::otap::OtapArrowRecords;
-use otap_df_pdata::otap::filter::{IdBitmapPool, filter_otap_batch};
-use otap_df_telemetry::metrics::MetricSet;
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_engine::ConsumerEffectHandlerExtension;
+use otel_arrow_dfe_engine::MessageSourceLocalEffectHandlerExtension;
+use otel_arrow_dfe_engine::config::ProcessorConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
+use otel_arrow_dfe_engine::error::Error as EngineError;
+use otel_arrow_dfe_engine::local::processor as local;
+use otel_arrow_dfe_engine::message::Message;
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::processor::{
+    FlowMetricHook, ProcessorRuntimeRequirements, ProcessorWrapper,
+};
+use otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES;
+use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_pdata::OtapPayload;
+use otel_arrow_dfe_pdata::TryIntoWithOptions;
+use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
+use otel_arrow_dfe_pdata::otap::filter::{IdBitmapPool, filter_otap_batch};
+use otel_arrow_dfe_telemetry::metrics::MetricSet;
 use serde_json::Value;
 use std::sync::Arc;
 
 const LOG_SAMPLING_PROCESSOR_URN: &str = "urn:otel:processor:log_sampling";
 
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Processor)]
+#[otel_arrow_dfe_engine::component_inventory(category = Processor)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
-static LOG_SAMPLING_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> =
-    otap_df_engine::ProcessorFactory {
+static LOG_SAMPLING_PROCESSOR_FACTORY: otel_arrow_dfe_engine::ProcessorFactory<OtapPdata> =
+    otel_arrow_dfe_engine::ProcessorFactory {
         name: LOG_SAMPLING_PROCESSOR_URN,
         create:
             |pipeline_ctx: PipelineContext,
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
              proc_cfg: &ProcessorConfig,
-             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
+             _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
                 create_log_sampling_processor(pipeline_ctx, node, node_config, proc_cfg)
             },
-        validate_config: otap_df_config::validation::validate_typed_config::<Config>,
-        wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+        validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<Config>,
+        wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     };
 
 /// Log sampling processor.
@@ -170,8 +172,9 @@ impl LogSamplingProcessor {
         // decision node in a flow that enables `dropped.items`.
         effect_handler.record_flow_dropped_items(SignalType::Logs, dropped as u64);
 
-        let pdata = OtapPdata::new(context, OtapPayload::from(filtered));
+        let mut pdata = OtapPdata::new(context, OtapPayload::from(filtered));
         if kept == 0 {
+            pdata.complete_processor_without_output(effect_handler);
             effect_handler.notify_ack(AckMsg::new(pdata)).await?;
         } else {
             effect_handler.send_message_with_source_node(pdata).await?;
@@ -226,7 +229,7 @@ impl local::Processor<OtapPdata> for LogSamplingProcessor {
                 | NodeControlMsg::MemoryPressureChanged { .. }
                 | NodeControlMsg::DrainIngress { .. }
                 | NodeControlMsg::Wakeup { .. }
-                | NodeControlMsg::DelayedData { .. } => Ok(()),
+                | NodeControlMsg::ResumeData { .. } => Ok(()),
             },
         }
     }
@@ -251,24 +254,27 @@ fn create_log_sampling_processor(
 mod tests {
     use super::*;
     use arrow::array::AsArray;
-    use otap_df_engine::context::ControllerContext;
-    use otap_df_engine::message::Message;
-    use otap_df_engine::processor::ProcessorWrapper;
-    use otap_df_engine::testing::processor::{TestContext, TestRuntime};
-    use otap_df_engine::testing::test_node;
-    use otap_df_otap::pdata::Context;
-    use otap_df_pdata::PayloadData;
-    use otap_df_pdata::encode::{encode_logs_otap_batch, encode_spans_otap_batch};
-    use otap_df_pdata::otap::OtapBatchStore;
-    use otap_df_pdata::proto::OtlpProtoMessage;
-    use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-    use otap_df_pdata::testing::fixtures::{
+    use otel_arrow_dfe_engine::Interests;
+    use otel_arrow_dfe_engine::context::ControllerContext;
+    use otel_arrow_dfe_engine::control::{PipelineCompletionMsg, pipeline_completion_msg_channel};
+    use otel_arrow_dfe_engine::message::Message;
+    use otel_arrow_dfe_engine::processor::ProcessorWrapper;
+    use otel_arrow_dfe_engine::testing::processor::{TestContext, TestRuntime};
+    use otel_arrow_dfe_engine::testing::test_node;
+    use otel_arrow_dfe_otap::pdata::Context;
+    use otel_arrow_dfe_otap::testing::TestCallData;
+    use otel_arrow_dfe_pdata::PayloadData;
+    use otel_arrow_dfe_pdata::encode::{encode_logs_otap_batch, encode_spans_otap_batch};
+    use otel_arrow_dfe_pdata::otap::OtapBatchStore;
+    use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+    use otel_arrow_dfe_pdata::testing::fixtures::{
         logs_with_varying_attributes_and_properties, metrics_sum_with_full_resource_and_scope,
         traces_with_full_resource_and_scope,
     };
-    use otap_df_pdata::testing::round_trip::otlp_message_to_bytes;
-    use otap_df_pdata::{logs, record_batch};
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_pdata::testing::round_trip::otlp_message_to_bytes;
+    use otel_arrow_dfe_pdata::{logs, record_batch};
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use std::future::Future;
 
     // ==================== Integration Tests ====================
@@ -336,6 +342,8 @@ mod tests {
         });
     }
 
+    /// Scenario: a zip sampler exhausts its budget and fully drops a subscribed log batch.
+    /// Guarantees: the dropped batch is acknowledged without producing downstream pdata.
     #[test]
     fn test_zip_basic_flow() {
         let config = serde_json::json!({
@@ -364,10 +372,27 @@ mod tests {
                 assert_eq!(msgs[0].num_items(), 10, "only 10 remaining budget");
 
                 // Send 5 more (budget exhausted, should be acked/dropped)
-                let pdata = make_log_pdata_arrow(5);
+                let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(1);
+                ctx.set_pipeline_completion_sender(completion_tx);
+                let pdata = make_log_pdata_arrow(5).test_subscribe_to(
+                    Interests::ACKS,
+                    TestCallData::new_with(0, 0).into(),
+                    11,
+                );
                 ctx.process(Message::PData(pdata)).await.expect("process");
                 let msgs = ctx.drain_pdata().await;
                 assert_eq!(msgs.len(), 0, "budget exhausted, nothing forwarded");
+                match completion_rx.recv().await.expect("expected completion") {
+                    PipelineCompletionMsg::DeliverAck { mut ack } => {
+                        assert_eq!(ack.accepted.num_items(), 0);
+                    }
+                    PipelineCompletionMsg::DeliverNack { nack } => {
+                        panic!(
+                            "fully sampled batch was unexpectedly nacked: {}",
+                            nack.reason
+                        );
+                    }
+                }
             })
         });
     }

@@ -7,12 +7,12 @@
 //! wraps those serializers with an exporter-owned byte limit, reuses the caller's buffer, and
 //! appends a newline only after a complete document has been encoded successfully.
 
-use otap_df_pdata::otlp::json::{
+use otel_arrow_dfe_pdata::otlp::json::{
     JsonEncodeError, write_logs_json, write_metrics_json, write_traces_json,
 };
-use otap_df_pdata_views::views::logs::LogsDataView;
-use otap_df_pdata_views::views::metrics::MetricsView;
-use otap_df_pdata_views::views::trace::TracesView;
+use otel_arrow_dfe_pdata_views::views::logs::LogsDataView;
+use otel_arrow_dfe_pdata_views::views::metrics::MetricsView;
+use otel_arrow_dfe_pdata_views::views::trace::TracesView;
 use std::io::{self, Write};
 
 /// Failure while encoding one bounded OTLP JSON Lines frame.
@@ -110,7 +110,7 @@ pub fn encode_traces<T: TracesView>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_pdata::proto::opentelemetry::logs::v1::LogsData;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogsData;
 
     /// Scenario: An encoded document and its newline exactly reach the configured frame limit.
     /// Guarantees: The frame bound includes the delimiter and permits an exact fit.

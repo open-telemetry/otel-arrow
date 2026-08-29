@@ -91,9 +91,9 @@ periodic flush task, mutex on the hot path, internal queue, or retry loop.
 | [`encoding.rs`](encoding.rs) | Exporter-local size bound and JSON Lines framing around the shared serializers. |
 | [`writer.rs`](writer.rs) | Path leases, directory and file creation, open modes, tail recovery, transactional writes, rollback, and final synchronization. |
 | [`metrics.rs`](metrics.rs) | Component-specific counters with closed signal, outcome, and operation attributes. |
-| [`otap_df_pdata::otlp::json`](../../../../pdata/src/otlp/json/README.md) | Canonical view-based OTLP JSON serialization shared with other producers and consumers. |
+| [`otel_arrow_dfe_pdata::otlp::json`](../../../../pdata/src/otlp/json/README.md) | Canonical view-based OTLP JSON serialization shared with other producers and consumers. |
 
-Keep protocol serialization in `otap_df_pdata`. The exporter should contain
+Keep protocol serialization in `otel_arrow_dfe_pdata`. The exporter should contain
 only file-specific framing, limits, lifecycle, and completion behavior.
 
 ## Construction and Runtime State

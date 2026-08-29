@@ -671,7 +671,7 @@ engine:
             .as_nanos();
         let sequence = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "otap-df-config-engine-tests-{}-{}-{}.{}",
+            "otel-arrow-dfe-config-engine-tests-{}-{}-{}.{}",
             std::process::id(),
             suffix,
             sequence,

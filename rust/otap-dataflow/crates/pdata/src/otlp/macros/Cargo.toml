@@ -1,11 +1,15 @@
 [package]
-name = "otap-df-pdata-otlp-macros"
+name = "otel-arrow-dfe-pdata-otlp-macros"
+description = "Procedural macros for the OTAP pdata OTLP model"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
-publish.workspace = true
+readme = "README.md"
+publish = true
+keywords = ["telemetry", "opentelemetry", "otlp", "otap", "macros"]
+categories = ["development-tools::procedural-macro-helpers"]
 rust-version.workspace = true
 
 [lib]
@@ -15,4 +19,4 @@ proc-macro = true
 syn = { workspace = true, features = ["full", "extra-traits"] }
 quote = { workspace = true }
 proc-macro2 = { workspace = true }
-otap-df-pdata-otlp-model = { workspace = true }
+otel-arrow-dfe-pdata-otlp-model = { workspace = true }

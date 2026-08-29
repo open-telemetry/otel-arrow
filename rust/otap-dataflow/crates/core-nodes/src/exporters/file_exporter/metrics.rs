@@ -6,10 +6,10 @@
 //! Metrics use closed signal and operation attributes and deliberately omit destination paths so
 //! component observability cannot introduce unbounded cardinality or expose sensitive locations.
 
-use otap_df_config::SignalType;
-use otap_df_telemetry::common_attributes::{SignalAttributes, SignalOutcomeAttributes};
-use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_telemetry::common_attributes::{SignalAttributes, SignalOutcomeAttributes};
+use otel_arrow_dfe_telemetry::instrument::Counter;
+use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 
 /// Terminal file export outcomes, partitioned by signal and outcome.
 #[metric_set(
@@ -79,12 +79,12 @@ pub struct FileFailureMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_engine::context::ControllerContext;
-    use otap_df_telemetry::attributes::AttributeEnum as _;
-    use otap_df_telemetry::common_attributes::Outcome;
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_engine::context::ControllerContext;
+    use otel_arrow_dfe_telemetry::attributes::AttributeEnum as _;
+    use otel_arrow_dfe_telemetry::common_attributes::Outcome;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 
-    fn pipeline_context() -> otap_df_engine::context::PipelineContext {
+    fn pipeline_context() -> otel_arrow_dfe_engine::context::PipelineContext {
         let registry = TelemetryRegistryHandle::new();
         let controller = ControllerContext::new(registry);
         controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0)

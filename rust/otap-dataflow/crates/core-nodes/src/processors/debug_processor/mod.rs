@@ -8,7 +8,7 @@
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 //! ToDo: Use OTLP Views instead of the OTLP Request structs
 
-otap_df_telemetry::otel_component_scope!(
+otel_arrow_dfe_telemetry::otel_component_scope!(
     urn = DEBUG_PROCESSOR_URN,
     target = "otel.processor.debug",
 );
@@ -19,29 +19,31 @@ use self::output::{DebugOutput, DebugOutputPorts, DebugOutputWriter, OutputMode}
 use self::sampling::Sampler;
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::PortName;
-use otap_df_config::error::Error as ConfigError;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::config::ProcessorConfig;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::{CallData, NodeControlMsg};
-use otap_df_engine::error::Error;
-use otap_df_engine::local::processor as local;
-use otap_df_engine::message::Message;
-use otap_df_engine::node::NodeId;
-use otap_df_engine::process_duration::ComputeDuration;
-use otap_df_engine::processor::ProcessorWrapper;
-use otap_df_engine::{ConsumerEffectHandlerExtension, MessageSourceLocalEffectHandlerExtension};
-use otap_df_engine::{Interests, ProducerEffectHandlerExtension};
-use otap_df_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
-use otap_df_pdata::OtlpProtoBytes;
-use otap_df_pdata::TryIntoWithOptions;
-use otap_df_pdata::proto::opentelemetry::{
+use otel_arrow_dfe_config::PortName;
+use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_engine::config::ProcessorConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::control::{CallData, NodeControlMsg};
+use otel_arrow_dfe_engine::error::Error;
+use otel_arrow_dfe_engine::local::processor as local;
+use otel_arrow_dfe_engine::message::Message;
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::process_duration::ComputeDuration;
+use otel_arrow_dfe_engine::processor::ProcessorWrapper;
+use otel_arrow_dfe_engine::{
+    ConsumerEffectHandlerExtension, MessageSourceLocalEffectHandlerExtension,
+};
+use otel_arrow_dfe_engine::{Interests, ProducerEffectHandlerExtension};
+use otel_arrow_dfe_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
+use otel_arrow_dfe_pdata::OtlpProtoBytes;
+use otel_arrow_dfe_pdata::TryIntoWithOptions;
+use otel_arrow_dfe_pdata::proto::opentelemetry::{
     logs::v1::LogsData,
     metrics::v1::{MetricsData, metric::Data},
     trace::v1::TracesData,
 };
-use otap_df_telemetry::metrics::MeasurementMetricSet;
+use otel_arrow_dfe_telemetry::metrics::MeasurementMetricSet;
 use prost::Message as _;
 use serde_json::Value;
 use std::sync::Arc;
@@ -87,21 +89,21 @@ pub fn create_debug_processor(
 
 /// Register AttributesProcessor as an OTAP processor factory
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Processor)]
+#[otel_arrow_dfe_engine::component_inventory(category = Processor)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
-pub static DEBUG_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> =
-    otap_df_engine::ProcessorFactory {
+pub static DEBUG_PROCESSOR_FACTORY: otel_arrow_dfe_engine::ProcessorFactory<OtapPdata> =
+    otel_arrow_dfe_engine::ProcessorFactory {
         name: DEBUG_PROCESSOR_URN,
         create:
             |pipeline_ctx: PipelineContext,
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
              proc_cfg: &ProcessorConfig,
-             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
+             _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
                 create_debug_processor(pipeline_ctx, node, node_config, proc_cfg)
             },
-        wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-        validate_config: otap_df_config::validation::validate_typed_config::<Config>,
+        wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
+        validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<Config>,
     };
 
 impl DebugProcessor {
@@ -479,7 +481,7 @@ impl DebugProcessor {
             }
         }
         let attrs = metrics::SignalAttributes {
-            signal: otap_df_config::SignalType::Traces,
+            signal: otel_arrow_dfe_config::SignalType::Traces,
         };
         self.metrics.with(attrs).consumed_events.add(events as u64);
         self.metrics.with(attrs).consumed_links.add(links as u64);
@@ -527,7 +529,7 @@ impl DebugProcessor {
             }
         }
         let attrs = metrics::SignalAttributes {
-            signal: otap_df_config::SignalType::Logs,
+            signal: otel_arrow_dfe_config::SignalType::Logs,
         };
         self.metrics.with(attrs).consumed_events.add(events);
 
@@ -569,17 +571,17 @@ mod tests {
     use crate::processors::debug_processor::sampling::SamplingConfig;
     use crate::processors::debug_processor::{DEBUG_PROCESSOR_URN, DebugProcessor};
     use bytes::BytesMut;
-    use otap_df_config::node::NodeUserConfig;
-    use otap_df_engine::context::ControllerContext;
-    use otap_df_engine::message::Message;
-    use otap_df_engine::processor::ProcessorWrapper;
-    use otap_df_engine::testing::processor::TestRuntime;
-    use otap_df_engine::testing::processor::{TestContext, ValidateContext};
-    use otap_df_engine::testing::test_node;
-    use otap_df_otap::pdata::OtapPdata;
-    use otap_df_otap::testing::{next_ack, next_nack};
-    use otap_df_pdata::OtlpProtoBytes;
-    use otap_df_pdata::proto::opentelemetry::{
+    use otel_arrow_dfe_config::node::NodeUserConfig;
+    use otel_arrow_dfe_engine::context::ControllerContext;
+    use otel_arrow_dfe_engine::message::Message;
+    use otel_arrow_dfe_engine::processor::ProcessorWrapper;
+    use otel_arrow_dfe_engine::testing::processor::TestRuntime;
+    use otel_arrow_dfe_engine::testing::processor::{TestContext, ValidateContext};
+    use otel_arrow_dfe_engine::testing::test_node;
+    use otel_arrow_dfe_otap::pdata::OtapPdata;
+    use otel_arrow_dfe_otap::testing::{next_ack, next_nack};
+    use otel_arrow_dfe_pdata::OtlpProtoBytes;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::{
         common::v1::{AnyValue, InstrumentationScope, KeyValue},
         logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber},
         metrics::v1::{
@@ -633,7 +635,7 @@ mod tests {
 
     /// Test closure that simulates a typical processor scenario.
     fn scenario(
-        metrics_reporter: otap_df_telemetry::reporter::MetricsReporter,
+        metrics_reporter: otel_arrow_dfe_telemetry::reporter::MetricsReporter,
     ) -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
         move |mut ctx| {
             Box::pin(async move {
@@ -837,7 +839,9 @@ mod tests {
                 assert!(ctx.drain_pdata().await.is_empty());
 
                 ctx.process(Message::Control(
-                    otap_df_engine::control::NodeControlMsg::CollectTelemetry { metrics_reporter },
+                    otel_arrow_dfe_engine::control::NodeControlMsg::CollectTelemetry {
+                        metrics_reporter,
+                    },
                 ))
                 .await
                 .expect("Processor failed on CollectTelemetry");
@@ -895,7 +899,9 @@ mod tests {
                     if has_logs_signal {
                         for (field, value) in iter {
                             if field.name == "consumed.events" {
-                                if let otap_df_telemetry::metrics::MetricValue::U64(c) = value {
+                                if let otel_arrow_dfe_telemetry::metrics::MetricValue::U64(c) =
+                                    value
+                                {
                                     expected_log_events = *c;
                                 }
                             }
@@ -1442,12 +1448,14 @@ mod tests {
     ) -> (
         TestRuntime<OtapPdata>,
         ProcessorWrapper<OtapPdata>,
-        otap_df_engine::control::RuntimeCtrlMsgSender<OtapPdata>,
-        otap_df_engine::control::PipelineCompletionMsgSender<OtapPdata>,
-        otap_df_engine::control::PipelineCompletionMsgReceiver<OtapPdata>,
+        otel_arrow_dfe_engine::control::RuntimeCtrlMsgSender<OtapPdata>,
+        otel_arrow_dfe_engine::control::PipelineCompletionMsgSender<OtapPdata>,
+        otel_arrow_dfe_engine::control::PipelineCompletionMsgReceiver<OtapPdata>,
         String,
     ) {
-        use otap_df_engine::control::{pipeline_completion_msg_channel, runtime_ctrl_msg_channel};
+        use otel_arrow_dfe_engine::control::{
+            pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
+        };
 
         let test_runtime = TestRuntime::new();
         let signals = HashSet::from([SignalActive::Logs]);
@@ -1497,9 +1505,9 @@ mod tests {
     /// Tests that the debug processor forwards ACK messages upstream via the effect handler.
     #[test]
     fn test_debug_processor_forwards_ack_upstream() {
-        use otap_df_engine::Interests;
-        use otap_df_engine::control::{AckMsg, PipelineCompletionMsg};
-        use otap_df_otap::testing::TestCallData;
+        use otel_arrow_dfe_engine::Interests;
+        use otel_arrow_dfe_engine::control::{AckMsg, PipelineCompletionMsg};
+        use otel_arrow_dfe_otap::testing::TestCallData;
 
         let (
             test_runtime,
@@ -1556,9 +1564,9 @@ mod tests {
     /// Tests that the debug processor forwards NACK messages upstream via the effect handler.
     #[test]
     fn test_debug_processor_forwards_nack_upstream() {
-        use otap_df_engine::Interests;
-        use otap_df_engine::control::{NackMsg, PipelineCompletionMsg};
-        use otap_df_otap::testing::TestCallData;
+        use otel_arrow_dfe_engine::Interests;
+        use otel_arrow_dfe_engine::control::{NackMsg, PipelineCompletionMsg};
+        use otel_arrow_dfe_otap::testing::TestCallData;
 
         let (
             test_runtime,
@@ -1618,7 +1626,7 @@ mod tests {
     /// Tests that ACK/NACK messages without subscribers are handled gracefully.
     #[test]
     fn test_debug_processor_ack_nack_no_subscriber() {
-        use otap_df_engine::control::{AckMsg, NackMsg};
+        use otel_arrow_dfe_engine::control::{AckMsg, NackMsg};
 
         let (
             test_runtime,

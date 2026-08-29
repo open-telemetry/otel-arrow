@@ -12,8 +12,8 @@ use super::*;
 
 use crate::args::UiStartView;
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
-use otap_df_admin_api::config::tls::{TlsClientConfig, TlsConfig};
-use otap_df_admin_api::{AdminEndpoint, HttpAdminClientSettings, telemetry};
+use otel_arrow_dfe_admin_api::config::tls::{TlsClientConfig, TlsConfig};
+use otel_arrow_dfe_admin_api::{AdminEndpoint, HttpAdminClientSettings, telemetry};
 use ratatui::layout::Rect;
 use std::collections::BTreeMap;
 use std::time::Duration;

@@ -32,7 +32,7 @@ For example, an owned message or any other logs view can be encoded into a
 reusable buffer:
 
 ```rust
-use otap_df_pdata::otlp::json::write_logs_json;
+use otel_arrow_dfe_pdata::otlp::json::write_logs_json;
 
 let mut document = Vec::new();
 write_logs_json(&logs, &mut document)?;
@@ -49,7 +49,7 @@ limit, append a newline, and then write the completed frame:
 
 ```rust
 use std::io::Write as _;
-use otap_df_pdata::otlp::json::write_logs_json;
+use otel_arrow_dfe_pdata::otlp::json::write_logs_json;
 
 let mut document = Vec::new();
 write_logs_json(&logs, &mut document)?;

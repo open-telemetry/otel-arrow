@@ -8,8 +8,8 @@ use crate::otap_grpc::proxy::ProxyConfig;
 use crate::tls_utils;
 use http::header::HeaderValue;
 use hyper_util::rt::TokioIo;
-use otap_df_config::byte_units;
-use otap_df_config::tls::TlsClientConfig;
+use otel_arrow_dfe_config::byte_units;
+use otel_arrow_dfe_config::tls::TlsClientConfig;
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
@@ -274,7 +274,7 @@ impl GrpcClientSettings {
         let mut metadata = MetadataMap::with_capacity(self.headers.len());
         for (name, value) in &self.headers {
             let Ok(key) = name.parse::<MetadataKey<tonic::metadata::Ascii>>() else {
-                otap_df_telemetry::otel_debug!(
+                otel_arrow_dfe_telemetry::otel_debug!(
                     "grpc.client.static_header_skip",
                     reason = "invalid ascii metadata key",
                     header_name = name.as_str()
@@ -282,7 +282,7 @@ impl GrpcClientSettings {
                 continue;
             };
             let Ok(mut val) = MetadataValue::try_from(value.expose_secret()) else {
-                otap_df_telemetry::otel_debug!(
+                otel_arrow_dfe_telemetry::otel_debug!(
                     "grpc.client.static_header_skip",
                     reason = "invalid ascii metadata value",
                     header_name = name.as_str()
@@ -297,7 +297,7 @@ impl GrpcClientSettings {
             // For a validated config this never happens; log if it ever does so
             // the non-deterministic survivor is at least visible.
             if metadata.insert(key, val).is_some() {
-                otap_df_telemetry::otel_debug!(
+                otel_arrow_dfe_telemetry::otel_debug!(
                     "grpc.client.static_header_collision",
                     reason = "case-insensitive duplicate gRPC metadata key overwritten",
                     header_name = name.as_str()
@@ -564,7 +564,7 @@ impl GrpcClientSettings {
         let proxy = self.effective_proxy_config();
         if proxy.has_proxy() && !self.grpc_endpoint.trim_start().starts_with("https://") {
             let proxy_str = proxy.to_string();
-            otap_df_telemetry::otel_info!(
+            otel_arrow_dfe_telemetry::otel_info!(
                 "otap_grpc_exporter.proxy.configured",
                 endpoint = self.grpc_endpoint.as_str(),
                 proxy = proxy_str.as_str(),
@@ -739,7 +739,7 @@ where
 #[allow(missing_docs)]
 mod tests {
     use super::*;
-    use otap_df_config::tls::{TlsClientConfig, TlsConfig};
+    use otel_arrow_dfe_config::tls::{TlsClientConfig, TlsConfig};
     use tempfile::NamedTempFile;
 
     #[test]
@@ -1669,7 +1669,7 @@ mod tests {
     #[tokio::test]
     async fn startup_check_connect_succeeds() {
         crate::crypto::ensure_crypto_provider();
-        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         // Bind a TCP listener so the eager connect attempt has something to connect to.
         let _listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{port}"))
             .await
@@ -1686,7 +1686,7 @@ mod tests {
     #[tokio::test]
     async fn startup_check_connect_fails_connection_refused() {
         crate::crypto::ensure_crypto_provider();
-        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let settings = GrpcClientSettings {
             grpc_endpoint: format!("http://127.0.0.1:{port}"),
             startup_check: StartupCheck::Connect,
@@ -1715,9 +1715,9 @@ mod tests {
     #[tokio::test]
     async fn test_user_agent_sent_on_grpc_wire() {
         use bytes::Bytes;
-        use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
-        use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
-        use otap_df_pdata::proto::opentelemetry::collector::logs::v1::logs_service_server::{
+        use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::logs_service_server::{
             LogsService, LogsServiceServer,
         };
         use prost::Message;

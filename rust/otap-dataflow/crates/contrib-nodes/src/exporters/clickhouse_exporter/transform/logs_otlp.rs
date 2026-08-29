@@ -171,14 +171,14 @@ use arrow::array::{
 };
 use arrow::datatypes::{DataType, Field, Schema};
 use base64::Engine;
-use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
-use otap_df_pdata_views::views::common::{
+use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
+use otel_arrow_dfe_pdata_views::views::common::{
     AnyValueView, AttributeView, InstrumentationScopeView, ValueType,
 };
-use otap_df_pdata_views::views::logs::{
+use otel_arrow_dfe_pdata_views::views::logs::{
     LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView,
 };
-use otap_df_pdata_views::views::resource::ResourceView;
+use otel_arrow_dfe_pdata_views::views::resource::ResourceView;
 use serde::Serialize;
 use serde::ser::{Error as SerError, SerializeMap, SerializeSeq, Serializer};
 
@@ -1273,17 +1273,17 @@ mod tests {
     use arrow::array::Array;
     use arrow::util::display::array_value_to_string;
     use bytes::Bytes;
-    use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-    use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
-    use otap_df_pdata::proto::opentelemetry::common::v1::{
+    use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{
         AnyValue, InstrumentationScope, KeyValue,
     };
-    use otap_df_pdata::proto::opentelemetry::logs::v1::{
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{
         LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber,
     };
-    use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
-    use otap_df_pdata::testing::{fixtures, round_trip::encode_logs};
-    use otap_df_pdata::{OtapArrowRecords, OtapPayload, OtlpProtoBytes, TryIntoWithOptions};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
+    use otel_arrow_dfe_pdata::testing::{fixtures, round_trip::encode_logs};
+    use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayload, OtlpProtoBytes, TryIntoWithOptions};
     use prost::Message;
 
     use crate::exporters::clickhouse_exporter::transform::logs_fast::{
@@ -1791,7 +1791,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires a live ClickHouse; run with --ignored e2e"]
     async fn e2e_raw_otlp_logs_insert_roundtrips_through_clickhouse_schema() {
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let endpoint =
             std::env::var("CLICKHOUSE_URL").unwrap_or_else(|_| "http://localhost:8123".into());
         let username = std::env::var("CLICKHOUSE_USER").unwrap_or_else(|_| "default".into());

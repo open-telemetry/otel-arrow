@@ -12,7 +12,7 @@ pub mod formatter;
 
 use crate::registry::EntityKey;
 use encoder::DirectFieldVisitor;
-use otap_df_pdata::otlp::common::{ProtoBuffer, StackProtoBuffer};
+use otel_arrow_dfe_pdata::otlp::common::{ProtoBuffer, StackProtoBuffer};
 use serde::Serialize;
 use serde::ser::Serializer;
 use smallvec::SmallVec;
@@ -38,7 +38,7 @@ pub const LOG_ARGUMENTS_ENCODE_INLINE: usize = 256;
 /// Default buffer size for log formatting. Note that we truncate and
 /// recognize dropped_attributes_count at the top-level of each log
 /// record.
-pub const LOG_BUFFER_SIZE: usize = 512;
+pub const LOG_BUFFER_SIZE: usize = 1024;
 
 /// A log record with structural metadata and pre-encoded body/attributes.
 /// A SystemTime value for the event is presumed to be external.
@@ -48,7 +48,7 @@ pub struct LogRecord {
     pub callsite_id: Identifier,
 
     /// Pre-encoded body and attributes in OTLP bytes.  These bytes
-    /// can be interpreted using the otap_df_pdata::views::otlp::bytes::RawLogRecord
+    /// can be interpreted using the otel_arrow_dfe_pdata::views::otlp::bytes::RawLogRecord
     /// in practice and/or parsed by a crate::proto::opentelemetry::logs::v1::LogRecord
     /// message object for testing.
     pub body_attrs_bytes: bytes::Bytes,

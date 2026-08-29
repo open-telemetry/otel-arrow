@@ -6,7 +6,7 @@
 //! This processor decreases telemetry volume by reaggregating metrics collected
 //! at a higher frequency into a lower one.
 
-otap_df_telemetry::otel_component_scope!(
+otel_arrow_dfe_telemetry::otel_component_scope!(
     urn = TEMPORAL_REAGGREGATION_PROCESSOR_URN,
     target = "otel.processor.temporal_reaggregation",
 );
@@ -18,39 +18,39 @@ use async_trait::async_trait;
 use hashbrown::HashMap;
 use hashbrown::hash_map::EntryRef::{Occupied, Vacant};
 use linkme::distributed_slice;
-use otap_df_config::SignalType;
-use otap_df_config::error::Error as ConfigError;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
-use otap_df_engine::ProducerEffectHandlerExtension;
-use otap_df_engine::WakeupError;
-use otap_df_engine::config::ProcessorConfig;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::{
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_engine::MessageSourceLocalEffectHandlerExtension;
+use otel_arrow_dfe_engine::ProducerEffectHandlerExtension;
+use otel_arrow_dfe_engine::WakeupError;
+use otel_arrow_dfe_engine::config::ProcessorConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::control::{
     AckMsg, CallData, NackMsg, NodeControlMsg, WakeupRevision, WakeupSlot,
 };
-use otap_df_engine::error::{Error, ProcessorErrorKind};
-use otap_df_engine::local::processor as local;
-use otap_df_engine::message::Message;
-use otap_df_engine::node::NodeId;
-use otap_df_engine::processor::{ProcessorRuntimeRequirements, ProcessorWrapper};
-use otap_df_engine::{ConsumerEffectHandlerExtension, Interests};
-use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
-use otap_df_otap::accessory::slots::{Key as SlotKey, State as SlotState};
-use otap_df_otap::pdata::{Context, OtapPdata, PeerAddrMerger};
-use otap_df_pdata::otap::OtapArrowRecords;
-use otap_df_pdata::views::otap::OtapMetricsView;
-use otap_df_pdata::views::otlp::bytes::metrics::RawMetricsData;
-use otap_df_pdata::{OtapPayload, OtapPayloadHelpers, PayloadData};
-use otap_df_pdata_views::views::common::InstrumentationScopeView;
-use otap_df_pdata_views::views::metrics::{
+use otel_arrow_dfe_engine::error::{Error, ProcessorErrorKind};
+use otel_arrow_dfe_engine::local::processor as local;
+use otel_arrow_dfe_engine::message::Message;
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::processor::{ProcessorRuntimeRequirements, ProcessorWrapper};
+use otel_arrow_dfe_engine::{ConsumerEffectHandlerExtension, Interests};
+use otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES;
+use otel_arrow_dfe_otap::accessory::slots::{Key as SlotKey, State as SlotState};
+use otel_arrow_dfe_otap::pdata::{Context, OtapPdata, PeerAddrMerger};
+use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
+use otel_arrow_dfe_pdata::views::otap::OtapMetricsView;
+use otel_arrow_dfe_pdata::views::otlp::bytes::metrics::RawMetricsData;
+use otel_arrow_dfe_pdata::{OtapPayload, OtapPayloadHelpers, PayloadData};
+use otel_arrow_dfe_pdata_views::views::common::InstrumentationScopeView;
+use otel_arrow_dfe_pdata_views::views::metrics::{
     AggregationTemporality, DataType, DataView, ExponentialHistogramDataPointView,
     ExponentialHistogramView, GaugeView, HistogramDataPointView, HistogramView, MetricView,
     MetricsView, NumberDataPointView, ResourceMetricsView, ScopeMetricsView, SumView,
     SummaryDataPointView, SummaryView,
 };
-use otap_df_pdata_views::views::resource::ResourceView;
-use otap_df_telemetry::metrics::MetricSet;
+use otel_arrow_dfe_pdata_views::views::resource::ResourceView;
+use otel_arrow_dfe_telemetry::metrics::MetricSet;
 
 mod builder;
 mod config;
@@ -125,22 +125,23 @@ pub const TEMPORAL_REAGGREGATION_PROCESSOR_URN: &str = "urn:otel:processor:tempo
 
 /// Register the temporal reaggregation processor as an OTAP processor factory.
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Processor)]
+#[otel_arrow_dfe_engine::component_inventory(category = Processor)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
-pub static TEMPORAL_REAGGREGATION_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> =
-    otap_df_engine::ProcessorFactory {
-        name: TEMPORAL_REAGGREGATION_PROCESSOR_URN,
-        create:
-            |pipeline_ctx: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             proc_cfg: &ProcessorConfig,
-             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
-                create_temporal_reaggregation_processor(pipeline_ctx, node, node_config, proc_cfg)
-            },
-        wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-        validate_config: otap_df_config::validation::validate_typed_config::<Config>,
-    };
+pub static TEMPORAL_REAGGREGATION_PROCESSOR_FACTORY: otel_arrow_dfe_engine::ProcessorFactory<
+    OtapPdata,
+> = otel_arrow_dfe_engine::ProcessorFactory {
+    name: TEMPORAL_REAGGREGATION_PROCESSOR_URN,
+    create:
+        |pipeline_ctx: PipelineContext,
+         node: NodeId,
+         node_config: Arc<NodeUserConfig>,
+         proc_cfg: &ProcessorConfig,
+         _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
+            create_temporal_reaggregation_processor(pipeline_ctx, node, node_config, proc_cfg)
+        },
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<Config>,
+};
 
 /// Factory function to create a [`TemporalReaggregationProcessor`].
 pub fn create_temporal_reaggregation_processor(
@@ -1427,13 +1428,13 @@ mod tests {
     use std::future::Future;
     use std::net::SocketAddr;
 
-    use otap_df_engine::testing::processor::TestContext;
-    use otap_df_pdata::otap::OtapBatchStore;
-    use otap_df_pdata::otlp::metrics::MetricType;
-    use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
-    use otap_df_pdata::proto::opentelemetry::metrics::v1::AggregationTemporality;
-    use otap_df_pdata::proto::opentelemetry::metrics::v1::summary_data_point::ValueAtQuantile;
-    use otap_df_pdata::{metrics, record_batch};
+    use otel_arrow_dfe_engine::testing::processor::TestContext;
+    use otel_arrow_dfe_pdata::otap::OtapBatchStore;
+    use otel_arrow_dfe_pdata::otlp::metrics::MetricType;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::AggregationTemporality;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::summary_data_point::ValueAtQuantile;
+    use otel_arrow_dfe_pdata::{metrics, record_batch};
     use serde_json::json;
     use smallvec::smallvec;
 
@@ -2487,7 +2488,7 @@ mod tests {
             };
             let otlp = otap_to_otlp(actual);
             let md = match otlp {
-                otap_df_pdata::proto::OtlpProtoMessage::Metrics(md) => md,
+                otel_arrow_dfe_pdata::proto::OtlpProtoMessage::Metrics(md) => md,
                 _ => panic!("expected metrics"),
             };
             assert_eq!(

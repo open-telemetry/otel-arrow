@@ -17,7 +17,7 @@
 //! The `#[capability]` proc macro expands the trait into:
 //!
 //! - A `pub(crate) mod local` containing the `!Send` `BearerTokenProvider` trait variant
-//! - A `pub(crate) mod shared` containing the `Send` `BearerTokenProvider` trait variant
+//! - A `pub(crate) mod shared` containing the `Send + Sync` `BearerTokenProvider` trait variant
 //! - A `SharedAsLocalBearerTokenProvider` adapter
 //! - A zero-sized `pub struct BearerTokenProvider` registration handle
 //! - `local_entry::<E>` / `shared_entry::<E>` factory bridges
@@ -26,7 +26,7 @@
 use super::BearerToken;
 use crate::capability::error::CapabilityError;
 use futures::Stream;
-use otap_df_engine_macros::capability;
+use otel_arrow_dfe_engine_macros::capability;
 use std::pin::Pin;
 use std::time::Duration;
 
@@ -66,7 +66,7 @@ pub const TOKEN_USABLE_MARGIN: Duration = Duration::from_secs(30);
 /// subscription is always consumed on the core that created it
 /// (thread-per-core), so it need not be `Send`. The `#[capability]`
 /// macro emits this signature into both the `local` (`?Send`) and
-/// `shared` (`Send`) trait variants unchanged.
+/// `shared` (`Send + Sync`) trait variants unchanged.
 pub type TokenStream = Pin<Box<dyn Stream<Item = BearerToken> + 'static>>;
 
 /// Hands out OAuth bearer tokens to data-path nodes.

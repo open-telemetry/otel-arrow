@@ -1216,6 +1216,7 @@ impl<
             pipeline_id,
             timeout_secs,
             None,
+            None,
         )
     }
 
@@ -1225,6 +1226,7 @@ impl<
         pipeline_id: &str,
         timeout_secs: u64,
         engine_operation_id: Option<&str>,
+        initiator: Option<PipelineShutdownInitiator>,
     ) -> Result<CandidateShutdownPlan, ControlPlaneError> {
         let pipeline_group_id: PipelineGroupId = pipeline_group_id.to_owned().into();
         let pipeline_id: PipelineId = pipeline_id.to_owned().into();
@@ -1298,6 +1300,7 @@ impl<
             shutdown_id,
             pipeline_group_id,
             pipeline_id,
+            initiator,
             target_instances
                 .iter()
                 .map(|instance| ShutdownCoreProgress {
@@ -1779,6 +1782,7 @@ impl<
                 &pipeline_id,
                 timeout_secs,
                 engine_operation_id,
+                None,
             ) {
                 Ok(initial_shutdown) => {
                     let terminal_shutdown = self.wait_for_shutdown_terminal(initial_shutdown);

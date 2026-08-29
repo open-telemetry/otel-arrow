@@ -11,7 +11,7 @@
 //!
 //! [`PartitionerStrategy`]: super::config::PartitionerStrategy
 
-use otap_df_otap::transport_headers::TransportHeaders;
+use otel_arrow_dfe_otap::transport_headers::TransportHeaders;
 use std::hash::{Hash, Hasher};
 use xxhash_rust::xxh64::Xxh64;
 
@@ -79,7 +79,7 @@ pub fn partition_key_from_transport_headers(headers: &TransportHeaders) -> Optio
 #[must_use]
 pub fn partition_key_for_signal(
     signal_config: &super::config::SignalConfig,
-    context: &otap_df_otap::pdata::Context,
+    context: &otel_arrow_dfe_otap::pdata::Context,
 ) -> Option<String> {
     if signal_config.partition_by_transport_headers() {
         if let Some(headers) = context.transport_headers() {
@@ -101,7 +101,7 @@ pub fn partition_key_for_signal(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_otap::transport_headers::TransportHeader;
+    use otel_arrow_dfe_otap::transport_headers::TransportHeader;
 
     // ---- Transport header partition key tests ----
 
@@ -277,7 +277,7 @@ mod tests {
 
     use crate::common::kafka::MessageFormat;
     use crate::exporters::kafka_exporter::config::SignalConfig;
-    use otap_df_otap::pdata::Context;
+    use otel_arrow_dfe_otap::pdata::Context;
 
     #[test]
     fn test_partition_key_for_signal_disabled_returns_none() {

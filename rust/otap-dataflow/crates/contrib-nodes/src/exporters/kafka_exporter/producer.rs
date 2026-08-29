@@ -391,6 +391,7 @@ where
     /// See also the [`FutureProducer::send_result`] method, which will not
     /// retry the queue operation if the queue is full.
     #[allow(dead_code)]
+    #[allow(clippy::result_large_err)] // Preserve rdkafka's OwnedDeliveryResult API.
     pub async fn send<K, P, T>(
         &self,
         record: ExporterFutureRecord<'_, K, P>,

@@ -14,19 +14,19 @@
 
 // ToDo: Consider adding a jitter mechanism.
 
-otap_df_telemetry::otel_component_scope!(
+otel_arrow_dfe_telemetry::otel_component_scope!(
     urn = RETRY_PROCESSOR_URN,
     target = "otel.processor.retry",
 );
 
-use otap_df_otap::pdata::OtapPdata;
+use otel_arrow_dfe_otap::pdata::OtapPdata;
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::{SignalType, error::Error as ConfigError, node::NodeUserConfig};
-use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::{
+use otel_arrow_dfe_config::{SignalType, error::Error as ConfigError, node::NodeUserConfig};
+use otel_arrow_dfe_engine::MessageSourceLocalEffectHandlerExtension;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::{
     ConsumerEffectHandlerExtension, Interests, ProcessorFactory, ProducerEffectHandlerExtension,
     config::ProcessorConfig,
     control::{AckMsg, CallData, NackMsg, NodeControlMsg},
@@ -36,18 +36,30 @@ use otap_df_engine::{
     node::NodeId,
     processor::ProcessorWrapper,
 };
-use otap_df_telemetry::common_attributes::SignalAttributes;
-use otap_df_telemetry::error::Error as TelemetryError;
-use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry::metrics::MeasurementMetricSet;
-use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
+use otel_arrow_dfe_telemetry::common_attributes::SignalAttributes;
+use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
+use otel_arrow_dfe_telemetry::instrument::Counter;
+use otel_arrow_dfe_telemetry::metrics::MeasurementMetricSet;
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 /// URN for the RetryProcessor processor
 pub const RETRY_PROCESSOR_URN: &str = "urn:otel:processor:retry";
+
+/// Action taken on the final NACK when the retry processor stops retrying a
+/// PData message (retries exhausted or otherwise terminated).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExhaustionAction {
+    /// Leave the final NACK's permanent flag unchanged (default).
+    #[default]
+    PropagateTransient,
+    /// Force the final NACK to be permanent so upstream nodes do not retry it.
+    MarkPermanent,
+}
 
 /// Configuration for the retry processor. Modeled exactly on
 /// https://github.com/open-telemetry/opentelemetry-collector/blob/main/exporter/exporterhelper/README.md#retry-on-failure.
@@ -85,6 +97,12 @@ pub struct RetryConfig {
     /// Multiplier for the retry interval.
     #[serde(default = "default_multiplier")]
     pub multiplier: f64,
+
+    /// Action applied to the final NACK when the processor stops retrying.
+    /// Defaults to `propagate_transient`, which leaves the NACK unchanged.
+    /// `mark_permanent` forces the final NACK to be permanent.
+    #[serde(default)]
+    pub exhaustion_action: ExhaustionAction,
 }
 
 // These defaults are copied from the Collector (exporterhelper) retry sender.
@@ -119,6 +137,7 @@ impl Default for RetryConfig {
             initial_interval: default_initial_interval(),
             max_elapsed_time: default_max_elapsed_time(),
             multiplier: default_multiplier(),
+            exhaustion_action: ExhaustionAction::default(),
         }
     }
 }
@@ -305,13 +324,13 @@ impl RetryMetrics {
 
 /// OTAP RetryProcessor
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Processor)]
-#[distributed_slice(otap_df_otap::OTAP_PROCESSOR_FACTORIES)]
+#[otel_arrow_dfe_engine::component_inventory(category = Processor)]
+#[distributed_slice(otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES)]
 pub static RETRY_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: RETRY_PROCESSOR_URN,
     create: create_retry_processor,
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    validate_config: otap_df_config::validation::validate_typed_config::<RetryConfig>,
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<RetryConfig>,
 };
 
 /// A processor that handles message retries with exponential backoff
@@ -337,7 +356,7 @@ pub fn create_retry_processor(
     node: NodeId,
     node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
-    _capabilities: &otap_df_engine::capability::registry::Capabilities,
+    _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
     let config: RetryConfig = serde_json::from_value(node_config.config.clone()).map_err(|e| {
         ConfigError::InvalidUserConfig {
@@ -449,13 +468,23 @@ impl RetryProcessor {
         Ok(())
     }
 
+    /// Applies the configured exhaustion action to a final NACK before it is
+    /// handed back to the engine. `mark_permanent` forces the NACK to be
+    /// permanent; `propagate_transient` leaves it unchanged.
+    fn apply_exhaustion_action(&self, nack: &mut NackMsg<OtapPdata>) {
+        if self.config.exhaustion_action == ExhaustionAction::MarkPermanent {
+            nack.permanent = true;
+        }
+    }
+
     async fn terminate_nack(
         &mut self,
-        nack: NackMsg<OtapPdata>,
+        mut nack: NackMsg<OtapPdata>,
         signal: SignalType,
         reason: RetryTerminationReason,
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
+        self.apply_exhaustion_action(&mut nack);
         // Count only after the terminal NACK is handed back to the engine.
         effect_handler.notify_nack(nack).await?;
         self.metrics.record_message_terminated(signal, reason);
@@ -561,7 +590,7 @@ impl RetryProcessor {
             &mut rereq,
         );
 
-        // Requeue the data onto this node, we'll continue in the DelayedData branch next.
+        // Requeue the data onto this node, we'll continue in the ResumeData branch next.
         match effect_handler.requeue_later(next_retry_time_i, rereq) {
             Ok(_) => {
                 // "Scheduled" means the local scheduler accepted ownership.
@@ -569,15 +598,15 @@ impl RetryProcessor {
                 Ok(())
             }
             Err(refused) => {
-                effect_handler
-                    .notify_nack(NackMsg::new("cannot requeue", refused))
-                    .await?;
+                let mut nack = NackMsg::new("cannot requeue", refused);
+                self.apply_exhaustion_action(&mut nack);
+                effect_handler.notify_nack(nack).await?;
                 Ok(())
             }
         }
     }
 
-    async fn handle_delayed(
+    async fn handle_resumed(
         &mut self,
         _when: Instant,
         data: Box<OtapPdata>,
@@ -645,10 +674,10 @@ impl Processor<OtapPdata> for RetryProcessor {
             Message::Control(control_msg) => match control_msg {
                 NodeControlMsg::Ack(ack) => self.handle_ack(ack, effect_handler).await,
                 NodeControlMsg::Nack(nack) => self.handle_nack(nack, effect_handler).await,
-                NodeControlMsg::DelayedData { when, data } => {
+                NodeControlMsg::ResumeData { when, data } => {
                     if let Some(calldata) = data.source_route() {
                         let _rstate: RetryState = calldata.calldata.try_into()?;
-                        self.handle_delayed(when, data, effect_handler).await?;
+                        self.handle_resumed(when, data, effect_handler).await?;
                     }
                     Ok(())
                 }
@@ -683,8 +712,9 @@ impl RetryProcessor {
     #[must_use]
     #[cfg(test)]
     pub fn with_config(config: RetryConfig) -> Self {
-        let telemetry_registry = otap_df_telemetry::registry::TelemetryRegistryHandle::default();
-        let controller = otap_df_engine::context::ControllerContext::new(telemetry_registry);
+        let telemetry_registry =
+            otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::default();
+        let controller = otel_arrow_dfe_engine::context::ControllerContext::new(telemetry_registry);
         let pipeline_ctx = controller.pipeline_context_with("test".into(), "retry".into(), 0, 1, 0);
         let metrics = RetryMetrics::new(&pipeline_ctx);
 
@@ -701,30 +731,31 @@ impl RetryProcessor {
 #[cfg(test)]
 mod test {
     use super::{
-        RETRY_PROCESSOR_URN, RetryConfig, RetryMessageMetrics, RetryOperationalMetrics,
-        RetryTerminationAttributes, RetryTerminationReason, SignalAttributes,
+        ExhaustionAction, RETRY_PROCESSOR_URN, RetryConfig, RetryMessageMetrics,
+        RetryOperationalMetrics, RetryTerminationAttributes, RetryTerminationReason,
+        SignalAttributes,
     };
-    use otap_df_channel::mpsc::Channel;
-    use otap_df_config::{SignalType, node::NodeUserConfig};
-    use otap_df_engine::Interests;
-    use otap_df_engine::config::ProcessorConfig;
-    use otap_df_engine::context::{ControllerContext, PipelineContext};
-    use otap_df_engine::control::{
+    use otel_arrow_dfe_channel::mpsc::Channel;
+    use otel_arrow_dfe_config::{SignalType, node::NodeUserConfig};
+    use otel_arrow_dfe_engine::Interests;
+    use otel_arrow_dfe_engine::config::ProcessorConfig;
+    use otel_arrow_dfe_engine::context::{ControllerContext, PipelineContext};
+    use otel_arrow_dfe_engine::control::{
         AckMsg, CallData, NackMsg, NodeControlMsg, PipelineCompletionMsg,
         pipeline_completion_msg_channel,
     };
-    use otap_df_engine::error::Error as EngineError;
-    use otap_df_engine::local::message::LocalReceiver;
-    use otap_df_engine::message::{Message, Receiver};
-    use otap_df_engine::node::NodeWithPDataReceiver;
-    use otap_df_engine::testing::liveness::next_completion;
-    use otap_df_engine::testing::node::test_node;
-    use otap_df_engine::testing::processor::{TestContext, TestRuntime};
-    use otap_df_engine::testing::setup_test_runtime;
-    use otap_df_otap::pdata::OtapPdata;
-    use otap_df_otap::testing::{TestCallData, create_test_pdata, next_ack, next_nack};
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
-    use otap_df_telemetry::reporter::MetricsReporter;
+    use otel_arrow_dfe_engine::error::Error as EngineError;
+    use otel_arrow_dfe_engine::local::message::LocalReceiver;
+    use otel_arrow_dfe_engine::message::{Message, Receiver};
+    use otel_arrow_dfe_engine::node::NodeWithPDataReceiver;
+    use otel_arrow_dfe_engine::testing::liveness::next_completion;
+    use otel_arrow_dfe_engine::testing::node::test_node;
+    use otel_arrow_dfe_engine::testing::processor::{TestContext, TestRuntime};
+    use otel_arrow_dfe_engine::testing::setup_test_runtime;
+    use otel_arrow_dfe_otap::pdata::OtapPdata;
+    use otel_arrow_dfe_otap::testing::{TestCallData, create_test_pdata, next_ack, next_nack};
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
     use serde_json::json;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
@@ -867,6 +898,34 @@ mod test {
         assert_eq!(cfg, RetryConfig::default());
     }
 
+    /// Scenario: A configuration omits the `exhaustion_action` field.
+    /// Guarantees: The processor defaults to `propagate_transient`.
+    #[test]
+    fn test_exhaustion_action_defaults_to_propagate_transient() {
+        let cfg: RetryConfig = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(cfg.exhaustion_action, ExhaustionAction::PropagateTransient);
+        assert_eq!(
+            ExhaustionAction::default(),
+            ExhaustionAction::PropagateTransient
+        );
+    }
+
+    /// Scenario: Both `exhaustion_action` variants are parsed from their wire names.
+    /// Guarantees: `propagate_transient` and `mark_permanent` map to the matching enum values.
+    #[test]
+    fn test_exhaustion_action_deserializes_both_variants() {
+        let propagate: RetryConfig =
+            serde_json::from_value(json!({ "exhaustion_action": "propagate_transient" })).unwrap();
+        assert_eq!(
+            propagate.exhaustion_action,
+            ExhaustionAction::PropagateTransient
+        );
+
+        let permanent: RetryConfig =
+            serde_json::from_value(json!({ "exhaustion_action": "mark_permanent" })).unwrap();
+        assert_eq!(permanent.exhaustion_action, ExhaustionAction::MarkPermanent);
+    }
+
     /// Scenario: Retry intervals contain valid fractional-second values.
     /// Guarantees: Deserialization preserves subsecond precision and the configured multiplier.
     #[test]
@@ -885,6 +944,7 @@ mod test {
                 max_interval: Duration::new(1, 750000000),
                 max_elapsed_time: Duration::new(9, 900000000),
                 multiplier: 1.999,
+                exhaustion_action: ExhaustionAction::PropagateTransient,
             }
         );
     }
@@ -960,6 +1020,12 @@ mod test {
         })
     }
 
+    fn create_test_config_mark_permanent() -> serde_json::Value {
+        let mut cfg = create_test_config();
+        cfg["exhaustion_action"] = json!("mark_permanent");
+        cfg
+    }
+
     #[derive(Debug, Default, PartialEq, Eq)]
     struct RetryMetricSummary {
         retries_scheduled: u64,
@@ -1007,10 +1073,10 @@ mod test {
         // For the success case, we expect success with or without a
         // working clock.  Test both ways.
         for i in 0..3 {
-            test_retry_processor(create_test_config(), i, None, true, false, None)
+            test_retry_processor(create_test_config(), i, None, true, false, None, None)
         }
         for i in 0..3 {
-            test_retry_processor(create_test_config(), i, None, false, false, None)
+            test_retry_processor(create_test_config(), i, None, false, false, None, None)
         }
     }
 
@@ -1025,6 +1091,8 @@ mod test {
             true,  // working clock
             false, // retryable
             Some("deadline"),
+            // Default exhaustion action leaves the final NACK transient.
+            Some(false),
         )
     }
 
@@ -1039,6 +1107,8 @@ mod test {
             true,
             true, // permanent error
             Some("permanent_refusal"),
+            // Permanent downstream refusals stay permanent.
+            Some(true),
         )
     }
 
@@ -1055,6 +1125,40 @@ mod test {
             false, // broken clock
             false, // retryable
             Some("retry_limit"),
+            // Default exhaustion action leaves the final NACK transient.
+            Some(false),
+        )
+    }
+
+    /// Scenario: The deadline is exhausted while `exhaustion_action` is `mark_permanent`.
+    /// Guarantees: The final NACK returned upstream is marked permanent.
+    #[test]
+    fn test_retry_processor_mark_permanent_on_deadline() {
+        test_retry_processor(
+            create_test_config_mark_permanent(),
+            4,
+            Some("final retry: simulated downstream".into()),
+            true,  // working clock
+            false, // retryable
+            Some("deadline"),
+            // mark_permanent converts the final transient NACK to permanent.
+            Some(true),
+        )
+    }
+
+    /// Scenario: The retry-count limit is reached while `exhaustion_action` is `mark_permanent`.
+    /// Guarantees: The final NACK returned upstream is marked permanent.
+    #[test]
+    fn test_retry_processor_mark_permanent_on_limit() {
+        test_retry_processor(
+            create_test_config_mark_permanent(),
+            4,
+            Some("final retry: simulated".into()),
+            false, // broken clock
+            false, // retryable
+            Some("retry_limit"),
+            // mark_permanent converts the final transient NACK to permanent.
+            Some(true),
         )
     }
 
@@ -1074,7 +1178,7 @@ mod test {
             node,
             Arc::new(node_config),
             rt.config(),
-            &otap_df_engine::capability::registry::Capabilities::empty(),
+            &otel_arrow_dfe_engine::capability::registry::Capabilities::empty(),
         )
         .expect("create processor");
 
@@ -1147,7 +1251,7 @@ mod test {
             node,
             Arc::new(node_config),
             rt.config(),
-            &otap_df_engine::capability::registry::Capabilities::empty(),
+            &otel_arrow_dfe_engine::capability::registry::Capabilities::empty(),
         )
         .expect("create processor");
 
@@ -1229,7 +1333,7 @@ mod test {
             node.clone(),
             Arc::new(node_config),
             &processor_config,
-            &otap_df_engine::capability::registry::Capabilities::empty(),
+            &otel_arrow_dfe_engine::capability::registry::Capabilities::empty(),
         )
         .expect("create processor");
 
@@ -1272,6 +1376,7 @@ mod test {
         working_clock: bool,
         permanent_error: bool,
         expected_termination: Option<&'static str>,
+        expected_final_permanent: Option<bool>,
     ) {
         let pipeline_ctx = create_test_pipeline_context();
         let node = test_node("retry-processor-full-test");
@@ -1285,7 +1390,7 @@ mod test {
             node,
             Arc::new(node_config),
             rt.config(),
-            &otap_df_engine::capability::registry::Capabilities::empty(),
+            &otel_arrow_dfe_engine::capability::registry::Capabilities::empty(),
         )
         .expect("create processor");
 
@@ -1349,8 +1454,8 @@ mod test {
                             .take_due_local_control(when)
                             .expect("scheduled local control");
                         assert!(
-                            matches!(control, NodeControlMsg::DelayedData { .. }),
-                            "retry should requeue retained pdata as DelayedData"
+                            matches!(control, NodeControlMsg::ResumeData { .. }),
+                            "retry should requeue retained pdata as ResumeData"
                         );
                         ctx.process(Message::Control(control)).await.unwrap();
 
@@ -1414,6 +1519,13 @@ mod test {
                                 .contains(outcome_failure.as_deref().expect("expecting nack"))
                         );
                         assert_eq!(node_id, 4444);
+
+                        if let Some(expected_permanent) = expected_final_permanent {
+                            assert_eq!(
+                                nack.permanent, expected_permanent,
+                                "final nack permanent flag mismatch"
+                            );
+                        }
 
                         let nackdata: TestCallData =
                             nack.unwind.route.calldata.try_into().expect("my calldata");

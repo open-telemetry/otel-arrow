@@ -5,11 +5,13 @@
 //!
 //! Note: At the moment, these attributes are used for metrics aggregation and reporting.
 
-use otap_df_telemetry::attributes::{
+use otel_arrow_dfe_telemetry::attributes::{
     AttributeKeySchema, AttributeSetHandler, AttributeSetKeySchema, AttributeValue,
 };
-use otap_df_telemetry::descriptor::{AttributeField, AttributeValueType, AttributesDescriptor};
-use otap_df_telemetry_macros::{AttributeEnum, attribute_set};
+use otel_arrow_dfe_telemetry::descriptor::{
+    AttributeField, AttributeValueType, AttributesDescriptor,
+};
+use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::hash::Hash;
@@ -17,9 +19,9 @@ use std::hash::Hash;
 /// Convert from config `AttributeValue` to telemetry `AttributeValue`.
 #[must_use]
 pub fn config_to_telemetry_attr(
-    value: &otap_df_config::pipeline::telemetry::AttributeValue,
+    value: &otel_arrow_dfe_config::pipeline::telemetry::AttributeValue,
 ) -> AttributeValue {
-    use otap_df_config::pipeline::telemetry::AttributeValue as ConfigValue;
+    use otel_arrow_dfe_config::pipeline::telemetry::AttributeValue as ConfigValue;
     match value {
         ConfigValue::String(s) => AttributeValue::String(s.clone()),
         ConfigValue::Bool(b) => AttributeValue::Boolean(*b),
@@ -38,7 +40,7 @@ pub fn config_to_telemetry_attr(
 pub fn config_map_to_telemetry(
     map: &std::collections::HashMap<
         String,
-        otap_df_config::pipeline::telemetry::TelemetryAttribute,
+        otel_arrow_dfe_config::pipeline::telemetry::TelemetryAttribute,
     >,
 ) -> BTreeMap<String, AttributeValue> {
     map.iter()
@@ -286,7 +288,7 @@ impl AttributeSetKeySchema for CustomAttributeSet {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_telemetry::attributes::{AttributeEnum, AttributeSetHandler};
+    use otel_arrow_dfe_telemetry::attributes::{AttributeEnum, AttributeSetHandler};
 
     /// Distinct `(group, pipeline)` pairs must not collide on attribute
     /// values: flattening into a single `/`-separated string allows two

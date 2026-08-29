@@ -17,8 +17,8 @@ use crate::error::CliError;
 use crate::render::{render_logs, render_metrics_compact, render_metrics_full};
 use crate::style::HumanStyle;
 use crate::troubleshoot::{filter_logs, filter_metrics_compact, filter_metrics_full};
-use otap_df_admin_api::AdminClient;
-use otap_df_admin_api::telemetry::MetricsOptions;
+use otel_arrow_dfe_admin_api::AdminClient;
+use otel_arrow_dfe_admin_api::telemetry::MetricsOptions;
 use std::io::Write;
 
 /// Execute telemetry-scoped commands.

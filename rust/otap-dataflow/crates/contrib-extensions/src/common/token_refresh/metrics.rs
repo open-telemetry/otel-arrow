@@ -8,10 +8,10 @@
 //! instruments the refresh loop records. [`TokenProviderMetricsTracker`] then
 //! provides the recording and flushing logic once for all of them.
 
-use otap_df_telemetry::error::Error as TelemetryError;
-use otap_df_telemetry::instrument::{Counter, Mmsc};
-use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler, MetricSetSnapshot};
-use otap_df_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
+use otel_arrow_dfe_telemetry::instrument::{Counter, Mmsc};
+use otel_arrow_dfe_telemetry::metrics::{MetricSet, MetricSetHandler, MetricSetSnapshot};
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 
 /// The instruments a bearer-token provider metric set must expose.
 pub trait TokenProviderMetrics: MetricSetHandler + Send + 'static {

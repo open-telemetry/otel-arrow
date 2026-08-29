@@ -6,7 +6,7 @@
 //! This processor will partition incoming OTAP batches by the evaluated result of some expression
 //! and set the partition value in the outgoing batches metadata.
 
-otap_df_telemetry::otel_component_scope!(
+otel_arrow_dfe_telemetry::otel_component_scope!(
     urn = PARTITION_PROCESSOR_URN,
     target = "otel.processor.partition",
 );
@@ -15,32 +15,32 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::SignalType;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::config::ProcessorConfig;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
-use otap_df_engine::error::ProcessorErrorKind;
-use otap_df_engine::local::processor::{EffectHandler, Processor};
-use otap_df_engine::message::Message;
-use otap_df_engine::node::NodeId;
-use otap_df_engine::processor::ProcessorWrapper;
-use otap_df_engine::wiring_contract::WiringContract;
-use otap_df_engine::{
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_engine::config::ProcessorConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::control::{AckMsg, NackCause, NackMsg, NodeControlMsg};
+use otel_arrow_dfe_engine::error::ProcessorErrorKind;
+use otel_arrow_dfe_engine::local::processor::{EffectHandler, Processor};
+use otel_arrow_dfe_engine::message::Message;
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::processor::{FlowMetricHook, ProcessorWrapper};
+use otel_arrow_dfe_engine::wiring_contract::WiringContract;
+use otel_arrow_dfe_engine::{
     ConsumerEffectHandlerExtension, FlowMetricAccumulation, Interests,
     MessageSourceLocalEffectHandlerExtension, ProcessorFactory, ProducerEffectHandlerExtension,
 };
-use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
-use otap_df_otap::accessory::context::split_contexts::Contexts;
-use otap_df_otap::accessory::slots::Key;
-use otap_df_otap::pdata::OtapPdata;
-use otap_df_otap::transport_headers::{TransportHeader, ValueKind};
-use otap_df_pdata::{OtapArrowRecords, OtapPayload, TryIntoWithOptions};
-use otap_df_query_engine::parser::default_parser_options;
-use otap_df_query_engine::pipeline::partition::{PartitionValue, Partitioner};
-use otap_df_query_engine_languages::opl::parser::OplParser;
-use otap_df_telemetry::common_attributes::{Outcome, OutcomeAttributes};
-use otap_df_telemetry::metrics::MeasurementMetricSet;
+use otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES;
+use otel_arrow_dfe_otap::accessory::context::split_contexts::{Contexts, OutboundError};
+use otel_arrow_dfe_otap::accessory::slots::Key;
+use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_otap::transport_headers::{TransportHeader, ValueKind};
+use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayload, TryIntoWithOptions};
+use otel_arrow_dfe_query_engine::parser::default_parser_options;
+use otel_arrow_dfe_query_engine::pipeline::partition::{PartitionValue, Partitioner};
+use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
+use otel_arrow_dfe_telemetry::common_attributes::{Outcome, OutcomeAttributes};
+use otel_arrow_dfe_telemetry::metrics::MeasurementMetricSet;
 use serde_json::Value;
 use slotmap::Key as _;
 
@@ -58,8 +58,8 @@ fn create_partition_processor(
     node_id: NodeId,
     user_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
-    _capabilities: &otap_df_engine::capability::registry::Capabilities,
-) -> Result<ProcessorWrapper<OtapPdata>, otap_df_config::error::Error> {
+    _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+) -> Result<ProcessorWrapper<OtapPdata>, otel_arrow_dfe_config::error::Error> {
     let processor = PartitionProcessor::from_config(&pipeline_ctx, &user_config.config)?;
     Ok(ProcessorWrapper::local(
         processor,
@@ -70,7 +70,7 @@ fn create_partition_processor(
 }
 
 /// Register partition processor
-#[otap_df_engine::component_inventory(category = Processor)]
+#[otel_arrow_dfe_engine::component_inventory(category = Processor)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static PARTITION_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: PARTITION_PROCESSOR_URN,
@@ -78,7 +78,7 @@ pub static PARTITION_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorF
     wiring_contract: WiringContract::UNRESTRICTED,
     validate_config: |value| {
         let config: Config = serde_json::from_value(value.clone()).map_err(|e| {
-            otap_df_config::error::Error::InvalidUserConfig {
+            otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
             }
         })?;
@@ -89,12 +89,12 @@ pub static PARTITION_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorF
             PartitionByConfig::OplExpression(opl_expression) => {
                 let (expr, function_defs) =
                     OplParser::parse_expr_with_options(&opl_expression, default_parser_options())
-                        .map_err(|e| otap_df_config::error::Error::InvalidUserConfig {
+                        .map_err(|e| otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                         error: format!("Could not parse OPL Expression: {e:?}"),
                     })?;
 
                 let _ = Partitioner::try_new(expr, function_defs).map_err(|e| {
-                    otap_df_config::error::Error::InvalidUserConfig {
+                    otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                         error: format!("Could not plan partitioner from OPL expression: {e:?}"),
                     }
                 })?;
@@ -118,9 +118,9 @@ impl PartitionProcessor {
     fn from_config(
         pipeline_ctx: &PipelineContext,
         config: &Value,
-    ) -> Result<Self, otap_df_config::error::Error> {
+    ) -> Result<Self, otel_arrow_dfe_config::error::Error> {
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
-            otap_df_config::error::Error::InvalidUserConfig {
+            otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: format!("Failed to parse PartitionProcessor config: {e}"),
             }
         })?;
@@ -129,12 +129,12 @@ impl PartitionProcessor {
             PartitionByConfig::OplExpression(opl_expression) => {
                 let (expr, function_defs) =
                     OplParser::parse_expr_with_options(&opl_expression, default_parser_options())
-                        .map_err(|e| otap_df_config::error::Error::InvalidUserConfig {
+                        .map_err(|e| otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                         error: format!("Could not parse OPL Expression: {e:?}"),
                     })?;
 
                 Partitioner::try_new(expr, function_defs).map_err(|e| {
-                    otap_df_config::error::Error::InvalidUserConfig {
+                    otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                         error: format!("Could not plan partitioner from OPL expression: {e:?}"),
                     }
                 })?
@@ -157,15 +157,16 @@ impl PartitionProcessor {
         outbound_key: Key,
         signal_type: SignalType,
         effect_handler: &mut EffectHandler<OtapPdata>,
-    ) -> Result<(), otap_df_engine::error::Error> {
+    ) -> Result<(), otel_arrow_dfe_engine::error::Error> {
         // clear the outbound context
         if let Some(inbound) = self.contexts.clear_outbound(outbound_key) {
             // if we're in this location, we've cleared the final outbound context for some inbound
             // batch, which means we can now Ack or Nack the inbound context
-            let (context, error_reason) = inbound;
-            let pdata = OtapPdata::new(context, OtapPayload::empty(signal_type));
-            if let Some(error) = error_reason {
-                effect_handler.notify_nack(NackMsg::new(error, pdata)).await
+            let pdata = OtapPdata::new(inbound.context, OtapPayload::empty(signal_type));
+            if let Some(error) = inbound.error {
+                effect_handler
+                    .notify_nack(NackMsg::new_with_cause(error.reason, pdata, error.cause))
+                    .await
             } else {
                 effect_handler.notify_ack(AckMsg::new(pdata)).await
             }
@@ -181,14 +182,14 @@ impl Processor<OtapPdata> for PartitionProcessor {
         &mut self,
         message: Message<OtapPdata>,
         effect_handler: &mut EffectHandler<OtapPdata>,
-    ) -> Result<(), otap_df_engine::error::Error> {
+    ) -> Result<(), otel_arrow_dfe_engine::error::Error> {
         match message {
             Message::Control(control_message) => match control_message {
                 NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
                 } => {
                     if let Err(e) = metrics_reporter.report_measurement(&mut self.metrics) {
-                        return Err(otap_df_engine::error::Error::InternalError {
+                        return Err(otel_arrow_dfe_engine::error::Error::InternalError {
                             message: e.to_string(),
                         });
                     }
@@ -205,8 +206,13 @@ impl Processor<OtapPdata> for PartitionProcessor {
 
                 NodeControlMsg::Nack(nack_msg) => {
                     let outbound_key: Key = nack_msg.unwind.route.calldata.try_into()?;
-                    self.contexts
-                        .set_failed_outbound(outbound_key, nack_msg.reason);
+                    self.contexts.set_failed_outbound(
+                        outbound_key,
+                        OutboundError {
+                            reason: nack_msg.reason,
+                            cause: nack_msg.cause,
+                        },
+                    );
                     self.handle_ack_nack(
                         outbound_key,
                         nack_msg.refused.signal_type(),
@@ -218,7 +224,7 @@ impl Processor<OtapPdata> for PartitionProcessor {
                 NodeControlMsg::Config { .. }
                 | NodeControlMsg::TimerTick { .. }
                 | NodeControlMsg::Wakeup { .. }
-                | NodeControlMsg::DelayedData { .. }
+                | NodeControlMsg::ResumeData { .. }
                 | NodeControlMsg::MemoryPressureChanged { .. }
                 | NodeControlMsg::DrainIngress { .. }
                 | NodeControlMsg::Shutdown { .. } => {
@@ -256,7 +262,7 @@ impl Processor<OtapPdata> for PartitionProcessor {
                             })
                             .operations
                             .inc();
-                        return Err(otap_df_engine::error::Error::ProcessorError {
+                        return Err(otel_arrow_dfe_engine::error::Error::ProcessorError {
                             processor: effect_handler.processor_id(),
                             kind: ProcessorErrorKind::Other,
                             error: format!("Error partitioning batch: {e}"),
@@ -268,9 +274,10 @@ impl Processor<OtapPdata> for PartitionProcessor {
                 match partitions.len() {
                     0 => {
                         // no partitions, just Ack the inbound
-                        let pdata =
+                        let mut pdata =
                             OtapPdata::new(inbound_context, OtapPayload::empty(signal_type));
 
+                        pdata.complete_processor_without_output(effect_handler);
                         effect_handler.notify_ack(AckMsg::new(pdata)).await?;
                     }
                     1 => {
@@ -301,8 +308,8 @@ impl Processor<OtapPdata> for PartitionProcessor {
                         // create context key for inbound batch
                         let inbound_ctx_key = self
                             .contexts
-                            .insert_inbound(inbound_context.clone(), None)
-                            .ok_or_else(|| otap_df_engine::error::Error::ProcessorError {
+                            .insert_inbound(inbound_context.clone(), None, None)
+                            .ok_or_else(|| otel_arrow_dfe_engine::error::Error::ProcessorError {
                                 processor: effect_handler.processor_id(),
                                 kind: ProcessorErrorKind::Other,
                                 error: "inbound slots not available".into(),
@@ -329,11 +336,15 @@ impl Processor<OtapPdata> for PartitionProcessor {
                                     // indicating that some partition was not emitted.
                                     self.contexts.set_failed_inbound(
                                         inbound_ctx_key,
-                                        "insufficient outbound slots for partitions".into(),
+                                        OutboundError {
+                                            reason: "insufficient outbound slots for partitions"
+                                                .into(),
+                                            cause: NackCause::RouteFull,
+                                        },
                                     );
                                 }
 
-                                otap_df_engine::error::Error::ProcessorError {
+                                otel_arrow_dfe_engine::error::Error::ProcessorError {
                                     processor: effect_handler.processor_id(),
                                     kind: ProcessorErrorKind::Other,
                                     error: "outbound slots not available".into(),
@@ -484,7 +495,7 @@ mod test {
 
     use super::*;
 
-    use otap_df_engine::{
+    use otel_arrow_dfe_engine::{
         capability::registry::Capabilities,
         context::ControllerContext,
         control::{
@@ -495,11 +506,11 @@ mod test {
             test_node,
         },
     };
-    use otap_df_otap::{
+    use otel_arrow_dfe_otap::{
         pdata::Context,
         testing::{TestCallData, next_ack, next_nack},
     };
-    use otap_df_pdata::{
+    use otel_arrow_dfe_pdata::{
         OtlpProtoBytes, TryFromWithOptions,
         otap::Logs,
         proto::{
@@ -512,13 +523,13 @@ mod test {
         },
         testing::round_trip::otlp_to_otap,
     };
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use prost::Message as _;
 
     fn create_processor_with_config(
         config: Value,
         runtime: &TestRuntime<OtapPdata>,
-    ) -> Result<ProcessorWrapper<OtapPdata>, otap_df_config::error::Error> {
+    ) -> Result<ProcessorWrapper<OtapPdata>, otel_arrow_dfe_config::error::Error> {
         let mut node_config = NodeUserConfig::new_processor_config(PARTITION_PROCESSOR_URN);
         node_config.config = config;
 
@@ -570,7 +581,7 @@ mod test {
         ctx: &mut TestContext<OtapPdata>,
         context: Context,
         signal_type: SignalType,
-    ) -> Result<(), otap_df_engine::error::Error> {
+    ) -> Result<(), otel_arrow_dfe_engine::error::Error> {
         let ack = next_ack(AckMsg::new(OtapPdata::new(
             context,
             OtapPayload::empty(signal_type),
@@ -586,10 +597,12 @@ mod test {
         context: Context,
         signal_type: SignalType,
         reason: &str,
-    ) -> Result<(), otap_df_engine::error::Error> {
-        let nack = next_nack(NackMsg::new(
+        cause: NackCause,
+    ) -> Result<(), otel_arrow_dfe_engine::error::Error> {
+        let nack = next_nack(NackMsg::new_permanent_with_cause(
             reason,
             OtapPdata::new(context, OtapPayload::empty(signal_type)),
+            cause,
         ));
         let (_, nack) = nack.unwrap();
         ctx.process(Message::Control(NodeControlMsg::Nack(nack)))
@@ -918,6 +931,8 @@ mod test {
             });
     }
 
+    /// Scenario: partitioning an empty subscribed batch produces no partitions.
+    /// Guarantees: the input is acknowledged without producing downstream pdata.
     #[test]
     fn test_empty_batch() {
         let runtime = TestRuntime::<OtapPdata>::new();
@@ -1170,6 +1185,7 @@ mod test {
                     outbound_contexts.pop().unwrap(),
                     SignalType::Logs,
                     "error happened",
+                    NackCause::Refused,
                 )
                 .await
                 .unwrap();
@@ -1180,7 +1196,8 @@ mod test {
                     PipelineCompletionMsg::DeliverNack { nack } => {
                         let (node_id, nack) = next_nack(nack).expect("expected ack subscriber");
                         assert_eq!(node_id, upstream_node_id);
-                        assert_eq!(nack.reason, "error happened")
+                        assert_eq!(nack.reason, "error happened");
+                        assert_eq!(nack.cause, NackCause::Refused);
                     }
                     other => {
                         panic!("got unexpected pipeline ctrl message {other:?}")

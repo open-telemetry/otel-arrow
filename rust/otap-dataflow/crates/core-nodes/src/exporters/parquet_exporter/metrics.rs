@@ -3,8 +3,8 @@
 
 //! Metrics specific to the Parquet exporter IO lifecycle.
 
-use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry_macros::metric_set;
+use otel_arrow_dfe_telemetry::instrument::Counter;
+use otel_arrow_dfe_telemetry_macros::metric_set;
 
 /// Parquet exporter IO metrics.
 /// Grouped under `otap.exporter.parquet`.

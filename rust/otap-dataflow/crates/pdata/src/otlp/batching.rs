@@ -5,7 +5,7 @@ use super::OtlpProtoBytes;
 use crate::error::{Error, Result};
 use crate::proto::consts::wire_types;
 use crate::views::otlp::bytes::decode::{field_value_range, read_varint};
-use otap_df_config::SignalType;
+use otel_arrow_dfe_config::SignalType;
 use std::num::NonZeroU64;
 
 // OTLP export requests share a uniform nesting across all three signals:

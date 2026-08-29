@@ -12,7 +12,7 @@ use azure_identity::{
     ManagedIdentityCredentialOptions, UserAssignedId, WorkloadIdentityCredential,
     WorkloadIdentityCredentialOptions,
 };
-use otap_df_engine::capability::auth::BearerToken;
+use otel_arrow_dfe_engine::capability::auth::BearerToken;
 
 use super::config::{AuthMethod, Config};
 use super::error::Error;
@@ -30,7 +30,7 @@ impl Auth {
     pub fn new(config: &Config) -> Result<Self, Error> {
         // Azure credentials use a `reqwest`/`rustls` HTTP client, which requires
         // a process-wide crypto provider to be installed.
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let credential = create_credential(config)?;
         Ok(Self {
             credential,

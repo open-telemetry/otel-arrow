@@ -1,5 +1,5 @@
 [package]
-name = "otap-df-contrib-extensions"
+name = "otel-arrow-dfe-contrib-extensions"
 description = "OTAP Contrib extensions"
 version.workspace = true
 authors.workspace = true
@@ -14,11 +14,11 @@ workspace = true
 
 [dependencies]
 # Workspace crates
-otap-df-config = { workspace = true }
-otap-df-engine = { workspace = true }
-otap-df-otap = { workspace = true }
-otap-df-telemetry = { workspace = true }
-otap-df-telemetry-macros = { workspace = true }
+otel-arrow-dfe-config = { workspace = true }
+otel-arrow-dfe-engine = { workspace = true }
+otel-arrow-dfe-otap = { workspace = true }
+otel-arrow-dfe-telemetry = { workspace = true }
+otel-arrow-dfe-telemetry-macros = { workspace = true }
 
 async-trait.workspace = true
 futures.workspace = true
@@ -62,9 +62,9 @@ crypto-aws-lc = ["jsonwebtoken?/aws_lc_rs"]
 crypto-openssl = ["dep:openssl"]
 
 [dev-dependencies]
-otap-df-engine = { workspace = true, features = ["test-utils"] }
-otap-df-otap = { workspace = true, features = ["crypto-ring"] }
-otap-test-tls-certs = { workspace = true }
+otel-arrow-dfe-engine = { workspace = true, features = ["test-utils"] }
+otel-arrow-dfe-otap = { workspace = true, features = ["crypto-ring"] }
+otel-arrow-dfe-test-tls-certs = { workspace = true }
 rcgen = { workspace = true, features = ["aws_lc_rs"] }
 # Test fallback for the JWT signing backend when no `crypto-*` feature is
 # selected, so the suite runs without committing the library to a backend.
