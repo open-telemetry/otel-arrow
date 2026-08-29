@@ -42,7 +42,7 @@ use otel_arrow_dfe_engine::ExporterFactory;
 use otel_arrow_dfe_engine::config::ExporterConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_engine::context_declaration::{
-    ContextAccessId, ContextDeclaration, ContextDeclarationProvider, ContextReadSelector,
+    ContextDeclaration, ContextDeclarationProvider, ContextReadSelector,
 };
 use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otel_arrow_dfe_engine::error::Error as EngineError;

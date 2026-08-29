@@ -539,7 +539,8 @@ pub(super) struct ControllerRuntimeState {
     /// Per-core restart streak and active recovery-worker state.
     pub(super) runtime_recoveries: HashMap<(PipelineKey, usize), RuntimeRecoveryState>,
     /// Runtime failures held while an explicit operation owns their lifecycle.
-    pub(super) deferred_runtime_recoveries: HashMap<DeployedPipelineKey, RuntimeInstanceError>,
+    pub(super) deferred_runtime_recoveries:
+        HashMap<DeployedPipelineKey, (Arc<CompiledContextPolicy>, RuntimeInstanceError)>,
     /// Planning-stage lifecycle reservations keyed by logical pipeline.
     pub(super) pipeline_operation_reservations:
         HashMap<PipelineKey, PipelineOperationReservationState>,

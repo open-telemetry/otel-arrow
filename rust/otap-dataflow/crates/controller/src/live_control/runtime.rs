@@ -141,6 +141,7 @@ impl<
         self: &Arc<Self>,
         launched: LaunchedPipelineThread<PData>,
     ) {
+        let context_policy = Arc::clone(&launched.context_policy);
         let (should_compact, pending_exit) = {
             let mut state = self
                 .state
@@ -174,7 +175,7 @@ impl<
                 .compact_pipeline_instances(&logical_pipeline_key);
         }
         if let Some(RuntimeInstanceExit::Error(error)) = pending_exit {
-            self.schedule_runtime_recovery(launched.pipeline_key, error);
+            self.schedule_runtime_recovery(launched.pipeline_key, context_policy, error);
         }
     }
 
@@ -203,21 +204,27 @@ impl<
             }
         }
 
-        let (should_compact, exit_was_applied) = {
+        let (should_compact, exit_was_applied, context_policy) = {
             let mut state = self
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             if state.runtime_instances.contains_key(&pipeline_key) {
+                let context_policy = state
+                    .runtime_instances
+                    .get(&pipeline_key)
+                    .map(|instance| Arc::clone(&instance.context_policy))
+                    .expect("checked runtime instance is present");
                 (
                     Self::apply_instance_exit_locked(&mut state, &pipeline_key, &exit),
                     true,
+                    Some(context_policy),
                 )
             } else {
                 _ = state
                     .pending_instance_exits
                     .insert(pipeline_key.clone(), exit.clone());
-                (false, false)
+                (false, false, None)
             }
         };
         if should_compact {
@@ -229,8 +236,11 @@ impl<
                 .compact_pipeline_instances(&logical_pipeline_key);
         }
         self.state_changed.notify_all();
-        if exit_was_applied && let RuntimeInstanceExit::Error(error) = exit {
-            self.schedule_runtime_recovery(pipeline_key, error);
+        if exit_was_applied
+            && let RuntimeInstanceExit::Error(error) = exit
+            && let Some(context_policy) = context_policy
+        {
+            self.schedule_runtime_recovery(pipeline_key, context_policy, error);
         }
     }
 
@@ -238,12 +248,15 @@ impl<
     fn defer_runtime_recovery_locked(
         state: &mut ControllerRuntimeState,
         failed_key: DeployedPipelineKey,
+        context_policy: Arc<CompiledContextPolicy>,
         error: RuntimeInstanceError,
     ) {
         // Deployed keys are unique and operation overlap is bounded by assigned
         // cores plus rollout candidates, so this queue cannot grow independently
         // of controller-owned runtime state.
-        let _ = state.deferred_runtime_recoveries.insert(failed_key, error);
+        let _ = state
+            .deferred_runtime_recoveries
+            .insert(failed_key, (context_policy, error));
     }
 
     /// Restarts failures deferred for one pipeline after ownership handoff.
@@ -274,18 +287,18 @@ impl<
                     state
                         .deferred_runtime_recoveries
                         .remove(&deployed_key)
-                        .map(|error| (deployed_key, error))
+                        .map(|(context_policy, error)| (deployed_key, context_policy, error))
                 })
                 .collect::<Vec<_>>()
         };
-        deferred.sort_by_key(|(deployed_key, _)| {
+        deferred.sort_by_key(|(deployed_key, _, _)| {
             (deployed_key.core_id, deployed_key.deployment_generation)
         });
-        for (deployed_key, error) in deferred {
+        for (deployed_key, context_policy, error) in deferred {
             // schedule_runtime_recovery revalidates the committed serving
             // generation, so failures for candidates retired by the operation
             // are ignored while failures for its winner are restarted.
-            self.schedule_runtime_recovery(deployed_key, error);
+            self.schedule_runtime_recovery(deployed_key, context_policy, error);
         }
     }
 
@@ -320,13 +333,14 @@ impl<
     fn schedule_runtime_recovery(
         self: &Arc<Self>,
         failed_key: DeployedPipelineKey,
+        context_policy: Arc<CompiledContextPolicy>,
         error: RuntimeInstanceError,
     ) {
         let pipeline_key = PipelineKey::new(
             failed_key.pipeline_group_id.clone(),
             failed_key.pipeline_id.clone(),
         );
-        let (current_record, context_policy) = {
+        let current_record = {
             let mut state = self
                 .state
                 .lock()
@@ -342,19 +356,13 @@ impl<
                 // can fail after its one-time readiness check. Retain the exit so
                 // ownership release can recover whichever generation ultimately
                 // remains serving.
-                Self::defer_runtime_recovery_locked(&mut state, failed_key, error);
+                Self::defer_runtime_recovery_locked(&mut state, failed_key, context_policy, error);
                 return;
             }
-            (
-                state.logical_pipelines.get(&pipeline_key).cloned(),
-                state
-                    .runtime_instances
-                    .get(&failed_key)
-                    .map(|instance| Arc::clone(&instance.context_policy)),
-            )
+            state.logical_pipelines.get(&pipeline_key).cloned()
         };
 
-        let (Some(current_record), Some(context_policy)) = (current_record, context_policy) else {
+        let Some(current_record) = current_record else {
             let mut state = self
                 .state
                 .lock()
@@ -387,7 +395,12 @@ impl<
                 return;
             }
             if state.recovery_preempted(&pipeline_key) {
-                Self::defer_runtime_recovery_locked(&mut state, failed_key, error);
+                Self::defer_runtime_recovery_locked(
+                    &mut state,
+                    failed_key,
+                    Arc::clone(&context_policy),
+                    error,
+                );
                 return;
             }
 
@@ -1091,6 +1104,11 @@ impl<
         let should_defer = state.recovery_preempted(pipeline_key)
             && !state.recovery_in_shutdown_context(pipeline_key);
         if should_defer {
+            let context_policy = state
+                .runtime_recoveries
+                .get(&recovery_key)
+                .map(|recovery| Arc::clone(&recovery.context_policy))
+                .expect("recovery worker ownership requires recovery state");
             Self::defer_runtime_recovery_locked(
                 &mut state,
                 DeployedPipelineKey {
@@ -1099,6 +1117,7 @@ impl<
                     core_id,
                     deployment_generation: failed_generation,
                 },
+                context_policy,
                 RuntimeInstanceError::runtime(error),
             );
         }
