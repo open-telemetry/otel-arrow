@@ -370,6 +370,12 @@ impl RecordBundle for OtapRecordBundleAdapter {
     fn item_count(&self) -> u64 {
         self.records.num_items() as u64
     }
+
+    fn byte_count(&self) -> Option<u64> {
+        self.records
+            .num_bytes()
+            .and_then(|bytes| u64::try_from(bytes).ok())
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -500,6 +506,10 @@ impl RecordBundle for OtlpBytesAdapter {
     fn item_count(&self) -> u64 {
         self.cached_item_count
     }
+
+    fn byte_count(&self) -> Option<u64> {
+        u64::try_from(self.bytes.num_bytes()).ok()
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -605,6 +615,39 @@ pub fn recover_item_count(bundle: &dyn RecordBundle) -> Option<u64> {
         SignalType::Metrics => create_records::<Metrics>(&payloads).ok()?,
     };
     Some(records.num_items() as u64)
+}
+
+/// Recovers the logical byte count from a decoded Quiver bundle.
+///
+/// This is used for WAL entries because the WAL format does not persist
+/// [`RecordBundle::byte_count`].
+pub fn recover_byte_count(bundle: &dyn RecordBundle) -> Option<u64> {
+    let payloads = bundle
+        .descriptor()
+        .slots
+        .iter()
+        .filter_map(|slot| {
+            bundle
+                .payload(slot.id)
+                .map(|payload| (slot.id, payload.batch.clone()))
+        })
+        .collect::<HashMap<_, _>>();
+
+    if let Some((signal_type, batch)) = find_otlp_slot(&payloads) {
+        return extract_otlp_bytes(signal_type, batch)
+            .ok()
+            .and_then(|bytes| u64::try_from(bytes.num_bytes()).ok());
+    }
+
+    let signal_type = determine_signal_type(&payloads).ok()?;
+    let records = match signal_type {
+        SignalType::Logs => create_records::<Logs>(&payloads).ok()?,
+        SignalType::Traces => create_records::<Traces>(&payloads).ok()?,
+        SignalType::Metrics => create_records::<Metrics>(&payloads).ok()?,
+    };
+    records
+        .num_bytes()
+        .and_then(|bytes| u64::try_from(bytes).ok())
 }
 
 /// Convert a ReconstructedBundle back to OtapPdata.
@@ -907,6 +950,20 @@ mod tests {
         assert_eq!(recover_item_count(&adapter), Some(3));
     }
 
+    /// Scenario: An OTAP bundle is measured live and reconstructed from WAL slots.
+    /// Guarantees: Both paths use the payload's canonical logical byte measurement.
+    #[test]
+    fn byte_count_from_arrow_bundle_uses_payload_num_bytes() {
+        let records = OtapArrowRecords::Logs(logs!((Logs, ("id", UInt16, vec![1u16, 2, 3]))));
+        let expected = records
+            .num_bytes()
+            .and_then(|bytes| u64::try_from(bytes).ok());
+        let adapter = OtapRecordBundleAdapter::new(records);
+
+        assert_eq!(adapter.byte_count(), expected);
+        assert_eq!(recover_byte_count(&adapter), expected);
+    }
+
     /// Scenario: A decoded OTLP pass-through bundle is inspected during WAL expiry.
     /// Guarantees: The counter uses the same protobuf item scan as live ingestion.
     #[test]
@@ -919,6 +976,19 @@ mod tests {
             recover_item_count(&adapter),
             Some(adapter.cached_item_count())
         );
+    }
+
+    /// Scenario: An OTLP pass-through bundle is measured live and reconstructed from WAL slots.
+    /// Guarantees: Both paths report the protobuf wire length.
+    #[test]
+    fn byte_count_from_otlp_bundle_uses_wire_length() {
+        let payload = b"test OTLP protobuf data".to_vec();
+        let expected = payload.len() as u64;
+        let otlp = OtlpProtoBytes::new_from_bytes(SignalType::Logs, payload);
+        let adapter = OtlpBytesAdapter::new(otlp).map_err(|(e, _)| e).unwrap();
+
+        assert_eq!(adapter.byte_count(), Some(expected));
+        assert_eq!(recover_byte_count(&adapter), Some(expected));
     }
 
     #[test]
