@@ -12,10 +12,11 @@ use otel_arrow_dfe_engine::local::capability::auth::bearer_token_provider::Beare
 use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
 use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
+#[cfg(test)]
 use otel_arrow_dfe_pdata::otlp::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::views::otap::OtapLogsView;
 use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
-use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayload, PayloadData};
+use otel_arrow_dfe_pdata::{CodecView, OtapArrowRecords, OtapPayload};
 
 use super::client::LogsIngestionClientPool;
 use super::config::Config;
@@ -28,7 +29,7 @@ use super::metrics::AzureMonitorExporterMetricsRc;
 use super::state::AzureMonitorExporterState;
 use super::transformer::Transformer;
 use otel_arrow_dfe_otap::bearer_auth::{BearerAuth, BearerAuthEvents};
-use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
+use otel_arrow_dfe_otap::pdata::{Context, OtapPdata, PdataEffectHandlerExtension};
 
 use otel_arrow_dfe_telemetry::common_attributes::{HttpResponse, Outcome};
 
@@ -456,15 +457,28 @@ impl AzureMonitorExporter {
                 *msg_id += 1;
                 let (context, payload) = pdata.into_parts();
 
-                let log_entries = match payload.data() {
-                    PayloadData::OtapArrowRecords(otap_records) => match otap_records {
+                let view = match effect_handler.view(&payload).await {
+                    Ok(view) => view,
+                    Err(error) => {
+                        effect_handler
+                            .notify_nack(NackMsg::new_permanent(
+                                error.to_string(),
+                                OtapPdata::new(context, payload),
+                            ))
+                            .await?;
+                        return Ok(());
+                    }
+                };
+                let log_entries = match view {
+                    CodecView::OtapArrowRecords(otap_records) => match otap_records.as_ref() {
                         OtapArrowRecords::Logs(_) => {
-                            let logs_view = OtapLogsView::try_from(otap_records).map_err(|e| {
-                                let error = Error::LogsViewCreationFailed { source: e };
-                                EngineError::InternalError {
-                                    message: error.to_string(),
-                                }
-                            })?;
+                            let logs_view =
+                                OtapLogsView::try_from(otap_records.as_ref()).map_err(|e| {
+                                    let error = Error::LogsViewCreationFailed { source: e };
+                                    EngineError::InternalError {
+                                        message: error.to_string(),
+                                    }
+                                })?;
                             Some(self.transformer.convert_to_log_analytics(&logs_view))
                         }
                         OtapArrowRecords::Metrics(_) | OtapArrowRecords::Traces(_) => {
@@ -476,13 +490,12 @@ impl AzureMonitorExporter {
                             None
                         }
                     },
-                    PayloadData::OtlpBytes(otlp_bytes) => match otlp_bytes {
-                        OtlpProtoBytes::ExportLogsRequest(bytes) => {
-                            let logs_view = RawLogsData::new(bytes.as_ref());
+                    CodecView::OtlpBytes { signal, bytes } => match signal {
+                        SignalType::Logs => {
+                            let logs_view = RawLogsData::new(bytes);
                             Some(self.transformer.convert_to_log_analytics(&logs_view))
                         }
-                        OtlpProtoBytes::ExportMetricsRequest(_)
-                        | OtlpProtoBytes::ExportTracesRequest(_) => {
+                        SignalType::Metrics | SignalType::Traces => {
                             otel_warn!(
                                 "azure_monitor_exporter.message.unsupported_signal",
                                 signal = "metrics_or_traces",

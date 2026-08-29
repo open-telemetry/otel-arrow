@@ -5,6 +5,7 @@
 
 use super::error::KafkaExporterError;
 use otel_arrow_dfe_pdata::{OtapArrowRecords, Producer as PdataProducer};
+#[cfg(test)]
 use otel_arrow_dfe_pdata::{OtapPayload, OtlpProtoBytes, TryIntoWithOptions};
 
 use prost::Message as ProstMessage;
@@ -23,7 +24,8 @@ use prost::Message as ProstMessage;
 ///
 /// A vector of bytes containing the OTLP protobuf representation,
 /// ready to be sent to Kafka.
-pub fn encode_to_otlp_bytes(payload: OtapPayload) -> Result<Vec<u8>, KafkaExporterError> {
+#[cfg(test)]
+pub(crate) fn encode_to_otlp_bytes(payload: OtapPayload) -> Result<Vec<u8>, KafkaExporterError> {
     // Convert payload to OTLP protobuf bytes
     // This uses the built-in TryFrom implementation that handles both cases:
     // - OtlpProtoBytes -> return as-is
@@ -40,7 +42,7 @@ pub fn encode_to_otlp_bytes(payload: OtapPayload) -> Result<Vec<u8>, KafkaExport
 ///
 /// # Arguments
 ///
-/// * `payload` - The OTAP payload to encode
+/// * `otap_records` - Native OTAP records to encode
 /// * `producer` - The OTAP PdataProducer used to encode BatchArrowRecords
 ///
 /// # Returns
@@ -48,12 +50,9 @@ pub fn encode_to_otlp_bytes(payload: OtapPayload) -> Result<Vec<u8>, KafkaExport
 /// A vector of bytes containing the BatchArrowRecord byte representation,
 /// ready to be sent to Kafka.
 pub fn encode_to_batch_arrow_record_bytes(
-    payload: OtapPayload,
+    mut otap_records: OtapArrowRecords,
     producer: &mut PdataProducer,
 ) -> Result<Vec<u8>, KafkaExporterError> {
-    let mut otap_records: OtapArrowRecords = payload
-        .try_into_with_default()
-        .map_err(|e| KafkaExporterError::OtapArrowRecordsConversion(format!("{}", e)))?;
     let bar = producer
         .produce_bar(&mut otap_records)
         .map_err(|e| KafkaExporterError::BatchArrowRecordConversion(format!("{}", e)))?;
