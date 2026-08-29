@@ -46,6 +46,7 @@ use async_trait::async_trait;
 use otel_arrow_dfe_channel::error::RecvError;
 use otel_arrow_dfe_config::PortName;
 use otel_arrow_dfe_config::transport_headers_policy::HeaderCapturePolicy;
+use otel_arrow_dfe_pdata::codec::CodecExecutor;
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
 use otel_arrow_dfe_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
@@ -101,6 +102,7 @@ impl<PData> ControlChannel<PData> {
 #[derive(Clone)]
 pub struct EffectHandler<PData> {
     pub(crate) core: EffectHandlerCore<PData>,
+    codec_executor: CodecExecutor,
     /// Output-port router.
     pub router: OutputRouter<SharedSender<PData>>,
     /// Capture policy for extracting transport headers from inbound metadata.
@@ -127,9 +129,21 @@ impl<PData> EffectHandler<PData> {
         let router = OutputRouter::new(node_id, msg_senders, default_port);
         EffectHandler {
             core,
+            codec_executor: CodecExecutor::default(),
             router,
             capture_policy: None,
         }
+    }
+
+    /// Returns the runtime-owned pdata codec service.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn codec_executor(&self) -> &CodecExecutor {
+        &self.codec_executor
+    }
+
+    pub(crate) fn set_codec_executor(&mut self, codec_executor: CodecExecutor) {
+        self.codec_executor = codec_executor;
     }
 
     /// Returns the name of the receiver associated with this handler.

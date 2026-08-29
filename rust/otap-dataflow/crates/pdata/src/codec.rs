@@ -10,6 +10,7 @@
 
 use std::borrow::{Borrow, Cow};
 use std::fmt;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use bytes::Bytes;
 use otel_arrow_dfe_config::{EncodeOptions, SignalType};
@@ -65,6 +66,67 @@ impl From<String> for PdataEncoding {
 impl fmt::Display for PdataEncoding {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+/// Inline envelope for an independently encoded telemetry batch.
+///
+/// It contains immutable codec identity, signal, and shared bytes only. Item
+/// counts and other measurements remain in the owning payload wrapper so this
+/// envelope stays compact enough for allocation-free admission.
+#[derive(Clone, Debug)]
+pub struct EncodedPdata {
+    codec: ResolvedCodec,
+    signal: SignalType,
+    bytes: Bytes,
+}
+
+impl EncodedPdata {
+    /// Resolves and admits bytes without parsing their contents.
+    pub fn new(encoding: &PdataEncoding, signal: SignalType, bytes: Bytes) -> Result<Self, Error> {
+        resolve(encoding, signal, CodecDirection::Decode)?.admit(signal, bytes)
+    }
+
+    pub(crate) const fn from_resolved(
+        codec: ResolvedCodec,
+        signal: SignalType,
+        bytes: Bytes,
+    ) -> Self {
+        Self {
+            codec,
+            signal,
+            bytes,
+        }
+    }
+
+    /// Stable representation identity.
+    #[must_use]
+    pub fn encoding(&self) -> &PdataEncoding {
+        &self.codec.metadata().encoding
+    }
+
+    /// Resolved codec identity.
+    #[must_use]
+    pub const fn codec(&self) -> ResolvedCodec {
+        self.codec
+    }
+
+    /// Signal carried outside the encoded bytes.
+    #[must_use]
+    pub const fn signal_type(&self) -> SignalType {
+        self.signal
+    }
+
+    /// Borrows the original shared buffer.
+    #[must_use]
+    pub const fn bytes(&self) -> &Bytes {
+        &self.bytes
+    }
+
+    /// Takes ownership of the shared buffer without copying it.
+    #[must_use]
+    pub fn into_bytes(self) -> Bytes {
+        self.bytes
     }
 }
 
@@ -220,6 +282,12 @@ impl ResolvedCodec {
             .count_items
             .and_then(|counter| counter(signal, bytes))
     }
+
+    /// Admits supported input without decoding or creating mutable codec state.
+    pub fn admit(self, signal: SignalType, bytes: Bytes) -> Result<EncodedPdata, Error> {
+        self.require(signal, CodecDirection::Decode)?;
+        Ok(EncodedPdata::from_resolved(self, signal, bytes))
+    }
 }
 
 /// Startup-resolved output representation and output-specific options.
@@ -273,6 +341,41 @@ pub struct CodecState {
     codecs: Vec<(ResolvedCodec, Box<dyn PdataCodec>)>,
 }
 
+/// Scoped handle to the codec state owned by one pipeline runtime.
+///
+/// Cloning this value only clones the `Arc`. The closure boundary prevents a
+/// mutable codec borrow from escaping the operation or crossing an async
+/// suspension point. The mutex also lets shared nodes use the same pipeline
+/// service as local nodes. A future blocking or async executor can replace this
+/// implementation without putting codec state into node structs.
+#[derive(Clone, Default)]
+pub struct CodecExecutor {
+    state: Arc<Mutex<CodecState>>,
+}
+
+impl CodecExecutor {
+    fn lock(&self) -> MutexGuard<'_, CodecState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Runs one synchronous operation against runtime-owned codec state.
+    ///
+    /// This is an implementation hook for pdata-aware effect handlers. The
+    /// closure keeps mutable codec access scoped to one synchronous operation.
+    #[doc(hidden)]
+    pub fn execute<R>(&self, operation: impl FnOnce(&mut CodecState) -> R) -> R {
+        operation(&mut self.lock())
+    }
+
+    /// Returns whether two handles address the same pipeline-owned state.
+    #[must_use]
+    pub fn shares_state_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.state, &other.state)
+    }
+}
+
 impl CodecState {
     fn instance(&mut self, codec: ResolvedCodec) -> &mut dyn PdataCodec {
         let index = match self.codecs.iter().position(|(key, _)| *key == codec) {
@@ -308,6 +411,14 @@ impl CodecState {
         Ok(records)
     }
 
+    /// Decodes an admitted envelope using reusable runtime state.
+    pub fn decode_encoded(
+        &mut self,
+        encoded: &EncodedPdata,
+    ) -> Result<OtapArrowRecords, crate::encode::Error> {
+        self.decode(encoded.codec, encoded.signal, &encoded.bytes)
+    }
+
     /// Creates a view through the same reusable codec instance.
     pub fn view<'a>(
         &mut self,
@@ -326,6 +437,14 @@ impl CodecState {
             );
         }
         Ok(view)
+    }
+
+    /// Creates a view over an admitted envelope.
+    pub fn view_encoded<'a>(
+        &mut self,
+        encoded: &'a EncodedPdata,
+    ) -> Result<CodecView<'a>, crate::encode::Error> {
+        self.view(encoded.codec, encoded.signal, &encoded.bytes)
     }
 
     /// Encodes with a startup-resolved output plan.
@@ -702,16 +821,33 @@ mod tests {
         assert_eq!(CodecState::default().test_instance_count(), 0);
     }
 
-    /// Scenario: OTLP bytes are viewed and then decoded through reusable codec state.
-    /// Guarantees: the view borrows the original buffer and decoding preserves signal and items.
+    /// Scenario: two runtime handles execute codec work for one pipeline.
+    /// Guarantees: cloned handles share the same lazily created codec instance.
+    #[test]
+    fn executor_clones_share_lazy_state() {
+        let first = CodecExecutor::default();
+        let second = first.clone();
+        assert!(first.shares_state_with(&second));
+        first.execute(|state| {
+            _ = state
+                .decode(ResolvedCodec::OTLP, SignalType::Logs, &logs_bytes())
+                .unwrap();
+        });
+        second.execute(|state| assert_eq!(state.test_instance_count(), 1));
+    }
+
+    /// Scenario: admitted OTLP bytes are viewed and decoded through reusable codec state.
+    /// Guarantees: admission preserves the buffer and decoding preserves signal and items.
     #[test]
     fn otlp_view_and_decode_preserve_input() {
         let bytes = logs_bytes();
         let pointer = bytes.as_ptr();
+        let encoded = ResolvedCodec::OTLP.admit(SignalType::Logs, bytes).unwrap();
+        assert_eq!(encoded.codec(), ResolvedCodec::OTLP);
+        assert_eq!(encoded.signal_type(), SignalType::Logs);
+        assert_eq!(encoded.bytes().as_ptr(), pointer);
         let mut state = CodecState::default();
-        let view = state
-            .view(ResolvedCodec::OTLP, SignalType::Logs, &bytes)
-            .unwrap();
+        let view = state.view_encoded(&encoded).unwrap();
         match view {
             CodecView::OtlpBytes { signal, bytes } => {
                 assert_eq!(signal, SignalType::Logs);
@@ -719,9 +855,7 @@ mod tests {
             }
             CodecView::OtapArrowRecords(_) => panic!("OTLP should expose a borrowed byte view"),
         }
-        let records = state
-            .decode(ResolvedCodec::OTLP, SignalType::Logs, &bytes)
-            .unwrap();
+        let records = state.decode_encoded(&encoded).unwrap();
         assert_eq!(records.signal_type(), SignalType::Logs);
         assert_eq!(records.num_items(), 4);
         assert_eq!(state.test_instance_count(), 1);

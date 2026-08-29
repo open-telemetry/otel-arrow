@@ -24,8 +24,8 @@ pub mod encode;
 pub(crate) mod payload;
 
 pub use codec::{
-    CodecDirection, CodecState, CodecView, EncodeOutput, EncodingPlan, PdataCodec,
-    PdataCodecMetadata, PdataCodecRegistration, PdataEncoding, ResolvedCodec,
+    CodecDirection, CodecExecutor, CodecState, CodecView, EncodeOutput, EncodedPdata, EncodingPlan,
+    PdataCodec, PdataCodecMetadata, PdataCodecRegistration, PdataEncoding, ResolvedCodec,
 };
 pub use otap::OtapArrowRecords;
 pub use otlp::OtlpProtoBytes;
