@@ -34,11 +34,12 @@ otel_arrow_dfe_telemetry::otel_component_scope!(
 );
 
 use async_trait::async_trait;
+#[cfg(test)]
 use bytes::Bytes;
 use linkme::distributed_slice;
+use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_config::node::NodeUserConfig;
-use otel_arrow_dfe_config::{SignalFormat, SignalType};
 use otel_arrow_dfe_engine::MessageSourceLocalEffectHandlerExtension;
 use otel_arrow_dfe_engine::{
     ConsumerEffectHandlerExtension, Interests, LocalWakeupRequirements,
@@ -53,21 +54,22 @@ use otel_arrow_dfe_engine::{
 };
 use otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES;
 use otel_arrow_dfe_otap::accessory::slots::{Key as SlotKey, State as SlotState};
-use otel_arrow_dfe_otap::pdata::{Context, OtapPdata, PeerAddrMerger};
-use otel_arrow_dfe_pdata::TryIntoWithOptions;
-use otel_arrow_dfe_pdata::{
-    OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProtoBytes, PayloadData,
-    error::Error as PDataError,
-    otap::batching::make_item_batches,
-    otlp::batching::{BytesBatches, make_bytes_batches_owned},
-};
+use otel_arrow_dfe_otap::pdata::{Context, OtapPdata, PdataEffectHandlerExtension, PeerAddrMerger};
+pub use otel_arrow_dfe_pdata::batching::BatchSizer as Sizer;
+use otel_arrow_dfe_pdata::batching::{BatchPlan, BatchProfile, BatchingOutput, PdataFormat};
+#[cfg(test)]
+use otel_arrow_dfe_pdata::codec::CodecState;
+use otel_arrow_dfe_pdata::codec::registered_codecs;
+use otel_arrow_dfe_pdata::{OtapPayload, error::Error as PDataError};
+#[cfg(test)]
+use otel_arrow_dfe_pdata::{OtlpProtoBytes, TryIntoWithOptions};
 use otel_arrow_dfe_telemetry::instrument::{Counter, Mmsc};
 use otel_arrow_dfe_telemetry::metrics::MetricSet;
 use otel_arrow_dfe_telemetry_macros::metric_set;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
-use std::num::NonZeroU64;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -88,62 +90,25 @@ pub const DEFAULT_MAX_BATCH_DURATION_MS: u64 = 200;
 const LOG_MSG_BATCHING_FAILED_PREFIX: &str = "OTAP batch processor: low-level batching failed for";
 const LOG_MSG_BATCHING_FAILED_SUFFIX: &str = "; dropping";
 
-// Encodes each supported (format, signal) pair into a distinct batch-local
-// wakeup slot.
-const fn wakeup_slot(format: SignalFormat, signal: SignalType) -> WakeupSlot {
-    let format_base = match format {
-        SignalFormat::OtapRecords => 0,
-        SignalFormat::OtlpBytes => 3,
-        SignalFormat::Encoded => 6,
-    };
-    let signal_offset = match signal {
+// Each finite buffer owns three signal slots, independent of its codec.
+const fn wakeup_slot(buffer: usize, signal: SignalType) -> WakeupSlot {
+    let offset = match signal {
         SignalType::Logs => 0,
         SignalType::Metrics => 1,
         SignalType::Traces => 2,
     };
-    WakeupSlot(format_base + signal_offset)
+    WakeupSlot(buffer as u128 * 3 + offset)
 }
 
-const fn signal_from_wakeup_slot(slot: WakeupSlot) -> Option<(SignalFormat, SignalType)> {
-    match slot.0 {
-        0 => Some((SignalFormat::OtapRecords, SignalType::Logs)),
-        1 => Some((SignalFormat::OtapRecords, SignalType::Metrics)),
-        2 => Some((SignalFormat::OtapRecords, SignalType::Traces)),
-        3 => Some((SignalFormat::OtlpBytes, SignalType::Logs)),
-        4 => Some((SignalFormat::OtlpBytes, SignalType::Metrics)),
-        5 => Some((SignalFormat::OtlpBytes, SignalType::Traces)),
-        _ => None,
-    }
-}
-
-/// How to size a batch.
-///
-/// Note: these are not always supported. In the present code, the only
-/// supported Sizer value is Items. We expect future support for bytes and
-/// requests sizers.
-#[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum Sizer {
-    /// Count requests. This metric counts one per OtapPdata message.
-    Requests,
-    /// Count items.  The number of log records, trace spans, or
-    /// metric data points.
-    Items,
-    /// Count bytes.
-    Bytes,
-}
-
-impl Sizer {
-    /// Returns Sizer-specific size logic.
-    fn batch_size<T: OtapPayloadHelpers>(&self, payload: &T) -> Result<usize, PDataError> {
-        match self {
-            Self::Requests => Ok(1),
-            Self::Items => Ok(payload.num_items()),
-            Self::Bytes => payload.num_bytes().ok_or_else(|| PDataError::Format {
-                error: "bytes encoding not known".into(),
-            }),
-        }
-    }
+#[cfg(test)]
+fn signal_from_wakeup_slot(slot: WakeupSlot) -> Option<(usize, SignalType)> {
+    let buffer = usize::try_from(slot.0 / 3).ok()?;
+    let signal = match slot.0 % 3 {
+        0 => SignalType::Logs,
+        1 => SignalType::Metrics,
+        _ => SignalType::Traces,
+    };
+    Some((buffer, signal))
 }
 
 /// Min/max size for a specific format
@@ -201,76 +166,103 @@ pub struct FormatConfig {
 }
 
 /// Batching format option.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, PartialEq)]
 pub enum BatchingFormat {
-    /// Force to OTAP (default).
+    /// Force to OTAP.
     Otap,
 
     /// Force to OTLP.
     Otlp,
 
-    /// Preserve format, support both independently.
+    /// Preserve when native batching is supported; otherwise emit OTAP.
     Preserve,
+
+    /// Force output to a registered codec.
+    Codec(String),
 }
 
-/// Output of a batching operation: the produced batches, each paired with the
-/// input-unit *ownership weight* it represents (in the active sizer's unit),
-/// plus the number of oversize entries emitted whole because splitting them
-/// would have exceeded the configured fragment budget.
-///
-/// Ownership weights sum to exactly the input total (even when byte-splitting
-/// duplicates wrapper headers across fragments), so the batch processor can
-/// apportion Ack/Nack subscribers by ownership and attribute every fragment of
-/// a split input back to that input.
-struct BatchingOutput<T> {
-    batches: Vec<(T, usize)>,
-    budget_fallbacks: u64,
+impl<'de> Deserialize<'de> for BatchingFormat {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(deserializer)?.as_str() {
+            "otap" => Self::Otap,
+            "otlp" | "otlp-bytes" => Self::Otlp,
+            "preserve" => Self::Preserve,
+            name => Self::Codec(name.to_owned()),
+        })
+    }
 }
 
-/// The common signature of the batching methods
-trait Batcher<T: OtapPayloadHelpers> {
-    fn make_batches(
-        fmtcfg: &FormatConfig,
-        signal: SignalType,
-        records: Vec<T>,
-    ) -> Result<BatchingOutput<T>, PDataError>;
-
-    fn wakeup_slot(signal: SignalType) -> WakeupSlot;
-
-    /// Returns the appropriate empty request payload for this signal.
-    fn empty(signal: SignalType) -> T;
+impl Serialize for BatchingFormat {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(match self {
+            Self::Otap => "otap",
+            Self::Otlp => "otlp",
+            Self::Preserve => "preserve",
+            Self::Codec(name) => name,
+        })
+    }
 }
 
-/// Batch processor configuration.
+/// Batch processor configuration, with compatible built-in profile aliases.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(try_from = "ConfigInput")]
 pub struct Config {
-    /// The OTAP configuration.
-    #[serde(default = "default_otap")]
+    /// Native OTAP profile (legacy alias for codecs.otap).
     pub otap: FormatConfig,
-
-    /// The OTLP configuration.
-    #[serde(default = "default_otlp")]
+    /// OTLP byte profile (legacy alias for codecs.otlp-bytes).
     pub otlp: FormatConfig,
-
-    /// Maximum time data can sit in a batch before being flushed.
-    /// The timer starts when the first item arrives into an empty batch.
-    /// Set to 0 for immediate flush on every input.
-    #[serde(with = "humantime_serde", default = "default_max_batch_duration")]
+    /// Explicit profiles indexed by canonical codec name.
+    pub codecs: BTreeMap<String, FormatConfig>,
+    /// Maximum age of pending input.
     pub max_batch_duration: Duration,
-
-    /// Limits the number of pending requests for completion tracking.
-    #[serde(default = "default_inbound_request_limit")]
+    /// Per-buffer inbound completion tracking limit.
     pub inbound_request_limit: NonZeroUsize,
-
-    /// Limits the number of outbound requests for completion tracking.
-    #[serde(default = "default_outbound_request_limit")]
+    /// Per-buffer outbound completion tracking limit.
     pub outbound_request_limit: NonZeroUsize,
-
-    /// Batching format choice. Default is to preserve format, meaning
-    /// to batch OTAP and OTLP separately.
-    #[serde(default = "default_batching_format")]
+    /// Desired output representation, or native batching with OTAP fallback.
     pub format: BatchingFormat,
+}
+
+#[derive(Deserialize)]
+struct ConfigInput {
+    otap: Option<FormatConfig>,
+    otlp: Option<FormatConfig>,
+    #[serde(default)]
+    codecs: BTreeMap<String, FormatConfig>,
+    #[serde(with = "humantime_serde", default = "default_max_batch_duration")]
+    max_batch_duration: Duration,
+    #[serde(default = "default_inbound_request_limit")]
+    inbound_request_limit: NonZeroUsize,
+    #[serde(default = "default_outbound_request_limit")]
+    outbound_request_limit: NonZeroUsize,
+    #[serde(default = "default_batching_format")]
+    format: BatchingFormat,
+}
+
+impl TryFrom<ConfigInput> for Config {
+    type Error = String;
+    fn try_from(input: ConfigInput) -> Result<Self, Self::Error> {
+        let mut codecs = BTreeMap::new();
+        for (name, profile) in input.codecs {
+            let format = PdataFormat::resolve(&name).map_err(|error| error.to_string())?;
+            let canonical = format.name().to_owned();
+            if (format == PdataFormat::OTAP && input.otap.is_some())
+                || (format == PdataFormat::OTLP && input.otlp.is_some())
+                || codecs.insert(canonical.clone(), profile).is_some()
+            {
+                return Err(format!("duplicate batching profile for {canonical}"));
+            }
+        }
+        Ok(Self {
+            otap: input.otap.unwrap_or_else(default_otap),
+            otlp: input.otlp.unwrap_or_else(default_otlp),
+            codecs,
+            max_batch_duration: input.max_batch_duration,
+            inbound_request_limit: input.inbound_request_limit,
+            outbound_request_limit: input.outbound_request_limit,
+            format: input.format,
+        })
+    }
 }
 
 const fn default_otap_min_size_items() -> Option<NonZeroUsize> {
@@ -376,32 +368,97 @@ impl Default for Config {
             inbound_request_limit: default_inbound_request_limit(),
             outbound_request_limit: default_outbound_request_limit(),
             format: default_batching_format(),
+            codecs: BTreeMap::new(),
         }
     }
 }
 
 impl Config {
-    /// Validates the configuration.
+    /// Validates all active batching plans and their capabilities.
     pub fn validate(&self) -> Result<(), ConfigError> {
-        let immediate_flush = self.max_batch_duration == Duration::ZERO;
-        match self.format {
-            BatchingFormat::Otap => {
-                self.otap
-                    .validate(SignalFormat::OtapRecords, immediate_flush)?;
-            }
-            BatchingFormat::Otlp => {
-                self.otlp
-                    .validate(SignalFormat::OtlpBytes, immediate_flush)?;
-            }
-            BatchingFormat::Preserve => {
-                self.otap
-                    .validate(SignalFormat::OtapRecords, immediate_flush)?;
-                self.otlp
-                    .validate(SignalFormat::OtlpBytes, immediate_flush)?;
-            }
-        };
+        self.plans().map(|_| ())
+    }
 
-        Ok(())
+    fn profile(&self, format: PdataFormat) -> BatchProfile {
+        if let Some(profile) = self.codecs.get(format.name()) {
+            return profile.into();
+        }
+        if format == PdataFormat::OTAP {
+            return (&self.otap).into();
+        }
+        if format == PdataFormat::OTLP {
+            return (&self.otlp).into();
+        }
+        let mut default = format.default_profile();
+        // A codec without native support uses the configured OTAP fallback profile.
+        if !format.has_native_batching() {
+            self.codecs.get("otap").unwrap_or(&self.otap).into()
+        } else {
+            // Adding a compiled-in codec must not invalidate existing immediate
+            // flush configurations. An implicit profile uses its native threshold
+            // as a split limit; explicit profiles still require valid split settings.
+            if self.max_batch_duration == Duration::ZERO {
+                default.max_size = default.max_size.or(default.min_size);
+                default.min_size = None;
+            }
+            default
+        }
+    }
+
+    fn plans(&self) -> Result<Vec<(PdataFormat, BatchPlan)>, ConfigError> {
+        let formats = if self.format == BatchingFormat::Preserve {
+            let mut formats = vec![PdataFormat::OTAP, PdataFormat::OTLP];
+            let mut extra: Vec<_> = registered_codecs()
+                .filter(|codec| codec.metadata().can_decode)
+                .map(PdataFormat::encoded)
+                .filter(|format| *format != PdataFormat::OTLP)
+                .collect();
+            extra.sort_by_key(|format| format.name());
+            formats.extend(extra);
+            formats
+        } else {
+            vec![match &self.format {
+                BatchingFormat::Otap => PdataFormat::OTAP,
+                BatchingFormat::Otlp => PdataFormat::OTLP,
+                BatchingFormat::Codec(name) => PdataFormat::resolve(name).map_err(config_error)?,
+                BatchingFormat::Preserve => unreachable!(),
+            }]
+        };
+        formats
+            .into_iter()
+            .map(|format| {
+                let profile = self.profile(format);
+                if self.max_batch_duration == Duration::ZERO
+                    && (profile.min_size.is_some() || profile.max_size.is_none())
+                {
+                    return Err(config_error(
+                        "immediate flushing requires max_size and no min_size",
+                    ));
+                }
+                BatchPlan::new(format, profile, self.format == BatchingFormat::Preserve)
+                    .map(|plan| (format, plan))
+                    .map_err(config_error)
+            })
+            .collect()
+    }
+}
+
+fn config_error(error: impl std::fmt::Display) -> ConfigError {
+    ConfigError::InvalidUserConfig {
+        error: error.to_string(),
+    }
+}
+
+impl From<&FormatConfig> for BatchProfile {
+    fn from(profile: &FormatConfig) -> Self {
+        Self {
+            min_size: profile.min_size,
+            max_size: profile.max_size,
+            sizer: profile.sizer,
+            max_split_fragments: profile.max_split_fragments,
+            max_split_overhead_bytes: profile.max_split_overhead_bytes,
+            max_split_fragments_per_flush: profile.max_split_fragments_per_flush,
+        }
     }
 }
 
@@ -429,78 +486,13 @@ impl FormatConfig {
             max_split_fragments_per_flush: default_max_split_fragments_per_flush(),
         }
     }
-
-    /// The lower of the two size limits.
-    fn lower_limit(&self) -> usize {
-        self.min_size.or(self.max_size).expect("valid").get()
-    }
-
-    /// Validate the config, given its format. `immediate_flush` indicates the
-    /// parent Config has max_batch_duration == 0.
-    pub fn validate(&self, format: SignalFormat, immediate_flush: bool) -> Result<(), ConfigError> {
-        // At least one size is set.
-        if self.min_size.or(self.max_size).is_none() {
-            return Err(ConfigError::InvalidUserConfig {
-                error: "max_size or min_size must be set".into(),
-            });
-        }
-
-        // Check for a supported sizer. Presently, OTAP supports only
-        // items, OTLP supports only bytes.
-        let (expect_sizer, with_msg) = match format {
-            SignalFormat::OtapRecords => (Sizer::Items, "OTAP batch sizer: must be items"),
-            SignalFormat::OtlpBytes => (Sizer::Bytes, "OTLP batch sizer: must be bytes"),
-            SignalFormat::Encoded => (
-                Sizer::Bytes,
-                "encoded batches require conversion before legacy batching",
-            ),
-        };
-        if self.sizer != expect_sizer {
-            return Err(ConfigError::InvalidUserConfig {
-                error: with_msg.into(),
-            });
-        }
-
-        // If both sizes are set, check max_size is >= the min_size.
-        if let (Some(max_size), Some(min_size)) = (self.max_size, self.min_size) {
-            if max_size < min_size {
-                return Err(ConfigError::InvalidUserConfig {
-                    error: format!(
-                        "max_size ({}) must be >= min_size ({}) or unset",
-                        max_size, min_size,
-                    ),
-                });
-            }
-        }
-
-        // immediate_flush indicates there is not a time-based flush criteria, which
-        // raises requirements:
-        if immediate_flush {
-            // If min_size is set, we need a max_batch_duration to avoid
-            // indefinite delay.
-            if self.min_size.is_some() {
-                return Err(ConfigError::InvalidUserConfig {
-                    error: "min_size set requires max_batch_duration is set".into(),
-                });
-            }
-            // If max_size is unset, we're doing nothing with a batch processor,
-            // so this is considered an error.
-            if self.max_size.is_none() {
-                return Err(ConfigError::InvalidUserConfig {
-                    error: "max_batch_duration unset requires max_size is set".into(),
-                });
-            }
-        }
-
-        Ok(())
-    }
 }
 
 /// Per-signal state
-struct SignalBatches<T: OtapPayloadHelpers> {
-    logs: SignalBuffer<T>,
-    metrics: SignalBuffer<T>,
-    traces: SignalBuffer<T>,
+struct SignalBatches {
+    logs: SignalBuffer,
+    metrics: SignalBuffer,
+    traces: SignalBuffer,
 }
 
 /// Per-input wait context, including the arriving request's context.
@@ -524,9 +516,10 @@ struct BatchPortion {
     weight: usize,
 }
 
-struct Inputs<T: OtapPayloadHelpers> {
+#[derive(Default)]
+struct Inputs {
     /// Input batches.
-    pending: Vec<T>,
+    pending: Vec<OtapPayload>,
 
     /// Waiter context
     context: Vec<BatchPortion>,
@@ -541,9 +534,9 @@ struct MultiContext {
 }
 
 /// Per-signal buffer state
-struct SignalBuffer<T: OtapPayloadHelpers> {
+struct SignalBuffer {
     /// Pending input state.
-    inputs: Inputs<T>,
+    inputs: Inputs,
 
     /// Map of inbound requests.  This contains a limited number of pending request
     /// contexts with details for the impl to notify after an outcome is available.
@@ -559,38 +552,36 @@ struct SignalBuffer<T: OtapPayloadHelpers> {
 
     /// Whether the local scheduler currently has a live wakeup for this signal.
     wakeup_armed: bool,
+    slot: WakeupSlot,
 }
 
 /// Local (!Send) batch processor
 pub struct BatchProcessor {
     config: Config,
-    otap_signals: Option<SignalBatches<OtapArrowRecords>>,
-    otlp_signals: Option<SignalBatches<OtlpProtoBytes>>,
+    formats: Vec<Option<FormatState>>,
+    routes: Vec<(PdataFormat, usize)>,
     metrics: MetricSet<BatchProcessorMetrics>,
 }
 
-struct BatchProcessorFormat<'a, T: OtapPayloadHelpers> {
+struct FormatState {
+    plan: BatchPlan,
+    signals: SignalBatches,
+}
+
+struct BatchProcessorFormat<'a> {
     config: &'a Config,
-    fmtcfg: &'a FormatConfig,
-    signals: &'a mut SignalBatches<T>,
+    plan: &'a BatchPlan,
+    signals: &'a mut SignalBatches,
     metrics: &'a mut MetricSet<BatchProcessorMetrics>,
 }
 
-struct BatchProcessorSignal<'a, T: OtapPayloadHelpers>
-where
-    SignalBuffer<T>: Batcher<T>,
-{
+struct BatchProcessorSignal<'a> {
     signal: SignalType,
     config: &'a Config,
-    fmtcfg: &'a FormatConfig,
-    buffer: &'a mut SignalBuffer<T>,
+    fmtcfg: &'a BatchProfile,
+    plan: &'a BatchPlan,
+    buffer: &'a mut SignalBuffer,
     metrics: &'a mut MetricSet<BatchProcessorMetrics>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ActiveBatchProcessorFormatKind {
-    Otap,
-    Otlp,
 }
 
 /// There are three reasons to flush.
@@ -650,10 +641,6 @@ pub struct BatchProcessorMetrics {
     split_budget_fallbacks: Counter<u64>,
 }
 
-fn nzu_to_nz64(nz: Option<NonZeroUsize>) -> Option<NonZeroU64> {
-    nz.map(|nz| NonZeroU64::new(nz.get() as u64).expect("nonzero"))
-}
-
 async fn log_batching_failed(
     effect: &mut local::EffectHandler<OtapPdata>,
     signal: SignalType,
@@ -667,18 +654,8 @@ async fn log_batching_failed(
 }
 
 impl BatchProcessor {
-    fn no_active_format_error() -> EngineError {
-        EngineError::InternalError {
-            message: "batch processor has no active format state".to_owned(),
-        }
-    }
-
-    const fn local_wakeup_requirements(&self) -> LocalWakeupRequirements {
-        let live_slots = match self.config.format {
-            BatchingFormat::Otap | BatchingFormat::Otlp => 3,
-            BatchingFormat::Preserve => 6,
-        };
-        LocalWakeupRequirements::new(live_slots)
+    fn local_wakeup_requirements(&self) -> LocalWakeupRequirements {
+        LocalWakeupRequirements::new(self.formats.iter().flatten().count() * 3)
     }
 
     /// Parse JSON config and build the processor instance with the provided metrics set.
@@ -693,23 +670,37 @@ impl BatchProcessor {
                 error: format!("invalid OTAP batch processor config: {e}"),
             })?;
 
-        // This checks that if both are present, max_size >= min_size, and
-        // that at least one is present so that lower_limit is valid below.
-        config.validate()?;
-
-        let otap_signals: Option<SignalBatches<OtapArrowRecords>> = config
-            .format
-            .has_otap()
-            .then(|| SignalBatches::new(&config));
-        let otlp_signals: Option<SignalBatches<OtlpProtoBytes>> = config
-            .format
-            .has_otlp()
-            .then(|| SignalBatches::new(&config));
-
-        Ok(BatchProcessor {
+        let plans = config.plans()?;
+        let mut formats: Vec<Option<FormatState>> = vec![None, None];
+        let mut routes = Vec::new();
+        for (source, plan) in plans {
+            let existing = formats
+                .iter()
+                .position(|state| state.as_ref().is_some_and(|state| state.plan == plan));
+            let index = existing.unwrap_or_else(|| {
+                if source == PdataFormat::OTAP {
+                    0
+                } else if source == PdataFormat::OTLP {
+                    1
+                } else {
+                    formats.len()
+                }
+            });
+            if index == formats.len() {
+                formats.push(None);
+            }
+            if formats[index].is_none() {
+                formats[index] = Some(FormatState {
+                    plan,
+                    signals: SignalBatches::new(&config, index),
+                });
+            }
+            routes.push((source, index));
+        }
+        Ok(Self {
             config,
-            otap_signals,
-            otlp_signals,
+            formats,
+            routes,
             metrics,
         })
     }
@@ -730,133 +721,86 @@ impl BatchProcessor {
         Ok(ProcessorWrapper::local(proc, node, user_config, proc_cfg))
     }
 
-    /// Flush all per-signal buffers (logs, metrics, traces).
+    /// Flushes each registered buffer at shutdown.
     async fn flush_shutdown(
         &mut self,
         effect: &mut local::EffectHandler<OtapPdata>,
     ) -> Result<(), EngineError> {
-        for signal in [SignalType::Logs, SignalType::Traces, SignalType::Metrics] {
-            if let Some(mut otap_signals) = self.otap_format() {
-                otap_signals
-                    .for_signal(signal)
-                    .flush_signal_impl(effect, Instant::now(), FlushReason::Shutdown)
-                    .await?;
-            }
-            if let Some(mut otlp_signals) = self.otlp_format() {
-                otlp_signals
-                    .for_signal(signal)
-                    .flush_signal_impl(effect, Instant::now(), FlushReason::Shutdown)
-                    .await?;
+        for index in 0..self.formats.len() {
+            for signal in [SignalType::Logs, SignalType::Traces, SignalType::Metrics] {
+                if let Some(mut format) = self.format(index) {
+                    format
+                        .for_signal(signal)
+                        .flush_signal_impl(effect, Instant::now(), FlushReason::Shutdown)
+                        .await?;
+                }
             }
         }
         Ok(())
     }
 
-    fn otap_format(&mut self) -> Option<BatchProcessorFormat<'_, OtapArrowRecords>> {
-        self.otap_signals
+    fn format(&mut self, index: usize) -> Option<BatchProcessorFormat<'_>> {
+        self.formats
+            .get_mut(index)?
             .as_mut()
-            .map(|signals| BatchProcessorFormat {
+            .map(|state| BatchProcessorFormat {
                 config: &self.config,
-                fmtcfg: &self.config.otap,
-                signals,
+                plan: &state.plan,
+                signals: &mut state.signals,
                 metrics: &mut self.metrics,
             })
     }
 
-    fn otlp_format(&mut self) -> Option<BatchProcessorFormat<'_, OtlpProtoBytes>> {
-        self.otlp_signals
-            .as_mut()
-            .map(|signals| BatchProcessorFormat {
-                config: &self.config,
-                fmtcfg: &self.config.otlp,
-                signals,
-                metrics: &mut self.metrics,
-            })
-    }
-
-    fn format_for_signal_format(
-        &self,
-        signal_format: SignalFormat,
-    ) -> Option<ActiveBatchProcessorFormatKind> {
-        match signal_format {
-            SignalFormat::OtapRecords if self.otap_signals.is_some() => {
-                Some(ActiveBatchProcessorFormatKind::Otap)
-            }
-            SignalFormat::OtapRecords if self.otlp_signals.is_some() => {
-                Some(ActiveBatchProcessorFormatKind::Otlp)
-            }
-            SignalFormat::OtlpBytes if self.otlp_signals.is_some() => {
-                Some(ActiveBatchProcessorFormatKind::Otlp)
-            }
-            SignalFormat::OtlpBytes if self.otap_signals.is_some() => {
-                Some(ActiveBatchProcessorFormatKind::Otap)
-            }
-            _ => None,
-        }
-    }
-
-    /// Process one incoming batch. Immediately acks empty requests.
-    /// If this input causes pending data to exceed the lower bound, it will
-    /// flush at least one output.
+    /// The pdata plan owns preparation; the node owns scheduling and delivery.
     async fn process_signal_impl(
         &mut self,
         effect: &mut local::EffectHandler<OtapPdata>,
         request: OtapPdata,
     ) -> Result<(), EngineError> {
         let signal = request.signal_type();
-
-        let (ctx, payload) = request.into_parts();
-
-        match payload.into_data() {
-            PayloadData::OtapArrowRecords(otap) => {
-                if let Some(mut otap_format) = self.otap_format() {
-                    otap_format
-                        .for_signal(signal)
-                        .accept_payload(effect, ctx, otap)
-                        .await?
-                } else if let Some(mut otlp_format) = self.otlp_format() {
-                    let otlp_payload = otap.try_into_with_default()?;
-                    otlp_format
-                        .for_signal(signal)
-                        .accept_payload(effect, ctx, otlp_payload)
-                        .await?
-                } else {
-                    return Err(Self::no_active_format_error());
-                }
-            }
-            PayloadData::OtlpBytes(otlp) => {
-                if let Some(mut otlp_format) = self.otlp_format() {
-                    otlp_format
-                        .for_signal(signal)
-                        .accept_payload(effect, ctx, otlp)
-                        .await?
-                } else if let Some(mut otap_format) = self.otap_format() {
-                    let otap_payload = otlp.try_into_with_default()?;
-                    otap_format
-                        .for_signal(signal)
-                        .accept_payload(effect, ctx, otap_payload)
-                        .await?
-                } else {
-                    return Err(Self::no_active_format_error());
-                }
-            }
-            PayloadData::Encoded(_) => {
-                unreachable!("encoded payloads are not admitted during the storage transition")
-            }
+        let (ctx, mut payload) = request.into_parts();
+        let index = if self.config.format == BatchingFormat::Preserve {
+            self.routes
+                .iter()
+                .find(|(source, _)| *source == payload.format())
+                .map(|(_, index)| *index)
+        } else {
+            self.routes.first().map(|(_, index)| *index)
         };
-        Ok(())
+        let Some(index) = index else {
+            effect
+                .notify_nack(NackMsg::new_permanent(
+                    "no batching plan for admitted codec",
+                    OtapPdata::new(ctx, payload),
+                ))
+                .await?;
+            return Ok(());
+        };
+        let mut format = self.format(index).expect("configured route");
+        if let Err(error) = effect.prepare_batch(format.plan, &mut payload).await {
+            format.metrics.dropped_conversion.inc();
+            effect
+                .notify_nack(NackMsg::new_permanent(
+                    error.to_string(),
+                    OtapPdata::new(ctx, payload),
+                ))
+                .await?;
+            return Ok(());
+        }
+        format
+            .for_signal(signal)
+            .accept_payload(effect, ctx, payload)
+            .await
     }
 }
 
-impl<'a, T: OtapPayloadHelpers> BatchProcessorFormat<'a, T>
-where
-    SignalBuffer<T>: Batcher<T>,
-{
-    const fn for_signal(&mut self, signal: SignalType) -> BatchProcessorSignal<'_, T> {
+impl<'a> BatchProcessorFormat<'a> {
+    const fn for_signal(&mut self, signal: SignalType) -> BatchProcessorSignal<'_> {
         BatchProcessorSignal {
             signal,
             config: self.config,
-            fmtcfg: self.fmtcfg,
+            fmtcfg: self.plan.profile(),
+            plan: self.plan,
             buffer: match signal {
                 SignalType::Logs => &mut self.signals.logs,
                 SignalType::Traces => &mut self.signals.traces,
@@ -867,101 +811,19 @@ where
     }
 }
 
-impl Batcher<OtapArrowRecords> for SignalBuffer<OtapArrowRecords> {
-    fn make_batches(
-        fmtcfg: &FormatConfig,
-        signal: SignalType,
-        pending: Vec<OtapArrowRecords>,
-    ) -> Result<BatchingOutput<OtapArrowRecords>, PDataError> {
-        // OTAP only supports Sizer::Items (checked in validate)
-        debug_assert_eq!(fmtcfg.sizer, Sizer::Items);
-        let batches = make_item_batches(signal, nzu_to_nz64(fmtcfg.max_size), pending)?;
-        // Item batches never duplicate content, so each output's ownership
-        // weight is simply its item count.
-        let batches = batches
-            .into_iter()
-            .map(|b| {
-                let weight = fmtcfg.sizer.batch_size(&b)?;
-                Ok((b, weight))
-            })
-            .collect::<Result<Vec<_>, PDataError>>()?;
-        Ok(BatchingOutput {
-            batches,
-            budget_fallbacks: 0,
-        })
-    }
-
-    fn empty(signal: SignalType) -> OtapArrowRecords {
-        match signal {
-            SignalType::Logs => OtapArrowRecords::Logs(otel_arrow_dfe_pdata::otap::Logs::default()),
-            SignalType::Metrics => {
-                OtapArrowRecords::Metrics(otel_arrow_dfe_pdata::otap::Metrics::default())
-            }
-            SignalType::Traces => {
-                OtapArrowRecords::Traces(otel_arrow_dfe_pdata::otap::Traces::default())
-            }
-        }
-    }
-
-    fn wakeup_slot(signal: SignalType) -> WakeupSlot {
-        wakeup_slot(SignalFormat::OtapRecords, signal)
-    }
-}
-
-impl Batcher<OtlpProtoBytes> for SignalBuffer<OtlpProtoBytes> {
-    fn make_batches(
-        fmtcfg: &FormatConfig,
-        signal: SignalType,
-        pending: Vec<OtlpProtoBytes>,
-    ) -> Result<BatchingOutput<OtlpProtoBytes>, PDataError> {
-        // OTLP only supports Sizer::Bytes (checked in validate)
-        debug_assert_eq!(fmtcfg.sizer, Sizer::Bytes);
-        let BytesBatches {
-            batches,
-            budget_fallbacks,
-        } = make_bytes_batches_owned(
-            signal,
-            nzu_to_nz64(fmtcfg.max_size),
-            nzu_to_nz64(fmtcfg.max_split_fragments),
-            nzu_to_nz64(fmtcfg.max_split_overhead_bytes),
-            nzu_to_nz64(fmtcfg.max_split_fragments_per_flush),
-            pending,
-        )?;
-        Ok(BatchingOutput {
-            batches,
-            budget_fallbacks,
-        })
-    }
-
-    fn empty(signal: SignalType) -> OtlpProtoBytes {
-        match signal {
-            SignalType::Logs => OtlpProtoBytes::ExportLogsRequest(Bytes::new()),
-            SignalType::Metrics => OtlpProtoBytes::ExportMetricsRequest(Bytes::new()),
-            SignalType::Traces => OtlpProtoBytes::ExportTracesRequest(Bytes::new()),
-        }
-    }
-
-    fn wakeup_slot(signal: SignalType) -> WakeupSlot {
-        wakeup_slot(SignalFormat::OtlpBytes, signal)
-    }
-}
-
-impl<'a, T: OtapPayloadHelpers> BatchProcessorSignal<'a, T>
-where
-    SignalBuffer<T>: Batcher<T>,
-{
+impl<'a> BatchProcessorSignal<'a> {
     async fn accept_payload(
         &mut self,
         effect: &mut local::EffectHandler<OtapPdata>,
         ctx: Context,
-        payload: T,
+        payload: OtapPayload,
     ) -> Result<(), EngineError> {
         let weight = self.fmtcfg.sizer.batch_size(&payload)?;
         if weight == 0 {
             // Note: we do not check for empty envelopes, e.g., logs
             // requests with only a resource and no log records. We do
             // not count these.
-            let mut pdata = OtapPdata::new(ctx, payload.into());
+            let mut pdata = OtapPdata::new(ctx, payload);
             pdata.complete_processor_without_output(effect);
             effect.notify_ack(AckMsg::new(pdata)).await?;
             return Ok(());
@@ -983,7 +845,7 @@ where
             match slot {
                 Err(bctx) => {
                     self.metrics.nacked_inbound_slots.inc();
-                    let refused = OtapPdata::new(bctx.ctx, payload.into());
+                    let refused = OtapPdata::new(bctx.ctx, payload);
                     // Note: Failure to Ack/Nack is an engine-level error.
                     effect
                         .notify_nack(NackMsg::new("inbound routes exhausted", refused))
@@ -1058,7 +920,7 @@ where
         }
 
         if reason != FlushReason::Timer && self.buffer.wakeup_armed {
-            let _ = effect.cancel_wakeup(SignalBuffer::<T>::wakeup_slot(self.signal));
+            let _ = effect.cancel_wakeup(self.buffer.slot);
             self.buffer.wakeup_armed = false;
         }
 
@@ -1108,7 +970,7 @@ where
         let BatchingOutput {
             batches: mut output_batches,
             budget_fallbacks,
-        } = match SignalBuffer::<T>::make_batches(self.fmtcfg, self.signal, pending) {
+        } = match effect.batch(self.plan, self.signal, pending).await {
             Ok(v) => v,
             Err(e) => {
                 self.metrics.batching_errors.add(count as u64);
@@ -1119,7 +981,7 @@ where
                 self.buffer
                     .handle_partial_responses(self.signal, effect, &res, inputs.context)
                     .await?;
-                return Err(EngineError::InternalError { message: str });
+                return Ok(());
             }
         };
 
@@ -1190,16 +1052,31 @@ where
 
         let mut input_context = inputs.take_context();
 
-        for (records, ownership) in output_batches {
+        for (mut records, ownership) in output_batches {
             // Apportion ack/nack subscribers by the batch's ownership weight
             // (input units it represents), not its own encoded size, so every
             // fragment of a split input is attributed back to that input.
             let weight = ownership;
-            let mut pdata = OtapPdata::new(Context::default(), records.into());
 
             // If any inputs require completion tracking, get an outbound slot
             // and subscribe so their contexts can unwind after this output.
             let (routed_ctxs, merged_peer) = self.buffer.drain_context(weight, &mut input_context);
+            if let Err(error) = effect.finish_batch(self.plan, &mut records).await {
+                self.metrics.dropped_conversion.inc();
+                if let Some(parts) = routed_ctxs {
+                    self.buffer
+                        .handle_partial_responses(
+                            self.signal,
+                            effect,
+                            &Err(error.to_string()),
+                            parts,
+                        )
+                        .await?;
+                }
+                continue;
+            }
+            let mut pdata = OtapPdata::new(Context::default(), records);
+
             // Forward the receiver-observed peer address only when every
             // input merged into this output batch came from the same peer
             // (see Context::merge_peer_addr). Mixed-peer batches leave
@@ -1219,10 +1096,7 @@ where
                                 effect
                                     .notify_nack(NackMsg::new(
                                         "outbound routes exhausted",
-                                        OtapPdata::new(
-                                            batch.ctx,
-                                            SignalBuffer::empty(self.signal).into(),
-                                        ),
+                                        OtapPdata::new(batch.ctx, OtapPayload::empty(self.signal)),
                                     ))
                                     .await?;
                                 // Note: failure to get an outbound slot does not
@@ -1232,9 +1106,11 @@ where
                         }
                     }
                     Ok(outkey) => {
+                        let mut calldata: CallData = outkey.into();
+                        calldata.push((self.buffer.slot.0 as u64).into());
                         effect.subscribe_to(
                             Interests::NACKS | Interests::ACKS,
-                            outkey.into(),
+                            calldata,
                             &mut pdata,
                         );
                     }
@@ -1302,24 +1178,29 @@ impl BatchProcessor {
             return Ok(());
         }
 
-        let signal = retdata.signal_type();
-        match self.format_for_signal_format(retdata.signal_format()) {
-            Some(ActiveBatchProcessorFormatKind::Otap) => {
-                self.otap_format()
-                    .expect("otap batch state must exist when otap format kind is selected")
-                    .for_signal(signal)
-                    .handle(signal, calldata, effect, res)
-                    .await
-            }
-            Some(ActiveBatchProcessorFormatKind::Otlp) => {
-                self.otlp_format()
-                    .expect("otlp batch state must exist when otlp format kind is selected")
-                    .for_signal(signal)
-                    .handle(signal, calldata, effect, res)
-                    .await
-            }
-            None => Err(Self::no_active_format_error()),
+        let mut calldata = calldata;
+        if calldata.len() != 2 {
+            return Err(EngineError::InternalError {
+                message: "invalid batch completion token".into(),
+            });
         }
+        let slot = u64::from(calldata.pop().expect("checked token"));
+        let index = (slot / 3) as usize;
+        let signal = match slot % 3 {
+            0 => SignalType::Logs,
+            1 => SignalType::Metrics,
+            _ => SignalType::Traces,
+        };
+        let _ = retdata;
+        let mut format = self
+            .format(index)
+            .ok_or_else(|| EngineError::InternalError {
+                message: "unknown batch completion buffer".into(),
+            })?;
+        format
+            .for_signal(signal)
+            .handle(signal, calldata, effect, res)
+            .await
     }
 }
 
@@ -1377,33 +1258,20 @@ impl local::Processor<OtapPdata> for BatchProcessor {
                     Ok(())
                 }
                 NodeControlMsg::Wakeup { slot, when, .. } => {
-                    let Some((format, signal)) = signal_from_wakeup_slot(slot) else {
+                    let Ok(index) = usize::try_from(slot.0 / 3) else {
                         return Ok(());
                     };
-
-                    match format {
-                        SignalFormat::OtapRecords => {
-                            if let Some(mut otap_format) = self.otap_format() {
-                                otap_format
-                                    .for_signal(signal)
-                                    .flush_signal_impl(effect, when, FlushReason::Timer)
-                                    .await?;
-                            }
-                        }
-                        SignalFormat::OtlpBytes => {
-                            if let Some(mut otlp_format) = self.otlp_format() {
-                                otlp_format
-                                    .for_signal(signal)
-                                    .flush_signal_impl(effect, when, FlushReason::Timer)
-                                    .await?;
-                            }
-                        }
-                        SignalFormat::Encoded => {
-                            unreachable!(
-                                "encoded payloads are not admitted during the storage transition"
-                            )
-                        }
+                    let signal = match slot.0 % 3 {
+                        0 => SignalType::Logs,
+                        1 => SignalType::Metrics,
+                        _ => SignalType::Traces,
                     };
+                    if let Some(mut format) = self.format(index) {
+                        format
+                            .for_signal(signal)
+                            .flush_signal_impl(effect, when, FlushReason::Timer)
+                            .await?;
+                    }
 
                     Ok(())
                 }
@@ -1419,35 +1287,12 @@ impl local::Processor<OtapPdata> for BatchProcessor {
     }
 }
 
-impl<T: OtapPayloadHelpers> Default for Inputs<T> {
-    fn default() -> Self {
+impl SignalBatches {
+    fn new(config: &Config, index: usize) -> Self {
         Self {
-            pending: Vec::new(),
-            context: Vec::new(),
-            weight: 0,
-        }
-    }
-}
-
-impl BatchingFormat {
-    const fn has_otlp(&self) -> bool {
-        !matches!(self, Self::Otap)
-    }
-
-    const fn has_otap(&self) -> bool {
-        !matches!(self, Self::Otlp)
-    }
-}
-
-impl<T: OtapPayloadHelpers> SignalBatches<T>
-where
-    SignalBuffer<T>: Batcher<T>,
-{
-    fn new(config: &Config) -> Self {
-        Self {
-            logs: SignalBuffer::new(config),
-            traces: SignalBuffer::new(config),
-            metrics: SignalBuffer::new(config),
+            logs: SignalBuffer::new(config, wakeup_slot(index, SignalType::Logs)),
+            traces: SignalBuffer::new(config, wakeup_slot(index, SignalType::Traces)),
+            metrics: SignalBuffer::new(config, wakeup_slot(index, SignalType::Metrics)),
         }
     }
 }
@@ -1468,7 +1313,7 @@ impl MultiContext {
     }
 }
 
-impl<T: OtapPayloadHelpers> Inputs<T> {
+impl Inputs {
     fn drain(&mut self) -> Self {
         Self {
             pending: std::mem::take(&mut self.pending),
@@ -1498,13 +1343,13 @@ impl<T: OtapPayloadHelpers> Inputs<T> {
         }
     }
 
-    fn accept(&mut self, batch: T, part: BatchPortion) {
+    fn accept(&mut self, batch: OtapPayload, part: BatchPortion) {
         self.weight += part.weight;
         self.pending.push(batch);
         self.context.push(part);
     }
 
-    fn take_pending(&mut self) -> Vec<T> {
+    fn take_pending(&mut self) -> Vec<OtapPayload> {
         std::mem::take(&mut self.pending)
     }
 
@@ -1513,32 +1358,29 @@ impl<T: OtapPayloadHelpers> Inputs<T> {
     }
 }
 
-fn known_total_bytes<T: OtapPayloadHelpers>(payloads: &[T]) -> Option<usize> {
+fn known_total_bytes(payloads: &[OtapPayload]) -> Option<usize> {
     payloads.iter().try_fold(0usize, |total, payload| {
-        payload.num_bytes().map(|bytes| total + bytes)
+        payload.measured_bytes().map(|bytes| total + bytes)
     })
 }
 
 /// Like [`known_total_bytes`] but over output batches paired with ownership
 /// weights (the weight is ignored; only the real encoded size is summed).
-fn known_total_output_bytes<T: OtapPayloadHelpers>(payloads: &[(T, usize)]) -> Option<usize> {
+fn known_total_output_bytes(payloads: &[(OtapPayload, usize)]) -> Option<usize> {
     payloads.iter().try_fold(0usize, |total, (payload, _own)| {
-        payload.num_bytes().map(|bytes| total + bytes)
+        payload.measured_bytes().map(|bytes| total + bytes)
     })
 }
 
-impl<T: OtapPayloadHelpers> SignalBuffer<T>
-where
-    Inputs<T>: Default,
-    Self: Batcher<T>,
-{
-    fn new(cfg: &Config) -> Self {
+impl SignalBuffer {
+    fn new(cfg: &Config, slot: WakeupSlot) -> Self {
         Self {
             inputs: Inputs::default(),
             inbound: SlotState::new(cfg.inbound_request_limit.get()),
             outbound: SlotState::new(cfg.outbound_request_limit.get()),
             arrival: None,
             wakeup_armed: false,
+            slot,
         }
     }
 
@@ -1548,8 +1390,8 @@ where
     fn take_remaining(
         &mut self,
         sizer: Sizer,
-        from_inputs: &mut Inputs<T>,
-        output_batches: &mut Vec<(T, usize)>,
+        from_inputs: &mut Inputs,
+        output_batches: &mut Vec<(OtapPayload, usize)>,
     ) {
         // SAFETY: protected by output_batches.len() > 1. The caller only retains
         // a whole-input partial (ownership weight == real size), so recomputing
@@ -1671,13 +1513,13 @@ where
     /// should flush, where `now` is the current timestamp.
     async fn set_arrival(
         &mut self,
-        signal: SignalType,
+        _signal: SignalType,
         now: Instant,
         timeout: Duration,
         effect: &mut local::EffectHandler<OtapPdata>,
     ) -> Result<(), EngineError> {
         effect
-            .set_wakeup(Self::wakeup_slot(signal), now + timeout)
+            .set_wakeup(self.slot, now + timeout)
             .map(|_| {
                 self.arrival = Some(now);
                 self.wakeup_armed = true;
@@ -1730,7 +1572,6 @@ mod tests {
     use otel_arrow_dfe_otap::testing::TestCallData;
     use otel_arrow_dfe_otap::testing::{next_ack, next_nack};
     use otel_arrow_dfe_pdata::encode::{encode_logs_otap_batch, encode_spans_otap_batch};
-    use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
     use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
     use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::InstrumentationScope;
     use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{
@@ -1846,9 +1687,170 @@ mod tests {
         assert_eq!(uc.default_output.as_deref(), Some("main_output"));
     }
 
+    /// Scenario: The batch processor is created with its default configuration.
+    /// Guarantees: Default codec profiles and duration limits are accepted.
     #[test]
     fn test_default_config_ok() {
         let _cfg: Config = serde_json::from_value(json!({})).unwrap_or_default();
+    }
+
+    /// Scenario: users configure built-in profiles through legacy aliases or
+    /// canonical codec names, or request ambiguous/unsupported configurations.
+    /// Guarantees: compatible YAML resolves identically and invalid capabilities
+    /// are rejected before the processor buffers any requests.
+    #[test]
+    fn codec_profiles_preserve_configuration_compatibility() {
+        let legacy: Config = serde_json::from_value(json!({
+            "format": "otlp", "otlp": { "min_size": 32, "max_size": 64, "sizer": "bytes" }
+        }))
+        .unwrap();
+        let canonical: Config = serde_json::from_value(json!({
+            "format": "otlp-bytes", "codecs": { "otlp-bytes": { "min_size": 32, "max_size": 64, "sizer": "bytes" } }
+        })).unwrap();
+        assert_eq!(legacy.plans().unwrap(), canonical.plans().unwrap());
+        let immediate: Config = serde_json::from_value(json!({
+            "max_batch_duration": "0s",
+            "otap": { "max_size": 100, "sizer": "items" },
+            "otlp": { "max_size": 10000, "sizer": "bytes" }
+        }))
+        .unwrap();
+        immediate.validate().unwrap();
+        assert!(
+            serde_json::from_value::<Config>(json!({
+                "otlp": { "min_size": 32, "sizer": "bytes" },
+                "codecs": { "otlp-bytes": { "min_size": 32, "sizer": "bytes" } }
+            }))
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate")
+        );
+        assert!(
+            serde_json::from_value::<Config>(json!({
+                "codecs": { "not-registered": { "min_size": 1, "sizer": "items" } }
+            }))
+            .is_err()
+        );
+        let decode_only: Config = serde_json::from_value(json!({
+            "format": "test-otlp-decode-only"
+        }))
+        .unwrap();
+        assert!(
+            decode_only
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("encoder unavailable")
+        );
+        let unsupported: Config = serde_json::from_value(json!({
+            "codecs": { "test-otlp-codec": { "min_size": 1, "sizer": "bytes" } }
+        }))
+        .unwrap();
+        assert!(
+            unsupported
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("fallback requires items")
+        );
+    }
+
+    /// Scenario: preserve mode receives a native-batching extension and a
+    /// decoder-only extension, and downstream changes their output representation.
+    /// Guarantees: native output retains its codec, fallback emits OTAP, and both
+    /// Ack and Nack reach the correct input through explicit completion tokens.
+    #[test]
+    fn codec_batches_route_completions_after_downstream_conversion() {
+        use otel_arrow_dfe_pdata::codec::{EncodedPdata, PdataEncoding};
+        let (_, _, phase) = setup_test_runtime(json!({
+            "format": "preserve",
+            "otap": { "min_size": 1, "sizer": "items" },
+            "codecs": { "test-native-otlp": { "min_size": 1, "sizer": "bytes" } },
+            "max_batch_duration": "1s"
+        }));
+        phase
+            .run_test(move |mut ctx| async move {
+                let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(10);
+                ctx.set_pipeline_completion_sender(completion_tx);
+                let mut generator = DataGenerator::new(1);
+                for (index, name) in ["test-native-otlp", "test-otlp-decode-only"]
+                    .into_iter()
+                    .enumerate()
+                {
+                    let logs: OtlpProtoMessage = generator.generate_logs().into();
+                    let bytes = otlp_message_to_bytes(&logs).clone_bytes();
+                    let encoded = EncodedPdata::new(
+                        &PdataEncoding::from(name.to_owned()),
+                        SignalType::Logs,
+                        bytes,
+                    )
+                    .unwrap();
+                    let input = OtapPdata::new_default(encoded.into()).test_subscribe_to(
+                        Interests::ACKS | Interests::NACKS,
+                        TestCallData::new_with(index as u64, 0).into(),
+                        23,
+                    );
+                    ctx.process(Message::PData(input)).await.unwrap();
+                    let mut outputs = ctx.drain_pdata().await;
+                    assert_eq!(outputs.len(), 1);
+                    let output = outputs.pop().unwrap();
+                    assert_eq!(
+                        output.payload_ref().format().name(),
+                        if index == 0 { name } else { "otap" }
+                    );
+                    assert_equivalent(&[logs], &[otap_pdata_to_message(&output)]);
+                    // Both replies use a representation different from the emitted one.
+                    let returned = if index == 0 {
+                        output
+                            .try_into_otap(&mut CodecState::default())
+                            .unwrap()
+                            .into_pdata()
+                    } else {
+                        let (context, payload) = output.into_parts();
+                        OtapPdata::new(
+                            context,
+                            payload
+                                .into_encoded_for_test(PdataEncoding::OTLP, Default::default())
+                                .unwrap()
+                                .into(),
+                        )
+                    };
+                    if index == 0 {
+                        let (_, ack) = next_ack(AckMsg::new(returned)).unwrap();
+                        ctx.process(Message::Control(NodeControlMsg::Ack(ack)))
+                            .await
+                            .unwrap();
+                    } else {
+                        let (_, nack) =
+                            next_nack(NackMsg::new("test rejection", returned)).unwrap();
+                        ctx.process(Message::Control(NodeControlMsg::Nack(nack)))
+                            .await
+                            .unwrap();
+                    }
+                    let completion = next_completion(
+                        &mut completion_rx,
+                        Duration::from_secs(1),
+                        "codec batch completion",
+                    )
+                    .await;
+                    let (node, calldata) = match completion {
+                        PipelineCompletionMsg::DeliverAck { ack } if index == 0 => {
+                            let (node, ack) = next_ack(ack).unwrap();
+                            (node, ack.unwind.route.calldata)
+                        }
+                        PipelineCompletionMsg::DeliverNack { nack } if index == 1 => {
+                            let (node, nack) = next_nack(nack).unwrap();
+                            (node, nack.unwind.route.calldata)
+                        }
+                        other => panic!("unexpected completion: {other:?}"),
+                    };
+                    assert_eq!(node, 23);
+                    assert_eq!(
+                        TestCallData::try_from(calldata).unwrap(),
+                        TestCallData::new_with(index as u64, 0)
+                    );
+                }
+            })
+            .validate(|_| async {});
     }
 
     #[test]
@@ -1972,18 +1974,21 @@ mod tests {
     }
 
     fn otap_pdata_to_message(data: &OtapPdata) -> OtlpProtoMessage {
-        let rec: OtapArrowRecords = data.clone().payload().try_into_with_default().unwrap();
-        otap_to_otlp(&rec)
+        let rec = data
+            .clone()
+            .try_into_otap(&mut CodecState::default())
+            .unwrap();
+        otap_to_otlp(rec.records())
     }
 
     const fn all_wakeup_slots() -> [WakeupSlot; 6] {
         [
-            wakeup_slot(SignalFormat::OtapRecords, SignalType::Logs),
-            wakeup_slot(SignalFormat::OtapRecords, SignalType::Metrics),
-            wakeup_slot(SignalFormat::OtapRecords, SignalType::Traces),
-            wakeup_slot(SignalFormat::OtlpBytes, SignalType::Logs),
-            wakeup_slot(SignalFormat::OtlpBytes, SignalType::Metrics),
-            wakeup_slot(SignalFormat::OtlpBytes, SignalType::Traces),
+            wakeup_slot(0, SignalType::Logs),
+            wakeup_slot(0, SignalType::Metrics),
+            wakeup_slot(0, SignalType::Traces),
+            wakeup_slot(1, SignalType::Logs),
+            wakeup_slot(1, SignalType::Metrics),
+            wakeup_slot(1, SignalType::Traces),
         ]
     }
 
@@ -2318,12 +2323,12 @@ mod tests {
     #[test]
     fn test_wakeup_slot_round_trip_and_uniqueness() {
         let slots = [
-            (SignalFormat::OtapRecords, SignalType::Logs),
-            (SignalFormat::OtapRecords, SignalType::Metrics),
-            (SignalFormat::OtapRecords, SignalType::Traces),
-            (SignalFormat::OtlpBytes, SignalType::Logs),
-            (SignalFormat::OtlpBytes, SignalType::Metrics),
-            (SignalFormat::OtlpBytes, SignalType::Traces),
+            (0, SignalType::Logs),
+            (0, SignalType::Metrics),
+            (0, SignalType::Traces),
+            (1, SignalType::Logs),
+            (1, SignalType::Metrics),
+            (1, SignalType::Traces),
         ];
 
         for (expected_format, expected_signal) in slots {
@@ -2347,6 +2352,8 @@ mod tests {
     // The processor replaces wakeups per slot. This test proves that an early
     // wakeup is ignored and that the current wakeup still flushes the buffered
     // input later.
+    /// Scenario: A stale timer wakeup arrives before the current batch deadline.
+    /// Guarantees: The early wakeup leaves data buffered and the current wakeup flushes it once.
     #[test]
     fn test_timer_flush_ignores_stale_wakeup() {
         let (_telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
@@ -2394,7 +2401,7 @@ mod tests {
 
                 let stale_when = Instant::now();
                 ctx.process(Message::Control(NodeControlMsg::Wakeup {
-                    slot: wakeup_slot(SignalFormat::OtapRecords, SignalType::Logs),
+                    slot: wakeup_slot(0, SignalType::Logs),
                     when: stale_when,
                     revision: 0,
                 }))
@@ -2407,7 +2414,7 @@ mod tests {
 
                 let current_when = Instant::now() + Duration::from_secs(1);
                 ctx.process(Message::Control(NodeControlMsg::Wakeup {
-                    slot: wakeup_slot(SignalFormat::OtapRecords, SignalType::Logs),
+                    slot: wakeup_slot(0, SignalType::Logs),
                     when: current_when,
                     revision: 1,
                 }))
@@ -2548,7 +2555,7 @@ mod tests {
 
                 let current_when = Instant::now() + Duration::from_secs(1);
                 ctx.process(Message::Control(NodeControlMsg::Wakeup {
-                    slot: wakeup_slot(SignalFormat::OtapRecords, SignalType::Logs),
+                    slot: wakeup_slot(0, SignalType::Logs),
                     when: current_when,
                     revision: 1,
                 }))
@@ -3187,6 +3194,8 @@ mod tests {
 
     /// OTLP min_size is byte-based. The size flush decision must compare the
     /// configured threshold against pending bytes, not against log-record count.
+    /// Scenario: Encoded OTLP input reaches the configured byte threshold.
+    /// Guarantees: The processor flushes OTLP-encoded output without waiting for its timer.
     #[test]
     fn test_otlp_byte_min_size_triggers_size_flush() {
         let (_telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
@@ -3218,7 +3227,7 @@ mod tests {
                     1,
                     "byte min_size should trigger an immediate size flush"
                 );
-                assert_eq!(outputs[0].signal_format(), SignalFormat::OtlpBytes);
+                assert_eq!(outputs[0].payload_ref().format(), PdataFormat::OTLP);
 
                 let output_messages: Vec<_> = outputs.iter().map(otap_pdata_to_message).collect();
                 assert_equivalent(&[logs], &output_messages);
@@ -3329,8 +3338,8 @@ mod tests {
             });
     }
 
-    /// Test Preserve mode: this can't use the same test harness used above because it
-    /// arranges mixed-format inputs.
+    /// Scenario: preserve-mode batching receives interleaved OTLP and native OTAP batches.
+    /// Guarantees: each built-in representation is batched independently and keeps its output format.
     #[test]
     fn test_preserve_mode_mixed_formats() {
         let (_telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
@@ -3377,8 +3386,8 @@ mod tests {
                 // Trigger timeout for both active batching slots.
                 let when = Instant::now() + Duration::from_secs(1);
                 for slot in [
-                    wakeup_slot(SignalFormat::OtlpBytes, SignalType::Logs),
-                    wakeup_slot(SignalFormat::OtapRecords, SignalType::Logs),
+                    wakeup_slot(1, SignalType::Logs),
+                    wakeup_slot(0, SignalType::Logs),
                 ] {
                     ctx.process(Message::Control(NodeControlMsg::Wakeup {
                         slot,
@@ -3398,10 +3407,11 @@ mod tests {
                 let mut has_otap = false;
                 let mut has_otlp = false;
                 for output in &outputs {
-                    match output.signal_format() {
-                        SignalFormat::OtapRecords => has_otap = true,
-                        SignalFormat::OtlpBytes => has_otlp = true,
-                        SignalFormat::Encoded => panic!("unexpected encoded output"),
+                    if output.payload_ref().format() == PdataFormat::OTAP {
+                        has_otap = true;
+                    } else {
+                        assert_eq!(output.payload_ref().format(), PdataFormat::OTLP);
+                        has_otlp = true;
                     }
                 }
 

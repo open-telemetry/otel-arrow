@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use bytes::Bytes;
 use otel_arrow_dfe_config::{EncodeOptions, SignalType};
 
+use crate::batching::{BatchProfile, BatchSizer, BatchingSupport, CodecBatches};
 use crate::error::Error;
 use crate::otap::OtapArrowRecords;
 use crate::otlp::logs::LogsProtoBytesEncoder;
@@ -145,6 +146,8 @@ pub struct PdataCodecMetadata {
     pub can_decode: bool,
     /// Whether native OTAP can be converted to this representation.
     pub can_encode: bool,
+    /// Optional native batching support and its default policy.
+    pub batching: Option<BatchingSupport>,
 }
 
 /// A read-only view returned directly by a codec.
@@ -211,6 +214,44 @@ pub trait PdataCodec: Send {
     ) -> Result<CodecView<'a>, crate::encode::Error> {
         self.decode(signal, bytes)
             .map(|records| CodecView::OtapArrowRecords(Cow::Owned(records)))
+    }
+
+    /// Measures a complete encoded batch for a supported batching unit.
+    fn measure(
+        &mut self,
+        signal: SignalType,
+        bytes: Bytes,
+        sizer: BatchSizer,
+    ) -> Result<usize, Error> {
+        match sizer {
+            BatchSizer::Bytes => Ok(bytes.len()),
+            BatchSizer::Items => {
+                let records = self.decode(signal, &bytes).map_err(|error| Error::Format {
+                    error: error.to_string(),
+                })?;
+                if records.signal_type() != signal {
+                    return Err(Error::Format {
+                        error: "decoder changed the signal type".into(),
+                    });
+                }
+                Ok(records.num_items())
+            }
+            BatchSizer::Requests => Err(Error::Format {
+                error: "request sizing is unsupported".into(),
+            }),
+        }
+    }
+
+    /// Re-batches complete encoded inputs in order.
+    fn batch(
+        &mut self,
+        _signal: SignalType,
+        _profile: &BatchProfile,
+        _inputs: Vec<Bytes>,
+    ) -> Result<CodecBatches, Error> {
+        Err(Error::Format {
+            error: "native batching is unavailable".into(),
+        })
     }
 }
 
@@ -419,7 +460,7 @@ impl CodecExecutor {
 }
 
 impl CodecState {
-    fn instance(&mut self, codec: ResolvedCodec) -> &mut dyn PdataCodec {
+    pub(crate) fn instance(&mut self, codec: ResolvedCodec) -> &mut dyn PdataCodec {
         let index = match self.codecs.iter().position(|(key, _)| *key == codec) {
             Some(index) => index,
             None => {
@@ -645,6 +686,15 @@ fn validate_factories(factories: &[PdataCodecRegistration]) -> Result<(), Error>
                 "must advertise a signal and an encoder or decoder",
             ));
         }
+        if let Some(batching) = &metadata.batching {
+            batching.default_profile.validate()?;
+            if !metadata.can_decode || !batching.sizers.contains(&batching.default_profile.sizer) {
+                return Err(codec_error(
+                    &metadata.encoding,
+                    "native batching requires a decoder and a supported default sizer",
+                ));
+            }
+        }
         if factories[..index]
             .iter()
             .any(|other| other.metadata.encoding == metadata.encoding)
@@ -809,6 +859,36 @@ impl PdataCodec for OtlpCodec {
     ) -> Result<CodecView<'a>, crate::encode::Error> {
         Ok(CodecView::OtlpBytes { signal, bytes })
     }
+
+    fn batch(
+        &mut self,
+        signal: SignalType,
+        profile: &BatchProfile,
+        inputs: Vec<Bytes>,
+    ) -> Result<CodecBatches, Error> {
+        let limit = |value: Option<std::num::NonZeroUsize>| {
+            value.map(|value| std::num::NonZeroU64::new(value.get() as u64).expect("nonzero"))
+        };
+        let result = crate::otlp::batching::make_bytes_batches_owned(
+            signal,
+            limit(profile.max_size),
+            limit(profile.max_split_fragments),
+            limit(profile.max_split_overhead_bytes),
+            limit(profile.max_split_fragments_per_flush),
+            inputs
+                .into_iter()
+                .map(|bytes| OtlpProtoBytes::new_from_bytes(signal, bytes))
+                .collect(),
+        )?;
+        Ok(CodecBatches {
+            batches: result
+                .batches
+                .into_iter()
+                .map(|(mut bytes, weight)| (bytes.replace_bytes(Bytes::new()), weight))
+                .collect(),
+            budget_fallbacks: result.budget_fallbacks,
+        })
+    }
 }
 
 /// Metadata for the built-in OTLP codec.
@@ -819,6 +899,10 @@ pub static OTLP_METADATA: PdataCodecMetadata = PdataCodecMetadata {
     compression: None,
     can_decode: true,
     can_encode: true,
+    batching: Some(BatchingSupport {
+        sizers: &[BatchSizer::Bytes],
+        default_profile: BatchProfile::otlp(),
+    }),
 };
 
 #[allow(unsafe_code)]
@@ -984,6 +1068,83 @@ mod tests {
                 malformed: Some(Bytes::from_static(&[0x0a, 0x05, 0x01])),
                 expected_items,
             });
+        }
+    }
+
+    /// Scenario: a codec batcher drops, duplicates, or overflows input ownership weights.
+    /// Guarantees: BatchPlan rejects every output that cannot be attributed exactly to inputs.
+    #[test]
+    fn native_batcher_must_partition_input_ownership() {
+        use crate::batching::{BatchPlan, PdataFormat};
+
+        struct InvalidBatcher;
+
+        impl PdataCodec for InvalidBatcher {
+            fn decode(
+                &mut self,
+                signal: SignalType,
+                bytes: &Bytes,
+            ) -> Result<OtapArrowRecords, crate::encode::Error> {
+                OtlpCodec::default().decode(signal, bytes)
+            }
+
+            fn encode(
+                &mut self,
+                records: OtapArrowRecords,
+                options: EncodeOptions,
+            ) -> Result<Bytes, Error> {
+                OtlpCodec::default().encode(records, options)
+            }
+
+            fn batch(
+                &mut self,
+                _signal: SignalType,
+                _profile: &BatchProfile,
+                inputs: Vec<Bytes>,
+            ) -> Result<CodecBatches, Error> {
+                let bytes = &inputs[0];
+                let batches = match bytes[0] {
+                    0 => Vec::new(),
+                    1 => vec![(bytes.clone(), 0), (bytes.clone(), 1)],
+                    _ => vec![(bytes.clone(), usize::MAX), (bytes.clone(), 1)],
+                };
+                Ok(CodecBatches {
+                    batches,
+                    budget_fallbacks: 0,
+                })
+            }
+        }
+
+        static METADATA: PdataCodecMetadata = PdataCodecMetadata {
+            encoding: PdataEncoding::new("test-invalid-batcher"),
+            signals: &[SignalType::Logs],
+            format_version: None,
+            compression: None,
+            can_decode: true,
+            can_encode: true,
+            batching: Some(BatchingSupport {
+                sizers: &[BatchSizer::Bytes],
+                default_profile: BatchProfile::otlp(),
+            }),
+        };
+        static REGISTRATION: PdataCodecRegistration = PdataCodecRegistration {
+            count_items: None,
+            metadata: &METADATA,
+            create: || Box::new(InvalidBatcher),
+        };
+
+        let codec = ResolvedCodec(&REGISTRATION);
+        let plan = BatchPlan::new(PdataFormat::encoded(codec), BatchProfile::otlp(), true).unwrap();
+        let mut state = CodecState::default();
+        for bytes in [b"\0", b"\x01", b"\x02"] {
+            let payload = codec
+                .admit(SignalType::Logs, Bytes::from_static(bytes))
+                .unwrap();
+            let error = plan
+                .batch(SignalType::Logs, vec![payload.into()], &mut state)
+                .err()
+                .unwrap();
+            assert!(error.to_string().contains("partition input ownership"));
         }
     }
 }

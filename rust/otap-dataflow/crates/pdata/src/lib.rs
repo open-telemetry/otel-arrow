@@ -18,6 +18,7 @@ pub mod otap;
 pub mod schema;
 
 pub mod arrays;
+pub mod batching;
 pub mod codec;
 pub(crate) mod decode;
 pub mod encode;

@@ -3,6 +3,8 @@
 
 //! Testing utilities for OTLP and OTAP verification.
 
+#[cfg(any(test, feature = "testing"))]
+pub mod codec;
 pub mod codec_conformance;
 pub mod equiv;
 pub mod fixtures;

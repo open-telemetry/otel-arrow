@@ -33,6 +33,7 @@ use otel_arrow_dfe_engine::{
     MessageSourceLocalEffectHandlerExtension, MessageSourceSharedEffectHandlerExtension,
     ProducerEffectHandlerExtension,
 };
+use otel_arrow_dfe_pdata::batching::{BatchPlan, BatchingOutput};
 use otel_arrow_dfe_pdata::codec::{CodecView, EncodingPlan};
 use otel_arrow_dfe_pdata::{CodecState, OtapArrowRecords, OtapPayload, OtapPayloadHelpers};
 
@@ -1095,6 +1096,28 @@ pub trait PdataEffectHandlerExtension {
         payload: &mut OtapPayload,
         plan: &EncodingPlan,
     ) -> Result<bytes::Bytes, otel_arrow_dfe_pdata::error::Error>;
+
+    /// Prepares one payload for a startup-resolved batching plan.
+    async fn prepare_batch(
+        &self,
+        plan: &BatchPlan,
+        payload: &mut OtapPayload,
+    ) -> Result<(), otel_arrow_dfe_pdata::error::Error>;
+
+    /// Merges or splits prepared payloads through a batching plan.
+    async fn batch(
+        &self,
+        plan: &BatchPlan,
+        signal: SignalType,
+        inputs: Vec<OtapPayload>,
+    ) -> Result<BatchingOutput, otel_arrow_dfe_pdata::error::Error>;
+
+    /// Converts a flushed working batch to the plan's output representation.
+    async fn finish_batch(
+        &self,
+        plan: &BatchPlan,
+        payload: &mut OtapPayload,
+    ) -> Result<(), otel_arrow_dfe_pdata::error::Error>;
 }
 
 /// Processor capability for algorithms that always require mutable native OTAP.
@@ -1204,6 +1227,31 @@ macro_rules! impl_pdata_effect_handler_ext {
                 plan: &EncodingPlan,
             ) -> Result<bytes::Bytes, otel_arrow_dfe_pdata::error::Error> {
                 self.codec_executor().encode_owned(payload, plan)
+            }
+
+            async fn prepare_batch(
+                &self,
+                plan: &BatchPlan,
+                payload: &mut OtapPayload,
+            ) -> Result<(), otel_arrow_dfe_pdata::error::Error> {
+                plan.prepare_with(payload, self.codec_executor())
+            }
+
+            async fn batch(
+                &self,
+                plan: &BatchPlan,
+                signal: SignalType,
+                inputs: Vec<OtapPayload>,
+            ) -> Result<BatchingOutput, otel_arrow_dfe_pdata::error::Error> {
+                plan.batch_with(signal, inputs, self.codec_executor())
+            }
+
+            async fn finish_batch(
+                &self,
+                plan: &BatchPlan,
+                payload: &mut OtapPayload,
+            ) -> Result<(), otel_arrow_dfe_pdata::error::Error> {
+                plan.finish_with(payload, self.codec_executor())
             }
         }
     };

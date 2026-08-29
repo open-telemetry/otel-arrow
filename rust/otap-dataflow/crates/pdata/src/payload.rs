@@ -407,6 +407,16 @@ impl OtapPayload {
         }
     }
 
+    /// Returns a cached byte measurement or measures the current representation.
+    #[must_use]
+    pub fn measured_bytes(&self) -> Option<usize> {
+        self.data.num_bytes()
+    }
+
+    pub(crate) fn set_item_count(&mut self, count: usize) {
+        self.item_count.set(count);
+    }
+
     /// Borrows the concrete payload data for pattern matching.
     #[must_use]
     pub fn data(&self) -> &PayloadData {
@@ -472,6 +482,76 @@ impl OtapPayload {
                 })
             }
         }
+    }
+
+    /// Materializes native OTAP only after a successful decode.
+    pub(crate) fn materialize_otap(
+        &mut self,
+        state: &mut CodecState,
+    ) -> Result<(), crate::encode::Error> {
+        if !matches!(self.data, PayloadData::OtapArrowRecords(_)) {
+            let records = self
+                .clone()
+                .try_into_otap(state)
+                .map_err(|error| error.into_parts().0)?;
+            *self = records.into();
+        }
+        Ok(())
+    }
+
+    /// Converts to a generalized encoded representation through reusable state.
+    pub fn into_encoded(
+        mut self,
+        state: &mut CodecState,
+        plan: &EncodingPlan,
+    ) -> Result<EncodedPdata, Error> {
+        let signal = self.signal_type();
+        plan.codec()
+            .require(signal, crate::codec::CodecDirection::Encode)?;
+        if self.format() == PdataFormat::encoded(plan.codec()) {
+            return Ok(match self.data {
+                PayloadData::OtlpBytes(bytes) => {
+                    EncodedPdata::from_resolved(ResolvedCodec::OTLP, signal, bytes.into_bytes())
+                }
+                PayloadData::Encoded(encoded) => encoded,
+                PayloadData::OtapArrowRecords(_) => {
+                    unreachable!("native OTAP has no encoded representation")
+                }
+            });
+        }
+        let bytes = self.prepare_encoded(state, plan)?.into_bytes();
+        Ok(EncodedPdata::from_resolved(plan.codec(), signal, bytes))
+    }
+
+    /// Test helper for one-shot encoded representation conversion.
+    #[cfg(any(test, feature = "testing"))]
+    #[doc(hidden)]
+    pub fn into_encoded_for_test(
+        self,
+        encoding: PdataEncoding,
+        options: otel_arrow_dfe_config::EncodeOptions,
+    ) -> Result<EncodedPdata, Error> {
+        let plan = EncodingPlan::resolve(&encoding, options)?;
+        self.into_encoded(&mut CodecState::default(), &plan)
+    }
+
+    /// Atomically replaces the representation after successful encoding.
+    pub fn convert_encoding(
+        &mut self,
+        state: &mut CodecState,
+        plan: &EncodingPlan,
+    ) -> Result<(), Error> {
+        if self.format() != PdataFormat::encoded(plan.codec()) {
+            let item_count = self.known_item_count();
+            let encoded = self.clone().into_encoded(state, plan)?;
+            let converted = Self::from_encoded(encoded);
+            *self = if let Some(count) = item_count {
+                converted.with_item_count(count)
+            } else {
+                converted
+            };
+        }
+        Ok(())
     }
 
     /// Returns a read-only representation-independent view.
