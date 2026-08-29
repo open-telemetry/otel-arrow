@@ -22,6 +22,7 @@ struct RuntimeRecoveryAttempt {
     attempt: usize,
     target_key: DeployedPipelineKey,
     resolved: ResolvedPipelineConfig,
+    context_policy: Arc<CompiledContextPolicy>,
     placement: LivePipelinePlacement,
     backoff: Duration,
 }
@@ -77,6 +78,7 @@ impl<
     pub(super) fn launch_regular_pipeline_instance(
         self: &Arc<Self>,
         resolved_pipeline: &ResolvedPipelineConfig,
+        context_policy: Arc<CompiledContextPolicy>,
         placement: &LivePipelinePlacement,
         core_id: usize,
         deployment_generation: u64,
@@ -106,7 +108,7 @@ impl<
             CoreId { id: core_id },
             core_placement.numa_node_id,
             Arc::clone(&placement.listener_group_snapshot),
-            Arc::clone(&self.context_policy),
+            context_policy,
             num_cores,
             resolved_pipeline.pipeline.clone(),
             resolved_pipeline.policies.channel_capacity.clone(),
@@ -148,6 +150,7 @@ impl<
                 launched.pipeline_key.clone(),
                 RuntimeInstanceRecord {
                     control_sender: Some(launched.control_sender.clone()),
+                    context_policy: launched.context_policy,
                     lifecycle: RuntimeInstanceLifecycle::Active,
                 },
             );
@@ -323,7 +326,7 @@ impl<
             failed_key.pipeline_group_id.clone(),
             failed_key.pipeline_id.clone(),
         );
-        let current_record = {
+        let (current_record, context_policy) = {
             let mut state = self
                 .state
                 .lock()
@@ -342,10 +345,16 @@ impl<
                 Self::defer_runtime_recovery_locked(&mut state, failed_key, error);
                 return;
             }
-            state.logical_pipelines.get(&pipeline_key).cloned()
+            (
+                state.logical_pipelines.get(&pipeline_key).cloned(),
+                state
+                    .runtime_instances
+                    .get(&failed_key)
+                    .map(|instance| Arc::clone(&instance.context_policy)),
+            )
         };
 
-        let Some(current_record) = current_record else {
+        let (Some(current_record), Some(context_policy)) = (current_record, context_policy) else {
             let mut state = self
                 .state
                 .lock()
@@ -388,6 +397,7 @@ impl<
                 .entry(recovery_key)
                 .or_insert_with(|| RuntimeRecoveryState {
                     serving_generation: current_record.active_generation,
+                    context_policy: Arc::clone(&context_policy),
                     restart_count: 0,
                     ready_since: None,
                     worker_id: None,
@@ -405,6 +415,7 @@ impl<
                 // superseded. Only the selected serving generation may recover.
                 return;
             }
+            recovery.context_policy = Arc::clone(&context_policy);
             if runtime_recovery_streak_expired(
                 recovery.ready_since,
                 policy.reset_after,
@@ -607,6 +618,7 @@ impl<
 
             let target_key = match self.launch_regular_pipeline_instance(
                 &attempt.resolved,
+                Arc::clone(&attempt.context_policy),
                 &attempt.placement,
                 core_id,
                 attempt.target_key.deployment_generation,
@@ -796,6 +808,7 @@ impl<
         else {
             return RuntimeRecoveryAttemptDecision::Exhausted;
         };
+        let context_policy = Arc::clone(&recovery.context_policy);
         let placement =
             self.live_pipeline_placement_from(&resolved, placement, placement_generation);
         let attempt = recovery.restart_count + 1;
@@ -826,6 +839,7 @@ impl<
                 deployment_generation: target_generation,
             },
             resolved,
+            context_policy,
             placement,
             backoff: runtime_recovery_backoff(policy, attempt),
         }))

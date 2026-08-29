@@ -323,6 +323,7 @@ impl<
             );
             let deployed_key = match self.launch_regular_pipeline_instance(
                 &plan.resolved_pipeline,
+                Arc::clone(&plan.context_policy),
                 &plan.target_placement,
                 *core_id,
                 plan.target_generation,
@@ -391,6 +392,7 @@ impl<
 
             let new_key = match self.launch_regular_pipeline_instance(
                 &plan.resolved_pipeline,
+                Arc::clone(&plan.context_policy),
                 &plan.target_placement,
                 *core_id,
                 active_generation,
@@ -509,6 +511,7 @@ impl<
 
             let new_key = match self.launch_regular_pipeline_instance(
                 &plan.resolved_pipeline,
+                Arc::clone(&plan.context_policy),
                 &plan.target_placement,
                 *core_id,
                 plan.target_generation,
@@ -570,6 +573,7 @@ impl<
 
             let new_key = match self.launch_regular_pipeline_instance(
                 &plan.resolved_pipeline,
+                Arc::clone(&plan.context_policy),
                 &plan.target_placement,
                 *core_id,
                 plan.target_generation,
@@ -754,6 +758,7 @@ impl<
             let old_key = self
                 .launch_regular_pipeline_instance(
                     &previous.resolved,
+                    Arc::clone(&previous.context_policy),
                     current_placement,
                     *core_id,
                     previous_generation,
@@ -889,6 +894,7 @@ impl<
             let old_key = self
                 .launch_regular_pipeline_instance(
                     &previous.resolved,
+                    Arc::clone(&previous.context_policy),
                     current_placement,
                     *core_id,
                     previous_generation,
@@ -937,6 +943,7 @@ impl<
             let old_key = self
                 .launch_regular_pipeline_instance(
                     &previous.resolved,
+                    Arc::clone(&previous.context_policy),
                     current_placement,
                     *core_id,
                     previous_generation,

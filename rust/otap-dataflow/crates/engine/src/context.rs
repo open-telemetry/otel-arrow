@@ -449,6 +449,14 @@ impl PipelineContext {
         self.compiled_context_policy.as_ref()
     }
 
+    /// Returns the revision of the compiled context policy, if one was injected.
+    #[must_use]
+    pub fn context_revision(&self) -> Option<crate::context_declaration::ContextRevisionId> {
+        self.compiled_context_policy
+            .as_ref()
+            .map(|policy| policy.revision())
+    }
+
     /// Returns the pipeline-scoped topic set, if one was injected.
     #[must_use]
     pub fn topic_set<T: Send + Sync + 'static>(&self) -> Option<crate::topic::TopicSet<T>> {

@@ -88,6 +88,18 @@ pub enum ContextDeclaration {
 /// Deterministically describes a node factory's context access.
 pub type ContextDeclarationFn = fn(&serde_json::Value) -> Result<Vec<ContextDeclaration>, Error>;
 
+/// Monotonic identity for a compiled context policy configuration.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ContextRevisionId(u64);
+
+impl ContextRevisionId {
+    /// Creates a context policy revision.
+    #[must_use]
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+}
+
 /// Builds deterministic producer declarations from configuration-sized inputs.
 #[derive(Default)]
 pub struct ContextDeclarationsBuilder {
@@ -134,8 +146,32 @@ impl ContextDeclarationsBuilder {
 /// Opaque context policy compiled from the resolved configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompiledContextPolicy {
+    revision: ContextRevisionId,
     // Replaced by executable plans in the next compiler pass.
     declarations: HashMap<PipelineKey, HashMap<ConfigNodeId, Box<[ContextDeclaration]>>>,
+}
+
+impl CompiledContextPolicy {
+    /// Returns the revision associated with this compiled policy.
+    #[must_use]
+    pub const fn revision(&self) -> ContextRevisionId {
+        self.revision
+    }
+
+    /// Returns a copy carrying the supplied revision.
+    #[must_use]
+    pub fn with_revision(&self, revision: ContextRevisionId) -> Arc<Self> {
+        Arc::new(Self {
+            revision,
+            declarations: self.declarations.clone(),
+        })
+    }
+
+    /// Returns whether two policies compile the same declarations.
+    #[must_use]
+    pub fn matches_configuration(&self, other: &Self) -> bool {
+        self.declarations == other.declarations
+    }
 }
 
 impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
@@ -166,7 +202,10 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
             let _ = declarations.insert(pipeline_key, declarations_by_node);
         }
 
-        Ok(Arc::new(CompiledContextPolicy { declarations }))
+        Ok(Arc::new(CompiledContextPolicy {
+            revision: ContextRevisionId::default(),
+            declarations,
+        }))
     }
 
     fn node_context_declarations(
@@ -264,6 +303,7 @@ mod tests {
             name: "tenant".into(),
         };
         let policy = CompiledContextPolicy {
+            revision: ContextRevisionId::default(),
             declarations: HashMap::from([(
                 pipeline.clone(),
                 HashMap::from([(node.clone(), vec![declaration.clone()].into_boxed_slice())]),
@@ -275,20 +315,6 @@ mod tests {
             [declaration].as_slice()
         );
         assert!(!policy.declarations[&pipeline].contains_key("other"));
-    }
-
-    /// Scenario: equivalent policies are compiled from the same declarations.
-    /// Guarantees: policy equality detects unchanged context configuration.
-    #[test]
-    fn compiled_policy_equality_detects_unchanged_configuration() {
-        let policy = CompiledContextPolicy {
-            declarations: HashMap::new(),
-        };
-        let equivalent = CompiledContextPolicy {
-            declarations: HashMap::new(),
-        };
-
-        assert_eq!(policy, equivalent);
     }
 
     /// Scenario: Two access IDs select the same register.

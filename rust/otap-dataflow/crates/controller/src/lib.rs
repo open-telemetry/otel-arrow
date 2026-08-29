@@ -2590,7 +2590,7 @@ impl<
         )?;
         pipeline_ctx.set_topic_set(topic_set);
         pipeline_ctx.set_listener_group_snapshot_arc(listener_group_snapshot);
-        pipeline_ctx.set_compiled_context_policy(context_policy);
+        pipeline_ctx.set_compiled_context_policy(Arc::clone(&context_policy));
         let (runtime_ctrl_msg_tx, runtime_ctrl_msg_rx) =
             runtime_ctrl_msg_channel(channel_capacity_policy.control.pipeline);
         let (pipeline_completion_msg_tx, pipeline_completion_msg_rx) =
@@ -2662,6 +2662,7 @@ impl<
         Ok(LaunchedPipelineThread {
             pipeline_key,
             control_sender,
+            context_policy,
             _marker: std::marker::PhantomData,
         })
     }

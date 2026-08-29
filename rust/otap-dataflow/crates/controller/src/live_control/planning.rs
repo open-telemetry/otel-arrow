@@ -624,7 +624,7 @@ impl<
             pipeline_id,
             request,
             None,
-            false,
+            None,
             None,
             None,
         )?;
@@ -644,29 +644,38 @@ impl<
             pipeline_id,
             request,
             None,
-            false,
+            None,
             None,
             None,
         )
     }
 
-    fn verify_context_policy(
+    fn compile_context_policy(
         &self,
         resolved: &ResolvedOtelDataflowSpec,
-    ) -> Result<(), ControlPlaneError> {
+    ) -> Result<Arc<CompiledContextPolicy>, ControlPlaneError> {
         let candidate_context_policy = self
             .pipeline_factory
             .compile_context_policy(resolved)
             .map_err(|error| ControlPlaneError::InvalidRequest {
                 message: error.to_string(),
             })?;
-        if self.context_policy != candidate_context_policy {
-            return Err(ControlPlaneError::InvalidRequest {
-                message: "request would modify the compiled context policy".to_owned(),
-            });
-        }
-
-        Ok(())
+        let revision = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if state
+                .context_policy
+                .matches_configuration(&candidate_context_policy)
+            {
+                return Ok(Arc::clone(&state.context_policy));
+            }
+            let revision = state.next_context_revision;
+            state.next_context_revision += 1;
+            otel_arrow_dfe_engine::context_declaration::ContextRevisionId::new(revision)
+        };
+        Ok(candidate_context_policy.with_revision(revision))
     }
 
     fn prepare_rollout_plan_for_engine_operation(
@@ -675,7 +684,7 @@ impl<
         pipeline_id: &str,
         request: &ReconfigureRequest,
         planning_config: Option<&OtelDataflowSpec>,
-        context_policy_prevalidated: bool,
+        prepared_context_policy: Option<Arc<CompiledContextPolicy>>,
         engine_operation_id: Option<&str>,
         projected_reserved_core_ids: Option<&BTreeSet<usize>>,
     ) -> Result<CandidateRolloutPlan, ControlPlaneError> {
@@ -751,9 +760,10 @@ impl<
         Self::validate_live_memory_limiter_unchanged(&live_config, &candidate_config)?;
 
         let resolved_candidate_config = candidate_config.resolve();
-        if !context_policy_prevalidated {
-            self.verify_context_policy(&resolved_candidate_config)?;
-        }
+        let context_policy = match prepared_context_policy {
+            Some(policy) => policy,
+            None => self.compile_context_policy(&resolved_candidate_config)?,
+        };
         let resolved_pipeline = resolved_candidate_config
             .pipelines
             .into_iter()
@@ -1001,6 +1011,7 @@ impl<
             pipeline_id,
             action,
             resolved_pipeline,
+            context_policy,
             base_config_revision,
             current_record,
             current_placement,
@@ -1202,15 +1213,29 @@ impl<
                     plan.pipeline_id.clone(),
                     plan.resolved_pipeline.pipeline.clone(),
                 );
+            let context_policy = match plan.action {
+                RolloutAction::NoOp => plan
+                    .current_record
+                    .as_ref()
+                    .map(|record| Arc::clone(&record.context_policy))
+                    .expect("no-op rollout has a committed record"),
+                RolloutAction::Create | RolloutAction::Resize | RolloutAction::Replace => {
+                    Arc::clone(&plan.context_policy)
+                }
+            };
             _ = state.logical_pipelines.insert(
                 plan.pipeline_key.clone(),
                 LogicalPipelineRecord {
                     resolved: plan.resolved_pipeline.clone(),
+                    context_policy: Arc::clone(&context_policy),
                     active_generation,
                     placement: plan.target_placement.placement.clone(),
                     placement_generation: plan.target_placement.listener_group_snapshot.generation,
                 },
             );
+            if !matches!(plan.action, RolloutAction::NoOp) {
+                state.context_policy = context_policy;
+            }
             state.config_revision += 1;
             state
                 .runtime_recoveries
@@ -2008,7 +2033,7 @@ impl<
             }
         }
         let desired_resolved_config = desired_config.resolve();
-        self.verify_context_policy(&desired_resolved_config)?;
+        let desired_context_policy = self.compile_context_policy(&desired_resolved_config)?;
         let desired_phase_by_key: HashMap<_, _> = desired_resolved_config
             .pipelines
             .iter()
@@ -2063,7 +2088,7 @@ impl<
                 pipeline_key.pipeline_id(),
                 &reconfigure_request,
                 Some(&desired_config),
-                true,
+                Some(Arc::clone(&desired_context_policy)),
                 Some(guard.operation_id()),
                 Some(&projected_exclusive_core_ids),
             )?;
