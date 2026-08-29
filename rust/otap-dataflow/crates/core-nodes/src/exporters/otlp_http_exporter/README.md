@@ -197,7 +197,7 @@ successes, and Ack/Nack notification failures do not emit this metric.
 | `otlp.exporter.http.receive` | `debug` | A pdata batch was received by the exporter loop. |
 | `otlp.exporter.http.shutdown` | `info` | Exporter shutdown and terminal reason. |
 | `otlp.exporter.http.zero_partial_rejected` | `debug` | A zero-length partial-success response was rejected. |
-| `otlp.exporter.http.export_error` | `warn` | An HTTP export request did not complete successfully. |
+| `otlp.exporter.http.export_error` | `warn` | An HTTP export request failed; non-success responses include bounded backend error details when available. |
 | `otlp.exporter.http.invalid_bearer_token` | `warn` | A bearer token from the provider could not be turned into a valid `Authorization` header. |
 | `otlp.exporter.http.token_stream_closed` | `warn` | The bearer token provider closed its refresh stream; the last token (if any) is reused and no longer refreshes. |
 
