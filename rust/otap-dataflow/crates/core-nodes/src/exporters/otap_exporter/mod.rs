@@ -2652,8 +2652,9 @@ mod tests {
         }
     }
 
-    /// Tests that exporter shutdown NACKs a batch already yielded to the OTAP
-    /// request stream when no corresponding BatchStatus has arrived yet.
+    /// Scenario: shutdown reaches its deadline while an exported batch still has
+    /// no corresponding `BatchStatus`.
+    /// Guarantees: the exporter NACKs the correlated pdata before it terminates.
     #[test]
     fn test_shutdown_nacks_correlated_pdata() {
         let grpc_addr = "127.0.0.1";
@@ -2758,7 +2759,9 @@ mod tests {
 
                 control_sender
                     .send(NodeControlMsg::Shutdown {
-                        deadline: Instant::now().add(Duration::from_millis(10)),
+                        // Keep this above scheduler jitter in the parallel workspace suite.
+                        // The mock response remains pending, so cancellation is still forced.
+                        deadline: Instant::now().add(Duration::from_secs(1)),
                         reason: "test done".into(),
                     })
                     .await
