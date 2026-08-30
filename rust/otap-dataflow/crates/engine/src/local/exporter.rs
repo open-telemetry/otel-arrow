@@ -39,9 +39,11 @@ use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, Timer
 use crate::error::Error;
 use crate::message::ExporterInbox;
 use crate::node::NodeId;
+use crate::runtime_services::{CodecEffectHandler, PipelineRuntimeServices};
 use crate::terminal_state::TerminalState;
 use async_trait::async_trait;
 use otel_arrow_dfe_config::transport_headers_policy::HeaderPropagationPolicy;
+use otel_arrow_dfe_pdata_codec::CodecService;
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
 use otel_arrow_dfe_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
@@ -105,10 +107,21 @@ pub struct EffectHandler<PData> {
 impl<PData> EffectHandler<PData> {
     /// Creates a new local (!Send) `EffectHandler` with the given exporter node id and metrics
     /// reporter.
+    #[cfg(any(test, feature = "test-utils"))]
     #[must_use]
     pub fn new(node_id: NodeId, metrics_reporter: MetricsReporter) -> Self {
+        let runtime_services =
+            PipelineRuntimeServices::new().expect("the linked pdata codec registry must be valid");
+        Self::new_with_runtime_services(node_id, metrics_reporter, runtime_services)
+    }
+
+    pub(crate) fn new_with_runtime_services(
+        node_id: NodeId,
+        metrics_reporter: MetricsReporter,
+        runtime_services: PipelineRuntimeServices,
+    ) -> Self {
         EffectHandler {
-            core: EffectHandlerCore::new(node_id, metrics_reporter),
+            core: EffectHandlerCore::new(node_id, metrics_reporter, runtime_services),
             _pd: PhantomData,
             propagation_policy: None,
         }
@@ -187,6 +200,12 @@ impl<PData> EffectHandler<PData> {
     ) {
         self.core
             .set_pipeline_completion_msg_sender(pipeline_completion_msg_sender);
+    }
+}
+
+impl<PData> CodecEffectHandler for EffectHandler<PData> {
+    fn codec_service(&self) -> &CodecService {
+        self.core.runtime_services.codecs()
     }
 }
 

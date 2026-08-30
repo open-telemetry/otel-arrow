@@ -829,6 +829,14 @@ impl ProtoBuffer {
             self.buffer.reserve(capacity - self.buffer.capacity());
         }
     }
+
+    /// Clears the buffer and bounds the allocation retained for later encodes.
+    pub fn retain_capacity(&mut self, maximum: usize) {
+        self.buffer.clear();
+        if self.buffer.capacity() > maximum {
+            self.buffer = Vec::with_capacity(maximum.min(self.limit));
+        }
+    }
 }
 
 impl BoundedBuf for ProtoBuffer {

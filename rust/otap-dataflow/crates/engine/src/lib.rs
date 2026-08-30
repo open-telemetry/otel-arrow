@@ -73,6 +73,7 @@ pub mod message;
 pub mod processor;
 pub mod receiver;
 pub mod retained_work;
+pub mod runtime_services;
 
 mod attributes;
 mod channel_metrics;

@@ -1261,6 +1261,7 @@ dependencies = [
  "otel-arrow-dfe-engine",
  "otel-arrow-dfe-otap",
  "otel-arrow-dfe-pdata",
+ "otel-arrow-dfe-pdata-codec",
  "otel-arrow-dfe-pdata-views",
  "otel-arrow-dfe-telemetry",
  "otel-arrow-dfe-telemetry-macros",
@@ -7674,6 +7675,7 @@ dependencies = [
  "otel-arrow-dfe-engine",
  "otel-arrow-dfe-engine-macros",
  "otel-arrow-dfe-pdata",
+ "otel-arrow-dfe-pdata-codec",
  "otel-arrow-dfe-state",
  "otel-arrow-dfe-telemetry",
  "otel-arrow-dfe-telemetry-macros",
@@ -7821,6 +7823,19 @@ dependencies = [
  "tokio-stream",
  "tonic",
  "tonic-prost",
+]
+
+[[package]]
+name = "otel-arrow-dfe-pdata-codec"
+version = "0.52.0"
+dependencies = [
+ "bytes",
+ "linkme",
+ "otel-arrow-dfe-config",
+ "otel-arrow-dfe-pdata",
+ "otel-arrow-dfe-pdata-views",
+ "prost 0.14.4",
+ "thiserror 2.0.20",
 ]
 
 [[package]]

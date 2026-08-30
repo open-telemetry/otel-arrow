@@ -1172,7 +1172,16 @@ mod test {
     use pretty_assertions::assert_eq;
     use std::cell::Cell;
     use std::collections::HashMap;
+    use std::mem::size_of;
     use tokio::sync::mpsc;
+
+    /// Scenario: Queued OTAP pdata is built for a 64-bit target before codec integration.
+    /// Guarantees: The baseline queued-message layout remains fixed for later comparisons.
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn legacy_otap_pdata_layout_is_stable() {
+        assert_eq!(size_of::<OtapPdata>(), 152);
+    }
 
     fn create_test() -> (TestCallData, OtapPdata) {
         (TestCallData::default(), create_test_pdata())

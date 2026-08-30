@@ -29,6 +29,7 @@ use crate::local::processor as local;
 use crate::message::{Message, ProcessorInbox, Receiver, Sender};
 use crate::node::{Node, NodeId, NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::node_local_scheduler::NodeLocalSchedulerHandle;
+use crate::runtime_services::PipelineRuntimeServices;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::shared::processor as shared;
 use crate::terminal_state::TerminalMetricsDeadline;
@@ -482,6 +483,17 @@ impl<PData> ProcessorWrapper<PData> {
         metrics_reporter: MetricsReporter,
         node_interests: Interests,
     ) -> Result<ProcessorWrapperRuntime<PData>, Error> {
+        let runtime_services = PipelineRuntimeServices::new()?;
+        self.prepare_runtime_with_services(metrics_reporter, node_interests, runtime_services)
+            .await
+    }
+
+    async fn prepare_runtime_with_services(
+        self,
+        metrics_reporter: MetricsReporter,
+        node_interests: Interests,
+        runtime_services: PipelineRuntimeServices,
+    ) -> Result<ProcessorWrapperRuntime<PData>, Error> {
         match self {
             ProcessorWrapper::Local {
                 node_id,
@@ -517,11 +529,12 @@ impl<PData> ProcessorWrapper<PData> {
                     node_interests,
                 );
                 let default_port = user_config.default_output.clone();
-                let mut effect_handler = local::EffectHandler::new(
+                let mut effect_handler = local::EffectHandler::new_with_runtime_services(
                     node_id,
                     pdata_senders,
                     default_port,
                     metrics_reporter,
+                    runtime_services.clone(),
                 );
                 effect_handler.set_source_tagging(source_tag);
                 effect_handler.core.set_local_scheduler(local_scheduler);
@@ -566,11 +579,12 @@ impl<PData> ProcessorWrapper<PData> {
                     node_interests,
                 );
                 let default_port = user_config.default_output.clone();
-                let mut effect_handler = shared::EffectHandler::new(
+                let mut effect_handler = shared::EffectHandler::new_with_runtime_services(
                     node_id,
                     pdata_senders,
                     default_port,
                     metrics_reporter,
+                    runtime_services,
                 );
                 effect_handler.set_source_tagging(source_tag);
                 effect_handler.core.set_local_scheduler(local_scheduler);
@@ -594,6 +608,7 @@ impl<PData> ProcessorWrapper<PData> {
     where
         PData: ReceivedAtNode + FlowMetricHook,
     {
+        let runtime_services = PipelineRuntimeServices::new()?;
         self.start_with_completion_metrics(
             runtime_ctrl_msg_tx,
             pipeline_completion_msg_tx,
@@ -613,6 +628,7 @@ impl<PData> ProcessorWrapper<PData> {
             false,
             false,
             TerminalMetricsDeadline::default(),
+            runtime_services,
         )
         .await
     }
@@ -637,12 +653,17 @@ impl<PData> ProcessorWrapper<PData> {
         flow_metrics_active: bool,
         flow_needs_timing: bool,
         terminal_metrics_deadline: TerminalMetricsDeadline,
+        runtime_services: PipelineRuntimeServices,
     ) -> Result<(), Error>
     where
         PData: ReceivedAtNode + FlowMetricHook,
     {
         let runtime = self
-            .prepare_runtime(metrics_reporter.clone(), node_interests)
+            .prepare_runtime_with_services(
+                metrics_reporter.clone(),
+                node_interests,
+                runtime_services,
+            )
             .await?;
 
         match runtime {
@@ -1014,6 +1035,7 @@ mod tests {
     use crate::processor::{
         Error, ProcessorRuntimeRequirements, ProcessorWrapper, validate_local_wakeup_requirements,
     };
+    use crate::runtime_services::PipelineRuntimeServices;
     use crate::shared::message::{SharedReceiver, SharedSender};
     use crate::shared::processor as shared;
     use crate::testing::processor::TestRuntime;
@@ -1541,6 +1563,7 @@ mod tests {
                             true,
                             true,
                             crate::terminal_state::TerminalMetricsDeadline::default(),
+                            PipelineRuntimeServices::new().unwrap(),
                         )
                         .await
                 });
@@ -1758,6 +1781,7 @@ mod tests {
                 true, // flow_metrics_active
                 false,
                 crate::terminal_state::TerminalMetricsDeadline::default(),
+                PipelineRuntimeServices::new().unwrap(),
             )
             .await;
 
@@ -1999,6 +2023,7 @@ mod tests {
                 true,
                 false,
                 crate::terminal_state::TerminalMetricsDeadline::default(),
+                PipelineRuntimeServices::new().unwrap(),
             )
             .await;
 

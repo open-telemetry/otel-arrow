@@ -53,9 +53,9 @@ impl OtlpProtoBytes {
     #[must_use]
     pub fn new_from_bytes<B>(signal: SignalType, b: B) -> Self
     where
-        B: Into<Vec<u8>>,
+        B: Into<Bytes>,
     {
-        let bytes: Bytes = b.into().into();
+        let bytes: Bytes = b.into();
         match signal {
             SignalType::Logs => Self::ExportLogsRequest(bytes),
             SignalType::Metrics => Self::ExportMetricsRequest(bytes),

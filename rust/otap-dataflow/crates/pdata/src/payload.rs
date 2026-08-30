@@ -455,73 +455,86 @@ impl OtapPayloadHelpers for OtlpProtoBytes {
     }
 
     fn num_items(&self) -> usize {
-        // Counting requires traversing the encoded protobuf record hierarchy.
-        match self {
-            Self::ExportLogsRequest(bytes) => {
-                let logs_data_view = RawLogsData::new(bytes.as_ref());
-                use otel_arrow_dfe_pdata_views::views::logs::{
-                    LogsDataView, ResourceLogsView, ScopeLogsView,
-                };
-                logs_data_view
-                    .resources()
-                    .map(|rl| {
-                        rl.scopes()
-                            .map(|sl| sl.log_records().count())
-                            .sum::<usize>()
-                    })
-                    .sum()
-            }
-            Self::ExportTracesRequest(bytes) => {
-                let traces_data_view = RawTraceData::new(bytes.as_ref());
-                use otel_arrow_dfe_pdata_views::views::trace::{
-                    ResourceSpansView, ScopeSpansView, TracesView,
-                };
-                traces_data_view
-                    .resources()
-                    .map(|rs| rs.scopes().map(|ss| ss.spans().count()).sum::<usize>())
-                    .sum()
-            }
-            Self::ExportMetricsRequest(bytes) => {
-                let metrics_data_view = RawMetricsData::new(bytes.as_ref());
-                use otel_arrow_dfe_pdata_views::views::metrics::{
-                    DataView, ExponentialHistogramView, GaugeView, HistogramView, MetricView,
-                    MetricsView, ResourceMetricsView, ScopeMetricsView, SumView, SummaryView,
-                };
-                metrics_data_view
-                    .resources()
-                    .map(|rm| {
-                        rm.scopes()
-                            .map(|sm| {
-                                sm.metrics()
-                                    .map(|metric| {
-                                        metric
-                                            .data()
-                                            .map(|data| {
-                                                let mut count = 0;
-                                                if let Some(gauge) = data.as_gauge() {
-                                                    count += gauge.data_points().count();
-                                                } else if let Some(sum) = data.as_sum() {
-                                                    count += sum.data_points().count();
-                                                } else if let Some(histogram) = data.as_histogram()
-                                                {
-                                                    count += histogram.data_points().count();
-                                                } else if let Some(exp_histogram) =
-                                                    data.as_exponential_histogram()
-                                                {
-                                                    count += exp_histogram.data_points().count();
-                                                } else if let Some(summary) = data.as_summary() {
-                                                    count += summary.data_points().count();
-                                                }
-                                                count
-                                            })
-                                            .unwrap_or(0)
-                                    })
-                                    .sum::<usize>()
-                            })
-                            .sum::<usize>()
-                    })
-                    .sum()
-            }
+        count_otlp_items(self.signal_type(), self.as_bytes())
+    }
+}
+
+/// Stateless OTLP item scan shared by the codec and compatibility storage.
+pub(crate) fn count_otlp_items(signal: SignalType, bytes: &[u8]) -> usize {
+    // Counting traverses the encoded protobuf record hierarchy without
+    // constructing an owned request or a mutable codec instance.
+    match signal {
+        SignalType::Logs => {
+            let logs_data_view = RawLogsData::new(bytes);
+            use otel_arrow_dfe_pdata_views::views::logs::{
+                LogsDataView, ResourceLogsView, ScopeLogsView,
+            };
+            logs_data_view
+                .resources()
+                .map(|resource| {
+                    resource
+                        .scopes()
+                        .map(|scope| scope.log_records().count())
+                        .sum::<usize>()
+                })
+                .sum()
+        }
+        SignalType::Traces => {
+            let traces_data_view = RawTraceData::new(bytes);
+            use otel_arrow_dfe_pdata_views::views::trace::{
+                ResourceSpansView, ScopeSpansView, TracesView,
+            };
+            traces_data_view
+                .resources()
+                .map(|resource| {
+                    resource
+                        .scopes()
+                        .map(|scope| scope.spans().count())
+                        .sum::<usize>()
+                })
+                .sum()
+        }
+        SignalType::Metrics => {
+            let metrics_data_view = RawMetricsData::new(bytes);
+            use otel_arrow_dfe_pdata_views::views::metrics::{
+                DataView, ExponentialHistogramView, GaugeView, HistogramView, MetricView,
+                MetricsView, ResourceMetricsView, ScopeMetricsView, SumView, SummaryView,
+            };
+            metrics_data_view
+                .resources()
+                .map(|resource| {
+                    resource
+                        .scopes()
+                        .map(|scope| {
+                            scope
+                                .metrics()
+                                .map(|metric| {
+                                    metric
+                                        .data()
+                                        .map(|data| {
+                                            if let Some(gauge) = data.as_gauge() {
+                                                gauge.data_points().count()
+                                            } else if let Some(sum) = data.as_sum() {
+                                                sum.data_points().count()
+                                            } else if let Some(histogram) = data.as_histogram() {
+                                                histogram.data_points().count()
+                                            } else if let Some(histogram) =
+                                                data.as_exponential_histogram()
+                                            {
+                                                histogram.data_points().count()
+                                            } else if let Some(summary) = data.as_summary() {
+                                                summary.data_points().count()
+                                            } else {
+                                                0
+                                            }
+                                        })
+                                        .unwrap_or(0)
+                                })
+                                .sum::<usize>()
+                        })
+                        .sum::<usize>()
+                })
+                .sum()
         }
     }
 }
@@ -691,6 +704,29 @@ mod test {
     use bytes::Bytes;
     use pretty_assertions::assert_eq;
     use prost::Message;
+    use std::mem::size_of;
+
+    /// Scenario: The legacy payload representation is built for a 64-bit target.
+    /// Guarantees: The baseline payload layout remains fixed for codec comparisons.
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn legacy_payload_layout_is_stable() {
+        assert_eq!(size_of::<PayloadData>(), 40);
+        assert_eq!(size_of::<OtapPayload>(), 72);
+    }
+
+    /// Scenario: An OTLP payload is converted back to its matching legacy representation.
+    /// Guarantees: Forwarding retains the original shared byte buffer without copying it.
+    #[test]
+    fn matching_otlp_forwarding_preserves_buffer() {
+        let original = Bytes::from_static(b"legacy-otlp");
+        let pointer = original.as_ptr();
+        let payload = OtapPayload::from(OtlpProtoBytes::ExportLogsRequest(original));
+        let forwarded: OtlpProtoBytes = payload
+            .try_into_with_default()
+            .expect("matching OTLP forwarding");
+        assert_eq!(forwarded.as_bytes().as_ptr(), pointer);
+    }
 
     #[test]
     fn test_conversion_logs() {

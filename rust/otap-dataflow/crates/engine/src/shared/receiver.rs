@@ -40,12 +40,14 @@ use crate::effect_handler::{
 use crate::error::{Error, TypedError};
 use crate::node::NodeId;
 use crate::output_router::OutputRouter;
+use crate::runtime_services::{CodecEffectHandler, PipelineRuntimeServices};
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::terminal_state::TerminalState;
 use async_trait::async_trait;
 use otel_arrow_dfe_channel::error::RecvError;
 use otel_arrow_dfe_config::PortName;
 use otel_arrow_dfe_config::transport_headers_policy::HeaderCapturePolicy;
+use otel_arrow_dfe_pdata_codec::CodecService;
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
 use otel_arrow_dfe_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
@@ -114,6 +116,7 @@ impl<PData> EffectHandler<PData> {
     ///
     /// Use this constructor when your receiver do need to be sent across threads or
     /// when it uses components that are `Send`.
+    #[cfg(any(test, feature = "test-utils"))]
     #[must_use]
     pub fn new(
         node_id: NodeId,
@@ -122,7 +125,27 @@ impl<PData> EffectHandler<PData> {
         runtime_ctrl_msg_sender: RuntimeCtrlMsgSender<PData>,
         metrics_reporter: MetricsReporter,
     ) -> Self {
-        let mut core = EffectHandlerCore::new(node_id.clone(), metrics_reporter);
+        let runtime_services =
+            PipelineRuntimeServices::new().expect("the linked pdata codec registry must be valid");
+        Self::new_with_runtime_services(
+            node_id,
+            msg_senders,
+            default_port,
+            runtime_ctrl_msg_sender,
+            metrics_reporter,
+            runtime_services,
+        )
+    }
+
+    pub(crate) fn new_with_runtime_services(
+        node_id: NodeId,
+        msg_senders: HashMap<PortName, SharedSender<PData>>,
+        default_port: Option<PortName>,
+        runtime_ctrl_msg_sender: RuntimeCtrlMsgSender<PData>,
+        metrics_reporter: MetricsReporter,
+        runtime_services: PipelineRuntimeServices,
+    ) -> Self {
+        let mut core = EffectHandlerCore::new(node_id.clone(), metrics_reporter, runtime_services);
         core.set_runtime_ctrl_msg_sender(runtime_ctrl_msg_sender);
         let router = OutputRouter::new(node_id, msg_senders, default_port);
         EffectHandler {
@@ -280,6 +303,12 @@ impl<PData> EffectHandler<PData> {
     }
 
     // More methods will be added in the future as needed.
+}
+
+impl<PData> CodecEffectHandler for EffectHandler<PData> {
+    fn codec_service(&self) -> &CodecService {
+        self.core.runtime_services.codecs()
+    }
 }
 
 #[cfg(test)]
