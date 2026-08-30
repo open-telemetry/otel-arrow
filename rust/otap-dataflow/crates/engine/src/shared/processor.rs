@@ -49,11 +49,12 @@ use crate::message::Message;
 use crate::node::NodeId;
 use crate::output_router::OutputRouter;
 use crate::processor::ProcessorRuntimeRequirements;
+use crate::runtime_services::{CodecEffectHandler, PipelineRuntimeServices};
 use crate::shared::message::SharedSender;
 use crate::{WakeupError, WakeupSetOutcome};
 use async_trait::async_trait;
 use otel_arrow_dfe_config::{PortName, SignalType};
-use otel_arrow_dfe_pdata::codec::CodecExecutor;
+use otel_arrow_dfe_pdata_codec::CodecService;
 use otel_arrow_dfe_telemetry::common_attributes::SignalAttributes;
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
 use otel_arrow_dfe_telemetry::instrument::HistogramNormal;
@@ -131,7 +132,6 @@ pub trait Processor<PData> {
 #[derive(Clone)]
 pub struct EffectHandler<PData> {
     pub(crate) core: EffectHandlerCore<PData>,
-    codec_executor: CodecExecutor,
     /// Output-port router.
     pub router: OutputRouter<SharedSender<PData>>,
     /// Per-handler flow_metric state. See [`SharedFlowMetricState`] /
@@ -147,6 +147,7 @@ pub struct EffectHandler<PData> {
 /// Implementation for the `Send` effect handler.
 impl<PData> EffectHandler<PData> {
     /// Creates a new shared (Send) `EffectHandler` with the given processor name and pdata sender.
+    #[cfg(any(test, feature = "test-utils"))]
     #[must_use]
     pub fn new(
         node_id: NodeId,
@@ -154,25 +155,31 @@ impl<PData> EffectHandler<PData> {
         default_port: Option<PortName>,
         metrics_reporter: MetricsReporter,
     ) -> Self {
-        let core = EffectHandlerCore::new(node_id.clone(), metrics_reporter);
+        let runtime_services =
+            PipelineRuntimeServices::new().expect("the linked pdata codec registry must be valid");
+        Self::new_with_runtime_services(
+            node_id,
+            msg_senders,
+            default_port,
+            metrics_reporter,
+            runtime_services,
+        )
+    }
+
+    pub(crate) fn new_with_runtime_services(
+        node_id: NodeId,
+        msg_senders: HashMap<PortName, SharedSender<PData>>,
+        default_port: Option<PortName>,
+        metrics_reporter: MetricsReporter,
+        runtime_services: PipelineRuntimeServices,
+    ) -> Self {
+        let core = EffectHandlerCore::new(node_id.clone(), metrics_reporter, runtime_services);
         let router = OutputRouter::new(node_id, msg_senders, default_port);
         EffectHandler {
             core,
-            codec_executor: CodecExecutor::default(),
             router,
             flow: SharedFlowMetricState::default(),
         }
-    }
-
-    /// Returns the runtime-owned pdata codec service.
-    #[doc(hidden)]
-    #[must_use]
-    pub const fn codec_executor(&self) -> &CodecExecutor {
-        &self.codec_executor
-    }
-
-    pub(crate) fn set_codec_executor(&mut self, codec_executor: CodecExecutor) {
-        self.codec_executor = codec_executor;
     }
 
     /// Returns the id of the processor associated with this handler.
@@ -906,6 +913,12 @@ impl<PData> EffectHandler<PData> {
     ) {
         self.core
             .set_pipeline_completion_msg_sender(pipeline_completion_msg_sender);
+    }
+}
+
+impl<PData> CodecEffectHandler for EffectHandler<PData> {
+    fn codec_service(&self) -> &CodecService {
+        self.core.runtime_services.codecs()
     }
 }
 

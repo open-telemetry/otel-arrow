@@ -21,6 +21,7 @@ test-utils = []
 [dependencies]
 otel-arrow-dfe-channel = { workspace = true }
 otel-arrow-dfe-pdata = { workspace = true }
+otel-arrow-dfe-pdata-codec = { workspace = true }
 otel-arrow-dfe-config = { workspace = true }
 otel-arrow-dfe-engine-macros = { workspace = true }
 otel-arrow-dfe-component-inventory-syntax = { workspace = true }

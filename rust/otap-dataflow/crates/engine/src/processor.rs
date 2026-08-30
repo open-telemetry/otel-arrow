@@ -29,6 +29,7 @@ use crate::local::processor as local;
 use crate::message::{Message, ProcessorInbox, Receiver, Sender};
 use crate::node::{Node, NodeId, NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::node_local_scheduler::NodeLocalSchedulerHandle;
+use crate::runtime_services::PipelineRuntimeServices;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::shared::processor as shared;
 use crate::terminal_state::TerminalMetricsDeadline;
@@ -36,7 +37,6 @@ use otel_arrow_dfe_channel::error::SendError;
 use otel_arrow_dfe_channel::mpsc;
 use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_config::{PortName, SignalType};
-use otel_arrow_dfe_pdata::codec::CodecExecutor;
 use otel_arrow_dfe_telemetry::metrics::MeasurementMetricSet;
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
@@ -483,6 +483,17 @@ impl<PData> ProcessorWrapper<PData> {
         metrics_reporter: MetricsReporter,
         node_interests: Interests,
     ) -> Result<ProcessorWrapperRuntime<PData>, Error> {
+        let runtime_services = PipelineRuntimeServices::new()?;
+        self.prepare_runtime_with_services(metrics_reporter, node_interests, runtime_services)
+            .await
+    }
+
+    async fn prepare_runtime_with_services(
+        self,
+        metrics_reporter: MetricsReporter,
+        node_interests: Interests,
+        runtime_services: PipelineRuntimeServices,
+    ) -> Result<ProcessorWrapperRuntime<PData>, Error> {
         match self {
             ProcessorWrapper::Local {
                 node_id,
@@ -518,11 +529,12 @@ impl<PData> ProcessorWrapper<PData> {
                     node_interests,
                 );
                 let default_port = user_config.default_output.clone();
-                let mut effect_handler = local::EffectHandler::new(
+                let mut effect_handler = local::EffectHandler::new_with_runtime_services(
                     node_id,
                     pdata_senders,
                     default_port,
                     metrics_reporter,
+                    runtime_services.clone(),
                 );
                 effect_handler.set_source_tagging(source_tag);
                 effect_handler.core.set_local_scheduler(local_scheduler);
@@ -567,11 +579,12 @@ impl<PData> ProcessorWrapper<PData> {
                     node_interests,
                 );
                 let default_port = user_config.default_output.clone();
-                let mut effect_handler = shared::EffectHandler::new(
+                let mut effect_handler = shared::EffectHandler::new_with_runtime_services(
                     node_id,
                     pdata_senders,
                     default_port,
                     metrics_reporter,
+                    runtime_services,
                 );
                 effect_handler.set_source_tagging(source_tag);
                 effect_handler.core.set_local_scheduler(local_scheduler);
@@ -595,6 +608,7 @@ impl<PData> ProcessorWrapper<PData> {
     where
         PData: ReceivedAtNode + FlowMetricHook,
     {
+        let runtime_services = PipelineRuntimeServices::new()?;
         self.start_with_completion_metrics(
             runtime_ctrl_msg_tx,
             pipeline_completion_msg_tx,
@@ -614,7 +628,7 @@ impl<PData> ProcessorWrapper<PData> {
             false,
             false,
             TerminalMetricsDeadline::default(),
-            CodecExecutor::default(),
+            runtime_services,
         )
         .await
     }
@@ -639,13 +653,17 @@ impl<PData> ProcessorWrapper<PData> {
         flow_metrics_active: bool,
         flow_needs_timing: bool,
         terminal_metrics_deadline: TerminalMetricsDeadline,
-        codec_executor: CodecExecutor,
+        runtime_services: PipelineRuntimeServices,
     ) -> Result<(), Error>
     where
         PData: ReceivedAtNode + FlowMetricHook,
     {
         let runtime = self
-            .prepare_runtime(metrics_reporter.clone(), node_interests)
+            .prepare_runtime_with_services(
+                metrics_reporter.clone(),
+                node_interests,
+                runtime_services,
+            )
             .await?;
 
         match runtime {
@@ -654,7 +672,6 @@ impl<PData> ProcessorWrapper<PData> {
                 mut inbox,
                 mut effect_handler,
             } => {
-                effect_handler.set_codec_executor(codec_executor.clone());
                 effect_handler
                     .core
                     .set_runtime_ctrl_msg_sender(runtime_ctrl_msg_tx);
@@ -754,7 +771,6 @@ impl<PData> ProcessorWrapper<PData> {
                 mut inbox,
                 mut effect_handler,
             } => {
-                effect_handler.set_codec_executor(codec_executor);
                 effect_handler
                     .core
                     .set_runtime_ctrl_msg_sender(runtime_ctrl_msg_tx);
@@ -1019,6 +1035,7 @@ mod tests {
     use crate::processor::{
         Error, ProcessorRuntimeRequirements, ProcessorWrapper, validate_local_wakeup_requirements,
     };
+    use crate::runtime_services::PipelineRuntimeServices;
     use crate::shared::message::{SharedReceiver, SharedSender};
     use crate::shared::processor as shared;
     use crate::testing::processor::TestRuntime;
@@ -1026,7 +1043,6 @@ mod tests {
     use crate::testing::{CtrlMsgCounters, TestMsg, test_node};
     use async_trait::async_trait;
     use otel_arrow_dfe_config::{SignalType, node::NodeUserConfig};
-    use otel_arrow_dfe_pdata::codec::CodecExecutor;
     use otel_arrow_dfe_telemetry::common_attributes::SignalAttributes;
     use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricValue};
     use serde_json::Value;
@@ -1547,7 +1563,7 @@ mod tests {
                             true,
                             true,
                             crate::terminal_state::TerminalMetricsDeadline::default(),
-                            CodecExecutor::default(),
+                            PipelineRuntimeServices::new().unwrap(),
                         )
                         .await
                 });
@@ -1765,7 +1781,7 @@ mod tests {
                 true, // flow_metrics_active
                 false,
                 crate::terminal_state::TerminalMetricsDeadline::default(),
-                CodecExecutor::default(),
+                PipelineRuntimeServices::new().unwrap(),
             )
             .await;
 
@@ -2007,7 +2023,7 @@ mod tests {
                 true,
                 false,
                 crate::terminal_state::TerminalMetricsDeadline::default(),
-                CodecExecutor::default(),
+                PipelineRuntimeServices::new().unwrap(),
             )
             .await;
 

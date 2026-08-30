@@ -21,7 +21,6 @@ arrow-schema = { workspace = true }
 datafusion = { workspace = true }
 ciborium = { workspace = true }
 itertools = { workspace = true }
-linkme = { workspace = true }
 otel-arrow-dfe-config = { workspace = true }
 otel-arrow-dfe-pdata-otlp-macros = { workspace = true }
 otel-arrow-dfe-pdata-otlp-model = { workspace = true }
