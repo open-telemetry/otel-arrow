@@ -313,13 +313,16 @@ fn bench_exporter(c: &mut Criterion) {
         // create data that will be used to benchmark the exporters
         let mut otap_signals = Vec::new();
         let mut otlp_signals = Vec::new();
-        for _ in 0..size {    
+        for _ in 0..size {
             let trace_records =
                 create_otap_batch_with_rows(TRACES_BATCH_ID, ArrowPayloadType::Spans, 50);
-           let log_records =
+            let log_records =
                 create_otap_batch_with_rows(LOGS_BATCH_ID, ArrowPayloadType::Logs, 50);
-            let metrics_records =
-                create_otap_batch_with_rows(METRICS_BATCH_ID, ArrowPayloadType::UnivariateMetrics, 50);
+            let metrics_records = create_otap_batch_with_rows(
+                METRICS_BATCH_ID,
+                ArrowPayloadType::UnivariateMetrics,
+                50,
+            );
 
             otap_signals.push(OtapPdata::new(Context::default(), trace_records.into()));
             otap_signals.push(OtapPdata::new(Context::default(), log_records.into()));
