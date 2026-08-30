@@ -34,12 +34,12 @@ use crate::pipeline_ctrl::{
     snapshot_node_metrics_with_handles,
 };
 use crate::processor::FlowMetricHook;
+use crate::runtime_services::PipelineRuntimeServices;
 use crate::terminal_state::{TerminalMetricsDeadline, TerminalState};
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
 use otel_arrow_dfe_config::DeployedPipelineKey;
 use otel_arrow_dfe_config::pipeline::PipelineConfig;
 use otel_arrow_dfe_config::policy::TelemetryPolicy;
-use otel_arrow_dfe_pdata::codec::CodecExecutor;
 use otel_arrow_dfe_telemetry::event::ObservedEventReporter;
 use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
 use otel_arrow_dfe_telemetry::reporter::{MetricsReporter, ReportOutcome};
@@ -471,7 +471,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             .build()
             .expect("Failed to create runtime");
         let local_tasks = LocalSet::new();
-        let codec_executor = CodecExecutor::default();
+        let runtime_services = PipelineRuntimeServices::new()?;
         // ToDo create an optimized version of FuturesUnordered that can be used for !Send, !Sync tasks
         let mut futures = FuturesUnordered::new();
 
@@ -615,7 +615,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             let effect_metrics_reporter = metrics_reporter.clone();
             let final_metrics_reporter = metrics_reporter.clone();
             let exporter_terminal_metrics_deadline = terminal_metrics_deadline.clone();
-            let exporter_codec_executor = codec_executor.clone();
+            let exporter_runtime_services = runtime_services.clone();
             let fut = async move {
                 match exporter
                     .start_with_completion_metrics(
@@ -624,7 +624,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                         effect_metrics_reporter,
                         node_interests,
                         completion_emission_metrics,
-                        exporter_codec_executor,
+                        exporter_runtime_services,
                     )
                     .await
                 {
@@ -699,7 +699,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             let metrics_reporter = metrics_reporter.clone();
             let final_metrics_reporter = metrics_reporter.clone();
             let processor_terminal_metrics_deadline = terminal_metrics_deadline.clone();
-            let processor_codec_executor = codec_executor.clone();
+            let processor_runtime_services = runtime_services.clone();
             // Extract flow metric roles for this processor node.
             // Compute pipeline-wide flags before moving metric sets into handlers.
             let flow_active = flow_metric_state.is_active();
@@ -779,7 +779,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                         flow_active,
                         flow_needs_timing,
                         processor_terminal_metrics_deadline.clone(),
-                        processor_codec_executor,
+                        processor_runtime_services,
                     )
                     .await;
                 flush_metrics_reporter(
@@ -839,15 +839,15 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             let effect_metrics_reporter = metrics_reporter.clone();
             let final_metrics_reporter = metrics_reporter.clone();
             let receiver_terminal_metrics_deadline = terminal_metrics_deadline.clone();
-            let receiver_codec_executor = codec_executor.clone();
+            let receiver_runtime_services = runtime_services.clone();
             let fut = async move {
                 match receiver
-                    .start_with_codec_executor(
+                    .start_with_runtime_services(
                         runtime_ctrl_msg_tx,
                         pipeline_completion_msg_tx,
                         effect_metrics_reporter,
                         node_interests,
-                        receiver_codec_executor,
+                        receiver_runtime_services,
                     )
                     .await
                 {

@@ -22,6 +22,7 @@ use crate::local::exporter as local;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message::{ExporterInbox, Receiver, Sender};
 use crate::node::{Node, NodeId, NodeWithPDataReceiver};
+use crate::runtime_services::PipelineRuntimeServices;
 use crate::shared::exporter as shared;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::terminal_state::TerminalState;
@@ -29,7 +30,6 @@ use otel_arrow_dfe_channel::error::SendError;
 use otel_arrow_dfe_channel::mpsc;
 use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_config::transport_headers_policy::HeaderPropagationPolicy;
-use otel_arrow_dfe_pdata::codec::CodecExecutor;
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use std::sync::Arc;
 
@@ -292,13 +292,14 @@ impl<PData> ExporterWrapper<PData> {
         metrics_reporter: MetricsReporter,
         node_interests: Interests,
     ) -> Result<TerminalState, Error> {
+        let runtime_services = PipelineRuntimeServices::new()?;
         self.start_with_completion_metrics(
             runtime_ctrl_msg_tx,
             pipeline_completion_msg_tx,
             metrics_reporter,
             node_interests,
             None,
-            CodecExecutor::default(),
+            runtime_services,
         )
         .await
     }
@@ -310,7 +311,7 @@ impl<PData> ExporterWrapper<PData> {
         metrics_reporter: MetricsReporter,
         node_interests: Interests,
         completion_emission_metrics: Option<CompletionEmissionMetricsHandle>,
-        codec_executor: CodecExecutor,
+        runtime_services: PipelineRuntimeServices,
     ) -> Result<TerminalState, Error> {
         match (self, metrics_reporter) {
             (
@@ -324,9 +325,11 @@ impl<PData> ExporterWrapper<PData> {
                 },
                 metrics_reporter,
             ) => {
-                let mut effect_handler =
-                    local::EffectHandler::new(node_id.clone(), metrics_reporter);
-                effect_handler.set_codec_executor(codec_executor.clone());
+                let mut effect_handler = local::EffectHandler::new_with_runtime_services(
+                    node_id.clone(),
+                    metrics_reporter,
+                    runtime_services.clone(),
+                );
                 let pdata_rx = pdata_receiver.ok_or_else(|| Error::ExporterError {
                     exporter: effect_handler.exporter_id(),
                     kind: ExporterErrorKind::Configuration,
@@ -363,9 +366,11 @@ impl<PData> ExporterWrapper<PData> {
                 },
                 metrics_reporter,
             ) => {
-                let mut effect_handler =
-                    shared::EffectHandler::new(node_id.clone(), metrics_reporter);
-                effect_handler.set_codec_executor(codec_executor);
+                let mut effect_handler = shared::EffectHandler::new_with_runtime_services(
+                    node_id.clone(),
+                    metrics_reporter,
+                    runtime_services,
+                );
                 let pdata_rx = pdata_receiver.ok_or_else(|| Error::ExporterError {
                     exporter: effect_handler.exporter_id(),
                     kind: ExporterErrorKind::Configuration,

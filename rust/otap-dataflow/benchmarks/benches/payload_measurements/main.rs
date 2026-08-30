@@ -20,8 +20,9 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::*;
 use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::*;
 use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::*;
 use otel_arrow_dfe_pdata::testing::round_trip::{otlp_message_to_bytes, otlp_to_otap};
-use otel_arrow_dfe_pdata::{
-    CodecState, EncodingPlan, OtapPayload, ResolvedCodec, TryIntoWithOptions,
+use otel_arrow_dfe_pdata::{OtapPayload, TryIntoWithOptions};
+use otel_arrow_dfe_pdata_codec::{
+    CodecService, EncodePolicy, EncodingPlan, PdataEncoding, ViewPlan,
 };
 
 #[cfg(not(windows))]
@@ -294,44 +295,46 @@ fn direct_codec_paths(c: &mut Criterion) {
         let otlp_bytes: OtlpProtoBytes = otlp_message_to_bytes(&message);
         let encoded = otlp_bytes.clone_bytes();
         let otap_records: OtapArrowRecords = otlp_to_otap(&message);
+        let service = CodecService::new().expect("valid codec registry");
+        let codec = service
+            .registry()
+            .resolve_decoder(&PdataEncoding::OTLP, SignalType::Logs)
+            .expect("OTLP decoder");
+        let encoded = codec
+            .admit(SignalType::Logs, encoded)
+            .expect("OTLP admission");
+        let view_plan = ViewPlan::accept_encoded([codec]);
+        let encoding_plan = EncodingPlan::resolve(
+            service.registry(),
+            &PdataEncoding::OTLP,
+            SignalType::Logs,
+            EncodePolicy::default(),
+        )
+        .expect("OTLP encoding plan");
 
         _ = group.bench_function(BenchmarkId::new("OTLP/count", record_count), |b| {
-            b.iter(|| black_box(ResolvedCodec::OTLP.count_items(SignalType::Logs, &encoded)))
+            b.iter(|| black_box(codec.count_items(SignalType::Logs, encoded.bytes())))
         });
 
         _ = group.bench_function(BenchmarkId::new("OTLP/view", record_count), |b| {
-            let mut state = CodecState::default();
-            b.iter(|| {
-                black_box(
-                    state
-                        .view(ResolvedCodec::OTLP, SignalType::Logs, &encoded)
-                        .expect("OTLP codec view"),
-                )
-            })
+            b.iter(|| black_box(service.view(&encoded, &view_plan).expect("OTLP codec view")))
         });
 
         _ = group.bench_function(BenchmarkId::new("OTLP/decode", record_count), |b| {
-            let mut state = CodecState::default();
-            b.iter(|| {
-                black_box(
-                    state
-                        .decode(ResolvedCodec::OTLP, SignalType::Logs, &encoded)
-                        .expect("OTLP codec decode"),
-                )
-            })
+            b.iter(|| black_box(service.decode(&encoded).expect("OTLP codec decode")))
         });
 
         _ = group.bench_function(
             BenchmarkId::new("OTAP/encode_prepared", record_count),
             |b| {
-                let mut state = CodecState::default();
                 b.iter_batched(
                     || otap_records.clone(),
                     |mut records| {
-                        let output = state
-                            .prepare_encode(&mut records, &EncodingPlan::OTLP)
-                            .expect("OTLP prepared output");
-                        black_box(output.as_ref().len())
+                        service
+                            .with_encoded_output(&mut records, &encoding_plan, |output| {
+                                black_box(output.as_ref().len())
+                            })
+                            .expect("OTLP prepared output")
                     },
                     BatchSize::SmallInput,
                 )
@@ -339,15 +342,13 @@ fn direct_codec_paths(c: &mut Criterion) {
         );
 
         _ = group.bench_function(BenchmarkId::new("OTAP/encode_owned", record_count), |b| {
-            let mut state = CodecState::default();
             b.iter_batched(
                 || otap_records.clone(),
                 |mut records| {
                     black_box(
-                        state
-                            .prepare_encode(&mut records, &EncodingPlan::OTLP)
-                            .expect("OTLP owned output")
-                            .into_bytes(),
+                        service
+                            .encode_bytes(&mut records, &encoding_plan)
+                            .expect("OTLP owned output"),
                     )
                 },
                 BatchSize::SmallInput,
