@@ -14,7 +14,7 @@ tokio.workspace = true
 serde_json.workspace = true
 otel-arrow-dfe-core-nodes = { workspace = true, features = ["bench"] }
 otel-arrow-dfe-dev-nodes = { workspace = true }
-otel-arrow-dfe-otap = { workspace = true }
+otel-arrow-dfe-otap = { workspace = true, features = ["test-utils"] }
 
 [dev-dependencies]
 criterion = { workspace = true, features = ["html_reports", "async_tokio"] }
@@ -24,7 +24,7 @@ prost = { workspace = true }
 otel-arrow-dfe-control-channel = { workspace = true }
 otel-arrow-dfe-config = { workspace = true }
 otel-arrow-dfe-channel = { workspace = true }
-otel-arrow-dfe-engine = { workspace = true }
+otel-arrow-dfe-engine = { workspace = true, features = ["test-utils"] }
 otel-arrow-dfe-telemetry = { workspace = true }
 otel-arrow-dfe-telemetry-macros = { workspace = true }
 otel-arrow-dfe-pdata = { workspace = true, features = ["bench", "testing"] }

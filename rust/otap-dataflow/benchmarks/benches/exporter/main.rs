@@ -6,7 +6,6 @@
 #![allow(missing_docs)]
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use fluke_hpack::Encoder;
 use otel_arrow_dfe_channel::mpsc;
 use otel_arrow_dfe_core_nodes::exporters::otap_exporter::{OTAP_EXPORTER_URN, OTAPExporter};
 use otel_arrow_dfe_dev_nodes::exporters::perf_exporter::{
@@ -21,11 +20,10 @@ use otel_arrow_dfe_engine::{
     testing::test_node,
 };
 use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
+use otel_arrow_dfe_otap::otap_mock::create_otap_batch_with_rows;
 use otel_arrow_dfe_pdata::{
-    Consumer,
-    otap::{OtapArrowRecords, from_record_messages},
     proto::opentelemetry::arrow::v1::{
-        ArrowPayload, ArrowPayloadType, BatchArrowRecords, BatchStatus, StatusCode,
+        ArrowPayloadType, BatchArrowRecords, BatchStatus, StatusCode,
         arrow_logs_service_server::{ArrowLogsService, ArrowLogsServiceServer},
         arrow_metrics_service_server::{ArrowMetricsService, ArrowMetricsServiceServer},
         arrow_traces_service_server::{ArrowTracesService, ArrowTracesServiceServer},
