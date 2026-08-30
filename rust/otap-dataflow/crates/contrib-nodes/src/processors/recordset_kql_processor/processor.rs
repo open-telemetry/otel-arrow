@@ -27,9 +27,10 @@ use otel_arrow_dfe_engine::{
     process_duration::ComputeDuration,
     processor::ProcessorRuntimeRequirements,
 };
+use otel_arrow_dfe_pdata::OtlpProtoBytes;
 #[cfg(test)]
 use otel_arrow_dfe_pdata::TryIntoWithOptions;
-use otel_arrow_dfe_pdata::{EncodingPlan, OtapPayload, OtlpProtoBytes};
+use otel_arrow_dfe_pdata_codec::{EncodePolicy, EncodingPlan, OtapPayload, PdataEncoding};
 
 /// URN identifier for the processor
 pub const RECORDSET_KQL_PROCESSOR_URN: &str = "urn:microsoft:processor:recordset_kql";
@@ -52,6 +53,7 @@ pub struct RecordsetKqlProcessor {
     config: RecordsetKqlProcessorConfig,
     pipeline: BridgePipeline,
     compute_duration: ComputeDuration,
+    encoding_plan: Option<EncodingPlan>,
 }
 
 /// Result of processing a single signal payload: the transformed bytes plus the
@@ -84,6 +86,7 @@ impl RecordsetKqlProcessor {
             config,
             pipeline,
             compute_duration,
+            encoding_plan: None,
         })
     }
 
@@ -152,8 +155,15 @@ impl RecordsetKqlProcessor {
 
         // Encode through the pipeline runtime's reusable codec state.
         let (ctx, mut payload) = data.into_parts();
+        if self.encoding_plan.is_none() {
+            self.encoding_plan = Some(
+                effect_handler
+                    .resolve_encoding_plan(&PdataEncoding::OTLP, EncodePolicy::default())?,
+            );
+        }
+        let encoding_plan = self.encoding_plan.expect("encoding plan initialized");
         let otlp_bytes = match effect_handler
-            .encode_owned(&mut payload, &EncodingPlan::OTLP)
+            .encode_owned(&mut payload, &encoding_plan)
             .await
         {
             Ok(bytes) => bytes,

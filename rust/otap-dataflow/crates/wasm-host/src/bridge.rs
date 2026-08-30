@@ -79,8 +79,9 @@ mod tests {
     }
 
     fn severities_of(pdata: OtapPdata) -> Vec<String> {
+        let service = otel_arrow_dfe_pdata_codec::CodecService::new().unwrap();
         let arrow_pdata = pdata
-            .try_into_otap(&mut otel_arrow_dfe_pdata::codec::CodecState::default())
+            .try_into_otap(&service)
             .expect("convert payload to otap records");
         let records = arrow_pdata.records();
         let batch = records
@@ -112,8 +113,9 @@ mod tests {
         .expect("run_on_otap_records should pass through empty payloads")
         .expect("empty payload should be forwarded, not dropped");
 
+        let service = otel_arrow_dfe_pdata_codec::CodecService::new().unwrap();
         let records = output
-            .try_into_otap(&mut otel_arrow_dfe_pdata::codec::CodecState::default())
+            .try_into_otap(&service)
             .expect("convert payload to otap records");
         assert!(
             records.records().get(ArrowPayloadType::Logs).is_none(),
@@ -181,8 +183,9 @@ mod tests {
             .expect("bridge run succeeds")
             .expect("payload is not dropped");
 
+        let service = otel_arrow_dfe_pdata_codec::CodecService::new().unwrap();
         let records = output
-            .try_into_otap(&mut otel_arrow_dfe_pdata::codec::CodecState::default())
+            .try_into_otap(&service)
             .expect("convert payload to otap records");
         let otlp = otap_to_otlp(records.records());
 

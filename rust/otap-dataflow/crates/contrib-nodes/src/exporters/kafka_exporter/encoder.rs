@@ -6,7 +6,9 @@
 use super::error::KafkaExporterError;
 use otel_arrow_dfe_pdata::{OtapArrowRecords, Producer as PdataProducer};
 #[cfg(test)]
-use otel_arrow_dfe_pdata::{OtapPayload, OtlpProtoBytes, TryIntoWithOptions};
+use otel_arrow_dfe_pdata::{OtlpProtoBytes, TryIntoWithOptions};
+#[cfg(test)]
+use otel_arrow_dfe_pdata_codec::OtapPayload;
 
 use prost::Message as ProstMessage;
 

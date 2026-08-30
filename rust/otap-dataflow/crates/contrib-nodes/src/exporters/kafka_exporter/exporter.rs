@@ -51,10 +51,8 @@ use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
 use otel_arrow_dfe_otap::pdata::{OtapPdata, PdataEffectHandlerExtension};
-#[cfg(test)]
-use otel_arrow_dfe_pdata::CodecState;
-use otel_arrow_dfe_pdata::EncodingPlan;
 use otel_arrow_dfe_pdata::Producer as PdataProducer;
+use otel_arrow_dfe_pdata_codec::{EncodePolicy, EncodingPlan, PdataEncoding};
 use otel_arrow_dfe_telemetry::common_attributes::Outcome;
 use rdkafka::client::DefaultClientContext;
 use rdkafka::config::FromClientConfigAndContext;
@@ -315,6 +313,7 @@ pub struct KafkaExporter {
     traces_allowed_topics_regex: Option<Vec<Regex>>,
     metrics_allowed_topics_regex: Option<Vec<Regex>>,
     logs_allowed_topics_regex: Option<Vec<Regex>>,
+    encoding_plan: Option<EncodingPlan>,
 }
 
 /// Factory registration for the Kafka exporter.
@@ -402,6 +401,7 @@ impl KafkaExporter {
             traces_allowed_topics_regex,
             metrics_allowed_topics_regex,
             logs_allowed_topics_regex,
+            encoding_plan: None,
         })
     }
 
@@ -646,8 +646,9 @@ impl KafkaExporter {
         let encode_result = match (encoding, effect_handler) {
             (MessageFormat::OtlpProto, Some(effect_handler)) => {
                 let mut encoding_payload = payload.clone();
+                let encoding_plan = self.encoding_plan.expect("encoding plan initialized");
                 effect_handler
-                    .encode_owned(&mut encoding_payload, &EncodingPlan::OTLP)
+                    .encode_owned(&mut encoding_payload, &encoding_plan)
                     .await
                     .map(|bytes| bytes.to_vec())
                     .map_err(|error| KafkaExporterError::OtlpConversion(error.to_string()))
@@ -665,13 +666,23 @@ impl KafkaExporter {
             #[cfg(test)]
             (MessageFormat::OtlpProto, None) => encoder::encode_to_otlp_bytes(payload.clone()),
             #[cfg(test)]
-            (MessageFormat::OtapProto, None) => payload
-                .clone()
-                .try_into_otap(&mut CodecState::default())
-                .map_err(|error| KafkaExporterError::OtapArrowRecordsConversion(error.to_string()))
-                .and_then(|records| {
-                    encoder::encode_to_batch_arrow_record_bytes(records, &mut self.pdata_producer)
-                }),
+            (MessageFormat::OtapProto, None) => {
+                let service = otel_arrow_dfe_pdata_codec::CodecService::new().map_err(|error| {
+                    KafkaExporterError::OtapArrowRecordsConversion(error.to_string())
+                })?;
+                payload
+                    .clone()
+                    .try_into_otap(&service)
+                    .map_err(|error| {
+                        KafkaExporterError::OtapArrowRecordsConversion(error.to_string())
+                    })
+                    .and_then(|records| {
+                        encoder::encode_to_batch_arrow_record_bytes(
+                            records,
+                            &mut self.pdata_producer,
+                        )
+                    })
+            }
             #[cfg(not(test))]
             (_, None) => Err(KafkaExporterError::OtlpConversion(
                 "runtime codec service unavailable".to_string(),
@@ -1111,6 +1122,9 @@ impl Exporter<OtapPdata> for KafkaExporter {
         mut inbox: ExporterInbox<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, EngineError> {
+        self.encoding_plan = Some(
+            effect_handler.resolve_encoding_plan(&PdataEncoding::OTLP, EncodePolicy::default())?,
+        );
         effect_handler
             .info(&format!(
                 "Starting Kafka exporter with brokers: {}",

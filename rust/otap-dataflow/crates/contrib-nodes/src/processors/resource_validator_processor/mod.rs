@@ -64,7 +64,6 @@ use otel_arrow_dfe_engine::local::processor as local;
 use otel_arrow_dfe_engine::message::Message;
 use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_engine::processor::ProcessorWrapper;
-use otel_arrow_dfe_pdata::CodecView;
 use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_pdata::TryFromWithOptions;
 #[cfg(test)]
@@ -74,6 +73,7 @@ use otel_arrow_dfe_pdata::views::otap::OtapLogsView;
 use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
 use otel_arrow_dfe_pdata::views::otlp::bytes::metrics::RawMetricsData;
 use otel_arrow_dfe_pdata::views::otlp::bytes::traces::RawTraceData;
+use otel_arrow_dfe_pdata_codec::{PdataEncoding, PdataView, ViewPlan};
 use otel_arrow_dfe_pdata_views::views::common::{AnyValueView, AttributeView, ValueType};
 use otel_arrow_dfe_pdata_views::views::logs::{LogsDataView, ResourceLogsView};
 use otel_arrow_dfe_pdata_views::views::metrics::{MetricsView, ResourceMetricsView};
@@ -156,6 +156,8 @@ pub struct ResourceValidatorProcessor {
     case_sensitive: bool,
     /// Telemetry metrics
     metrics: MetricSet<ResourceValidatorMetrics>,
+    /// Read-only representations resolved from the injected runtime service.
+    view_plan: Option<ViewPlan>,
 }
 
 /// Factory function to create a Resource Validator processor
@@ -209,6 +211,7 @@ impl ResourceValidatorProcessor {
             source_mode: AllowedValuesSource::Static,
             case_sensitive: config.case_sensitive,
             metrics,
+            view_plan: None,
         })
     }
 
@@ -228,6 +231,7 @@ impl ResourceValidatorProcessor {
             source_mode: AllowedValuesSource::Static,
             case_sensitive,
             metrics,
+            view_plan: None,
         }
     }
 
@@ -488,7 +492,13 @@ impl local::Processor<OtapPdata> for ResourceValidatorProcessor {
             Message::PData(mut pdata) => {
                 let signal_type = pdata.signal_type();
 
-                let view = match effect_handler.view(pdata.payload_ref()).await {
+                if self.view_plan.is_none() {
+                    self.view_plan =
+                        Some(effect_handler.resolve_view_plan(&[PdataEncoding::OTLP])?);
+                }
+                let view_plan = self.view_plan.as_ref().expect("view plan initialized");
+
+                let view = match effect_handler.view(pdata.payload_ref(), view_plan).await {
                     Ok(view) => view,
                     Err(error) => {
                         let failure = ValidationFailure::ConversionError;
@@ -506,21 +516,21 @@ impl local::Processor<OtapPdata> for ResourceValidatorProcessor {
                 let allowed_values = self.get_allowed_values(&pdata);
 
                 let validation_result = match view {
-                    CodecView::OtlpBytes { signal, bytes } => match signal {
+                    PdataView::Encoded(view) => match view.signal_type() {
                         SignalType::Logs => {
-                            let logs_data = RawLogsData::new(bytes);
+                            let logs_data = RawLogsData::new(view.bytes());
                             self.validate_logs(&logs_data, &allowed_values)
                         }
                         SignalType::Metrics => {
-                            let metrics_data = RawMetricsData::new(bytes);
+                            let metrics_data = RawMetricsData::new(view.bytes());
                             self.validate_metrics(&metrics_data, &allowed_values)
                         }
                         SignalType::Traces => {
-                            let trace_data = RawTraceData::new(bytes);
+                            let trace_data = RawTraceData::new(view.bytes());
                             self.validate_traces(&trace_data, &allowed_values)
                         }
                     },
-                    CodecView::OtapArrowRecords(arrow_records) => match signal_type {
+                    PdataView::Native(arrow_records) => match signal_type {
                         SignalType::Logs => {
                             self.validate_arrow_logs(arrow_records.as_ref(), &allowed_values)
                         }

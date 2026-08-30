@@ -51,11 +51,12 @@ use otel_arrow_dfe_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
 use otel_arrow_dfe_otap::metrics::ExporterExportMetrics;
 use otel_arrow_dfe_otap::pdata::{OtapPdata, PdataEffectHandlerExtension};
+use otel_arrow_dfe_pdata::OtapArrowRecords;
 #[cfg(test)]
 use otel_arrow_dfe_pdata::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::error::Error as PdataError;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayload};
+use otel_arrow_dfe_pdata_codec::{OtapPayload, PdataEncoding, PdataFormat};
 use otel_arrow_dfe_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
 use otel_arrow_dfe_telemetry::metrics::MetricSetHandler;
 use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet};
@@ -208,9 +209,7 @@ fn transform_raw_otlp_logs(
     payload: &OtapPayload,
     transformer: &mut OtlpLogsTransformer,
 ) -> Option<Result<Option<arrow::array::RecordBatch>, error::ClickhouseExporterError>> {
-    if payload.signal_type() == SignalType::Logs
-        && payload.format()
-            == otel_arrow_dfe_pdata::PdataFormat::encoded(otel_arrow_dfe_pdata::ResolvedCodec::OTLP)
+    if payload.signal_type() == SignalType::Logs && payload.encoding() == Some(&PdataEncoding::OTLP)
     {
         Some(
             transformer.transform(
@@ -366,8 +365,7 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                 Message::PData(pdata) => {
                     let export_started_at = Instant::now();
                     let signal_type = pdata.signal_type();
-                    let input_was_native =
-                        pdata.payload_ref().format() == otel_arrow_dfe_pdata::PdataFormat::OTAP;
+                    let input_was_native = pdata.payload_ref().format() == PdataFormat::OTAP;
 
                     if is_unsupported_non_empty_signal(&pdata) {
                         let reason =

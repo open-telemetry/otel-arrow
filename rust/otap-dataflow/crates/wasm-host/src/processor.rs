@@ -33,7 +33,7 @@ use otel_arrow_dfe_engine::processor::ProcessorWrapper;
 use otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES;
 use otel_arrow_dfe_otap::pdata::{OtapPdata, PdataEffectHandlerExtension};
 use otel_arrow_dfe_pdata::OtapArrowRecords;
-use otel_arrow_dfe_pdata::OtapPayload;
+use otel_arrow_dfe_pdata_codec::OtapPayload;
 use serde::{Deserialize, Serialize};
 use wasmtime::component::{Component, HasSelf, Linker};
 use wasmtime::{Engine, Store};
@@ -285,7 +285,7 @@ mod tests {
     use otel_arrow_dfe_engine::testing::node::test_node;
     use otel_arrow_dfe_engine::testing::processor::TestRuntime;
     use otel_arrow_dfe_otap::pdata::Context;
-    use otel_arrow_dfe_pdata::OtapPayload;
+    use otel_arrow_dfe_pdata_codec::OtapPayload;
     use tokio::time::timeout;
 
     struct DropAllProcessor;

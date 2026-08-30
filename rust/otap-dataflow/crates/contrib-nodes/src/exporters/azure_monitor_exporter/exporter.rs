@@ -12,11 +12,12 @@ use otel_arrow_dfe_engine::local::capability::auth::bearer_token_provider::Beare
 use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
 use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_pdata::OtapArrowRecords;
 #[cfg(test)]
 use otel_arrow_dfe_pdata::otlp::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::views::otap::OtapLogsView;
 use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
-use otel_arrow_dfe_pdata::{CodecView, OtapArrowRecords, OtapPayload};
+use otel_arrow_dfe_pdata_codec::{OtapPayload, PdataEncoding, PdataView, ViewPlan};
 
 use super::client::LogsIngestionClientPool;
 use super::config::Config;
@@ -67,6 +68,7 @@ pub struct AzureMonitorExporter {
     last_batch_queued_at: tokio::time::Instant,
     heartbeat: Option<Heartbeat>,
     token_provider: Option<Box<dyn BearerTokenProvider>>,
+    view_plan: Option<ViewPlan>,
 }
 
 impl AzureMonitorExporter {
@@ -115,6 +117,7 @@ impl AzureMonitorExporter {
             last_batch_queued_at: tokio::time::Instant::now(),
             heartbeat,
             token_provider: Some(token_provider),
+            view_plan: None,
         })
     }
 
@@ -457,7 +460,13 @@ impl AzureMonitorExporter {
                 *msg_id += 1;
                 let (context, payload) = pdata.into_parts();
 
-                let view = match effect_handler.view(&payload).await {
+                if self.view_plan.is_none() {
+                    self.view_plan =
+                        Some(effect_handler.resolve_view_plan(&[PdataEncoding::OTLP])?);
+                }
+                let view_plan = self.view_plan.as_ref().expect("view plan initialized");
+
+                let view = match effect_handler.view(&payload, view_plan).await {
                     Ok(view) => view,
                     Err(error) => {
                         effect_handler
@@ -470,7 +479,7 @@ impl AzureMonitorExporter {
                     }
                 };
                 let log_entries = match view {
-                    CodecView::OtapArrowRecords(otap_records) => match otap_records.as_ref() {
+                    PdataView::Native(otap_records) => match otap_records.as_ref() {
                         OtapArrowRecords::Logs(_) => {
                             let logs_view =
                                 OtapLogsView::try_from(otap_records.as_ref()).map_err(|e| {
@@ -490,9 +499,9 @@ impl AzureMonitorExporter {
                             None
                         }
                     },
-                    CodecView::OtlpBytes { signal, bytes } => match signal {
+                    PdataView::Encoded(view) => match view.signal_type() {
                         SignalType::Logs => {
-                            let logs_view = RawLogsData::new(bytes);
+                            let logs_view = RawLogsData::new(view.bytes());
                             Some(self.transformer.convert_to_log_analytics(&logs_view))
                         }
                         SignalType::Metrics | SignalType::Traces => {

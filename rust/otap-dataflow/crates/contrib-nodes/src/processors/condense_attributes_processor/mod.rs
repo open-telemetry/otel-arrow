@@ -34,13 +34,14 @@ use otel_arrow_dfe_engine::message::Message;
 use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_engine::process_duration::ComputeDuration;
 use otel_arrow_dfe_engine::processor::ProcessorWrapper;
+use otel_arrow_dfe_pdata::OtapArrowRecords;
 #[cfg(test)]
 use otel_arrow_dfe_pdata::TryIntoWithOptions;
 use otel_arrow_dfe_pdata::encode::record::attributes::StrKeysAttributesRecordBatchBuilder;
 use otel_arrow_dfe_pdata::otlp::attributes::AttributeValueType;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_dfe_pdata::schema::consts;
-use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayload};
+use otel_arrow_dfe_pdata_codec::OtapPayload;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;

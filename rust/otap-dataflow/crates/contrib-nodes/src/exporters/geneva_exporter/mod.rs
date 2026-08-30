@@ -48,10 +48,11 @@ use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
 use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
 use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_pdata::otlp::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::views::otap::OtapLogsView;
 use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
-use otel_arrow_dfe_pdata::{EncodingPlan, OtapArrowRecords, OtapPayload};
+use otel_arrow_dfe_pdata_codec::{EncodePolicy, EncodingPlan, OtapPayload, PdataEncoding};
 use otel_arrow_dfe_telemetry::instrument::{Counter, Mmsc};
 use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet};
 use otel_arrow_dfe_telemetry_macros::metric_set;
@@ -1384,6 +1385,7 @@ impl GenevaExporter {
         &mut self,
         payload: OtapPayload,
         effect_handler: &EffectHandler<OtapPdata>,
+        encoding_plan: &EncodingPlan,
     ) -> Result<usize, String> {
         if payload.is_empty() {
             self.metrics.empty_payloads_skipped.inc();
@@ -1394,9 +1396,7 @@ impl GenevaExporter {
             return Ok(0);
         }
 
-        if payload.format()
-            != otel_arrow_dfe_pdata::PdataFormat::encoded(otel_arrow_dfe_pdata::ResolvedCodec::OTLP)
-        {
+        if payload.encoding() != Some(&PdataEncoding::OTLP) {
             let otap_records = effect_handler
                 .try_payload_into_otap(payload)
                 .await
@@ -1455,7 +1455,7 @@ impl GenevaExporter {
                     let mut trace_payload =
                         OtapPayload::from(OtapArrowRecords::Traces(otap_records));
                     let bytes = effect_handler
-                        .encode_owned(&mut trace_payload, &EncodingPlan::OTLP)
+                        .encode_owned(&mut trace_payload, encoding_plan)
                         .await
                         .map_err(|e| {
                             self.metrics.conversion_errors.inc();
@@ -1619,6 +1619,8 @@ impl Exporter<OtapPdata> for GenevaExporter {
         mut msg_chan: ExporterInbox<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
+        let encoding_plan =
+            effect_handler.resolve_encoding_plan(&PdataEncoding::OTLP, EncodePolicy::default())?;
         match &self.config.auth {
             AuthConfig::AgentFed => {
                 otel_info!(
@@ -1676,7 +1678,10 @@ impl Exporter<OtapPdata> for GenevaExporter {
                         OtapPayload::empty(signal_type)
                     };
 
-                    match self.export_payload(payload, &effect_handler).await {
+                    match self
+                        .export_payload(payload, &effect_handler, &encoding_plan)
+                        .await
+                    {
                         Ok(_batches_uploaded) => {
                             self.pdata_metrics
                                 .with(SignalOutcomeAttributes {
