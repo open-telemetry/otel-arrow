@@ -228,6 +228,7 @@ pub fn create_otap_batch_with_rows(
     payload_type: ArrowPayloadType,
     num_rows: usize,
 ) -> OtapArrowRecords {
+    assert!(num_rows > 0, "num_rows must be > 0");
     let base = u16::try_from(batch_id).expect("batch_id must fit in u16");
     let ids = UInt16Array::from_iter_values((0..num_rows).map(|i| {
         let offset = u16::try_from(i).expect("row index must fit in u16");
