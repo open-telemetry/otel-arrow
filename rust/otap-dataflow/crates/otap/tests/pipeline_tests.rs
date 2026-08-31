@@ -16,8 +16,8 @@ use otel_arrow_dfe_config::policy::{ChannelCapacityPolicy, MetricLevel, Telemetr
 use otel_arrow_dfe_config::{DeployedPipelineKey, PipelineGroupId, PipelineId};
 use otel_arrow_dfe_core_nodes::exporters::noop_exporter::NOOP_EXPORTER_URN;
 use otel_arrow_dfe_core_nodes::receivers::otlp_receiver::OTLP_RECEIVER_URN;
-use otel_arrow_dfe_core_nodes::receivers::traffic_generator::TRAFFIC_GENERATOR_RECEIVER_URN;
-use otel_arrow_dfe_core_nodes::receivers::traffic_generator::config::{
+use otel_arrow_dfe_dev_nodes::receivers::traffic_generator::TRAFFIC_GENERATOR_RECEIVER_URN;
+use otel_arrow_dfe_dev_nodes::receivers::traffic_generator::config::{
     Config as TrafficGeneratorConfig, DataSource, TrafficConfig,
 };
 use otel_arrow_dfe_engine::context::ControllerContext;

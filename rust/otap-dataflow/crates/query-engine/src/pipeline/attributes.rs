@@ -60,7 +60,7 @@ impl PipelineStage for AttributeTransformPipelineStage {
 
 #[cfg(test)]
 mod test {
-    use data_engine_kql_parser::{KqlParser, Parser};
+    use otel_arrow_contrib_data_engine_kql_parser::{KqlParser, Parser};
     use otel_arrow_dfe_pdata::{
         OtapArrowRecords,
         otap::Logs,
