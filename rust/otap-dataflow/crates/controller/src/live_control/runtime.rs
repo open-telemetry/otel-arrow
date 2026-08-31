@@ -236,11 +236,12 @@ impl<
                 .compact_pipeline_instances(&logical_pipeline_key);
         }
         self.state_changed.notify_all();
-        if exit_was_applied
-            && let RuntimeInstanceExit::Error(error) = exit
-            && let Some(context_policy) = context_policy
-        {
-            self.schedule_runtime_recovery(pipeline_key, context_policy, error);
+        if exit_was_applied && let RuntimeInstanceExit::Error(error) = exit {
+            self.schedule_runtime_recovery(
+                pipeline_key,
+                context_policy.expect("exit context"),
+                error,
+            );
         }
     }
 
