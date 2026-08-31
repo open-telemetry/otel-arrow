@@ -134,17 +134,9 @@ jobs:
       - name: Build reduced-feature ARM test archive
         if: matrix.os == 'ubuntu-24.04-arm'
         shell: bash
-        env:
-          # This ARM job has repeatedly died with exit 143 ("runner has received
-          # a shutdown signal") while compiling `otel-arrow-dfe`. Disable test
-          # debuginfo and limit compiler concurrency to reduce resource pressure.
-          # The sampler records live resource usage if the runner fails again.
-          # `nextest archive` uses the test profile; DEV_DEBUG defensively covers
-          # any auxiliary dev-profile Cargo invocation.
-          CARGO_PROFILE_TEST_DEBUG: "0"
-          CARGO_PROFILE_DEV_DEBUG: "0"
-          CARGO_BUILD_JOBS: "4"
         run: |
+          # Record live resource usage so this run can be compared with the
+          # reduced-debuginfo ARM builds.
           (
             while true; do
               echo "[resources] $(date -u +%T)"
