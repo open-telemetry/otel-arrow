@@ -238,7 +238,7 @@ where
                         &ctx.resource_bytes,
                         &mut scope_cache,
                     )
-                    .unwrap();
+                    .expect("benchmark log encoding should succeed");
                     let _ = std::hint::black_box(buf.len());
                 }
             }
@@ -418,7 +418,7 @@ fn bench_encode_otlp_log_batches(c: &mut Criterion) {
                                     &resource_bytes,
                                     &mut per_record_scope_cache,
                                 )
-                                .unwrap();
+                                .expect("benchmark log encoding should succeed");
                                 std::hint::black_box(buf.into_bytes()).len()
                             })
                             .sum::<usize>();
@@ -440,7 +440,7 @@ fn bench_encode_otlp_log_batches(c: &mut Criterion) {
                             &resource_bytes,
                             &mut batch_scope_cache,
                         )
-                        .unwrap();
+                        .expect("benchmark log encoding should succeed");
                         std::hint::black_box(buf.into_bytes())
                     },
                     BatchSize::SmallInput,

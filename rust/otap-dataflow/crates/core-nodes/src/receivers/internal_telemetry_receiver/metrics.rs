@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Internal metrics receiver state
 
 use otel_arrow_dfe_config::error::Error as ConfigError;
