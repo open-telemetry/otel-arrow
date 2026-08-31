@@ -6,7 +6,7 @@
 # apply the "chore" label, or apply the "skipchangelog" label.
 #
 # PRs confined to paths that have no changelog to write into -- any `docs/`
-# or `rfcs/` directory, or `rust/experimental/` -- are exempt automatically.
+# or `rfcs/` directory, or `rust/contrib/` -- are exempt automatically.
 #
 # Modeled on opentelemetry-collector-contrib/.github/workflows/changelog.yml.
 
@@ -117,10 +117,10 @@ jobs:
           # Treat PR as exempt when every changed file is under a path with no
           # user-facing changelog:
           #   - any docs/ or rfcs/ directory
-          #   - rust/experimental/, whose crates ship no CHANGELOG.md
+          #   - rust/contrib/, whose projects ship no repository CHANGELOG.md
           non_exempt_files=$(printf '%s\n' "$all_changed" | grep -v '^$' \
             | grep -v -E '(^|.*/)(docs|rfcs)/' \
-            | grep -v -E '^rust/experimental/' \
+            | grep -v -E '^rust/contrib/' \
             || true)
 
           if [ -z "$non_exempt_files" ]; then

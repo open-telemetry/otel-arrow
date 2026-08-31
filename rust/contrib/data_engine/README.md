@@ -12,8 +12,8 @@ integration lives separately in
 [`otel-arrow-dfe-query-engine`](../../otap-dataflow/crates/query-engine/).
 It does not define the data engine's scope.
 
-The workspace remains under `rust/experimental` in the `otel-arrow` repository
-while it is developed and maintained here. Published crates therefore use the
+The workspace lives under `rust/contrib` in the `otel-arrow` repository while
+it is developed and maintained here. Published crates therefore use the
 `otel-arrow-contrib-data-engine-*` prefix. The prefix communicates current
 repository stewardship and distinguishes these experimental contributed crates
 from OTAP Dataflow's core crates; it does not imply an architectural dependency
