@@ -94,9 +94,8 @@ fn create(
         })
 }
 
-/*
+/// Factory registration for the OAuth 2.0 Client Auth extension.
 #[allow(unsafe_code)]
-// #[otap_df_engine::component_inventory(category = Extension)]
 #[distributed_slice(OTAP_EXTENSION_FACTORIES)]
 pub static OAUTH2_CLIENT_AUTH_EXTENSION: ExtensionFactory = ExtensionFactory {
     name: OAUTH2_CLIENT_AUTH_URN,
@@ -108,5 +107,3 @@ pub static OAUTH2_CLIENT_AUTH_EXTENSION: ExtensionFactory = ExtensionFactory {
     create,
     validate_config,
 };
-
-*/

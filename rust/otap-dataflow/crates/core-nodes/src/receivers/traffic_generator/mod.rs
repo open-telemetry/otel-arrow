@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use linkme::distributed_slice;
 use metrics::TrafficGeneratorReceiverMetrics;
 use otap_df_channel::error::{RecvError, SendError};
+use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_config::transport_headers::{TransportHeader, TransportHeaders};
 use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
@@ -102,7 +103,6 @@ pub static TRAFFIC_GENERATOR_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFact
              node_config: Arc<NodeUserConfig>,
              receiver_config: &ReceiverConfig,
              _capabilities: &otap_df_engine::capability::registry::Capabilities| {
-        // println!("pierre 2");
         Ok(ReceiverWrapper::local(
             TrafficGeneratorReceiver::from_config(pipeline, &node_config.config)?,
             node,
@@ -111,21 +111,26 @@ pub static TRAFFIC_GENERATOR_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFact
         ))
     },
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    validate_config: validation_closure,
+    validate_config: validate_config,
 };
 
-fn validation_closure(config: &Value) -> Result<(), otap_df_config::error::Error> {
-    let _ = otap_df_config::validation::validate_typed_config::<Config>(config);
+/// Validates the Traffic Generator exporter configuration at config load time.
+///
+/// Runs before any node is started (initial load and live reconfigure), so bad
+/// configuration is rejected fast and attributed to the offending node rather
+/// than surfacing as an opaque client error at startup.
+fn validate_config(config: &Value) -> Result<(), ConfigError> {
     let config_typed: Config = serde_json::from_value(config.clone()).map_err(|err| {
         otap_df_config::error::Error::InvalidUserConfig {
             error: err.to_string(),
         }
     })?;
-    config_typed.get_traffic_config().validate().map_err(|e| {
+    let _ = config_typed.get_traffic_config().validate().map_err(|e| {
         otap_df_config::error::Error::InvalidUserConfig {
             error: e.to_string(),
         }
-    })
+    });
+    Ok(())
 }
 
 impl TrafficGeneratorReceiver {
@@ -141,13 +146,11 @@ impl TrafficGeneratorReceiver {
         pipeline_ctx: PipelineContext,
         config: &Value,
     ) -> Result<Self, otap_df_config::error::Error> {
-        // println!("here the configu is {:?}", config);
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
             }
         })?;
-        // println!("Pierre deepest");
         config.get_traffic_config().validate()?;
         Ok(TrafficGeneratorReceiver::new(pipeline_ctx, config))
     }

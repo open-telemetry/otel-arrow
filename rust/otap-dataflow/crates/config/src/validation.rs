@@ -25,7 +25,6 @@ use crate::error::Error;
 /// ```ignore
 /// validate_config: validate_typed_config::<MyComponentConfig>,
 /// ```
-/// TODO: use this other places
 pub fn validate_typed_config<T: serde::de::DeserializeOwned>(
     config: &serde_json::Value,
 ) -> Result<(), Error> {

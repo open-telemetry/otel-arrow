@@ -3,10 +3,7 @@
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
-use otap_df_config::SignalType;
-use otap_df_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
 use otap_df_engine::config::ExporterConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::{AckMsg, NodeControlMsg};
@@ -16,13 +13,25 @@ use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{ExporterInbox, Message};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
+use otap_df_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::OtapPayload;
-use otap_df_pdata::views::otap::OtapLogsView;
-use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
 
 use std::sync::Arc;
+
+use tracing::Level;
+
+impl NoopExporter {
+    /// There is some sort of interaction which silently fails to add nodes to
+    /// pipelines unless the node has 1+ method (arbitrary name) with a non-obvious
+    /// body. I have traced it down to tracing::event but need to go further to
+    /// understand what's going on.
+    #[allow(unused)]
+    async fn sentinel(&self, _payload: &OtapPayload) {
+        tracing::event!(Level::DEBUG, "sentinel");
+    }
+}
 
 /// The URN for the noop exporter.
 pub const NOOP_EXPORTER_URN: &str = "urn:otel:exporter:noop";
@@ -31,8 +40,6 @@ pub const NOOP_EXPORTER_URN: &str = "urn:otel:exporter:noop";
 pub struct NoopExporter;
 
 /// Declare the Noop Exporter as a local exporter factory.
-
-// // TODO: is this called?
 #[allow(unsafe_code)]
 #[otap_df_engine::component_inventory(category = Exporter)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
@@ -53,7 +60,6 @@ pub static NOOP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: otap_df_config::validation::no_config,
 };
-
 
 #[async_trait(?Send)]
 impl Exporter<OtapPdata> for NoopExporter {
@@ -78,14 +84,37 @@ impl Exporter<OtapPdata> for NoopExporter {
     }
 }
 
-use tracing::Level;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use otap_df_engine::Interests;
+    use otap_df_otap::testing::{test_exporter_no_subscription, test_exporter_with_subscription};
+    use serde_json::json;
 
-impl NoopExporter {
-    /// There is some sort of interaction which silently fails to add nodes
-    /// to pipelines unless the node has 1+ method (arbitrary name) with a 
-    /// non-obvious body. I have traced it down to tracing::event but need
-    /// to go further to understand what's going on.
-    async fn sentinel(&self, _payload: &OtapPayload) {
-        tracing::event!(Level::DEBUG, "sentinel");
+    #[test]
+    fn test_noop_exporter_no_subscription() {
+        test_exporter_no_subscription(&NOOP_EXPORTER, json!({}));
+    }
+
+    #[test]
+    fn test_noop_exporter_with_subscription() {
+        test_exporter_with_subscription(
+            &NOOP_EXPORTER,
+            json!({}),
+            Interests::ACKS,
+            Interests::ACKS,
+        );
+        test_exporter_with_subscription(
+            &NOOP_EXPORTER,
+            json!({}),
+            Interests::ACKS | Interests::RETURN_DATA,
+            Interests::ACKS,
+        );
+        test_exporter_with_subscription(
+            &NOOP_EXPORTER,
+            json!({}),
+            Interests::NACKS,
+            Interests::empty(),
+        );
     }
 }

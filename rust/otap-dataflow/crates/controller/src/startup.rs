@@ -106,7 +106,6 @@ pub fn validate_pipeline_components<PData: 'static + Clone + Debug>(
     for (node_id, node_cfg) in pipeline_cfg.node_iter() {
         let kind = node_cfg.kind();
         let urn_str = node_cfg.r#type.as_str();
-        // println!("HERHEHEHEH {:?}, {:?}", kind, node_cfg);
 
         let validate_config_fn = match kind {
             NodeKind::Receiver => factory
@@ -116,7 +115,6 @@ pub fn validate_pipeline_components<PData: 'static + Clone + Debug>(
             NodeKind::Processor => {
                 let step1 = factory.get_processor_factory_map();
                 let step2 = step1.get(urn_str);
-                println!("step1 {:?}\nurn: {}\nstep2 {:?}", step1, urn_str, step2);
                 step2.map(|f| {
                     println!("found some function");
                     f.validate_config
@@ -125,7 +123,6 @@ pub fn validate_pipeline_components<PData: 'static + Clone + Debug>(
             NodeKind::Exporter => {
                 let step1 = factory.get_exporter_factory_map();
                 let step2 = step1.get(urn_str);
-                println!("step1 {:?}\nurn: {}\nstep2 {:?}", step1, urn_str, step2);
                 step2.map(|f| f.validate_config)
             }
         };
@@ -148,7 +145,6 @@ pub fn validate_pipeline_components<PData: 'static + Clone + Debug>(
                 .into());
             }
             Some(validate_fn) => {
-                println!("FUNCTIONSISNS {:?}", validate_fn);
                 validate_fn(&node_cfg.config).map_err(|e| {
                     std::io::Error::other(format!(
                         "Invalid config for component `{}` in pipeline_group={} pipeline={} node={}: {}",
