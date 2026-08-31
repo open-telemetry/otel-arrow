@@ -62,7 +62,10 @@ use serde_json::Value;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::JoinHandle;
@@ -949,6 +952,11 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
                 // Clone first_pdata before moving it into the stream, so we can
                 // NACK it if the connection fails before the stream is polled.
                 let first_pdata_fallback = first_pdata.clone();
+                // The request stream can fail the first pdata directly (for
+                // example, during encoding), without sending a correlation.
+                // Track that terminal outcome so the shutdown fallback does
+                // not NACK the same pdata a second time.
+                let first_pdata_handled = Arc::new(AtomicBool::new(false));
 
                 // create the request stream
                 let req_stream = create_req_stream(
@@ -961,6 +969,7 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
                     pdata_metrics_tx.clone(),
                     worker_metrics.request_metrics(),
                     correlation_tx.clone(),
+                    first_pdata_handled.clone(),
                 );
 
                 // Attach the configured static `headers` as the stream's initial
@@ -1011,6 +1020,7 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
                             &mut correlation_rx,
                             first_pdata_fallback,
                             first_export_started_at,
+                            first_pdata_handled,
                             OtapExporterErrorType::Shutdown,
                         )
                         .await;
@@ -1044,6 +1054,7 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
                             &mut correlation_rx,
                             first_pdata_fallback,
                             first_export_started_at,
+                            first_pdata_handled,
                             error_type,
                         )
                         .await;
@@ -1080,6 +1091,7 @@ async fn fail_stream_open_pdata(
     correlation_rx: &mut Receiver<CorrelatedPdata>,
     first_pdata_fallback: OtapPdata,
     first_export_started_at: Instant,
+    first_pdata_handled: Arc<AtomicBool>,
     error_type: OtapExporterErrorType,
 ) {
     let mut drained = false;
@@ -1094,7 +1106,7 @@ async fn fail_stream_open_pdata(
             ))
             .await;
     }
-    if !drained {
+    if !drained && !first_pdata_handled.load(Ordering::Acquire) {
         _ = pdata_metrics_tx
             .send(PDataMetricsUpdate::IncFailed(
                 signal_type,
@@ -1117,6 +1129,7 @@ fn create_req_stream(
     pdata_metrics_tx: Sender<PDataMetricsUpdate>,
     request_metrics: OtapRequestStreamMetricsHandle,
     correlation_tx: Sender<CorrelatedPdata>,
+    first_pdata_handled: Arc<AtomicBool>,
 ) -> impl IntoStreamingRequest<Message = BatchArrowRecords> {
     stream! {
         let mut producer = Producer::new_with_options(ProducerOptions {
@@ -1143,6 +1156,7 @@ fn create_req_stream(
                             pdata: first_pdata,
                             export_started_at: first_export_started_at,
                         });
+                        first_pdata_handled.store(true, Ordering::Release);
                         yield bar;
                     }
                     Err(_) => {
@@ -1154,6 +1168,7 @@ fn create_req_stream(
                                 OtapExporterErrorType::Internal,
                             ))
                             .await;
+                        first_pdata_handled.store(true, Ordering::Release);
                     }
                 }
             }
@@ -1164,6 +1179,7 @@ fn create_req_stream(
                     first_export_started_at.elapsed(),
                     OtapExporterErrorType::Encoding,
                 )).await;
+                first_pdata_handled.store(true, Ordering::Release);
             }
         };
 
@@ -2671,17 +2687,14 @@ mod tests {
             request: tonic::Request<Streaming<BatchArrowRecords>>,
         ) -> Result<Response<Self::ArrowLogsStream>, Status> {
             let mut input_stream = request.into_inner();
-            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            let (_tx, rx) = tokio::sync::mpsc::channel(1);
             let notify = self.sender.clone();
             let release = Arc::clone(&self.release);
 
-            _ = tokio::spawn(async move {
-                if let Ok(Some(_batch)) = input_stream.message().await {
-                    let _ = notify.send(()).await;
-                    let _keep_response_open = tx;
-                    release.notified().await;
-                }
-            });
+            if let Ok(Some(_batch)) = input_stream.message().await {
+                let _ = notify.send(()).await;
+                release.notified().await;
+            }
 
             Ok(Response::new(
                 Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)) as Self::ArrowLogsStream,
