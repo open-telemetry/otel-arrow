@@ -4025,7 +4025,7 @@ dependencies = [
 [[package]]
 name = "geneva-uploader"
 version = "0.5.0"
-source = "git+https://github.com/open-telemetry/opentelemetry-rust-contrib.git?rev=43bd04be9e825564eeb3424b3e4caebf3e3ba7c5#43bd04be9e825564eeb3424b3e4caebf3e3ba7c5"
+source = "git+https://github.com/open-telemetry/opentelemetry-rust-contrib.git?rev=91057e4f9bda2dea819ead1648a83c7c7df0feda#91057e4f9bda2dea819ead1648a83c7c7df0feda"
 dependencies = [
  "azure_core 0.29.1",
  "azure_identity 0.29.0",
