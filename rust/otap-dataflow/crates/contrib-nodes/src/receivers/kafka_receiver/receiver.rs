@@ -287,14 +287,27 @@ impl KafkaReceiver {
         mut config: KafkaReceiverConfig,
     ) -> Result<Self, ConfigError> {
         // Kafka static membership requires each consumer-group member to have a
-        // unique group.instance.id. On a multi-core pipeline every core would
-        // otherwise share the configured ID and fence one another, so suffix it
-        // with the pipeline core ID.
-        if pipeline_ctx.num_cores() > 1 {
-            if let Some(base_id) = config.group_instance_id() {
-                let resolved = format!("{base_id}-{}", pipeline_ctx.core_id());
-                config.set_group_instance_id(resolved);
+        // unique group.instance.id. Two situations would otherwise make separate
+        // members share the configured ID and fence one another:
+        //   1. On a multi-core pipeline every core would share the ID -- suffix
+        //      with the pipeline core ID.
+        //   2. During a live-reconfiguration cutover the engine starts a NEW
+        //      pipeline instance (a new deployment generation) whose receiver
+        //      reuses the same configured ID while the OLD instance is still
+        //      draining. The duplicate static member causes the group coordinator
+        //      to fence the old member's offset commits, dropping acked offsets
+        //      (they are re-delivered on the new instance, but progress is lost).
+        //      Suffix with the deployment generation so each generation is a
+        //      distinct static member for the overlap window.
+        // Both suffixes are applied so a multi-core, multi-generation deployment
+        // still yields a unique ID per (generation, core).
+        if let Some(base_id) = config.group_instance_id() {
+            let mut resolved = base_id.to_string();
+            resolved.push_str(&format!("-g{}", pipeline_ctx.deployment_generation()));
+            if pipeline_ctx.num_cores() > 1 {
+                resolved.push_str(&format!("-{}", pipeline_ctx.core_id()));
             }
+            config.set_group_instance_id(resolved);
         }
 
         // Warn about consumer_config keys that may be overwritten by first-class fields.
@@ -2125,6 +2138,34 @@ mod tests {
         KafkaReceiverConfig::try_from(builder).expect("test config valid")
     }
 
+    /// Like [`manual_traces_config_no_timer`] but with an explicit `client_id`
+    /// and an optional `group.instance.id` (static membership). Used by the
+    /// live-reconfiguration cutover tests that run two receivers concurrently and
+    /// need to control each member's identity within a shared consumer group.
+    fn cutover_traces_config(
+        brokers: &str,
+        group_id: &str,
+        client_id: &str,
+        traces_topic: &str,
+        group_instance_id: Option<&str>,
+    ) -> KafkaReceiverConfig {
+        let mut builder = KafkaReceiverConfigBuilder::new(brokers, group_id, client_id)
+            .with_traces(
+                SignalConfig::new(vec![traces_topic.to_string()])
+                    .with_encoding(MessageFormat::OtlpProto),
+            )
+            .with_commit(CommitConfig {
+                mode: ConfigCommitMode::Manual,
+                interval_ms: None,
+            })
+            .with_auto_offset_reset(AutoOffsetReset::Earliest)
+            .with_isolation_level(IsolationLevel::ReadUncommitted);
+        if let Some(id) = group_instance_id {
+            builder = builder.with_group_instance_id(id);
+        }
+        KafkaReceiverConfig::try_from(builder).expect("test config valid")
+    }
+
     /// Like [`manual_traces_config_no_timer`] but arms the opt-in consumer-lag
     /// refresh timer at `lag_refresh_interval_ms`, so a lag-refresh worker is
     /// periodically spawned and can be in flight when a shutdown arrives.
@@ -2206,6 +2247,23 @@ mod tests {
         controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), core_id, num_cores, 0)
     }
 
+    fn make_pipeline_ctx_with_generation(
+        core_id: usize,
+        num_cores: usize,
+        deployment_generation: u64,
+    ) -> PipelineContext {
+        let registry = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(registry);
+        controller_ctx.pipeline_context_with_generation(
+            "grp".into(),
+            "pipeline".into(),
+            core_id,
+            num_cores,
+            0,
+            deployment_generation,
+        )
+    }
+
     fn make_config_with_group_instance_id(instance_id: &str) -> KafkaReceiverConfig {
         KafkaReceiverConfig::try_from(
             KafkaReceiverConfigBuilder::new("unused:9092", "g", "c")
@@ -2232,8 +2290,9 @@ mod tests {
 
     /// Scenario (construction and configuration): a receiver is built on a multi-core
     /// pipeline with a configured `group.instance.id`.
-    /// Guarantees: the instance id is suffixed with the core id so each core joins the
-    /// consumer group as a distinct static member.
+    /// Guarantees: the instance id is suffixed with the deployment generation and
+    /// the core id so each (generation, core) joins the consumer group as a
+    /// distinct static member.
     #[test]
     fn new_suffixes_group_instance_id_with_core_id_when_multi_core() {
         let cfg = make_config_with_group_instance_id("instance-1");
@@ -2241,24 +2300,55 @@ mod tests {
         let receiver = KafkaReceiver::new(ctx, cfg).expect("receiver should build");
         assert_eq!(
             receiver.config.group_instance_id(),
-            Some("instance-1-3"),
-            "multi-core pipeline should suffix group.instance.id with core id"
+            Some("instance-1-g0-3"),
+            "multi-core pipeline should suffix group.instance.id with generation \
+             and core id"
         );
     }
 
     /// Scenario (construction and configuration): a receiver is built on a single-core
     /// pipeline with a configured `group.instance.id`.
-    /// Guarantees: the instance id is left unchanged, so a single-core deployment keeps the
-    /// operator-provided static member id.
+    /// Guarantees: the instance id is suffixed with the deployment generation (but
+    /// not a core id on a single-core pipeline), so a new pipeline generation
+    /// during a live-reconfiguration cutover is a distinct static member from the
+    /// draining old generation.
     #[test]
-    fn new_keeps_group_instance_id_unchanged_when_single_core() {
+    fn new_suffixes_group_instance_id_with_generation_when_single_core() {
         let cfg = make_config_with_group_instance_id("instance-1");
         let ctx = make_pipeline_ctx_with(0, 1);
         let receiver = KafkaReceiver::new(ctx, cfg).expect("receiver should build");
         assert_eq!(
             receiver.config.group_instance_id(),
-            Some("instance-1"),
-            "single-core pipeline should leave group.instance.id unchanged"
+            Some("instance-1-g0"),
+            "single-core pipeline should suffix group.instance.id with the \
+             deployment generation"
+        );
+    }
+
+    /// Scenario (construction and configuration): two receivers are built from the
+    /// same operator `group.instance.id` but different deployment generations, as
+    /// happens during a live-reconfiguration cutover (old generation draining, new
+    /// generation starting).
+    /// Guarantees: the resolved `group.instance.id`s differ by generation suffix,
+    /// so the new instance is a distinct static member and does not fence the old
+    /// instance's offset commits during the drain overlap.
+    #[test]
+    fn new_distinct_generations_yield_distinct_group_instance_ids() {
+        let cfg_old = make_config_with_group_instance_id("instance-1");
+        let ctx_old = make_pipeline_ctx_with_generation(0, 1, 7);
+        let old = KafkaReceiver::new(ctx_old, cfg_old).expect("old receiver should build");
+
+        let cfg_new = make_config_with_group_instance_id("instance-1");
+        let ctx_new = make_pipeline_ctx_with_generation(0, 1, 8);
+        let new = KafkaReceiver::new(ctx_new, cfg_new).expect("new receiver should build");
+
+        assert_eq!(old.config.group_instance_id(), Some("instance-1-g7"));
+        assert_eq!(new.config.group_instance_id(), Some("instance-1-g8"));
+        assert_ne!(
+            old.config.group_instance_id(),
+            new.config.group_instance_id(),
+            "distinct generations must resolve to distinct static member ids so a \
+             cutover does not fence the draining old instance",
         );
     }
 
@@ -6133,20 +6223,22 @@ mod tests {
         .await;
     }
 
-    /// Scenario (lifecycle: drain and shutdown): a manual-commit receiver owns
-    /// both partitions and acks their records, then a second consumer joins the
-    /// same group forcing one partition to be revoked, and only then is the
-    /// receiver drained.
-    /// Guarantees: the drain-time commit purges the revoked partition before
-    /// building the committable set, so it commits only the partition the
-    /// receiver still owns; both partitions nonetheless retain committed offsets
-    /// (the revoked one from the pre-revoke commit-before-revoke), so a rebalance
-    /// concurrent with drain neither loses progress nor commits a partition this
-    /// consumer no longer owns.
+    /// Scenario (lifecycle: drain and shutdown): following the engine's live-
+    /// reconfiguration order -- the OLD receiver (A) owns both partitions and acks
+    /// their records; the NEW receiver (B) is started in the SAME group (distinct
+    /// `group.instance.id`) and provably ACQUIRES a partition via a normal
+    /// cooperative rebalance (NEW Ready, a real overlap) BEFORE A is drained; only
+    /// THEN is A drained.
+    /// Guarantees: the OLD drain-time commit purges the partition revoked to B
+    /// before building the committable set, so A commits only what it still owns;
+    /// both partitions nonetheless retain committed offsets (the revoked one from
+    /// the pre-revoke commit-before-revoke) so no progress is lost, and the NEW
+    /// receiver continues to own and consume its acquired partition after the OLD
+    /// instance drains cleanly.
     #[tokio::test]
-    async fn drain_after_rebalance_revocation_does_not_commit_revoked_partition() {
-        const TOPIC: &str = "drain-rebalance-revoke-traces";
-        let group = "drain-rebalance-revoke-group";
+    async fn cutover_new_receiver_same_group_acquires_partition_before_old_drains() {
+        const TOPIC: &str = "cutover-same-group-handoff-traces";
+        let group = "cutover-same-group-handoff-group";
         with_cluster(
             KafkaTestCluster::builder().topic_with(TOPIC, REBALANCE_TEST_PARTITIONS, 1),
             |cluster| async move {
@@ -6164,34 +6256,72 @@ mod tests {
                     )
                     .await;
 
-                let cfg =
-                    manual_traces_config(cluster.bootstrap_servers(), group, TOPIC, 500, None);
-                let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
-
+                // OLD receiver (A): owns both partitions, acks all records.
+                let cfg_a = cutover_traces_config(
+                    cluster.bootstrap_servers(),
+                    group,
+                    "receiver-a",
+                    TOPIC,
+                    Some("inst-a"),
+                );
+                let mut receiver_a = KafkaReceiverHarness::start(&cluster, cfg_a);
                 let total = (REBALANCE_RECORDS_PER_PARTITION * REBALANCE_TEST_PARTITIONS) as usize;
                 for _ in 0..total {
-                    let pdata = receiver.recv_pdata().await;
-                    receiver.ack(pdata);
+                    let pdata = receiver_a.recv_pdata().await;
+                    receiver_a.ack(pdata);
                 }
 
-                // Let a safety-net commit flush the receiver's progress on both
-                // partitions before the revoke (commit-before-revoke).
-                tokio::time::sleep(Duration::from_millis(800)).await;
+                // Ensure A's progress on both partitions is committed before the
+                // rebalance revokes one from it (commit-before-revoke).
+                let brokers = cluster.bootstrap_servers().to_string();
+                let a_committed =
+                    poll_until(Duration::from_secs(5), Duration::from_millis(100), || {
+                        let c0 = committed_offset(&brokers, group, TOPIC, 0)
+                            .expect("kafka-test: committed-offset probe failed");
+                        let c1 = committed_offset(&brokers, group, TOPIC, 1)
+                            .expect("kafka-test: committed-offset probe failed");
+                        c0.is_some_and(|o| o >= REBALANCE_RECORDS_PER_PARTITION as i64)
+                            && c1.is_some_and(|o| o >= REBALANCE_RECORDS_PER_PARTITION as i64)
+                    })
+                    .await;
+                // A commits via ack; if the async commit has not flushed yet, the
+                // drain below still commits, so this is a best-effort precondition.
+                let _ = a_committed;
 
-                // A second consumer joins the SAME group, forcing one partition to
-                // be revoked from the receiver. Keep the trigger alive to hold the
-                // revoke while we drain.
-                let _trigger =
-                    RebalanceTrigger::join(&cluster, group, &[TOPIC], Duration::from_secs(10))
-                        .await;
+                // Engine order step 1+2: start the NEW receiver (B) in the SAME
+                // group and wait until it ACQUIRES a partition (NEW Ready) -- the
+                // cooperative rebalance revokes one partition from A to B while A
+                // is still running.
+                let cfg_b = cutover_traces_config(
+                    cluster.bootstrap_servers(),
+                    group,
+                    "receiver-b",
+                    TOPIC,
+                    Some("inst-b"),
+                );
+                let receiver_b = KafkaReceiverHarness::start(&cluster, cfg_b);
+                let b_ready = tokio::time::timeout(Duration::from_secs(20), async {
+                    loop {
+                        if receiver_b.is_partition_assigned(TOPIC, 0)
+                            || receiver_b.is_partition_assigned(TOPIC, 1)
+                        {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(25)).await;
+                    }
+                })
+                .await;
+                assert!(
+                    b_ready.is_ok(),
+                    "the NEW receiver must acquire a partition (NEW Ready) before \
+                     the OLD instance is drained",
+                );
 
-                // Drain after the revoke: the drain-time commit must purge the
-                // revoked partition and only commit the retained one.
-                receiver.drain(Duration::from_secs(5));
-
+                // Engine order step 3: only now drain the OLD instance (A).
+                receiver_a.drain(Duration::from_secs(5));
                 let mut drained = false;
                 for _ in 0..16 {
-                    match receiver.try_recv_runtime(Duration::from_secs(5)).await {
+                    match receiver_a.try_recv_runtime(Duration::from_secs(5)).await {
                         Some(RuntimeControlMsg::ReceiverDrained { .. }) => {
                             drained = true;
                             break;
@@ -6202,18 +6332,13 @@ mod tests {
                 }
                 assert!(
                     drained,
-                    "receiver must emit ReceiverDrained even after a concurrent \
-                     partition revocation",
+                    "old receiver must emit ReceiverDrained even after a concurrent \
+                     partition revocation to the new receiver",
                 );
-
-                receiver.await_stopped().await;
+                receiver_a.await_stopped().await;
 
                 // Both partitions must retain committed offsets accounting for all
-                // produced records: the retained one via the drain commit, the
-                // revoked one via the earlier commit-before-revoke. No progress is
-                // lost and the drain never commits a partition it no longer owns
-                // beyond what was already committed.
-                let brokers = cluster.bootstrap_servers().to_string();
+                // produced records: no progress is lost across the cutover.
                 let all_committed =
                     poll_until(Duration::from_secs(5), Duration::from_millis(250), || {
                         let c0 = committed_offset(&brokers, group, TOPIC, 0)
@@ -6227,7 +6352,844 @@ mod tests {
                 assert!(
                     all_committed,
                     "both partitions must retain committed offsets >= \
-                     {REBALANCE_RECORDS_PER_PARTITION} across a revoke-then-drain",
+                     {REBALANCE_RECORDS_PER_PARTITION} across the cutover",
+                );
+
+                // The NEW receiver keeps owning at least one partition after the
+                // OLD instance has fully drained (it is unaffected).
+                assert!(
+                    receiver_b.is_partition_assigned(TOPIC, 0)
+                        || receiver_b.is_partition_assigned(TOPIC, 1),
+                    "the NEW receiver must still own a partition after the OLD \
+                     instance drains",
+                );
+
+                receiver_b.shutdown(Duration::from_secs(5));
+                receiver_b.await_stopped().await;
+            },
+        )
+        .await;
+    }
+
+    /// Scenario (lifecycle: drain and shutdown): live-reconfiguration cutover on
+    /// the SAME broker with DISTINCT consumer groups -- the OLD receiver (A, group
+    /// A) is serving when the NEW receiver (B, group B) is started, reads and
+    /// commits from the same topic (NEW Ready), and only THEN is A drained.
+    /// Guarantees: the NEW receiver consumes, acks, and commits its own records
+    /// independently of the OLD instance and keeps working after A has fully
+    /// drained -- an independent-group cutover on one broker does not disturb the
+    /// new instance.
+    #[tokio::test]
+    async fn cutover_new_receiver_same_broker_distinct_group_starts_before_old_drains() {
+        const TOPIC: &str = "cutover-distinct-group-traces";
+        const PRE: usize = 3;
+        const POST: usize = 3;
+        let group_a = "cutover-distinct-group-a";
+        let group_b = "cutover-distinct-group-b";
+        with_cluster(
+            KafkaTestCluster::builder().topic(TOPIC),
+            |cluster| async move {
+                let producer = cluster.producer().build();
+                let req = create_traces_with_spans();
+                let mut bytes = vec![];
+                req.encode(&mut bytes).expect("encode");
+
+                for i in 0..PRE {
+                    let key = format!("pre-{i}");
+                    producer
+                        .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
+                        .await
+                        .expect("send pre record");
+                }
+
+                // OLD receiver (A, group A): consume and ack the initial batch.
+                let cfg_a = cutover_traces_config(
+                    cluster.bootstrap_servers(),
+                    group_a,
+                    "receiver-a",
+                    TOPIC,
+                    None,
+                );
+                let mut receiver_a = KafkaReceiverHarness::start(&cluster, cfg_a);
+                for _ in 0..PRE {
+                    let pdata = receiver_a.recv_pdata().await;
+                    receiver_a.ack(pdata);
+                }
+
+                // Engine order step 1+2: start the NEW receiver (B, group B) and
+                // confirm it is working (reads the same records from its own
+                // group offset and acks) BEFORE the OLD instance is drained.
+                let cfg_b = cutover_traces_config(
+                    cluster.bootstrap_servers(),
+                    group_b,
+                    "receiver-b",
+                    TOPIC,
+                    None,
+                );
+                let mut receiver_b = KafkaReceiverHarness::start(&cluster, cfg_b);
+                for _ in 0..PRE {
+                    let pdata = receiver_b.recv_pdata().await;
+                    receiver_b.ack(pdata);
+                }
+
+                // Engine order step 3: only now drain the OLD instance (A).
+                receiver_a.drain(Duration::from_secs(5));
+                let mut drained = false;
+                for _ in 0..16 {
+                    match receiver_a.try_recv_runtime(Duration::from_secs(5)).await {
+                        Some(RuntimeControlMsg::ReceiverDrained { .. }) => {
+                            drained = true;
+                            break;
+                        }
+                        Some(_) => continue,
+                        None => break,
+                    }
+                }
+                assert!(drained, "old receiver never emitted ReceiverDrained");
+                receiver_a.await_stopped().await;
+
+                // The NEW receiver keeps working after the OLD instance is gone:
+                // it consumes and acks records produced post-cutover.
+                for i in 0..POST {
+                    let key = format!("post-{i}");
+                    producer
+                        .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
+                        .await
+                        .expect("send post record");
+                }
+                for _ in 0..POST {
+                    let pdata = receiver_b
+                        .try_recv_pdata(Duration::from_secs(15))
+                        .await
+                        .expect("new receiver must consume post-cutover records");
+                    receiver_b.ack(pdata);
+                }
+
+                // The NEW receiver's group commits its post-cutover progress.
+                let brokers = cluster.bootstrap_servers().to_string();
+                let b_committed =
+                    poll_until(Duration::from_secs(5), Duration::from_millis(250), || {
+                        committed_offset(&brokers, group_b, TOPIC, 0)
+                            .expect("kafka-test: committed-offset probe failed")
+                            .is_some_and(|o| o >= (PRE + POST) as i64)
+                    })
+                    .await;
+                assert!(
+                    b_committed,
+                    "the NEW receiver must commit its own progress after the cutover",
+                );
+
+                receiver_b.shutdown(Duration::from_secs(5));
+                receiver_b.await_stopped().await;
+            },
+        )
+        .await;
+    }
+
+    /// Scenario (lifecycle: drain and shutdown): live-reconfiguration cutover
+    /// where the OLD receiver (A, deployment generation 0) and the NEW receiver
+    /// (B, deployment generation 1) share the SAME operator `group.instance.id`
+    /// in the SAME group, exactly as the engine deploys a new pipeline instance
+    /// during a rolling cutover. B joins before A is drained (engine order).
+    /// Guarantees: because `KafkaReceiver::new` folds the deployment generation
+    /// into the static `group.instance.id`, the new generation is a DISTINCT
+    /// static member from the draining old generation, so its JOIN is never
+    /// rejected with `FENCED_INSTANCE_ID`. Therefore (1) the OLD receiver is not
+    /// fenced out by the new generation's join -- it keeps consuming and acking
+    /// while both are alive; (2) the OLD receiver drains cleanly; and (3) the OLD
+    /// instance's committed offset never regresses across the cutover (its
+    /// progress is preserved, not corrupted by the new member). This is the
+    /// integration guard for the generation-suffix fix; the exact resolved-id
+    /// format is asserted deterministically by the `new_*` unit tests. The
+    /// downstream partition handoff to the new instance is a broker rebalance
+    /// concern not asserted here because the in-process mock broker does not
+    /// deterministically hand a partition between two static members.
+    #[tokio::test]
+    async fn cutover_new_receiver_same_group_same_instance_id_starts_before_old_drains() {
+        const TOPIC: &str = "cutover-same-instance-id-traces";
+        const PRE: usize = 3;
+        let group = "cutover-same-instance-id-group";
+        with_cluster(
+            KafkaTestCluster::builder().topic(TOPIC),
+            |cluster| async move {
+                let producer = cluster.producer().build();
+                let req = create_traces_with_spans();
+                let mut bytes = vec![];
+                req.encode(&mut bytes).expect("encode");
+
+                for i in 0..PRE {
+                    let key = format!("pre-{i}");
+                    producer
+                        .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
+                        .await
+                        .expect("send pre record");
+                }
+
+                // OLD receiver (A): deployment generation 0, operator static id.
+                let cfg_a = cutover_traces_config(
+                    cluster.bootstrap_servers(),
+                    group,
+                    "receiver-a",
+                    TOPIC,
+                    Some("inst-shared"),
+                );
+                let mut receiver_a =
+                    KafkaReceiverHarness::start_with_generation(&cluster, cfg_a, 0);
+                for _ in 0..PRE {
+                    let pdata = receiver_a.recv_pdata().await;
+                    receiver_a.ack(pdata);
+                }
+                let brokers = cluster.bootstrap_servers().to_string();
+                let pre_committed =
+                    poll_until(Duration::from_secs(5), Duration::from_millis(100), || {
+                        committed_offset(&brokers, group, TOPIC, 0)
+                            .expect("kafka-test: committed-offset probe failed")
+                            .is_some_and(|o| o >= PRE as i64)
+                    })
+                    .await;
+                assert!(
+                    pre_committed,
+                    "A's pre-B progress must commit before the new generation joins",
+                );
+
+                // Engine order step 1+2: start the NEW receiver (B) as a NEW
+                // deployment GENERATION (1) reusing the SAME operator
+                // `group.instance.id`. The generation suffix makes it a distinct
+                // static member so its JOIN is never fenced. Let it join before
+                // the OLD instance is drained.
+                let cfg_b = cutover_traces_config(
+                    cluster.bootstrap_servers(),
+                    group,
+                    "receiver-b",
+                    TOPIC,
+                    Some("inst-shared"),
+                );
+                let receiver_b = KafkaReceiverHarness::start_with_generation(&cluster, cfg_b, 1);
+                receiver_b.wait_for_control_barrier().await;
+
+                // (1) The OLD receiver is not fenced out by the new generation's
+                // join: it still consumes and acks a record produced while both
+                // generations are alive.
+                producer
+                    .send_full(SendRecord::new(TOPIC, &bytes).key(b"mid"))
+                    .await
+                    .expect("send mid record");
+                let a_mid = receiver_a
+                    .try_recv_pdata(Duration::from_secs(10))
+                    .await
+                    .expect(
+                        "the OLD receiver must keep consuming while the new \
+                         generation (distinct static member) is present -- its join \
+                         must not fence the old member out",
+                    );
+                receiver_a.ack(a_mid);
+
+                // Engine order step 3: only now drain the OLD instance (A).
+                receiver_a.drain(Duration::from_secs(5));
+                let mut drained = false;
+                for _ in 0..16 {
+                    match receiver_a.try_recv_runtime(Duration::from_secs(5)).await {
+                        Some(RuntimeControlMsg::ReceiverDrained { .. }) => {
+                            drained = true;
+                            break;
+                        }
+                        Some(_) => continue,
+                        None => break,
+                    }
+                }
+                assert!(drained, "old receiver must drain cleanly");
+                receiver_a.await_stopped().await;
+
+                // (3) The OLD instance's committed offset never regresses below its
+                // pre-cutover progress: the new member's join does not corrupt or
+                // roll back the old instance's committed offsets. (Whether the
+                // post-join "mid" ack also commits depends on the coordinator's
+                // same-group rebalance timing; the guaranteed floor is the pre-B
+                // prefix, and no record is ever lost because anything un-committed
+                // is redelivered at-least-once.)
+                let committed_after_drain = committed_offset(&brokers, group, TOPIC, 0)
+                    .expect("kafka-test: committed-offset probe failed")
+                    .unwrap_or(0);
+                assert!(
+                    committed_after_drain >= PRE as i64,
+                    "the OLD instance's committed offset must never regress below \
+                     its pre-cutover prefix ({PRE}) when a same-id new generation \
+                     joins; got {committed_after_drain}",
+                );
+
+                receiver_b.shutdown(Duration::from_secs(5));
+                receiver_b.await_stopped().await;
+            },
+        )
+        .await;
+    }
+
+    /// Scenario (lifecycle: drain and shutdown): live-reconfiguration cutover
+    /// where the NEW receiver (B) points at a DIFFERENT broker than the OLD
+    /// receiver (A). B is started against broker B, consumes from it (NEW Ready),
+    /// and only THEN is A drained on broker A.
+    /// Guarantees: the NEW receiver on the second broker consumes+acks+commits
+    /// independently and keeps working after A drains -- brokers are fully
+    /// isolated across the cutover, so draining the old instance cannot affect
+    /// the new one.
+    #[tokio::test]
+    async fn cutover_new_receiver_different_broker_starts_before_old_drains() {
+        const TOPIC_A: &str = "cutover-broker-a-traces";
+        const TOPIC_B: &str = "cutover-broker-b-traces";
+        const RECORDS: usize = 3;
+        let group = "cutover-diff-broker-drain-group";
+        with_cluster(
+            KafkaTestCluster::builder().topic(TOPIC_A),
+            |cluster_a| async move {
+                // Build the SECOND broker on the same LocalSet thread.
+                let cluster_b = KafkaTestCluster::builder().topic(TOPIC_B).build();
+
+                let req = create_traces_with_spans();
+                let mut bytes = vec![];
+                req.encode(&mut bytes).expect("encode");
+
+                // OLD receiver (A) on broker A with some produced records.
+                let producer_a = cluster_a.producer().build();
+                for i in 0..RECORDS {
+                    let key = format!("a-{i}");
+                    producer_a
+                        .send_full(SendRecord::new(TOPIC_A, &bytes).key(key.as_bytes()))
+                        .await
+                        .expect("send to broker A");
+                }
+                let cfg_a = cutover_traces_config(
+                    cluster_a.bootstrap_servers(),
+                    group,
+                    "receiver-a",
+                    TOPIC_A,
+                    None,
+                );
+                let mut receiver_a = KafkaReceiverHarness::start(&cluster_a, cfg_a);
+                for _ in 0..RECORDS {
+                    let pdata = receiver_a.recv_pdata().await;
+                    receiver_a.ack(pdata);
+                }
+
+                // Engine order step 1+2: start the NEW receiver (B) on broker B
+                // and confirm it consumes from broker B (NEW Ready).
+                let producer_b = cluster_b.producer().build();
+                for i in 0..RECORDS {
+                    let key = format!("b-{i}");
+                    producer_b
+                        .send_full(SendRecord::new(TOPIC_B, &bytes).key(key.as_bytes()))
+                        .await
+                        .expect("send to broker B");
+                }
+                let cfg_b = cutover_traces_config(
+                    cluster_b.bootstrap_servers(),
+                    group,
+                    "receiver-b",
+                    TOPIC_B,
+                    None,
+                );
+                let mut receiver_b = KafkaReceiverHarness::start(&cluster_b, cfg_b);
+                for _ in 0..RECORDS {
+                    let pdata = receiver_b.recv_pdata().await;
+                    receiver_b.ack(pdata);
+                }
+
+                // Engine order step 3: only now drain the OLD instance (A) on
+                // broker A.
+                receiver_a.drain(Duration::from_secs(5));
+                let mut drained = false;
+                for _ in 0..16 {
+                    match receiver_a.try_recv_runtime(Duration::from_secs(5)).await {
+                        Some(RuntimeControlMsg::ReceiverDrained { .. }) => {
+                            drained = true;
+                            break;
+                        }
+                        Some(_) => continue,
+                        None => break,
+                    }
+                }
+                assert!(drained, "old receiver never emitted ReceiverDrained");
+                receiver_a.await_stopped().await;
+
+                // The NEW receiver on broker B keeps working after A drains: it
+                // consumes and acks records produced to broker B post-cutover.
+                for i in 0..RECORDS {
+                    let key = format!("b-post-{i}");
+                    producer_b
+                        .send_full(SendRecord::new(TOPIC_B, &bytes).key(key.as_bytes()))
+                        .await
+                        .expect("send post to broker B");
+                }
+                for _ in 0..RECORDS {
+                    let pdata = receiver_b
+                        .try_recv_pdata(Duration::from_secs(15))
+                        .await
+                        .expect("new receiver on broker B must keep consuming");
+                    receiver_b.ack(pdata);
+                }
+
+                // Broker B commits the new receiver's progress.
+                let brokers_b = cluster_b.bootstrap_servers().to_string();
+                let committed =
+                    poll_until(Duration::from_secs(5), Duration::from_millis(250), || {
+                        committed_offset(&brokers_b, group, TOPIC_B, 0)
+                            .expect("kafka-test: committed-offset probe failed")
+                            .is_some_and(|o| o >= (2 * RECORDS) as i64)
+                    })
+                    .await;
+                assert!(
+                    committed,
+                    "the NEW receiver on broker B must commit its progress after \
+                     the OLD instance on broker A drains",
+                );
+
+                receiver_b.shutdown(Duration::from_secs(5));
+                receiver_b.await_stopped().await;
+            },
+        )
+        .await;
+    }
+
+    /// Scenario (lifecycle: drain and shutdown): the different-broker cutover
+    /// where the OLD receiver (A) is terminated via a bare `Shutdown` instead of
+    /// `DrainIngress`. The NEW receiver (B) on broker B is started and consuming
+    /// (NEW Ready) before A is shut down.
+    /// Guarantees: the NEW receiver on the second broker is unaffected regardless
+    /// of whether the OLD instance receives `DrainIngress` or `Shutdown` -- it
+    /// keeps consuming+acking+committing on broker B after A stops.
+    #[tokio::test]
+    async fn cutover_new_receiver_different_broker_shutdown_variant_starts_before_old_stops() {
+        const TOPIC_A: &str = "cutover-broker-a-shutdown-traces";
+        const TOPIC_B: &str = "cutover-broker-b-shutdown-traces";
+        const RECORDS: usize = 3;
+        let group = "cutover-diff-broker-shutdown-group";
+        with_cluster(
+            KafkaTestCluster::builder().topic(TOPIC_A),
+            |cluster_a| async move {
+                let cluster_b = KafkaTestCluster::builder().topic(TOPIC_B).build();
+
+                let req = create_traces_with_spans();
+                let mut bytes = vec![];
+                req.encode(&mut bytes).expect("encode");
+
+                let producer_a = cluster_a.producer().build();
+                for i in 0..RECORDS {
+                    let key = format!("a-{i}");
+                    producer_a
+                        .send_full(SendRecord::new(TOPIC_A, &bytes).key(key.as_bytes()))
+                        .await
+                        .expect("send to broker A");
+                }
+                let cfg_a = cutover_traces_config(
+                    cluster_a.bootstrap_servers(),
+                    group,
+                    "receiver-a",
+                    TOPIC_A,
+                    None,
+                );
+                let mut receiver_a = KafkaReceiverHarness::start(&cluster_a, cfg_a);
+                for _ in 0..RECORDS {
+                    let pdata = receiver_a.recv_pdata().await;
+                    receiver_a.ack(pdata);
+                }
+
+                // NEW receiver (B) on broker B, consuming (NEW Ready).
+                let producer_b = cluster_b.producer().build();
+                for i in 0..RECORDS {
+                    let key = format!("b-{i}");
+                    producer_b
+                        .send_full(SendRecord::new(TOPIC_B, &bytes).key(key.as_bytes()))
+                        .await
+                        .expect("send to broker B");
+                }
+                let cfg_b = cutover_traces_config(
+                    cluster_b.bootstrap_servers(),
+                    group,
+                    "receiver-b",
+                    TOPIC_B,
+                    None,
+                );
+                let mut receiver_b = KafkaReceiverHarness::start(&cluster_b, cfg_b);
+                for _ in 0..RECORDS {
+                    let pdata = receiver_b.recv_pdata().await;
+                    receiver_b.ack(pdata);
+                }
+
+                // Engine order step 3, Shutdown variant: terminate the OLD
+                // instance (A) via a bare Shutdown rather than DrainIngress.
+                receiver_a.shutdown(Duration::from_secs(5));
+                receiver_a.await_stopped().await;
+
+                // The NEW receiver on broker B keeps working regardless of the
+                // OLD instance's terminal control message.
+                for i in 0..RECORDS {
+                    let key = format!("b-post-{i}");
+                    producer_b
+                        .send_full(SendRecord::new(TOPIC_B, &bytes).key(key.as_bytes()))
+                        .await
+                        .expect("send post to broker B");
+                }
+                for _ in 0..RECORDS {
+                    let pdata = receiver_b
+                        .try_recv_pdata(Duration::from_secs(15))
+                        .await
+                        .expect("new receiver on broker B must keep consuming");
+                    receiver_b.ack(pdata);
+                }
+
+                let brokers_b = cluster_b.bootstrap_servers().to_string();
+                let committed =
+                    poll_until(Duration::from_secs(5), Duration::from_millis(250), || {
+                        committed_offset(&brokers_b, group, TOPIC_B, 0)
+                            .expect("kafka-test: committed-offset probe failed")
+                            .is_some_and(|o| o >= (2 * RECORDS) as i64)
+                    })
+                    .await;
+                assert!(
+                    committed,
+                    "the NEW receiver on broker B must commit its progress after \
+                     the OLD instance on broker A is shut down",
+                );
+
+                receiver_b.shutdown(Duration::from_secs(5));
+                receiver_b.await_stopped().await;
+            },
+        )
+        .await;
+    }
+
+    /// Scenario (lifecycle: drain and shutdown): following the engine's live-
+    /// reconfiguration order on a single-partition topic -- the OLD receiver (A)
+    /// consumes records but leaves them un-acked; the NEW receiver (B) is started
+    /// in the SAME group and joins BEFORE A is drained; only THEN is A drained
+    /// via `DrainIngress`. With one partition, B cannot own it until A releases it
+    /// on drain, so "NEW Ready" here means B has joined the group before the OLD
+    /// drain step and the partition hands off when A leaves.
+    /// Guarantees: the drain commits nothing past the un-acked prefix, so after
+    /// the handoff the NEW receiver re-receives every un-acked record (at-least-
+    /// once redelivery, no data loss across the cutover), while the OLD receiver
+    /// drains cleanly.
+    #[tokio::test]
+    async fn cutover_new_receiver_starts_before_old_drains_redelivers_uncommitted_single_partition()
+    {
+        const TOPIC: &str = "cutover-redeliver-1p-traces";
+        const RECORDS: usize = 3;
+        let group = "cutover-redeliver-1p-group";
+        with_cluster(
+            KafkaTestCluster::builder().topic(TOPIC),
+            |cluster| async move {
+                let producer = cluster.producer().build();
+                let req = create_traces_with_spans();
+                let mut bytes = vec![];
+                req.encode(&mut bytes).expect("encode");
+
+                for i in 0..RECORDS {
+                    let key = format!("rec-{i}");
+                    producer
+                        .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
+                        .await
+                        .expect("send record");
+                }
+
+                // OLD receiver (A): consume every record but NEVER ack, so no
+                // offset is committable at drain time.
+                let cfg_a = cutover_traces_config(
+                    cluster.bootstrap_servers(),
+                    group,
+                    "receiver-a",
+                    TOPIC,
+                    None,
+                );
+                let mut receiver_a = KafkaReceiverHarness::start(&cluster, cfg_a);
+                for _ in 0..RECORDS {
+                    let _ = receiver_a.recv_pdata().await;
+                }
+
+                // Engine order step 1+2: start the NEW receiver (B) in the SAME
+                // group and let it join the group BEFORE the OLD instance is
+                // drained. With a single partition B parks waiting for the
+                // assignment A still holds.
+                let cfg_b = cutover_traces_config(
+                    cluster.bootstrap_servers(),
+                    group,
+                    "receiver-b",
+                    TOPIC,
+                    None,
+                );
+                let mut receiver_b = KafkaReceiverHarness::start(&cluster, cfg_b);
+                receiver_b.wait_for_control_barrier().await;
+
+                // Engine order step 3: only now drain the OLD instance (A).
+                receiver_a.drain(Duration::from_secs(5));
+                let mut drained = false;
+                for _ in 0..16 {
+                    match receiver_a.try_recv_runtime(Duration::from_secs(5)).await {
+                        Some(RuntimeControlMsg::ReceiverDrained { .. }) => {
+                            drained = true;
+                            break;
+                        }
+                        Some(_) => continue,
+                        None => break,
+                    }
+                }
+                assert!(drained, "old receiver never emitted ReceiverDrained");
+                receiver_a.await_stopped().await;
+
+                // The un-acked records were never committed, so the broker holds
+                // no committed offset past the un-acked prefix.
+                let brokers = cluster.bootstrap_servers().to_string();
+                let committed = committed_offset(&brokers, group, TOPIC, 0)
+                    .expect("kafka-test: committed-offset probe failed");
+                assert!(
+                    committed.is_none_or(|o| o < RECORDS as i64),
+                    "drain must not commit past the un-acked prefix, got {committed:?}",
+                );
+
+                // The NEW receiver (B) picks up the released partition and
+                // re-receives all un-acked records (at-least-once, no loss).
+                let mut redelivered = 0usize;
+                for _ in 0..RECORDS {
+                    if receiver_b
+                        .try_recv_pdata(Duration::from_secs(15))
+                        .await
+                        .is_some()
+                    {
+                        redelivered += 1;
+                    }
+                }
+                assert_eq!(
+                    redelivered, RECORDS,
+                    "the NEW receiver must re-receive all {RECORDS} un-acked \
+                     records after the OLD instance drains (no loss across the \
+                     cutover), got {redelivered}",
+                );
+
+                receiver_b.shutdown(Duration::from_secs(5));
+                receiver_b.await_stopped().await;
+            },
+        )
+        .await;
+    }
+
+    /// Scenario (lifecycle: drain and shutdown): the multi-partition analogue of
+    /// the cutover redelivery test -- the OLD receiver (A) owns every partition
+    /// and consumes records un-acked; the NEW receiver (B) is started in the SAME
+    /// group and provably ACQUIRES a partition (strong "NEW Ready", a true
+    /// overlap with A still running) BEFORE A is drained; only THEN is A drained.
+    /// Guarantees: no partition commits past its un-acked prefix, so after the
+    /// cutover the NEW receiver re-receives the un-acked records from the
+    /// partition handed off to it (at-least-once redelivery, no loss), while the
+    /// OLD receiver drains cleanly.
+    #[tokio::test]
+    async fn cutover_new_receiver_starts_before_old_drains_redelivers_uncommitted_multi_partition()
+    {
+        const TOPIC: &str = "cutover-redeliver-mp-traces";
+        let group = "cutover-redeliver-mp-group";
+        with_cluster(
+            KafkaTestCluster::builder().topic_with(TOPIC, REBALANCE_TEST_PARTITIONS, 1),
+            |cluster| async move {
+                let producer = cluster.producer().build();
+                let req = create_traces_with_spans();
+                let mut bytes = vec![];
+                req.encode(&mut bytes).expect("encode");
+
+                producer
+                    .produce_per_partition(
+                        TOPIC,
+                        REBALANCE_TEST_PARTITIONS,
+                        REBALANCE_RECORDS_PER_PARTITION,
+                        &bytes,
+                    )
+                    .await;
+
+                // OLD receiver (A): consume all records from both partitions but
+                // NEVER ack, so no offset is committable at drain time.
+                let cfg_a = cutover_traces_config(
+                    cluster.bootstrap_servers(),
+                    group,
+                    "receiver-a",
+                    TOPIC,
+                    None,
+                );
+                let mut receiver_a = KafkaReceiverHarness::start(&cluster, cfg_a);
+                let total = (REBALANCE_RECORDS_PER_PARTITION * REBALANCE_TEST_PARTITIONS) as usize;
+                for _ in 0..total {
+                    let _ = receiver_a.recv_pdata().await;
+                }
+
+                // Engine order step 1+2: start the NEW receiver (B) in the SAME
+                // group and wait until it ACQUIRES a partition -- a real overlap
+                // while A is still running (NEW Ready before the OLD drain step).
+                let cfg_b = cutover_traces_config(
+                    cluster.bootstrap_servers(),
+                    group,
+                    "receiver-b",
+                    TOPIC,
+                    None,
+                );
+                let mut receiver_b = KafkaReceiverHarness::start(&cluster, cfg_b);
+                // One partition is revoked from A and assigned to B; B owning
+                // either partition proves it is a live, Ready group member.
+                let b_ready = tokio::time::timeout(Duration::from_secs(20), async {
+                    loop {
+                        if receiver_b.is_partition_assigned(TOPIC, 0)
+                            || receiver_b.is_partition_assigned(TOPIC, 1)
+                        {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(25)).await;
+                    }
+                })
+                .await;
+                assert!(
+                    b_ready.is_ok(),
+                    "the NEW receiver must acquire a partition before the OLD drain",
+                );
+
+                // Engine order step 3: only now drain the OLD instance (A).
+                receiver_a.drain(Duration::from_secs(5));
+                let mut drained = false;
+                for _ in 0..16 {
+                    match receiver_a.try_recv_runtime(Duration::from_secs(5)).await {
+                        Some(RuntimeControlMsg::ReceiverDrained { .. }) => {
+                            drained = true;
+                            break;
+                        }
+                        Some(_) => continue,
+                        None => break,
+                    }
+                }
+                assert!(drained, "old receiver never emitted ReceiverDrained");
+                receiver_a.await_stopped().await;
+
+                // No partition committed past its un-acked prefix (nothing acked).
+                let brokers = cluster.bootstrap_servers().to_string();
+                for partition in 0..REBALANCE_TEST_PARTITIONS {
+                    let committed = committed_offset(&brokers, group, TOPIC, partition)
+                        .expect("kafka-test: committed-offset probe failed");
+                    assert!(
+                        committed.is_none_or(|o| o < REBALANCE_RECORDS_PER_PARTITION as i64),
+                        "partition {partition} must not commit past the un-acked \
+                         prefix, got {committed:?}",
+                    );
+                }
+
+                // The NEW receiver (B) re-receives un-acked records after the
+                // cutover (at-least-once redelivery, no loss). It now owns every
+                // partition, so all records redeliver to it.
+                let mut redelivered = 0usize;
+                for _ in 0..total {
+                    if receiver_b
+                        .try_recv_pdata(Duration::from_secs(15))
+                        .await
+                        .is_some()
+                    {
+                        redelivered += 1;
+                    }
+                }
+                assert_eq!(
+                    redelivered, total,
+                    "the NEW receiver must re-receive all {total} un-acked records \
+                     across the cutover (no loss), got {redelivered}",
+                );
+
+                receiver_b.shutdown(Duration::from_secs(5));
+                receiver_b.await_stopped().await;
+            },
+        )
+        .await;
+    }
+
+    /// Scenario (lifecycle: drain and shutdown): a manual-commit receiver owns
+    /// both partitions of a multi-partition topic and acks a DIFFERENT prefix on
+    /// each -- one partition fully acked, the other left with an un-acked gap at
+    /// its first offset -- then is drained.
+    /// Guarantees: the drain-time commit halts at each partition's own gap: the
+    /// fully-acked partition commits past all its records, while the
+    /// gap-at-offset-0 partition commits nothing past offset 0 (the broker
+    /// receives no commit past any partition's un-acked prefix), so a
+    /// multi-partition drain preserves per-partition at-least-once boundaries.
+    #[tokio::test]
+    async fn drain_multi_partition_commits_halt_at_each_partition_gap() {
+        const TOPIC: &str = "drain-multi-gap-traces";
+        // Partition that is fully acked, and the one left with a leading gap.
+        const FULL_P: i32 = 0;
+        const GAP_P: i32 = 1;
+        let group = "drain-multi-gap-group";
+        with_cluster(
+            KafkaTestCluster::builder().topic_with(TOPIC, REBALANCE_TEST_PARTITIONS, 1),
+            |cluster| async move {
+                let producer = cluster.producer().build();
+                let req = create_traces_with_spans();
+                let mut bytes = vec![];
+                req.encode(&mut bytes).expect("encode");
+
+                producer
+                    .produce_per_partition(
+                        TOPIC,
+                        REBALANCE_TEST_PARTITIONS,
+                        REBALANCE_RECORDS_PER_PARTITION,
+                        &bytes,
+                    )
+                    .await;
+
+                let cfg = manual_traces_config_no_timer(cluster.bootstrap_servers(), group, TOPIC);
+                let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+
+                // Consume every record from both partitions, but ack selectively:
+                // ack all of FULL_P; for GAP_P ack every record EXCEPT its offset
+                // 0, leaving a leading un-acked gap. Partition/offset are read from
+                // each pdata's Kafka source route calldata.
+                let total = (REBALANCE_RECORDS_PER_PARTITION * REBALANCE_TEST_PARTITIONS) as usize;
+                for _ in 0..total {
+                    let pdata = receiver.recv_pdata().await;
+                    let (_, partition, offset, _) =
+                        decode_calldata(&pdata.source_route().expect("source route").calldata);
+                    if partition == GAP_P && offset == 0 {
+                        // Leave the first record of the gap partition un-acked.
+                        continue;
+                    }
+                    receiver.ack(pdata);
+                }
+
+                receiver.drain(Duration::from_secs(5));
+                let mut drained = false;
+                for _ in 0..16 {
+                    match receiver.try_recv_runtime(Duration::from_secs(5)).await {
+                        Some(RuntimeControlMsg::ReceiverDrained { .. }) => {
+                            drained = true;
+                            break;
+                        }
+                        Some(_) => continue,
+                        None => break,
+                    }
+                }
+                assert!(drained, "receiver never emitted ReceiverDrained");
+                receiver.await_stopped().await;
+
+                let brokers = cluster.bootstrap_servers().to_string();
+
+                // The fully-acked partition commits past all its records.
+                let full_committed =
+                    poll_until(Duration::from_secs(5), Duration::from_millis(250), || {
+                        committed_offset(&brokers, group, TOPIC, FULL_P)
+                            .expect("kafka-test: committed-offset probe failed")
+                            .is_some_and(|o| o >= REBALANCE_RECORDS_PER_PARTITION as i64)
+                    })
+                    .await;
+                assert!(
+                    full_committed,
+                    "the fully-acked partition must commit past all its records, got {:?}",
+                    committed_offset(&brokers, group, TOPIC, FULL_P)
+                        .expect("kafka-test: committed-offset probe failed"),
+                );
+
+                // The gap partition must NOT commit past its un-acked offset 0.
+                let gap_committed = committed_offset(&brokers, group, TOPIC, GAP_P)
+                    .expect("kafka-test: committed-offset probe failed");
+                assert!(
+                    gap_committed.is_none_or(|o| o == 0),
+                    "the gap partition must not commit past its un-acked offset 0 \
+                     (lowest contiguous only), got {gap_committed:?}",
                 );
             },
         )
