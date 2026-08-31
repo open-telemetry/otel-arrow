@@ -15,23 +15,24 @@ groups:
             config:
               source_id: oracle-audit
               connection:
-                connect_string: database.contoso.com:1521/ORCL
-                instant_client_dir: /opt/oracle/instantclient
+                connect_string: '${env:ORACLE_CONNECT_STRING}'
+                instant_client_dir: '${env:ORACLE_INSTANT_CLIENT_DIR}'
               authentication:
-                username_file: /var/run/secrets/oracle/oracle-audit/username
-                password_file: /var/run/secrets/oracle/oracle-audit/password
+                username_file: '${env:ORACLE_USERNAME_FILE}'
+                password_file: '${env:ORACLE_PASSWORD_FILE}'
               query:
                 statement: >
-                  SELECT AUDIT_ID, LAST_UPDATED, USER_NAME, ACTION
-                  FROM AUDIT_LOGS
-                interval: 5m
+                  SELECT EVENT_ID, EVENT_TS, PAYLOAD
+                  FROM OTAP_ORACLE_EVENTS
+                  ORDER BY EVENT_TS, EVENT_ID
+                interval: 5s
                 fetch_size: 1000
                 max_rows_per_poll: 10000
                 timeout: 2m
               # Parsed for forward compatibility; stateful watermarking is not active.
               watermark:
-                timestamp_column: LAST_UPDATED
-                tie_breaker_column: AUDIT_ID
+                timestamp_column: EVENT_TS
+                tie_breaker_column: EVENT_ID
                 timezone: UTC
                 start_at: beginning
               # Parsed for forward compatibility; checkpoint persistence is not active.
