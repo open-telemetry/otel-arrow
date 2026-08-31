@@ -1,6 +1,0 @@
-change_type: breaking
-component: pipeline
-note: "Correct durable-buffer retention metrics to report only unresolved logical loss."
-issues: [3892]
-subtext: |
-  Migration: replace processor.durable_buffer.loss.segments with processor.durable_buffer.reclaimed.segments, and use reclaimed.bytes for physical storage. loss.bytes now reports logical payload bytes.
