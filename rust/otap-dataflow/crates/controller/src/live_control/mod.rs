@@ -24,6 +24,7 @@ use otel_arrow_dfe_admin::{
     PipelineRolloutSummary as ApiPipelineRolloutSummary, PipelineShutdownInitiator,
     ReconfigureRequest, RolloutCoreStatus, RolloutStatus, ShutdownCoreStatus, ShutdownStatus,
 };
+use otel_arrow_dfe_engine::context_declaration::ContextPolicyGeneration;
 use otel_arrow_dfe_engine::topology::NumaTopology;
 use otel_arrow_dfe_state::conditions::ConditionStatus;
 use otel_arrow_dfe_state::phase::PipelinePhase;
@@ -157,7 +158,7 @@ impl<
                 live_config,
                 config_revision: 0,
                 context_policy,
-                next_context_revision: 1,
+                next_context_policy_generation: 1,
                 logical_pipelines: HashMap::new(),
                 runtime_instances: HashMap::new(),
                 runtime_recoveries: HashMap::new(),

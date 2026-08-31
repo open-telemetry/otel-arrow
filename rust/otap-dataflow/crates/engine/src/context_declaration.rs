@@ -88,12 +88,12 @@ pub enum ContextDeclaration {
 /// Deterministically describes a node factory's context access.
 pub type ContextDeclarationFn = fn(&serde_json::Value) -> Result<Vec<ContextDeclaration>, Error>;
 
-/// Monotonic identity for a compiled context policy configuration.
+/// Generation assigned to a compiled context policy.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ContextRevisionId(u64);
+pub struct ContextPolicyGeneration(u64);
 
-impl ContextRevisionId {
-    /// Creates a context policy revision.
+impl ContextPolicyGeneration {
+    /// Creates a context policy generation.
     #[must_use]
     pub const fn new(value: u64) -> Self {
         Self(value)
@@ -146,30 +146,30 @@ impl ContextDeclarationsBuilder {
 /// Opaque context policy compiled from the resolved configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompiledContextPolicy {
-    revision: ContextRevisionId,
+    generation: ContextPolicyGeneration,
     // Replaced by executable plans in the next compiler pass.
     declarations: HashMap<PipelineKey, HashMap<ConfigNodeId, Box<[ContextDeclaration]>>>,
 }
 
 impl CompiledContextPolicy {
-    /// Returns the revision associated with this compiled policy.
+    /// Returns the generation associated with this compiled policy.
     #[must_use]
-    pub const fn revision(&self) -> ContextRevisionId {
-        self.revision
+    pub const fn generation(&self) -> ContextPolicyGeneration {
+        self.generation
     }
 
-    /// Returns a copy carrying the supplied revision.
+    /// Returns a copy carrying the supplied generation.
     #[must_use]
-    pub fn with_revision(&self, revision: ContextRevisionId) -> Arc<Self> {
+    pub fn with_generation(&self, generation: ContextPolicyGeneration) -> Arc<Self> {
         Arc::new(Self {
-            revision,
+            generation,
             declarations: self.declarations.clone(),
         })
     }
 
     /// Returns whether two policies compile the same declarations.
     #[must_use]
-    pub fn matches_configuration(&self, other: &Self) -> bool {
+    pub fn equivalent_declarations(&self, other: &Self) -> bool {
         self.declarations == other.declarations
     }
 }
@@ -203,7 +203,7 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
         }
 
         Ok(Arc::new(CompiledContextPolicy {
-            revision: ContextRevisionId::default(),
+            generation: ContextPolicyGeneration::default(),
             declarations,
         }))
     }
@@ -303,7 +303,7 @@ mod tests {
             name: "tenant".into(),
         };
         let policy = CompiledContextPolicy {
-            revision: ContextRevisionId::default(),
+            generation: ContextPolicyGeneration::default(),
             declarations: HashMap::from([(
                 pipeline.clone(),
                 HashMap::from([(node.clone(), vec![declaration.clone()].into_boxed_slice())]),

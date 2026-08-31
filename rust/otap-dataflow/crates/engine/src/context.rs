@@ -449,12 +449,14 @@ impl PipelineContext {
         self.compiled_context_policy.as_ref()
     }
 
-    /// Returns the revision of the compiled context policy, if one was injected.
+    /// Returns the generation of the compiled context policy, if one was injected.
     #[must_use]
-    pub fn context_revision(&self) -> Option<crate::context_declaration::ContextRevisionId> {
+    pub fn context_policy_generation(
+        &self,
+    ) -> Option<crate::context_declaration::ContextPolicyGeneration> {
         self.compiled_context_policy
             .as_ref()
-            .map(|policy| policy.revision())
+            .map(|policy| policy.generation())
     }
 
     /// Returns the pipeline-scoped topic set, if one was injected.

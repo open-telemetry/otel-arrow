@@ -660,22 +660,22 @@ impl<
             .map_err(|error| ControlPlaneError::InvalidRequest {
                 message: error.to_string(),
             })?;
-        let revision = {
+        let generation = {
             let mut state = self
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             if state
                 .context_policy
-                .matches_configuration(&candidate_context_policy)
+                .equivalent_declarations(&candidate_context_policy)
             {
                 return Ok(Arc::clone(&state.context_policy));
             }
-            let revision = state.next_context_revision;
-            state.next_context_revision += 1;
-            otel_arrow_dfe_engine::context_declaration::ContextRevisionId::new(revision)
+            let generation = state.next_context_policy_generation;
+            state.next_context_policy_generation += 1;
+            ContextPolicyGeneration::new(generation)
         };
-        Ok(candidate_context_policy.with_revision(revision))
+        Ok(candidate_context_policy.with_generation(generation))
     }
 
     fn prepare_rollout_plan_for_engine_operation(
