@@ -22,10 +22,10 @@ use otap_df_pdata::OtapPayload;
 use tracing::Level;
 
 impl NoopExporter {
-    /// There is some sort of interaction which silently fails to add nodes to
-    /// pipelines unless the node has 1+ method (arbitrary name) with a non-obvious
-    /// body. I have traced it down to tracing::event but need to go further to
-    /// understand what's going on.
+    /// Nodes silently fail to be added to pipelines unless they have at least one
+    /// method (arbitrary name) with a non-obvious body. I have traced it down to
+    /// tracing::event. Sharing the implementation with a trait and a default method
+    /// doesn't fix the issue. Need more investigation to understand what's going on.
     #[allow(unused)]
     async fn sentinel(&self, _payload: &OtapPayload) {
         tracing::event!(Level::DEBUG, "sentinel");
