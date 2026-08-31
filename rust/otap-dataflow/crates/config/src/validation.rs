@@ -26,19 +26,13 @@ use crate::error::Error;
 /// validate_config: validate_typed_config::<MyComponentConfig>,
 /// ```
 /// TODO: use this other places
-pub fn validate_typed_config<T: serde::de::DeserializeOwned + ValidateExtraConfig>(
+pub fn validate_typed_config<T: serde::de::DeserializeOwned>(
     config: &serde_json::Value,
 ) -> Result<(), Error> {
-    let config_typed: T = serde_json::from_value(config.clone()).map_err(|err| Error::InvalidUserConfig { error: err.to_string() })?;
-    config_typed.validate_extra()   
-}
-
-/// Dummy Doc
-pub trait ValidateExtraConfig: serde::de::DeserializeOwned {
-    /// Dummy Doc
-    fn validate_extra(&self) -> Result<(), Error> {
-        Ok(())
-    }
+    let _: T = serde_json::from_value(config.clone()).map_err(|e| Error::InvalidUserConfig {
+        error: e.to_string(),
+    })?;
+    Ok(())
 }
 
 /// Validator for components that accept **no** user configuration.

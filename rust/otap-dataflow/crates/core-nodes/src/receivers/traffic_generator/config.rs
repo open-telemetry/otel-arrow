@@ -15,15 +15,6 @@ use weaver_forge::registry::ResolvedRegistry;
 use weaver_resolver::{DefaultSchemaVisitor, WeaverResolver, WeaverResolverConfig};
 use weaver_semconv::registry_repo::RegistryRepo;
 
-use otap_df_config::validation::ValidateExtraConfig;
-use otap_df_config::error::Error as ConfigError;
-
-impl ValidateExtraConfig for Config {
-    fn validate_extra(&self) -> Result<(), ConfigError> {
-        self.get_traffic_config().validate().map_err(|e| ConfigError::InvalidUserConfig { error: e.to_string() })
-    }
-}
-
 /// Source of telemetry data schema and attributes
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

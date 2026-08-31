@@ -102,7 +102,7 @@ pub static TRAFFIC_GENERATOR_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFact
              node_config: Arc<NodeUserConfig>,
              receiver_config: &ReceiverConfig,
              _capabilities: &otap_df_engine::capability::registry::Capabilities| {
-                // println!("pierre 2");
+        // println!("pierre 2");
         Ok(ReceiverWrapper::local(
             TrafficGeneratorReceiver::from_config(pipeline, &node_config.config)?,
             node,
@@ -111,8 +111,22 @@ pub static TRAFFIC_GENERATOR_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFact
         ))
     },
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    validate_config: otap_df_config::validation::validate_typed_config::<Config>,
+    validate_config: validation_closure,
 };
+
+fn validation_closure(config: &Value) -> Result<(), otap_df_config::error::Error> {
+    let _ = otap_df_config::validation::validate_typed_config::<Config>(config);
+    let config_typed: Config = serde_json::from_value(config.clone()).map_err(|err| {
+        otap_df_config::error::Error::InvalidUserConfig {
+            error: err.to_string(),
+        }
+    })?;
+    config_typed.get_traffic_config().validate().map_err(|e| {
+        otap_df_config::error::Error::InvalidUserConfig {
+            error: e.to_string(),
+        }
+    })
+}
 
 impl TrafficGeneratorReceiver {
     /// creates a new TrafficGeneratorReceiver

@@ -138,6 +138,7 @@ pub trait NamedFactory {
 }
 
 /// A factory for creating receivers.
+#[derive(Debug)]
 pub struct ReceiverFactory<PData> {
     /// The name of the receiver.
     pub name: &'static str,
@@ -182,6 +183,7 @@ impl<PData> NamedFactory for ReceiverFactory<PData> {
 }
 
 /// A factory for creating processors.
+#[derive(Debug)]
 pub struct ProcessorFactory<PData> {
     /// The name of the processor.
     pub name: &'static str,
@@ -226,6 +228,7 @@ impl<PData> NamedFactory for ProcessorFactory<PData> {
 }
 
 /// A factory for creating exporter.
+#[derive(Debug)]
 pub struct ExporterFactory<PData> {
     /// The name of the receiver.
     pub name: &'static str,
@@ -683,6 +686,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         exporter_factories: &'static [ExporterFactory<PData>],
         extension_factories: &'static [ExtensionFactory],
     ) -> Self {
+        // println!("<=====SOME INTERESTING THINGS {:?}", exporter_factories);
         Self {
             receiver_factory_map: OnceLock::new(),
             processor_factory_map: OnceLock::new(),
@@ -717,10 +721,13 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
     /// Gets the exporter factory map, initializing it if necessary.
     pub fn get_exporter_factory_map(&self) -> &HashMap<&'static str, ExporterFactory<PData>> {
+        println!("<========WE ARE HERE {:?}", self.exporter_factory_map);
         self.exporter_factory_map.get_or_init(|| {
             self.exporter_factories
                 .iter()
-                .map(|f| (f.name(), f.clone()))
+                .map(|f| {
+                    println!("PIDRRE {}", f.name());
+                    (f.name(), f.clone())})
                 .collect::<HashMap<&'static str, ExporterFactory<PData>>>()
         })
     }

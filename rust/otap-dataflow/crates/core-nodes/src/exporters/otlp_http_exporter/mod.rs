@@ -85,6 +85,9 @@ pub struct OtlpHttpExporter {
 }
 
 /// Declare the OTLP HTTP Exporter as a local exporter factory
+///
+
+// THis one works
 #[allow(unsafe_code)]
 #[otap_df_engine::component_inventory(category = Exporter)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
@@ -94,6 +97,8 @@ pub static OTLP_HTTP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     wiring_contract: WiringContract::UNRESTRICTED,
     validate_config,
 };
+
+// and here is an existing pattern I can reuse
 
 /// Validates the OTLP HTTP exporter configuration at config load time.
 ///

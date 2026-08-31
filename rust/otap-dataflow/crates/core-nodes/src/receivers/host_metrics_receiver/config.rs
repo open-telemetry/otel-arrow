@@ -8,10 +8,6 @@ use serde::{Deserialize, Serialize};
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
-use otap_df_config::validation::ValidateExtraConfig;
-
-impl ValidateExtraConfig for Config {}
-
 fn default_collection_interval() -> Duration {
     Duration::from_secs(10)
 }

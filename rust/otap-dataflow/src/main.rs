@@ -292,10 +292,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     validate_engine_config_for_startup(&engine_cfg, &run_options)?;
 
-    /* 
+    /*
     {
     use otap_df_core_nodes::receivers::traffic_generator::config::Config;
-    
+
     let resolved_config = engine_cfg.resolve();
     let (_, pipelines, _) = resolved_config.into_parts();
     for pipeline_entry in pipelines {
