@@ -12,6 +12,47 @@ changes. See [`RELEASING.md`](../../RELEASING.md) for the versioning policy.
 
 <!-- next version -->
 
+## v0.53.0
+
+### :stop_sign: Breaking changes :stop_sign:
+
+- `pipeline`: Kafka receivers now replay transient NACKs by default in manual-commit mode and publish lifecycle metrics under receiver.kafka.messages. ([#3505](https://github.com/open-telemetry/otel-arrow/issues/3505))
+  Replay is partition-local, uses capped backoff, and may duplicate records.
+  Migration: Set transient_nack.mode: commit_and_skip to keep advancing offsets. Rename receiver.messages.{started,completed,bytes} queries to receiver.kafka.messages.{started,completed,payload_size}.
+
+- `pipeline`: Correct durable-buffer retention metrics to report only unresolved logical loss. ([#3892](https://github.com/open-telemetry/otel-arrow/issues/3892))
+  Migration: replace processor.durable_buffer.loss.segments with processor.durable_buffer.reclaimed.segments, and use reclaimed.bytes for physical storage. loss.bytes now reports logical payload bytes.
+
+### :rocket: New components :rocket:
+
+- `query-engine`: Publish the data-engine expression, parser-abstractions, KQL parser, and recordset crates to crates.io as otel-arrow-contrib-data-engine-* (experimental, pre-1.0). ([#3916](https://github.com/open-telemetry/otel-arrow/issues/3916), [#1340](https://github.com/open-telemetry/otel-arrow/issues/1340))
+  These crates were renamed from data_engine_expressions, data_engine_parser_abstractions, data_engine_kql_parser, and data_engine_recordset. Update any path dependency or import that used the old names.
+
+### :bulb: Enhancements :bulb:
+
+- `all`: Publish additional OTAP Dataflow crates to crates.io for use as versioned dependencies. ([#1340](https://github.com/open-telemetry/otel-arrow/issues/1340))
+- `dependencies`: Upgrade various Rust dependencies. ([#3948](https://github.com/open-telemetry/otel-arrow/issues/3948))
+- `otap`: OTLP receivers now return HTTP 400 / gRPC INVALID_ARGUMENT for permanent client-caused rejections instead of a retryable 503 / UNAVAILABLE. ([#3826](https://github.com/open-telemetry/otel-arrow/issues/3826))
+  Applies only when the OTLP receiver is configured with wait_for_result: true (default false); otherwise it responds before the pipeline NACK is seen. Transient failures still map to 503 / UNAVAILABLE and permanent server-side failures to 500 / INTERNAL.
+
+- `pipeline`: OTLP HTTP exporter now reads bounded (4 KiB) error response bodies to include diagnostic information in export failures, preventing indefinite buffering from unresponsive backends. ([#3902](https://github.com/open-telemetry/otel-arrow/issues/3902))
+- `pipeline`: Add `exhaustion_action` option to the retry processor to control the final NACK when retries stop. ([#3927](https://github.com/open-telemetry/otel-arrow/issues/3927))
+  Defaults to `propagate_transient`, which leaves the final NACK unchanged.
+  Set `mark_permanent` to force the final NACK to be permanent to notify
+  upstream nodes
+
+### :toolbox: Bug fixes :toolbox:
+
+- `engine`: Nodes now report an error when a bound capability does not support the requested execution model. ([#3883](https://github.com/open-telemetry/otel-arrow/issues/3883))
+- `engine`: Increase the size allowed for log messages to avoid truncating important error information ([#3900](https://github.com/open-telemetry/otel-arrow/issues/3900))
+- `observability`: Honor the shutdown deadline when draining internal logs into a backpressured observability pipeline. ([#3843](https://github.com/open-telemetry/otel-arrow/issues/3843))
+- `pipeline`: Include the Azure Monitor response body in unexpected HTTP status errors ([#3921](https://github.com/open-telemetry/otel-arrow/issues/3921))
+- `pipeline`: Azure Monitor exporter now permanently rejects empty batches instead of allowing them to be retried. ([#3891](https://github.com/open-telemetry/otel-arrow/issues/3891))
+- `pipeline`: Corrects population of Nack permanent flag and payload in transform processor ([#3904](https://github.com/open-telemetry/otel-arrow/issues/3904))
+- `pipeline`: Prevent the transform processor from forwarding empty output when every signal item is filtered or routed. ([#3891](https://github.com/open-telemetry/otel-arrow/issues/3891))
+
+<!-- previous-version -->
+
 ## v0.52.0
 
 ### :stop_sign: Breaking changes :stop_sign:
