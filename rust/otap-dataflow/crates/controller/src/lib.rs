@@ -2185,6 +2185,8 @@ impl<
             .name(thread_name.clone())
             .spawn(move || {
                 let exit = match catch_unwind(AssertUnwindSafe(|| {
+                    // println!("pierre 9");
+
                     Self::run_pipeline_thread(
                         run_key,
                         core_id,
@@ -2382,6 +2384,7 @@ impl<
                 .as_ref()
                 .map(|(settings, _)| settings)
                 .cloned();
+            // println!("pierre 8");
             let runtime_pipeline = pipeline_factory
                 .build(
                     pipeline_context.clone(),

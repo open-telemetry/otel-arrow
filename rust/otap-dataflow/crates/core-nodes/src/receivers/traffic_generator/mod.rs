@@ -102,6 +102,7 @@ pub static TRAFFIC_GENERATOR_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFact
              node_config: Arc<NodeUserConfig>,
              receiver_config: &ReceiverConfig,
              _capabilities: &otap_df_engine::capability::registry::Capabilities| {
+                // println!("pierre 2");
         Ok(ReceiverWrapper::local(
             TrafficGeneratorReceiver::from_config(pipeline, &node_config.config)?,
             node,
@@ -126,11 +127,13 @@ impl TrafficGeneratorReceiver {
         pipeline_ctx: PipelineContext,
         config: &Value,
     ) -> Result<Self, otap_df_config::error::Error> {
+        // println!("here the configu is {:?}", config);
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
             }
         })?;
+        // println!("Pierre deepest");
         config.get_traffic_config().validate()?;
         Ok(TrafficGeneratorReceiver::new(pipeline_ctx, config))
     }

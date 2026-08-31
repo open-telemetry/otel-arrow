@@ -7243,6 +7243,7 @@ dependencies = [
  "otap-df-core-nodes",
  "otap-df-engine",
  "otap-df-otap",
+ "serde_json",
  "tikv-jemallocator",
 ]
 

@@ -984,6 +984,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         }
                     }
 
+                    // println!("pierre 6");
                     let wrapper = self.build_node_wrapper(
                         &mut build_state,
                         &base_ctx,
@@ -991,6 +992,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         node_id.clone(),
                         basic_runtime_metrics_enabled,
                         || {
+                            // println!("pierre 5");
                             self.create_receiver(
                                 &base_ctx,
                                 node_id.clone(),
@@ -1885,6 +1887,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
         let capture_policy = resolve_capture_policy(&node_config, transport_headers_policy);
 
+        // println!("pierre 3");
         let receiver = create(
             (*pipeline_ctx).clone(),
             node_id.clone(),
