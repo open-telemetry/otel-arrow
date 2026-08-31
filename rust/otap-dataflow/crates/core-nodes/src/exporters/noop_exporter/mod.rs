@@ -16,10 +16,9 @@ use otap_df_engine::terminal_state::TerminalState;
 use otap_df_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
-use otap_df_pdata::OtapPayload;
-
 use std::sync::Arc;
 
+use otap_df_pdata::OtapPayload;
 use tracing::Level;
 
 impl NoopExporter {

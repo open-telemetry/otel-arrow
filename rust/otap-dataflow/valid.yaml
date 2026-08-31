@@ -1,0 +1,27 @@
+version: otel_dataflow/v1
+engine: {}
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: receiver:traffic_generator
+            config:
+              traffic_config:
+                max_signal_count: 1
+                max_batch_size: 1
+                signals_per_second: 1
+                trace_weight: 1
+              registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
+          router:
+            type: processor:type_router
+            config: {}
+          noop:
+            type: exporter:noop
+            config: {}
+        connections:
+          - from: receiver
+            to: router
+          - from: router["logs"]
+            to: noop

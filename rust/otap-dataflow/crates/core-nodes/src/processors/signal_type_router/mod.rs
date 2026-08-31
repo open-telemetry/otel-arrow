@@ -71,6 +71,16 @@ use crate::processors::exclusive_router_admission::{
     ExclusiveRouteScheduler, FullRouteHandling, PendingRoute, SelectedRouteAdmissionPolicy,
 };
 
+use otap_df_pdata::OtapPayload;
+use tracing::Level;
+
+impl SignalTypeRouter {
+    #[allow(unused)]
+    async fn sentinel(&self, _payload: &OtapPayload) {
+        tracing::event!(Level::DEBUG, "sentinel");
+    }
+}
+
 /// URN for the SignalTypeRouter processor
 pub const SIGNAL_TYPE_ROUTER_URN: &str = "urn:otel:processor:type_router";
 

@@ -60,6 +60,16 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::{Instant, MissedTickBehavior, interval_at};
 
+use otap_df_pdata::OtapPayload;
+use tracing::Level;
+
+impl InternalTelemetryReceiver {
+    #[allow(unused)]
+    async fn sentinel(&self, _payload: &OtapPayload) {
+        tracing::event!(Level::DEBUG, "sentinel");
+    }
+}
+
 /// The URN for the internal telemetry receiver.
 pub use otap_df_config::engine::INTERNAL_TELEMETRY_RECEIVER_URN;
 

@@ -292,26 +292,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     validate_engine_config_for_startup(&engine_cfg, &run_options)?;
 
-    /*
-    {
-    use otap_df_core_nodes::receivers::traffic_generator::config::Config;
-
-    let resolved_config = engine_cfg.resolve();
-    let (_, pipelines, _) = resolved_config.into_parts();
-    for pipeline_entry in pipelines {
-        for (_, node_config) in pipeline_entry.pipeline.node_iter() {
-            let config = &node_config.config;
-            if let Ok(config_2) = serde_json::from_value::<Config>(config.clone()) {
-                match config_2.get_traffic_config().validate() {
-                    Ok(k) => println!("ok for {:?}", k),
-                        Err(e) => println!("error for {:?}", e)
-                    }
-                }
-            }
-        }
-    }
-    */
-
     if validate_and_exit {
         println!("Configuration '{}' is valid.", resolved.source);
         std::process::exit(0);

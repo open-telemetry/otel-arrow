@@ -129,7 +129,7 @@ fn validate_config(config: &Value) -> Result<(), ConfigError> {
         otap_df_config::error::Error::InvalidUserConfig {
             error: e.to_string(),
         }
-    });
+    })?;
     Ok(())
 }
 
