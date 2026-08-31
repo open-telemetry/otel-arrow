@@ -11,6 +11,52 @@ configuration can be introduced incrementally. When `watermark` is present,
 its columns are validated against live result metadata and its timestamp
 column supplies OTLP event time.
 
+## One-command Docker demo
+
+The Docker demo packages the receiver, load generator, Oracle Instant Client,
+credential-file setup, and Oracle Free orchestration. Docker is the only local
+prerequisite.
+
+From `rust\otap-dataflow`, run:
+
+```powershell
+docker compose -f docker-compose.oracle-demo.yaml up --build
+```
+
+The first run downloads Oracle Free and builds the receiver image, so it can
+take several minutes. The receiver container waits for Oracle, creates 25
+deterministic rows, and starts the console pipeline automatically. Look for:
+
+```text
+Prepared OTAP_ORACLE_EVENTS with 25 deterministic rows and collision groups of 5
+Starting the Oracle receiver. Snapshot rows repeat every five seconds.
+```
+
+Override the generated row count or timestamp collision size without editing
+files:
+
+```powershell
+$env:ORACLE_DEMO_ROWS = "100"
+$env:ORACLE_DEMO_COLLISION_SIZE = "10"
+docker compose -f docker-compose.oracle-demo.yaml up --build
+```
+
+Stop the containers with `Ctrl+C`. Remove the containers and demo database
+volume with:
+
+```powershell
+docker compose -f docker-compose.oracle-demo.yaml down --volumes
+```
+
+The default database password is a public, local-demo-only value. The Oracle
+port binds only to `127.0.0.1`. Do not publish this Compose setup or use its
+credentials in production. The image downloads Oracle Instant Client directly
+from Oracle while building; review Oracle's license before redistributing a
+built image.
+
+This remains a snapshot demo. It does not enable watermark or checkpoint
+behavior.
+
 ## Local load-generator demo
 
 The repository includes `oracle_load_generator`, a deterministic data
