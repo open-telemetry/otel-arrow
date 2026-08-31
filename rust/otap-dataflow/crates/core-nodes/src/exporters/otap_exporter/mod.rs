@@ -995,10 +995,11 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
                         // server actually received this batch before the stream
                         // was torn down. If it did, and upstream retries after
                         // restart, the batch may be resent and processed twice.
-                        // Per the OTLP delivery guarantees (see
-                        // proto/opentelemetry-proto/docs/requirements.md), rare
-                        // duplicate delivery is preferable to silent data loss,
-                        // so we always fail closed rather than assume success.
+                        // We always fail closed rather than assume success,
+                        // matching the sibling `otlp_grpc_exporter`'s
+                        // `nack_without_usable_token`, which force-drains parked
+                        // pdata on shutdown with an explicit retryable NACK
+                        // instead of dropping it silently.
                         //
                         // This matches today's immediate-cancel shutdown model.
                         // Issue #3870 plans a drain-until-deadline model where a
