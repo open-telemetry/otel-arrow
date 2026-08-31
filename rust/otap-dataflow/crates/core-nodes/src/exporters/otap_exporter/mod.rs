@@ -5,6 +5,15 @@
 //!
 //! ToDo: Handle configuration changes
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
+//! ToDo: Today, shutdown cancels worker streams immediately and Nacks any
+//! pdata that has not yet received a `BatchStatus` (see
+//! `fail_stream_open_pdata` / `fail_correlated_pdata`). Issue #3870 tracks
+//! replacing this with a drain-until-deadline design that keeps processing
+//! in-flight `BatchStatus` responses and only Nacks what remains unresolved
+//! once the shutdown deadline is reached. When that lands, the fixes below
+//! for the shutdown-during-stream-open race should be revisited: some of
+//! today's immediate Nacks may become Acks if the response arrives before
+//! the new deadline.
 
 otel_arrow_dfe_telemetry::otel_component_scope!(
     urn = OTAP_EXPORTER_URN,
@@ -977,6 +986,33 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
                     res = req_fut => res,
                     _ = shutdown_rx.changed() => {
                         drop(correlation_tx);
+                        // The request stream may already have yielded its first
+                        // batch before Tonic returns the response stream. Drain
+                        // that correlation, or fail the fallback when it was
+                        // never yielded, so shutdown cannot lose the NACK.
+                        //
+                        // NACKing here is intentional: we cannot know whether the
+                        // server actually received this batch before the stream
+                        // was torn down. If it did, and upstream retries after
+                        // restart, the batch may be resent and processed twice.
+                        // Per the OTLP delivery guarantees (see
+                        // proto/opentelemetry-proto/docs/requirements.md), rare
+                        // duplicate delivery is preferable to silent data loss,
+                        // so we always fail closed rather than assume success.
+                        //
+                        // This matches today's immediate-cancel shutdown model.
+                        // Issue #3870 plans a drain-until-deadline model where a
+                        // late successful BatchStatus would Ack instead; revisit
+                        // this fallback when that lands.
+                        fail_stream_open_pdata(
+                            &pdata_metrics_tx,
+                            signal_type,
+                            &mut correlation_rx,
+                            first_pdata_fallback,
+                            first_export_started_at,
+                            OtapExporterErrorType::Shutdown,
+                        )
+                        .await;
                         break;
                     }
                 };
@@ -2652,8 +2688,10 @@ mod tests {
         }
     }
 
-    /// Tests that exporter shutdown NACKs a batch already yielded to the OTAP
-    /// request stream when no corresponding BatchStatus has arrived yet.
+    /// Scenario: Exporter shutdown races with an OTAP stream-open request after
+    /// the server receives a batch but before any BatchStatus arrives.
+    /// Guarantees: The correlated pdata is NACKed even when shutdown wins the
+    /// stream-open select before the client receives the response stream.
     #[test]
     fn test_shutdown_nacks_correlated_pdata() {
         let grpc_addr = "127.0.0.1";
