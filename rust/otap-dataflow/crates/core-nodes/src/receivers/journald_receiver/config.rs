@@ -13,6 +13,11 @@ use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
+use otap_df_config::validation::ValidateExtraConfig;
+
+impl ValidateExtraConfig for Config {}
+
+
 /// Default stable OTAP source identifier for the local system journal.
 pub const DEFAULT_SOURCE_ID: &str = "system";
 /// Default journal root path for reading the local host journal.
