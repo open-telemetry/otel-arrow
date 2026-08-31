@@ -7,7 +7,7 @@
 //! and `otel_event!`) for internal use within the OTAP engine codebase. These macros wrap the
 //! `tracing` crate's logging functionality and are intended for instrumenting engine internals,
 //! receivers, processors, exporters, and other pipeline components.
-
+//! 
 #![allow(unused_macros)]
 
 #[doc(hidden)]

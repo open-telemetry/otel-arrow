@@ -7553,6 +7553,7 @@ dependencies = [
  "tonic",
  "tonic-middleware",
  "tower",
+ "tracing",
  "uuid",
  "weaver_common",
  "weaver_forge",
