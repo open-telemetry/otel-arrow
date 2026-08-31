@@ -209,12 +209,11 @@ impl<
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if state.runtime_instances.contains_key(&pipeline_key) {
-                let context_policy = state
-                    .runtime_instances
-                    .get(&pipeline_key)
-                    .map(|instance| Arc::clone(&instance.context_policy))
-                    .expect("checked runtime instance is present");
+            if let Some(context_policy) = state
+                .runtime_instances
+                .get(&pipeline_key)
+                .map(|instance| Arc::clone(&instance.context_policy))
+            {
                 (
                     Self::apply_instance_exit_locked(&mut state, &pipeline_key, &exit),
                     true,

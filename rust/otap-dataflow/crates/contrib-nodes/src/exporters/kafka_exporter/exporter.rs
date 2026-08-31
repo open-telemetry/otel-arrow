@@ -62,6 +62,7 @@ use rdkafka::message::{Header, OwnedHeaders};
 use rdkafka::producer::Producer;
 use rdkafka::producer::future_producer::OwnedDeliveryResult;
 use regex::Regex;
+use serde::Deserialize;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -359,8 +360,8 @@ context_access! {
 fn kafka_exporter_declarations(
     config: &serde_json::Value,
 ) -> Result<Vec<ContextDeclaration>, otel_arrow_dfe_config::error::Error> {
-    let config: KafkaExporterConfig =
-        serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
+    let config =
+        KafkaExporterConfig::deserialize(config).map_err(|e| ConfigError::InvalidUserConfig {
             error: format!("kafka exporter declaration provider: {e}"),
         })?;
 
