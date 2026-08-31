@@ -23,3 +23,6 @@ pub use otlp::{OtlpMappingError, rows_to_pdata, validate_mapping};
 pub use query::{CompiledQuery, QueryError};
 pub use receiver::DatabaseReceiver;
 pub use row::{CellValue, ColumnMetadata, Row};
+
+#[cfg(test)]
+mod tests;

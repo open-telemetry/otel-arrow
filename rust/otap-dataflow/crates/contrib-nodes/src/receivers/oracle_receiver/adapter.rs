@@ -115,9 +115,10 @@ fn validate_blocking(
         .set_call_timeout(Some(query.timeout()))
         .map_err(OracleAdapterError::Configure)?;
     begin_read_only(&connection)?;
+    let fetch_size = oracle_fetch_size(query.fetch_size())?;
     let mut statement = connection
         .statement(query.sql())
-        .fetch_array_size(1)
+        .fetch_array_size(fetch_size)
         .prefetch_rows(0)
         .build()
         .map_err(OracleAdapterError::Prepare)?;
@@ -154,11 +155,10 @@ fn execute_blocking(
         .set_call_timeout(Some(query.timeout()))
         .map_err(OracleAdapterError::Configure)?;
     begin_read_only(&connection)?;
+    let fetch_size = oracle_fetch_size(query.fetch_size())?;
     let mut statement = connection
         .statement(query.sql())
-        // OCI fetch buffers are allocated outside normalized-byte accounting.
-        // Fetch one native row at a time until row-width admission is introduced.
-        .fetch_array_size(1)
+        .fetch_array_size(fetch_size)
         .prefetch_rows(0)
         .build()
         .map_err(OracleAdapterError::Prepare)?;
@@ -200,14 +200,11 @@ fn execute_blocking(
         .rollback()
         .map_err(OracleAdapterError::Configure)?;
 
-    Ok((
-        connection,
-        QueryResult {
-            columns,
-            rows,
-            normalized_bytes,
-        },
-    ))
+    Ok((connection, QueryResult { columns, rows }))
+}
+
+fn oracle_fetch_size(fetch_size: usize) -> Result<u32, OracleAdapterError> {
+    u32::try_from(fetch_size).map_err(|_| OracleAdapterError::FetchSizeOutOfRange(fetch_size))
 }
 
 fn column_metadata(column: &oracle::ColumnInfo) -> ColumnMetadata {
@@ -494,6 +491,9 @@ pub enum OracleAdapterError {
     /// The query returned more than the configured row ceiling.
     #[error("Oracle query exceeded the configured {0}-row poll limit")]
     RowLimit(usize),
+    /// The configured fetch size cannot be represented by the Oracle driver.
+    #[error("query.fetch_size {0} exceeds Oracle's supported range")]
+    FetchSizeOutOfRange(usize),
     /// Normalized data exceeded the fixed first-slice byte ceiling.
     #[error("Oracle query exceeded the configured {0}-byte poll limit")]
     ByteLimit(u64),
@@ -503,43 +503,5 @@ pub enum OracleAdapterError {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        CellValue, OracleAdapterError, OracleType, bounded_connect_string, finite_float,
-        validate_types,
-    };
-    use std::time::Duration;
-
-    /// Scenario: Oracle returns a non-finite binary floating-point value.
-    /// Guarantees: Conversion fails the poll instead of emitting a lossy or invalid value.
-    #[test]
-    fn rejects_non_finite_float() {
-        let error = finite_float(CellValue::Float64(f64::NAN))
-            .expect_err("non-finite value should fail conversion");
-        assert!(matches!(error, OracleAdapterError::NonFiniteFloat));
-    }
-
-    /// Scenario: An Easy Connect string omits network timeout properties.
-    /// Guarantees: The adapter derives bounded connect and transport timeouts from query timeout.
-    #[test]
-    fn adds_bounded_network_timeouts() {
-        let connect_string =
-            bounded_connect_string("database.contoso.com:1521/ORCL", Duration::from_secs(120))
-                .expect("Easy Connect string should be supported");
-
-        assert_eq!(
-            connect_string,
-            "database.contoso.com:1521/ORCL?connect_timeout=120&transport_connect_timeout=120"
-        );
-    }
-
-    /// Scenario: Oracle result metadata contains a vendor type without bounded normalization.
-    /// Guarantees: Metadata validation fails explicitly instead of falling back to debug text.
-    #[test]
-    fn rejects_unsupported_vendor_type() {
-        assert!(matches!(
-            validate_types(&[OracleType::BLOB]),
-            Err(OracleAdapterError::UnsupportedType(_))
-        ));
-    }
-}
+#[path = "adapter_tests.rs"]
+mod tests;

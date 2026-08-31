@@ -31,8 +31,6 @@ pub struct QueryResult {
     pub columns: Vec<ColumnMetadata>,
     /// Rows returned by this poll.
     pub rows: Vec<Row>,
-    /// Total normalized value bytes.
-    pub normalized_bytes: u64,
 }
 
 /// Database-specific query execution required by the shared receiver.
