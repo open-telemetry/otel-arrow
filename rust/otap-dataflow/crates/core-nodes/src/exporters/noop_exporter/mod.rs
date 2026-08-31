@@ -28,36 +28,35 @@ use std::sync::Arc;
 pub const NOOP_EXPORTER_URN: &str = "urn:otel:exporter:noop";
 
 /// Exporter that does nothing.
-pub struct NoopExporterOld;
+pub struct NoopExporter;
 
 /// Declare the Noop Exporter as a local exporter factory.
 
 // // TODO: is this called?
-// #[allow(unsafe_code)]
-// #[otap_df_engine::component_inventory(category = Exporter)]
-// #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
-// pub static NOOP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
-//     name: NOOP_EXPORTER_URN,
-//     create: |_pipeline: PipelineContext,
-//              node: NodeId,
-//              node_config: Arc<NodeUserConfig>,
-//              exporter_config: &ExporterConfig,
-//              _capabilities: &otap_df_engine::capability::registry::Capabilities| {
-//         Ok(ExporterWrapper::local(
-//             NoopExporter {},
-//             node,
-//             node_config,
-//             exporter_config,
-//         ))
-//     },
-//     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-//     validate_config: otap_df_config::validation::no_config,
-// };
+#[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Exporter)]
+#[distributed_slice(OTAP_EXPORTER_FACTORIES)]
+pub static NOOP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
+    name: NOOP_EXPORTER_URN,
+    create: |_pipeline: PipelineContext,
+             node: NodeId,
+             node_config: Arc<NodeUserConfig>,
+             exporter_config: &ExporterConfig,
+             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
+        Ok(ExporterWrapper::local(
+            NoopExporter {},
+            node,
+            node_config,
+            exporter_config,
+        ))
+    },
+    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otap_df_config::validation::no_config,
+};
 
-/*
 
 #[async_trait(?Send)]
-impl Exporter<OtapPdata> for NoopExporterOld {
+impl Exporter<OtapPdata> for NoopExporter {
     async fn start(
         self: Box<Self>,
         mut msg_chan: ExporterInbox<OtapPdata>,
@@ -74,46 +73,6 @@ impl Exporter<OtapPdata> for NoopExporterOld {
                 }
             }
         }
-
-        Ok(TerminalState::default())
-    }
-}
-
- */
-
-/// Console exporter that prints OTLP data to stdout.
-pub struct NoopExporter {
-}
-
-/// Declare the Console Exporter as a local exporter factory
-#[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Exporter)]
-#[distributed_slice(OTAP_EXPORTER_FACTORIES)]
-pub static NOOP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
-    name: NOOP_EXPORTER_URN,
-    create: |_pipeline: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             exporter_config: &ExporterConfig,
-             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
-        Ok(ExporterWrapper::local(
-            NoopExporter{},
-            node,
-            node_config,
-            exporter_config,
-        ))
-    },
-    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    validate_config: otap_df_config::validation::no_config,
-};
-
-#[async_trait(?Send)]
-impl Exporter<OtapPdata> for NoopExporter {
-    async fn start(
-        self: Box<Self>,
-        mut msg_chan: ExporterInbox<OtapPdata>,
-        effect_handler: EffectHandler<OtapPdata>,
-    ) -> Result<TerminalState, Error> {
 
         Ok(TerminalState::default())
     }
