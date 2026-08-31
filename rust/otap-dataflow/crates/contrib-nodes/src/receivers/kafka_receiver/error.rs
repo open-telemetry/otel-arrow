@@ -151,6 +151,25 @@ pub enum KafkaReceiverError {
         min: i32,
     },
 
+    /// The transient-NACK initial backoff exceeded its maximum backoff.
+    #[error(
+        "invalid kafka receiver configuration: transient_nack.initial_backoff_ms ({initial}) \
+         must be <= transient_nack.max_backoff_ms ({max})"
+    )]
+    ConfigInvalidTransientNackBackoff {
+        /// The configured initial retry backoff in milliseconds.
+        initial: u64,
+        /// The configured maximum retry backoff in milliseconds.
+        max: u64,
+    },
+
+    /// Kafka replay was requested while librdkafka auto-commit was enabled.
+    #[error(
+        "invalid kafka receiver configuration: transient_nack.mode replay requires \
+         commit.mode manual"
+    )]
+    ConfigTransientNackReplayRequiresManual,
+
     /// A field that must be strictly positive was zero (or negative).
     #[error("invalid kafka receiver configuration: {field} must be > 0")]
     ConfigNonPositiveValue {

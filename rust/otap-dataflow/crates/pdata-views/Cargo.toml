@@ -11,7 +11,7 @@ readme = "README.md"
 publish = true
 rust-version.workspace = true
 description = "Zero-dependency view traits for OTLP/OTAP telemetry data"
-keywords = ["opentelemetry", "otlp", "otap", "telemetry", "views"]
+keywords = ["telemetry", "opentelemetry", "otlp", "otap", "views"]
 categories = ["data-structures"]
 
 [dependencies]

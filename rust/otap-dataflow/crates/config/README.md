@@ -1,5 +1,8 @@
 # `otel-arrow-dfe-config`
 
+This crate is currently pre-1.0. Its public API may evolve between minor
+releases.
+
 Configuration model crate for the OTAP Dataflow Engine.
 
 If you are authoring runtime YAML, start with:
