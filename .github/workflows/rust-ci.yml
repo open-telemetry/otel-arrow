@@ -23,15 +23,15 @@ concurrency:
 
 jobs:
   # Non-required test matrix.
-  # - experimental folders run unpartitioned on all OSes (they are small).
+  # - contrib folders run unpartitioned on all OSes (they are small).
   # - otap-dataflow runs on ARM and macOS, split into 3 partitions.
-  experimental_tests:
+  contrib_tests:
     if: github.event_name == 'pull_request'
     strategy:
       fail-fast: false
       matrix:
         folder:
-          - experimental/data_engine
+          - contrib/data_engine
         os:
           - ubuntu-latest
           - ubuntu-24.04-arm
@@ -247,7 +247,7 @@ jobs:
       matrix:
         folder:
           - otap-dataflow
-          - experimental/data_engine
+          - contrib/data_engine
         os:
           - ubuntu-latest
           - ubuntu-24.04-arm
@@ -328,7 +328,7 @@ jobs:
       matrix:
         folder:
           - otap-dataflow
-          - experimental/data_engine
+          - contrib/data_engine
         os:
           - ubuntu-latest
           - ubuntu-24.04-arm
@@ -366,7 +366,7 @@ jobs:
       matrix:
         folder:
           - otap-dataflow
-          - experimental/data_engine
+          - contrib/data_engine
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -407,7 +407,7 @@ jobs:
       matrix:
         folder:
           - otap-dataflow
-          - experimental/data_engine
+          - contrib/data_engine
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
