@@ -48,8 +48,8 @@ Arrow](https://arrow.apache.org/), and our Parquet exporter for OTAP
 makes OpenTelemetry data directly accessible to a wide range of tools,
 thanks to the [Apache Parquet](https://parquet.apache.org/) ecosystem.
 
-The transform and query primitives are developed in the experimental
-[Data Engine](./rust/experimental/data_engine/README.md) workspace. Although
+The transform and query primitives are developed in the contrib
+[Data Engine](./rust/contrib/data_engine/README.md) workspace. Although
 the OTAP Dataflow Engine consumes these crates, the Data Engine is
 general-purpose and has no architectural dependency on OTAP or OpenTelemetry
 data. Its published crates use the `otel-arrow-contrib-data-engine-*` prefix
