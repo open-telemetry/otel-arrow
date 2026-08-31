@@ -294,7 +294,7 @@ tracepoint_decode = "0.5.0"
 tracelogging = "1.2.4"
 tracelogging_dynamic = "1.2.4"
 urlencoding = "2"
-geneva-uploader = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "43bd04be9e825564eeb3424b3e4caebf3e3ba7c5", default-features = false, features = ["tls-rustls"] }
+geneva-uploader = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "91057e4f9bda2dea819ead1648a83c7c7df0feda", default-features = false, features = ["tls-rustls"] }
 opentelemetry-resource-detectors = "0.12.0"
 
 [patch."https://github.com/open-telemetry/otel-arrow"]
