@@ -11,10 +11,11 @@ use bytes::Bytes;
 use otel_arrow_dfe_config::pipeline::telemetry::{
     AttributeValue as ConfigAttributeValue, AttributeValueArray as ConfigAttributeValueArray,
 };
-use otel_arrow_dfe_pdata::otlp::common::{BoundedBuf, Dropped, EncodeResult, ProtoBuffer};
+use otel_arrow_dfe_pdata::otlp::common::{BoundedBuf, EncodeFailure, EncodeResult, ProtoBuffer};
 use otel_arrow_dfe_pdata::proto::consts::{
     field_num::common::*, field_num::logs::*, field_num::resource::*, wire_types,
 };
+use slotmap::Key;
 use std::collections::HashMap;
 use std::time::SystemTime;
 use tracing::Level;
@@ -123,7 +124,7 @@ impl<'buf, B: BoundedBuf> DirectFieldVisitor<'buf, B> {
     /// Encode a string attribute, truncating the value if it doesn't fit.
     ///
     /// Returns `Ok(false)` if the full value was written, `Ok(true)` if the
-    /// value was truncated (with a `[...]` suffix), or `Err(Dropped)` if even
+    /// value was truncated (with a `[...]` suffix), or `Err(EncodeFailure)` if even
     /// a truncated form would not fit. On `Err`, the buffer is left in a state
     /// that is invalid for OTLP (an unfinished partial KeyValue may have been
     /// written), so callers must invoke this within a [`BoundedBuf::try_encode`]
@@ -133,7 +134,7 @@ impl<'buf, B: BoundedBuf> DirectFieldVisitor<'buf, B> {
         buf: &mut B,
         key: &str,
         value: &str,
-    ) -> Result<bool, Dropped> {
+    ) -> Result<bool, EncodeFailure> {
         let mut truncated = false;
         // Use _partial variants so the wrapper length placeholders are patched
         // even when the inner truncating encoder writes partial bytes (it
@@ -147,7 +148,7 @@ impl<'buf, B: BoundedBuf> DirectFieldVisitor<'buf, B> {
                         truncated = was_truncated;
                         Ok(())
                     }
-                    Err(Dropped) => Err(Dropped),
+                    Err(failure) => Err(failure),
                 }
             })
         })?;
@@ -201,7 +202,7 @@ impl<'buf, B: BoundedBuf> DirectFieldVisitor<'buf, B> {
         buf: &mut B,
         key: &str,
         value: &dyn std::fmt::Debug,
-    ) -> Result<bool, Dropped> {
+    ) -> Result<bool, EncodeFailure> {
         let mut truncated = false;
         buf.encode_len_delimited_partial(LOG_RECORD_ATTRIBUTES, |buf| {
             buf.encode_string(KEY_VALUE_KEY, key)?;
@@ -211,7 +212,7 @@ impl<'buf, B: BoundedBuf> DirectFieldVisitor<'buf, B> {
                         truncated = was_truncated;
                         Ok(())
                     }
-                    Err(Dropped) => Err(Dropped),
+                    Err(failure) => Err(failure),
                 }
             })
         })?;
@@ -248,7 +249,7 @@ impl<'buf, B: BoundedBuf> DirectFieldVisitor<'buf, B> {
             buf.encode_len_delimited_partial(LOG_RECORD_BODY, |buf| {
                 match encode_debug_string(buf, value) {
                     Ok(_truncated) => Ok(()),
-                    Err(Dropped) => Err(Dropped),
+                    Err(failure) => Err(failure),
                 }
             })
         });
@@ -360,7 +361,7 @@ impl<B: BoundedBuf> std::fmt::Write for BoundedBufFmt<'_, B> {
 fn encode_debug_string<B: BoundedBuf>(
     buf: &mut B,
     value: &dyn std::fmt::Debug,
-) -> Result<bool, Dropped> {
+) -> Result<bool, EncodeFailure> {
     let mut truncated = false;
     buf.encode_len_delimited_partial(ANY_VALUE_STRING_VALUE, |buf| {
         use std::fmt::Write as _;
@@ -375,7 +376,7 @@ fn encode_debug_string<B: BoundedBuf>(
         truncated = was_truncated;
         if was_truncated && buf.len() <= content_start {
             // Nothing useful was written (not even the suffix fit).
-            return Err(Dropped);
+            return Err(EncodeFailure::Dropped);
         }
         Ok(())
     })?;
@@ -466,7 +467,7 @@ impl<B: BoundedBuf> tracing::field::Visit for DirectFieldVisitor<'_, B> {
             buf.try_encode(|b| {
                 truncated =
                     DirectFieldVisitor::encode_string_attribute_truncating_to(b, key, value)?;
-                Ok::<(), Dropped>(())
+                Ok::<(), EncodeFailure>(())
             })
         });
         match (fit, truncated) {
@@ -475,7 +476,7 @@ impl<B: BoundedBuf> tracing::field::Visit for DirectFieldVisitor<'_, B> {
                 // Truncated; bytes were preserved.
                 self.dropped_count += 1;
             }
-            (Err(Dropped), _) => {
+            (Err(_), _) => {
                 // Hard failure; everything rolled back.
                 self.dropped_count += 1;
             }
@@ -493,7 +494,7 @@ impl<B: BoundedBuf> tracing::field::Visit for DirectFieldVisitor<'_, B> {
         let fit = self.buf.with_max_remaining(budget, |buf| {
             buf.try_encode(|b| {
                 truncated = DirectFieldVisitor::encode_debug_attribute_to(b, key, value)?;
-                Ok::<(), Dropped>(())
+                Ok::<(), EncodeFailure>(())
             })
         });
         match (fit, truncated) {
@@ -502,7 +503,7 @@ impl<B: BoundedBuf> tracing::field::Visit for DirectFieldVisitor<'_, B> {
                 // Truncated; bytes were preserved with [...] suffix.
                 self.dropped_count += 1;
             }
-            (Err(Dropped), _) => {
+            (Err(_), _) => {
                 // Hard failure; everything rolled back.
                 self.dropped_count += 1;
             }
@@ -631,6 +632,8 @@ const EXPORT_LOGS_REQUEST_RESOURCE_LOGS: u64 = 1;
 /// The Internal Telemetry Receiver uses this to avoid re-encoding scope
 /// attributes for each log event. Entity attributes are looked up once
 /// from the registry and encoded as InstrumentationScope.attributes bytes.
+/// Entity keys must remain registered until their first lookup populates this
+/// cache; a key that is neither registered nor cached cannot be encoded.
 ///
 /// TODO: ScopeToBytesMap grows without any attention to managing memory.
 /// We will require a way to de-register entities that are no longer use
@@ -651,29 +654,29 @@ impl ScopeToBytesMap {
         }
     }
 
-    /// Get or compute the encoded scope attribute bytes for an entity key.
-    pub fn get_or_encode(&mut self, key: EntityKey) -> Bytes {
+    /// Get or compute scope attributes for a registered or previously cached entity key.
+    pub fn get_or_encode(&mut self, key: EntityKey) -> Result<Bytes, EncodeFailure> {
         if let Some(cached) = self.cache.get(&key) {
-            return cached.clone();
+            return Ok(cached.clone());
         }
 
-        let visited = self.registry.visit_entity(key, |attrs| {
+        match self.registry.visit_entity(key, |attrs| {
             attrs
                 .iter_attributes()
                 .map(|(a, b)| (a, b.clone()))
                 .collect::<Vec<_>>()
-        });
-        visited
-            .map(|attrs| {
+        }) {
+            Some(visited) => {
                 let mut buf = ProtoBuffer::with_capacity(128);
-                for (attr_key, attr_value) in attrs {
-                    encode_scope_attribute(&mut buf, attr_key, &attr_value);
+                for (attr_key, attr_value) in visited {
+                    encode_scope_attribute(&mut buf, attr_key, &attr_value)?;
                 }
                 let bytes = buf.into_bytes();
                 let _ = self.cache.insert(key, bytes.clone());
-                bytes
-            })
-            .unwrap_or_default()
+                Ok(bytes)
+            }
+            None => Err(EncodeFailure::Unregistered),
+        }
     }
 
     /// Clear the cache. Call this when entities may have been updated.
@@ -688,8 +691,8 @@ fn encode_scope_attribute(
     buf: &mut ProtoBuffer,
     key: &str,
     value: &crate::attributes::AttributeValue,
-) {
-    let _ = encode_key_value(buf, INSTRUMENTATION_SCOPE_ATTRIBUTES, key, value);
+) -> EncodeResult {
+    encode_key_value(buf, INSTRUMENTATION_SCOPE_ATTRIBUTES, key, value)
 }
 
 /// Encode a KeyValue message wrapped in the given outer field tag.
@@ -753,51 +756,83 @@ fn encode_any_value(
     Ok(())
 }
 
-/// Encode a LogEvent as a complete ExportLogsServiceRequest.
-///
-/// This version resolves entity keys from the log record's context to populate
-/// the InstrumentationScope.attributes field. The scope cache is used to avoid
-/// re-encoding entity attributes for each log event.
-pub fn encode_export_logs_request(
+fn encode_scope_logs(
     buf: &mut ProtoBuffer,
-    event: &LogEvent,
-    resource_bytes: &Bytes,
+    target: &str,
+    context: &[EntityKey],
+    events: &[LogEvent],
     scope_cache: &mut ScopeToBytesMap,
-) {
-    buf.clear();
+) -> EncodeResult {
+    buf.encode_len_delimited(RESOURCE_LOGS_SCOPE_LOGS, |buf| {
+        buf.encode_len_delimited(SCOPE_LOG_SCOPE, |buf| {
+            buf.encode_string(INSTRUMENTATION_SCOPE_NAME, target)?;
+            for entity_key in context {
+                let b = scope_cache.get_or_encode(*entity_key)?;
+                buf.extend_from_slice(&b)?;
+            }
+            Ok(())
+        })?;
 
-    // ExportLogsServiceRequest.resource_logs (field 1, repeated ResourceLogs)
-    let _: EncodeResult = buf.encode_len_delimited(EXPORT_LOGS_REQUEST_RESOURCE_LOGS, |buf| {
-        // ResourceLogs.resource (field 1, Resource message)
-        // Copy pre-encoded resource bytes directly
-        buf.extend_from_slice(resource_bytes)?;
-
-        // ResourceLogs.scope_logs (field 2, repeated ScopeLogs)
-        buf.encode_len_delimited(RESOURCE_LOGS_SCOPE_LOGS, |buf| {
-            // ScopeLogs.scope (field 1, InstrumentationScope message)
-            buf.encode_len_delimited(SCOPE_LOG_SCOPE, |buf| {
-                // InstrumentationScope.name (field 1, string) -- the tracing
-                // target identifying the static logical software unit that
-                // emitted the event. Component-owned events use a
-                // component-aware target; shared code uses its package target.
-                // Pairing scope.name with the bare `event.name` encoded below
-                // keeps `event.name` aligned with the semconv registry.
-                buf.encode_string(INSTRUMENTATION_SCOPE_NAME, event.record.callsite().target())?;
-                for entity_key in event.record.context.iter() {
-                    let scope_bytes = scope_cache.get_or_encode(*entity_key);
-                    buf.extend_from_slice(&scope_bytes)?;
-                }
-                Ok(())
-            })?;
-
-            // ScopeLogs.log_records (field 2, repeated LogRecord)
+        for event in events {
             buf.encode_len_delimited(SCOPE_LOGS_LOG_RECORDS, |buf| {
                 let mut encoder = DirectLogRecordEncoder::new(buf);
                 let _ = encoder.encode_log_record(event.time, &event.record);
                 Ok(())
+            })?;
+        }
+        Ok(())
+    })
+}
+
+/// Encode logs as one request, grouping by scope.
+///
+/// Every entity key referenced by an event must remain registered until its
+/// scope attributes have been cached.
+pub fn encode_export_logs_request(
+    buf: &mut ProtoBuffer,
+    events: &mut [LogEvent],
+    resource_bytes: &Bytes,
+    scope_cache: &mut ScopeToBytesMap,
+) -> EncodeResult {
+    buf.clear();
+    if events.is_empty() {
+        return Ok(());
+    }
+
+    // Sort the events in scope order.
+    events.sort_by(|a, b| {
+        a.record
+            .callsite()
+            .target()
+            .cmp(b.record.callsite().target())
+            .then_with(|| {
+                a.record
+                    .context
+                    .iter()
+                    .map(|key| key.data().as_ffi())
+                    .cmp(b.record.context.iter().map(|key| key.data().as_ffi()))
             })
-        })
     });
+
+    buf.encode_len_delimited(EXPORT_LOGS_REQUEST_RESOURCE_LOGS, |buf| {
+        buf.extend_from_slice(resource_bytes)?;
+
+        for events in events.chunk_by(|a, b| {
+            a.record.callsite().target() == b.record.callsite().target()
+                && a.record.context == b.record.context
+        }) {
+            let first = &events[0];
+
+            encode_scope_logs(
+                buf,
+                first.record.callsite().target(),
+                first.record.context.as_slice(),
+                events,
+                scope_cache,
+            )?;
+        }
+        Ok(())
+    })
 }
 
 #[cfg(test)]
@@ -971,7 +1006,13 @@ mod tests {
         let resource_bytes = encode_config_resource_field(&HashMap::new());
 
         let mut buf = ProtoBuffer::default();
-        encode_export_logs_request(&mut buf, &log_event, &resource_bytes, &mut scope_cache);
+        encode_export_logs_request(
+            &mut buf,
+            &mut [log_event.clone()],
+            &resource_bytes,
+            &mut scope_cache,
+        )
+        .unwrap();
 
         let decoded = ExportLogsServiceRequest::decode(buf.into_bytes().as_ref()).unwrap();
         let scope_logs = &decoded.resource_logs.first().unwrap().scope_logs;
@@ -1023,6 +1064,85 @@ mod tests {
             ),
         );
         assert_eq!(expected, decoded);
+    }
+
+    /// Scenario: a batch interleaves records from two entity contexts.
+    /// Guarantees: equal contexts share one scope regardless of entity-key sort order.
+    #[test]
+    fn encode_export_logs_request_groups_equal_scopes() {
+        fn assert_scope<const N: usize>(
+            scope_logs: &[ScopeLogs],
+            pipeline_name: &'static str,
+            cpu_id: i64,
+            event_names: [&'static str; N],
+        ) {
+            let expected_attributes = [
+                KeyValue::new("pipeline.name", AnyValue::new_string(pipeline_name)),
+                KeyValue::new("cpu.id", AnyValue::new_int(cpu_id)),
+            ];
+            let scope_logs = scope_logs
+                .iter()
+                .find(|scope_logs| {
+                    scope_logs
+                        .scope
+                        .as_ref()
+                        .is_some_and(|scope| scope.attributes == expected_attributes)
+                })
+                .expect("expected scope attributes");
+
+            assert_eq!(
+                scope_logs
+                    .log_records
+                    .iter()
+                    .map(|record| record.event_name.as_str())
+                    .collect::<Vec<_>>(),
+                event_names
+            );
+        }
+
+        let registry = TelemetryRegistryHandle::new();
+        let key_a = registry.register_entity(TestScopeAttributes::new("pipeline-a", 1));
+        let key_b = registry.register_entity(TestScopeAttributes::new("pipeline-b", 2));
+        let mut scope_cache = ScopeToBytesMap::new(registry);
+        let time = SystemTime::UNIX_EPOCH + Duration::from_secs(1);
+        let mut events = vec![
+            LogEvent {
+                time,
+                record: __log_record_impl!(Level::INFO, "test.batch.b-first")
+                    .into_record(LogContext::from_buf([key_b])),
+            },
+            LogEvent {
+                time,
+                record: __log_record_impl!(Level::INFO, "test.batch.a")
+                    .into_record(LogContext::from_buf([key_a])),
+            },
+            LogEvent {
+                time,
+                record: __log_record_impl!(Level::INFO, "test.batch.b-second")
+                    .into_record(LogContext::from_buf([key_b])),
+            },
+        ];
+
+        let mut buf = ProtoBuffer::default();
+        encode_export_logs_request(
+            &mut buf,
+            events.as_mut_slice(),
+            &Bytes::new(),
+            &mut scope_cache,
+        )
+        .unwrap();
+        let decoded =
+            ExportLogsServiceRequest::decode(buf.into_bytes()).expect("valid logs request");
+        let scope_logs = &decoded.resource_logs[0].scope_logs;
+
+        assert_eq!(scope_logs.len(), 2);
+        assert_scope(
+            scope_logs,
+            "pipeline-b",
+            2,
+            ["test.batch.b-first", "test.batch.b-second"],
+        );
+        assert_scope(scope_logs, "pipeline-a", 1, ["test.batch.a"]);
     }
 
     // --- Test infrastructure for Map (kvlist) scope attributes ---
@@ -1086,7 +1206,13 @@ mod tests {
 
         let resource_bytes = encode_config_resource_field(&HashMap::new());
         let mut buf = ProtoBuffer::default();
-        encode_export_logs_request(&mut buf, &log_event, &resource_bytes, &mut scope_cache);
+        encode_export_logs_request(
+            &mut buf,
+            &mut [log_event],
+            &resource_bytes,
+            &mut scope_cache,
+        )
+        .unwrap();
 
         let decoded = ExportLogsServiceRequest::decode(buf.into_bytes().as_ref()).unwrap();
         let scope = decoded.resource_logs[0].scope_logs[0]

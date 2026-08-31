@@ -6,6 +6,7 @@ use otel_arrow_dfe_engine::local::receiver as local;
 use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
 use otel_arrow_dfe_pdata::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::otlp::ProtoBuffer;
+use otel_arrow_dfe_pdata::otlp::common::EncodeFailure;
 use otel_arrow_dfe_telemetry::event::{LogEvent, ObservedEvent};
 use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 use otel_arrow_dfe_telemetry::self_tracing::{ScopeToBytesMap, encode_export_logs_request};
@@ -39,20 +40,33 @@ impl LogExportState {
     }
 
     /// Send a log event as OTLP logs with scope attributes from entity context.
+    ///
+    /// The event's entity keys must still be registered unless their scope
+    /// attributes were already cached by an earlier event.
     pub(super) async fn send_log_event(
         &mut self,
         effect_handler: &local::EffectHandler<OtapPdata>,
-        log_event: LogEvent,
+        mut log_event: LogEvent,
         resource_field_bytes: &Bytes,
     ) -> Result<(), Error> {
         let mut buf = ProtoBuffer::with_capacity(512);
 
         encode_export_logs_request(
             &mut buf,
-            &log_event,
+            std::slice::from_mut(&mut log_event),
             resource_field_bytes,
             &mut self.scope_cache,
-        );
+        )
+        .map_err(|failure| Error::PdataConversionError {
+            error: match failure {
+                EncodeFailure::Dropped => {
+                    "internal log record exceeded the encoder limit".to_owned()
+                }
+                EncodeFailure::Unregistered => {
+                    "internal log scope references an unregistered entity key".to_owned()
+                }
+            },
+        })?;
 
         let pdata = OtapPdata::new(
             Context::default(),
