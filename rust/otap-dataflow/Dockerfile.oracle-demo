@@ -51,7 +51,8 @@ COPY --from=builder /out/oracle_load_generator /app/oracle_load_generator
 COPY rust/otap-dataflow/configs/oracle-oci-console.yaml /app/oracle-oci-console.yaml
 COPY rust/otap-dataflow/oracle-demo-entrypoint.sh /app/oracle-demo-entrypoint.sh
 
-RUN chmod 755 /app/oracle-demo-entrypoint.sh
+RUN sed -i 's/\r$//' /app/oracle-demo-entrypoint.sh \
+    && chmod 755 /app/oracle-demo-entrypoint.sh
 
 ENV LD_LIBRARY_PATH=/opt/oracle/instantclient_23_26
 ENV ORACLE_INSTANT_CLIENT_DIR=/opt/oracle/instantclient_23_26
