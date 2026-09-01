@@ -222,6 +222,20 @@ def op_progress(file_id, continuation=False):
     )
 
 
+def op_progress_zero_delta_finalize(file_id):
+    return operation(
+        2,
+        file_id
+        + u64(4)
+        + u32(1)
+        + u64(4)
+        + FOUR_GUARD
+        + resume_clean()
+        + u64(1_700_000_000_000_000_007)
+        + u8(1),
+    )
+
+
 def op_reset_truncate(file_id):
     return operation(
         3,
@@ -440,6 +454,12 @@ def main():
     for name, encoded in operations.items():
         write(f"operation-{name}.bin", encoded)
         write(f"transaction-{name}.bin", transaction(1, [encoded]))
+    zero_delta_finalize = op_progress_zero_delta_finalize(file_ids[18])
+    write("operation-update-progress-zero-delta-finalize.bin", zero_delta_finalize)
+    write(
+        "transaction-update-progress-zero-delta-finalize.bin",
+        transaction(1, [zero_delta_finalize]),
+    )
     mutated = op_keep_failed(file_ids[16], True)
     write("operation-keep-failed-mutation.bin", mutated)
     write("transaction-keep-failed-mutation.bin", transaction(1, [mutated]))

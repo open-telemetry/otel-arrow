@@ -13,6 +13,7 @@ use otel_arrow_dfe_filelog_checkpoint::{
 
 const CURRENT: &[u8] = include_bytes!("fixtures/current-generation-42.bin");
 const ACTIVE_SNAPSHOT: &[u8] = include_bytes!("fixtures/snapshot-active.bin");
+const QUARANTINED_SNAPSHOT: &[u8] = include_bytes!("fixtures/snapshot-quarantined.bin");
 const MIN_TX: &[u8] = include_bytes!("fixtures/transaction-minimum.bin");
 const PROGRESS_OP: &[u8] = include_bytes!("fixtures/operation-update-progress.bin");
 const METADATA_OP: &[u8] = include_bytes!("fixtures/operation-update-metadata.bin");
@@ -107,6 +108,10 @@ fn active_record_frame() -> Vec<u8> {
     ACTIVE_SNAPSHOT[60..ACTIVE_SNAPSHOT.len() - 24].to_vec()
 }
 
+fn quarantined_record_frame() -> Vec<u8> {
+    QUARANTINED_SNAPSHOT[60..QUARANTINED_SNAPSHOT.len() - 24].to_vec()
+}
+
 fn refresh_record_crc(frame: &mut [u8]) {
     let crc_offset = frame.len() - 4;
     let checksum = crc32c(&frame[..crc_offset]);
@@ -138,6 +143,27 @@ fn resize_record_payload(mut frame: Vec<u8>, payload: Vec<u8>) -> Vec<u8> {
     frame.extend_from_slice(&payload);
     frame.extend_from_slice(&crc32c(&frame).to_be_bytes());
     frame
+}
+
+fn snapshot_with_active_advisory(advisory: &[u8]) -> Vec<u8> {
+    let frame = active_record_frame();
+    let mut payload = frame[4..frame.len() - 4].to_vec();
+    payload.truncate(145);
+    payload.extend_from_slice(advisory);
+    snapshot_from_frames(&[resize_record_payload(frame, payload)])
+}
+
+fn continuation_frame(start: u64, end: u64, index: u32, lifecycle: u8) -> Vec<u8> {
+    let frame = active_record_frame();
+    let mut payload = frame[4..frame.len() - 4].to_vec();
+    let mut resume = Vec::with_capacity(21);
+    resume.push(1);
+    resume.extend_from_slice(&start.to_be_bytes());
+    resume.extend_from_slice(&end.to_be_bytes());
+    resume.extend_from_slice(&index.to_be_bytes());
+    drop(payload.splice(135..136, resume));
+    payload[156] = lifecycle;
+    resize_record_payload(frame, payload)
 }
 
 /// Scenario: CURRENT is short, has bad magic/version/flags, or has a bad CRC.
@@ -392,6 +418,86 @@ fn invalid_snapshot_lifecycle_and_resume_are_rejected() {
         ),
         Err(DecodeError::InvalidSnapshotState { .. })
     ));
+}
+
+/// Scenario: CRC-valid snapshot records carry zero epoch or zero framing-profile version fields.
+/// Guarantees: Both scalar reachable-state minima are rejected by snapshot decoding while unknown nonzero profile versions remain supported.
+#[test]
+fn snapshot_zero_epoch_and_profile_version_are_rejected() {
+    let namespace = namespace_digest("app-logs").unwrap();
+    for (offset, width) in [(20, 4), (105, 2)] {
+        let mut frame = active_record_frame();
+        frame[offset..offset + width].fill(0);
+        refresh_record_crc(&mut frame);
+        assert!(matches!(
+            decode_snapshot(&snapshot_from_frames(&[frame]), &namespace, 1),
+            Err(DecodeError::InvalidSnapshotState { .. })
+        ));
+    }
+}
+
+/// Scenario: CRC-valid snapshot continuations violate each offset relationship or appear on a finalized record.
+/// Guarantees: Continuation start/end reachability and the finalized-clean requirement are enforced before WAL replay.
+#[test]
+fn snapshot_continuation_reachability_is_enforced() {
+    let namespace = namespace_digest("app-logs").unwrap();
+    for frame in [
+        continuation_frame(4, 0, 1, 1),
+        continuation_frame(0, 4, 1, 1),
+        continuation_frame(0, 0, 1, 2),
+    ] {
+        assert!(matches!(
+            decode_snapshot(&snapshot_from_frames(&[frame]), &namespace, 1),
+            Err(DecodeError::InvalidSnapshotState { .. })
+        ));
+    }
+}
+
+/// Scenario: CRC-valid quarantined snapshot records carry a zero reason or a quarantine epoch different from the file epoch.
+/// Guarantees: Quarantine evidence is locally reachable only with a nonzero reason and matching epoch.
+#[test]
+fn snapshot_invalid_quarantine_evidence_values_are_rejected() {
+    let namespace = namespace_digest("app-logs").unwrap();
+
+    let mut zero_reason = quarantined_record_frame();
+    put_u16(&mut zero_reason, 149, 0);
+    refresh_record_crc(&mut zero_reason);
+    assert!(matches!(
+        decode_snapshot(&snapshot_from_frames(&[zero_reason]), &namespace, 1),
+        Err(DecodeError::InvalidSnapshotState { .. })
+    ));
+
+    let mut mismatched_epoch = quarantined_record_frame();
+    put_u32(&mut mismatched_epoch, 159, 5);
+    refresh_record_crc(&mut mismatched_epoch);
+    assert!(matches!(
+        decode_snapshot(&snapshot_from_frames(&[mismatched_epoch]), &namespace, 1),
+        Err(DecodeError::InvalidSnapshotState { .. })
+    ));
+}
+
+/// Scenario: CRC-valid snapshot payloads omit required quarantine evidence or append evidence to an Active shape.
+/// Guarantees: Lifecycle-determined evidence layouts cannot be silently reinterpreted as reachable records.
+#[test]
+fn snapshot_quarantine_evidence_shape_is_enforced_during_decode() {
+    let namespace = namespace_digest("app-logs").unwrap();
+
+    let frame = quarantined_record_frame();
+    let mut payload = frame[4..frame.len() - 4].to_vec();
+    drop(payload.drain(145..167));
+    let missing = resize_record_payload(frame, payload);
+    assert!(decode_snapshot(&snapshot_from_frames(&[missing]), &namespace, 1).is_err());
+
+    let frame = active_record_frame();
+    let mut payload = frame[4..frame.len() - 4].to_vec();
+    let mut evidence = Vec::with_capacity(22);
+    evidence.extend_from_slice(&1u16.to_be_bytes());
+    evidence.extend_from_slice(&88u64.to_be_bytes());
+    evidence.extend_from_slice(&2u32.to_be_bytes());
+    evidence.extend_from_slice(&99u64.to_be_bytes());
+    drop(payload.splice(137..137, evidence));
+    let unexpected = resize_record_payload(frame, payload);
+    assert!(decode_snapshot(&snapshot_from_frames(&[unexpected]), &namespace, 1).is_err());
 }
 
 /// Scenario: An in-memory Active record incorrectly carries quarantine evidence.
@@ -841,6 +947,129 @@ fn malformed_advisory_path_is_rejected() {
     ));
 }
 
+/// Scenario: CRC-valid snapshot advisory paths use reserved flags or a noncanonical Unavailable shape.
+/// Guarantees: Reserved bits and both nonzero Unavailable flag/length forms fail in the actual record decoder.
+#[test]
+fn advisory_path_flags_and_unavailable_shape_are_rejected() {
+    let namespace = namespace_digest("app-logs").unwrap();
+    let unix = include_bytes!("fixtures/advisory-unix.bin");
+
+    let mut reserved = unix.to_vec();
+    reserved[1] = 0x02;
+    assert!(matches!(
+        decode_snapshot(&snapshot_with_active_advisory(&reserved), &namespace, 1),
+        Err(DecodeError::ReservedFieldNonZero { .. })
+    ));
+
+    let mut unavailable_flags = vec![0, 1];
+    unavailable_flags.extend_from_slice(&0u64.to_be_bytes());
+    unavailable_flags.extend_from_slice(&0u16.to_be_bytes());
+    unavailable_flags.extend_from_slice(&[0; 32]);
+    assert!(matches!(
+        decode_snapshot(
+            &snapshot_with_active_advisory(&unavailable_flags),
+            &namespace,
+            1
+        ),
+        Err(DecodeError::InvalidAdvisoryPath { .. })
+    ));
+
+    let mut unavailable_length = unavailable_flags;
+    unavailable_length[1] = 0;
+    put_u64(&mut unavailable_length, 2, 1);
+    assert!(matches!(
+        decode_snapshot(
+            &snapshot_with_active_advisory(&unavailable_length),
+            &namespace,
+            1
+        ),
+        Err(DecodeError::InvalidAdvisoryPath { .. })
+    ));
+}
+
+/// Scenario: CRC-valid Unix advisory paths carry inconsistent complete/truncated lengths or a wrong complete digest.
+/// Guarantees: Every decoder-only length-selection arm and recomputable digest check fails closed inside a snapshot record.
+#[test]
+fn advisory_path_unix_length_and_digest_rules_are_rejected() {
+    let namespace = namespace_digest("app-logs").unwrap();
+    let unix = include_bytes!("fixtures/advisory-unix.bin");
+
+    let mut empty_present = unix.to_vec();
+    put_u64(&mut empty_present, 2, 0);
+    assert!(matches!(
+        decode_snapshot(
+            &snapshot_with_active_advisory(&empty_present),
+            &namespace,
+            1
+        ),
+        Err(DecodeError::InvalidAdvisoryPath { .. })
+    ));
+
+    let mut incomplete = unix.to_vec();
+    put_u16(&mut incomplete, 10, 15);
+    assert_eq!(incomplete.remove(12), b'/');
+    assert!(matches!(
+        decode_snapshot(&snapshot_with_active_advisory(&incomplete), &namespace, 1),
+        Err(DecodeError::InvalidAdvisoryPath { .. })
+    ));
+
+    let mut short_truncated = include_bytes!("fixtures/advisory-long-truncated.bin").to_vec();
+    put_u64(&mut short_truncated, 2, 4096);
+    assert!(matches!(
+        decode_snapshot(
+            &snapshot_with_active_advisory(&short_truncated),
+            &namespace,
+            1
+        ),
+        Err(DecodeError::InvalidAdvisoryPath { .. })
+    ));
+
+    let mut wrong_suffix_len = include_bytes!("fixtures/advisory-long-truncated.bin").to_vec();
+    put_u16(&mut wrong_suffix_len, 10, 4095);
+    assert_eq!(wrong_suffix_len.remove(12), b'x');
+    assert!(matches!(
+        decode_snapshot(
+            &snapshot_with_active_advisory(&wrong_suffix_len),
+            &namespace,
+            1
+        ),
+        Err(DecodeError::InvalidAdvisoryPath { .. })
+    ));
+
+    let mut wrong_digest = unix.to_vec();
+    let last = wrong_digest.len() - 1;
+    wrong_digest[last] ^= 1;
+    assert!(matches!(
+        decode_snapshot(&snapshot_with_active_advisory(&wrong_digest), &namespace, 1),
+        Err(DecodeError::InvalidAdvisoryPath { .. })
+    ));
+}
+
+/// Scenario: CRC-valid Windows advisory paths carry odd complete or stored native-byte lengths.
+/// Guarantees: UTF-16LE alignment is validated independently for both length fields by the containing snapshot decoder.
+#[test]
+fn advisory_path_windows_alignment_is_rejected() {
+    let namespace = namespace_digest("app-logs").unwrap();
+    let windows = include_bytes!("fixtures/advisory-windows-utf16le.bin");
+
+    let mut odd_full = windows.to_vec();
+    let full = u64::from_be_bytes(odd_full[2..10].try_into().unwrap());
+    put_u64(&mut odd_full, 2, full - 1);
+    assert!(matches!(
+        decode_snapshot(&snapshot_with_active_advisory(&odd_full), &namespace, 1),
+        Err(DecodeError::InvalidAdvisoryPath { .. })
+    ));
+
+    let mut odd_stored = windows.to_vec();
+    let stored = u16::from_be_bytes(odd_stored[10..12].try_into().unwrap());
+    put_u16(&mut odd_stored, 10, stored - 1);
+    assert_eq!(odd_stored.remove(12), b'C');
+    assert!(matches!(
+        decode_snapshot(&snapshot_with_active_advisory(&odd_stored), &namespace, 1),
+        Err(DecodeError::InvalidAdvisoryPath { .. })
+    ));
+}
+
 /// Scenario: Snapshot record/footer lengths or count echoes disagree under valid local CRCs.
 /// Guarantees: Self-delimiting records consume exactly their payload and footer summaries match the file.
 #[test]
@@ -987,6 +1216,14 @@ fn nested_operation_discriminants_are_rejected() {
         decode_operation(&presence),
         Err(DecodeError::ReservedFieldNonZero { .. })
     ));
+
+    let mut metadata_state = METADATA_OP.to_vec();
+    metadata_state[21] = 0;
+    refresh_operation_crc(&mut metadata_state);
+    assert!(matches!(
+        decode_operation(&metadata_state),
+        Err(DecodeError::UnknownDiscriminant { .. })
+    ));
 }
 
 /// Scenario: An operation payload has a valid CRC but carries one undefined extension byte.
@@ -1039,6 +1276,13 @@ fn transaction_header_corruption_is_rejected_before_torn_tail() {
         Err(DecodeError::ReservedFieldNonZero { .. })
     ));
     let mut bytes = MIN_TX.to_vec();
+    put_u16(&mut bytes, 30, 1);
+    refresh_transaction_crcs(&mut bytes);
+    assert!(matches!(
+        scan_all_for_test(&bytes),
+        Err(DecodeError::ReservedFieldNonZero { .. })
+    ));
+    let mut bytes = MIN_TX.to_vec();
     put_u16(&mut bytes, 8, 2);
     assert!(matches!(
         scan_all_for_test(&bytes),
@@ -1072,6 +1316,49 @@ fn incomplete_final_transaction_is_the_only_torn_tail() {
     let missing_frame_crc = scan_all_for_test(&MIN_TX[..MIN_TX.len() - 1]).unwrap();
     assert_eq!(missing_frame_crc.torn_tail_bytes, MIN_TX.len() - 1);
     assert!(missing_frame_crc.transactions.is_empty());
+}
+
+/// Scenario: A valid sequence-1 transaction precedes a mechanically incomplete or complete-corrupt sequence-2 frame.
+/// Guarantees: Incremental recovery drops the first decoded value, reports the exact torn suffix, and still fails closed on complete corruption.
+#[test]
+fn torn_tail_after_valid_transaction_is_reported_incrementally() {
+    let mut second = MIN_TX.to_vec();
+    put_u64(&mut second, 12, 2);
+    refresh_transaction_crcs(&mut second);
+
+    let mut wal = MIN_TX.to_vec();
+    wal.extend_from_slice(&second[..second.len() - 1]);
+    let Some(TransactionScan::Complete {
+        transaction,
+        consumed,
+    }) = scan_next_transaction(&wal, 1).unwrap()
+    else {
+        panic!("first transaction must be complete");
+    };
+    assert_eq!(transaction.sequence, 1);
+    let suffix = &wal[consumed..];
+    drop(transaction);
+    let Some(TransactionScan::TornTail { bytes }) = scan_next_transaction(suffix, 2).unwrap()
+    else {
+        panic!("second transaction must be a torn tail");
+    };
+    assert_eq!(bytes, suffix.len());
+    assert_eq!(bytes, second.len() - 1);
+
+    let mut corrupt_second = second;
+    let last = corrupt_second.len() - 1;
+    corrupt_second[last] ^= 1;
+    let mut corrupt_wal = MIN_TX.to_vec();
+    corrupt_wal.extend_from_slice(&corrupt_second);
+    let Some(TransactionScan::Complete { consumed, .. }) =
+        scan_next_transaction(&corrupt_wal, 1).unwrap()
+    else {
+        panic!("first transaction must remain complete");
+    };
+    assert!(matches!(
+        scan_next_transaction(&corrupt_wal[consumed..], 2),
+        Err(DecodeError::ChecksumMismatch { .. })
+    ));
 }
 
 /// Scenario: A CRC-valid out-of-sequence header is followed by an incomplete body.

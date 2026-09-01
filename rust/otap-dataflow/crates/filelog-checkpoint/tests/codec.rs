@@ -4,15 +4,16 @@
 //! Positive conformance tests against independently generated fixtures.
 
 use otel_arrow_dfe_filelog_checkpoint::{
-    AdvisoryPath, CommittedFrontierGuard, DecodeError, EncodeError, FRAMING_PROFILE_VERSION,
-    FileId, FramingEncoding, FramingOnDecodeError, FramingProfileParams, LifecycleState,
-    MAX_PROGRESS_TX_BODY_BYTES, MAX_PROGRESS_TX_FRAME_BYTES, MaxLogSizeBehavior, MultilineMode,
-    Operation, ResetQuarantineAction, SNAPSHOT_MAX_RECORD_FRAME_BYTES, TX_HEADER_BYTES,
-    TX_MIN_BODY_BYTES, TX_MIN_FRAME_BYTES, Transaction, TransactionScan, UpdateFingerprint,
-    WAL_HEADER_BYTES, WAL_MAX_TX_BODY_BYTES, WAL_MAX_TX_FRAME_BYTES, crc32c, decode_current,
-    decode_operation, decode_snapshot, decode_wal_header, encode_current, encode_operation,
-    encode_snapshot, encode_transaction, encode_wal_header, namespace_digest,
-    scan_next_transaction,
+    AdvisoryPath, AdvisoryPathKind, CommittedFrontierGuard, DecodeError, EncodeError,
+    FRAMING_PROFILE_VERSION, FileId, FramingEncoding, FramingOnDecodeError, FramingProfileParams,
+    FramingResume, LifecycleState, Locator, MAX_PROGRESS_TX_BODY_BYTES,
+    MAX_PROGRESS_TX_FRAME_BYTES, MaxLogSizeBehavior, MultilineMode, Operation, QuarantineEvidence,
+    RegisterFile, ResetQuarantineAction, SNAPSHOT_FOOTER_BYTES, SNAPSHOT_HEADER_BYTES,
+    SNAPSHOT_MAX_RECORD_FRAME_BYTES, SnapshotRecord, TX_HEADER_BYTES, TX_MIN_BODY_BYTES,
+    TX_MIN_FRAME_BYTES, Transaction, TransactionScan, UpdateFingerprint, WAL_HEADER_BYTES,
+    WAL_MAX_TX_BODY_BYTES, WAL_MAX_TX_FRAME_BYTES, crc32c, decode_current, decode_operation,
+    decode_snapshot, decode_wal_header, encode_current, encode_operation, encode_snapshot,
+    encode_transaction, encode_wal_header, namespace_digest, scan_next_transaction,
 };
 
 const CURRENT: &[u8] = include_bytes!("fixtures/current-generation-42.bin");
@@ -61,6 +62,24 @@ fn expected(name: &str) -> Vec<u8> {
         .find_map(|line| line.split_once('=').filter(|(key, _)| *key == name))
         .map(|(_, value)| hex::decode(value).expect("fixture hex must be valid"))
         .expect("expected fixture key must exist")
+}
+
+fn advisory_wire(path: &AdvisoryPath) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.push(path.kind().to_wire());
+    bytes.push(u8::from(path.is_truncated()));
+    bytes.extend_from_slice(&path.full_path_len().to_be_bytes());
+    bytes.extend_from_slice(&(path.stored_path_bytes().len() as u16).to_be_bytes());
+    bytes.extend_from_slice(path.stored_path_bytes());
+    bytes.extend_from_slice(path.full_path_digest());
+    bytes
+}
+
+fn frontier_wire(guard: CommittedFrontierGuard) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(34);
+    bytes.extend_from_slice(&guard.window_len.to_be_bytes());
+    bytes.extend_from_slice(&guard.digest);
+    bytes
 }
 
 fn default_profile(multiline: bool) -> FramingProfileParams {
@@ -274,6 +293,43 @@ fn every_operation_transaction_fixture_matches_codec() {
     }
 }
 
+/// Scenario: An independently encoded progress operation finalizes with no offset delta.
+/// Guarantees: A nonzero epoch, unchanged canonical guard, clean resume, and finalize=true are structurally accepted and re-encode exactly.
+#[test]
+fn zero_delta_finalization_fixtures_match_codec() {
+    let operation_bytes =
+        include_bytes!("fixtures/operation-update-progress-zero-delta-finalize.bin");
+    let transaction_bytes =
+        include_bytes!("fixtures/transaction-update-progress-zero-delta-finalize.bin");
+
+    let (operation, consumed) = decode_operation(operation_bytes).unwrap();
+    let Operation::UpdateProgress(progress) = &operation else {
+        panic!("update_progress fixture expected");
+    };
+    assert_eq!(progress.expected_file_epoch, 1);
+    assert_eq!(progress.expected_committed_offset, 4);
+    assert_eq!(progress.new_committed_offset, 4);
+    assert_eq!(
+        progress.new_committed_frontier_guard,
+        CommittedFrontierGuard::compute(4, b"abc\n").unwrap()
+    );
+    assert_eq!(progress.new_framing_resume, FramingResume::Clean);
+    assert!(progress.finalize);
+    assert_eq!(consumed, operation_bytes.len());
+    assert_eq!(encode_operation(&operation).unwrap(), operation_bytes);
+
+    let Some(TransactionScan::Complete {
+        transaction,
+        consumed,
+    }) = scan_next_transaction(transaction_bytes, 1).unwrap()
+    else {
+        panic!("complete transaction expected");
+    };
+    assert_eq!(consumed, transaction_bytes.len());
+    assert_eq!(transaction.operations, vec![operation]);
+    assert_eq!(encode_transaction(&transaction).unwrap(), transaction_bytes);
+}
+
 /// Scenario: The smallest semantically valid transaction uses an empty-to-one-byte fingerprint extension.
 /// Guarantees: The published minimum body arithmetic is exact and accepted by the scanner.
 #[test]
@@ -346,6 +402,122 @@ fn published_digest_and_crc_vectors_match() {
     assert_eq!(empty.digest, expected("frontier_empty")[..]);
     let nonempty = CommittedFrontierGuard::compute(4, b"abc\n").unwrap();
     assert_eq!(nonempty.digest, expected("frontier_nonempty")[..]);
+}
+
+/// Scenario: Standalone independently generated advisory-path and frontier wire fixtures are consumed.
+/// Guarantees: Public durable values reconstruct the exact documented fixed-width and bounded byte encodings without a production-only helper API.
+#[test]
+fn standalone_path_and_frontier_fixtures_match_values() {
+    let unix = AdvisoryPath::from_unix_bytes(b"/var/log/app.log").unwrap();
+    assert_eq!(
+        advisory_wire(&unix),
+        include_bytes!("fixtures/advisory-unix.bin")
+    );
+
+    let windows_units: Vec<u16> = "C:\\logs\\app.log".encode_utf16().collect();
+    let windows = AdvisoryPath::from_windows_utf16_units(&windows_units).unwrap();
+    assert_eq!(windows.kind(), AdvisoryPathKind::WindowsUtf16Le);
+    assert_eq!(
+        advisory_wire(&windows),
+        include_bytes!("fixtures/advisory-windows-utf16le.bin")
+    );
+
+    let long = AdvisoryPath::from_unix_bytes(&vec![b'x'; 5000]).unwrap();
+    assert_eq!(
+        advisory_wire(&long),
+        include_bytes!("fixtures/advisory-long-truncated.bin")
+    );
+
+    assert_eq!(
+        frontier_wire(CommittedFrontierGuard::empty()),
+        include_bytes!("fixtures/frontier-empty.bin")
+    );
+    assert_eq!(
+        frontier_wire(CommittedFrontierGuard::compute(4, b"abc\n").unwrap()),
+        include_bytes!("fixtures/frontier-nonempty.bin")
+    );
+}
+
+/// Scenario: A snapshot record uses every variable-width field at its normative maximum.
+/// Guarantees: The exact 69,854-byte payload and 69,862-byte frame encode and decode at equality while preserving all bounded fields.
+#[test]
+fn maximum_snapshot_record_frame_is_accepted() {
+    let advisory_path = AdvisoryPath::from_unix_bytes(&vec![b'p'; 4097]).unwrap();
+    let record = SnapshotRecord {
+        file_id: FileId::from_bytes([0x41; 16]),
+        file_epoch: 1,
+        committed_offset: 64,
+        committed_frontier_guard: CommittedFrontierGuard::compute(64, &[0x47; 64]).unwrap(),
+        fingerprint: vec![0x46; u16::MAX as usize],
+        ignored_header_bytes: u32::MAX,
+        locator: Locator::WindowsVolumeFileId {
+            volume_serial: u64::MAX,
+            file_id: [0x4C; 16],
+        },
+        framing_profile_version: FRAMING_PROFILE_VERSION,
+        framing_profile_digest: [0x50; 32],
+        framing_resume: FramingResume::Continuation {
+            record_start_offset: 0,
+            record_end_offset: 65,
+            next_fragment_index: 1,
+        },
+        lifecycle_state: LifecycleState::Quarantined,
+        quarantine_evidence: Some(QuarantineEvidence {
+            reason_code: 1,
+            observed_size: u64::MAX,
+            quarantine_epoch: 1,
+            quarantine_time_unix_nano: u64::MAX,
+        }),
+        last_seen_time_unix_nano: u64::MAX,
+        advisory_path,
+    };
+
+    let encoded = encode_snapshot(9, "maximum-record", std::slice::from_ref(&record)).unwrap();
+    let record_frame = &encoded[SNAPSHOT_HEADER_BYTES..encoded.len() - SNAPSHOT_FOOTER_BYTES];
+    assert_eq!(
+        u32::from_be_bytes(record_frame[..4].try_into().unwrap()),
+        69_854
+    );
+    assert_eq!(record_frame.len() as u64, SNAPSHOT_MAX_RECORD_FRAME_BYTES);
+
+    let namespace = namespace_digest("maximum-record").unwrap();
+    let decoded = decode_snapshot(&encoded, &namespace, 1).unwrap();
+    assert_eq!(decoded.records, vec![record]);
+    assert_eq!(decoded.records[0].fingerprint.len(), u16::MAX as usize);
+    assert_eq!(
+        decoded.records[0].advisory_path.stored_path_bytes().len(),
+        4096
+    );
+}
+
+/// Scenario: A register_file operation uses every variable-width field at its normative maximum.
+/// Guarantees: The exact 69,812-byte payload and 69,820-byte frame encode, decode, and compare equal at the inclusive limit.
+#[test]
+fn maximum_register_file_frame_is_accepted() {
+    let operation = Operation::RegisterFile(RegisterFile {
+        file_id: FileId::from_bytes([0x51; 16]),
+        file_epoch: 1,
+        committed_offset: 0,
+        committed_frontier_guard: CommittedFrontierGuard::empty(),
+        fingerprint: vec![0x52; u16::MAX as usize],
+        ignored_header_bytes: u32::MAX,
+        locator: Locator::WindowsVolumeFileId {
+            volume_serial: u64::MAX,
+            file_id: [0x53; 16],
+        },
+        framing_profile_version: FRAMING_PROFILE_VERSION,
+        framing_profile_digest: [0x54; 32],
+        framing_resume: FramingResume::Clean,
+        last_seen_time_unix_nano: u64::MAX,
+        advisory_path: AdvisoryPath::from_unix_bytes(&vec![b'r'; 4097]).unwrap(),
+    });
+
+    let encoded = encode_operation(&operation).unwrap();
+    assert_eq!(u32::from_be_bytes(encoded[..4].try_into().unwrap()), 69_812);
+    assert_eq!(encoded.len(), 69_820);
+    let (decoded, consumed) = decode_operation(&encoded).unwrap();
+    assert_eq!(consumed, encoded.len());
+    assert_eq!(decoded, operation);
 }
 
 /// Scenario: Default and end-pattern framing profiles are serialized independently.
