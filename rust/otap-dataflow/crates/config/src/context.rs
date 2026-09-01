@@ -1,13 +1,13 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Configuration types for referring to pipeline context entries.
+//! Configuration types for referring to transport-header context entries.
 
 use crate::error::Error;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// A context entry reference in `entry` or `entry:member` form.
+/// A normalized transport-header context entry reference.
 #[derive(
     Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord, Hash,
 )]
@@ -16,24 +16,12 @@ use serde::{Deserialize, Serialize};
 pub struct ContextEntryRef(String);
 
 impl ContextEntryRef {
-    /// Parses and normalizes a context entry reference, which has two
-    /// forms:
-    ///
-    /// 1. `entryname`
-    /// 2. `composite:association
+    /// Parses and normalizes a transport-header context entry reference.
     pub fn parse(raw: &str) -> Result<Self, Error> {
-        let mut parts = raw.split(':');
-        let entry = parts.next().unwrap_or_default();
-        let member = parts.next();
-        if entry.is_empty()
-            || entry.chars().any(char::is_whitespace)
-            || member
-                .is_some_and(|member| member.is_empty() || member.chars().any(char::is_whitespace))
-            || parts.next().is_some()
-        {
+        if raw.is_empty() || raw.contains(':') || !raw.bytes().all(|byte| byte.is_ascii_graphic()) {
             return Err(Error::InvalidUserConfig {
                 error: format!(
-                    "invalid context entry reference `{raw}`; expected `entry` or `entry:member`"
+                    "invalid transport-header context entry reference `{raw}`; expected a single printable ASCII name"
                 ),
             });
         }
@@ -44,20 +32,6 @@ impl ContextEntryRef {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
-    }
-
-    /// Returns the root entry name.
-    #[must_use]
-    pub fn entry(&self) -> &str {
-        self.0
-            .split_once(':')
-            .map_or(self.0.as_str(), |(entry, _)| entry)
-    }
-
-    /// Returns the qualified member name, if present.
-    #[must_use]
-    pub fn member(&self) -> Option<&str> {
-        self.0.split_once(':').map(|(_, member)| member)
     }
 }
 
@@ -97,45 +71,32 @@ impl From<&'static str> for ContextEntryRef {
 mod tests {
     use super::*;
 
-    /// Scenario: Singleton and qualified context entry references are parsed.
-    /// Guarantees: names are normalized and entry/member access is preserved.
+    /// Scenario: A transport-header context entry reference is parsed.
+    /// Guarantees: the header name is normalized to lowercase.
     #[test]
-    fn parses_supported_reference_forms() {
-        let singleton = ContextEntryRef::parse("X-Tenant").unwrap();
-        assert_eq!(singleton.as_str(), "x-tenant");
-        assert_eq!(singleton.entry(), "x-tenant");
-        assert_eq!(singleton.member(), None);
+    fn parses_transport_header_reference() {
+        let reference = ContextEntryRef::parse("X-Tenant").unwrap();
+        assert_eq!(reference.as_str(), "x-tenant");
 
-        let qualified = ContextEntryRef::parse("Product_User:Customer_ID").unwrap();
-        assert_eq!(qualified.as_str(), "product_user:customer_id");
-        assert_eq!(qualified.entry(), "product_user");
-        assert_eq!(qualified.member(), Some("customer_id"));
+        let punctuation = ContextEntryRef::parse("Tenant/Region@1").unwrap();
+        assert_eq!(punctuation.as_str(), "tenant/region@1");
     }
 
-    /// Scenario: A context entry reference has an invalid structural form.
-    /// Guarantees: empty, whitespace, and multiply-qualified names are rejected.
+    /// Scenario: A transport-header reference has an unsupported form.
+    /// Guarantees: empty, non-ASCII, whitespace, and composite names are rejected.
     #[test]
     fn rejects_invalid_reference_forms() {
-        for invalid in [
-            "",
-            ":member",
-            "entry:",
-            "entry:member:extra",
-            "entry member",
-        ] {
+        for invalid in ["", "entry:member", "entry member", "t\u{e9}nant"] {
             assert!(ContextEntryRef::parse(invalid).is_err(), "{invalid}");
         }
     }
 
-    /// Scenario: A qualified context entry reference is deserialized from YAML.
+    /// Scenario: A transport-header context entry reference is deserialized from YAML.
     /// Guarantees: configuration uses the canonical normalized string form.
     #[test]
     fn serde_uses_string_form() {
-        let parsed: ContextEntryRef = serde_yaml::from_str("Product:Customer").unwrap();
-        assert_eq!(parsed.as_str(), "product:customer");
-        assert_eq!(
-            serde_yaml::to_string(&parsed).unwrap(),
-            "product:customer\n"
-        );
+        let parsed: ContextEntryRef = serde_yaml::from_str("X-Tenant").unwrap();
+        assert_eq!(parsed.as_str(), "x-tenant");
+        assert_eq!(serde_yaml::to_string(&parsed).unwrap(), "x-tenant\n");
     }
 }
