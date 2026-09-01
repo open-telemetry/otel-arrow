@@ -41,7 +41,6 @@ itoa = { workspace = true, optional = true }
 geneva-uploader = { workspace = true, optional = true }
 opentelemetry-proto = { workspace = true, optional = true }
 oracle = { workspace = true, optional = true }
-blake3 = { workspace = true, optional = true }
 futures-channel = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 otel-arrow-contrib-data-engine-expressions = { workspace = true, optional = true }
@@ -107,7 +106,6 @@ database-receiver = [
 oracle-receiver = [
     "database-receiver",
     "dep:oracle",
-    "dep:blake3",
 ]
 kafka-exporter = [
     "dep:rdkafka",

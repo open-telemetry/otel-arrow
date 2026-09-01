@@ -7482,7 +7482,6 @@ dependencies = [
  "aws-msk-iam-sasl-signer",
  "axum",
  "base64 0.23.1",
- "blake3",
  "bytes",
  "chrono",
  "clap",

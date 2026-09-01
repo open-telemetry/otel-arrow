@@ -116,7 +116,11 @@ cargo run -p otel-arrow-dfe-contrib-nodes `
 ```
 
 Keep `--rows` at or below the configured `max_rows_per_poll`. An oversized
-snapshot fails the batch rather than silently truncating it.
+snapshot fails the batch rather than silently truncating it. The receiver caps
+`max_rows_per_poll` at 10,000 rows and bounds normalized data to 8 MiB per poll.
+The minimal Oracle adapter uses one-row native fetch arrays because rust-oracle
+does not expose current result widths until after allocating that array;
+`fetch_size` instead bounds the receiver's row-vector preallocation.
 
 ### 3. Configure receiver credentials
 
@@ -131,20 +135,30 @@ $env:ORACLE_USERNAME_FILE = "C:\secrets\oracle-username"
 $env:ORACLE_PASSWORD_FILE = "C:\secrets\oracle-password"
 ```
 
-The checked-in `configs\oracle-oci-console.yaml` reads these four environment
-variables:
+The checked-in `configs\oracle-oci-console.yaml` accepts these four environment
+overrides and supplies container-friendly local defaults:
 
 ```yaml
 connection:
-  connect_string: '${env:ORACLE_CONNECT_STRING}'
-  instant_client_dir: '${env:ORACLE_INSTANT_CLIENT_DIR}'
+  connect_string: '${env:ORACLE_CONNECT_STRING:-//localhost:1521/FREEPDB1}'
+  instant_client_dir: '${env:ORACLE_INSTANT_CLIENT_DIR:-/opt/oracle/instantclient}'
 authentication:
-  username_file: '${env:ORACLE_USERNAME_FILE}'
-  password_file: '${env:ORACLE_PASSWORD_FILE}'
+  username_file: '${env:ORACLE_USERNAME_FILE:-/run/oracle-secrets/username}'
+  password_file: '${env:ORACLE_PASSWORD_FILE:-/run/oracle-secrets/password}'
 ```
 
 Single quotes are intentional: environment substitution occurs before YAML
 parsing, and single-quoted YAML preserves Windows path backslashes.
+
+Credential paths must reference regular UTF-8 files no larger than 64 KiB.
+Keeping credential contents outside the YAML prevents environment substitution,
+debug output, and effective-configuration snapshots from materializing the
+username or password. `source_id` is limited to 256 bytes, and `query.timeout`
+must be between 1 millisecond and 5 minutes. Initial network connection attempts
+are capped at 10 seconds because Oracle cannot interrupt a connection attempt
+before the native client returns a connection handle. Multi-address Easy
+Connect strings and `retry_count` or `retry_delay` parameters are therefore
+rejected in this foundation.
 
 The checked-in query already reads the generated table:
 

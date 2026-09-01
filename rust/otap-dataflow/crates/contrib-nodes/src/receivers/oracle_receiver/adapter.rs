@@ -4,16 +4,22 @@
 //! Oracle implementation of the database adapter contract.
 
 use crate::receivers::database::{
-    CellValue, ColumnMetadata, CompiledQuery, DatabaseSystem, DriverAdapter, QueryResult, Row,
+    CellValue, ColumnMetadata, CompiledQuery, DatabaseSystem, DriverAdapter, DriverCancellation,
+    QueryResult, Row,
 };
 use async_trait::async_trait;
 use oracle::sql_type::{IntervalDS, IntervalYM, OracleType, Timestamp};
 use oracle::{Connection, Row as OracleRow};
-use std::sync::{Mutex, OnceLock};
+use otel_arrow_dfe_engine::error::ReceiverErrorKind;
+use std::io::Read;
+use std::path::Path;
+use std::sync::{Arc, Mutex, OnceLock};
 
 // Oracle client initialization is process-global. The mutex only serializes
 // the one-time directory choice when multiple pipeline instances start.
 static ORACLE_CLIENT_DIRECTORY: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+const MAX_CREDENTIAL_BYTES: u64 = 64 * 1024;
+const MAX_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[derive(Clone)]
 pub(crate) struct OracleAdapterConfig {
@@ -26,7 +32,8 @@ pub(crate) struct OracleAdapterConfig {
 /// Oracle adapter that reuses one connection across non-overlapping polls.
 pub struct OracleAdapter {
     config: OracleAdapterConfig,
-    connection: Option<Connection>,
+    connection: Option<Arc<Connection>>,
+    cancellation: OracleCancellation,
 }
 
 impl OracleAdapter {
@@ -34,16 +41,110 @@ impl OracleAdapter {
         Self {
             config,
             connection: None,
+            cancellation: OracleCancellation::default(),
         }
+    }
+}
+
+/// Cancellation shared only between one Oracle blocking worker and its local receiver.
+#[derive(Clone, Default)]
+pub struct OracleCancellation {
+    state: Arc<Mutex<CancellationState>>,
+}
+
+#[derive(Default)]
+struct CancellationState {
+    requested: bool,
+    connection: Option<Arc<Connection>>,
+}
+
+struct ActiveConnection {
+    cancellation: OracleCancellation,
+}
+
+impl ActiveConnection {
+    fn register(
+        cancellation: &OracleCancellation,
+        connection: Arc<Connection>,
+    ) -> Result<Option<Self>, OracleAdapterError> {
+        let mut state = cancellation
+            .state
+            .lock()
+            .map_err(|_| OracleAdapterError::CancellationState)?;
+        if state.requested {
+            return Ok(None);
+        }
+        state.connection = Some(connection);
+        Ok(Some(Self {
+            cancellation: cancellation.clone(),
+        }))
+    }
+}
+
+impl Drop for ActiveConnection {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.cancellation.state.lock() {
+            state.connection = None;
+        }
+    }
+}
+
+impl OracleCancellation {
+    fn ensure_not_requested(&self) -> Result<(), OracleAdapterError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| OracleAdapterError::CancellationState)?;
+        if state.requested {
+            Err(OracleAdapterError::Cancelled)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[async_trait(?Send)]
+impl DriverCancellation for OracleCancellation {
+    type Error = OracleAdapterError;
+
+    async fn cancel(&self) -> Result<(), Self::Error> {
+        let connection = {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| OracleAdapterError::CancellationState)?;
+            state.requested = true;
+            state.connection.clone()
+        };
+        let Some(connection) = connection else {
+            return Ok(());
+        };
+        tokio::task::spawn_blocking(move || connection.break_execution())
+            .await
+            .map_err(OracleAdapterError::CancellationWorker)?
+            .map_err(OracleAdapterError::Cancellation)
     }
 }
 
 #[async_trait(?Send)]
 impl DriverAdapter for OracleAdapter {
     type Error = OracleAdapterError;
+    type Cancellation = OracleCancellation;
 
     fn system(&self) -> DatabaseSystem {
         DatabaseSystem::Oracle
+    }
+
+    fn begin_operation(&mut self) -> Result<Self::Cancellation, Self::Error> {
+        let mut state = self
+            .cancellation
+            .state
+            .lock()
+            .map_err(|_| OracleAdapterError::CancellationState)?;
+        state.requested = false;
+        state.connection = None;
+        drop(state);
+        Ok(self.cancellation.clone())
     }
 
     async fn validate_query(
@@ -55,10 +156,12 @@ impl DriverAdapter for OracleAdapter {
         let connection = self.connection.take();
         let config = self.config.clone();
         let query = query.clone();
-        let result =
-            tokio::task::spawn_blocking(move || validate_blocking(connection, &config, &query))
-                .await
-                .map_err(OracleAdapterError::Worker)?;
+        let cancellation = self.cancellation.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            validate_blocking(connection, &config, &query, &cancellation)
+        })
+        .await
+        .map_err(OracleAdapterError::Worker)?;
         match result {
             Ok((connection, columns)) => {
                 self.connection = Some(connection);
@@ -74,10 +177,12 @@ impl DriverAdapter for OracleAdapter {
         let connection = self.connection.take();
         let config = self.config.clone();
         let query = query.clone();
-        let result =
-            tokio::task::spawn_blocking(move || execute_blocking(connection, &config, &query))
-                .await
-                .map_err(OracleAdapterError::Worker)?;
+        let cancellation = self.cancellation.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            execute_blocking(connection, &config, &query, &cancellation)
+        })
+        .await
+        .map_err(OracleAdapterError::Worker)?;
         match result {
             Ok((connection, rows)) => {
                 self.connection = Some(connection);
@@ -98,27 +203,69 @@ impl DriverAdapter for OracleAdapter {
                 | OracleAdapterError::ByteLimit(_)
         )
     }
+
+    fn classify_error(error: &Self::Error) -> ReceiverErrorKind {
+        match error {
+            OracleAdapterError::Connect(_) => ReceiverErrorKind::Connect,
+            OracleAdapterError::Credential { .. }
+            | OracleAdapterError::CredentialTooLarge(_)
+            | OracleAdapterError::CredentialNotRegularFile(_)
+            | OracleAdapterError::InvalidCredentialEncoding(_)
+            | OracleAdapterError::EmptyCredential(_)
+            | OracleAdapterError::Initialize(_)
+            | OracleAdapterError::ClientAlreadyInitialized
+            | OracleAdapterError::ClientDirectoryConflict
+            | OracleAdapterError::ClientInitializationLock
+            | OracleAdapterError::ConnectDescriptorUnsupported
+            | OracleAdapterError::ConnectTimeoutOverride
+            | OracleAdapterError::ConnectRetryUnsupported
+            | OracleAdapterError::MultipleAddressUnsupported
+            | OracleAdapterError::UnsupportedType(_)
+            | OracleAdapterError::FetchSizeOutOfRange(_) => ReceiverErrorKind::Configuration,
+            OracleAdapterError::Configure(_)
+            | OracleAdapterError::Prepare(_)
+            | OracleAdapterError::Query(_)
+            | OracleAdapterError::Fetch(_)
+            | OracleAdapterError::Convert(_)
+            | OracleAdapterError::RowLimit(_)
+            | OracleAdapterError::ByteLimit(_) => ReceiverErrorKind::Transport,
+            OracleAdapterError::CancellationState
+            | OracleAdapterError::CancellationWorker(_)
+            | OracleAdapterError::Cancellation(_)
+            | OracleAdapterError::Cancelled => ReceiverErrorKind::Shutdown,
+            OracleAdapterError::NonFiniteFloat | OracleAdapterError::Worker(_) => {
+                ReceiverErrorKind::Other
+            }
+        }
+    }
 }
 
 fn validate_blocking(
-    connection: Option<Connection>,
+    connection: Option<Arc<Connection>>,
     config: &OracleAdapterConfig,
     query: &CompiledQuery,
-) -> Result<(Connection, Vec<ColumnMetadata>), OracleAdapterError> {
+    cancellation: &OracleCancellation,
+) -> Result<(Arc<Connection>, Vec<ColumnMetadata>), OracleAdapterError> {
     // Executing the prepared SELECT is required because Oracle exposes result
     // metadata on the result set. No row is fetched during startup validation.
     let connection = match connection {
         Some(connection) => connection,
-        None => connect(config, query.timeout())?,
+        None => {
+            cancellation.ensure_not_requested()?;
+            Arc::new(connect(config, query.timeout())?)
+        }
     };
+    let _active = ActiveConnection::register(cancellation, Arc::clone(&connection))?
+        .ok_or(OracleAdapterError::Cancelled)?;
     connection
         .set_call_timeout(Some(query.timeout()))
         .map_err(OracleAdapterError::Configure)?;
     begin_read_only(&connection)?;
-    let fetch_size = oracle_fetch_size(query.fetch_size())?;
+    // One row is the only safe native bound before rust-oracle exposes current
+    // result metadata.
     let mut statement = connection
         .statement(query.sql())
-        .fetch_array_size(fetch_size)
+        .fetch_array_size(1)
         .prefetch_rows(0)
         .build()
         .map_err(OracleAdapterError::Prepare)?;
@@ -143,22 +290,30 @@ fn validate_blocking(
 }
 
 fn execute_blocking(
-    connection: Option<Connection>,
+    connection: Option<Arc<Connection>>,
     config: &OracleAdapterConfig,
     query: &CompiledQuery,
-) -> Result<(Connection, QueryResult), OracleAdapterError> {
+    cancellation: &OracleCancellation,
+) -> Result<(Arc<Connection>, QueryResult), OracleAdapterError> {
     let connection = match connection {
         Some(connection) => connection,
-        None => connect(config, query.timeout())?,
+        None => {
+            cancellation.ensure_not_requested()?;
+            Arc::new(connect(config, query.timeout())?)
+        }
     };
+    let _active = ActiveConnection::register(cancellation, Arc::clone(&connection))?
+        .ok_or(OracleAdapterError::Cancelled)?;
     connection
         .set_call_timeout(Some(query.timeout()))
         .map_err(OracleAdapterError::Configure)?;
     begin_read_only(&connection)?;
-    let fetch_size = oracle_fetch_size(query.fetch_size())?;
     let mut statement = connection
         .statement(query.sql())
-        .fetch_array_size(fetch_size)
+        // Rebuilding a statement can expose changed view or column widths.
+        // A one-row native buffer is the only safe bound before rust-oracle
+        // reveals current result metadata.
+        .fetch_array_size(1)
         .prefetch_rows(0)
         .build()
         .map_err(OracleAdapterError::Prepare)?;
@@ -177,7 +332,7 @@ fn execute_blocking(
 
     // The iterator continues through every driver page. The extra row detects
     // a result larger than the poll ceiling instead of silently truncating it.
-    let mut rows = Vec::new();
+    let mut rows = Vec::with_capacity(query.fetch_size().min(query.max_rows()));
     let mut normalized_bytes = 0_u64;
     for (index, row) in result_set
         .by_ref()
@@ -201,10 +356,6 @@ fn execute_blocking(
         .map_err(OracleAdapterError::Configure)?;
 
     Ok((connection, QueryResult { columns, rows }))
-}
-
-fn oracle_fetch_size(fetch_size: usize) -> Result<u32, OracleAdapterError> {
-    u32::try_from(fetch_size).map_err(|_| OracleAdapterError::FetchSizeOutOfRange(fetch_size))
 }
 
 fn column_metadata(column: &oracle::ColumnInfo) -> ColumnMetadata {
@@ -258,12 +409,22 @@ fn bounded_connect_string(
     {
         return Err(OracleAdapterError::ConnectTimeoutOverride);
     }
+    if normalized.contains("retry_count=") || normalized.contains("retry_delay=") {
+        return Err(OracleAdapterError::ConnectRetryUnsupported);
+    }
+    if connect_string
+        .split('?')
+        .next()
+        .is_some_and(|address| address.contains(','))
+    {
+        return Err(OracleAdapterError::MultipleAddressUnsupported);
+    }
     let separator = if connect_string.contains('?') {
         '&'
     } else {
         '?'
     };
-    let seconds = timeout.as_secs().max(1);
+    let seconds = timeout.min(MAX_CONNECT_TIMEOUT).as_secs().max(1);
     Ok(format!(
         "{connect_string}{separator}connect_timeout={seconds}&transport_connect_timeout={seconds}"
     ))
@@ -294,8 +455,31 @@ fn initialize_client(directory: &str) -> Result<(), OracleAdapterError> {
 }
 
 fn read_credential(path: &str, kind: &'static str) -> Result<String, OracleAdapterError> {
-    let mut value = std::fs::read_to_string(path)
+    let path = Path::new(path);
+    let metadata = std::fs::metadata(path)
         .map_err(|source| OracleAdapterError::Credential { kind, source })?;
+    if !metadata.is_file() {
+        return Err(OracleAdapterError::CredentialNotRegularFile(kind));
+    }
+    let file = std::fs::File::open(path)
+        .map_err(|source| OracleAdapterError::Credential { kind, source })?;
+    if !file
+        .metadata()
+        .map_err(|source| OracleAdapterError::Credential { kind, source })?
+        .is_file()
+    {
+        return Err(OracleAdapterError::CredentialNotRegularFile(kind));
+    }
+    let mut bytes = Vec::with_capacity(metadata.len().min(MAX_CREDENTIAL_BYTES) as usize);
+    _ = file
+        .take(MAX_CREDENTIAL_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|source| OracleAdapterError::Credential { kind, source })?;
+    if bytes.len() as u64 > MAX_CREDENTIAL_BYTES {
+        return Err(OracleAdapterError::CredentialTooLarge(kind));
+    }
+    let mut value = String::from_utf8(bytes)
+        .map_err(|_| OracleAdapterError::InvalidCredentialEncoding(kind))?;
     while value.ends_with(['\r', '\n']) {
         _ = value.pop();
     }
@@ -443,6 +627,15 @@ pub enum OracleAdapterError {
         #[source]
         source: std::io::Error,
     },
+    /// A mounted credential file exceeds the fixed file-size ceiling.
+    #[error("Oracle {0} file exceeds the credential size limit")]
+    CredentialTooLarge(&'static str),
+    /// A mounted credential path is not a regular file.
+    #[error("Oracle {0} path must reference a regular file")]
+    CredentialNotRegularFile(&'static str),
+    /// A mounted credential file is not UTF-8.
+    #[error("Oracle {0} file must contain valid UTF-8")]
+    InvalidCredentialEncoding(&'static str),
     /// A mounted credential file was empty.
     #[error("Oracle {0} file must not be empty")]
     EmptyCredential(&'static str),
@@ -467,6 +660,12 @@ pub enum OracleAdapterError {
     /// Connection timeout properties are owned by the receiver's query timeout.
     #[error("Oracle connect string must not override receiver connection timeouts")]
     ConnectTimeoutOverride,
+    /// Connection retry controls would defeat the bounded startup attempt.
+    #[error("Oracle connect string must not configure retry_count or retry_delay")]
+    ConnectRetryUnsupported,
+    /// Multiple addresses would multiply the per-attempt startup timeout.
+    #[error("Oracle connect string must contain exactly one database address")]
+    MultipleAddressUnsupported,
     /// Session or timeout setup failed.
     #[error("Oracle session configuration failed")]
     Configure(#[source] oracle::Error),
@@ -500,6 +699,18 @@ pub enum OracleAdapterError {
     /// Blocking Oracle execution could not be joined.
     #[error("Oracle worker failed")]
     Worker(#[source] tokio::task::JoinError),
+    /// Cancellation state could not be synchronized with the blocking worker.
+    #[error("Oracle cancellation state is unavailable")]
+    CancellationState,
+    /// Native Oracle cancellation could not be joined.
+    #[error("Oracle cancellation worker failed")]
+    CancellationWorker(#[source] tokio::task::JoinError),
+    /// Oracle rejected a request to interrupt the active call.
+    #[error("Oracle cancellation failed")]
+    Cancellation(#[source] oracle::Error),
+    /// An operation was cancelled before it registered its connection.
+    #[error("Oracle operation was cancelled")]
+    Cancelled,
 }
 
 #[cfg(test)]

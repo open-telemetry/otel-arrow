@@ -18,7 +18,7 @@ mod row;
 mod scheduler;
 
 pub use config::{ConfigError, OutputConfig, PollingConfig};
-pub use driver::{DatabaseSystem, DriverAdapter, QueryResult};
+pub use driver::{DatabaseSystem, DriverAdapter, DriverCancellation, QueryResult};
 pub use otlp::{OtlpMappingError, rows_to_pdata, validate_mapping};
 pub use query::{CompiledQuery, QueryError};
 pub use receiver::DatabaseReceiver;

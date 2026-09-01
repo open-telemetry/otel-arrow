@@ -8,6 +8,7 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{KeyValue, any_value
 use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{LogRecord, LogsData};
 use prost::Message;
 use std::collections::BTreeMap;
+use std::mem::size_of;
 use std::time::Duration;
 
 fn column(name: &str, source_type: &str) -> ColumnMetadata {
@@ -323,4 +324,42 @@ fn rejects_fetch_size_above_poll_limit() {
         config.validate(),
         Err(ConfigError::FetchSizeExceedsRowLimit)
     );
+}
+
+/// Scenario: Polling limits exceed the fixed native-fetch or result-row ceilings.
+/// Guarantees: Misconfiguration cannot request unbounded driver or receiver allocations.
+#[test]
+fn rejects_excessive_polling_limits() {
+    let config = PollingConfig {
+        interval: Duration::from_secs(1),
+        timeout: Duration::from_secs(1),
+        fetch_size: 10_001,
+        max_rows_per_poll: 10_000,
+    };
+    assert!(matches!(
+        config.validate(),
+        Err(ConfigError::FetchSizeLimit { maximum: 10_000 })
+    ));
+
+    let config = PollingConfig {
+        interval: Duration::from_secs(1),
+        timeout: Duration::from_secs(1),
+        fetch_size: 10_000,
+        max_rows_per_poll: 10_001,
+    };
+    assert!(matches!(
+        config.validate(),
+        Err(ConfigError::RowLimit { maximum: 10_000 })
+    ));
+}
+
+/// Scenario: A result contains many NULL values with no dynamic payload bytes.
+/// Guarantees: Memory accounting includes row and CellValue allocations, not only scalar payloads.
+#[test]
+fn normalized_size_includes_structural_allocations() {
+    let row = Row {
+        values: vec![CellValue::Null; 100],
+    };
+
+    assert!(row.normalized_size() >= (size_of::<Row>() + 100 * size_of::<CellValue>()) as u64);
 }

@@ -8,6 +8,11 @@ use crate::receivers::database::{
     CompiledQuery, DatabaseReceiver, OutputConfig, PollingConfig, QueryError,
 };
 use serde::Deserialize;
+use std::time::Duration;
+
+const MAX_SOURCE_ID_BYTES: usize = 256;
+const MIN_ORACLE_TIMEOUT: Duration = Duration::from_millis(1);
+const MAX_ORACLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 /// Validated configuration for one Oracle snapshot query.
 ///
@@ -62,6 +67,11 @@ impl TryFrom<RawOracleConfig> for OracleReceiverConfig {
 
     fn try_from(config: RawOracleConfig) -> Result<Self, Self::Error> {
         required("source_id", &config.source_id)?;
+        if config.source_id.len() > MAX_SOURCE_ID_BYTES {
+            return Err(OracleConfigError::new(format!(
+                "source_id must not exceed {MAX_SOURCE_ID_BYTES} bytes"
+            )));
+        }
         required(
             "connection.connect_string",
             &config.connection.connect_string,
@@ -79,6 +89,11 @@ impl TryFrom<RawOracleConfig> for OracleReceiverConfig {
             &config.authentication.password_file,
         )?;
         required("query.statement", &config.query.statement)?;
+        if !(MIN_ORACLE_TIMEOUT..=MAX_ORACLE_TIMEOUT).contains(&config.query.timeout) {
+            return Err(OracleConfigError::new(
+                "query.timeout must be between 1ms and 5m",
+            ));
+        }
         config.query.polling().validate()?;
         let (event_timestamp_column, validation_columns) = if let Some(watermark) = config.watermark
         {
@@ -153,11 +168,11 @@ struct OracleAuthenticationConfig {
 struct OracleQueryConfig {
     statement: String,
     #[serde(with = "humantime_serde")]
-    interval: std::time::Duration,
+    interval: Duration,
     fetch_size: usize,
     max_rows_per_poll: usize,
     #[serde(with = "humantime_serde")]
-    timeout: std::time::Duration,
+    timeout: Duration,
 }
 
 impl OracleQueryConfig {

@@ -4,6 +4,7 @@
 //! Database-neutral values and result metadata.
 
 use std::fmt;
+use std::mem::size_of;
 
 /// A database scalar normalized without losing source precision.
 #[derive(Clone, PartialEq)]
@@ -108,10 +109,13 @@ pub struct Row {
 }
 
 impl Row {
-    /// Returns the normalized payload size used for bounded-memory accounting.
+    /// Returns conservative normalized storage used for bounded-memory accounting.
     #[must_use]
     pub fn normalized_size(&self) -> u64 {
-        self.values.iter().fold(0, |size, value| {
+        let allocated = size_of::<Self>()
+            .saturating_add(self.values.len().saturating_mul(size_of::<CellValue>()))
+            as u64;
+        self.values.iter().fold(allocated, |size, value| {
             size.saturating_add(value.normalized_size())
         })
     }

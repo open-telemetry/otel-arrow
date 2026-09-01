@@ -5,6 +5,7 @@
 
 use super::{ColumnMetadata, CompiledQuery, Row};
 use async_trait::async_trait;
+use otel_arrow_dfe_engine::error::ReceiverErrorKind;
 use std::error::Error;
 
 /// Stable OpenTelemetry database system identity.
@@ -33,14 +34,29 @@ pub struct QueryResult {
     pub rows: Vec<Row>,
 }
 
+/// Cancellation handle for one database operation running outside the local async core.
+#[async_trait(?Send)]
+pub trait DriverCancellation: Clone {
+    /// Adapter error returned when cancellation cannot be requested.
+    type Error: Error + 'static;
+
+    /// Requests cancellation of the current native database operation.
+    async fn cancel(&self) -> Result<(), Self::Error>;
+}
+
 /// Database-specific query execution required by the shared receiver.
 #[async_trait(?Send)]
 pub trait DriverAdapter {
     /// Adapter-specific error with its diagnostic source chain intact.
     type Error: Error + 'static;
+    /// Cloneable handle used to interrupt one active native operation.
+    type Cancellation: DriverCancellation<Error = Self::Error>;
 
     /// Returns the adapter's stable database system identity.
     fn system(&self) -> DatabaseSystem;
+
+    /// Resets cancellation state before one native operation starts.
+    fn begin_operation(&mut self) -> Result<Self::Cancellation, Self::Error>;
 
     /// Inspects live result metadata without returning rows.
     async fn validate_query(
@@ -54,5 +70,10 @@ pub trait DriverAdapter {
     /// Returns whether this failure should discard only the current result batch.
     fn is_batch_error(&self, _error: &Self::Error) -> bool {
         false
+    }
+
+    /// Classifies a terminal adapter failure for receiver diagnostics.
+    fn classify_error(_error: &Self::Error) -> ReceiverErrorKind {
+        ReceiverErrorKind::Other
     }
 }

@@ -84,6 +84,30 @@ fn rejects_undocumented_oracle_query_fields() {
     }
 }
 
+/// Scenario: Oracle configuration uses an unsupported call timeout.
+/// Guarantees: Sub-millisecond and excessively long timeouts fail before opening a connection.
+#[test]
+fn rejects_unsupported_oracle_timeouts() {
+    for timeout in ["500us", "6m"] {
+        let mut config = documented_config();
+        config["query"]["timeout"] = serde_json::json!(timeout);
+        assert!(
+            serde_json::from_value::<OracleReceiverConfig>(config).is_err(),
+            "unsupported timeout '{timeout}' must be rejected"
+        );
+    }
+}
+
+/// Scenario: A source identifier is large enough to amplify every emitted row.
+/// Guarantees: Repeated OTLP resource identity remains bounded by configuration validation.
+#[test]
+fn rejects_oversized_source_id() {
+    let mut config = documented_config();
+    config["source_id"] = serde_json::json!("x".repeat(257));
+
+    assert!(serde_json::from_value::<OracleReceiverConfig>(config).is_err());
+}
+
 /// Scenario: A live Oracle database is explicitly configured for an end-to-end smoke test.
 /// Guarantees: The registered receiver validates metadata, polls Oracle, and emits one OTLP log
 /// for the selected row.

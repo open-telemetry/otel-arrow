@@ -7,6 +7,9 @@ use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
+const MAX_FETCH_SIZE: usize = 10_000;
+const MAX_ROWS_PER_POLL: usize = 10_000;
+
 /// Bounds and timing shared by every database receiver.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -74,6 +77,16 @@ impl PollingConfig {
         if self.max_rows_per_poll == 0 {
             return Err(ConfigError::ZeroRowLimit);
         }
+        if self.fetch_size > MAX_FETCH_SIZE {
+            return Err(ConfigError::FetchSizeLimit {
+                maximum: MAX_FETCH_SIZE,
+            });
+        }
+        if self.max_rows_per_poll > MAX_ROWS_PER_POLL {
+            return Err(ConfigError::RowLimit {
+                maximum: MAX_ROWS_PER_POLL,
+            });
+        }
         if self.fetch_size > self.max_rows_per_poll {
             return Err(ConfigError::FetchSizeExceedsRowLimit);
         }
@@ -126,6 +139,18 @@ pub enum ConfigError {
     /// Per-poll row limit is zero.
     #[error("query.max_rows_per_poll must be greater than zero")]
     ZeroRowLimit,
+    /// Driver fetch size exceeds the fixed native allocation ceiling.
+    #[error("query.fetch_size must not exceed {maximum}")]
+    FetchSizeLimit {
+        /// Largest supported native fetch size.
+        maximum: usize,
+    },
+    /// Per-poll row limit exceeds the fixed receiver allocation ceiling.
+    #[error("query.max_rows_per_poll must not exceed {maximum}")]
+    RowLimit {
+        /// Largest supported row count per poll.
+        maximum: usize,
+    },
     /// Fetch size exceeds the poll ceiling.
     #[error("query.fetch_size must not exceed query.max_rows_per_poll")]
     FetchSizeExceedsRowLimit,

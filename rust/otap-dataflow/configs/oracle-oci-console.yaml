@@ -15,11 +15,11 @@ groups:
             config:
               source_id: oracle-audit
               connection:
-                connect_string: '${env:ORACLE_CONNECT_STRING}'
-                instant_client_dir: '${env:ORACLE_INSTANT_CLIENT_DIR}'
+                connect_string: '${env:ORACLE_CONNECT_STRING:-//localhost:1521/FREEPDB1}'
+                instant_client_dir: '${env:ORACLE_INSTANT_CLIENT_DIR:-/opt/oracle/instantclient}'
               authentication:
-                username_file: '${env:ORACLE_USERNAME_FILE}'
-                password_file: '${env:ORACLE_PASSWORD_FILE}'
+                username_file: '${env:ORACLE_USERNAME_FILE:-/run/oracle-secrets/username}'
+                password_file: '${env:ORACLE_PASSWORD_FILE:-/run/oracle-secrets/password}'
               query:
                 statement: >
                   SELECT EVENT_ID, EVENT_TS, PAYLOAD
