@@ -18,14 +18,12 @@
 //! - `local_entry::<E>` / `shared_entry::<E>` factory bridges
 //! - A `KNOWN_CAPABILITIES` distributed-slice entry
 
+use crate::capability::auth::ApiKey;
 use crate::capability::error::CapabilityError;
 use futures::Stream;
 use otel_arrow_dfe_engine_macros::capability;
-use secrecy::{ExposeSecret, SecretString};
-use serde_json::{Map, Value};
 use std::pin::Pin;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// How close to [`ApiKey::expires_on`] an API Key stops being usable.
 ///
@@ -47,74 +45,6 @@ use std::time::{Duration, Instant};
 /// request's own duration plus that clock skew; 30s matches the default API Key
 /// endpoint timeout.
 pub const API_KEY_USABLE_MARGIN: Duration = Duration::from_secs(30);
-
-/// An API Key.
-///
-/// The value is wrapped in [`SecretString`], which zeroizes on drop and masks
-/// itself in [`Debug`] output, so it cannot leak into logs or telemetry. The
-/// `SecretString` sits behind an [`Arc`] so cloning an API Key (handing it to
-/// multiple subscribers, or returning it from `get_api_key` on the hot path) is
-/// a cheap refcount bump that shares one plaintext allocation rather than
-/// copying the secret bytes.
-///
-/// `expires_on` is a monotonic [`Instant`] -- an absolute wall-clock expiry is
-/// converted to an `Instant` once, so the value is immune to wall-clock jumps
-/// thereafter. `None` means no known expiry. The API Key value is opaque to
-/// this type: an expiry is only ever what a caller supplies from the issuer's
-/// response metadata, never parsed out of the API Key itself.
-#[derive(Clone, Debug)]
-pub struct ApiKey {
-    value: Arc<SecretString>,
-    attributes: Option<Arc<Map<String, Value>>>,
-    expires_on: Option<Instant>,
-}
-
-impl ApiKey {
-    /// Creates an API Key from its value.
-    #[must_use]
-    pub fn new(value: impl Into<SecretString>) -> Self {
-        Self {
-            value: Arc::new(value.into()),
-            attributes: None,
-            expires_on: None,
-        }
-    }
-
-    /// Adds attributes to an API Key.
-    #[must_use]
-    pub fn with_attributes(mut self, attributes: Map<String, Value>) -> Self {
-        self.attributes = Some(Arc::new(attributes));
-        self
-    }
-
-    /// Adds expiry to an API Key.
-    #[must_use]
-    pub fn with_expiry(mut self, expires_on: Instant) -> Self {
-        self.expires_on = Some(expires_on);
-        self
-    }
-
-    /// Exposes the API Key value secret.
-    ///
-    /// Named `expose_value` (rather than a plain getter) so every plaintext
-    /// access is explicit and greppable.
-    #[must_use]
-    pub fn expose_value(&self) -> &str {
-        self.value.expose_secret()
-    }
-
-    /// Gets API Key attributes.
-    #[must_use]
-    pub fn get_attributes(&self) -> Option<&Map<String, Value>> {
-        self.attributes.as_deref()
-    }
-
-    /// Gets the API Key expiry.
-    #[must_use]
-    pub fn get_expires_on(&self) -> Option<Instant> {
-        self.expires_on
-    }
-}
 
 /// A per-consumer subscription to API Key refreshes.
 ///
