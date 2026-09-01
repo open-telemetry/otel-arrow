@@ -1,27 +1,78 @@
 # Filelog checkpoint codec
 
-`otel-arrow-dfe-filelog-checkpoint` implements the filelog-specific version 1
-checkpoint wire format. It provides durable value types and bounded codecs for
-`CURRENT`, snapshots, WAL headers, operations, and transactions.
+`otel-arrow-dfe-filelog-checkpoint` defines the durable checkpoint format used
+by the Filelog receiver.
 
-The version 1 on-disk representation is the compatibility contract. The Rust
-API is internal and experimental under repository policy. This crate performs
-no filesystem access or checkpoint publication, and it does not introduce a
-production filelog receiver.
+It converts checkpoint values between Rust types and their exact on-disk byte
+representation. The crate is specific to Filelog; it is not a general-purpose
+storage or WAL library.
 
-Future consumers are the core-nodes filelog receiver and offline checkpoint
-administration in `dfctl`. Dependency direction is from those consumers to
-this crate; this crate intentionally has no runtime, engine, controller, OTAP,
-Arrow, configuration, discovery, reader, or telemetry dependencies.
+## What this crate provides
 
-Operation decoding validates framing and self-contained transaction structure.
-Checks that require a previously stored record or staged checkpoint table are
-intentionally deferred to replay. In particular, structurally valid
-`keep_failed` values are preserved for replay to compare bit-for-bit with the
-stored quarantined record.
+The crate encodes and decodes:
 
-Snapshot decoding requires the caller's current maximum tracked-file count and
-rejects a larger authenticated record count before allocating record storage or
-decoding record bodies. WAL recovery uses `scan_next_transaction` so a consumer
-can validate, apply, and drop one transaction before decoding the next; the
-production API does not collect an entire WAL in memory.
+- `CURRENT`, which identifies the active checkpoint generation;
+- snapshots containing the complete tracked-file state;
+- WAL headers;
+- checkpoint operations; and
+- atomic WAL transactions.
+
+All decoding is bounded. Lengths, counts, versions, reserved fields, and
+checksums are validated before variable-size data is trusted.
+
+## Format compatibility
+
+Once a Filelog release writes a version 1 checkpoint, later releases must
+continue to interpret those bytes using the same field layout, byte order,
+operation codes, checksums, and corruption rules. An incompatible on-disk
+change requires a new checkpoint format version and an explicit migration or
+rejection policy.
+
+The crate's Rust API remains internal and experimental. Rust types, module
+layout, and function names may change while the version 1 byte format remains
+compatible.
+
+## Scope
+
+This crate only handles checkpoint values and bytes. It does not:
+
+- access the filesystem;
+- create or lock checkpoint directories;
+- append or synchronize a WAL;
+- publish checkpoint generations;
+- apply operations to previously stored state;
+- compact or recover a checkpoint store; or
+- implement the Filelog receiver.
+
+Filesystem storage, replay, compaction, and receiver integration are separate
+layers built on this codec.
+
+## Decoding and replay
+
+The codec validates the structure of each operation and transaction. Rules
+that depend on a previously stored record are checked later while replaying the
+operation against the checkpoint table.
+
+For example, a `keep_failed` operation is structurally valid on its own. Replay
+must still confirm that its epoch, offset, frontier guard, fingerprint, and
+framing state match the stored quarantined record exactly.
+
+Snapshot decoding takes the caller's current tracked-file limit. A snapshot
+declaring more records than that limit is rejected before record storage is
+allocated or record bodies are decoded.
+
+WAL recovery is incremental. `scan_next_transaction` returns at most one
+validated transaction, allowing the caller to apply and drop it before
+decoding the next transaction. The codec does not collect the complete WAL in
+memory.
+
+## Consumers
+
+The intended consumers are:
+
+- the core-nodes Filelog receiver; and
+- offline Filelog checkpoint administration in `dfctl`.
+
+Both depend on this crate. The checkpoint crate does not depend on the
+receiver, `dfctl`, the engine, controller, OTAP, Arrow, discovery, reader,
+configuration, or telemetry layers.
