@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788222657731,
+  "lastUpdate": 1788240032849,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -27873,6 +27873,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 102.48,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "161134993+Dipanshusinghh@users.noreply.github.com",
+            "name": "Dipanshu singh",
+            "username": "Dipanshusinghh"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "da76cb64f3c7e0070d7f134419ad8fc58c413805",
+          "message": "feat(metrics): Migrate temporal_reaggregation processor telemetry to enum attributes (#3749)\n\nMigrates the `temporal_reaggregation` processor telemetry to use the new\n`MeasurementMetricSet` with enum attributes, following the\n`operations`/`failures`/`flushes` model (similar to the transform\nprocessor).\n\n### Changes:\n- **Telemetry split into 3 distinct populations:**\n- `processor.temporal_reaggregation.pdata.operations`: Records one\nterminal outcome (`success` or `failure`) per metrics PData input.\n- `processor.temporal_reaggregation.pdata.failures`: Records actionable\ncauses (`error.type` like `view_creation`, `id_overflow`,\n`stream_cardinality_exceeded`) alongside failed operations.\n- `processor.temporal_reaggregation.pdata.flushes`: Records non-empty\nflush attempts and their results (with `outcome` and `reason`).\n- **Deferred flush measurement:** Flush success is now recorded *only*\nwhen the result is explicitly known (`Emitted`), ensuring empty flushes\naren't erroneously counted.\n- **Testing:** Added robust telemetry tests covering 5 different\nscenarios (passthrough, overflow, timer flushes, empty flushes, and\nshutdown flushes) with `Scenario:` and `Guarantees:` comments.\n- **Documentation:** Updated `README.md` to cleanly document the 3\nsemantic populations, and added an explicit migration mapping in the\nchangelog.\n\nPart of the enum-attribute instrumentation migration tracked in #3530",
+          "timestamp": "2026-09-01T04:29:19Z",
+          "tree_id": "ae71ebd1385710baf41d62619d2990f9fcc78144",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/da76cb64f3c7e0070d7f134419ad8fc58c413805"
+        },
+        "date": 1788240018054,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 83.24,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.91,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.53,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 70.6,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.8,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.38,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 115.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 102.54,
             "unit": "MB"
           }
         ]
