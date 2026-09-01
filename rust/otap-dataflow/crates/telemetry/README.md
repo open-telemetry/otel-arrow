@@ -1,5 +1,8 @@
 # Internal Telemetry System (schema-first, multivariate, NUMA-aware)
 
+This crate is currently pre-1.0. Its public API may evolve between minor
+releases.
+
 Status: draft under active development.
 
 A low-overhead, NUMA-aware telemetry system that turns a declarative schema into

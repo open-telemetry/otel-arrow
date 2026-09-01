@@ -1107,7 +1107,7 @@ dependencies = [
 [[package]]
 name = "azure_core"
 version = "1.2.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=b28858626ec4ec2188f14b55f20159eb2b9580e9#b28858626ec4ec2188f14b55f20159eb2b9580e9"
+source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=aacb2060111920f9fca2f72bff7e401e8a7198ce#aacb2060111920f9fca2f72bff7e401e8a7198ce"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -1139,7 +1139,7 @@ dependencies = [
 [[package]]
 name = "azure_core_macros"
 version = "1.1.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=b28858626ec4ec2188f14b55f20159eb2b9580e9#b28858626ec4ec2188f14b55f20159eb2b9580e9"
+source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=aacb2060111920f9fca2f72bff7e401e8a7198ce#aacb2060111920f9fca2f72bff7e401e8a7198ce"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1167,7 +1167,7 @@ dependencies = [
 [[package]]
 name = "azure_identity"
 version = "1.1.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=b28858626ec4ec2188f14b55f20159eb2b9580e9#b28858626ec4ec2188f14b55f20159eb2b9580e9"
+source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=aacb2060111920f9fca2f72bff7e401e8a7198ce#aacb2060111920f9fca2f72bff7e401e8a7198ce"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -11349,7 +11349,7 @@ dependencies = [
 [[package]]
 name = "typespec"
 version = "1.2.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=b28858626ec4ec2188f14b55f20159eb2b9580e9#b28858626ec4ec2188f14b55f20159eb2b9580e9"
+source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=aacb2060111920f9fca2f72bff7e401e8a7198ce#aacb2060111920f9fca2f72bff7e401e8a7198ce"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -11387,7 +11387,7 @@ dependencies = [
 [[package]]
 name = "typespec_client_core"
 version = "1.2.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=b28858626ec4ec2188f14b55f20159eb2b9580e9#b28858626ec4ec2188f14b55f20159eb2b9580e9"
+source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=aacb2060111920f9fca2f72bff7e401e8a7198ce#aacb2060111920f9fca2f72bff7e401e8a7198ce"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -11422,7 +11422,7 @@ dependencies = [
 [[package]]
 name = "typespec_macros"
 version = "1.1.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=b28858626ec4ec2188f14b55f20159eb2b9580e9#b28858626ec4ec2188f14b55f20159eb2b9580e9"
+source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=aacb2060111920f9fca2f72bff7e401e8a7198ce#aacb2060111920f9fca2f72bff7e401e8a7198ce"
 dependencies = [
  "proc-macro2",
  "quote",
