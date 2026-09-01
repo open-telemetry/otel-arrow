@@ -1,0 +1,887 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+//! Structural corruption, bounds, invariant, and torn-tail tests.
+
+use otel_arrow_dfe_filelog_checkpoint::{
+    DecodeError, EncodeError, FileId, Locator, Operation, QuarantineEvidence, SnapshotRecord,
+    Transaction, WAL_MAX_OPS_PER_TX, crc32c, decode_current, decode_operation, decode_snapshot,
+    decode_wal_header, encode_snapshot, encode_transaction, namespace_digest, scan_transactions,
+};
+
+const CURRENT: &[u8] = include_bytes!("fixtures/current-generation-42.bin");
+const ACTIVE_SNAPSHOT: &[u8] = include_bytes!("fixtures/snapshot-active.bin");
+const MIN_TX: &[u8] = include_bytes!("fixtures/transaction-minimum.bin");
+const PROGRESS_OP: &[u8] = include_bytes!("fixtures/operation-update-progress.bin");
+const METADATA_OP: &[u8] = include_bytes!("fixtures/operation-update-metadata.bin");
+
+fn put_u16(bytes: &mut [u8], offset: usize, value: u16) {
+    bytes[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
+}
+
+fn put_u32(bytes: &mut [u8], offset: usize, value: u32) {
+    bytes[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
+}
+
+fn put_u64(bytes: &mut [u8], offset: usize, value: u64) {
+    bytes[offset..offset + 8].copy_from_slice(&value.to_be_bytes());
+}
+
+fn refresh_operation_crc(bytes: &mut [u8]) {
+    let crc_offset = bytes.len() - 4;
+    let checksum = crc32c(&bytes[..crc_offset]);
+    put_u32(bytes, crc_offset, checksum);
+}
+
+fn operation_from_payload(payload: &[u8]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(payload.len() + 8);
+    bytes.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+    bytes.extend_from_slice(payload);
+    bytes.extend_from_slice(&crc32c(&bytes).to_be_bytes());
+    bytes
+}
+
+fn refresh_transaction_crcs(bytes: &mut [u8]) {
+    let header_checksum = crc32c(&bytes[..32]);
+    put_u32(bytes, 32, header_checksum);
+    let frame_crc_offset = bytes.len() - 4;
+    let frame_checksum = crc32c(&bytes[..frame_crc_offset]);
+    put_u32(bytes, frame_crc_offset, frame_checksum);
+}
+
+fn transaction_from_operations(operations: &[&[u8]]) -> Vec<u8> {
+    let body: Vec<u8> = operations
+        .iter()
+        .flat_map(|operation| operation.iter().copied())
+        .collect();
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"FLOGTXN\0");
+    bytes.extend_from_slice(&1u16.to_be_bytes());
+    bytes.extend_from_slice(&0u16.to_be_bytes());
+    bytes.extend_from_slice(&1u64.to_be_bytes());
+    bytes.extend_from_slice(&(body.len() as u32).to_be_bytes());
+    bytes.extend_from_slice(&(!(body.len() as u32)).to_be_bytes());
+    bytes.extend_from_slice(&(operations.len() as u16).to_be_bytes());
+    bytes.extend_from_slice(&0u16.to_be_bytes());
+    bytes.extend_from_slice(&crc32c(&bytes).to_be_bytes());
+    bytes.extend_from_slice(&body);
+    bytes.extend_from_slice(&crc32c(&bytes).to_be_bytes());
+    bytes
+}
+
+fn active_record_frame() -> Vec<u8> {
+    ACTIVE_SNAPSHOT[60..ACTIVE_SNAPSHOT.len() - 24].to_vec()
+}
+
+fn refresh_record_crc(frame: &mut [u8]) {
+    let crc_offset = frame.len() - 4;
+    let checksum = crc32c(&frame[..crc_offset]);
+    put_u32(frame, crc_offset, checksum);
+}
+
+fn snapshot_from_frames(frames: &[Vec<u8>]) -> Vec<u8> {
+    let mut header = ACTIVE_SNAPSHOT[..60].to_vec();
+    put_u32(&mut header, 52, frames.len() as u32);
+    let header_checksum = crc32c(&header[..56]);
+    put_u32(&mut header, 56, header_checksum);
+    let total: usize = frames.iter().map(Vec::len).sum();
+    let mut bytes = header;
+    for frame in frames {
+        bytes.extend_from_slice(frame);
+    }
+    let mut footer = Vec::new();
+    footer.extend_from_slice(b"FLOGSFT\0");
+    footer.extend_from_slice(&(total as u64).to_be_bytes());
+    footer.extend_from_slice(&(frames.len() as u32).to_be_bytes());
+    footer.extend_from_slice(&crc32c(&footer).to_be_bytes());
+    bytes.extend_from_slice(&footer);
+    bytes
+}
+
+fn resize_record_payload(mut frame: Vec<u8>, payload: Vec<u8>) -> Vec<u8> {
+    frame.clear();
+    frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+    frame.extend_from_slice(&payload);
+    frame.extend_from_slice(&crc32c(&frame).to_be_bytes());
+    frame
+}
+
+/// Scenario: CURRENT is short, has bad magic/version/flags, or has a bad CRC.
+/// Guarantees: Every fixed marker envelope failure is rejected rather than partially accepted.
+#[test]
+fn current_envelope_corruption_is_rejected() {
+    assert!(matches!(
+        decode_current(&CURRENT[..23]),
+        Err(DecodeError::InvalidLength { .. })
+    ));
+    let mut bytes = CURRENT.to_vec();
+    bytes[0] ^= 1;
+    assert!(matches!(
+        decode_current(&bytes),
+        Err(DecodeError::BadMagic { .. })
+    ));
+    let mut bytes = CURRENT.to_vec();
+    put_u16(&mut bytes, 8, 2);
+    assert!(matches!(
+        decode_current(&bytes),
+        Err(DecodeError::UnsupportedVersion { .. })
+    ));
+    let mut bytes = CURRENT.to_vec();
+    put_u16(&mut bytes, 10, 1);
+    assert!(matches!(
+        decode_current(&bytes),
+        Err(DecodeError::ReservedFieldNonZero { .. })
+    ));
+    let mut bytes = CURRENT.to_vec();
+    bytes[23] ^= 1;
+    assert!(matches!(
+        decode_current(&bytes),
+        Err(DecodeError::ChecksumMismatch { .. })
+    ));
+}
+
+/// Scenario: Snapshot header CRC, record CRC, footer CRC, truncation, and trailing bytes are corrupted.
+/// Guarantees: Snapshots fail closed with no WAL-style torn-tail salvage.
+#[test]
+fn snapshot_artifact_corruption_is_rejected() {
+    let namespace = namespace_digest("app-logs").unwrap();
+    let mut bytes = ACTIVE_SNAPSHOT.to_vec();
+    bytes[59] ^= 1;
+    assert!(matches!(
+        decode_snapshot(&bytes, &namespace),
+        Err(DecodeError::ChecksumMismatch { .. })
+    ));
+    let mut bytes = ACTIVE_SNAPSHOT.to_vec();
+    bytes[20] ^= 1;
+    assert!(matches!(
+        decode_snapshot(&bytes, &namespace),
+        Err(DecodeError::ChecksumMismatch { .. })
+    ));
+    let mut bytes = ACTIVE_SNAPSHOT.to_vec();
+    bytes[ACTIVE_SNAPSHOT.len() - 25] ^= 1;
+    assert!(matches!(
+        decode_snapshot(&bytes, &namespace),
+        Err(DecodeError::ChecksumMismatch { .. })
+    ));
+    let mut bytes = ACTIVE_SNAPSHOT.to_vec();
+    let footer_crc = bytes.len() - 1;
+    bytes[footer_crc] ^= 1;
+    assert!(matches!(
+        decode_snapshot(&bytes, &namespace),
+        Err(DecodeError::ChecksumMismatch { .. })
+    ));
+    assert!(matches!(
+        decode_snapshot(&ACTIVE_SNAPSHOT[..ACTIVE_SNAPSHOT.len() - 1], &namespace),
+        Err(DecodeError::Truncated { .. })
+    ));
+    let mut bytes = ACTIVE_SNAPSHOT.to_vec();
+    bytes.push(0);
+    assert!(matches!(
+        decode_snapshot(&bytes, &namespace),
+        Err(DecodeError::TrailingBytes { .. })
+    ));
+}
+
+/// Scenario: Snapshot magic, format version, or reserved flags are invalid.
+/// Guarantees: Snapshot headers use a closed versioned envelope before record decoding.
+#[test]
+fn snapshot_header_discriminants_are_rejected() {
+    let namespace = namespace_digest("app-logs").unwrap();
+    let mut magic = ACTIVE_SNAPSHOT.to_vec();
+    magic[0] ^= 1;
+    assert!(matches!(
+        decode_snapshot(&magic, &namespace),
+        Err(DecodeError::BadMagic { .. })
+    ));
+    let mut version = ACTIVE_SNAPSHOT.to_vec();
+    put_u16(&mut version, 8, 2);
+    assert!(matches!(
+        decode_snapshot(&version, &namespace),
+        Err(DecodeError::UnsupportedVersion { .. })
+    ));
+    let mut flags = ACTIVE_SNAPSHOT.to_vec();
+    put_u16(&mut flags, 10, 1);
+    assert!(matches!(
+        decode_snapshot(&flags, &namespace),
+        Err(DecodeError::ReservedFieldNonZero { .. })
+    ));
+}
+
+/// Scenario: A snapshot record declares an excessive or unavailable payload length.
+/// Guarantees: Absolute bounds are checked before slicing and remaining-byte checks fail safely.
+#[test]
+fn snapshot_record_lengths_are_bounded_before_slicing() {
+    let namespace = namespace_digest("app-logs").unwrap();
+    let mut bytes = ACTIVE_SNAPSHOT.to_vec();
+    put_u32(&mut bytes, 60, 69_855);
+    assert!(matches!(
+        decode_snapshot(&bytes, &namespace),
+        Err(DecodeError::LengthExceedsMaximum { .. })
+    ));
+    let mut bytes = ACTIVE_SNAPSHOT.to_vec();
+    put_u32(&mut bytes, 60, 500);
+    assert!(matches!(
+        decode_snapshot(&bytes, &namespace),
+        Err(DecodeError::Truncated { .. })
+    ));
+}
+
+/// Scenario: A snapshot repeats an exact record frame.
+/// Guarantees: Duplicate file IDs are rejected globally instead of last-write-wins decoding.
+#[test]
+fn duplicate_snapshot_file_id_is_rejected() {
+    let frame = active_record_frame();
+    let bytes = snapshot_from_frames(&[frame.clone(), frame]);
+    let namespace = namespace_digest("app-logs").unwrap();
+    assert!(matches!(
+        decode_snapshot(&bytes, &namespace),
+        Err(DecodeError::DuplicateFileId { .. })
+    ));
+}
+
+/// Scenario: Two live records have distinct file IDs but claim the same POSIX locator.
+/// Guarantees: Snapshot-wide live locator uniqueness is enforced independently of record order.
+#[test]
+fn duplicate_live_snapshot_locator_is_rejected() {
+    let first = active_record_frame();
+    let mut second = first.clone();
+    second[4..20].copy_from_slice(&[0xAA; 16]);
+    refresh_record_crc(&mut second);
+    let bytes = snapshot_from_frames(&[first, second]);
+    let namespace = namespace_digest("app-logs").unwrap();
+    assert!(matches!(
+        decode_snapshot(&bytes, &namespace),
+        Err(DecodeError::DuplicateLiveLocator { .. })
+    ));
+}
+
+/// Scenario: A snapshot record carries an unknown locator kind or durable Unspecified locator.
+/// Guarantees: Locator discriminants are closed and reachable durable records require concrete identity.
+#[test]
+fn invalid_snapshot_locator_is_rejected() {
+    let namespace = namespace_digest("app-logs").unwrap();
+    let mut unknown = active_record_frame();
+    unknown[88] = 9;
+    refresh_record_crc(&mut unknown);
+    assert!(matches!(
+        decode_snapshot(&snapshot_from_frames(&[unknown]), &namespace),
+        Err(DecodeError::UnknownDiscriminant { .. })
+    ));
+
+    let frame = active_record_frame();
+    let mut payload = frame[4..frame.len() - 4].to_vec();
+    drop(payload.drain(85..101));
+    payload[84] = 0;
+    let unspecified = resize_record_payload(frame, payload);
+    assert!(matches!(
+        decode_snapshot(&snapshot_from_frames(&[unspecified]), &namespace),
+        Err(DecodeError::InvalidSnapshotState { .. })
+    ));
+}
+
+/// Scenario: Snapshot lifecycle or framing-resume discriminants and shapes are invalid.
+/// Guarantees: Unknown lifecycle values and locally unreachable continuation state fail closed.
+#[test]
+fn invalid_snapshot_lifecycle_and_resume_are_rejected() {
+    let namespace = namespace_digest("app-logs").unwrap();
+    let mut lifecycle = active_record_frame();
+    lifecycle[140] = 9;
+    refresh_record_crc(&mut lifecycle);
+    assert!(matches!(
+        decode_snapshot(&snapshot_from_frames(&[lifecycle]), &namespace),
+        Err(DecodeError::UnknownDiscriminant { .. })
+    ));
+
+    let frame = active_record_frame();
+    let mut payload = frame[4..frame.len() - 4].to_vec();
+    payload[135] = 1;
+    drop(payload.splice(136..136, [0u8; 20]));
+    let invalid_resume = resize_record_payload(frame, payload);
+    assert!(matches!(
+        decode_snapshot(&snapshot_from_frames(&[invalid_resume]), &namespace),
+        Err(DecodeError::InvalidSnapshotState { .. })
+    ));
+}
+
+/// Scenario: An in-memory Active record incorrectly carries quarantine evidence.
+/// Guarantees: The encoder rejects the impossible presence shape rather than emitting ambiguous bytes.
+#[test]
+fn invalid_quarantine_presence_shape_is_rejected() {
+    let namespace = namespace_digest("app-logs").unwrap();
+    let mut record = decode_snapshot(ACTIVE_SNAPSHOT, &namespace)
+        .unwrap()
+        .records
+        .remove(0);
+    record.quarantine_evidence = Some(QuarantineEvidence {
+        reason_code: 1,
+        observed_size: 0,
+        quarantine_epoch: record.file_epoch,
+        quarantine_time_unix_nano: 0,
+    });
+    assert!(matches!(
+        encode_snapshot(1, "app-logs", &[record]),
+        Err(EncodeError::InvalidSnapshotState { .. })
+    ));
+}
+
+/// Scenario: Current-version encoders receive reserved quarantine or removal reason codes.
+/// Guarantees: Encoders never produce reserved diagnostic values even though decoders keep reason fields opaque.
+#[test]
+fn encoder_rejects_reserved_reason_codes() {
+    let namespace = namespace_digest("app-logs").unwrap();
+    let fixture = include_bytes!("fixtures/snapshot-quarantined.bin");
+    let mut record = decode_snapshot(fixture, &namespace)
+        .unwrap()
+        .records
+        .remove(0);
+    record.quarantine_evidence.as_mut().unwrap().reason_code = 0;
+    assert!(matches!(
+        encode_snapshot(7, "app-logs", &[record]),
+        Err(EncodeError::ReservedReasonCode { .. })
+    ));
+
+    let mut quarantine = decode_operation(include_bytes!("fixtures/operation-quarantine-file.bin"))
+        .unwrap()
+        .0;
+    let Operation::QuarantineFile(operation) = &mut quarantine else {
+        panic!("fixture must be quarantine_file");
+    };
+    operation.reason_code = 4;
+    assert!(matches!(
+        otel_arrow_dfe_filelog_checkpoint::encode_operation(&quarantine),
+        Err(EncodeError::ReservedReasonCode { .. })
+    ));
+
+    let mut remove = decode_operation(include_bytes!("fixtures/operation-remove-file.bin"))
+        .unwrap()
+        .0;
+    let Operation::RemoveFile(operation) = &mut remove else {
+        panic!("fixture must be remove_file");
+    };
+    operation.removal_reason = 0;
+    assert!(matches!(
+        otel_arrow_dfe_filelog_checkpoint::encode_operation(&remove),
+        Err(EncodeError::ReservedReasonCode { .. })
+    ));
+}
+
+/// Scenario: Advisory-path bytes contain an unknown kind inside an otherwise CRC-valid record.
+/// Guarantees: Malformed path representations are rejected after bounded record parsing.
+#[test]
+fn malformed_advisory_path_is_rejected() {
+    let mut frame = active_record_frame();
+    frame[149] = 9;
+    refresh_record_crc(&mut frame);
+    let namespace = namespace_digest("app-logs").unwrap();
+    assert!(matches!(
+        decode_snapshot(&snapshot_from_frames(&[frame]), &namespace),
+        Err(DecodeError::UnknownDiscriminant { .. })
+    ));
+}
+
+/// Scenario: Snapshot record/footer lengths or count echoes disagree under valid local CRCs.
+/// Guarantees: Self-delimiting records consume exactly their payload and footer summaries match the file.
+#[test]
+fn snapshot_unconsumed_record_and_footer_mismatches_are_rejected() {
+    let namespace = namespace_digest("app-logs").unwrap();
+    let frame = active_record_frame();
+    let mut payload = frame[4..frame.len() - 4].to_vec();
+    payload.push(0);
+    let extended = resize_record_payload(frame, payload);
+    assert!(matches!(
+        decode_snapshot(&snapshot_from_frames(&[extended]), &namespace),
+        Err(DecodeError::UnconsumedBytes { .. })
+    ));
+
+    for (offset, value) in [(281, 0u64), (289, 2u64)] {
+        let mut bytes = ACTIVE_SNAPSHOT.to_vec();
+        if offset == 281 {
+            put_u64(&mut bytes, offset, value);
+        } else {
+            put_u32(&mut bytes, offset, value as u32);
+        }
+        let footer_start = bytes.len() - 24;
+        let checksum = crc32c(&bytes[footer_start..footer_start + 20]);
+        let crc_offset = bytes.len() - 4;
+        put_u32(&mut bytes, crc_offset, checksum);
+        assert!(matches!(
+            decode_snapshot(&bytes, &namespace),
+            Err(DecodeError::UnconsumedBytes { .. })
+        ));
+    }
+}
+
+/// Scenario: A snapshot stores a nonzero future framing-profile structural version.
+/// Guarantees: PR1A preserves opaque nonzero versions for later compatibility comparison instead of guessing support.
+#[test]
+fn future_framing_profile_version_is_structurally_preserved() {
+    let mut frame = active_record_frame();
+    put_u16(&mut frame, 105, 2);
+    refresh_record_crc(&mut frame);
+    let namespace = namespace_digest("app-logs").unwrap();
+    let snapshot = decode_snapshot(&snapshot_from_frames(&[frame]), &namespace).unwrap();
+    assert_eq!(snapshot.records[0].framing_profile_version, 2);
+}
+
+/// Scenario: WAL header magic, version, flags, and checksum are corrupted.
+/// Guarantees: Every fixed WAL header field is validated before transaction scanning.
+#[test]
+fn wal_header_corruption_is_rejected() {
+    let fixture = include_bytes!("fixtures/wal-header.bin");
+    assert!(matches!(
+        decode_wal_header(&fixture[..55]),
+        Err(DecodeError::InvalidLength { .. })
+    ));
+    for (offset, expected) in [(0, "magic"), (8, "version"), (10, "flags"), (55, "crc")] {
+        let mut bytes = fixture.to_vec();
+        bytes[offset] ^= 1;
+        let error = decode_wal_header(&bytes).unwrap_err();
+        match expected {
+            "magic" => assert!(matches!(error, DecodeError::BadMagic { .. })),
+            "version" => assert!(matches!(error, DecodeError::UnsupportedVersion { .. })),
+            "flags" => assert!(matches!(error, DecodeError::ReservedFieldNonZero { .. })),
+            _ => assert!(matches!(error, DecodeError::ChecksumMismatch { .. })),
+        }
+    }
+}
+
+/// Scenario: Operation framing has an excessive length, missing declared bytes, or bad CRC.
+/// Guarantees: Operation bounds precede slicing and complete corrupt frames are never salvaged.
+#[test]
+fn operation_length_and_crc_corruption_is_rejected() {
+    let mut excessive = Vec::from((131_096u32).to_be_bytes());
+    assert!(matches!(
+        decode_operation(&excessive),
+        Err(DecodeError::LengthExceedsMaximum { .. })
+    ));
+    put_u32(&mut excessive, 0, 100);
+    assert!(matches!(
+        decode_operation(&excessive),
+        Err(DecodeError::Truncated { .. })
+    ));
+    let mut bad_crc = PROGRESS_OP.to_vec();
+    let last = bad_crc.len() - 1;
+    bad_crc[last] ^= 1;
+    assert!(matches!(
+        decode_operation(&bad_crc),
+        Err(DecodeError::ChecksumMismatch { .. })
+    ));
+}
+
+/// Scenario: An operation has an unknown code or invalid boolean discriminant under a valid CRC.
+/// Guarantees: Operation code and boolean spaces are closed rather than interpreted by truthiness.
+#[test]
+fn operation_discriminants_are_rejected() {
+    let mut unknown = PROGRESS_OP.to_vec();
+    unknown[4] = 0xFF;
+    refresh_operation_crc(&mut unknown);
+    assert!(matches!(
+        decode_operation(&unknown),
+        Err(DecodeError::UnknownDiscriminant { .. })
+    ));
+    let mut invalid_bool = PROGRESS_OP.to_vec();
+    let bool_offset = invalid_bool.len() - 5;
+    invalid_bool[bool_offset] = 2;
+    refresh_operation_crc(&mut invalid_bool);
+    assert!(matches!(
+        decode_operation(&invalid_bool),
+        Err(DecodeError::UnknownDiscriminant { .. })
+    ));
+}
+
+/// Scenario: Nested resume, action, lifecycle, and presence discriminants are outside v1.
+/// Guarantees: Every operation-local tagged value and reserved bit is closed under valid frame CRCs.
+#[test]
+fn nested_operation_discriminants_are_rejected() {
+    let mut resume = PROGRESS_OP.to_vec();
+    resume[75] = 9;
+    refresh_operation_crc(&mut resume);
+    assert!(matches!(
+        decode_operation(&resume),
+        Err(DecodeError::UnknownDiscriminant { .. })
+    ));
+
+    let mut action =
+        include_bytes!("fixtures/operation-reset-quarantined-keep-failed.bin").to_vec();
+    action[25] = 9;
+    refresh_operation_crc(&mut action);
+    assert!(matches!(
+        decode_operation(&action),
+        Err(DecodeError::UnknownDiscriminant { .. })
+    ));
+
+    let mut lifecycle = include_bytes!("fixtures/operation-remove-file.bin").to_vec();
+    lifecycle[25] = 0;
+    refresh_operation_crc(&mut lifecycle);
+    assert!(matches!(
+        decode_operation(&lifecycle),
+        Err(DecodeError::UnknownDiscriminant { .. })
+    ));
+
+    let mut presence = METADATA_OP.to_vec();
+    presence[26] = 2;
+    refresh_operation_crc(&mut presence);
+    assert!(matches!(
+        decode_operation(&presence),
+        Err(DecodeError::ReservedFieldNonZero { .. })
+    ));
+}
+
+/// Scenario: An operation payload has a valid CRC but carries one undefined extension byte.
+/// Guarantees: Version 1 consumes every length-delimited payload byte and cannot silently ignore extensions.
+#[test]
+fn operation_unconsumed_extension_is_rejected() {
+    let payload = &PROGRESS_OP[4..PROGRESS_OP.len() - 4];
+    let mut extended = payload.to_vec();
+    extended.push(0);
+    assert!(matches!(
+        decode_operation(&operation_from_payload(&extended)),
+        Err(DecodeError::UnconsumedBytes { .. })
+    ));
+}
+
+/// Scenario: Both fingerprint length fields use their full u16 structural range.
+/// Guarantees: The 131,095-byte structural operation maximum is accepted without confusing it with the 131,094-byte semantic maximum.
+#[test]
+fn structural_maximum_fingerprint_operation_is_bounded_and_decodable() {
+    let mut payload = Vec::with_capacity(131_095);
+    payload.push(4);
+    payload.extend_from_slice(&[0x22; 16]);
+    payload.extend_from_slice(&1u32.to_be_bytes());
+    payload.extend_from_slice(&u16::MAX.to_be_bytes());
+    payload.extend_from_slice(&vec![0xAA; usize::from(u16::MAX)]);
+    payload.extend_from_slice(&u16::MAX.to_be_bytes());
+    payload.extend_from_slice(&vec![0xBB; usize::from(u16::MAX)]);
+    assert_eq!(payload.len(), 131_095);
+    let bytes = operation_from_payload(&payload);
+    assert!(matches!(
+        decode_operation(&bytes),
+        Ok((Operation::UpdateFingerprint(_), _))
+    ));
+}
+
+/// Scenario: Transaction headers carry bad complements, flags, versions, CRCs, or body bounds.
+/// Guarantees: A complete header is fully validated before its declared body can be called torn.
+#[test]
+fn transaction_header_corruption_is_rejected_before_torn_tail() {
+    let mut bytes = MIN_TX.to_vec();
+    bytes[24] ^= 1;
+    assert!(matches!(
+        scan_transactions(&bytes),
+        Err(DecodeError::LengthComplementMismatch { .. })
+    ));
+    let mut bytes = MIN_TX.to_vec();
+    put_u16(&mut bytes, 10, 1);
+    assert!(matches!(
+        scan_transactions(&bytes),
+        Err(DecodeError::ReservedFieldNonZero { .. })
+    ));
+    let mut bytes = MIN_TX.to_vec();
+    put_u16(&mut bytes, 8, 2);
+    assert!(matches!(
+        scan_transactions(&bytes),
+        Err(DecodeError::UnsupportedVersion { .. })
+    ));
+    let mut bytes = MIN_TX.to_vec();
+    bytes[35] ^= 1;
+    assert!(matches!(
+        scan_transactions(&bytes),
+        Err(DecodeError::ChecksumMismatch { .. })
+    ));
+    for body_len in [33u32, 16 * 1024 * 1024 + 1] {
+        let mut bytes = MIN_TX.to_vec();
+        put_u32(&mut bytes, 20, body_len);
+        put_u32(&mut bytes, 24, !body_len);
+        refresh_transaction_crcs(&mut bytes);
+        assert!(matches!(
+            scan_transactions(&bytes),
+            Err(DecodeError::TransactionBodyOutOfBounds { .. })
+        ));
+    }
+}
+
+/// Scenario: The final suffix is shorter than a header or shorter than a valid header's declared frame.
+/// Guarantees: Only mechanically incomplete final transactions are classified as torn tails.
+#[test]
+fn incomplete_final_transaction_is_the_only_torn_tail() {
+    let short = scan_transactions(&MIN_TX[..35]).unwrap();
+    assert_eq!(short.torn_tail_bytes, 35);
+    assert!(short.transactions.is_empty());
+    let missing_frame_crc = scan_transactions(&MIN_TX[..MIN_TX.len() - 1]).unwrap();
+    assert_eq!(missing_frame_crc.torn_tail_bytes, MIN_TX.len() - 1);
+    assert!(missing_frame_crc.transactions.is_empty());
+}
+
+/// Scenario: A CRC-valid out-of-sequence header is followed by an incomplete body.
+/// Guarantees: Sequence corruption is reported before incomplete-body torn-tail classification.
+#[test]
+fn wrong_sequence_header_with_incomplete_body_is_corruption() {
+    let mut bytes = MIN_TX.to_vec();
+    put_u64(&mut bytes, 12, 2);
+    refresh_transaction_crcs(&mut bytes);
+    bytes.truncate(40);
+    assert!(matches!(
+        scan_transactions(&bytes),
+        Err(DecodeError::SequenceOutOfOrder { .. })
+    ));
+}
+
+/// Scenario: A complete final transaction has a bad frame CRC or a bad enclosed operation CRC.
+/// Guarantees: Complete corruption is never expanded into automatic torn-tail salvage.
+#[test]
+fn complete_bad_crc_transaction_is_corruption() {
+    let mut frame_crc = MIN_TX.to_vec();
+    let last = frame_crc.len() - 1;
+    frame_crc[last] ^= 1;
+    assert!(matches!(
+        scan_transactions(&frame_crc),
+        Err(DecodeError::ChecksumMismatch { .. })
+    ));
+
+    let mut operation_crc = MIN_TX.to_vec();
+    operation_crc[MIN_TX.len() - 5] ^= 1;
+    let frame_crc_offset = operation_crc.len() - 4;
+    let checksum = crc32c(&operation_crc[..frame_crc_offset]);
+    put_u32(&mut operation_crc, frame_crc_offset, checksum);
+    assert!(matches!(
+        scan_transactions(&operation_crc),
+        Err(DecodeError::ChecksumMismatch { .. })
+    ));
+}
+
+/// Scenario: First or later transaction sequence is zero, gapped, or repeated.
+/// Guarantees: The scanner owns strict one-based sequence structure across the complete suffix.
+#[test]
+fn transaction_sequence_zero_gap_and_repeat_are_rejected() {
+    for sequence in [0u64, 2] {
+        let mut bytes = MIN_TX.to_vec();
+        put_u64(&mut bytes, 12, sequence);
+        refresh_transaction_crcs(&mut bytes);
+        assert!(matches!(
+            scan_transactions(&bytes),
+            Err(DecodeError::SequenceOutOfOrder { .. })
+        ));
+    }
+    let mut repeated = MIN_TX.to_vec();
+    repeated.extend_from_slice(MIN_TX);
+    assert!(matches!(
+        scan_transactions(&repeated),
+        Err(DecodeError::SequenceOutOfOrder { .. })
+    ));
+}
+
+/// Scenario: A transaction declares zero operations or mixes progress and non-progress operations.
+/// Guarantees: Atomic transaction classes cannot be empty or cross the progress/non-progress boundary.
+#[test]
+fn empty_and_mixed_transactions_are_rejected() {
+    let mut empty = MIN_TX.to_vec();
+    put_u16(&mut empty, 28, 0);
+    refresh_transaction_crcs(&mut empty);
+    assert!(matches!(
+        scan_transactions(&empty),
+        Err(DecodeError::EmptyTransaction { .. })
+    ));
+    let mixed = transaction_from_operations(&[PROGRESS_OP, METADATA_OP]);
+    assert!(matches!(
+        scan_transactions(&mixed),
+        Err(DecodeError::MixedTransactionClass { .. })
+    ));
+}
+
+/// Scenario: A progress-only transaction repeats one file key.
+/// Guarantees: Duplicate progress keys are rejected before a consumer can apply ambiguous updates.
+#[test]
+fn duplicate_progress_file_id_is_rejected() {
+    let duplicate = transaction_from_operations(&[PROGRESS_OP, PROGRESS_OP]);
+    assert!(matches!(
+        scan_transactions(&duplicate),
+        Err(DecodeError::DuplicateProgressFileId { .. })
+    ));
+}
+
+/// Scenario: A non-progress transaction contains 257 individually valid operations.
+/// Guarantees: The tighter non-progress count limit is enforced after class determination.
+#[test]
+fn non_progress_operation_count_boundary_is_rejected() {
+    let operations: Vec<&[u8]> = (0..257).map(|_| METADATA_OP).collect();
+    let bytes = transaction_from_operations(&operations);
+    assert!(matches!(
+        scan_transactions(&bytes),
+        Err(DecodeError::TooManyOperations { max: 256, .. })
+    ));
+}
+
+/// Scenario: A transaction body contains two operations while op_count declares one.
+/// Guarantees: Transaction bodies must be consumed exactly and cannot hide uncounted operations.
+#[test]
+fn transaction_body_and_operation_count_must_agree() {
+    let mut bytes = transaction_from_operations(&[METADATA_OP, METADATA_OP]);
+    put_u16(&mut bytes, 28, 1);
+    refresh_transaction_crcs(&mut bytes);
+    assert!(matches!(
+        scan_transactions(&bytes),
+        Err(DecodeError::UnconsumedBytes { .. })
+    ));
+}
+
+/// Scenario: A transaction declares or attempts to encode a 4,097th progress operation.
+/// Guarantees: Both decoder and encoder reject the operation-count boundary before application.
+#[test]
+fn progress_operation_count_boundary_is_rejected() {
+    let max_fixture = include_bytes!("fixtures/transaction-max-progress.bin");
+    let mut declared = max_fixture.to_vec();
+    put_u16(&mut declared, 28, WAL_MAX_OPS_PER_TX + 1);
+    refresh_transaction_crcs(&mut declared);
+    assert!(matches!(
+        scan_transactions(&declared),
+        Err(DecodeError::TooManyOperations { .. })
+    ));
+
+    let mut transaction = scan_transactions(max_fixture)
+        .unwrap()
+        .transactions
+        .remove(0);
+    let mut extra = transaction.operations[0].clone();
+    let Operation::UpdateProgress(progress) = &mut extra else {
+        panic!("boundary fixture must be progress-only");
+    };
+    progress.file_id = FileId::from_bytes([0xFF; 16]);
+    transaction.operations.push(extra);
+    assert!(matches!(
+        encode_transaction(&transaction),
+        Err(EncodeError::TooManyOperations { .. })
+    ));
+}
+
+/// Scenario: A complete transaction encloses an unknown operation with recomputed outer CRC.
+/// Guarantees: Outer integrity cannot make an unsupported operation code acceptable.
+#[test]
+fn unknown_operation_in_complete_transaction_is_rejected() {
+    let mut operation = PROGRESS_OP.to_vec();
+    operation[4] = 0xFE;
+    refresh_operation_crc(&mut operation);
+    let bytes = transaction_from_operations(&[&operation]);
+    assert!(matches!(
+        scan_transactions(&bytes),
+        Err(DecodeError::UnknownDiscriminant { .. })
+    ));
+}
+
+/// Scenario: Constructed transactions have no operations or mix transaction classes.
+/// Guarantees: Encoder-side validation mirrors structural class rules before writing bytes.
+#[test]
+fn encoder_rejects_empty_and_mixed_transactions() {
+    let empty = Transaction {
+        sequence: 1,
+        operations: Vec::new(),
+    };
+    assert!(matches!(
+        encode_transaction(&empty),
+        Err(EncodeError::EmptyTransaction { .. })
+    ));
+    let progress = decode_operation(PROGRESS_OP).unwrap().0;
+    let metadata = decode_operation(METADATA_OP).unwrap().0;
+    let mixed = Transaction {
+        sequence: 1,
+        operations: vec![progress, metadata],
+    };
+    assert!(matches!(
+        encode_transaction(&mixed),
+        Err(EncodeError::MixedTransactionClass { .. })
+    ));
+}
+
+/// Scenario: A malformed metadata operation carries an unknown advisory-path kind under a valid CRC.
+/// Guarantees: Nested variable structures retain closed discriminants within operation framing.
+#[test]
+fn malformed_operation_advisory_path_is_rejected() {
+    let mut operation = METADATA_OP.to_vec();
+    operation[35] = 9;
+    refresh_operation_crc(&mut operation);
+    assert!(matches!(
+        decode_operation(&operation),
+        Err(DecodeError::UnknownDiscriminant { .. })
+    ));
+}
+
+/// Scenario: Administrative string fields are forbidden, missing, or invalid UTF-8.
+/// Guarantees: Presence coupling, required nonempty audit data, and UTF-8 validation are structural.
+#[test]
+fn administrative_string_shapes_are_rejected() {
+    let remove = include_bytes!("fixtures/operation-remove-file.bin");
+    let mut forbidden = remove.to_vec();
+    forbidden[36] = 0;
+    refresh_operation_crc(&mut forbidden);
+    assert!(matches!(
+        decode_operation(&forbidden),
+        Err(DecodeError::UnexpectedPresentField { .. })
+    ));
+
+    let mut invalid_utf8 = remove.to_vec();
+    invalid_utf8[39] = 0xFF;
+    refresh_operation_crc(&mut invalid_utf8);
+    assert!(matches!(
+        decode_operation(&invalid_utf8),
+        Err(DecodeError::InvalidUtf8 { .. })
+    ));
+
+    let keep = include_bytes!("fixtures/operation-reset-quarantined-keep-failed.bin");
+    let payload = &keep[4..keep.len() - 4];
+    let mut empty_audit = payload[..105].to_vec();
+    empty_audit.extend_from_slice(&0u16.to_be_bytes());
+    assert!(matches!(
+        decode_operation(&operation_from_payload(&empty_audit)),
+        Err(DecodeError::EmptyRequiredField { .. })
+    ));
+}
+
+/// Scenario: A finalized snapshot record is changed to a continuation resume in memory.
+/// Guarantees: Finalized records remain clean even when all fields are otherwise representable.
+#[test]
+fn finalized_snapshot_requires_clean_resume() {
+    let fixture = include_bytes!("fixtures/snapshot-rotated-finalized.bin");
+    let namespace = namespace_digest("app-logs").unwrap();
+    let mut record: SnapshotRecord = decode_snapshot(fixture, &namespace)
+        .unwrap()
+        .records
+        .remove(0);
+    record.framing_resume = otel_arrow_dfe_filelog_checkpoint::FramingResume::Continuation {
+        record_start_offset: 0,
+        record_end_offset: 2,
+        next_fragment_index: 1,
+    };
+    record.committed_offset = 1;
+    record.committed_frontier_guard =
+        otel_arrow_dfe_filelog_checkpoint::CommittedFrontierGuard::compute(1, b"x").unwrap();
+    assert!(matches!(
+        encode_snapshot(7, "app-logs", &[record]),
+        Err(EncodeError::InvalidSnapshotState { .. })
+    ));
+}
+
+/// Scenario: A decoded active fixture is assigned Unspecified in memory.
+/// Guarantees: Snapshot encoder and decoder apply the same non-Unspecified durable locator invariant.
+#[test]
+fn snapshot_encoder_rejects_unspecified_locator() {
+    let namespace = namespace_digest("app-logs").unwrap();
+    let mut record = decode_snapshot(ACTIVE_SNAPSHOT, &namespace)
+        .unwrap()
+        .records
+        .remove(0);
+    record.locator = Locator::Unspecified;
+    assert!(matches!(
+        encode_snapshot(7, "app-logs", &[record]),
+        Err(EncodeError::InvalidSnapshotState { .. })
+    ));
+}
+
+/// Scenario: Snapshot bytes are valid but belong to a different namespace.
+/// Guarantees: Namespace binding fails before any record can be consumed by the caller.
+#[test]
+fn snapshot_namespace_mismatch_is_rejected() {
+    let other = namespace_digest("other").unwrap();
+    assert!(matches!(
+        decode_snapshot(ACTIVE_SNAPSHOT, &other),
+        Err(DecodeError::NamespaceMismatch { .. })
+    ));
+}
