@@ -121,7 +121,7 @@ pub static TRAFFIC_GENERATOR_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFact
     validate_config: validate_config,
 };
 
-/// Validates the Traffic Generator exporter configuration at config load time.
+/// Validates the Traffic Generator receiver configuration at config load time.
 ///
 /// Runs before any node is started (initial load and live reconfigure), so bad
 /// configuration is rejected fast and attributed to the offending node rather
@@ -1882,6 +1882,8 @@ mod tests {
             .run_validation(validation);
     }
 
+    /// Scenario: Receiver config validation accepts configs with at least one non-zero signal weight and rejects configs where all weights are zero.
+    /// Guarantees: validate_config returns Ok for a valid config and InvalidUserConfig for an all-zero-weight config.
     #[test]
     fn test_config_validation() {
         let valid_config = json!({
