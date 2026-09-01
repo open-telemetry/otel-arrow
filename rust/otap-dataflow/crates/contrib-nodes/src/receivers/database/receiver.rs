@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Small shared polling receiver core.
+//! Shared polling receiver core.
 
 use super::driver::{DriverAdapter, DriverCancellation};
 use super::otlp::{rows_to_pdata, validate_mapping};

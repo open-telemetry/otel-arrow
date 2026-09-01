@@ -18,7 +18,6 @@ use std::sync::{Arc, Mutex, OnceLock};
 // Oracle client initialization is process-global. The mutex only serializes
 // the one-time directory choice when multiple pipeline instances start.
 static ORACLE_CLIENT_DIRECTORY: OnceLock<Mutex<Option<String>>> = OnceLock::new();
-const MAX_CREDENTIAL_BYTES: u64 = 64 * 1024;
 const MAX_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[derive(Clone)]
@@ -204,7 +203,6 @@ impl DriverAdapter for OracleAdapter {
         match error {
             OracleAdapterError::Connect(_) => ReceiverErrorKind::Connect,
             OracleAdapterError::Credential { .. }
-            | OracleAdapterError::CredentialTooLarge(_)
             | OracleAdapterError::CredentialNotRegularFile(_)
             | OracleAdapterError::InvalidCredentialEncoding(_)
             | OracleAdapterError::EmptyCredential(_)
@@ -445,7 +443,7 @@ fn read_credential(path: &str, kind: &'static str) -> Result<String, OracleAdapt
     if !metadata.is_file() {
         return Err(OracleAdapterError::CredentialNotRegularFile(kind));
     }
-    let file = std::fs::File::open(path)
+    let mut file = std::fs::File::open(path)
         .map_err(|source| OracleAdapterError::Credential { kind, source })?;
     if !file
         .metadata()
@@ -454,14 +452,10 @@ fn read_credential(path: &str, kind: &'static str) -> Result<String, OracleAdapt
     {
         return Err(OracleAdapterError::CredentialNotRegularFile(kind));
     }
-    let mut bytes = Vec::with_capacity(metadata.len().min(MAX_CREDENTIAL_BYTES) as usize);
+    let mut bytes = Vec::new();
     _ = file
-        .take(MAX_CREDENTIAL_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(|source| OracleAdapterError::Credential { kind, source })?;
-    if bytes.len() as u64 > MAX_CREDENTIAL_BYTES {
-        return Err(OracleAdapterError::CredentialTooLarge(kind));
-    }
     let mut value = String::from_utf8(bytes)
         .map_err(|_| OracleAdapterError::InvalidCredentialEncoding(kind))?;
     while value.ends_with(['\r', '\n']) {
@@ -611,9 +605,6 @@ pub enum OracleAdapterError {
         #[source]
         source: std::io::Error,
     },
-    /// A mounted credential file exceeds the fixed file-size ceiling.
-    #[error("Oracle {0} file exceeds the credential size limit")]
-    CredentialTooLarge(&'static str),
     /// A mounted credential path is not a regular file.
     #[error("Oracle {0} path must reference a regular file")]
     CredentialNotRegularFile(&'static str),

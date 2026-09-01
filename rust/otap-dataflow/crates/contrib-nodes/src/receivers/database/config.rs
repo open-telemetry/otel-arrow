@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Small database-neutral polling configuration.
+//! Database-neutral polling configuration.
 
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};

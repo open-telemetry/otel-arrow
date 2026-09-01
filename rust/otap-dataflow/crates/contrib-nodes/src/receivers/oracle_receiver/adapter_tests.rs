@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::{
-    CellValue, MAX_CREDENTIAL_BYTES, OracleAdapterError, OracleType, bounded_connect_string,
-    finite_float, read_credential, validate_types,
+    CellValue, OracleAdapterError, OracleType, bounded_connect_string, finite_float,
+    read_credential, validate_types,
 };
 use std::fs;
 use std::time::Duration;
@@ -83,21 +83,4 @@ fn rejects_non_utf8_credential() {
         read_credential(path.to_str().expect("UTF-8 path"), "password"),
         Err(OracleAdapterError::InvalidCredentialEncoding("password"))
     ));
-}
-
-/// Scenario: A mounted credential exceeds the shared credential-file size limit.
-/// Guarantees: Credential loading is bounded and its error does not disclose the configured path.
-#[test]
-fn rejects_oversized_credential_without_disclosing_path() {
-    let directory = tempfile::tempdir().expect("temporary directory");
-    let path = directory.path().join("sensitive-password-path");
-    fs::write(&path, vec![b'x'; MAX_CREDENTIAL_BYTES as usize + 1]).expect("write credential");
-
-    let error = read_credential(path.to_str().expect("UTF-8 path"), "password")
-        .expect_err("oversized credential should fail");
-    assert!(matches!(
-        error,
-        OracleAdapterError::CredentialTooLarge("password")
-    ));
-    assert!(!error.to_string().contains("sensitive-password-path"));
 }

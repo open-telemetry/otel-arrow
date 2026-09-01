@@ -150,15 +150,15 @@ authentication:
 Single quotes are intentional: environment substitution occurs before YAML
 parsing, and single-quoted YAML preserves Windows path backslashes.
 
-Credential paths must reference regular UTF-8 files no larger than 64 KiB.
-Keeping credential contents outside the YAML prevents environment substitution,
-debug output, and effective-configuration snapshots from materializing the
-username or password. `source_id` is limited to 256 bytes, and `query.timeout`
-must be between 1 millisecond and 5 minutes. Initial network connection attempts
-are capped at 10 seconds because Oracle cannot interrupt a connection attempt
-before the native client returns a connection handle. Multi-address Easy
-Connect strings and `retry_count` or `retry_delay` parameters are therefore
-rejected in this foundation.
+Credential paths must reference regular UTF-8 files. Keeping credential
+contents outside the YAML prevents environment substitution, debug output, and
+effective-configuration snapshots from materializing the username or password.
+`source_id` is limited to 256 bytes, and `query.timeout` must be between 1
+millisecond and 5 minutes. Initial network connection attempts are capped at 10
+seconds because Oracle cannot interrupt a connection attempt before the native
+client returns a connection handle. Multi-address Easy Connect strings and
+`retry_count` or `retry_delay` parameters are therefore rejected in this
+foundation.
 
 The checked-in query already reads the generated table:
 
