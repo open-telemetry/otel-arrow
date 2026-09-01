@@ -205,8 +205,11 @@ jobs:
             echo ""
             echo "## Rust Crates"
             echo ""
-            (cd rust/otap-dataflow && cargo xtask crates-publish plan) |
-              jq -r --arg version "${{ inputs.version }}" '.packages[] | "- `\(.name)@\($version)`"'
+            (cd rust/otap-dataflow && cargo xtask crates-publish plan) \
+              > /tmp/crates_publish_plan.json
+            jq -r --arg version "${{ inputs.version }}" \
+              '.packages[] | "- `\(.name)@\($version)`"' \
+              /tmp/crates_publish_plan.json
             echo ""
             echo "The Rust workspace is tagged as \`rust/otap-dataflow/v${{ inputs.version }}\`."
             echo ""
@@ -226,6 +229,8 @@ jobs:
               echo "_No Rust changes in this release._"
             fi
           } > /tmp/release_content.txt
+          echo "package_count=$(jq '.packages | length' /tmp/crates_publish_plan.json)" \
+            >> "$GITHUB_OUTPUT"
 
       - name: Dry run - Show planned changes
         if: inputs.dry_run
@@ -249,7 +254,7 @@ jobs:
           - `rust/otap-dataflow/v${{ inputs.version }}` - Rust workspace tag
 
           ## crates.io
-          - **Packages**: 14 OTAP Dataflow crates in dependency order
+          - **Packages**: ${{ steps.changelog.outputs.package_count }} OTAP Dataflow crates in dependency order
           - **Authentication**: crates.io trusted publishing (OIDC)
           - Existing versions are detected and skipped.
 
