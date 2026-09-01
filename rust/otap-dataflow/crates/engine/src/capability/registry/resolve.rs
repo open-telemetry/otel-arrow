@@ -133,6 +133,7 @@ pub(crate) fn resolve_bindings(
             let prior = local_entries.insert(
                 cap_type_id,
                 ResolvedLocalEntry {
+                    extension_id: local_entry.extension_id.clone(),
                     produce: std::cell::Cell::new(Some(local_entry.produce.clone_box())),
                     tracker_consumed,
                 },
@@ -157,6 +158,7 @@ pub(crate) fn resolve_bindings(
             let prior = shared_entries.insert(
                 cap_type_id,
                 ResolvedSharedEntry {
+                    extension_id: shared_entry.extension_id.clone(),
                     produce: std::cell::Cell::new(Some(shared_entry.produce.clone_box())),
                     tracker_consumed,
                     adapt_as_local: shared_entry.adapt_as_local,

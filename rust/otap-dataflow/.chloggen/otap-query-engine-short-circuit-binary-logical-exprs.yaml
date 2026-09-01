@@ -1,4 +1,0 @@
-change_type: enhancement
-component: query-engine
-note: add short circuit optimization to OTAP query engine for binary logical expressions having different data scopes
-issues: [3817]

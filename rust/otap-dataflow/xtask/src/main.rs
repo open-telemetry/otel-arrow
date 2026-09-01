@@ -23,6 +23,7 @@ mod component_inventory;
 mod crates_publish;
 mod diagnostics;
 mod genproto;
+mod publish_policy;
 mod structure_check;
 
 #[cfg(not(tarpaulin_include))]
@@ -79,7 +80,7 @@ Tasks:
   - structure-check: Validate the entire structure of the project.
   - compile-proto: Compile the protobufs files
   - component-inventory [--check <baseline>] [--update-baseline] [--format <table|json|yaml>]: Manage and verify the component inventory baseline.
-  - crates-publish <plan|check|publish VERSION>: Plan, validate, or publish the pilot crate.
+  - crates-publish <plan|check|preflight VERSION|publish VERSION>: Plan, validate, preflight, or publish crates.io packages.
 "
     );
     Ok(())

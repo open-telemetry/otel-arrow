@@ -84,11 +84,11 @@ rustls-symcrypt = { workspace = true, optional = true }
 
 [features]
 test-utils = ["rustls/ring", "otel-arrow-dfe-pdata/testing"]
-# Integration tests that depend on the traffic_generator receiver and the
+# Integration tests that depend on development nodes and the
 # `weaver_common` crate (used to load semconv schemas). Gating these behind
 # an opt-in feature lets builds that don't need them avoid pulling weaver,
 # gix, reqwest, native-tls and (on Linux) openssl-sys into the dep graph.
-integration-tests = ["dep:weaver_common", "otel-arrow-dfe-core-nodes/dev-tools"]
+integration-tests = ["dep:weaver_common"]
 crypto-ring = ["rustls/ring", "tokio-rustls/ring"]
 crypto-aws-lc = ["rustls/aws_lc_rs", "tokio-rustls/aws-lc-rs"]
 crypto-openssl = ["dep:rustls-openssl", "tonic/tls-native-roots"]
@@ -108,6 +108,7 @@ rustls-pki-types.workspace = true
 tokio-stream.workspace = true
 otel-arrow-dfe-contrib-nodes = { workspace = true }
 otel-arrow-dfe-core-nodes = { workspace = true }
+otel-arrow-dfe-dev-nodes = { workspace = true }
 otel-arrow-dfe-test-tls-certs.workspace = true
 otel-arrow-dfe-engine = { workspace = true, features = ["test-utils"] }
 otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
@@ -115,7 +116,7 @@ otel-arrow-dfe-state = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["fmt", "std", "env-filter"] }
 wiremock = { workspace = true }
 
-# Integration tests that pull `core-nodes/dev-tools` (traffic_generator)
+# Integration tests that pull `dev-nodes` (including traffic_generator)
 # and `weaver_common`. Listing them here with `required-features` lets cargo
 # skip the test binaries entirely when the `integration-tests` feature is
 # off, keeping the test source files free of `#[cfg]` gating.
