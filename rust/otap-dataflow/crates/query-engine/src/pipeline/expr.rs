@@ -6,7 +6,7 @@
 //! # Expression Tree
 //!
 //! The expressions are planned an executed as a tree of various expression types. The input
-//! for planning is an AST of expressions from the [`data_engine_expressions`]. The planning stage
+//! for planning is an AST of expressions from the [`otel_arrow_contrib_data_engine_expressions`]. The planning stage
 //! converts this into a tree containing datafusion logical plans ([`Expr`]s). At runtime, these
 //! logical plans are converted to datafusion physical expressions
 //! ([`PhysicalExpr`s](datafusion::physical_expr::PhysicalExprRef)) during evaluation.
@@ -226,6 +226,24 @@ impl ShortCircuitStrategy {
             Self::Or => true,
             Self::NotOr => false,
         })))
+    }
+
+    /// Returns the default value to substitute when a child is absent (its data source
+    /// does not exist in the batch), or `None` if no substitution applies.
+    ///
+    /// For OR/NotOr: absent data means "no match", so we substitute `false` (the OR
+    /// identity element: `false OR B` evaluates to `B`).
+    ///
+    /// For AND/NotAnd: returns `None`. Absent data in an AND already produces the
+    /// correct "no match" result via the `should_short_circuit` check (which treats
+    /// all-false/all-null as a short-circuit to false).
+    fn absent_child_default(&self) -> Option<ScopedValue> {
+        match self {
+            Self::Or | Self::NotOr => {
+                Some(ScopedValue::new_scalar(ScalarValue::Boolean(Some(false))))
+            }
+            Self::And | Self::NotAnd => None,
+        }
     }
 
     fn invert(&self) -> Self {

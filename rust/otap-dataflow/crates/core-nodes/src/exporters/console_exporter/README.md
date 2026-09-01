@@ -119,8 +119,12 @@ RESOURCE [service.name=checkout]
 
 Aggregation temporality and monotonicity are printed before data points.
 Histograms default to compact `count`, `sum`, `avg`, `min`, and `max`
-statistics. `avg` is emitted only when both `sum` is present and `count` is
-non-zero. Percentiles are not currently estimated.
+statistics plus approximate `p50`, `p90`, and `p99` values estimated from
+available bucket data. Approximate values use the `~=` marker. `avg` is emitted
+only when both `sum` is present and `count` is non-zero. Percentiles are omitted
+for empty or bucketless histograms. If an explicit percentile lands in an
+unbounded extreme bucket without the corresponding `min` or `max`, only that
+percentile is omitted.
 
 To inspect the complete histogram representation, including explicit bounds,
 bucket counts, exponential scale, offsets, zero count, and zero threshold,
@@ -250,7 +254,7 @@ when the metric set is registered; `signal` and `error.type` are bounded
 per-measurement attributes.
 
 Console output remains best effort. The exporter ACKs a message after the
-attempt even when `outcome="failure"`, so `node.consumer.consumed.messages`
+attempt even when `outcome="failure"`, so `node.input.messages`
 describes pipeline completion while `exporter.exports.messages` describes
 the actual console export result.
 

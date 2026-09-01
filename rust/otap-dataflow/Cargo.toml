@@ -14,7 +14,7 @@ exclude = [
 resolver = "2"
 
 [workspace.package]
-version = "0.51.0"
+version = "0.53.0"
 authors = ["OpenTelemetry"]
 edition = "2024"
 repository = "https://github.com/open-telemetry/otel-arrow"
@@ -24,11 +24,12 @@ rust-version = "1.87.0"
 
 [package]
 name = "otel-arrow-dfe"
-version = "0.51.0"
+version = "0.53.0"
 description = "OTel-Arrow Dataflow Engine supporting natively OTLP and OTAP Data Formats"
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
+publish.workspace = true
 keywords = ["OpenTelemetry", "OTLP", "OTAP", "Dataflow", "Engine"]
 categories = ["asynchronous", "network-programming"]
 
@@ -42,6 +43,7 @@ otel-arrow-dfe-contrib-extensions.workspace = true
 otel-arrow-dfe-contrib-nodes.workspace = true
 otel-arrow-dfe-controller.workspace = true
 otel-arrow-dfe-core-nodes.workspace = true
+otel-arrow-dfe-dev-nodes = { workspace = true, optional = true }
 otel-arrow-dfe-engine.workspace = true
 otel-arrow-dfe-otap.workspace = true
 otel-arrow-dfe-wasm-host = { workspace = true, optional = true }
@@ -55,28 +57,30 @@ tikv-jemallocator = { workspace = true, optional = true }
 
 [workspace.dependencies]
 otel-arrow-dfe-admin-api = { path = "crates/admin-api" }
-otel-arrow-dfe-admin-types = { path = "crates/admin-types" }
-otel-arrow-dfe-pdata-otlp-macros = { path = "./crates/pdata/src/otlp/macros"}
-otel-arrow-dfe-pdata-otlp-model = { path = "./crates/pdata/src/otlp/model"}
-otel-arrow-dfe-config = { path = "crates/config" }
+otel-arrow-dfe-admin-types = { version = "0.53.0", path = "crates/admin-types" }
+otel-arrow-dfe-pdata-otlp-macros = { version = "0.53.0", path = "./crates/pdata/src/otlp/macros"}
+otel-arrow-dfe-pdata-otlp-model = { version = "0.53.0", path = "./crates/pdata/src/otlp/model"}
+otel-arrow-dfe-config = { version = "0.53.0", path = "crates/config" }
 otel-arrow-dfe-contrib-extensions = { path = "crates/contrib-extensions" }
 otel-arrow-dfe-contrib-nodes = { path = "crates/contrib-nodes" }
 otel-arrow-dfe-control-channel = { path = "crates/control-channel" }
 otel-arrow-dfe-controller = { path = "crates/controller" }
 otel-arrow-dfe-core-nodes = { path = "crates/core-nodes" }
+otel-arrow-dfe-dev-nodes = { path = "crates/dev-nodes" }
 otel-arrow-dfe-engine = { path = "crates/engine" }
-otel-arrow-dfe-expohisto = { path = "crates/expohisto" }
+otel-arrow-dfe-expohisto = { version = "0.53.0", path = "crates/expohisto" }
 otel-arrow-dfe-otap = { path = "crates/otap" }
 otel-arrow-dfe-wasm-host = { path = "crates/wasm-host" }
 otel-arrow-dfe-test-tls-certs = { path = "crates/otap-test-tls-certs" }
 otel-arrow-dfe-test-net = { path = "crates/otap-test-net" }
-otel-arrow-dfe-pdata = { path = "crates/pdata" }
-otel-arrow-dfe-pdata-views = { path = "crates/pdata-views" }
+otel-arrow-dfe-pdata = { version = "0.53.0", path = "crates/pdata" }
+otel-arrow-dfe-pdata-views = { version = "0.53.0", path = "crates/pdata-views" }
 otel-arrow-dfe-telemetry = { path = "crates/telemetry" }
-otel-arrow-dfe-quiver = { path = "crates/quiver" }
-data_engine_expressions = { path = "../experimental/query_engine/expressions" }
-data_engine_kql_parser = { path = "../experimental/query_engine/kql-parser" }
-data_engine_parser_abstractions = { path = "../experimental/query_engine/parser-abstractions"}
+otel-arrow-dfe-quiver = { version = "0.53.0", path = "crates/quiver" }
+otel-arrow-contrib-data-engine-expressions = "0.1.0"
+otel-arrow-contrib-data-engine-kql-parser = "0.1.0"
+otel-arrow-contrib-data-engine-parser-abstractions = "0.1.0"
+otel-arrow-contrib-data-engine-recordset = "0.1.0"
 
 aws-config = "1.0"
 aws-msk-iam-sasl-signer = "1.0.1"
@@ -158,11 +162,9 @@ openssl = "0.10"
 opentelemetry-proto = { version = "0.32", default-features = false, features = ["gen-tonic-messages", "logs", "trace"]}
 
 # Detector-only use: opentelemetry_sdk provides the `Resource` type and `ResourceDetector` trait;
-# opentelemetry provides the `Key`/`Value` types those resources hold. Both use
-# `default-features = false` to drop trace/metrics/logs. Two caveats keep this from being fully slim
-# today: opentelemetry_sdk 0.32.1 predates the slimming in opentelemetry-rust #3593 (unreleased), and
-# the contrib resource-detectors crate still enables opentelemetry's default features, so they are
-# pulled in transitively until fixed upstream.
+# opentelemetry provides the `Key`/`Value` types those resources hold. These dependencies use
+# `default-features = false` to drop trace/metrics/logs. opentelemetry_sdk 0.32.1 predates the
+# slimming in opentelemetry-rust #3593 (unreleased).
 opentelemetry = { version = "0.32.0", default-features = false }
 opentelemetry_sdk = { version = "0.32.1", default-features = false }
 
@@ -193,6 +195,7 @@ rustls-openssl = "0.3"
 rustls-symcrypt = "0.2.2"
 schemars = { version = "1.0.0" }
 secrecy = { version = "0.10.3", features = ["serde"] }
+semver = "1"
 serde = { version = "1.0.228", features = ["derive", "rc"] }
 serde_cbor = "0.11.2"
 serde_json = { version = "1.0.149" }
@@ -240,11 +243,11 @@ trybuild = "1.0"
 unsync = "0.1.2"
 url = "2.5.7"
 uuid = { version = "1.17.0", features = ["v4", "v7"] }
-weaver_common = { git = "https://github.com/open-telemetry/weaver.git", rev = "a3db0b726d19eabaf282b1c71dab1ff254121213" } # v0.24.2
-weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", rev = "a3db0b726d19eabaf282b1c71dab1ff254121213" } # v0.24.2
-weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", rev = "a3db0b726d19eabaf282b1c71dab1ff254121213" } # v0.24.2
-weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", rev = "a3db0b726d19eabaf282b1c71dab1ff254121213" } # v0.24.2
-weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", rev = "a3db0b726d19eabaf282b1c71dab1ff254121213" } # v0.24.2
+weaver_common = { git = "https://github.com/open-telemetry/weaver.git", rev = "78b64d8da8e0034374e66a560ae22991b2e88a81" } # v0.24.2
+weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", rev = "78b64d8da8e0034374e66a560ae22991b2e88a81" } # v0.24.2
+weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", rev = "78b64d8da8e0034374e66a560ae22991b2e88a81" } # v0.24.2
+weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", rev = "78b64d8da8e0034374e66a560ae22991b2e88a81" } # v0.24.2
+weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", rev = "78b64d8da8e0034374e66a560ae22991b2e88a81" } # v0.24.2
 sha1 = { version = "0.11" }
 sha2 = "0.11.0"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
@@ -257,8 +260,8 @@ cpu-time = "1.0.0"
 one_collect = "0.1.35021"
 
 # TODO: un-pin these dependencies as soon as Arc support is available in a released version: https://github.com/open-telemetry/otel-arrow/issues/3551
-azure_core = { git = "https://github.com/Azure/azure-sdk-for-rust.git", rev = "16e18e91a4480e93aa0e155bfdeb38902b04dd06", default-features = false }
-azure_identity = { git = "https://github.com/Azure/azure-sdk-for-rust.git", rev = "16e18e91a4480e93aa0e155bfdeb38902b04dd06", default-features = false }
+azure_core = { git = "https://github.com/Azure/azure-sdk-for-rust.git", rev = "aacb2060111920f9fca2f72bff7e401e8a7198ce", default-features = false }
+azure_identity = { git = "https://github.com/Azure/azure-sdk-for-rust.git", rev = "aacb2060111920f9fca2f72bff7e401e8a7198ce", default-features = false }
 flate2 = "1.1.5"
 
 # Keep reqwest default features off to avoid pulling in default-tls (and aws-lc-rs via reqwest's rustls feature).
@@ -269,19 +272,18 @@ time = ">=0.3.47, <0.3.56"
 wiremock = "0.6.5"
 anyhow = "1.0.98"
 crossterm = "0.29"
-data_engine_recordset = { path = '../experimental/query_engine/engine-recordset' }
 eventheader_dynamic = "0.5.0"
 include_dir = "0.7.4"
 mime_guess = "2.0.5"
 minijinja = "2"
 otel-arrow-dfe-admin = { path = 'crates/admin' }
-otel-arrow-dfe-channel = { path = 'crates/channel' }
-otel-arrow-dfe-engine-macros = { path = 'crates/engine-macros' }
-otel-arrow-dfe-component-inventory-syntax = { path = 'crates/component-inventory-syntax' }
-otel-arrow-dfe-query-engine-languages = { path = 'crates/query-engine-languages' }
-otel-arrow-dfe-query-engine = { path = 'crates/query-engine' }
+otel-arrow-dfe-channel = { version = "0.53.0", path = 'crates/channel' }
+otel-arrow-dfe-engine-macros = { version = "0.53.0", path = 'crates/engine-macros' }
+otel-arrow-dfe-component-inventory-syntax = { version = "0.53.0", path = 'crates/component-inventory-syntax' }
+otel-arrow-dfe-query-engine-languages = { version = "0.53.0", path = 'crates/query-engine-languages' }
+otel-arrow-dfe-query-engine = { version = "0.53.0", path = 'crates/query-engine' }
 otel-arrow-dfe-state = { path = 'crates/state' }
-otel-arrow-dfe-telemetry-macros = { path = 'crates/telemetry-macros' }
+otel-arrow-dfe-telemetry-macros = { version = "0.53.0", path = 'crates/telemetry-macros' }
 prost-build = "0.14"
 ratatui = "0.30"
 testcontainers = "0.27"
@@ -292,10 +294,8 @@ tracepoint_decode = "0.5.0"
 tracelogging = "1.2.4"
 tracelogging_dynamic = "1.2.4"
 urlencoding = "2"
-geneva-uploader = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "b4cbfda441075af8a6d1f2b7db7632febb3068ae", default-features = false, features = ["tls-rustls"] }
-# Pinned to a rev containing upstream resource detector work. Swap to a published version once
-# contrib cuts one.
-opentelemetry-resource-detectors = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "7819998d4bd015b7ae7576b1e26aaa56314f03e6" }
+geneva-uploader = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "91057e4f9bda2dea819ead1648a83c7c7df0feda", default-features = false, features = ["tls-rustls"] }
+opentelemetry-resource-detectors = "0.12.0"
 
 [patch."https://github.com/open-telemetry/otel-arrow"]
 otap-df-pdata-views = { path = "compat/otap-df-pdata-views" }
@@ -323,12 +323,16 @@ dhat-heap = [
     "dep:dhat",
 ]
 
-# Dev/test tooling (traffic generator) and the otap integration tests
+# Development nodes and the otap integration tests
 # that exercise it. Activating this from the workspace default keeps
 # `cargo test` running the full suite locally; CI jobs that drop
 # `dev-tools` (e.g. the Linux ARM `build_nonrequired` job) avoid the
 # weaver / gix / reqwest / native-tls / openssl-sys C build.
-dev-tools = ["otel-arrow-dfe-core-nodes/dev-tools", "otel-arrow-dfe-otap/integration-tests"]
+dev-tools = [
+    "dep:otel-arrow-dfe-dev-nodes",
+    "otel-arrow-dfe-core-nodes/dev-tools",
+    "otel-arrow-dfe-otap/integration-tests",
+]
 
 # Admin UI live log streaming over WebSocket.
 admin-live-logs-ws = ["otel-arrow-dfe-controller/admin-live-logs-ws"]

@@ -20,8 +20,10 @@ use std::thread;
 use std::time::Instant;
 
 mod component_inventory;
+mod crates_publish;
 mod diagnostics;
 mod genproto;
+mod publish_policy;
 mod structure_check;
 
 #[cfg(not(tarpaulin_include))]
@@ -51,6 +53,7 @@ fn main() -> anyhow::Result<()> {
                 structure_check::run()
             }
             "component-inventory" => component_inventory::run(&args.collect::<Vec<_>>()),
+            "crates-publish" => crates_publish::run(&args.collect::<Vec<_>>()),
             "help" => {
                 ensure_no_extra_args("help", &args.collect::<Vec<_>>())?;
                 print_help()
@@ -77,6 +80,7 @@ Tasks:
   - structure-check: Validate the entire structure of the project.
   - compile-proto: Compile the protobufs files
   - component-inventory [--check <baseline>] [--update-baseline] [--format <table|json|yaml>]: Manage and verify the component inventory baseline.
+  - crates-publish <plan|check|preflight VERSION|publish VERSION>: Plan, validate, preflight, or publish crates.io packages.
 "
     );
     Ok(())

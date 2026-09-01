@@ -58,7 +58,7 @@ use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_engine::ConsumerEffectHandlerExtension;
 use otel_arrow_dfe_engine::config::ProcessorConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
-use otel_arrow_dfe_engine::control::{NackMsg, NodeControlMsg};
+use otel_arrow_dfe_engine::control::{NackCause, NackMsg, NodeControlMsg};
 use otel_arrow_dfe_engine::error::Error;
 use otel_arrow_dfe_engine::local::processor as local;
 use otel_arrow_dfe_engine::message::Message;
@@ -548,11 +548,24 @@ impl local::Processor<OtapPdata> for ResourceValidatorProcessor {
                         effect_handler.send_message(pdata).await?;
                         Ok(())
                     }
-                    Err((_, error_msg)) => {
-                        // Validation failed, send permanent NACK
-                        effect_handler
-                            .notify_nack(NackMsg::new_permanent(&error_msg, pdata))
-                            .await?;
+                    Err((failure, error_msg)) => {
+                        // Client-caused failures are permanent refusals (INVALID_ARGUMENT);
+                        // an internal conversion error is a permanent server failure (INTERNAL).
+                        let nack = match failure {
+                            ValidationFailure::ConversionError => {
+                                NackMsg::new_permanent(&error_msg, pdata)
+                            }
+                            ValidationFailure::MissingAttribute
+                            | ValidationFailure::InvalidAttributeType
+                            | ValidationFailure::NotInAllowedList => {
+                                NackMsg::new_permanent_with_cause(
+                                    &error_msg,
+                                    pdata,
+                                    NackCause::Refused,
+                                )
+                            }
+                        };
+                        effect_handler.notify_nack(nack).await?;
                         Ok(())
                     }
                 }

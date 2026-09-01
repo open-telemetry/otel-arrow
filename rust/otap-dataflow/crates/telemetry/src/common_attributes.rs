@@ -30,11 +30,12 @@ impl AttributeEnum for SignalType {
 /// Outcome of a pipeline component operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
 pub enum Outcome {
-    /// The component completed the operation successfully.
+    /// The operation was accepted and completed at the measured boundary.
     Success,
-    /// The component itself failed the operation.
+    /// The operation was attempted but did not complete because of an error.
     Failure,
-    /// A downstream component refused the operation.
+    /// The operation was explicitly not accepted because of validation, policy,
+    /// admission, or capacity.
     Refused,
 }
 
