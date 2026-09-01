@@ -655,9 +655,9 @@ dependencies = [
 
 [[package]]
 name = "aws-lc-rs"
-version = "1.18.0"
+version = "1.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce2b2dcc879c3bae0d371e77c99f2238400ef24ec001394befa67b6e543add9e"
+checksum = "b281d307588d634de920874890732659e2e7672f72b5e10e81badc1a8a83621e"
 dependencies = [
  "aws-lc-sys",
  "untrusted 0.7.1",
@@ -666,9 +666,9 @@ dependencies = [
 
 [[package]]
 name = "aws-lc-sys"
-version = "0.44.0"
+version = "0.45.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f09fae7be8bb3174e05c6afdb34199e6dc0c7c04ba9fa237b1967adfbde27483"
+checksum = "9bff6c3b54fad79a2e60b8102caf565819711497c1f5f092f49508e2f5c31b27"
 dependencies = [
  "cc",
  "cmake",
@@ -1107,7 +1107,7 @@ dependencies = [
 [[package]]
 name = "azure_core"
 version = "1.2.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=b28858626ec4ec2188f14b55f20159eb2b9580e9#b28858626ec4ec2188f14b55f20159eb2b9580e9"
+source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=aacb2060111920f9fca2f72bff7e401e8a7198ce#aacb2060111920f9fca2f72bff7e401e8a7198ce"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -1139,7 +1139,7 @@ dependencies = [
 [[package]]
 name = "azure_core_macros"
 version = "1.1.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=b28858626ec4ec2188f14b55f20159eb2b9580e9#b28858626ec4ec2188f14b55f20159eb2b9580e9"
+source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=aacb2060111920f9fca2f72bff7e401e8a7198ce#aacb2060111920f9fca2f72bff7e401e8a7198ce"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1167,7 +1167,7 @@ dependencies = [
 [[package]]
 name = "azure_identity"
 version = "1.1.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=b28858626ec4ec2188f14b55f20159eb2b9580e9#b28858626ec4ec2188f14b55f20159eb2b9580e9"
+source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=aacb2060111920f9fca2f72bff7e401e8a7198ce#aacb2060111920f9fca2f72bff7e401e8a7198ce"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -1241,7 +1241,7 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
 name = "benchmarks"
-version = "0.53.0"
+version = "0.54.0"
 dependencies = [
  "arrow",
  "async-unsync",
@@ -4571,9 +4571,9 @@ dependencies = [
 
 [[package]]
 name = "gix-path"
-version = "0.12.5"
+version = "0.12.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b075e730586bba7341304d6fc1b4efc1d10cf64532622521c0e07f30e661046"
+checksum = "38fc6f029ea67de83cbcbd33fd98c05a48360d2932b39d9fdacbc6eae802d475"
 dependencies = [
  "bstr",
  "gix-trace",
@@ -6146,9 +6146,9 @@ dependencies = [
 
 [[package]]
 name = "libredox"
-version = "0.1.21"
+version = "0.1.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7955dfc218a8afb29dfeffd540e3a6e96baeb94fe7138228dd7cc6937fbbf96"
+checksum = "8d8f1ea3f21fd3405dcaf6c9b5c1630af9afc422d9073ea39c5f6d6c772e08ed"
 dependencies = [
  "libc",
 ]
@@ -6379,9 +6379,9 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "memfd"
-version = "0.6.5"
+version = "0.6.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ad38eb12aea514a0466ea40a80fd8cc83637065948eb4a426e4aa46261175227"
+checksum = "57804b2c9b69967f1536a56f86297e367a33b19e98852ed624b84551cdbc0d90"
 dependencies = [
  "rustix",
 ]
@@ -7211,7 +7211,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe"
-version = "0.53.0"
+version = "0.54.0"
 dependencies = [
  "cfg-if",
  "clap",
@@ -7231,7 +7231,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-admin"
-version = "0.53.0"
+version = "0.54.0"
 dependencies = [
  "axum",
  "chrono",
@@ -7255,7 +7255,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-admin-api"
-version = "0.53.0"
+version = "0.54.0"
 dependencies = [
  "async-trait",
  "otel-arrow-dfe-admin-types",
@@ -7278,7 +7278,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-admin-types"
-version = "0.53.0"
+version = "0.54.0"
 dependencies = [
  "otel-arrow-dfe-config",
  "serde",
@@ -7287,7 +7287,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-channel"
-version = "0.53.0"
+version = "0.54.0"
 dependencies = [
  "thiserror 2.0.20",
  "tokio",
@@ -7295,7 +7295,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-component-inventory"
-version = "0.53.0"
+version = "0.54.0"
 dependencies = [
  "otel-arrow-dfe-contrib-nodes",
  "otel-arrow-dfe-core-nodes",
@@ -7308,7 +7308,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-component-inventory-syntax"
-version = "0.53.0"
+version = "0.54.0"
 dependencies = [
  "proc-macro2",
  "syn 2.0.119",
@@ -7316,7 +7316,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-config"
-version = "0.53.0"
+version = "0.54.0"
 dependencies = [
  "byte-unit",
  "humantime-serde",
@@ -7338,7 +7338,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-contrib-extensions"
-version = "0.53.0"
+version = "0.54.0"
 dependencies = [
  "async-trait",
  "azure_core 1.2.0-beta.1",
@@ -7378,7 +7378,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-contrib-nodes"
-version = "0.53.0"
+version = "0.54.0"
 dependencies = [
  "ahash 0.8.12",
  "arrow",
@@ -7458,7 +7458,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-control-channel"
-version = "0.53.0"
+version = "0.54.0"
 dependencies = [
  "serde_json",
  "thiserror 2.0.20",
@@ -7467,7 +7467,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-controller"
-version = "0.53.0"
+version = "0.54.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -7503,7 +7503,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-core-nodes"
-version = "0.53.0"
+version = "0.54.0"
 dependencies = [
  "arrow",
  "arrow-ipc",
@@ -7579,7 +7579,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-ctl"
-version = "0.53.0"
+version = "0.54.0"
 dependencies = [
  "clap",
  "clap_complete",
@@ -7603,7 +7603,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-dev-nodes"
-version = "0.53.0"
+version = "0.54.0"
 dependencies = [
  "async-trait",
  "humantime-serde",
@@ -7631,7 +7631,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-engine"
-version = "0.53.0"
+version = "0.54.0"
 dependencies = [
  "async-channel",
  "async-trait",
@@ -7672,7 +7672,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-engine-macros"
-version = "0.53.0"
+version = "0.54.0"
 dependencies = [
  "otel-arrow-dfe-component-inventory-syntax",
  "proc-macro2",
@@ -7682,14 +7682,14 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-expohisto"
-version = "0.53.0"
+version = "0.54.0"
 dependencies = [
  "criterion",
 ]
 
 [[package]]
 name = "otel-arrow-dfe-otap"
-version = "0.53.0"
+version = "0.54.0"
 dependencies = [
  "arc-swap",
  "arrow",
@@ -7761,7 +7761,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-pdata"
-version = "0.53.0"
+version = "0.54.0"
 dependencies = [
  "ahash 0.8.12",
  "arrow",
@@ -7802,7 +7802,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-pdata-otlp-macros"
-version = "0.53.0"
+version = "0.54.0"
 dependencies = [
  "otel-arrow-dfe-pdata-otlp-model",
  "proc-macro2",
@@ -7812,18 +7812,18 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-pdata-otlp-model"
-version = "0.53.0"
+version = "0.54.0"
 dependencies = [
  "tonic-prost-build",
 ]
 
 [[package]]
 name = "otel-arrow-dfe-pdata-views"
-version = "0.53.0"
+version = "0.54.0"
 
 [[package]]
 name = "otel-arrow-dfe-query-engine"
-version = "0.53.0"
+version = "0.54.0"
 dependencies = [
  "arrow",
  "async-trait",
@@ -7851,7 +7851,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-query-engine-languages"
-version = "0.53.0"
+version = "0.54.0"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -7866,7 +7866,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-query-engine-playground"
-version = "0.53.0"
+version = "0.54.0"
 dependencies = [
  "arrow",
  "axum",
@@ -7882,7 +7882,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-quiver"
-version = "0.53.0"
+version = "0.54.0"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -7906,7 +7906,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-quiver-e2e"
-version = "0.53.0"
+version = "0.54.0"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -7926,7 +7926,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-state"
-version = "0.53.0"
+version = "0.54.0"
 dependencies = [
  "chrono",
  "flume",
@@ -7943,7 +7943,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-telemetry"
-version = "0.53.0"
+version = "0.54.0"
 dependencies = [
  "arc-swap",
  "bytes",
@@ -7975,7 +7975,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-telemetry-macros"
-version = "0.53.0"
+version = "0.54.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -7984,18 +7984,18 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-test-net"
-version = "0.53.0"
+version = "0.54.0"
 
 [[package]]
 name = "otel-arrow-dfe-test-tls-certs"
-version = "0.53.0"
+version = "0.54.0"
 dependencies = [
  "rcgen",
 ]
 
 [[package]]
 name = "otel-arrow-dfe-validation"
-version = "0.53.0"
+version = "0.54.0"
 dependencies = [
  "async-trait",
  "humantime-serde",
@@ -8029,7 +8029,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-wasm-host"
-version = "0.53.0"
+version = "0.54.0"
 dependencies = [
  "arrow",
  "arrow-cast",
@@ -8560,9 +8560,9 @@ checksum = "439ee305def115ba05938db6eb1644ff94165c5ab5e9420d1c1bcedbba909391"
 
 [[package]]
 name = "ppmd-rust"
-version = "1.4.0"
+version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "efca4c95a19a79d1c98f791f10aebd5c1363b473244630bb7dbde1dc98455a24"
+checksum = "9e9219bcb9d7aca6b2f63c83cf100cf78bcd619ac46e6ecbd0dd90869a39345d"
 
 [[package]]
 name = "pprof"
@@ -11348,7 +11348,7 @@ dependencies = [
 [[package]]
 name = "typespec"
 version = "1.2.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=b28858626ec4ec2188f14b55f20159eb2b9580e9#b28858626ec4ec2188f14b55f20159eb2b9580e9"
+source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=aacb2060111920f9fca2f72bff7e401e8a7198ce#aacb2060111920f9fca2f72bff7e401e8a7198ce"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -11386,7 +11386,7 @@ dependencies = [
 [[package]]
 name = "typespec_client_core"
 version = "1.2.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=b28858626ec4ec2188f14b55f20159eb2b9580e9#b28858626ec4ec2188f14b55f20159eb2b9580e9"
+source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=aacb2060111920f9fca2f72bff7e401e8a7198ce#aacb2060111920f9fca2f72bff7e401e8a7198ce"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -11421,7 +11421,7 @@ dependencies = [
 [[package]]
 name = "typespec_macros"
 version = "1.1.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=b28858626ec4ec2188f14b55f20159eb2b9580e9#b28858626ec4ec2188f14b55f20159eb2b9580e9"
+source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=aacb2060111920f9fca2f72bff7e401e8a7198ce#aacb2060111920f9fca2f72bff7e401e8a7198ce"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -12724,7 +12724,7 @@ checksum = "66fee0b777b0f5ac1c69bb06d361268faafa61cd4682ae064a171c16c433e9e4"
 
 [[package]]
 name = "xtask"
-version = "0.53.0"
+version = "0.54.0"
 dependencies = [
  "anyhow",
  "otel-arrow-dfe-component-inventory-syntax",

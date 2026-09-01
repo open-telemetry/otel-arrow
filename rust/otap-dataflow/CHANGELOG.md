@@ -12,6 +12,26 @@ changes. See [`RELEASING.md`](../../RELEASING.md) for the versioning policy.
 
 <!-- next version -->
 
+## v0.54.0
+
+### :stop_sign: Breaking changes :stop_sign:
+
+- `pipeline`: Migrated temporal reaggregation processor telemetry from three flat counters to three dimensioned metric populations: `operations`, `failures{error.type}`, and `flushes{outcome,reason}`. ([#3530](https://github.com/open-telemetry/otel-arrow/issues/3530))
+  Migration:
+    - flushes_timer -> flushes{reason="timer"}
+    - flushes_overflow -> flushes{reason=~"id_overflow|stream_cardinality_exceeded"}
+    - batches_rejected -> failures{error.type=~"view_creation|id_overflow|stream_cardinality_exceeded"}
+    Note: `flushes` counts non-empty attempts.
+
+### :bulb: Enhancements :bulb:
+
+- `dependencies`: Upgrade various Rust dependencies. ([#3947](https://github.com/open-telemetry/otel-arrow/issues/3947))
+- `engine`: Publish the telemetry, state, engine, admin, and controller crates as versioned crates.io packages. ([#1340](https://github.com/open-telemetry/otel-arrow/issues/1340))
+- `otap`: Avoid quadratic resource and scope scans in the OTAP trace view by resolving each resource's and scope's representative row from the pre-computed row group ([#3936](https://github.com/open-telemetry/otel-arrow/issues/3936))
+- `otap`: Avoid quadratic resource and scope scans in the OTAP metrics view by resolving each resource's and scope's representative row from the pre-computed row group ([#3964](https://github.com/open-telemetry/otel-arrow/issues/3964))
+
+<!-- previous-version -->
+
 ## v0.53.0
 
 ### :stop_sign: Breaking changes :stop_sign:
