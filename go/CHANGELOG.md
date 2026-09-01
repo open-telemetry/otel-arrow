@@ -13,6 +13,8 @@ changes. See [`RELEASING.md`](../RELEASING.md) for the versioning policy.
 
 ## v0.53.0
 
+No changes. This release maintains version parity across the repository.
+
 <!-- previous-version -->
 
 ## v0.52.0
