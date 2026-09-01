@@ -296,6 +296,7 @@ fn rejects_queries_outside_the_read_only_foundation() {
         timeout: Duration::from_secs(1),
         fetch_size: 10,
         max_rows_per_poll: 100,
+        max_batch_bytes: 10 * 1024 * 1024,
     };
     for sql in [
         "DELETE FROM AUDIT_LOGS",
@@ -318,12 +319,28 @@ fn rejects_fetch_size_above_poll_limit() {
         timeout: Duration::from_secs(1),
         fetch_size: 101,
         max_rows_per_poll: 100,
+        max_batch_bytes: 10 * 1024 * 1024,
     };
 
     assert_eq!(
         config.validate(),
         Err(ConfigError::FetchSizeExceedsRowLimit)
     );
+}
+
+/// Scenario: A poll is configured without a positive normalized-data byte budget.
+/// Guarantees: The receiver cannot run with an unbounded or zero-byte result batch.
+#[test]
+fn rejects_zero_batch_byte_limit() {
+    let config = PollingConfig {
+        interval: Duration::from_secs(1),
+        timeout: Duration::from_secs(1),
+        fetch_size: 10,
+        max_rows_per_poll: 100,
+        max_batch_bytes: 0,
+    };
+
+    assert_eq!(config.validate(), Err(ConfigError::ZeroBatchByteLimit));
 }
 
 /// Scenario: A polling limit exceeds the fixed result-row ceiling.
@@ -335,6 +352,7 @@ fn rejects_excessive_polling_limit() {
         timeout: Duration::from_secs(1),
         fetch_size: 10_000,
         max_rows_per_poll: 10_001,
+        max_batch_bytes: 10 * 1024 * 1024,
     };
     assert!(matches!(
         config.validate(),

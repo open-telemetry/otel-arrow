@@ -29,7 +29,7 @@ deterministic rows, and starts the console pipeline automatically. Look for:
 
 ```text
 Prepared OTAP_ORACLE_EVENTS with 25 deterministic rows and collision groups of 5
-Starting the Oracle receiver. Snapshot rows repeat every five seconds.
+Starting the Oracle receiver. Snapshot rows repeat every five minutes.
 ```
 
 Override the generated row count or timestamp collision size without editing
@@ -117,7 +117,9 @@ cargo run -p otel-arrow-dfe-contrib-nodes `
 
 Keep `--rows` at or below the configured `max_rows_per_poll`. An oversized
 snapshot fails the batch rather than silently truncating it. The receiver caps
-`max_rows_per_poll` at 10,000 rows and bounds normalized data to 8 MiB per poll.
+`max_rows_per_poll` at 10,000 rows and uses the configured `max_batch_bytes`
+limit for normalized data. The checked-in example sets that limit to 10 MiB.
+
 The minimal Oracle adapter uses one-row native fetch arrays because rust-oracle
 does not expose current result widths until after allocating that array;
 `fetch_size` instead bounds the receiver's row-vector preallocation.
@@ -177,7 +179,7 @@ cargo run --features oracle-receiver -- `
 
 The receiver emits one typed OTLP log record per generated row. Because this
 foundation is snapshot-only, it reads and emits the same rows every five
-seconds. Stop it with `Ctrl+C`.
+minutes. Stop it with `Ctrl+C`.
 
 ## Live smoke test
 

@@ -7,7 +7,8 @@ use super::adapter::{OracleAdapter, OracleAdapterConfig};
 use crate::receivers::database::{
     CompiledQuery, DatabaseReceiver, OutputConfig, PollingConfig, QueryError,
 };
-use serde::Deserialize;
+use serde::de::Error as DeError;
+use serde::{Deserialize, Deserializer};
 use std::time::Duration;
 
 const MAX_SOURCE_ID_BYTES: usize = 256;
@@ -167,6 +168,8 @@ struct OracleQueryConfig {
     interval: Duration,
     fetch_size: usize,
     max_rows_per_poll: usize,
+    #[serde(deserialize_with = "deserialize_byte_size")]
+    max_batch_bytes: u64,
     #[serde(with = "humantime_serde")]
     timeout: Duration,
 }
@@ -178,8 +181,17 @@ impl OracleQueryConfig {
             timeout: self.timeout,
             fetch_size: self.fetch_size,
             max_rows_per_poll: self.max_rows_per_poll,
+            max_batch_bytes: self.max_batch_bytes,
         }
     }
+}
+
+fn deserialize_byte_size<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    otel_arrow_dfe_config::byte_units::deserialize_u64(deserializer)?
+        .ok_or_else(|| DeError::custom("byte size must not be null"))
 }
 
 #[derive(Deserialize)]

@@ -26,6 +26,8 @@ pub struct PollingConfig {
     pub fetch_size: usize,
     /// Hard row limit for one poll.
     pub max_rows_per_poll: usize,
+    /// Hard normalized-data byte limit for one poll.
+    pub max_batch_bytes: u64,
 }
 
 /// Database-row to OTLP log mapping selected before ingestion.
@@ -78,6 +80,9 @@ impl PollingConfig {
         }
         if self.max_rows_per_poll == 0 {
             return Err(ConfigError::ZeroRowLimit);
+        }
+        if self.max_batch_bytes == 0 {
+            return Err(ConfigError::ZeroBatchByteLimit);
         }
         if self.max_rows_per_poll > MAX_ROWS_PER_POLL {
             return Err(ConfigError::RowLimit {
@@ -136,6 +141,9 @@ pub enum ConfigError {
     /// Per-poll row limit is zero.
     #[error("query.max_rows_per_poll must be greater than zero")]
     ZeroRowLimit,
+    /// Per-poll byte limit is zero.
+    #[error("query.max_batch_bytes must be greater than zero")]
+    ZeroBatchByteLimit,
     /// Per-poll row limit exceeds the fixed receiver allocation ceiling.
     #[error("query.max_rows_per_poll must not exceed {maximum}")]
     RowLimit {

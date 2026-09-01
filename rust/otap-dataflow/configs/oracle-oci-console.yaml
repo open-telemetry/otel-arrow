@@ -25,9 +25,10 @@ groups:
                   SELECT EVENT_ID, EVENT_TS, PAYLOAD
                   FROM OTAP_ORACLE_EVENTS
                   ORDER BY EVENT_TS, EVENT_ID
-                interval: 5s
+                interval: 5m
                 fetch_size: 1000
                 max_rows_per_poll: 10000
+                max_batch_bytes: 10 MiB
                 timeout: 2m
               # Parsed for forward compatibility; stateful watermarking is not active.
               watermark:

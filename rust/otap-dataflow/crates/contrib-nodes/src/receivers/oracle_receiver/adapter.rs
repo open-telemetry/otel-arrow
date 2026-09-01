@@ -291,8 +291,8 @@ fn execute_blocking(
         }
         let row = normalize_row(&row.map_err(OracleAdapterError::Fetch)?, &types)?;
         normalized_bytes = normalized_bytes.saturating_add(row.normalized_size());
-        if normalized_bytes > query.max_normalized_bytes() {
-            return Err(OracleAdapterError::ByteLimit(query.max_normalized_bytes()));
+        if normalized_bytes > query.max_batch_bytes() {
+            return Err(OracleAdapterError::ByteLimit(query.max_batch_bytes()));
         }
         rows.push(row);
     }

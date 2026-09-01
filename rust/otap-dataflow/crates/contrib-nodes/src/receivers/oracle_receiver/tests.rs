@@ -22,6 +22,7 @@ fn documented_config() -> Value {
             "interval": "5m",
             "fetch_size": 1000,
             "max_rows_per_poll": 10000,
+            "max_batch_bytes": "10 MiB",
             "timeout": "2m"
         },
         "watermark": {
@@ -36,6 +37,19 @@ fn documented_config() -> Value {
             "max_consecutive_failures": 5
         }
     })
+}
+
+/// Scenario: Oracle configuration omits the design-required result byte bound.
+/// Guarantees: Every configured query has an explicit client-side batch byte limit.
+#[test]
+fn requires_max_batch_bytes() {
+    let mut config = documented_config();
+    _ = config["query"]
+        .as_object_mut()
+        .expect("query object")
+        .remove("max_batch_bytes");
+
+    assert!(serde_json::from_value::<OracleReceiverConfig>(config).is_err());
 }
 
 /// Scenario: The receiver loads the complete documented Oracle configuration.
@@ -135,6 +149,7 @@ fn emits_oracle_rows_when_live_test_is_enabled() {
             "interval": "100ms",
             "fetch_size": 10,
             "max_rows_per_poll": 10,
+            "max_batch_bytes": "10 MiB",
             "timeout": "10s"
         },
         "watermark": {

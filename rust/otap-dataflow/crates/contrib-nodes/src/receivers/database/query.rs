@@ -7,8 +7,6 @@ use super::config::{ConfigError, OutputConfig, PollingConfig};
 use std::fmt;
 use std::time::Duration;
 
-const DEFAULT_MAX_NORMALIZED_BYTES: u64 = 8 * 1024 * 1024;
-
 /// Immutable query plan passed to a database adapter.
 #[derive(Clone)]
 pub struct CompiledQuery {
@@ -17,7 +15,7 @@ pub struct CompiledQuery {
     timeout: Duration,
     fetch_size: usize,
     max_rows: usize,
-    max_normalized_bytes: u64,
+    max_batch_bytes: u64,
     output: OutputConfig,
 }
 
@@ -39,7 +37,7 @@ impl CompiledQuery {
             timeout: config.timeout,
             fetch_size: config.fetch_size,
             max_rows: config.max_rows_per_poll,
-            max_normalized_bytes: DEFAULT_MAX_NORMALIZED_BYTES,
+            max_batch_bytes: config.max_batch_bytes,
             output,
         })
     }
@@ -76,8 +74,8 @@ impl CompiledQuery {
 
     /// Returns the hard normalized-byte ceiling for one poll.
     #[must_use]
-    pub const fn max_normalized_bytes(&self) -> u64 {
-        self.max_normalized_bytes
+    pub const fn max_batch_bytes(&self) -> u64 {
+        self.max_batch_bytes
     }
 
     /// Returns the OTLP output mapping.
@@ -96,7 +94,7 @@ impl fmt::Debug for CompiledQuery {
             .field("timeout", &self.timeout)
             .field("fetch_size", &self.fetch_size)
             .field("max_rows", &self.max_rows)
-            .field("max_normalized_bytes", &self.max_normalized_bytes)
+            .field("max_batch_bytes", &self.max_batch_bytes)
             .field("output", &self.output)
             .finish()
     }
