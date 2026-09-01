@@ -24,22 +24,37 @@ groups:
                 statement: >
                   SELECT EVENT_ID, EVENT_TS, PAYLOAD
                   FROM OTAP_ORACLE_EVENTS
-                  ORDER BY EVENT_TS, EVENT_ID
+                  WHERE (
+                    EVENT_TS > :last_timestamp
+                    OR (
+                      EVENT_TS = :last_timestamp
+                      AND EVENT_ID > :last_tie_breaker
+                    )
+                  )
+                  ORDER BY EVENT_TS ASC, EVENT_ID ASC
                 interval: 5m
                 fetch_size: 1000
                 max_rows_per_poll: 10000
+                # Exact serialized OTLP ceiling for one emitted page.
                 max_batch_bytes: 10 MiB
+                # Normalized in-memory ceiling for one poll before encoding.
+                max_normalized_bytes: 10 MiB
                 timeout: 2m
-              # Parsed for forward compatibility; stateful watermarking is not active.
               watermark:
-                timestamp_column: EVENT_TS
-                tie_breaker_column: EVENT_ID
-                timezone: UTC
-                start_at: beginning
-              # Parsed for forward compatibility; checkpoint persistence is not active.
+                mode: composite
+                timestamp:
+                  column: EVENT_TS
+                  bind: last_timestamp
+                  initial: "1970-01-01 00:00:00"
+                  timezone: UTC
+                tie_breaker:
+                  column: EVENT_ID
+                  bind: last_tie_breaker
+                  initial: 0
               checkpoint:
                 directory: ${engine.state_dir}/oracle
                 on_nack: rewind
+                nack_backoff: 1s
                 max_consecutive_failures: 5
           console:
             type: exporter:console

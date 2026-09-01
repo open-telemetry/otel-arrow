@@ -38,7 +38,7 @@ stabilization_seconds="${ORACLE_DEMO_STABILIZATION_SECONDS:-5}"
 echo "Oracle is ready; waiting ${stabilization_seconds}s for new sessions to stabilize."
 sleep "$stabilization_seconds"
 
-echo "Starting the Oracle receiver. Snapshot rows repeat every five minutes."
+echo "Starting the Oracle receiver. Composite watermark paging begins at the initial cursor."
 exec /app/df_engine \
     --config /app/oracle-oci-console.yaml \
     --num-cores 1

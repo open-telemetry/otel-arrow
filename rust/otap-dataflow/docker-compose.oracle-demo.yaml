@@ -10,7 +10,7 @@ services:
     environment:
       ORACLE_PWD: ${ORACLE_DEMO_PASSWORD:-OtelArrowDemo123}
     ports:
-      - "127.0.0.1:1521:1521"
+      - "127.0.0.1:${ORACLE_DEMO_PORT:-1521}:1521"
     volumes:
       - oracle-data:/opt/oracle/oradata
     healthcheck:

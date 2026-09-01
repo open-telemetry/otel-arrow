@@ -35,6 +35,7 @@ linkme.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 base64 = { workspace = true, optional = true }
+blake3 = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
 humantime-serde = { workspace = true, optional = true }
 itoa = { workspace = true, optional = true }
@@ -100,6 +101,7 @@ kafka-receiver = [
 ]
 database-receiver = [
     "dep:base64",
+    "dep:blake3",
     "dep:chrono",
     "dep:humantime-serde",
 ]

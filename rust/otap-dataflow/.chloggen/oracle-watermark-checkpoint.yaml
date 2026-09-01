@@ -1,5 +1,0 @@
-change_type: enhancement
-component: pipeline
-note: "Add ACK-driven composite watermark checkpoints to the Oracle receiver."
-issues: [3821]
-subtext: "Oracle polling now resumes from a durable timestamp and integer tuple, replays NACKed pages, and enforces row and encoded-byte limits."

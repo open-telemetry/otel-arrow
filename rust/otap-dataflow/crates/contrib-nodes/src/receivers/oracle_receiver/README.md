@@ -1,15 +1,93 @@
-# Oracle receiver foundation
+# Oracle composite watermark receiver
 
 The opt-in `oracle-receiver` feature registers
-`urn:otel:receiver:oracle`. This initial receiver runs one bounded,
-read-only snapshot query and emits one typed OTLP `LogRecord` per row.
+`urn:otel:receiver:oracle`. The receiver polls a customer-authored, read-only
+`SELECT` after a durable composite watermark, emits one typed OTLP `LogRecord`
+per row, and advances its checkpoint only after a downstream acknowledgement.
 
-Watermark progression, query rewriting, checkpoint persistence, and
-Ack/Nack rewind are not implemented. The optional `watermark` and
-`checkpoint` configuration sections are accepted only so the stable
-configuration can be introduced incrementally. When `watermark` is present,
-its columns are validated against live result metadata and its timestamp
-column supplies OTLP event time.
+## Delivery guarantees
+
+Delivery is **at least once**. A crash, a negative acknowledgement, or a drain
+that ends before feedback arrives can re-emit rows, but an unacknowledged row is
+never intentionally skipped.
+
+At most one page is in flight per source. The receiver does not start another
+query until the outstanding page is acknowledged, rejected, or the receiver
+terminates.
+
+## Supported watermark mode
+
+Only `watermark.mode: composite` is implemented:
+
+- an ordered timestamp column of an Oracle `DATE` or `TIMESTAMP`-family type
+- a non-null `int64` tie-breaker that is unique within each timestamp group
+- UTC semantics; `watermark.timestamp.timezone` must be `UTC`
+
+`scalar` and repeating `snapshot` modes are rejected as unsupported and are
+deferred to follow-up work.
+
+## Required query shape
+
+You supply the complete SQL. The receiver validates, before connecting, that the
+statement:
+
+- is a single `SELECT` without SQL comments or statement separators
+- references both configured named binds as real bind markers -- a bind name
+  appearing only inside a string literal, or only as a prefix of a longer bind,
+  does not count
+- ends with the outer ordering
+  `ORDER BY <timestamp_column> ASC, <tie_breaker_column> ASC`; an ordering
+  nested inside a subquery does not satisfy this
+
+Cursor values are bound through Oracle named parameters and are never
+interpolated into SQL text. Live result metadata is then checked so both cursor
+columns exist with supported, deterministic types.
+
+## Bounds
+
+Every operational bound is a required field:
+
+- `query.max_rows_per_poll` -- hard row ceiling for one poll
+- `query.max_normalized_bytes` -- in-memory ceiling for normalized rows before
+  encoding
+- `query.max_batch_bytes` -- **exact** serialized OTLP payload ceiling
+
+The receiver emits the largest non-empty row prefix that fits
+`max_batch_bytes`, and the committed candidate is always the cursor of the last
+row actually emitted. Rows beyond a ceiling are returned by the next poll rather
+than dropped. If a single first row exceeds either byte ceiling, the poll fails
+explicitly instead of skipping it.
+
+## Checkpoints and replay
+
+Checkpoints are revisioned files under `checkpoint.directory`, keyed by pipeline
+group, pipeline, receiver name, and `source_id`. Each file records a schema
+version, revision, source identity, configuration fingerprint, composite cursor,
+and checksum. Writes use a same-directory temporary file, `fsync`, and an atomic
+rename, and the two newest revisions are retained.
+
+Reads fail closed on corruption, an unsupported version, or a revision, source,
+or fingerprint mismatch, so a receiver never resumes from an unrelated position.
+The configuration fingerprint covers semantic fields only, so rotating a mounted
+credential does not invalidate durable state.
+
+`checkpoint.on_nack` supports only `rewind`. A negative acknowledgement retains
+the committed cursor and replays the same page after the fixed
+`checkpoint.nack_backoff`. Stale or duplicate feedback is ignored. Reaching
+`checkpoint.max_consecutive_failures` durable-write failures terminates the
+receiver with a checkpoint error without advancing in-memory state.
+
+A process-local lease keyed by the checkpoint identity prevents two receivers in
+one process from advancing the same checkpoint. It complements, and does not
+replace, the deployment requirement that exactly one collector replica owns a
+checkpoint source.
+
+## Telemetry
+
+The receiver registers the `receiver.database` metric set covering starts,
+polls, query failures, batches, rows, encoded bytes, acknowledgements, negative
+acknowledgements, replays, stale feedback, checkpoint commits, checkpoint
+failures, checkpoint cleanup failures, cancellations, drains, and shutdowns.
 
 ## One-command Docker demo
 
@@ -29,7 +107,7 @@ deterministic rows, and starts the console pipeline automatically. Look for:
 
 ```text
 Prepared OTAP_ORACLE_EVENTS with 25 deterministic rows and collision groups of 5
-Starting the Oracle receiver. Snapshot rows repeat every five minutes.
+Starting the Oracle receiver. Composite watermark paging begins at the initial cursor.
 ```
 
 Override the generated row count or timestamp collision size without editing
@@ -40,6 +118,10 @@ $env:ORACLE_DEMO_ROWS = "100"
 $env:ORACLE_DEMO_COLLISION_SIZE = "10"
 docker compose -f docker-compose.oracle-demo.yaml up --build
 ```
+
+If local port 1521 is already occupied, set `ORACLE_DEMO_PORT` to another
+loopback port such as `1522`. Communication between the demo containers still
+uses Oracle's internal port 1521.
 
 Stop the containers with `Ctrl+C`. Remove the containers and demo database
 volume with:
@@ -54,14 +136,15 @@ credentials in production. The image downloads Oracle Instant Client directly
 from Oracle while building; review Oracle's license before redistributing a
 built image.
 
-This remains a snapshot demo. It does not enable watermark or checkpoint
-behavior.
+The demo exercises composite watermark paging, including the deliberate
+timestamp collision groups that require the tie-breaker to make progress.
 
 ## Local load-generator demo
 
 The repository includes `oracle_load_generator`, a deterministic data
-generator originally introduced with the earlier Oracle work. This foundation
-reuses only the generator; it does not reuse or enable watermarking.
+generator originally introduced with the earlier Oracle work. Its stable
+timestamp collision groups exercise the receiver's composite cursor across
+successive pages.
 
 The generator creates this table:
 
@@ -75,8 +158,8 @@ CREATE TABLE OTAP_ORACLE_EVENTS (
 
 It inserts stable event IDs and timestamps, so rerunning it without `--reset`
 keeps existing rows and adds only missing IDs. `--collision-size` controls how
-many adjacent rows share a timestamp. Those collisions are useful for future
-composite-watermark work but do not activate watermarking in this receiver.
+many adjacent rows share a timestamp, verifying that the `int64` tie-breaker
+advances every row within an equal-timestamp group.
 
 ### 1. Configure Oracle
 
@@ -115,10 +198,11 @@ cargo run -p otel-arrow-dfe-contrib-nodes `
   --rows 50 --collision-size 5
 ```
 
-Keep `--rows` at or below the configured `max_rows_per_poll`. An oversized
-snapshot fails the batch rather than silently truncating it. The receiver caps
-`max_rows_per_poll` at 10,000 rows and uses the configured `max_batch_bytes`
-limit for normalized data. The checked-in example sets that limit to 10 MiB.
+Keep `--rows` at or below the configured `max_rows_per_poll`. A larger table is
+paged across successive polls rather than truncated. The receiver caps
+`max_rows_per_poll` at 10,000 rows, bounds normalized in-memory rows with
+`max_normalized_bytes`, and bounds the exact serialized OTLP payload with
+`max_batch_bytes`. The checked-in example sets both limits to 10 MiB.
 
 The minimal Oracle adapter uses one-row native fetch arrays because rust-oracle
 does not expose current result widths until after allocating that array;
@@ -159,15 +243,19 @@ effective-configuration snapshots from materializing the username or password.
 millisecond and 5 minutes. Initial network connection attempts are capped at 10
 seconds because Oracle cannot interrupt a connection attempt before the native
 client returns a connection handle. Multi-address Easy Connect strings and
-`retry_count` or `retry_delay` parameters are therefore rejected in this
-foundation.
+`retry_count` or `retry_delay` parameters are therefore rejected.
 
-The checked-in query already reads the generated table:
+The checked-in query already reads the generated table with the required cursor
+predicate and ordering:
 
 ```sql
 SELECT EVENT_ID, EVENT_TS, PAYLOAD
 FROM OTAP_ORACLE_EVENTS
-ORDER BY EVENT_TS, EVENT_ID
+WHERE (
+  EVENT_TS > :last_timestamp
+  OR (EVENT_TS = :last_timestamp AND EVENT_ID > :last_tie_breaker)
+)
+ORDER BY EVENT_TS ASC, EVENT_ID ASC
 ```
 
 ### 4. Run Oracle to console
@@ -177,9 +265,10 @@ cargo run --features oracle-receiver -- `
   --config configs\oracle-oci-console.yaml --num-cores 1
 ```
 
-The receiver emits one typed OTLP log record per generated row. Because this
-foundation is snapshot-only, it reads and emits the same rows every five
-minutes. Stop it with `Ctrl+C`.
+The receiver emits one typed OTLP log record per generated row, advances its
+durable checkpoint after each acknowledged page, and stops emitting once the
+table is exhausted. Newly inserted rows are picked up on the next poll. Stop it
+with `Ctrl+C`; restarting resumes from the last committed cursor.
 
 ## Live smoke test
 

@@ -3,7 +3,9 @@
 
 //! Contract between the shared polling core and database-specific drivers.
 
-use super::{ColumnMetadata, CompiledQuery, Row};
+use super::page::{CompositeCursor, QueryPage};
+use super::query::CompiledQuery;
+use super::row::ColumnMetadata;
 use async_trait::async_trait;
 use otel_arrow_dfe_engine::error::ReceiverErrorKind;
 use std::error::Error;
@@ -23,15 +25,6 @@ impl DatabaseSystem {
             Self::Oracle => "oracle",
         }
     }
-}
-
-/// One bounded, normalized query result.
-#[derive(Clone, Debug, PartialEq)]
-pub struct QueryResult {
-    /// Result columns shared by every row.
-    pub columns: Vec<ColumnMetadata>,
-    /// Rows returned by this poll.
-    pub rows: Vec<Row>,
 }
 
 /// Cancellation handle for one database operation running outside the local async core.
@@ -58,19 +51,24 @@ pub trait DriverAdapter {
     /// Resets cancellation state before one native operation starts.
     fn begin_operation(&mut self) -> Result<Self::Cancellation, Self::Error>;
 
-    /// Inspects live result metadata without returning rows.
+    /// Inspects live result metadata and validates cursor columns.
+    ///
+    /// Implementations must reject cursor columns whose vendor types cannot
+    /// produce a deterministic, non-null composite cursor.
     async fn validate_query(
         &mut self,
         query: &CompiledQuery,
     ) -> Result<Vec<ColumnMetadata>, Self::Error>;
 
-    /// Executes one compiled query and returns a bounded normalized result.
-    async fn execute(&mut self, query: &CompiledQuery) -> Result<QueryResult, Self::Error>;
-
-    /// Returns whether this failure should discard only the current result batch.
-    fn is_batch_error(&self, _error: &Self::Error) -> bool {
-        false
-    }
+    /// Executes one compiled query strictly after the committed cursor.
+    ///
+    /// Implementations bind the cursor through named database parameters and
+    /// return a bounded page whose rows each carry their own cursor.
+    async fn execute(
+        &mut self,
+        query: &CompiledQuery,
+        cursor: &CompositeCursor,
+    ) -> Result<QueryPage, Self::Error>;
 
     /// Classifies a terminal adapter failure for receiver diagnostics.
     fn classify_error(_error: &Self::Error) -> ReceiverErrorKind {
