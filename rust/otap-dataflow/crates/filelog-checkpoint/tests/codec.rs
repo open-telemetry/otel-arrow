@@ -4,12 +4,13 @@
 //! Positive conformance tests against independently generated fixtures.
 
 use otel_arrow_dfe_filelog_checkpoint::{
-    AdvisoryPath, CommittedFrontierGuard, FramingEncoding, FramingOnDecodeError,
-    FramingProfileParams, LifecycleState, MaxLogSizeBehavior, MultilineMode, Operation,
-    ResetQuarantineAction, TX_HEADER_BYTES, TX_MIN_BODY_BYTES, WAL_HEADER_BYTES, crc32c,
+    AdvisoryPath, CommittedFrontierGuard, DecodeError, EncodeError, FileId, FramingEncoding,
+    FramingOnDecodeError, FramingProfileParams, LifecycleState, MaxLogSizeBehavior, MultilineMode,
+    Operation, ResetQuarantineAction, TX_HEADER_BYTES, TX_MIN_BODY_BYTES, Transaction,
+    TransactionScan, UpdateFingerprint, WAL_HEADER_BYTES, WAL_MAX_TX_BODY_BYTES, crc32c,
     decode_current, decode_operation, decode_snapshot, decode_wal_header, encode_current,
     encode_operation, encode_snapshot, encode_transaction, encode_wal_header, namespace_digest,
-    scan_transactions,
+    scan_next_transaction,
 };
 
 const CURRENT: &[u8] = include_bytes!("fixtures/current-generation-42.bin");
@@ -19,6 +20,38 @@ const QUARANTINED_SNAPSHOT: &[u8] = include_bytes!("fixtures/snapshot-quarantine
 const FINALIZED_SNAPSHOT: &[u8] = include_bytes!("fixtures/snapshot-rotated-finalized.bin");
 const LONG_PATH_SNAPSHOT: &[u8] = include_bytes!("fixtures/snapshot-long-path.bin");
 const WAL_HEADER: &[u8] = include_bytes!("fixtures/wal-header.bin");
+
+struct TestScanResult {
+    transactions: Vec<Transaction>,
+    torn_tail_bytes: usize,
+}
+
+fn scan_all_for_test(bytes: &[u8]) -> Result<TestScanResult, DecodeError> {
+    let mut suffix = bytes;
+    let mut expected_sequence = 1u64;
+    let mut transactions = Vec::new();
+    let mut torn_tail_bytes = 0;
+    while let Some(scan) = scan_next_transaction(suffix, expected_sequence)? {
+        match scan {
+            TransactionScan::Complete {
+                transaction,
+                consumed,
+            } => {
+                transactions.push(transaction);
+                suffix = &suffix[consumed..];
+                expected_sequence += 1;
+            }
+            TransactionScan::TornTail { bytes } => {
+                torn_tail_bytes = bytes;
+                break;
+            }
+        }
+    }
+    Ok(TestScanResult {
+        transactions,
+        torn_tail_bytes,
+    })
+}
 
 fn expected(name: &str) -> Vec<u8> {
     include_str!("fixtures/expected-values.txt")
@@ -64,7 +97,7 @@ fn current_fixture_matches_codec() {
 #[test]
 fn empty_snapshot_fixture_matches_codec() {
     let namespace = namespace_digest("app-logs").unwrap();
-    let snapshot = decode_snapshot(EMPTY_SNAPSHOT, &namespace).unwrap();
+    let snapshot = decode_snapshot(EMPTY_SNAPSHOT, &namespace, u32::MAX).unwrap();
     assert_eq!(snapshot.generation, 0);
     assert!(snapshot.records.is_empty());
     assert_eq!(encode_snapshot(0, "app-logs", &[]).unwrap(), EMPTY_SNAPSHOT);
@@ -80,7 +113,7 @@ fn lifecycle_snapshot_fixtures_match_codec() {
         (QUARANTINED_SNAPSHOT, LifecycleState::Quarantined),
         (FINALIZED_SNAPSHOT, LifecycleState::RotatedFinalized),
     ] {
-        let snapshot = decode_snapshot(bytes, &namespace).unwrap();
+        let snapshot = decode_snapshot(bytes, &namespace, u32::MAX).unwrap();
         assert_eq!(snapshot.records.len(), 1);
         assert_eq!(snapshot.records[0].lifecycle_state, expected_state);
         assert_eq!(
@@ -95,7 +128,7 @@ fn lifecycle_snapshot_fixtures_match_codec() {
 #[test]
 fn long_advisory_path_snapshot_is_bounded() {
     let namespace = namespace_digest("app-logs").unwrap();
-    let snapshot = decode_snapshot(LONG_PATH_SNAPSHOT, &namespace).unwrap();
+    let snapshot = decode_snapshot(LONG_PATH_SNAPSHOT, &namespace, u32::MAX).unwrap();
     let path = &snapshot.records[0].advisory_path;
     assert!(path.is_truncated());
     assert_eq!(path.full_path_len(), 5000);
@@ -181,9 +214,13 @@ fn every_operation_transaction_fixture_matches_codec() {
         include_bytes!("fixtures/transaction-reset-quarantined-keep-failed.bin"),
         include_bytes!("fixtures/transaction-keep-failed-mutation.bin"),
         include_bytes!("fixtures/transaction-remove-file.bin"),
+        include_bytes!("fixtures/transaction-reset-quarantined-beginning.bin"),
+        include_bytes!("fixtures/transaction-reset-quarantined-end.bin"),
+        include_bytes!("fixtures/transaction-update-metadata-without-path.bin"),
+        include_bytes!("fixtures/transaction-remove-file-non-administrative.bin"),
     ];
     for bytes in fixtures {
-        let scan = scan_transactions(bytes).unwrap();
+        let scan = scan_all_for_test(bytes).unwrap();
         assert_eq!(scan.torn_tail_bytes, 0);
         assert_eq!(scan.transactions.len(), 1);
         assert_eq!(encode_transaction(&scan.transactions[0]).unwrap(), *bytes);
@@ -199,7 +236,7 @@ fn minimum_transaction_fixture_has_exact_boundary() {
         bytes.len(),
         TX_HEADER_BYTES + TX_MIN_BODY_BYTES as usize + 4
     );
-    assert_eq!(scan_transactions(bytes).unwrap().transactions.len(), 1);
+    assert_eq!(scan_all_for_test(bytes).unwrap().transactions.len(), 1);
 }
 
 /// Scenario: A progress transaction contains the maximum 4,096 unique operations at maximum progress width.
@@ -207,7 +244,7 @@ fn minimum_transaction_fixture_has_exact_boundary() {
 #[test]
 fn maximum_progress_transaction_fixture_is_accepted() {
     let bytes = include_bytes!("fixtures/transaction-max-progress.bin");
-    let scan = scan_transactions(bytes).unwrap();
+    let scan = scan_all_for_test(bytes).unwrap();
     assert_eq!(scan.transactions[0].operations.len(), 4096);
     assert_eq!(bytes.len(), 446_504);
 }
@@ -220,7 +257,7 @@ fn transaction_class_fixtures_are_accepted() {
         include_bytes!("fixtures/transaction-progress-class.bin").as_slice(),
         include_bytes!("fixtures/transaction-non-progress-class.bin").as_slice(),
     ] {
-        let scan = scan_transactions(bytes).unwrap();
+        let scan = scan_all_for_test(bytes).unwrap();
         assert_eq!(scan.transactions[0].operations.len(), 2);
         assert_eq!(scan.torn_tail_bytes, 0);
     }
@@ -284,4 +321,222 @@ fn framing_profile_fixtures_match_codec() {
         assert_eq!(profile.canonical_bytes().unwrap(), canonical_fixture);
         assert_eq!(profile.digest().unwrap(), expected(digest_key)[..]);
     }
+}
+
+/// Scenario: Recovery scans one hundred correctly sequenced transactions and then an empty suffix.
+/// Guarantees: The public scanner returns only one transaction at a time and clean EOF is distinct from a torn tail.
+#[test]
+fn transaction_scanning_is_incremental_and_accepts_clean_eof() {
+    let operation = decode_operation(include_bytes!("fixtures/operation-update-metadata.bin"))
+        .unwrap()
+        .0;
+    let mut wal = Vec::new();
+    for sequence in 1..=100 {
+        wal.extend_from_slice(
+            &encode_transaction(&Transaction {
+                sequence,
+                operations: vec![operation.clone()],
+            })
+            .unwrap(),
+        );
+    }
+
+    let mut suffix = wal.as_slice();
+    for expected_sequence in 1..=100 {
+        let Some(TransactionScan::Complete {
+            transaction,
+            consumed,
+        }) = scan_next_transaction(suffix, expected_sequence).unwrap()
+        else {
+            panic!("complete transaction expected");
+        };
+        assert_eq!(transaction.sequence, expected_sequence);
+        suffix = &suffix[consumed..];
+        drop(transaction);
+    }
+    assert!(suffix.is_empty());
+    assert_eq!(scan_next_transaction(suffix, 101).unwrap(), None);
+}
+
+/// Scenario: A non-progress transaction contains exactly the class maximum of 256 operations.
+/// Guarantees: The inclusive operation-count boundary is accepted by both encoder and scanner.
+#[test]
+fn maximum_non_progress_operation_count_is_accepted() {
+    let operation = decode_operation(include_bytes!("fixtures/operation-update-metadata.bin"))
+        .unwrap()
+        .0;
+    let bytes = encode_transaction(&Transaction {
+        sequence: 1,
+        operations: vec![operation; 256],
+    })
+    .unwrap();
+    let Some(TransactionScan::Complete { transaction, .. }) =
+        scan_next_transaction(&bytes, 1).unwrap()
+    else {
+        panic!("complete transaction expected");
+    };
+    assert_eq!(transaction.operations.len(), 256);
+}
+
+fn fingerprint_extension(file_id: FileId, old_len: usize, new_len: usize) -> Operation {
+    let expected_fingerprint = vec![0xA5; old_len];
+    let mut new_fingerprint = expected_fingerprint.clone();
+    new_fingerprint.resize(new_len, 0x5A);
+    Operation::UpdateFingerprint(UpdateFingerprint {
+        file_id,
+        expected_file_epoch: 1,
+        expected_fingerprint,
+        new_fingerprint,
+    })
+}
+
+/// Scenario: Non-progress transaction bodies are exactly 16 MiB and one byte larger.
+/// Guarantees: The exact hard boundary encodes and scans, while the first excessive body emits no frame.
+#[test]
+fn transaction_body_limit_is_exact() {
+    let full = fingerprint_extension(FileId::from_bytes([0x31; 16]), 65_534, 65_535);
+    let final_exact = fingerprint_extension(FileId::from_bytes([0x32; 16]), 63_614, 63_615);
+    let mut transaction = Transaction {
+        sequence: 1,
+        operations: vec![full; 127],
+    };
+    transaction.operations.push(final_exact);
+
+    let bytes = encode_transaction(&transaction).unwrap();
+    assert_eq!(bytes.len(), TX_HEADER_BYTES + 16 * 1024 * 1024 + 4);
+    let Some(TransactionScan::Complete { consumed, .. }) =
+        scan_next_transaction(&bytes, 1).unwrap()
+    else {
+        panic!("complete transaction expected");
+    };
+    assert_eq!(consumed, bytes.len());
+    drop(bytes);
+
+    let Operation::UpdateFingerprint(last) = transaction.operations.last_mut().unwrap() else {
+        panic!("fingerprint operation expected");
+    };
+    last.new_fingerprint.push(0x5A);
+    assert!(matches!(
+        encode_transaction(&transaction),
+        Err(EncodeError::TransactionBodyTooLarge {
+            len,
+            max: WAL_MAX_TX_BODY_BYTES,
+            ..
+        }) if len == WAL_MAX_TX_BODY_BYTES + 1
+    ));
+}
+
+/// Scenario: Independent fixtures exercise both reset actions, optional metadata, and non-administrative removal.
+/// Guarantees: All three quarantine actions and both optional-field absences round-trip byte-for-byte.
+#[test]
+fn independent_optional_and_action_fixtures_match_codec() {
+    let fixtures: &[&[u8]] = &[
+        include_bytes!("fixtures/operation-reset-quarantined-beginning.bin"),
+        include_bytes!("fixtures/operation-reset-quarantined-end.bin"),
+        include_bytes!("fixtures/operation-update-metadata-without-path.bin"),
+        include_bytes!("fixtures/operation-remove-file-non-administrative.bin"),
+    ];
+    for bytes in fixtures {
+        let (operation, consumed) = decode_operation(bytes).unwrap();
+        assert_eq!(consumed, bytes.len());
+        assert_eq!(encode_operation(&operation).unwrap(), *bytes);
+    }
+
+    let Operation::ResetQuarantinedFile(beginning) = decode_operation(fixtures[0]).unwrap().0
+    else {
+        panic!("reset operation expected");
+    };
+    let Operation::ResetQuarantinedFile(end) = decode_operation(fixtures[1]).unwrap().0 else {
+        panic!("reset operation expected");
+    };
+    assert_eq!(beginning.action, ResetQuarantineAction::ResetToBeginning);
+    assert_eq!(end.action, ResetQuarantineAction::ResetToEnd);
+}
+
+/// Scenario: Unix advisory paths contain exactly 4,096 and 4,097 native bytes.
+/// Guarantees: Truncation begins only above the v1 stored-path limit and retains the exact final 4,096 bytes.
+#[test]
+fn advisory_path_truncation_boundary_is_exact() {
+    let exact_bytes = vec![b'a'; 4096];
+    let exact = AdvisoryPath::from_unix_bytes(&exact_bytes).unwrap();
+    assert!(!exact.is_truncated());
+    assert_eq!(exact.full_path_len(), 4096);
+    assert_eq!(exact.stored_path_bytes(), exact_bytes);
+
+    let mut long_bytes = vec![b'b'; 4097];
+    long_bytes[0] = b'a';
+    let truncated = AdvisoryPath::from_unix_bytes(&long_bytes).unwrap();
+    assert!(truncated.is_truncated());
+    assert_eq!(truncated.full_path_len(), 4097);
+    assert_eq!(truncated.stored_path_bytes(), &long_bytes[1..]);
+}
+
+/// Scenario: Frontier guards are computed immediately below, at, and above the 64-byte window cap.
+/// Guarantees: Required window lengths are 63, 64, and 64 for offsets 63, 64, and 65 respectively.
+#[test]
+fn frontier_guard_window_boundary_is_exact() {
+    for (offset, window_len) in [(63, 63), (64, 64), (65, 64)] {
+        let guard = CommittedFrontierGuard::compute(offset, &vec![0xA5; window_len]).unwrap();
+        assert_eq!(guard.window_len, window_len as u16);
+    }
+    assert!(CommittedFrontierGuard::compute(65, &[0xA5; 65]).is_err());
+}
+
+/// Scenario: Framing profiles exercise exact pattern length and invalid version boundaries.
+/// Guarantees: A 4,096-byte pattern is accepted; 4,097 bytes, zero versions, empty patterns, and subminimum fingerprints are rejected.
+#[test]
+fn framing_profile_pattern_and_version_boundaries_are_enforced() {
+    let mut profile = default_profile(false);
+    profile.multiline_mode = MultilineMode::StartPattern {
+        regex_profile_version: 1,
+        pattern: "x".repeat(4096),
+    };
+    assert!(profile.canonical_bytes().is_ok());
+
+    let mut too_long = profile.clone();
+    let MultilineMode::StartPattern { pattern, .. } = &mut too_long.multiline_mode else {
+        unreachable!();
+    };
+    pattern.push('x');
+    assert!(matches!(
+        too_long.canonical_bytes(),
+        Err(EncodeError::FieldTooLong { max: 4096, .. })
+    ));
+
+    let mut zero_regex = profile.clone();
+    let MultilineMode::StartPattern {
+        regex_profile_version,
+        ..
+    } = &mut zero_regex.multiline_mode
+    else {
+        unreachable!();
+    };
+    *regex_profile_version = 0;
+    assert!(matches!(
+        zero_regex.canonical_bytes(),
+        Err(EncodeError::InvalidFieldValue { .. })
+    ));
+
+    let mut empty_pattern = profile.clone();
+    let MultilineMode::StartPattern { pattern, .. } = &mut empty_pattern.multiline_mode else {
+        unreachable!();
+    };
+    pattern.clear();
+    assert!(matches!(
+        empty_pattern.canonical_bytes(),
+        Err(EncodeError::RequiredFieldEmpty { .. })
+    ));
+
+    let mut zero_fingerprint_version = default_profile(false);
+    zero_fingerprint_version.fingerprint_profile_version = 0;
+    assert!(matches!(
+        zero_fingerprint_version.canonical_bytes(),
+        Err(EncodeError::InvalidFieldValue { .. })
+    ));
+    let mut short_fingerprint = default_profile(false);
+    short_fingerprint.fingerprint_bytes = 15;
+    assert!(matches!(
+        short_fingerprint.canonical_bytes(),
+        Err(EncodeError::InvalidFieldValue { .. })
+    ));
 }

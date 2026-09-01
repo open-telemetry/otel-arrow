@@ -291,7 +291,256 @@ impl Operation {
         }
     }
 
+    fn validate_for_encode(&self) -> Result<(), EncodeError> {
+        match self {
+            Self::RegisterFile(op) => {
+                require_nonzero_epoch("register_file.file_epoch", op.file_epoch)?;
+                if op.file_epoch != 1 {
+                    return Err(invalid_field(
+                        "register_file.file_epoch",
+                        "must be one for a new record",
+                    ));
+                }
+                require_guard_for_offset(
+                    "register_file.committed_frontier_guard",
+                    &op.committed_frontier_guard,
+                    op.committed_offset,
+                )?;
+                if op.locator == Locator::Unspecified {
+                    return Err(invalid_field(
+                        "register_file.locator",
+                        "must not be Unspecified",
+                    ));
+                }
+                if op.framing_profile_version != FILELOG_FORMAT_VERSION {
+                    return Err(invalid_field(
+                        "register_file.framing_profile_version",
+                        "version 1 producers must write version one",
+                    ));
+                }
+                if op.framing_resume != FramingResume::Clean {
+                    return Err(invalid_field(
+                        "register_file.framing_resume",
+                        "new records require a clean framing resume",
+                    ));
+                }
+            }
+            Self::UpdateProgress(op) => {
+                require_nonzero_epoch(
+                    "update_progress.expected_file_epoch",
+                    op.expected_file_epoch,
+                )?;
+                if op.new_committed_offset < op.expected_committed_offset {
+                    return Err(invalid_field(
+                        "update_progress.new_committed_offset",
+                        "must not move backward",
+                    ));
+                }
+                require_guard_for_offset(
+                    "update_progress.new_committed_frontier_guard",
+                    &op.new_committed_frontier_guard,
+                    op.new_committed_offset,
+                )?;
+                if !op
+                    .new_framing_resume
+                    .valid_for_offset(op.new_committed_offset)
+                {
+                    return Err(invalid_field(
+                        "update_progress.new_framing_resume",
+                        "is inconsistent with new_committed_offset",
+                    ));
+                }
+                if op.finalize && op.new_framing_resume != FramingResume::Clean {
+                    return Err(invalid_field(
+                        "update_progress.new_framing_resume",
+                        "finalization requires a clean framing resume",
+                    ));
+                }
+            }
+            Self::ResetAfterTruncate(op) => {
+                require_nonzero_epoch(
+                    "reset_after_truncate.expected_active_epoch",
+                    op.expected_active_epoch,
+                )?;
+                require_next_epoch(
+                    "reset_after_truncate.resulting_epoch",
+                    op.expected_active_epoch,
+                    op.resulting_epoch,
+                )?;
+                if op.new_committed_offset != 0 {
+                    return Err(invalid_field(
+                        "reset_after_truncate.new_committed_offset",
+                        "must be zero",
+                    ));
+                }
+                if op.new_framing_resume != FramingResume::Clean {
+                    return Err(invalid_field(
+                        "reset_after_truncate.new_framing_resume",
+                        "must be clean",
+                    ));
+                }
+                if op.reason_code != 1 {
+                    return Err(invalid_field(
+                        "reset_after_truncate.reason_code",
+                        "version 1 producers must write reason one",
+                    ));
+                }
+            }
+            Self::UpdateFingerprint(op) => {
+                require_nonzero_epoch(
+                    "update_fingerprint.expected_file_epoch",
+                    op.expected_file_epoch,
+                )?;
+                if op.new_fingerprint.len() <= op.expected_fingerprint.len()
+                    || !op.new_fingerprint.starts_with(&op.expected_fingerprint)
+                {
+                    return Err(invalid_field(
+                        "update_fingerprint.new_fingerprint",
+                        "must strictly extend expected_fingerprint",
+                    ));
+                }
+            }
+            Self::UpdateMetadata(op) => {
+                require_nonzero_epoch(
+                    "update_metadata.expected_file_epoch",
+                    op.expected_file_epoch,
+                )?;
+                if op.expected_prior_state == LifecycleState::RotatedFinalized {
+                    return Err(invalid_field(
+                        "update_metadata.expected_prior_state",
+                        "must be Active or Quarantined",
+                    ));
+                }
+            }
+            Self::QuarantineFile(op) => {
+                require_nonzero_epoch(
+                    "quarantine_file.expected_file_epoch",
+                    op.expected_file_epoch,
+                )?;
+                if quarantine_reason_reserved(op.reason_code) {
+                    return Err(EncodeError::ReservedReasonCode {
+                        field: "quarantine_file.reason_code",
+                        reason_code: op.reason_code,
+                    });
+                }
+                if op.locator == Locator::Unspecified {
+                    return Err(invalid_field(
+                        "quarantine_file.locator",
+                        "must not be Unspecified",
+                    ));
+                }
+                if op.quarantine_epoch != op.expected_file_epoch {
+                    return Err(invalid_field(
+                        "quarantine_file.quarantine_epoch",
+                        "must equal expected_file_epoch",
+                    ));
+                }
+            }
+            Self::ResetQuarantinedFile(op) => {
+                require_nonzero_epoch(
+                    "reset_quarantined_file.expected_quarantine_epoch",
+                    op.expected_quarantine_epoch,
+                )?;
+                if op.namespace_id.is_empty() {
+                    return Err(EncodeError::RequiredFieldEmpty {
+                        field: "reset_quarantined_file.namespace_id",
+                    });
+                }
+                if op.audit_reason.is_empty() {
+                    return Err(EncodeError::RequiredFieldEmpty {
+                        field: "reset_quarantined_file.audit_reason",
+                    });
+                }
+                match op.action {
+                    ResetQuarantineAction::ResetToBeginning => {
+                        require_next_epoch(
+                            "reset_quarantined_file.resulting_epoch",
+                            op.expected_quarantine_epoch,
+                            op.resulting_epoch,
+                        )?;
+                        if op.resulting_offset != 0 {
+                            return Err(invalid_field(
+                                "reset_quarantined_file.resulting_offset",
+                                "reset_to_beginning requires zero",
+                            ));
+                        }
+                        require_guard_for_offset(
+                            "reset_quarantined_file.new_committed_frontier_guard",
+                            &op.new_committed_frontier_guard,
+                            0,
+                        )?;
+                        if op.new_framing_resume != FramingResume::Clean {
+                            return Err(invalid_field(
+                                "reset_quarantined_file.new_framing_resume",
+                                "reset_to_beginning requires clean",
+                            ));
+                        }
+                    }
+                    ResetQuarantineAction::ResetToEnd => {
+                        require_next_epoch(
+                            "reset_quarantined_file.resulting_epoch",
+                            op.expected_quarantine_epoch,
+                            op.resulting_epoch,
+                        )?;
+                        require_guard_for_offset(
+                            "reset_quarantined_file.new_committed_frontier_guard",
+                            &op.new_committed_frontier_guard,
+                            op.resulting_offset,
+                        )?;
+                        if op.new_framing_resume != FramingResume::Clean {
+                            return Err(invalid_field(
+                                "reset_quarantined_file.new_framing_resume",
+                                "reset_to_end requires clean",
+                            ));
+                        }
+                    }
+                    ResetQuarantineAction::KeepFailed => {
+                        // Equality with stored state is deliberately a PR1B rule.
+                    }
+                }
+            }
+            Self::RemoveFile(op) => {
+                require_nonzero_epoch("remove_file.expected_file_epoch", op.expected_file_epoch)?;
+                if op.removal_reason == 0 {
+                    return Err(EncodeError::ReservedReasonCode {
+                        field: "remove_file.removal_reason",
+                        reason_code: op.removal_reason,
+                    });
+                }
+                if !op.administrative && op.expected_prior_state != LifecycleState::Active {
+                    return Err(invalid_field(
+                        "remove_file.expected_prior_state",
+                        "non-administrative removal requires Active",
+                    ));
+                }
+                match (op.administrative, &op.namespace_id, &op.audit_reason) {
+                    (true, Some(namespace), Some(reason)) => {
+                        if namespace.is_empty() {
+                            return Err(EncodeError::RequiredFieldEmpty {
+                                field: "remove_file.namespace_id",
+                            });
+                        }
+                        if reason.is_empty() {
+                            return Err(EncodeError::RequiredFieldEmpty {
+                                field: "remove_file.audit_reason",
+                            });
+                        }
+                    }
+                    (false, None, None) => {}
+                    _ => {
+                        return Err(invalid_field(
+                            "remove_file.administrative",
+                            "flag and administrative fields must agree",
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn encode_payload(&self) -> Result<Vec<u8>, EncodeError> {
+        self.validate_for_encode()?;
         let mut out = Writer::new();
         match self {
             Self::RegisterFile(op) => {
@@ -341,14 +590,6 @@ impl Operation {
                 out.u16(op.reason_code);
             }
             Self::UpdateFingerprint(op) => {
-                if op.new_fingerprint.len() <= op.expected_fingerprint.len()
-                    || !op.new_fingerprint.starts_with(&op.expected_fingerprint)
-                {
-                    return Err(EncodeError::InvalidFieldValue {
-                        field: "update_fingerprint.new_fingerprint",
-                        reason: "must strictly extend expected_fingerprint",
-                    });
-                }
                 out.u8(OP_UPDATE_FINGERPRINT);
                 out.bytes(op.file_id.as_bytes());
                 out.u32(op.expected_file_epoch);
@@ -364,12 +605,6 @@ impl Operation {
                 )?;
             }
             Self::UpdateMetadata(op) => {
-                if op.expected_prior_state == LifecycleState::RotatedFinalized {
-                    return Err(EncodeError::InvalidFieldValue {
-                        field: "update_metadata.expected_prior_state",
-                        reason: "must be Active or Quarantined",
-                    });
-                }
                 out.u8(OP_UPDATE_METADATA);
                 out.bytes(op.file_id.as_bytes());
                 out.u8(op.expected_prior_state.to_wire());
@@ -385,12 +620,6 @@ impl Operation {
                 }
             }
             Self::QuarantineFile(op) => {
-                if quarantine_reason_reserved(op.reason_code) {
-                    return Err(EncodeError::ReservedReasonCode {
-                        field: "quarantine_file.reason_code",
-                        reason_code: op.reason_code,
-                    });
-                }
                 out.u8(OP_QUARANTINE_FILE);
                 out.bytes(op.file_id.as_bytes());
                 out.u32(op.expected_file_epoch);
@@ -401,16 +630,6 @@ impl Operation {
                 out.u64(op.quarantine_time_unix_nano);
             }
             Self::ResetQuarantinedFile(op) => {
-                if op.namespace_id.is_empty() {
-                    return Err(EncodeError::RequiredFieldEmpty {
-                        field: "reset_quarantined_file.namespace_id",
-                    });
-                }
-                if op.audit_reason.is_empty() {
-                    return Err(EncodeError::RequiredFieldEmpty {
-                        field: "reset_quarantined_file.audit_reason",
-                    });
-                }
                 out.u8(OP_RESET_QUARANTINED_FILE);
                 out.bytes(op.file_id.as_bytes());
                 out.u32(op.expected_quarantine_epoch);
@@ -437,12 +656,6 @@ impl Operation {
                 )?;
             }
             Self::RemoveFile(op) => {
-                if op.removal_reason == 0 {
-                    return Err(EncodeError::ReservedReasonCode {
-                        field: "remove_file.removal_reason",
-                        reason_code: op.removal_reason,
-                    });
-                }
                 out.u8(OP_REMOVE_FILE);
                 out.bytes(op.file_id.as_bytes());
                 out.u32(op.expected_file_epoch);
@@ -452,16 +665,6 @@ impl Operation {
                 out.u8(u8::from(op.administrative));
                 match (op.administrative, &op.namespace_id, &op.audit_reason) {
                     (true, Some(namespace), Some(reason)) => {
-                        if namespace.is_empty() {
-                            return Err(EncodeError::RequiredFieldEmpty {
-                                field: "remove_file.namespace_id",
-                            });
-                        }
-                        if reason.is_empty() {
-                            return Err(EncodeError::RequiredFieldEmpty {
-                                field: "remove_file.audit_reason",
-                            });
-                        }
                         out.var_bytes(
                             "remove_file.namespace_id",
                             namespace.as_bytes(),
@@ -477,12 +680,7 @@ impl Operation {
                         out.u16(0);
                         out.u16(0);
                     }
-                    _ => {
-                        return Err(EncodeError::InvalidFieldValue {
-                            field: "remove_file.administrative",
-                            reason: "flag and administrative fields must agree",
-                        });
-                    }
+                    _ => unreachable!("validated administrative field shape"),
                 }
             }
         }
@@ -704,6 +902,48 @@ impl Operation {
         }
         Ok(operation)
     }
+}
+
+fn invalid_field(field: &'static str, reason: &'static str) -> EncodeError {
+    EncodeError::InvalidFieldValue { field, reason }
+}
+
+fn require_nonzero_epoch(field: &'static str, epoch: u32) -> Result<(), EncodeError> {
+    if epoch == 0 {
+        return Err(invalid_field(field, "must be nonzero"));
+    }
+    Ok(())
+}
+
+fn require_next_epoch(
+    field: &'static str,
+    expected_epoch: u32,
+    resulting_epoch: u32,
+) -> Result<(), EncodeError> {
+    let next = expected_epoch
+        .checked_add(1)
+        .ok_or_else(|| invalid_field(field, "expected epoch cannot be incremented"))?;
+    if resulting_epoch != next {
+        return Err(invalid_field(
+            field,
+            "must be exactly one greater than expected epoch",
+        ));
+    }
+    Ok(())
+}
+
+fn require_guard_for_offset(
+    field: &'static str,
+    guard: &CommittedFrontierGuard,
+    offset: u64,
+) -> Result<(), EncodeError> {
+    if !guard.valid_for_offset(offset) {
+        return Err(invalid_field(
+            field,
+            "window must equal min(committed offset, 64)",
+        ));
+    }
+    Ok(())
 }
 
 fn read_bool(input: &mut Reader<'_>, field: &'static str) -> Result<bool, DecodeError> {
@@ -952,17 +1192,37 @@ fn decode_transaction_body(
     })
 }
 
-enum TransactionScan {
-    Complete(Transaction, usize),
-    TornTail(usize),
+/// Result of scanning one transaction from a WAL suffix.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TransactionScan {
+    /// One complete, validated transaction and its exact encoded width.
+    Complete {
+        /// Decoded transaction.
+        transaction: Transaction,
+        /// Bytes consumed from the supplied suffix.
+        consumed: usize,
+    },
+    /// The entire non-empty suffix is a mechanically allowed torn tail.
+    TornTail {
+        /// Incomplete suffix width.
+        bytes: usize,
+    },
 }
 
-fn scan_one_transaction(
+/// Scans at most one transaction from a WAL suffix.
+///
+/// An empty suffix returns `None`. Callers can validate and apply a complete
+/// transaction, advance by `consumed`, and drop it before scanning the next.
+/// This keeps recovery memory bounded by one transaction.
+pub fn scan_next_transaction(
     bytes: &[u8],
     expected_sequence: u64,
-) -> Result<TransactionScan, DecodeError> {
+) -> Result<Option<TransactionScan>, DecodeError> {
+    if bytes.is_empty() {
+        return Ok(None);
+    }
     if bytes.len() < TX_HEADER_BYTES {
-        return Ok(TransactionScan::TornTail(bytes.len()));
+        return Ok(Some(TransactionScan::TornTail { bytes: bytes.len() }));
     }
     let header_bytes = &bytes[..TX_HEADER_BYTES];
     let mut header = Reader::new(header_bytes);
@@ -1044,7 +1304,7 @@ fn scan_one_transaction(
             context: "transaction frame length",
         })?;
     if bytes.len() < needed {
-        return Ok(TransactionScan::TornTail(bytes.len()));
+        return Ok(Some(TransactionScan::TornTail { bytes: bytes.len() }));
     }
     let frame_crc_offset = needed - TX_FRAME_CRC_BYTES;
     let stored_frame_crc =
@@ -1063,53 +1323,10 @@ fn scan_one_transaction(
         });
     }
     let body = &bytes[TX_HEADER_BYTES..frame_crc_offset];
-    Ok(TransactionScan::Complete(
-        decode_transaction_body(sequence, op_count, body)?,
-        needed,
-    ))
-}
-
-/// Result of scanning a WAL transaction suffix.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ScanResult {
-    /// Complete validated transactions in sequence order.
-    pub transactions: Vec<Transaction>,
-    /// Final mechanically allowed incomplete suffix length.
-    pub torn_tail_bytes: usize,
-}
-
-/// Scans a transaction-only WAL suffix starting with sequence one.
-pub fn scan_transactions(bytes: &[u8]) -> Result<ScanResult, DecodeError> {
-    let mut cursor = 0usize;
-    let mut expected_sequence = 1u64;
-    let mut transactions = Vec::new();
-    let mut torn_tail_bytes = 0;
-    while cursor < bytes.len() {
-        match scan_one_transaction(&bytes[cursor..], expected_sequence)? {
-            TransactionScan::Complete(transaction, consumed) => {
-                cursor = cursor
-                    .checked_add(consumed)
-                    .ok_or(DecodeError::ArithmeticOverflow {
-                        context: "WAL scan cursor",
-                    })?;
-                expected_sequence =
-                    expected_sequence
-                        .checked_add(1)
-                        .ok_or(DecodeError::ArithmeticOverflow {
-                            context: "WAL transaction sequence",
-                        })?;
-                transactions.push(transaction);
-            }
-            TransactionScan::TornTail(bytes) => {
-                torn_tail_bytes = bytes;
-                break;
-            }
-        }
-    }
-    Ok(ScanResult {
-        transactions,
-        torn_tail_bytes,
-    })
+    Ok(Some(TransactionScan::Complete {
+        transaction: decode_transaction_body(sequence, op_count, body)?,
+        consumed: needed,
+    }))
 }
 
 /// Encodes an exact version 1 WAL header.

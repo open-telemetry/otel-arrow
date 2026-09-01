@@ -247,6 +247,10 @@ def op_metadata(file_id):
     return operation(5, file_id + u8(1) + u32(1) + u8(1) + u64(42) + UNIX_PATH)
 
 
+def op_metadata_without_path(file_id):
+    return operation(5, file_id + u8(1) + u32(1) + u8(0) + u64(42))
+
+
 def op_quarantine(file_id):
     return operation(
         6,
@@ -287,6 +291,26 @@ def op_keep_failed(file_id, mutated=False):
     )
 
 
+def op_reset_quarantined(file_id, action):
+    assert action in (1, 2)
+    offset = 0 if action == 1 else 4
+    guard = EMPTY_GUARD if action == 1 else FOUR_GUARD
+    return operation(
+        7,
+        file_id
+        + u32(1)
+        + u8(action)
+        + u32(2)
+        + u64(offset)
+        + guard
+        + resume_clean()
+        + variable(b"replacement-stream")
+        + u64(1_700_000_000_000_000_005)
+        + variable(CHECKPOINT_ID)
+        + variable(b"operator approved reset"),
+    )
+
+
 def op_remove(file_id):
     return operation(
         8,
@@ -298,6 +322,20 @@ def op_remove(file_id):
         + u8(1)
         + variable(CHECKPOINT_ID)
         + variable(b"retire quarantined file"),
+    )
+
+
+def op_remove_non_administrative(file_id):
+    return operation(
+        8,
+        file_id
+        + u32(1)
+        + u8(1)
+        + u16(1)
+        + u64(1_700_000_000_000_000_006)
+        + u8(0)
+        + variable(b"")
+        + variable(b""),
     )
 
 
@@ -405,6 +443,19 @@ def main():
     mutated = op_keep_failed(file_ids[16], True)
     write("operation-keep-failed-mutation.bin", mutated)
     write("transaction-keep-failed-mutation.bin", transaction(1, [mutated]))
+    reset_beginning = op_reset_quarantined(file_ids[25], 1)
+    reset_end = op_reset_quarantined(file_ids[26], 2)
+    metadata_without_path = op_metadata_without_path(file_ids[27])
+    remove_non_administrative = op_remove_non_administrative(file_ids[28])
+    extra_operations = {
+        "reset-quarantined-beginning": reset_beginning,
+        "reset-quarantined-end": reset_end,
+        "update-metadata-without-path": metadata_without_path,
+        "remove-file-non-administrative": remove_non_administrative,
+    }
+    for name, encoded in extra_operations.items():
+        write(f"operation-{name}.bin", encoded)
+        write(f"transaction-{name}.bin", transaction(1, [encoded]))
     write("transaction-minimum.bin", transaction(1, [op_update_fingerprint(file_ids[20], True)]))
     write(
         "transaction-progress-class.bin",

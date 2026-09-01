@@ -168,6 +168,14 @@ pub enum DecodeError {
         /// Artifact name.
         context: &'static str,
     },
+    /// A snapshot declared more records than the caller permits.
+    #[error("snapshot declares {declared} records, caller maximum is {max}")]
+    SnapshotRecordCountExceedsLimit {
+        /// Untrusted record count from the validated snapshot header.
+        declared: u32,
+        /// Caller-provided maximum record count.
+        max: u32,
+    },
     /// A snapshot record violated a self-contained reachable-state rule.
     #[error("snapshot record {file_id:?} is invalid: {reason}")]
     InvalidSnapshotState {

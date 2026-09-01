@@ -4,9 +4,11 @@
 //! Structural corruption, bounds, invariant, and torn-tail tests.
 
 use otel_arrow_dfe_filelog_checkpoint::{
-    DecodeError, EncodeError, FileId, Locator, Operation, QuarantineEvidence, SnapshotRecord,
-    Transaction, WAL_MAX_OPS_PER_TX, crc32c, decode_current, decode_operation, decode_snapshot,
-    decode_wal_header, encode_snapshot, encode_transaction, namespace_digest, scan_transactions,
+    CommittedFrontierGuard, DecodeError, EncodeError, FileId, FramingResume, LifecycleState,
+    Locator, Operation, QuarantineEvidence, SnapshotRecord, Transaction, TransactionScan,
+    WAL_MAX_OPS_PER_TX, crc32c, decode_current, decode_operation, decode_snapshot,
+    decode_wal_header, encode_operation, encode_snapshot, encode_transaction, namespace_digest,
+    scan_next_transaction,
 };
 
 const CURRENT: &[u8] = include_bytes!("fixtures/current-generation-42.bin");
@@ -14,6 +16,38 @@ const ACTIVE_SNAPSHOT: &[u8] = include_bytes!("fixtures/snapshot-active.bin");
 const MIN_TX: &[u8] = include_bytes!("fixtures/transaction-minimum.bin");
 const PROGRESS_OP: &[u8] = include_bytes!("fixtures/operation-update-progress.bin");
 const METADATA_OP: &[u8] = include_bytes!("fixtures/operation-update-metadata.bin");
+
+struct TestScanResult {
+    transactions: Vec<Transaction>,
+    torn_tail_bytes: usize,
+}
+
+fn scan_all_for_test(bytes: &[u8]) -> Result<TestScanResult, DecodeError> {
+    let mut suffix = bytes;
+    let mut expected_sequence = 1u64;
+    let mut transactions = Vec::new();
+    let mut torn_tail_bytes = 0;
+    while let Some(scan) = scan_next_transaction(suffix, expected_sequence)? {
+        match scan {
+            TransactionScan::Complete {
+                transaction,
+                consumed,
+            } => {
+                transactions.push(transaction);
+                suffix = &suffix[consumed..];
+                expected_sequence += 1;
+            }
+            TransactionScan::TornTail { bytes } => {
+                torn_tail_bytes = bytes;
+                break;
+            }
+        }
+    }
+    Ok(TestScanResult {
+        transactions,
+        torn_tail_bytes,
+    })
+}
 
 fn put_u16(bytes: &mut [u8], offset: usize, value: u16) {
     bytes[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
@@ -148,36 +182,40 @@ fn snapshot_artifact_corruption_is_rejected() {
     let mut bytes = ACTIVE_SNAPSHOT.to_vec();
     bytes[59] ^= 1;
     assert!(matches!(
-        decode_snapshot(&bytes, &namespace),
+        decode_snapshot(&bytes, &namespace, u32::MAX),
         Err(DecodeError::ChecksumMismatch { .. })
     ));
     let mut bytes = ACTIVE_SNAPSHOT.to_vec();
     bytes[20] ^= 1;
     assert!(matches!(
-        decode_snapshot(&bytes, &namespace),
+        decode_snapshot(&bytes, &namespace, u32::MAX),
         Err(DecodeError::ChecksumMismatch { .. })
     ));
     let mut bytes = ACTIVE_SNAPSHOT.to_vec();
     bytes[ACTIVE_SNAPSHOT.len() - 25] ^= 1;
     assert!(matches!(
-        decode_snapshot(&bytes, &namespace),
+        decode_snapshot(&bytes, &namespace, u32::MAX),
         Err(DecodeError::ChecksumMismatch { .. })
     ));
     let mut bytes = ACTIVE_SNAPSHOT.to_vec();
     let footer_crc = bytes.len() - 1;
     bytes[footer_crc] ^= 1;
     assert!(matches!(
-        decode_snapshot(&bytes, &namespace),
+        decode_snapshot(&bytes, &namespace, u32::MAX),
         Err(DecodeError::ChecksumMismatch { .. })
     ));
     assert!(matches!(
-        decode_snapshot(&ACTIVE_SNAPSHOT[..ACTIVE_SNAPSHOT.len() - 1], &namespace),
+        decode_snapshot(
+            &ACTIVE_SNAPSHOT[..ACTIVE_SNAPSHOT.len() - 1],
+            &namespace,
+            u32::MAX
+        ),
         Err(DecodeError::Truncated { .. })
     ));
     let mut bytes = ACTIVE_SNAPSHOT.to_vec();
     bytes.push(0);
     assert!(matches!(
-        decode_snapshot(&bytes, &namespace),
+        decode_snapshot(&bytes, &namespace, u32::MAX),
         Err(DecodeError::TrailingBytes { .. })
     ));
 }
@@ -190,19 +228,19 @@ fn snapshot_header_discriminants_are_rejected() {
     let mut magic = ACTIVE_SNAPSHOT.to_vec();
     magic[0] ^= 1;
     assert!(matches!(
-        decode_snapshot(&magic, &namespace),
+        decode_snapshot(&magic, &namespace, u32::MAX),
         Err(DecodeError::BadMagic { .. })
     ));
     let mut version = ACTIVE_SNAPSHOT.to_vec();
     put_u16(&mut version, 8, 2);
     assert!(matches!(
-        decode_snapshot(&version, &namespace),
+        decode_snapshot(&version, &namespace, u32::MAX),
         Err(DecodeError::UnsupportedVersion { .. })
     ));
     let mut flags = ACTIVE_SNAPSHOT.to_vec();
     put_u16(&mut flags, 10, 1);
     assert!(matches!(
-        decode_snapshot(&flags, &namespace),
+        decode_snapshot(&flags, &namespace, u32::MAX),
         Err(DecodeError::ReservedFieldNonZero { .. })
     ));
 }
@@ -215,15 +253,39 @@ fn snapshot_record_lengths_are_bounded_before_slicing() {
     let mut bytes = ACTIVE_SNAPSHOT.to_vec();
     put_u32(&mut bytes, 60, 69_855);
     assert!(matches!(
-        decode_snapshot(&bytes, &namespace),
+        decode_snapshot(&bytes, &namespace, u32::MAX),
         Err(DecodeError::LengthExceedsMaximum { .. })
     ));
     let mut bytes = ACTIVE_SNAPSHOT.to_vec();
     put_u32(&mut bytes, 60, 500);
     assert!(matches!(
-        decode_snapshot(&bytes, &namespace),
+        decode_snapshot(&bytes, &namespace, u32::MAX),
         Err(DecodeError::Truncated { .. })
     ));
+}
+
+/// Scenario: A one-record snapshot is opened with configured maxima of one and zero.
+/// Guarantees: Equality is accepted and limit plus one is rejected before a corrupt record body is decoded.
+#[test]
+fn snapshot_record_count_is_checked_before_record_allocation_and_decode() {
+    let namespace = namespace_digest("app-logs").unwrap();
+    assert_eq!(
+        decode_snapshot(ACTIVE_SNAPSHOT, &namespace, 1)
+            .unwrap()
+            .records
+            .len(),
+        1
+    );
+
+    let mut corrupt_record = ACTIVE_SNAPSHOT.to_vec();
+    corrupt_record[ACTIVE_SNAPSHOT.len() - 25] ^= 1;
+    assert_eq!(
+        decode_snapshot(&corrupt_record, &namespace, 0),
+        Err(DecodeError::SnapshotRecordCountExceedsLimit {
+            declared: 1,
+            max: 0,
+        })
+    );
 }
 
 /// Scenario: A snapshot repeats an exact record frame.
@@ -234,7 +296,7 @@ fn duplicate_snapshot_file_id_is_rejected() {
     let bytes = snapshot_from_frames(&[frame.clone(), frame]);
     let namespace = namespace_digest("app-logs").unwrap();
     assert!(matches!(
-        decode_snapshot(&bytes, &namespace),
+        decode_snapshot(&bytes, &namespace, u32::MAX),
         Err(DecodeError::DuplicateFileId { .. })
     ));
 }
@@ -250,7 +312,7 @@ fn duplicate_live_snapshot_locator_is_rejected() {
     let bytes = snapshot_from_frames(&[first, second]);
     let namespace = namespace_digest("app-logs").unwrap();
     assert!(matches!(
-        decode_snapshot(&bytes, &namespace),
+        decode_snapshot(&bytes, &namespace, u32::MAX),
         Err(DecodeError::DuplicateLiveLocator { .. })
     ));
 }
@@ -264,7 +326,7 @@ fn invalid_snapshot_locator_is_rejected() {
     unknown[88] = 9;
     refresh_record_crc(&mut unknown);
     assert!(matches!(
-        decode_snapshot(&snapshot_from_frames(&[unknown]), &namespace),
+        decode_snapshot(&snapshot_from_frames(&[unknown]), &namespace, u32::MAX),
         Err(DecodeError::UnknownDiscriminant { .. })
     ));
 
@@ -274,7 +336,7 @@ fn invalid_snapshot_locator_is_rejected() {
     payload[84] = 0;
     let unspecified = resize_record_payload(frame, payload);
     assert!(matches!(
-        decode_snapshot(&snapshot_from_frames(&[unspecified]), &namespace),
+        decode_snapshot(&snapshot_from_frames(&[unspecified]), &namespace, u32::MAX),
         Err(DecodeError::InvalidSnapshotState { .. })
     ));
 }
@@ -288,7 +350,7 @@ fn invalid_snapshot_lifecycle_and_resume_are_rejected() {
     lifecycle[140] = 9;
     refresh_record_crc(&mut lifecycle);
     assert!(matches!(
-        decode_snapshot(&snapshot_from_frames(&[lifecycle]), &namespace),
+        decode_snapshot(&snapshot_from_frames(&[lifecycle]), &namespace, u32::MAX),
         Err(DecodeError::UnknownDiscriminant { .. })
     ));
 
@@ -298,7 +360,11 @@ fn invalid_snapshot_lifecycle_and_resume_are_rejected() {
     drop(payload.splice(136..136, [0u8; 20]));
     let invalid_resume = resize_record_payload(frame, payload);
     assert!(matches!(
-        decode_snapshot(&snapshot_from_frames(&[invalid_resume]), &namespace),
+        decode_snapshot(
+            &snapshot_from_frames(&[invalid_resume]),
+            &namespace,
+            u32::MAX
+        ),
         Err(DecodeError::InvalidSnapshotState { .. })
     ));
 }
@@ -308,7 +374,7 @@ fn invalid_snapshot_lifecycle_and_resume_are_rejected() {
 #[test]
 fn invalid_quarantine_presence_shape_is_rejected() {
     let namespace = namespace_digest("app-logs").unwrap();
-    let mut record = decode_snapshot(ACTIVE_SNAPSHOT, &namespace)
+    let mut record = decode_snapshot(ACTIVE_SNAPSHOT, &namespace, u32::MAX)
         .unwrap()
         .records
         .remove(0);
@@ -330,7 +396,7 @@ fn invalid_quarantine_presence_shape_is_rejected() {
 fn encoder_rejects_reserved_reason_codes() {
     let namespace = namespace_digest("app-logs").unwrap();
     let fixture = include_bytes!("fixtures/snapshot-quarantined.bin");
-    let mut record = decode_snapshot(fixture, &namespace)
+    let mut record = decode_snapshot(fixture, &namespace, u32::MAX)
         .unwrap()
         .records
         .remove(0);
@@ -348,7 +414,7 @@ fn encoder_rejects_reserved_reason_codes() {
     };
     operation.reason_code = 4;
     assert!(matches!(
-        otel_arrow_dfe_filelog_checkpoint::encode_operation(&quarantine),
+        encode_operation(&quarantine),
         Err(EncodeError::ReservedReasonCode { .. })
     ));
 
@@ -360,9 +426,282 @@ fn encoder_rejects_reserved_reason_codes() {
     };
     operation.removal_reason = 0;
     assert!(matches!(
-        otel_arrow_dfe_filelog_checkpoint::encode_operation(&remove),
+        encode_operation(&remove),
         Err(EncodeError::ReservedReasonCode { .. })
     ));
+}
+
+fn assert_operation_encode_rejected(operation: Operation) {
+    assert!(matches!(
+        encode_operation(&operation),
+        Err(EncodeError::InvalidFieldValue { .. })
+            | Err(EncodeError::ReservedReasonCode { .. })
+            | Err(EncodeError::RequiredFieldEmpty { .. })
+    ));
+}
+
+/// Scenario: Constructed register operations violate each self-contained initial-record rule.
+/// Guarantees: The encoder cannot emit epoch zero/noninitial epoch, Unspecified identity, continuation state, bad guard shape, or profile version zero.
+#[test]
+fn encoder_rejects_locally_invalid_register_operations() {
+    let base = decode_operation(include_bytes!("fixtures/operation-register-file.bin"))
+        .unwrap()
+        .0;
+
+    for mutate in [
+        |op: &mut otel_arrow_dfe_filelog_checkpoint::RegisterFile| op.file_epoch = 0,
+        |op: &mut otel_arrow_dfe_filelog_checkpoint::RegisterFile| op.file_epoch = 2,
+        |op: &mut otel_arrow_dfe_filelog_checkpoint::RegisterFile| {
+            op.locator = Locator::Unspecified;
+        },
+        |op: &mut otel_arrow_dfe_filelog_checkpoint::RegisterFile| {
+            op.framing_resume = FramingResume::Continuation {
+                record_start_offset: 0,
+                record_end_offset: 2,
+                next_fragment_index: 1,
+            };
+        },
+        |op: &mut otel_arrow_dfe_filelog_checkpoint::RegisterFile| {
+            op.committed_frontier_guard.window_len = 1;
+        },
+        |op: &mut otel_arrow_dfe_filelog_checkpoint::RegisterFile| {
+            op.framing_profile_version = 0;
+        },
+    ] {
+        let mut operation = base.clone();
+        let Operation::RegisterFile(register) = &mut operation else {
+            panic!("register fixture expected");
+        };
+        mutate(register);
+        assert_operation_encode_rejected(operation);
+    }
+}
+
+/// Scenario: Constructed progress operations move backward or carry inconsistent frontier/finalization state.
+/// Guarantees: All progress rules decidable without stored checkpoint state are enforced before bytes are written.
+#[test]
+fn encoder_rejects_locally_invalid_progress_operations() {
+    let base = decode_operation(PROGRESS_OP).unwrap().0;
+
+    let mut operation = base.clone();
+    let Operation::UpdateProgress(progress) = &mut operation else {
+        panic!("progress fixture expected");
+    };
+    progress.expected_file_epoch = 0;
+    assert_operation_encode_rejected(operation);
+
+    let mut operation = base.clone();
+    let Operation::UpdateProgress(progress) = &mut operation else {
+        panic!("progress fixture expected");
+    };
+    progress.expected_committed_offset = progress.new_committed_offset + 1;
+    assert_operation_encode_rejected(operation);
+
+    let mut operation = base.clone();
+    let Operation::UpdateProgress(progress) = &mut operation else {
+        panic!("progress fixture expected");
+    };
+    progress.new_committed_frontier_guard.window_len -= 1;
+    assert_operation_encode_rejected(operation);
+
+    let mut operation = base;
+    let Operation::UpdateProgress(progress) = &mut operation else {
+        panic!("progress fixture expected");
+    };
+    progress.new_committed_offset = 2;
+    progress.new_committed_frontier_guard = CommittedFrontierGuard::compute(2, b"ab").unwrap();
+    progress.new_framing_resume = FramingResume::Continuation {
+        record_start_offset: 0,
+        record_end_offset: 3,
+        next_fragment_index: 1,
+    };
+    progress.finalize = true;
+    assert_operation_encode_rejected(operation);
+}
+
+/// Scenario: Constructed truncate-reset and quarantine operations violate locally decidable transition shapes.
+/// Guarantees: Nonzero reset offsets, dirty reset resumes, wrong epoch/reason transitions, and invalid quarantine identity/epoch are not encodable.
+#[test]
+fn encoder_rejects_locally_invalid_reset_and_quarantine_operations() {
+    let reset = decode_operation(include_bytes!(
+        "fixtures/operation-reset-after-truncate.bin"
+    ))
+    .unwrap()
+    .0;
+    for mutate in [
+        |op: &mut otel_arrow_dfe_filelog_checkpoint::ResetAfterTruncate| {
+            op.expected_active_epoch = 0;
+        },
+        |op: &mut otel_arrow_dfe_filelog_checkpoint::ResetAfterTruncate| {
+            op.resulting_epoch = 3;
+        },
+        |op: &mut otel_arrow_dfe_filelog_checkpoint::ResetAfterTruncate| {
+            op.new_committed_offset = 1;
+        },
+        |op: &mut otel_arrow_dfe_filelog_checkpoint::ResetAfterTruncate| {
+            op.new_framing_resume = FramingResume::Continuation {
+                record_start_offset: 0,
+                record_end_offset: 2,
+                next_fragment_index: 1,
+            };
+        },
+        |op: &mut otel_arrow_dfe_filelog_checkpoint::ResetAfterTruncate| op.reason_code = 2,
+    ] {
+        let mut operation = reset.clone();
+        let Operation::ResetAfterTruncate(reset) = &mut operation else {
+            panic!("truncate reset fixture expected");
+        };
+        mutate(reset);
+        assert_operation_encode_rejected(operation);
+    }
+
+    let quarantine = decode_operation(include_bytes!("fixtures/operation-quarantine-file.bin"))
+        .unwrap()
+        .0;
+    for mutate in [
+        |op: &mut otel_arrow_dfe_filelog_checkpoint::QuarantineFile| {
+            op.expected_file_epoch = 0;
+        },
+        |op: &mut otel_arrow_dfe_filelog_checkpoint::QuarantineFile| {
+            op.locator = Locator::Unspecified;
+        },
+        |op: &mut otel_arrow_dfe_filelog_checkpoint::QuarantineFile| {
+            op.quarantine_epoch += 1;
+        },
+    ] {
+        let mut operation = quarantine.clone();
+        let Operation::QuarantineFile(quarantine) = &mut operation else {
+            panic!("quarantine fixture expected");
+        };
+        mutate(quarantine);
+        assert_operation_encode_rejected(operation);
+    }
+}
+
+/// Scenario: Constructed reset-quarantined actions violate action-local epoch, offset, guard, or resume rules.
+/// Guarantees: Reset-to-beginning/end are locally valid before encoding while keep_failed remains reserved for stored-state comparison in PR1B.
+#[test]
+fn encoder_rejects_locally_invalid_quarantine_reset_actions() {
+    for fixture in [
+        include_bytes!("fixtures/operation-reset-quarantined-beginning.bin").as_slice(),
+        include_bytes!("fixtures/operation-reset-quarantined-end.bin").as_slice(),
+    ] {
+        let base = decode_operation(fixture).unwrap().0;
+
+        let mut operation = base.clone();
+        let Operation::ResetQuarantinedFile(reset) = &mut operation else {
+            panic!("quarantine reset fixture expected");
+        };
+        reset.expected_quarantine_epoch = 0;
+        assert_operation_encode_rejected(operation);
+
+        let mut operation = base.clone();
+        let Operation::ResetQuarantinedFile(reset) = &mut operation else {
+            panic!("quarantine reset fixture expected");
+        };
+        reset.resulting_epoch += 1;
+        assert_operation_encode_rejected(operation);
+
+        let mut operation = base.clone();
+        let Operation::ResetQuarantinedFile(reset) = &mut operation else {
+            panic!("quarantine reset fixture expected");
+        };
+        reset.new_committed_frontier_guard.window_len ^= 1;
+        assert_operation_encode_rejected(operation);
+
+        let mut operation = base;
+        let Operation::ResetQuarantinedFile(reset) = &mut operation else {
+            panic!("quarantine reset fixture expected");
+        };
+        reset.new_framing_resume = FramingResume::Continuation {
+            record_start_offset: 0,
+            record_end_offset: reset.resulting_offset.saturating_add(1),
+            next_fragment_index: 1,
+        };
+        assert_operation_encode_rejected(operation);
+    }
+
+    let mut beginning = decode_operation(include_bytes!(
+        "fixtures/operation-reset-quarantined-beginning.bin"
+    ))
+    .unwrap()
+    .0;
+    let Operation::ResetQuarantinedFile(reset) = &mut beginning else {
+        panic!("quarantine reset fixture expected");
+    };
+    reset.resulting_offset = 1;
+    assert_operation_encode_rejected(beginning);
+}
+
+/// Scenario: Constructed fingerprint, metadata, and removal operations violate local epoch and shape rules.
+/// Guarantees: Every non-table-dependent invariant on the remaining operation types is checked by the shared encode path.
+#[test]
+fn encoder_rejects_other_locally_invalid_operations() {
+    let mut fingerprint =
+        decode_operation(include_bytes!("fixtures/operation-update-fingerprint.bin"))
+            .unwrap()
+            .0;
+    let Operation::UpdateFingerprint(update) = &mut fingerprint else {
+        panic!("fingerprint fixture expected");
+    };
+    update.expected_file_epoch = 0;
+    assert_operation_encode_rejected(fingerprint);
+
+    let mut fingerprint =
+        decode_operation(include_bytes!("fixtures/operation-update-fingerprint.bin"))
+            .unwrap()
+            .0;
+    let Operation::UpdateFingerprint(update) = &mut fingerprint else {
+        panic!("fingerprint fixture expected");
+    };
+    update.new_fingerprint = update.expected_fingerprint.clone();
+    assert_operation_encode_rejected(fingerprint);
+
+    let metadata = decode_operation(METADATA_OP).unwrap().0;
+    for mutate in [
+        |op: &mut otel_arrow_dfe_filelog_checkpoint::UpdateMetadata| {
+            op.expected_file_epoch = 0;
+        },
+        |op: &mut otel_arrow_dfe_filelog_checkpoint::UpdateMetadata| {
+            op.expected_prior_state = LifecycleState::RotatedFinalized;
+        },
+    ] {
+        let mut operation = metadata.clone();
+        let Operation::UpdateMetadata(metadata) = &mut operation else {
+            panic!("metadata fixture expected");
+        };
+        mutate(metadata);
+        assert_operation_encode_rejected(operation);
+    }
+
+    let mut remove = decode_operation(include_bytes!("fixtures/operation-remove-file.bin"))
+        .unwrap()
+        .0;
+    let Operation::RemoveFile(operation) = &mut remove else {
+        panic!("remove fixture expected");
+    };
+    operation.expected_file_epoch = 0;
+    assert_operation_encode_rejected(remove);
+
+    let mut remove = decode_operation(include_bytes!("fixtures/operation-remove-file.bin"))
+        .unwrap()
+        .0;
+    let Operation::RemoveFile(operation) = &mut remove else {
+        panic!("remove fixture expected");
+    };
+    operation.administrative = false;
+    assert_operation_encode_rejected(remove);
+
+    let mut non_administrative = decode_operation(include_bytes!(
+        "fixtures/operation-remove-file-non-administrative.bin"
+    ))
+    .unwrap()
+    .0;
+    let Operation::RemoveFile(operation) = &mut non_administrative else {
+        panic!("remove fixture expected");
+    };
+    operation.expected_prior_state = LifecycleState::Quarantined;
+    assert_operation_encode_rejected(non_administrative);
 }
 
 /// Scenario: Advisory-path bytes contain an unknown kind inside an otherwise CRC-valid record.
@@ -374,7 +713,7 @@ fn malformed_advisory_path_is_rejected() {
     refresh_record_crc(&mut frame);
     let namespace = namespace_digest("app-logs").unwrap();
     assert!(matches!(
-        decode_snapshot(&snapshot_from_frames(&[frame]), &namespace),
+        decode_snapshot(&snapshot_from_frames(&[frame]), &namespace, u32::MAX),
         Err(DecodeError::UnknownDiscriminant { .. })
     ));
 }
@@ -389,7 +728,7 @@ fn snapshot_unconsumed_record_and_footer_mismatches_are_rejected() {
     payload.push(0);
     let extended = resize_record_payload(frame, payload);
     assert!(matches!(
-        decode_snapshot(&snapshot_from_frames(&[extended]), &namespace),
+        decode_snapshot(&snapshot_from_frames(&[extended]), &namespace, u32::MAX),
         Err(DecodeError::UnconsumedBytes { .. })
     ));
 
@@ -405,7 +744,7 @@ fn snapshot_unconsumed_record_and_footer_mismatches_are_rejected() {
         let crc_offset = bytes.len() - 4;
         put_u32(&mut bytes, crc_offset, checksum);
         assert!(matches!(
-            decode_snapshot(&bytes, &namespace),
+            decode_snapshot(&bytes, &namespace, u32::MAX),
             Err(DecodeError::UnconsumedBytes { .. })
         ));
     }
@@ -419,7 +758,7 @@ fn future_framing_profile_version_is_structurally_preserved() {
     put_u16(&mut frame, 105, 2);
     refresh_record_crc(&mut frame);
     let namespace = namespace_digest("app-logs").unwrap();
-    let snapshot = decode_snapshot(&snapshot_from_frames(&[frame]), &namespace).unwrap();
+    let snapshot = decode_snapshot(&snapshot_from_frames(&[frame]), &namespace, u32::MAX).unwrap();
     assert_eq!(snapshot.records[0].framing_profile_version, 2);
 }
 
@@ -567,25 +906,25 @@ fn transaction_header_corruption_is_rejected_before_torn_tail() {
     let mut bytes = MIN_TX.to_vec();
     bytes[24] ^= 1;
     assert!(matches!(
-        scan_transactions(&bytes),
+        scan_all_for_test(&bytes),
         Err(DecodeError::LengthComplementMismatch { .. })
     ));
     let mut bytes = MIN_TX.to_vec();
     put_u16(&mut bytes, 10, 1);
     assert!(matches!(
-        scan_transactions(&bytes),
+        scan_all_for_test(&bytes),
         Err(DecodeError::ReservedFieldNonZero { .. })
     ));
     let mut bytes = MIN_TX.to_vec();
     put_u16(&mut bytes, 8, 2);
     assert!(matches!(
-        scan_transactions(&bytes),
+        scan_all_for_test(&bytes),
         Err(DecodeError::UnsupportedVersion { .. })
     ));
     let mut bytes = MIN_TX.to_vec();
     bytes[35] ^= 1;
     assert!(matches!(
-        scan_transactions(&bytes),
+        scan_all_for_test(&bytes),
         Err(DecodeError::ChecksumMismatch { .. })
     ));
     for body_len in [33u32, 16 * 1024 * 1024 + 1] {
@@ -594,7 +933,7 @@ fn transaction_header_corruption_is_rejected_before_torn_tail() {
         put_u32(&mut bytes, 24, !body_len);
         refresh_transaction_crcs(&mut bytes);
         assert!(matches!(
-            scan_transactions(&bytes),
+            scan_all_for_test(&bytes),
             Err(DecodeError::TransactionBodyOutOfBounds { .. })
         ));
     }
@@ -604,10 +943,10 @@ fn transaction_header_corruption_is_rejected_before_torn_tail() {
 /// Guarantees: Only mechanically incomplete final transactions are classified as torn tails.
 #[test]
 fn incomplete_final_transaction_is_the_only_torn_tail() {
-    let short = scan_transactions(&MIN_TX[..35]).unwrap();
+    let short = scan_all_for_test(&MIN_TX[..35]).unwrap();
     assert_eq!(short.torn_tail_bytes, 35);
     assert!(short.transactions.is_empty());
-    let missing_frame_crc = scan_transactions(&MIN_TX[..MIN_TX.len() - 1]).unwrap();
+    let missing_frame_crc = scan_all_for_test(&MIN_TX[..MIN_TX.len() - 1]).unwrap();
     assert_eq!(missing_frame_crc.torn_tail_bytes, MIN_TX.len() - 1);
     assert!(missing_frame_crc.transactions.is_empty());
 }
@@ -621,7 +960,7 @@ fn wrong_sequence_header_with_incomplete_body_is_corruption() {
     refresh_transaction_crcs(&mut bytes);
     bytes.truncate(40);
     assert!(matches!(
-        scan_transactions(&bytes),
+        scan_all_for_test(&bytes),
         Err(DecodeError::SequenceOutOfOrder { .. })
     ));
 }
@@ -634,7 +973,7 @@ fn complete_bad_crc_transaction_is_corruption() {
     let last = frame_crc.len() - 1;
     frame_crc[last] ^= 1;
     assert!(matches!(
-        scan_transactions(&frame_crc),
+        scan_all_for_test(&frame_crc),
         Err(DecodeError::ChecksumMismatch { .. })
     ));
 
@@ -644,7 +983,7 @@ fn complete_bad_crc_transaction_is_corruption() {
     let checksum = crc32c(&operation_crc[..frame_crc_offset]);
     put_u32(&mut operation_crc, frame_crc_offset, checksum);
     assert!(matches!(
-        scan_transactions(&operation_crc),
+        scan_all_for_test(&operation_crc),
         Err(DecodeError::ChecksumMismatch { .. })
     ));
 }
@@ -658,14 +997,14 @@ fn transaction_sequence_zero_gap_and_repeat_are_rejected() {
         put_u64(&mut bytes, 12, sequence);
         refresh_transaction_crcs(&mut bytes);
         assert!(matches!(
-            scan_transactions(&bytes),
+            scan_all_for_test(&bytes),
             Err(DecodeError::SequenceOutOfOrder { .. })
         ));
     }
     let mut repeated = MIN_TX.to_vec();
     repeated.extend_from_slice(MIN_TX);
     assert!(matches!(
-        scan_transactions(&repeated),
+        scan_all_for_test(&repeated),
         Err(DecodeError::SequenceOutOfOrder { .. })
     ));
 }
@@ -678,12 +1017,12 @@ fn empty_and_mixed_transactions_are_rejected() {
     put_u16(&mut empty, 28, 0);
     refresh_transaction_crcs(&mut empty);
     assert!(matches!(
-        scan_transactions(&empty),
+        scan_all_for_test(&empty),
         Err(DecodeError::EmptyTransaction { .. })
     ));
     let mixed = transaction_from_operations(&[PROGRESS_OP, METADATA_OP]);
     assert!(matches!(
-        scan_transactions(&mixed),
+        scan_all_for_test(&mixed),
         Err(DecodeError::MixedTransactionClass { .. })
     ));
 }
@@ -694,7 +1033,7 @@ fn empty_and_mixed_transactions_are_rejected() {
 fn duplicate_progress_file_id_is_rejected() {
     let duplicate = transaction_from_operations(&[PROGRESS_OP, PROGRESS_OP]);
     assert!(matches!(
-        scan_transactions(&duplicate),
+        scan_all_for_test(&duplicate),
         Err(DecodeError::DuplicateProgressFileId { .. })
     ));
 }
@@ -706,7 +1045,7 @@ fn non_progress_operation_count_boundary_is_rejected() {
     let operations: Vec<&[u8]> = (0..257).map(|_| METADATA_OP).collect();
     let bytes = transaction_from_operations(&operations);
     assert!(matches!(
-        scan_transactions(&bytes),
+        scan_all_for_test(&bytes),
         Err(DecodeError::TooManyOperations { max: 256, .. })
     ));
 }
@@ -719,7 +1058,7 @@ fn transaction_body_and_operation_count_must_agree() {
     put_u16(&mut bytes, 28, 1);
     refresh_transaction_crcs(&mut bytes);
     assert!(matches!(
-        scan_transactions(&bytes),
+        scan_all_for_test(&bytes),
         Err(DecodeError::UnconsumedBytes { .. })
     ));
 }
@@ -733,11 +1072,11 @@ fn progress_operation_count_boundary_is_rejected() {
     put_u16(&mut declared, 28, WAL_MAX_OPS_PER_TX + 1);
     refresh_transaction_crcs(&mut declared);
     assert!(matches!(
-        scan_transactions(&declared),
+        scan_all_for_test(&declared),
         Err(DecodeError::TooManyOperations { .. })
     ));
 
-    let mut transaction = scan_transactions(max_fixture)
+    let mut transaction = scan_all_for_test(max_fixture)
         .unwrap()
         .transactions
         .remove(0);
@@ -762,7 +1101,7 @@ fn unknown_operation_in_complete_transaction_is_rejected() {
     refresh_operation_crc(&mut operation);
     let bytes = transaction_from_operations(&[&operation]);
     assert!(matches!(
-        scan_transactions(&bytes),
+        scan_all_for_test(&bytes),
         Err(DecodeError::UnknownDiscriminant { .. })
     ));
 }
@@ -841,18 +1180,17 @@ fn administrative_string_shapes_are_rejected() {
 fn finalized_snapshot_requires_clean_resume() {
     let fixture = include_bytes!("fixtures/snapshot-rotated-finalized.bin");
     let namespace = namespace_digest("app-logs").unwrap();
-    let mut record: SnapshotRecord = decode_snapshot(fixture, &namespace)
+    let mut record: SnapshotRecord = decode_snapshot(fixture, &namespace, u32::MAX)
         .unwrap()
         .records
         .remove(0);
-    record.framing_resume = otel_arrow_dfe_filelog_checkpoint::FramingResume::Continuation {
+    record.framing_resume = FramingResume::Continuation {
         record_start_offset: 0,
         record_end_offset: 2,
         next_fragment_index: 1,
     };
     record.committed_offset = 1;
-    record.committed_frontier_guard =
-        otel_arrow_dfe_filelog_checkpoint::CommittedFrontierGuard::compute(1, b"x").unwrap();
+    record.committed_frontier_guard = CommittedFrontierGuard::compute(1, b"x").unwrap();
     assert!(matches!(
         encode_snapshot(7, "app-logs", &[record]),
         Err(EncodeError::InvalidSnapshotState { .. })
@@ -864,7 +1202,7 @@ fn finalized_snapshot_requires_clean_resume() {
 #[test]
 fn snapshot_encoder_rejects_unspecified_locator() {
     let namespace = namespace_digest("app-logs").unwrap();
-    let mut record = decode_snapshot(ACTIVE_SNAPSHOT, &namespace)
+    let mut record = decode_snapshot(ACTIVE_SNAPSHOT, &namespace, u32::MAX)
         .unwrap()
         .records
         .remove(0);
@@ -881,7 +1219,7 @@ fn snapshot_encoder_rejects_unspecified_locator() {
 fn snapshot_namespace_mismatch_is_rejected() {
     let other = namespace_digest("other").unwrap();
     assert!(matches!(
-        decode_snapshot(ACTIVE_SNAPSHOT, &other),
+        decode_snapshot(ACTIVE_SNAPSHOT, &other, u32::MAX),
         Err(DecodeError::NamespaceMismatch { .. })
     ));
 }

@@ -334,9 +334,13 @@ pub fn encode_snapshot(
 }
 
 /// Decodes one complete version 1 snapshot for `expected_namespace_digest`.
+///
+/// `max_records` is checked against the authenticated header count before any
+/// record storage is allocated or any record body is decoded.
 pub fn decode_snapshot(
     bytes: &[u8],
     expected_namespace_digest: &[u8; 32],
+    max_records: u32,
 ) -> Result<Snapshot, DecodeError> {
     if bytes.len() < SNAPSHOT_HEADER_BYTES {
         return Err(DecodeError::Truncated {
@@ -381,11 +385,16 @@ pub fn decode_snapshot(
             context: "snapshot",
         });
     }
+    if record_count > max_records {
+        return Err(DecodeError::SnapshotRecordCountExceedsLimit {
+            declared: record_count,
+            max: max_records,
+        });
+    }
 
-    let capacity =
-        usize::try_from(record_count.min(65_536)).map_err(|_| DecodeError::ArithmeticOverflow {
-            context: "snapshot record capacity",
-        })?;
+    let capacity = usize::try_from(record_count).map_err(|_| DecodeError::ArithmeticOverflow {
+        context: "snapshot record capacity",
+    })?;
     let mut records = Vec::with_capacity(capacity);
     let mut ids = HashSet::with_capacity(capacity);
     let mut locators = HashMap::with_capacity(capacity);

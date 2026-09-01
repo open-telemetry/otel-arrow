@@ -33,9 +33,9 @@ pub use snapshot::{
 pub use wal::{
     MAX_OPERATION_PAYLOAD_BYTES, MAX_PROGRESS_TX_BODY_BYTES,
     MAX_VALID_UPDATE_FINGERPRINT_PAYLOAD_BYTES, Operation, QuarantineFile, RegisterFile,
-    RemoveFile, ResetAfterTruncate, ResetQuarantineAction, ResetQuarantinedFile, ScanResult,
-    TX_HEADER_BYTES, TX_MIN_BODY_BYTES, Transaction, TransactionClass, UpdateFingerprint,
+    RemoveFile, ResetAfterTruncate, ResetQuarantineAction, ResetQuarantinedFile, TX_HEADER_BYTES,
+    TX_MIN_BODY_BYTES, Transaction, TransactionClass, TransactionScan, UpdateFingerprint,
     UpdateMetadata, UpdateProgress, WAL_HEADER_BYTES, WAL_MAX_NON_PROGRESS_OPS_PER_TX,
     WAL_MAX_OPS_PER_TX, WAL_MAX_TX_BODY_BYTES, WalHeader, decode_operation, decode_wal_header,
-    encode_operation, encode_transaction, encode_wal_header, scan_transactions,
+    encode_operation, encode_transaction, encode_wal_header, scan_next_transaction,
 };
