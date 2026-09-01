@@ -38,14 +38,10 @@ impl OracleReceiverConfig {
 
     /// Builds the shared receiver and Oracle adapter.
     pub fn build(self) -> Result<DatabaseReceiver<OracleAdapter>, QueryError> {
+        let polling = self.query.polling();
         let query = CompiledQuery::compile(
             self.query.statement,
-            PollingConfig {
-                interval: self.query.interval,
-                timeout: self.query.timeout,
-                fetch_size: self.query.fetch_size,
-                max_rows_per_poll: self.query.max_rows_per_poll,
-            },
+            polling,
             OutputConfig {
                 timestamp_column: self.event_timestamp_column,
                 validation_columns: self.validation_columns,

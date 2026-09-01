@@ -46,7 +46,6 @@ pub fn validate_mapping(
         require_column(&available, column)?;
     }
     if let Some(column) = &output.timestamp_column {
-        require_column(&available, column)?;
         let metadata = columns
             .iter()
             .find(|metadata| metadata.name.eq_ignore_ascii_case(column))

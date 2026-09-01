@@ -44,6 +44,34 @@ impl OracleAdapter {
             cancellation: OracleCancellation::default(),
         }
     }
+
+    async fn run_blocking<T>(
+        &mut self,
+        query: &CompiledQuery,
+        operation: fn(
+            Option<Arc<Connection>>,
+            &OracleAdapterConfig,
+            &CompiledQuery,
+            &OracleCancellation,
+        ) -> Result<(Arc<Connection>, T), OracleAdapterError>,
+    ) -> Result<T, OracleAdapterError>
+    where
+        T: Send + 'static,
+    {
+        // Ownership moves into the blocking worker and returns only after the
+        // operation, preventing concurrent use of one Oracle connection.
+        let connection = self.connection.take();
+        let config = self.config.clone();
+        let query = query.clone();
+        let cancellation = self.cancellation.clone();
+        let (connection, value) = tokio::task::spawn_blocking(move || {
+            operation(connection, &config, &query, &cancellation)
+        })
+        .await
+        .map_err(OracleAdapterError::Worker)??;
+        self.connection = Some(connection);
+        Ok(value)
+    }
 }
 
 /// Cancellation shared only between one Oracle blocking worker and its local receiver.
@@ -66,18 +94,18 @@ impl ActiveConnection {
     fn register(
         cancellation: &OracleCancellation,
         connection: Arc<Connection>,
-    ) -> Result<Option<Self>, OracleAdapterError> {
+    ) -> Result<Self, OracleAdapterError> {
         let mut state = cancellation
             .state
             .lock()
             .map_err(|_| OracleAdapterError::CancellationState)?;
         if state.requested {
-            return Ok(None);
+            return Err(OracleAdapterError::Cancelled);
         }
         state.connection = Some(connection);
-        Ok(Some(Self {
+        Ok(Self {
             cancellation: cancellation.clone(),
-        }))
+        })
     }
 }
 
@@ -153,43 +181,11 @@ impl DriverAdapter for OracleAdapter {
     ) -> Result<Vec<ColumnMetadata>, Self::Error> {
         // rust-oracle is synchronous. Moving native calls to the blocking pool
         // keeps the engine's local async control loop responsive.
-        let connection = self.connection.take();
-        let config = self.config.clone();
-        let query = query.clone();
-        let cancellation = self.cancellation.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            validate_blocking(connection, &config, &query, &cancellation)
-        })
-        .await
-        .map_err(OracleAdapterError::Worker)?;
-        match result {
-            Ok((connection, columns)) => {
-                self.connection = Some(connection);
-                Ok(columns)
-            }
-            Err(error) => Err(error),
-        }
+        self.run_blocking(query, validate_blocking).await
     }
 
     async fn execute(&mut self, query: &CompiledQuery) -> Result<QueryResult, Self::Error> {
-        // Ownership moves into the worker and returns only after the complete
-        // bounded poll, preventing concurrent use of one Oracle connection.
-        let connection = self.connection.take();
-        let config = self.config.clone();
-        let query = query.clone();
-        let cancellation = self.cancellation.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            execute_blocking(connection, &config, &query, &cancellation)
-        })
-        .await
-        .map_err(OracleAdapterError::Worker)?;
-        match result {
-            Ok((connection, rows)) => {
-                self.connection = Some(connection);
-                Ok(rows)
-            }
-            Err(error) => Err(error),
-        }
+        self.run_blocking(query, execute_blocking).await
     }
 
     fn is_batch_error(&self, error: &Self::Error) -> bool {
@@ -220,8 +216,7 @@ impl DriverAdapter for OracleAdapter {
             | OracleAdapterError::ConnectTimeoutOverride
             | OracleAdapterError::ConnectRetryUnsupported
             | OracleAdapterError::MultipleAddressUnsupported
-            | OracleAdapterError::UnsupportedType(_)
-            | OracleAdapterError::FetchSizeOutOfRange(_) => ReceiverErrorKind::Configuration,
+            | OracleAdapterError::UnsupportedType(_) => ReceiverErrorKind::Configuration,
             OracleAdapterError::Configure(_)
             | OracleAdapterError::Prepare(_)
             | OracleAdapterError::Query(_)
@@ -248,19 +243,7 @@ fn validate_blocking(
 ) -> Result<(Arc<Connection>, Vec<ColumnMetadata>), OracleAdapterError> {
     // Executing the prepared SELECT is required because Oracle exposes result
     // metadata on the result set. No row is fetched during startup validation.
-    let connection = match connection {
-        Some(connection) => connection,
-        None => {
-            cancellation.ensure_not_requested()?;
-            Arc::new(connect(config, query.timeout())?)
-        }
-    };
-    let _active = ActiveConnection::register(cancellation, Arc::clone(&connection))?
-        .ok_or(OracleAdapterError::Cancelled)?;
-    connection
-        .set_call_timeout(Some(query.timeout()))
-        .map_err(OracleAdapterError::Configure)?;
-    begin_read_only(&connection)?;
+    let (connection, _active) = prepare_session(connection, config, query, cancellation)?;
     // One row is the only safe native bound before rust-oracle exposes current
     // result metadata.
     let mut statement = connection
@@ -270,22 +253,10 @@ fn validate_blocking(
         .build()
         .map_err(OracleAdapterError::Prepare)?;
     let result_set = statement.query(&[]).map_err(OracleAdapterError::Query)?;
-    let columns = result_set
-        .column_info()
-        .iter()
-        .map(column_metadata)
-        .collect::<Vec<_>>();
-    let types = result_set
-        .column_info()
-        .iter()
-        .map(|column| column.oracle_type().clone())
-        .collect::<Vec<_>>();
-    validate_types(&types)?;
+    let (columns, _) = result_metadata(result_set.column_info())?;
     drop(result_set);
     drop(statement);
-    connection
-        .rollback()
-        .map_err(OracleAdapterError::Configure)?;
+    finish_session(&connection)?;
     Ok((connection, columns))
 }
 
@@ -295,19 +266,7 @@ fn execute_blocking(
     query: &CompiledQuery,
     cancellation: &OracleCancellation,
 ) -> Result<(Arc<Connection>, QueryResult), OracleAdapterError> {
-    let connection = match connection {
-        Some(connection) => connection,
-        None => {
-            cancellation.ensure_not_requested()?;
-            Arc::new(connect(config, query.timeout())?)
-        }
-    };
-    let _active = ActiveConnection::register(cancellation, Arc::clone(&connection))?
-        .ok_or(OracleAdapterError::Cancelled)?;
-    connection
-        .set_call_timeout(Some(query.timeout()))
-        .map_err(OracleAdapterError::Configure)?;
-    begin_read_only(&connection)?;
+    let (connection, _active) = prepare_session(connection, config, query, cancellation)?;
     let mut statement = connection
         .statement(query.sql())
         // Rebuilding a statement can expose changed view or column widths.
@@ -318,17 +277,7 @@ fn execute_blocking(
         .build()
         .map_err(OracleAdapterError::Prepare)?;
     let mut result_set = statement.query(&[]).map_err(OracleAdapterError::Query)?;
-    let columns = result_set
-        .column_info()
-        .iter()
-        .map(column_metadata)
-        .collect::<Vec<_>>();
-    let types = result_set
-        .column_info()
-        .iter()
-        .map(|column| column.oracle_type().clone())
-        .collect::<Vec<_>>();
-    validate_types(&types)?;
+    let (columns, types) = result_metadata(result_set.column_info())?;
 
     // The iterator continues through every driver page. The extra row detects
     // a result larger than the poll ceiling instead of silently truncating it.
@@ -351,11 +300,46 @@ fn execute_blocking(
     }
     drop(result_set);
     drop(statement);
-    connection
-        .rollback()
-        .map_err(OracleAdapterError::Configure)?;
+    finish_session(&connection)?;
 
     Ok((connection, QueryResult { columns, rows }))
+}
+
+fn prepare_session(
+    connection: Option<Arc<Connection>>,
+    config: &OracleAdapterConfig,
+    query: &CompiledQuery,
+    cancellation: &OracleCancellation,
+) -> Result<(Arc<Connection>, ActiveConnection), OracleAdapterError> {
+    let connection = match connection {
+        Some(connection) => connection,
+        None => {
+            cancellation.ensure_not_requested()?;
+            Arc::new(connect(config, query.timeout())?)
+        }
+    };
+    let active = ActiveConnection::register(cancellation, Arc::clone(&connection))?;
+    connection
+        .set_call_timeout(Some(query.timeout()))
+        .map_err(OracleAdapterError::Configure)?;
+    begin_read_only(&connection)?;
+    Ok((connection, active))
+}
+
+fn result_metadata(
+    columns: &[oracle::ColumnInfo],
+) -> Result<(Vec<ColumnMetadata>, Vec<OracleType>), OracleAdapterError> {
+    let metadata = columns.iter().map(column_metadata).collect();
+    let types = columns
+        .iter()
+        .map(|column| column.oracle_type().clone())
+        .collect::<Vec<_>>();
+    validate_types(&types)?;
+    Ok((metadata, types))
+}
+
+fn finish_session(connection: &Connection) -> Result<(), OracleAdapterError> {
+    connection.rollback().map_err(OracleAdapterError::Configure)
 }
 
 fn column_metadata(column: &oracle::ColumnInfo) -> ColumnMetadata {
@@ -690,9 +674,6 @@ pub enum OracleAdapterError {
     /// The query returned more than the configured row ceiling.
     #[error("Oracle query exceeded the configured {0}-row poll limit")]
     RowLimit(usize),
-    /// The configured fetch size cannot be represented by the Oracle driver.
-    #[error("query.fetch_size {0} exceeds Oracle's supported range")]
-    FetchSizeOutOfRange(usize),
     /// Normalized data exceeded the fixed first-slice byte ceiling.
     #[error("Oracle query exceeded the configured {0}-byte poll limit")]
     ByteLimit(u64),

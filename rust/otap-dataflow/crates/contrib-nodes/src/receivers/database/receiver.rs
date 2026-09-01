@@ -3,7 +3,7 @@
 
 //! Small shared polling receiver core.
 
-use super::driver::{DriverAdapter, DriverCancellation, QueryResult};
+use super::driver::{DriverAdapter, DriverCancellation};
 use super::otlp::{rows_to_pdata, validate_mapping};
 use super::query::CompiledQuery;
 use super::scheduler::QueryScheduler;
@@ -42,21 +42,6 @@ where
             scheduler,
             source_id,
         }
-    }
-
-    /// Executes immediately, primarily for startup validation and tests.
-    pub async fn poll_once(&mut self) -> Result<QueryResult, A::Error> {
-        _ = self.adapter.begin_operation()?;
-        self.adapter.execute(&self.query).await
-    }
-
-    /// Waits until due, executes one poll, then schedules from completion.
-    pub async fn next_poll(&mut self) -> Result<QueryResult, A::Error> {
-        self.scheduler.wait().await;
-        _ = self.adapter.begin_operation()?;
-        let result = self.adapter.execute(&self.query).await;
-        self.scheduler.complete();
-        result
     }
 }
 

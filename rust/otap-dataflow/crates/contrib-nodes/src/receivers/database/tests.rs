@@ -326,21 +326,10 @@ fn rejects_fetch_size_above_poll_limit() {
     );
 }
 
-/// Scenario: Polling limits exceed the fixed native-fetch or result-row ceilings.
-/// Guarantees: Misconfiguration cannot request unbounded driver or receiver allocations.
+/// Scenario: A polling limit exceeds the fixed result-row ceiling.
+/// Guarantees: Misconfiguration cannot request an unbounded receiver allocation.
 #[test]
-fn rejects_excessive_polling_limits() {
-    let config = PollingConfig {
-        interval: Duration::from_secs(1),
-        timeout: Duration::from_secs(1),
-        fetch_size: 10_001,
-        max_rows_per_poll: 10_000,
-    };
-    assert!(matches!(
-        config.validate(),
-        Err(ConfigError::FetchSizeLimit { maximum: 10_000 })
-    ));
-
+fn rejects_excessive_polling_limit() {
     let config = PollingConfig {
         interval: Duration::from_secs(1),
         timeout: Duration::from_secs(1),
