@@ -11,6 +11,10 @@ changes. See [`RELEASING.md`](../RELEASING.md) for the versioning policy.
 
 <!-- next version -->
 
+## v0.53.0
+
+<!-- previous-version -->
+
 ## v0.52.0
 
 ### :bulb: Enhancements :bulb:
