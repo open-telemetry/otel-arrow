@@ -5770,6 +5770,131 @@ mod tests {
     }
 
     /// Scenario (lifecycle: drain and shutdown): a manual-commit receiver
+    /// consumes and ACKS every record (so it holds a committable offset past the
+    /// whole batch), then is drained while the broker rejects every OffsetCommit
+    /// RPC. The receiver's commits are issued asynchronously (`CommitMode::Async`)
+    /// and the bounded consumer close does not synchronously flush them, so the
+    /// acked progress is never durably committed at the broker.
+    /// Guarantees: an un-persisted drain-time commit yields at-least-once, NOT
+    /// data loss -- the broker retains no committed offset past the acked prefix,
+    /// and a fresh consumer in the SAME group re-reads every acked record
+    /// (duplicate delivery), so acked-but-uncommitted records are redelivered
+    /// rather than lost across a drain whose commit did not persist.
+    #[tokio::test]
+    async fn drain_unflushed_commit_redelivers_acked_records() {
+        const TOPIC: &str = "drain-unflushed-commit-redeliver-traces";
+        const RECORDS: usize = 3;
+        let group = "drain-unflushed-commit-redeliver-group";
+        with_cluster(
+            KafkaTestCluster::builder().topic(TOPIC),
+            |cluster| async move {
+                let producer = cluster.producer().build();
+                let req = create_traces_with_spans();
+                let mut bytes = vec![];
+                req.encode(&mut bytes).expect("encode");
+
+                for i in 0..RECORDS {
+                    let key = format!("rec-{i}");
+                    producer
+                        .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
+                        .await
+                        .expect("send record");
+                }
+
+                // Reject every OffsetCommit RPC so NO commit (steady-state async
+                // per-ack, or the drain-time commit) can durably persist. This is
+                // the deterministic stand-in for a commit that is issued but never
+                // reaches durable broker state before the receiver stops. A long
+                // run of the same error covers every commit attempt the receiver
+                // makes across the batch and the drain.
+                cluster.faults().fail_offset_commits(
+                    &[RDKafkaRespErr::RD_KAFKA_RESP_ERR_REQUEST_TIMED_OUT; 64],
+                );
+
+                // Manual-commit with no safety-net timer, so the only commits are
+                // the per-ack async commits and the drain-time commit -- all of
+                // which the broker rejects above.
+                let cfg = manual_traces_config_no_timer(cluster.bootstrap_servers(), group, TOPIC);
+                let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+
+                // Consume and ack every record so the tracker holds a committable
+                // offset covering the whole batch.
+                for _ in 0..RECORDS {
+                    let pdata = receiver.recv_pdata().await;
+                    receiver.ack(pdata);
+                }
+                // FIFO barrier: guarantee all acks were processed (and their
+                // rejected async commits attempted) before we drain.
+                receiver.wait_for_control_barrier().await;
+
+                // Drain: the receiver issues its final commit, which is also
+                // rejected, then terminates.
+                receiver.drain(Duration::from_secs(5));
+                let mut drained = false;
+                for _ in 0..16 {
+                    match receiver.try_recv_runtime(Duration::from_secs(5)).await {
+                        Some(RuntimeControlMsg::ReceiverDrained { .. }) => {
+                            drained = true;
+                            break;
+                        }
+                        Some(_) => continue,
+                        None => break,
+                    }
+                }
+                assert!(
+                    drained,
+                    "receiver must emit ReceiverDrained even when every offset \
+                     commit is rejected by the broker",
+                );
+                receiver.await_stopped().await;
+
+                // The rejected commits never persisted, so the broker holds no
+                // committed offset past the acked prefix. A committed offset is
+                // "next to read", so a durable commit of the whole batch would be
+                // exactly RECORDS; anything absent or below that proves the acked
+                // progress was NOT persisted.
+                let brokers = cluster.bootstrap_servers().to_string();
+                let committed = committed_offset(&brokers, group, TOPIC, 0)
+                    .expect("kafka-test: committed-offset probe failed");
+                assert!(
+                    committed.is_none_or(|o| o < RECORDS as i64),
+                    "a rejected drain-time commit must not persist past the acked \
+                     prefix (else the redelivery below would be lost), got \
+                     {committed:?}",
+                );
+
+                // Clear the fault so the observer below can join the group and
+                // commit its own fetch position without interference.
+                cluster.faults().clear_offset_commit_failures();
+
+                // A fresh consumer in the SAME group re-reads every acked record:
+                // at-least-once (duplicate) delivery, not data loss. Assign the
+                // partition directly so redelivery is observed without depending
+                // on group-rebalance timing after the old member left. With no
+                // committed offset for the group, `auto.offset.reset=earliest`
+                // starts the read at offset 0, so every acked record is re-read.
+                let observer = cluster
+                    .consumer()
+                    .group_id(group)
+                    .assign_partition(TOPIC, 0);
+                let redelivered = observer.recv_n(RECORDS).await;
+                assert_eq!(
+                    redelivered.len(),
+                    RECORDS,
+                    "a same-group consumer must re-read all {RECORDS} acked records \
+                     after a drain whose commit did not persist (at-least-once, no \
+                     loss)",
+                );
+                // No phantom extra records: exactly the acked batch redelivers.
+                observer
+                    .assert_no_more_messages(Duration::from_secs(2))
+                    .await;
+            },
+        )
+        .await;
+    }
+
+    /// Scenario (lifecycle: drain and shutdown): a manual-commit receiver
     /// consumes an initial batch, is drained, and then -- after the drain
     /// deadline has elapsed -- more records are produced while the broker's fetch
     /// path is failing transient errors.
