@@ -1679,6 +1679,7 @@ impl<
                 }
             }
 
+            let previous_live_config = state.live_config.clone();
             if let Some(group) = state
                 .live_config
                 .groups
@@ -1686,8 +1687,31 @@ impl<
             {
                 let _ = group.pipelines.remove(pipeline_key.pipeline_id());
             }
+            let candidate_context_policy = match self
+                .pipeline_factory
+                .compile_context_policy(&state.live_config.resolve())
+            {
+                Ok(policy) => policy,
+                Err(error) => {
+                    state.live_config = previous_live_config;
+                    return Err(ControlPlaneError::InvalidRequest {
+                        message: error.to_string(),
+                    });
+                }
+            };
+            let context_policy = if state
+                .context_policy
+                .equivalent_declarations(&candidate_context_policy)
+            {
+                Arc::clone(&state.context_policy)
+            } else {
+                let generation = state.next_context_policy_generation;
+                state.next_context_policy_generation += 1;
+                candidate_context_policy.with_generation(ContextPolicyGeneration::new(generation))
+            };
             let _ = state.logical_pipelines.remove(pipeline_key);
             let _ = state.generation_counters.remove(pipeline_key);
+            state.context_policy = context_policy;
             state.config_revision += 1;
             state
                 .runtime_recoveries
@@ -1825,7 +1849,6 @@ impl<
                         && matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active)
                 })
         };
-
         let shutdown = if has_active_runtime {
             match self.request_shutdown_pipeline_for_engine_operation(
                 &pipeline_group_id,

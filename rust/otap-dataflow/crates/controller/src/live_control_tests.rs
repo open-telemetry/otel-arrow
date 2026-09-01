@@ -3,10 +3,15 @@
 
 use super::*;
 use async_trait::async_trait;
+use linkme::distributed_slice;
+use otel_arrow_dfe_config::ContextEntryRef;
 use otel_arrow_dfe_config::engine::ResolvedPipelineRole;
 use otel_arrow_dfe_config::observed_state::ObservedStateSettings;
 use otel_arrow_dfe_config::settings::telemetry::logs::LogLevel;
 use otel_arrow_dfe_engine::config::{ExporterConfig, ProcessorConfig, ReceiverConfig};
+use otel_arrow_dfe_engine::context_declaration::{
+    ContextAccessId, ContextDeclaration, ContextDeclarationConfig, ContextDeclarationProvider,
+};
 use otel_arrow_dfe_engine::control::{
     NodeControlMsg, RuntimeControlMsg, RuntimeCtrlMsgReceiver, runtime_ctrl_msg_channel,
 };
@@ -27,6 +32,7 @@ use otel_arrow_dfe_telemetry::event::EngineEvent;
 use otel_arrow_dfe_telemetry::log_filter::{RuntimeLogFilter, RuntimeLogFilterHandle};
 use otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot;
 use otel_arrow_dfe_telemetry::tracing_init::ProviderSetup;
+use serde::Deserialize;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio_util::sync::CancellationToken;
 use tracing::{Event, Subscriber};
@@ -58,6 +64,55 @@ fn test_validate_config(
     _config: &serde_json::Value,
 ) -> Result<(), otel_arrow_dfe_config::error::Error> {
     Ok(())
+}
+
+const CONTEXT_POLICY_TEST_RECEIVER_URN: &str = "urn:test:receiver:context-policy";
+const CONTEXT_POLICY_TEST_ACCESS: ContextAccessId = ContextAccessId::new(0);
+static CONTEXT_POLICY_TEST_CAPTURE: Mutex<Option<std::sync::Weak<CompiledContextPolicy>>> =
+    Mutex::new(None);
+
+#[derive(Deserialize)]
+struct ContextPolicyTestConfig {
+    produces: ContextEntryRef,
+}
+
+impl ContextDeclarationConfig for ContextPolicyTestConfig {
+    fn context_declarations(
+        &self,
+    ) -> Result<Vec<ContextDeclaration>, otel_arrow_dfe_config::error::Error> {
+        Ok(vec![ContextDeclaration::Produces {
+            access: CONTEXT_POLICY_TEST_ACCESS,
+            entry: self.produces.clone(),
+        }])
+    }
+}
+
+#[allow(unsafe_code)]
+#[distributed_slice(otel_arrow_dfe_engine::context_declaration::CONTEXT_DECLARATION_PROVIDERS)]
+static CONTEXT_POLICY_TEST_DECLARATIONS: ContextDeclarationProvider =
+    ContextDeclarationProvider::from_typed_config::<ContextPolicyTestConfig>(
+        CONTEXT_POLICY_TEST_RECEIVER_URN,
+    );
+
+fn context_policy_test_receiver_create(
+    pipeline_ctx: PipelineContext,
+    node: otel_arrow_dfe_engine::node::NodeId,
+    node_config: Arc<NodeUserConfig>,
+    receiver_config: &ReceiverConfig,
+    _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+) -> Result<ReceiverWrapper<()>, otel_arrow_dfe_config::error::Error> {
+    let policy = pipeline_ctx
+        .compiled_context_policy()
+        .expect("compiled context policy should be installed");
+    *CONTEXT_POLICY_TEST_CAPTURE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::downgrade(policy));
+    Ok(ReceiverWrapper::local(
+        RecoveryTestReceiver,
+        node,
+        node_config,
+        receiver_config,
+    ))
 }
 
 fn test_receiver_create(
@@ -228,6 +283,51 @@ static TEST_PIPELINE_FACTORY: PipelineFactory<()> = PipelineFactory::new(
     TEST_RECEIVER_FACTORIES,
     TEST_PROCESSOR_FACTORIES,
     TEST_EXPORTER_FACTORIES,
+    &[],
+);
+
+static CONTEXT_POLICY_TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
+    ReceiverFactory {
+        name: CONTEXT_POLICY_TEST_RECEIVER_URN,
+        create: context_policy_test_receiver_create,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
+            ContextPolicyTestConfig,
+        >,
+    },
+    ReceiverFactory {
+        name: "urn:otel:receiver:internal_telemetry",
+        create: test_receiver_create,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: test_validate_config,
+    },
+];
+
+static CONTEXT_POLICY_TEST_EXPORTER_FACTORIES: &[ExporterFactory<()>] = &[
+    ExporterFactory {
+        name: "urn:test:exporter:example",
+        create: recovery_test_exporter_create,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: test_validate_config,
+    },
+    ExporterFactory {
+        name: "urn:otel:exporter:console",
+        create: test_exporter_create,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: test_validate_config,
+    },
+    ExporterFactory {
+        name: "urn:otel:exporter:noop",
+        create: test_exporter_create,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: test_validate_config,
+    },
+];
+
+static CONTEXT_POLICY_TEST_PIPELINE_FACTORY: PipelineFactory<()> = PipelineFactory::new(
+    CONTEXT_POLICY_TEST_RECEIVER_FACTORIES,
+    TEST_PROCESSOR_FACTORIES,
+    CONTEXT_POLICY_TEST_EXPORTER_FACTORIES,
     &[],
 );
 
@@ -3711,6 +3811,115 @@ fn delete_pipeline_removes_stopped_pipeline_from_live_config() {
         !snapshot.groups[&group_id]
             .pipelines
             .contains_key(&pipeline_id)
+    );
+}
+
+/// Scenario: a live pipeline with registered context declarations is deleted.
+/// Guarantees: the resolved policy reaches `PipelineContext`, deletion installs
+/// the post-delete policy, and the deleted pipeline's policy is released.
+#[test]
+fn delete_pipeline_recompiles_context_policy_without_removed_declarations() {
+    *CONTEXT_POLICY_TEST_CAPTURE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    let config = engine_config_with_pipeline(
+        r#"
+        nodes:
+          receiver:
+            type: "urn:test:receiver:context-policy"
+            config:
+              produces: X-Tenant
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+        "#,
+    );
+    let runtime = test_runtime_with_factory(&config, &CONTEXT_POLICY_TEST_PIPELINE_FACTORY);
+    let _runner = ObservedStateRunner::start(&runtime);
+    let initial_policy = {
+        let state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Arc::clone(&state.context_policy)
+    };
+    let resolved = config
+        .resolve()
+        .pipelines
+        .into_iter()
+        .find(|pipeline| {
+            pipeline.role == ResolvedPipelineRole::Regular
+                && pipeline.pipeline_group_id.as_ref() == "g1"
+                && pipeline.pipeline_id.as_ref() == "p1"
+        })
+        .expect("resolved pipeline should exist");
+    let placement = runtime
+        .pipeline_placement_for_resolved(&resolved)
+        .expect("resolved pipeline placement should exist");
+    let live_placement = runtime.live_pipeline_placement_from(&resolved, placement.clone(), 0);
+    runtime.register_committed_pipeline(resolved.clone(), placement, 0);
+    let core_id = live_placement
+        .placement
+        .cores
+        .first()
+        .expect("pipeline should have a core")
+        .core_id
+        .id;
+    let _deployed_key = runtime
+        .launch_regular_pipeline_instance(
+            &resolved,
+            Arc::clone(&initial_policy),
+            &live_placement,
+            core_id,
+            0,
+        )
+        .expect("pipeline should launch");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let installed_policy = loop {
+        if let Some(policy) = CONTEXT_POLICY_TEST_CAPTURE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+        {
+            break policy;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for context policy installation"
+        );
+        thread::sleep(Duration::from_millis(25));
+    };
+    assert!(Arc::ptr_eq(
+        &initial_policy,
+        &installed_policy
+            .upgrade()
+            .expect("installed policy should be live")
+    ));
+    drop(initial_policy);
+
+    let status = runtime
+        .request_delete_pipeline("g1", "p1", 5)
+        .expect("stopped pipeline should be deleted");
+    assert_eq!(status.state, "succeeded");
+
+    let (committed_config, committed_policy) = {
+        let state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        (state.live_config.clone(), Arc::clone(&state.context_policy))
+    };
+    let expected_policy = CONTEXT_POLICY_TEST_PIPELINE_FACTORY
+        .compile_context_policy(&committed_config.resolve())
+        .expect("post-delete policy should compile");
+
+    assert!(committed_policy.equivalent_declarations(&expected_policy));
+    assert!(
+        installed_policy.upgrade().is_none(),
+        "deleted pipeline policy should be released"
     );
 }
 
