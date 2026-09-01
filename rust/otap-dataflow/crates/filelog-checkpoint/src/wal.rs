@@ -291,6 +291,35 @@ impl Operation {
         }
     }
 
+    fn validate_decoded_structure(&self) -> Result<(), DecodeError> {
+        let (field, guard, offset) = match self {
+            Self::RegisterFile(op) => (
+                "register_file.committed_frontier_guard",
+                &op.committed_frontier_guard,
+                op.committed_offset,
+            ),
+            Self::UpdateProgress(op) => (
+                "update_progress.new_committed_frontier_guard",
+                &op.new_committed_frontier_guard,
+                op.new_committed_offset,
+            ),
+            Self::ResetQuarantinedFile(op) => (
+                "reset_quarantined_file.new_committed_frontier_guard",
+                &op.new_committed_frontier_guard,
+                op.resulting_offset,
+            ),
+            Self::ResetAfterTruncate(_)
+            | Self::UpdateFingerprint(_)
+            | Self::UpdateMetadata(_)
+            | Self::QuarantineFile(_)
+            | Self::RemoveFile(_) => return Ok(()),
+        };
+        if !guard.valid_for_offset(offset) {
+            return Err(DecodeError::InvalidCommittedFrontierGuard { field, offset });
+        }
+        Ok(())
+    }
+
     fn validate_for_encode(&self) -> Result<(), EncodeError> {
         match self {
             Self::RegisterFile(op) => {
@@ -496,6 +525,11 @@ impl Operation {
                     }
                     ResetQuarantineAction::KeepFailed => {
                         // Equality with stored state is deliberately a PR1B rule.
+                        require_guard_for_offset(
+                            "reset_quarantined_file.new_committed_frontier_guard",
+                            &op.new_committed_frontier_guard,
+                            op.resulting_offset,
+                        )?;
                     }
                 }
             }
@@ -900,6 +934,7 @@ impl Operation {
                 consumed: input.position(),
             });
         }
+        operation.validate_decoded_structure()?;
         Ok(operation)
     }
 }
@@ -940,7 +975,7 @@ fn require_guard_for_offset(
     if !guard.valid_for_offset(offset) {
         return Err(invalid_field(
             field,
-            "window must equal min(committed offset, 64)",
+            "must have the required window and canonical empty digest",
         ));
     }
     Ok(())
@@ -1213,11 +1248,15 @@ pub enum TransactionScan {
 ///
 /// An empty suffix returns `None`. Callers can validate and apply a complete
 /// transaction, advance by `consumed`, and drop it before scanning the next.
-/// This keeps recovery memory bounded by one transaction.
+/// This keeps recovery memory bounded by one transaction. The expected
+/// sequence must be nonzero; a fresh WAL generation begins at one.
 pub fn scan_next_transaction(
     bytes: &[u8],
     expected_sequence: u64,
 ) -> Result<Option<TransactionScan>, DecodeError> {
+    if expected_sequence == 0 {
+        return Err(DecodeError::ExpectedSequenceZero);
+    }
     if bytes.is_empty() {
         return Ok(None);
     }
@@ -1266,6 +1305,12 @@ pub fn scan_next_transaction(
             context: "WAL transaction header",
             stored: stored_header_crc,
             computed: computed_header_crc,
+        });
+    }
+    if sequence == 0 {
+        return Err(DecodeError::SequenceOutOfOrder {
+            expected: expected_sequence,
+            found: sequence,
         });
     }
     if sequence != expected_sequence {

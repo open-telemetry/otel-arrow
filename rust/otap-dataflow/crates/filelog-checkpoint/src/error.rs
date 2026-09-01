@@ -114,6 +114,9 @@ pub enum DecodeError {
         /// Sequence found.
         found: u64,
     },
+    /// A caller supplied zero as the next expected WAL sequence.
+    #[error("expected WAL sequence must be nonzero")]
+    ExpectedSequenceZero,
     /// A transaction carried zero operations.
     #[error("transaction {sequence} has zero operations")]
     EmptyTransaction {
@@ -217,6 +220,14 @@ pub enum DecodeError {
         field: &'static str,
         /// Violated rule.
         reason: &'static str,
+    },
+    /// A committed-frontier guard is not canonical for its carried offset.
+    #[error("field {field} is not a valid committed-frontier guard for offset {offset}")]
+    InvalidCommittedFrontierGuard {
+        /// Operation field carrying the guard.
+        field: &'static str,
+        /// Offset that determines the required window and empty digest.
+        offset: u64,
     },
 }
 

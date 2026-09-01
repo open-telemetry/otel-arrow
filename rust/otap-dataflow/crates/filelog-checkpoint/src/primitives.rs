@@ -19,6 +19,10 @@ pub(crate) const TX_MAGIC: &[u8; 8] = b"FLOGTXN\0";
 
 const NAMESPACE_DOMAIN: &[u8] = b"otel-arrow-filelog-checkpoint-namespace-v1\0";
 const FRONTIER_DOMAIN: &[u8] = b"otel-arrow-filelog-frontier-guard-v1\0";
+const EMPTY_FRONTIER_GUARD_DIGEST: [u8; 32] = [
+    0xbe, 0x47, 0xd0, 0x23, 0xa0, 0x6e, 0x82, 0xfd, 0x6d, 0xa2, 0xda, 0xa0, 0x63, 0x15, 0x47, 0xd6,
+    0xec, 0xa2, 0x97, 0xb7, 0xac, 0x53, 0x2c, 0xba, 0x64, 0x71, 0xab, 0x90, 0x82, 0x9e, 0xc5, 0xb9,
+];
 const ADVISORY_PATH_DOMAIN: &[u8] = b"otel-arrow-filelog-advisory-path-v1\0";
 
 /// Absolute version 1 fingerprint field maximum.
@@ -495,13 +499,10 @@ impl CommittedFrontierGuard {
 
     /// Computes the canonical empty guard at offset zero.
     #[must_use]
-    pub fn empty() -> Self {
-        let mut hasher = Sha256::new();
-        hasher.update(FRONTIER_DOMAIN);
-        hasher.update(0u16.to_be_bytes());
+    pub const fn empty() -> Self {
         Self {
             window_len: 0,
-            digest: hasher.finalize().into(),
+            digest: EMPTY_FRONTIER_GUARD_DIGEST,
         }
     }
 
@@ -517,13 +518,10 @@ impl CommittedFrontierGuard {
         })
     }
 
-    pub(crate) const fn valid_for_offset(&self, offset: u64) -> bool {
-        self.window_len as u64
-            == if offset < COMMITTED_FRONTIER_GUARD_WINDOW_BYTES as u64 {
-                offset
-            } else {
-                COMMITTED_FRONTIER_GUARD_WINDOW_BYTES as u64
-            }
+    pub(crate) fn valid_for_offset(&self, offset: u64) -> bool {
+        let expected_len = offset.min(u64::from(COMMITTED_FRONTIER_GUARD_WINDOW_BYTES));
+        self.window_len as u64 == expected_len
+            && (offset != 0 || self.digest == EMPTY_FRONTIER_GUARD_DIGEST)
     }
 }
 

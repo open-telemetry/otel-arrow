@@ -74,7 +74,7 @@ impl SnapshotRecord {
             .committed_frontier_guard
             .valid_for_offset(self.committed_offset)
         {
-            return Err("frontier guard window must equal min(committed_offset, 64)");
+            return Err("frontier guard must have the required window and canonical empty digest");
         }
         if self.locator == Locator::Unspecified {
             return Err("locator must not be Unspecified");

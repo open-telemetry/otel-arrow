@@ -288,6 +288,31 @@ fn snapshot_record_count_is_checked_before_record_allocation_and_decode() {
     );
 }
 
+/// Scenario: An offset-zero snapshot record carries a zero-length guard with a mutated digest.
+/// Guarantees: Snapshot encoding and decoding require the canonical empty-frontier digest, not only its zero window length.
+#[test]
+fn snapshot_offset_zero_guard_requires_canonical_digest() {
+    let fixture = include_bytes!("fixtures/snapshot-rotated-finalized.bin");
+    let namespace = namespace_digest("app-logs").unwrap();
+    let mut record = decode_snapshot(fixture, &namespace, 1)
+        .unwrap()
+        .records
+        .remove(0);
+    record.committed_frontier_guard.digest[0] ^= 1;
+    assert!(matches!(
+        encode_snapshot(7, "app-logs", &[record]),
+        Err(EncodeError::InvalidSnapshotState { .. })
+    ));
+
+    let mut frame = fixture[60..fixture.len() - 24].to_vec();
+    frame[34] ^= 1;
+    refresh_record_crc(&mut frame);
+    assert!(matches!(
+        decode_snapshot(&snapshot_from_frames(&[frame]), &namespace, 1),
+        Err(DecodeError::InvalidSnapshotState { .. })
+    ));
+}
+
 /// Scenario: A snapshot repeats an exact record frame.
 /// Guarantees: Duplicate file IDs are rejected globally instead of last-write-wins decoding.
 #[test]
@@ -704,6 +729,104 @@ fn encoder_rejects_other_locally_invalid_operations() {
     assert_operation_encode_rejected(non_administrative);
 }
 
+/// Scenario: WAL operations carry offset-zero guards whose digest differs from the canonical empty guard.
+/// Guarantees: Registration, progress, and quarantine-reset encoding reject the malformed guard while valid keep_failed remains representable.
+#[test]
+fn wal_encoder_requires_canonical_offset_zero_guards() {
+    let mut register = decode_operation(include_bytes!("fixtures/operation-register-file.bin"))
+        .unwrap()
+        .0;
+    let Operation::RegisterFile(operation) = &mut register else {
+        panic!("register fixture expected");
+    };
+    operation.committed_frontier_guard.digest[0] ^= 1;
+    assert_operation_encode_rejected(register);
+
+    let mut progress = decode_operation(PROGRESS_OP).unwrap().0;
+    let Operation::UpdateProgress(operation) = &mut progress else {
+        panic!("progress fixture expected");
+    };
+    operation.expected_committed_offset = 0;
+    operation.new_committed_offset = 0;
+    operation.new_committed_frontier_guard = CommittedFrontierGuard::empty();
+    operation.new_committed_frontier_guard.digest[0] ^= 1;
+    assert_operation_encode_rejected(progress);
+
+    let mut reset = decode_operation(include_bytes!(
+        "fixtures/operation-reset-quarantined-beginning.bin"
+    ))
+    .unwrap()
+    .0;
+    let Operation::ResetQuarantinedFile(operation) = &mut reset else {
+        panic!("quarantine reset fixture expected");
+    };
+    operation.new_committed_frontier_guard.digest[0] ^= 1;
+    assert_operation_encode_rejected(reset);
+
+    let keep_failed = decode_operation(include_bytes!(
+        "fixtures/operation-keep-failed-mutation.bin"
+    ))
+    .unwrap()
+    .0;
+    assert!(encode_operation(&keep_failed).is_ok());
+
+    let mut malformed_keep_failed = keep_failed;
+    let Operation::ResetQuarantinedFile(operation) = &mut malformed_keep_failed else {
+        panic!("quarantine reset fixture expected");
+    };
+    operation.resulting_offset = 0;
+    operation.new_committed_frontier_guard = CommittedFrontierGuard::empty();
+    operation.new_committed_frontier_guard.digest[0] ^= 1;
+    assert_operation_encode_rejected(malformed_keep_failed);
+}
+
+/// Scenario: CRC-valid WAL operation frames carry malformed offset-zero guard digests.
+/// Guarantees: Standalone operation decoding and transaction scanning reject noncanonical empty guards before replay.
+#[test]
+fn wal_decoder_requires_canonical_offset_zero_guards() {
+    let mut register = include_bytes!("fixtures/operation-register-file.bin").to_vec();
+    register[35] ^= 1;
+    refresh_operation_crc(&mut register);
+    assert!(matches!(
+        decode_operation(&register),
+        Err(DecodeError::InvalidCommittedFrontierGuard { .. })
+    ));
+    let transaction = transaction_from_operations(&[&register]);
+    assert!(matches!(
+        scan_all_for_test(&transaction),
+        Err(DecodeError::InvalidCommittedFrontierGuard { .. })
+    ));
+
+    let mut progress = PROGRESS_OP.to_vec();
+    put_u64(&mut progress, 33, 0);
+    put_u16(&mut progress, 41, 0);
+    progress[43] ^= 1;
+    refresh_operation_crc(&mut progress);
+    assert!(matches!(
+        decode_operation(&progress),
+        Err(DecodeError::InvalidCommittedFrontierGuard { .. })
+    ));
+
+    let mut reset = include_bytes!("fixtures/operation-reset-quarantined-beginning.bin").to_vec();
+    reset[40] ^= 1;
+    refresh_operation_crc(&mut reset);
+    assert!(matches!(
+        decode_operation(&reset),
+        Err(DecodeError::InvalidCommittedFrontierGuard { .. })
+    ));
+
+    let mut keep_failed =
+        include_bytes!("fixtures/operation-reset-quarantined-keep-failed.bin").to_vec();
+    put_u64(&mut keep_failed, 30, 0);
+    put_u16(&mut keep_failed, 38, 0);
+    keep_failed[40] ^= 1;
+    refresh_operation_crc(&mut keep_failed);
+    assert!(matches!(
+        decode_operation(&keep_failed),
+        Err(DecodeError::InvalidCommittedFrontierGuard { .. })
+    ));
+}
+
 /// Scenario: Advisory-path bytes contain an unknown kind inside an otherwise CRC-valid record.
 /// Guarantees: Malformed path representations are rejected after bounded record parsing.
 #[test]
@@ -1006,6 +1129,30 @@ fn transaction_sequence_zero_gap_and_repeat_are_rejected() {
     assert!(matches!(
         scan_all_for_test(&repeated),
         Err(DecodeError::SequenceOutOfOrder { .. })
+    ));
+}
+
+/// Scenario: A CRC-valid sequence-zero transaction is scanned with caller-expected sequence zero.
+/// Guarantees: Neither a caller-provided zero nor a stored zero can bypass the one-based WAL sequence contract.
+#[test]
+fn direct_scanner_rejects_zero_expected_and_stored_sequence() {
+    let mut bytes = MIN_TX.to_vec();
+    put_u64(&mut bytes, 12, 0);
+    refresh_transaction_crcs(&mut bytes);
+    assert_eq!(
+        scan_next_transaction(&bytes, 0),
+        Err(DecodeError::ExpectedSequenceZero)
+    );
+    assert_eq!(
+        scan_next_transaction(&[], 0),
+        Err(DecodeError::ExpectedSequenceZero)
+    );
+    assert!(matches!(
+        scan_next_transaction(&bytes, 1),
+        Err(DecodeError::SequenceOutOfOrder {
+            expected: 1,
+            found: 0,
+        })
     ));
 }
 
