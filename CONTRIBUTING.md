@@ -128,10 +128,10 @@ dependency bumps):
 - Apply the `skipchangelog` label (for maintainers).
 - Documentation-only PRs (all changed files are under a `docs/` or `rfcs/`
   directory).
-- PRs confined to `rust/experimental/` -- those crates are not released and
-  ship no `CHANGELOG.md`, so there is no changelog to write an entry into. A
+- PRs confined to `rust/contrib/` -- those independently scoped projects ship
+  no repository changelog, so there is no changelog to write an entry into. A
   PR that also touches a released module (for example `rust/otap-dataflow/`)
-  is *not* exempt, even if the bulk of the change is experimental.
+  is *not* exempt, even if the bulk of the change is under `rust/contrib/`.
 - For dependency-update PRs: Renovate auto-applies the `dependencies` label
   and bot-authored PRs are exempt.
 
