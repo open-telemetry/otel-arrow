@@ -170,7 +170,6 @@ impl Scenario {
             let result = run_pipelines_with_timeout(
                 rendered_group,
                 admin_base,
-                generator_signals,
                 timeout,
                 ready_max_attempts,
                 ready_backoff,

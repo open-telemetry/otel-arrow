@@ -13,10 +13,8 @@ use otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY;
 use std::collections::HashMap;
 use tokio::time::{Duration, sleep};
 
-const LOADGEN_METRIC_SET: &str = "receiver.traffic_generator";
-const LOADGEN_METRIC_NAME_LOGS: &str = "logs.produced";
-const LOADGEN_METRIC_NAME_METRICS: &str = "metrics.produced";
-const LOADGEN_TRACE_NAME_SPANS: &str = "spans.produced";
+const LOADGEN_METRIC_SET: &str = "node.output";
+const LOADGEN_METRIC_NAME_PRODUCED: &str = "items";
 const VALIDATION_METRIC_SET: &str = "exporter.validation";
 const VALIDATION_METRIC_NAME: &str = "valid";
 const VALIDATION_FINISHED_METRIC_NAME: &str = "finished";
@@ -24,7 +22,6 @@ const VALIDATION_FINISHED_METRIC_NAME: &str = "finished";
 pub(crate) async fn run_pipelines_with_timeout(
     rendered_group: String,
     admin_base: String,
-    expected_generator_signals: HashMap<String, u64>,
     timeout: Duration,
     ready_max_attempts: usize,
     ready_backoff: Duration,
@@ -36,7 +33,6 @@ pub(crate) async fn run_pipelines_with_timeout(
 
     wait_for_ready(&admin_client, ready_max_attempts, ready_backoff).await?;
     tokio::time::timeout(timeout, async {
-        wait_for_loadgen(&admin_client, &expected_generator_signals, metrics_poll).await?;
         let result = wait_for_validation_finished(&admin_client, metrics_poll).await;
         shutdown_pipeline(&admin_client).await?;
         result
@@ -104,21 +100,6 @@ async fn fetch_metrics(client: &AdminClient) -> Result<MetricsSnapshot, Validati
         serde_json::to_value(response).map_err(|e| ValidationError::Http(e.to_string()))?,
     )
     .map_err(|e| ValidationError::Http(e.to_string()))
-}
-
-/// loop until traffic generation is done
-async fn wait_for_loadgen(
-    client: &AdminClient,
-    expected_generator_signals: &HashMap<String, u64>,
-    metrics_poll: Duration,
-) -> Result<(), ValidationError> {
-    loop {
-        let snapshot = fetch_metrics(client).await?;
-        if loadgen_reached_limit(&snapshot, expected_generator_signals) {
-            return Ok(());
-        }
-        sleep(metrics_poll).await;
-    }
 }
 
 /// Poll metrics until every validation exporter reports `finished == 1`,
@@ -193,31 +174,6 @@ fn attribute_node_id(
     }
 }
 
-fn loadgen_reached_limit(
-    snapshot: &MetricsSnapshot,
-    expected_per_gen: &HashMap<String, u64>,
-) -> bool {
-    if expected_per_gen.is_empty() {
-        return true;
-    }
-
-    let mut iter = snapshot
-        .metric_sets
-        .iter()
-        .filter(|set| set.name == LOADGEN_METRIC_SET)
-        .filter_map(|set| attribute_node_id(&set.attributes).map(|label| (set, label)))
-        .peekable();
-
-    // No loadgen metric sets found yet -- generators have not reported their
-    // first telemetry tick. Keep polling.
-    if iter.peek().is_none() {
-        return false;
-    }
-
-    iter.all(|(set, label)| {
-        let loadgen_signals_produced = metric_value(set, LOADGEN_METRIC_NAME_LOGS).unwrap_or(0)
-            + metric_value(set, LOADGEN_METRIC_NAME_METRICS).unwrap_or(0)
-            + metric_value(set, LOADGEN_TRACE_NAME_SPANS).unwrap_or(0);
         loadgen_signals_produced >= *expected_per_gen.get(&label).unwrap_or(&0u64)
     })
 }
@@ -297,35 +253,6 @@ mod tests {
                 value: MetricValue::U64(value),
             }],
         }
-    }
-
-    #[test]
-    fn loadgen_reached_limit_uses_labels() {
-        let snap = MetricsSnapshot {
-            timestamp: "t".into(),
-            metric_sets: vec![
-                set_with_node(LOADGEN_METRIC_SET, LOADGEN_METRIC_NAME_LOGS, 10, "genA"),
-                set_with_node(LOADGEN_METRIC_SET, LOADGEN_METRIC_NAME_LOGS, 4, "genB"),
-            ],
-        };
-        let mut expected = HashMap::new();
-        _ = expected.insert("genA".into(), 5);
-        _ = expected.insert("genB".into(), 4);
-        assert!(loadgen_reached_limit(&snap, &expected));
-
-        _ = expected.insert("genB".into(), 5);
-        assert!(!loadgen_reached_limit(&snap, &expected));
-    }
-
-    #[test]
-    fn loadgen_empty_snapshot_returns_false() {
-        let snap = MetricsSnapshot {
-            timestamp: "t".into(),
-            metric_sets: vec![],
-        };
-        let mut expected = HashMap::new();
-        _ = expected.insert("genA".into(), 5);
-        assert!(!loadgen_reached_limit(&snap, &expected));
     }
 
     fn validation_set(valid: u64, finished: u64, node_id: &str) -> Vec<MetricSetSnapshot> {
@@ -431,7 +358,7 @@ mod tests {
             timestamp: "t".into(),
             metric_sets: vec![set_with_node(
                 LOADGEN_METRIC_SET,
-                LOADGEN_METRIC_NAME_LOGS,
+                LOADGEN_METRIC_NAME_PRODUCED,
                 100,
                 "genA",
             )],
@@ -449,7 +376,7 @@ mod tests {
             timestamp: "2026-01-01T00:00:00Z".into(),
             metric_sets: vec![set_with_node(
                 LOADGEN_METRIC_SET,
-                LOADGEN_METRIC_NAME_LOGS,
+                LOADGEN_METRIC_NAME_PRODUCED,
                 7,
                 "genA",
             )],
@@ -490,10 +417,7 @@ mod tests {
             .await
             .expect("readyz should pass");
         let snapshot = fetch_metrics(&client).await.expect("metrics should decode");
-        assert!(loadgen_reached_limit(
-            &snapshot,
-            &HashMap::from([(String::from("genA"), 7)])
-        ));
+
         shutdown_pipeline(&client)
             .await
             .expect("shutdown should accept");
