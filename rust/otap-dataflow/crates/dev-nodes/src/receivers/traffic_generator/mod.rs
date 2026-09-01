@@ -136,11 +136,7 @@ fn validate_config_impl(config: &Value) -> Result<Config, otel_arrow_dfe_config:
             otel_arrow_dfe_config::error::Error::InvalidUserConfig { error: err.to_string() }
         )?;
 
-    let _ = config.get_traffic_config().validate().map_err(|e| {
-        otel_arrow_dfe_config::error::Error::InvalidUserConfig {
-            error: e.to_string(),
-        }
-    })?;
+        config.get_traffic_config().validate()?;
     Ok(config)
 }
 
