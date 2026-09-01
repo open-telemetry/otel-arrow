@@ -132,11 +132,13 @@ fn validate_config(config: &Value) -> Result<(), otel_arrow_dfe_config::error::E
 }
 
 fn validate_config_impl(config: &Value) -> Result<Config, otel_arrow_dfe_config::error::Error> {
-    let config: Config = serde_json::from_value(config.clone()).map_err(|err|
-            otel_arrow_dfe_config::error::Error::InvalidUserConfig { error: err.to_string() }
-        )?;
+    let config: Config = serde_json::from_value(config.clone()).map_err(|err| {
+        otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+            error: err.to_string(),
+        }
+    })?;
 
-        config.get_traffic_config().validate()?;
+    config.get_traffic_config().validate()?;
     Ok(config)
 }
 
@@ -1900,10 +1902,14 @@ mod tests {
             }
         });
 
-        assert!((TRAFFIC_GENERATOR_RECEIVER.validate_config)(&valid_config).is_ok(),
-                "traffic_generator_receiver factory should call validate_config");
+        assert!(
+            (TRAFFIC_GENERATOR_RECEIVER.validate_config)(&valid_config).is_ok(),
+            "traffic_generator_receiver factory should call validate_config"
+        );
 
-        assert!((TRAFFIC_GENERATOR_RECEIVER.validate_config)(&invalid_config).is_err(),
-                "traffic_generator_receiver factory should call validate_config");
+        assert!(
+            (TRAFFIC_GENERATOR_RECEIVER.validate_config)(&invalid_config).is_err(),
+            "traffic_generator_receiver factory should call validate_config"
+        );
     }
 }
