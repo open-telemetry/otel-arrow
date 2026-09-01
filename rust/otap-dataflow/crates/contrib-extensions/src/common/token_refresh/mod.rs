@@ -18,11 +18,6 @@
 //! pub type MyAuthExtension = TokenProviderExtension<MyAuth, MyAuthMetrics>;
 //! ```
 
-mod metrics;
-mod provider;
+mod extension;
 
-#[cfg(test)]
-mod tests;
-
-pub use metrics::{TokenProviderMetrics, TokenProviderMetricsTracker};
-pub use provider::{TokenProviderExtension, TokenSource};
+pub use extension::TokenProviderExtension;

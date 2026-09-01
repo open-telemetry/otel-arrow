@@ -4,6 +4,7 @@
 //! Azure credential construction and token acquisition.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use azure_core::credentials::{TokenCredential, TokenRequestOptions};
@@ -13,10 +14,11 @@ use azure_identity::{
     WorkloadIdentityCredentialOptions,
 };
 use otel_arrow_dfe_engine::capability::auth::BearerToken;
+use otel_arrow_dfe_engine::capability::auth::bearer_token_provider::TOKEN_USABLE_MARGIN;
 
 use super::config::{AuthMethod, Config};
 use super::error::Error;
-use crate::common::token_refresh::TokenSource;
+use crate::common::background_refresh::BackgroundProviderSource;
 
 /// Wraps an Azure credential plus the scope it acquires tokens for.
 #[derive(Clone)]
@@ -46,12 +48,12 @@ impl Auth {
 }
 
 #[async_trait]
-impl TokenSource for Auth {
+impl BackgroundProviderSource<BearerToken> for Auth {
     type Error = Error;
 
     /// Acquires a single token (no retries) and converts it into a
     /// [`BearerToken`].
-    async fn fetch_token(&self) -> Result<BearerToken, Error> {
+    async fn fetch(&self) -> Result<BearerToken, Error> {
         let access = self
             .credential
             .get_token(&[&self.scope], Some(TokenRequestOptions::default()))
@@ -68,6 +70,14 @@ impl TokenSource for Auth {
 
     fn log_refresh_failure(&self, error: &Error) {
         otel_warn!("azure_identity_auth.token_refresh_failed", error = %error);
+    }
+
+    fn usable_margin() -> Duration {
+        TOKEN_USABLE_MARGIN
+    }
+
+    fn expires_on(value: &BearerToken) -> Option<Instant> {
+        value.expires_on()
     }
 }
 

@@ -6,7 +6,7 @@
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
@@ -19,6 +19,7 @@ use oauth2::{
     HttpResponse, RefreshToken, Scope, StandardRevocableToken, TokenResponse, TokenUrl,
 };
 use otel_arrow_dfe_engine::capability::auth::BearerToken;
+use otel_arrow_dfe_engine::capability::auth::bearer_token_provider::TOKEN_USABLE_MARGIN;
 use otel_arrow_dfe_otap::tls_utils::{read_file_with_limit_async, read_file_with_limit_sync};
 use rand::RngExt;
 use reqwest::{Certificate, Identity};
@@ -28,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use super::config::{Config, GrantType, SignatureAlgorithm};
 use super::error::Error;
 use super::jwt_crypto;
-use crate::common::token_refresh::TokenSource;
+use crate::common::background_refresh::BackgroundProviderSource;
 
 /// URN grant type sent to the token endpoint for the JWT-bearer grant.
 const JWT_BEARER_GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:jwt-bearer";
@@ -297,12 +298,12 @@ impl Auth {
 }
 
 #[async_trait]
-impl TokenSource for Auth {
+impl BackgroundProviderSource<BearerToken> for Auth {
     type Error = Error;
 
     /// Acquires a single token (no retries) and converts it into a
     /// [`BearerToken`].
-    async fn fetch_token(&self) -> Result<BearerToken, Error> {
+    async fn fetch(&self) -> Result<BearerToken, Error> {
         match self.grant_type {
             GrantType::ClientCredentials => self.get_token_client_credentials().await,
             GrantType::JwtBearer => self.get_token_jwt_bearer().await,
@@ -311,6 +312,14 @@ impl TokenSource for Auth {
 
     fn log_refresh_failure(&self, error: &Error) {
         otel_warn!("oauth2_client_auth.token_refresh_failed", error = %error);
+    }
+
+    fn usable_margin() -> Duration {
+        TOKEN_USABLE_MARGIN
+    }
+
+    fn expires_on(value: &BearerToken) -> Option<Instant> {
+        value.expires_on()
     }
 }
 

@@ -25,7 +25,9 @@ use super::auth::Auth;
 use super::config::{Config, GrantType, SignatureAlgorithm};
 use super::metrics::OAuth2ClientAuthMetrics;
 use super::*;
-use crate::common::token_refresh::{TokenProviderMetricsTracker, TokenSource};
+use crate::common::background_refresh::{
+    BackgroundProviderMetricsTracker, BackgroundProviderSource,
+};
 
 // -- Helpers ---------------------------------------------------
 
@@ -42,10 +44,10 @@ fn valid_config_json(token_url: &str) -> serde_json::Value {
     })
 }
 
-fn make_tracker() -> TokenProviderMetricsTracker<OAuth2ClientAuthMetrics> {
+fn make_tracker() -> BackgroundProviderMetricsTracker<OAuth2ClientAuthMetrics> {
     let registry = TelemetryRegistryHandle::new();
     let metric_set = registry.register_metric_set::<OAuth2ClientAuthMetrics>(EmptyAttributes());
-    TokenProviderMetricsTracker::new(metric_set)
+    BackgroundProviderMetricsTracker::new(metric_set)
 }
 
 fn make_extension(token_url: &str) -> OAuth2ClientAuthExtension {
@@ -1495,7 +1497,7 @@ async fn missing_client_secret_file_fails_acquisition() {
     .expect("config parses");
     let auth = Auth::new(&cfg).expect("auth builds");
     let err = auth
-        .fetch_token()
+        .fetch()
         .await
         .expect_err("a missing credential file must fail acquisition");
     assert!(
@@ -1521,7 +1523,7 @@ async fn non_utf8_client_secret_file_is_rejected() {
     .expect("config parses");
     let auth = Auth::new(&cfg).expect("auth builds");
     let err = auth
-        .fetch_token()
+        .fetch()
         .await
         .expect_err("non-UTF-8 credentials must be rejected");
     assert!(
@@ -1546,7 +1548,7 @@ async fn missing_signing_key_file_fails_acquisition() {
     .expect("config parses");
     let auth = Auth::new(&cfg).expect("auth builds");
     let err = auth
-        .fetch_token()
+        .fetch()
         .await
         .expect_err("a missing signing key file must fail acquisition");
     assert!(
@@ -1569,7 +1571,7 @@ async fn unusable_signing_key_fails_before_any_request() {
     .expect("config parses");
     let auth = Auth::new(&cfg).expect("auth builds");
     let err = auth
-        .fetch_token()
+        .fetch()
         .await
         .expect_err("an unusable signing key must fail acquisition");
     assert!(
@@ -1613,10 +1615,7 @@ async fn jwt_bearer_surfaces_error_status_and_body() {
         .await;
 
     let auth = jwt_bearer_auth(&format!("{}/token", server.uri()));
-    let err = auth
-        .fetch_token()
-        .await
-        .expect_err("a 401 must fail acquisition");
+    let err = auth.fetch().await.expect_err("a 401 must fail acquisition");
     let message = err.to_string();
     assert!(
         message.contains("401"),
@@ -1641,7 +1640,7 @@ async fn jwt_bearer_rejects_an_unparsable_success_body() {
 
     let auth = jwt_bearer_auth(&format!("{}/token", server.uri()));
     let err = auth
-        .fetch_token()
+        .fetch()
         .await
         .expect_err("an unparsable body must fail acquisition");
     assert!(
@@ -1666,7 +1665,7 @@ async fn jwt_bearer_response_without_expires_in_uses_the_fallback_lifetime() {
         .await;
 
     let auth = jwt_bearer_auth(&format!("{}/token", server.uri()));
-    let token = auth.fetch_token().await.expect("acquisition succeeds");
+    let token = auth.fetch().await.expect("acquisition succeeds");
     assert_eq!(token.expose_token(), "tok");
     let expires_on = token
         .expires_on()
@@ -1709,7 +1708,7 @@ async fn client_credentials_response_without_expires_in_uses_the_fallback_lifeti
     .await;
 
     let auth = client_credentials_auth(&format!("{}/token", server.uri()));
-    let token = auth.fetch_token().await.expect("acquisition succeeds");
+    let token = auth.fetch().await.expect("acquisition succeeds");
     let remaining = token
         .expires_on()
         .expect("a response without expires_in must still get a finite expiry")
@@ -1740,7 +1739,7 @@ async fn expires_in_is_accepted_as_a_string_on_both_grants() {
             client_credentials_auth(&token_url)
         };
 
-        let token = auth.fetch_token().await.expect("acquisition succeeds");
+        let token = auth.fetch().await.expect("acquisition succeeds");
         let remaining = token
             .expires_on()
             .expect("a string expires_in must still produce an expiry")
@@ -1772,7 +1771,7 @@ async fn a_non_bearer_token_type_is_rejected_on_both_grants() {
         };
 
         let err = auth
-            .fetch_token()
+            .fetch()
             .await
             .expect_err("a non-bearer token_type must fail acquisition");
         assert!(
@@ -1793,7 +1792,7 @@ async fn a_missing_or_differently_cased_token_type_is_treated_as_bearer() {
     ] {
         let server = start_json_token_server(body).await;
         let auth = client_credentials_auth(&format!("{}/token", server.uri()));
-        let token = auth.fetch_token().await.expect("acquisition succeeds");
+        let token = auth.fetch().await.expect("acquisition succeeds");
         assert_eq!(token.expose_token(), "tok");
     }
 }
@@ -1812,7 +1811,7 @@ async fn a_large_error_body_is_truncated_before_it_reaches_the_error() {
 
     let auth = jwt_bearer_auth(&format!("{}/token", server.uri()));
     let err = auth
-        .fetch_token()
+        .fetch()
         .await
         .expect_err("a 400 must fail acquisition")
         .to_string();

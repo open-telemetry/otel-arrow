@@ -21,7 +21,7 @@ async fn schedule_next_refreshes_before_expiry() {
         "t".to_owned(),
         Some(Instant::now() + Duration::from_secs(3600)),
     );
-    let refresh_at = schedule_next(&token, Duration::from_secs(300));
+    let refresh_at = schedule_next(token.expires_on(), Duration::from_secs(300));
     let secs = refresh_at
         .saturating_duration_since(tokio::time::Instant::now())
         .as_secs_f64();
@@ -37,7 +37,7 @@ async fn schedule_next_floors_near_expiry() {
         "t".to_owned(),
         Some(Instant::now() + Duration::from_secs(5)),
     );
-    let refresh_at = schedule_next(&token, Duration::from_secs(300));
+    let refresh_at = schedule_next(token.expires_on(), Duration::from_secs(300));
     let secs = refresh_at
         .saturating_duration_since(tokio::time::Instant::now())
         .as_secs_f64();
@@ -49,7 +49,7 @@ async fn schedule_next_floors_near_expiry() {
 #[tokio::test]
 async fn schedule_next_pushes_non_expiring_far_out() {
     let token = BearerToken::without_expiry("t".to_owned());
-    let refresh_at = schedule_next(&token, Duration::from_secs(300));
+    let refresh_at = schedule_next(token.expires_on(), Duration::from_secs(300));
     let secs = refresh_at
         .saturating_duration_since(tokio::time::Instant::now())
         .as_secs();

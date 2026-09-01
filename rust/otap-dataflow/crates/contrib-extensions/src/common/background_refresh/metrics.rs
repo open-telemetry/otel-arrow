@@ -1,42 +1,37 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Telemetry shared by every bearer-token provider extension.
-//!
-//! Each extension declares its own `#[metric_set]` struct (so its metrics carry
-//! its own set name) and implements [`TokenProviderMetrics`] to expose the four
-//! instruments the refresh loop records. [`TokenProviderMetricsTracker`] then
-//! provides the recording and flushing logic once for all of them.
+//! Telemetry shared by every background provider extension.
 
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
 use otel_arrow_dfe_telemetry::instrument::{Counter, Mmsc};
 use otel_arrow_dfe_telemetry::metrics::{MetricSet, MetricSetHandler, MetricSetSnapshot};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 
-/// The instruments a bearer-token provider metric set must expose.
-pub trait TokenProviderMetrics: MetricSetHandler + Send + 'static {
-    /// Counter of successful token acquisitions.
+/// The instruments a background provider metric set must expose.
+pub trait BackgroundProviderMetrics: MetricSetHandler + Send + 'static {
+    /// Counter of successful acquisitions.
     fn successes(&mut self) -> &mut Counter<u64>;
-    /// Counter of failed token acquisitions.
+    /// Counter of failed acquisitions.
     fn failures(&mut self) -> &mut Counter<u64>;
-    /// Counter of tokens published to consumers via the watch channel.
+    /// Counter of values published to consumers via the watch channel.
     fn publishes(&mut self) -> &mut Counter<u64>;
     /// Latency (ms) of successful acquisitions.
     fn success_latency(&mut self) -> &mut Mmsc;
 }
 
-/// Tracks and flushes a bearer-token provider's metric set.
-pub struct TokenProviderMetricsTracker<M: TokenProviderMetrics> {
+/// Tracks and flushes a background provider's metric set.
+pub struct BackgroundProviderMetricsTracker<M: BackgroundProviderMetrics> {
     metrics: MetricSet<M>,
 }
 
-impl<M: TokenProviderMetrics> std::fmt::Debug for TokenProviderMetricsTracker<M> {
+impl<M: BackgroundProviderMetrics> std::fmt::Debug for BackgroundProviderMetricsTracker<M> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TokenProviderMetricsTracker").finish()
     }
 }
 
-impl<M: TokenProviderMetrics> TokenProviderMetricsTracker<M> {
+impl<M: BackgroundProviderMetrics> BackgroundProviderMetricsTracker<M> {
     /// Creates a new tracker wrapping a registered metric set.
     #[must_use]
     pub fn new(metrics: MetricSet<M>) -> Self {

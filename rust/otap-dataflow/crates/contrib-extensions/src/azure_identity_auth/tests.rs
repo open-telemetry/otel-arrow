@@ -20,7 +20,7 @@ use super::config::{AuthMethod, Config};
 use super::error::Error;
 use super::metrics::AzureIdentityAuthMetrics;
 use super::*;
-use crate::common::token_refresh::TokenProviderMetricsTracker;
+use crate::common::background_refresh::BackgroundProviderMetricsTracker;
 
 // -- Config tests -------------------------------------------
 
@@ -287,10 +287,10 @@ fn make_extension(credential: Arc<dyn TokenCredential>) -> AzureIdentityAuthExte
     )
 }
 
-fn make_tracker() -> TokenProviderMetricsTracker<AzureIdentityAuthMetrics> {
+fn make_tracker() -> BackgroundProviderMetricsTracker<AzureIdentityAuthMetrics> {
     let registry = TelemetryRegistryHandle::new();
     let metric_set = registry.register_metric_set::<AzureIdentityAuthMetrics>(EmptyAttributes());
-    TokenProviderMetricsTracker::new(metric_set)
+    BackgroundProviderMetricsTracker::new(metric_set)
 }
 
 #[tokio::test]

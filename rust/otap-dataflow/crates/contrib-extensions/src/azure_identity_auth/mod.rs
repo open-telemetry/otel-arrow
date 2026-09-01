@@ -39,7 +39,8 @@ use tokio::sync::watch;
 use self::auth::Auth;
 use self::config::Config;
 use self::metrics::AzureIdentityAuthMetrics;
-use crate::common::token_refresh::{TokenProviderExtension, TokenProviderMetricsTracker};
+use crate::common::background_refresh::BackgroundProviderMetricsTracker;
+use crate::common::token_refresh::TokenProviderExtension;
 
 /// The Azure Identity Auth extension: the shared bearer-token refresher driven
 /// by an Azure credential.
@@ -86,7 +87,7 @@ fn create(
     // Register a dedicated entity + metric set for this extension instance.
     let entity_key = ext_ctx.register_extension_entity(name.clone(), ExtensionVariant::Shared);
     let metric_set = ext_ctx.register_metric_set_for_entity::<AzureIdentityAuthMetrics>(entity_key);
-    let tracker = TokenProviderMetricsTracker::new(metric_set);
+    let tracker = BackgroundProviderMetricsTracker::new(metric_set);
 
     // Empty token cache; the background refresh loop publishes the first token.
     let (tx, _rx) = watch::channel(None);
