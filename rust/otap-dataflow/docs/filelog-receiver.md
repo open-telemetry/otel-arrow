@@ -207,7 +207,8 @@ accepted compromises:
 | --- | --- |
 | Receiver | Discovery, file identity, local ownership, source decoding, record framing, source provenance, `observed_time_unix_nano`, aggregate-completion correlation, and Ack-gated progress |
 | Engine/topic runtime | Declaring Ack-required nodes, establishing downstream readiness, snapshotting nonempty required membership, propagating completion, and aggregating required fan-out subscribers into one Ack or Nack for each publication attempt |
-| Processors | Timestamp extraction and parsing, structured parsing, severity, trace correlation, enrichment, filtering, and routing semantics |
+| PData codecs (optional) | Preserving, batching, forwarding, decoding, or encoding complete independently decodable representations with stable format identity, such as standardized syslog, CEF, GELF, or a versioned JSON telemetry format |
+| Processors and OPL | Configurable application interpretation, including JSON/CSV field mapping, timestamp and severity derivation, trace correlation, enrichment, filtering, and routing semantics |
 | Exporters | Destination representation and delivery |
 
 The receiver factory validates receiver configuration only. It does not inspect
@@ -224,9 +225,24 @@ conflict; it is not the fan-out design.
 
 Multiline framing remains in the receiver because it determines which bytes
 belong to a record and therefore which source offset an Ack may advance.
-Timestamp parsing remains in a processor because it changes interpretation, not
-record boundaries. A processor parse failure does not change receiver framing,
-provenance, observed time, or source progress.
+For application-specific records, configurable timestamp parsing remains in a
+processor because it changes interpretation, not record boundaries. A
+processor parse failure does not change receiver framing, provenance, observed
+time, or source progress. A fixed known-format codec may decode timestamp or
+severity fields when those meanings are intrinsic to that representation.
+
+A future codec-aware path may preserve and batch a complete framed message in
+its known encoded representation, forward it transparently, or decode it to
+native OTAP when a consumer requires native fields. Codec participation does
+not move discovery, source ranges, framing, provenance, or checkpoint ownership
+out of filelog, and Phase 1 does not depend on the pluggable-codec series. The
+encoded payload contract must preserve filelog provenance and delivery context
+before such an optimization is enabled.
+
+A fixed, independently decodable telemetry format can use a PData codec.
+Application-specific JSON or CSV whose meaning depends on configured field
+names, timestamp/severity rules, headers, enrichment, filtering, or routing
+remains processor or OPL work.
 
 Processor and OPL capability assessment, including representative structured,
 container, and multiline processing pipelines, belongs in a companion issue or
