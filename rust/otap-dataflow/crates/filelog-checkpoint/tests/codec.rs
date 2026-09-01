@@ -4,12 +4,14 @@
 //! Positive conformance tests against independently generated fixtures.
 
 use otel_arrow_dfe_filelog_checkpoint::{
-    AdvisoryPath, CommittedFrontierGuard, DecodeError, EncodeError, FileId, FramingEncoding,
-    FramingOnDecodeError, FramingProfileParams, LifecycleState, MaxLogSizeBehavior, MultilineMode,
-    Operation, ResetQuarantineAction, TX_HEADER_BYTES, TX_MIN_BODY_BYTES, Transaction,
-    TransactionScan, UpdateFingerprint, WAL_HEADER_BYTES, WAL_MAX_TX_BODY_BYTES, crc32c,
-    decode_current, decode_operation, decode_snapshot, decode_wal_header, encode_current,
-    encode_operation, encode_snapshot, encode_transaction, encode_wal_header, namespace_digest,
+    AdvisoryPath, CommittedFrontierGuard, DecodeError, EncodeError, FRAMING_PROFILE_VERSION,
+    FileId, FramingEncoding, FramingOnDecodeError, FramingProfileParams, LifecycleState,
+    MAX_PROGRESS_TX_BODY_BYTES, MAX_PROGRESS_TX_FRAME_BYTES, MaxLogSizeBehavior, MultilineMode,
+    Operation, ResetQuarantineAction, SNAPSHOT_MAX_RECORD_FRAME_BYTES, TX_HEADER_BYTES,
+    TX_MIN_BODY_BYTES, TX_MIN_FRAME_BYTES, Transaction, TransactionScan, UpdateFingerprint,
+    WAL_HEADER_BYTES, WAL_MAX_TX_BODY_BYTES, WAL_MAX_TX_FRAME_BYTES, crc32c, decode_current,
+    decode_operation, decode_snapshot, decode_wal_header, encode_current, encode_operation,
+    encode_snapshot, encode_transaction, encode_wal_header, namespace_digest,
     scan_next_transaction,
 };
 
@@ -90,6 +92,51 @@ fn default_profile(multiline: bool) -> FramingProfileParams {
 fn current_fixture_matches_codec() {
     assert_eq!(decode_current(CURRENT), Ok(42));
     assert_eq!(encode_current(42), CURRENT);
+}
+
+/// Scenario: Public v1 version and complete-frame bounds are inspected by a future store consumer.
+/// Guarantees: Framing-profile versioning stays independent and every exported frame bound matches its normative value and component arithmetic.
+#[test]
+fn public_version_and_frame_bound_constants_are_exact() {
+    const CRC_BYTES: u64 = size_of::<u32>() as u64;
+    const SNAPSHOT_MAX_RECORD_PAYLOAD_BYTES: u64 = 69_854;
+
+    assert_eq!(FRAMING_PROFILE_VERSION, 1);
+    assert_eq!(TX_MIN_FRAME_BYTES, 74);
+    assert_eq!(WAL_MAX_TX_FRAME_BYTES, 16_777_256);
+    assert_eq!(MAX_PROGRESS_TX_FRAME_BYTES, 446_504);
+    assert_eq!(SNAPSHOT_MAX_RECORD_FRAME_BYTES, 69_862);
+
+    assert_eq!(
+        TX_MIN_FRAME_BYTES,
+        TX_HEADER_BYTES as u64 + TX_MIN_BODY_BYTES + CRC_BYTES
+    );
+    assert_eq!(
+        WAL_MAX_TX_FRAME_BYTES,
+        TX_HEADER_BYTES as u64 + WAL_MAX_TX_BODY_BYTES + CRC_BYTES
+    );
+    assert_eq!(
+        MAX_PROGRESS_TX_FRAME_BYTES,
+        TX_HEADER_BYTES as u64 + MAX_PROGRESS_TX_BODY_BYTES + CRC_BYTES
+    );
+    assert_eq!(
+        SNAPSHOT_MAX_RECORD_FRAME_BYTES,
+        CRC_BYTES + SNAPSHOT_MAX_RECORD_PAYLOAD_BYTES + CRC_BYTES
+    );
+}
+
+/// Scenario: The independent register_file fixture carries the current framing-profile recipe version.
+/// Guarantees: Registration validates and re-encodes against FRAMING_PROFILE_VERSION without coupling it to the artifact format version.
+#[test]
+fn register_file_uses_independent_framing_profile_version() {
+    let bytes = include_bytes!("fixtures/operation-register-file.bin");
+    let (operation, consumed) = decode_operation(bytes).unwrap();
+    let Operation::RegisterFile(register) = &operation else {
+        panic!("register_file fixture expected");
+    };
+    assert_eq!(register.framing_profile_version, FRAMING_PROFILE_VERSION);
+    assert_eq!(consumed, bytes.len());
+    assert_eq!(encode_operation(&operation).unwrap(), bytes);
 }
 
 /// Scenario: The independent empty snapshot carries generation zero and no records.

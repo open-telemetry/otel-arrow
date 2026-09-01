@@ -6,8 +6,9 @@
 use std::collections::HashSet;
 
 use crate::primitives::{
-    AUDIT_REASON_MAX_BYTES, FILELOG_FORMAT_VERSION, FINGERPRINT_MAX_BYTES, NAMESPACE_ID_MAX_BYTES,
-    Reader, TX_ENVELOPE_VERSION, TX_MAGIC, WAL_MAGIC, Writer, crc32c, quarantine_reason_reserved,
+    AUDIT_REASON_MAX_BYTES, FILELOG_FORMAT_VERSION, FINGERPRINT_MAX_BYTES, FRAMING_PROFILE_VERSION,
+    NAMESPACE_ID_MAX_BYTES, Reader, TX_ENVELOPE_VERSION, TX_MAGIC, WAL_MAGIC, Writer, crc32c,
+    quarantine_reason_reserved,
 };
 use crate::{
     AdvisoryPath, CommittedFrontierGuard, DecodeError, EncodeError, FileId, FramingResume,
@@ -33,6 +34,15 @@ pub const MAX_OPERATION_PAYLOAD_BYTES: u64 = 131_095;
 pub const MAX_VALID_UPDATE_FINGERPRINT_PAYLOAD_BYTES: u64 = 131_094;
 /// Largest progress-only transaction body.
 pub const MAX_PROGRESS_TX_BODY_BYTES: u64 = 446_464;
+/// Minimum complete version 1 transaction frame.
+pub const TX_MIN_FRAME_BYTES: u64 =
+    TX_HEADER_BYTES as u64 + TX_MIN_BODY_BYTES + TX_FRAME_CRC_BYTES as u64;
+/// Maximum complete version 1 transaction frame.
+pub const WAL_MAX_TX_FRAME_BYTES: u64 =
+    TX_HEADER_BYTES as u64 + WAL_MAX_TX_BODY_BYTES + TX_FRAME_CRC_BYTES as u64;
+/// Maximum complete progress-only transaction frame.
+pub const MAX_PROGRESS_TX_FRAME_BYTES: u64 =
+    TX_HEADER_BYTES as u64 + MAX_PROGRESS_TX_BODY_BYTES + TX_FRAME_CRC_BYTES as u64;
 
 const OP_REGISTER_FILE: u8 = 0x01;
 const OP_UPDATE_PROGRESS: u8 = 0x02;
@@ -291,6 +301,8 @@ impl Operation {
         }
     }
 
+    // Guard canonicality is a format-level decode requirement. Resume, locator,
+    // lifecycle, and prior-state reachability are validated during PR1B replay.
     fn validate_decoded_structure(&self) -> Result<(), DecodeError> {
         let (field, guard, offset) = match self {
             Self::RegisterFile(op) => (
@@ -341,7 +353,7 @@ impl Operation {
                         "must not be Unspecified",
                     ));
                 }
-                if op.framing_profile_version != FILELOG_FORMAT_VERSION {
+                if op.framing_profile_version != FRAMING_PROFILE_VERSION {
                     return Err(invalid_field(
                         "register_file.framing_profile_version",
                         "version 1 producers must write version one",

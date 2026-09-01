@@ -18,6 +18,11 @@ use crate::{
 pub const SNAPSHOT_HEADER_BYTES: usize = 60;
 /// Exact version 1 snapshot footer width.
 pub const SNAPSHOT_FOOTER_BYTES: usize = 24;
+const SNAPSHOT_RECORD_LENGTH_BYTES: u64 = size_of::<u32>() as u64;
+const SNAPSHOT_RECORD_CRC_BYTES: u64 = size_of::<u32>() as u64;
+/// Maximum complete version 1 snapshot record frame.
+pub const SNAPSHOT_MAX_RECORD_FRAME_BYTES: u64 =
+    SNAPSHOT_RECORD_LENGTH_BYTES + SNAPSHOT_MAX_RECORD_PAYLOAD_BYTES + SNAPSHOT_RECORD_CRC_BYTES;
 
 /// Immutable evidence attached to a quarantined record.
 #[derive(Debug, Clone, PartialEq, Eq)]

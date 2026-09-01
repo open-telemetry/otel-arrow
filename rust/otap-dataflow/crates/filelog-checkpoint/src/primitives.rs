@@ -10,6 +10,8 @@ use crate::{DecodeError, EncodeError};
 
 /// Version of every version 1 checkpoint artifact header.
 pub const FILELOG_FORMAT_VERSION: u16 = 1;
+/// Version of the framing-profile canonical serialization and digest recipe.
+pub const FRAMING_PROFILE_VERSION: u16 = 1;
 pub(crate) const TX_ENVELOPE_VERSION: u16 = 1;
 pub(crate) const CURRENT_MAGIC: &[u8; 8] = b"FLOGCUR\0";
 pub(crate) const SNAPSHOT_MAGIC: &[u8; 8] = b"FLOGSNP\0";
