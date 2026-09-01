@@ -8,7 +8,7 @@ change_type: bug_fix
 component: pipeline
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: OTAP exporter shutdown now NACKs data sent while a streaming request is still opening.
+note: OTAP exporter shutdown now NACKs the batch already sent to the server when a streaming request is still opening.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [2720, 3870]
@@ -18,4 +18,8 @@ issues: [2720, 3870]
 # Use pipe (|) for multiline entries. Breaking entries must include a `Migration:`
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
-subtext:
+subtext: |
+  A known gap remains when many batches are queued while the stream is still
+  opening: a batch already pulled off the queue but not yet correlated can
+  still be dropped on shutdown without a NACK. Issue #3870 tracks closing
+  this remaining gap.

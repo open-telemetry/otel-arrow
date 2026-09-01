@@ -14,6 +14,12 @@
 //! for the shutdown-during-stream-open race should be revisited: some of
 //! today's immediate Nacks may become Acks if the response arrives before
 //! the new deadline.
+//! ToDo: Known gap (pre-existing, not fixed by the above): if shutdown
+//! arrives while `create_req_stream` is blocked on `correlation_tx.reserve()`
+//! (correlation channel full, e.g. after 64 batches are queued while the
+//! stream is still opening), a batch already pulled off `rx` has not yet
+//! been added to `correlation_rx`. The stream-open drain cannot see or Nack
+//! it, so it is silently dropped. Track alongside #3870.
 
 otel_arrow_dfe_telemetry::otel_component_scope!(
     urn = OTAP_EXPORTER_URN,
@@ -1014,6 +1020,13 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
                         // Issue #3870 plans a drain-until-deadline model where a
                         // late successful BatchStatus would Ack instead; revisit
                         // this fallback when that lands.
+                        //
+                        // Known gap (see module-level ToDo): if shutdown lands
+                        // while `create_req_stream` is blocked on
+                        // `correlation_tx.reserve()`, the batch it already
+                        // pulled off `rx` is not yet in `correlation_rx` and
+                        // this drain cannot Nack it. Pre-existing, tracked
+                        // with #3870.
                         fail_stream_open_pdata(
                             &pdata_metrics_tx,
                             signal_type,
