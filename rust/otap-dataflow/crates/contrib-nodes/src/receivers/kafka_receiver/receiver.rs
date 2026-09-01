@@ -302,11 +302,12 @@ impl KafkaReceiver {
         // Both suffixes are applied so a multi-core, multi-generation deployment
         // still yields a unique ID per (generation, core).
         if let Some(base_id) = config.group_instance_id() {
-            let mut resolved = base_id.to_string();
-            resolved.push_str(&format!("-g{}", pipeline_ctx.deployment_generation()));
-            if pipeline_ctx.num_cores() > 1 {
-                resolved.push_str(&format!("-{}", pipeline_ctx.core_id()));
-            }
+            let generation = pipeline_ctx.deployment_generation();
+            let resolved = if pipeline_ctx.num_cores() > 1 {
+                format!("{base_id}-g{generation}-{}", pipeline_ctx.core_id())
+            } else {
+                format!("{base_id}-g{generation}")
+            };
             config.set_group_instance_id(resolved);
         }
 
@@ -6486,46 +6487,46 @@ mod tests {
         .await;
     }
 
-    /// Scenario (lifecycle: drain and shutdown): live-reconfiguration cutover
-    /// where the OLD receiver (A, deployment generation 0) and the NEW receiver
-    /// (B, deployment generation 1) share the SAME operator `group.instance.id`
-    /// in the SAME group, exactly as the engine deploys a new pipeline instance
-    /// during a rolling cutover. B joins before A is drained (engine order).
+    /// Scenario (lifecycle: drain and shutdown): live-reconfiguration cutover on
+    /// a single-core deployment where the OLD receiver (A) and the NEW receiver
+    /// (B) share the SAME operator `group.instance.id` in the SAME group but run
+    /// at DISTINCT deployment generations (A at generation 0, B at generation 1),
+    /// exactly as the engine deploys a new pipeline instance during a rolling
+    /// cutover. Two partitions so the members can genuinely split ownership.
     /// Guarantees: because `KafkaReceiver::new` folds the deployment generation
-    /// into the static `group.instance.id`, the new generation is a DISTINCT
-    /// static member from the draining old generation, so its JOIN is never
-    /// rejected with `FENCED_INSTANCE_ID`. Therefore (1) the OLD receiver is not
-    /// fenced out by the new generation's join -- it keeps consuming and acking
-    /// while both are alive; (2) the OLD receiver drains cleanly; and (3) the OLD
-    /// instance's committed offset never regresses across the cutover (its
-    /// progress is preserved, not corrupted by the new member). This is the
-    /// integration guard for the generation-suffix fix; the exact resolved-id
-    /// format is asserted deterministically by the `new_*` unit tests. The
-    /// downstream partition handoff to the new instance is a broker rebalance
-    /// concern not asserted here because the in-process mock broker does not
-    /// deterministically hand a partition between two static members.
+    /// into the static `group.instance.id`, A resolves to `inst-shared-g0` and B
+    /// to `inst-shared-g1` -- distinct static members even though no core-id
+    /// suffix is appended on a single-core pipeline. So the NEW receiver is NOT
+    /// stalled by the OLD one: it acquires a partition and actually receives
+    /// data (liveness), and it keeps working after A drains. This is the
+    /// integration guard that the generation suffix lets a same-operator-id new
+    /// instance make progress during a cutover (contrast with
+    /// `cutover_same_generation_same_instance_id_stalls_new_receiver`, which shows
+    /// an IDENTICAL resolved id starves the new receiver).
     #[tokio::test]
-    async fn cutover_new_receiver_same_group_same_instance_id_starts_before_old_drains() {
-        const TOPIC: &str = "cutover-same-instance-id-traces";
-        const PRE: usize = 3;
-        let group = "cutover-same-instance-id-group";
+    async fn cutover_new_receiver_distinct_generation_is_not_stalled() {
+        const TOPIC: &str = "cutover-distinct-gen-liveness-traces";
+        let group = "cutover-distinct-gen-liveness-group";
         with_cluster(
-            KafkaTestCluster::builder().topic(TOPIC),
+            KafkaTestCluster::builder().topic_with(TOPIC, REBALANCE_TEST_PARTITIONS, 1),
             |cluster| async move {
                 let producer = cluster.producer().build();
                 let req = create_traces_with_spans();
                 let mut bytes = vec![];
                 req.encode(&mut bytes).expect("encode");
 
-                for i in 0..PRE {
-                    let key = format!("pre-{i}");
-                    producer
-                        .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
-                        .await
-                        .expect("send pre record");
-                }
+                producer
+                    .produce_per_partition(
+                        TOPIC,
+                        REBALANCE_TEST_PARTITIONS,
+                        REBALANCE_RECORDS_PER_PARTITION,
+                        &bytes,
+                    )
+                    .await;
 
-                // OLD receiver (A): deployment generation 0, operator static id.
+                // OLD receiver (A): generation 0, operator id `inst-shared`
+                // -> resolves to `inst-shared-g0`. Consume so A owns both
+                // partitions.
                 let cfg_a = cutover_traces_config(
                     cluster.bootstrap_servers(),
                     group,
@@ -6535,28 +6536,14 @@ mod tests {
                 );
                 let mut receiver_a =
                     KafkaReceiverHarness::start_with_generation(&cluster, cfg_a, 0);
-                for _ in 0..PRE {
+                let total = (REBALANCE_RECORDS_PER_PARTITION * REBALANCE_TEST_PARTITIONS) as usize;
+                for _ in 0..total {
                     let pdata = receiver_a.recv_pdata().await;
                     receiver_a.ack(pdata);
                 }
-                let brokers = cluster.bootstrap_servers().to_string();
-                let pre_committed =
-                    poll_until(Duration::from_secs(5), Duration::from_millis(100), || {
-                        committed_offset(&brokers, group, TOPIC, 0)
-                            .expect("kafka-test: committed-offset probe failed")
-                            .is_some_and(|o| o >= PRE as i64)
-                    })
-                    .await;
-                assert!(
-                    pre_committed,
-                    "A's pre-B progress must commit before the new generation joins",
-                );
 
-                // Engine order step 1+2: start the NEW receiver (B) as a NEW
-                // deployment GENERATION (1) reusing the SAME operator
-                // `group.instance.id`. The generation suffix makes it a distinct
-                // static member so its JOIN is never fenced. Let it join before
-                // the OLD instance is drained.
+                // NEW receiver (B): generation 1, SAME operator id `inst-shared`
+                // -> resolves to `inst-shared-g1` (distinct static member).
                 let cfg_b = cutover_traces_config(
                     cluster.bootstrap_servers(),
                     group,
@@ -6564,27 +6551,56 @@ mod tests {
                     TOPIC,
                     Some("inst-shared"),
                 );
-                let receiver_b = KafkaReceiverHarness::start_with_generation(&cluster, cfg_b, 1);
-                receiver_b.wait_for_control_barrier().await;
+                let mut receiver_b =
+                    KafkaReceiverHarness::start_with_generation(&cluster, cfg_b, 1);
 
-                // (1) The OLD receiver is not fenced out by the new generation's
-                // join: it still consumes and acks a record produced while both
-                // generations are alive.
-                producer
-                    .send_full(SendRecord::new(TOPIC, &bytes).key(b"mid"))
-                    .await
-                    .expect("send mid record");
-                let a_mid = receiver_a
-                    .try_recv_pdata(Duration::from_secs(10))
-                    .await
-                    .expect(
-                        "the OLD receiver must keep consuming while the new \
-                         generation (distinct static member) is present -- its join \
-                         must not fence the old member out",
-                    );
-                receiver_a.ack(a_mid);
+                // Liveness step 1: B must ACQUIRE a partition (not be starved by
+                // A) because it is a distinct static member.
+                let b_acquired = tokio::time::timeout(Duration::from_secs(20), async {
+                    loop {
+                        if receiver_b.is_partition_assigned(TOPIC, 0)
+                            || receiver_b.is_partition_assigned(TOPIC, 1)
+                        {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(25)).await;
+                    }
+                })
+                .await;
+                assert!(
+                    b_acquired.is_ok(),
+                    "the NEW receiver (distinct generation suffix) must acquire a \
+                     partition and not be stalled by the OLD same-operator-id \
+                     receiver",
+                );
 
-                // Engine order step 3: only now drain the OLD instance (A).
+                // Liveness step 2: B must actually RECEIVE data from the partition
+                // it acquired. Produce fresh records to both partitions so at
+                // least one lands on B's partition.
+                for i in 0..REBALANCE_RECORDS_PER_PARTITION {
+                    for partition in 0..REBALANCE_TEST_PARTITIONS {
+                        producer
+                            .send_full(
+                                SendRecord::new(TOPIC, &bytes)
+                                    .key(format!("post-{partition}-{i}").as_bytes())
+                                    .partition(partition),
+                            )
+                            .await
+                            .expect("send post record");
+                    }
+                }
+                let b_pdata = receiver_b.try_recv_pdata(Duration::from_secs(15)).await;
+                assert!(
+                    b_pdata.is_some(),
+                    "the NEW receiver must receive data from its acquired partition \
+                     (it is live, not stalled)",
+                );
+                if let Some(pdata) = b_pdata {
+                    receiver_b.ack(pdata);
+                }
+
+                // Drain the OLD instance (engine order): A drains cleanly and B
+                // keeps owning a partition afterward.
                 receiver_a.drain(Duration::from_secs(5));
                 let mut drained = false;
                 for _ in 0..16 {
@@ -6600,23 +6616,137 @@ mod tests {
                 assert!(drained, "old receiver must drain cleanly");
                 receiver_a.await_stopped().await;
 
-                // (3) The OLD instance's committed offset never regresses below its
-                // pre-cutover progress: the new member's join does not corrupt or
-                // roll back the old instance's committed offsets. (Whether the
-                // post-join "mid" ack also commits depends on the coordinator's
-                // same-group rebalance timing; the guaranteed floor is the pre-B
-                // prefix, and no record is ever lost because anything un-committed
-                // is redelivered at-least-once.)
-                let committed_after_drain = committed_offset(&brokers, group, TOPIC, 0)
-                    .expect("kafka-test: committed-offset probe failed")
-                    .unwrap_or(0);
                 assert!(
-                    committed_after_drain >= PRE as i64,
-                    "the OLD instance's committed offset must never regress below \
-                     its pre-cutover prefix ({PRE}) when a same-id new generation \
-                     joins; got {committed_after_drain}",
+                    receiver_b.is_partition_assigned(TOPIC, 0)
+                        || receiver_b.is_partition_assigned(TOPIC, 1),
+                    "the NEW receiver must still own a partition after the OLD \
+                     instance drains",
                 );
 
+                receiver_b.shutdown(Duration::from_secs(5));
+                receiver_b.await_stopped().await;
+            },
+        )
+        .await;
+    }
+
+    /// Scenario (lifecycle: drain and shutdown): the hazard the deployment-
+    /// generation suffix on `group.instance.id` prevents. On a single-core
+    /// deployment, the OLD receiver (A) and the NEW receiver (B) share the SAME
+    /// operator `group.instance.id` AND the SAME deployment generation, so both
+    /// resolve to the IDENTICAL static member id (`inst-shared-g0`, with no
+    /// core-id suffix on a single-core pipeline) -- the situation that would arise
+    /// if a new instance reused the old instance's exact static identity.
+    /// Guarantees: with an identical resolved `group.instance.id`, the group
+    /// coordinator (as emulated by the in-process mock broker) does not hand a
+    /// partition to the duplicate member, so the NEW receiver is STARVED: it never
+    /// acquires a partition and receives no data while A keeps owning and
+    /// consuming. This documents why the generation suffix matters -- reusing an
+    /// identical static id across a cutover stalls the new instance (a real broker
+    /// would instead fence the OLD member via `FENCED_INSTANCE_ID`; either way an
+    /// identical static id is unsafe for a cutover). Contrast with
+    /// `cutover_new_receiver_distinct_generation_is_not_stalled`.
+    #[tokio::test]
+    async fn cutover_same_generation_same_instance_id_stalls_new_receiver() {
+        const TOPIC: &str = "cutover-same-gen-stall-traces";
+        let group = "cutover-same-gen-stall-group";
+        with_cluster(
+            KafkaTestCluster::builder().topic_with(TOPIC, REBALANCE_TEST_PARTITIONS, 1),
+            |cluster| async move {
+                let producer = cluster.producer().build();
+                let req = create_traces_with_spans();
+                let mut bytes = vec![];
+                req.encode(&mut bytes).expect("encode");
+
+                producer
+                    .produce_per_partition(
+                        TOPIC,
+                        REBALANCE_TEST_PARTITIONS,
+                        REBALANCE_RECORDS_PER_PARTITION,
+                        &bytes,
+                    )
+                    .await;
+
+                // OLD receiver (A): generation 0, operator id `inst-shared`
+                // -> resolves to `inst-shared-g0`. Consume so A owns the
+                // partitions.
+                let cfg_a = cutover_traces_config(
+                    cluster.bootstrap_servers(),
+                    group,
+                    "receiver-a",
+                    TOPIC,
+                    Some("inst-shared"),
+                );
+                let mut receiver_a =
+                    KafkaReceiverHarness::start_with_generation(&cluster, cfg_a, 0);
+                let total = (REBALANCE_RECORDS_PER_PARTITION * REBALANCE_TEST_PARTITIONS) as usize;
+                for _ in 0..total {
+                    let pdata = receiver_a.recv_pdata().await;
+                    receiver_a.ack(pdata);
+                }
+
+                // NEW receiver (B): generation 0 too, SAME operator id
+                // `inst-shared` -> resolves to the IDENTICAL `inst-shared-g0`
+                // (single core, so no core-id suffix differentiates them).
+                let cfg_b = cutover_traces_config(
+                    cluster.bootstrap_servers(),
+                    group,
+                    "receiver-b",
+                    TOPIC,
+                    Some("inst-shared"),
+                );
+                let mut receiver_b =
+                    KafkaReceiverHarness::start_with_generation(&cluster, cfg_b, 0);
+                receiver_b.wait_for_control_barrier().await;
+
+                // Produce fresh records so there is data available for whichever
+                // member owns each partition.
+                for i in 0..REBALANCE_RECORDS_PER_PARTITION {
+                    for partition in 0..REBALANCE_TEST_PARTITIONS {
+                        producer
+                            .send_full(
+                                SendRecord::new(TOPIC, &bytes)
+                                    .key(format!("post-{partition}-{i}").as_bytes())
+                                    .partition(partition),
+                            )
+                            .await
+                            .expect("send post record");
+                    }
+                }
+
+                // B is starved: with an identical resolved static id, the mock
+                // coordinator never grants B a partition, so it acquires nothing
+                // and receives no data within a bounded window.
+                assert!(
+                    receiver_b
+                        .try_recv_pdata(Duration::from_secs(5))
+                        .await
+                        .is_none(),
+                    "the NEW receiver sharing an IDENTICAL resolved group.instance.id \
+                     must be starved (receive no data) -- this is the stall the \
+                     generation suffix prevents",
+                );
+                assert!(
+                    !receiver_b.is_partition_assigned(TOPIC, 0)
+                        && !receiver_b.is_partition_assigned(TOPIC, 1),
+                    "the starved NEW receiver must not own any partition",
+                );
+
+                // The OLD receiver is unaffected: it still consumes the freshly
+                // produced records.
+                let a_more = receiver_a.try_recv_pdata(Duration::from_secs(10)).await;
+                assert!(
+                    a_more.is_some(),
+                    "the OLD receiver must keep consuming while the duplicate-id new \
+                     receiver is starved",
+                );
+                if let Some(pdata) = a_more {
+                    receiver_a.ack(pdata);
+                }
+
+                // Clean shutdown of both.
+                receiver_a.shutdown(Duration::from_secs(5));
+                receiver_a.await_stopped().await;
                 receiver_b.shutdown(Duration::from_secs(5));
                 receiver_b.await_stopped().await;
             },

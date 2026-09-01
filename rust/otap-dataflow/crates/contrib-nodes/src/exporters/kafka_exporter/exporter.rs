@@ -189,6 +189,17 @@ struct SendMeta {
     payload_bytes: usize,
 }
 
+/// The ack/nack a finalized delivery still needs to report upstream, produced by
+/// [`KafkaExporter::record_completion_metrics`] once the success/failure metric
+/// has been recorded.
+enum ReportIntent {
+    /// The delivery succeeded; ack the original pdata upstream.
+    Ack,
+    /// The delivery failed; nack the original pdata upstream with `reason`.
+    /// `permanent` selects a permanent (non-retryable) vs transient nack.
+    Nack { reason: String, permanent: bool },
+}
+
 /// Bounded, self-managing set of in-flight Kafka deliveries.
 ///
 /// Wraps a [`FuturesUnordered`] of boxed futures that each await a delivery and
@@ -771,6 +782,18 @@ impl KafkaExporter {
         reporter: &dyn AckNackReporter,
         effect_handler: Option<&EffectHandler<OtapPdata>>,
     ) {
+        let (intent, pdata) = self.record_completion_metrics(meta, result);
+        Self::report_completion(intent, pdata, reporter, effect_handler).await;
+    }
+
+    /// Records the success/failure metric for a resolved delivery and returns
+    /// the ack/nack that still needs to be reported, paired with the pdata to
+    /// return upstream.
+    fn record_completion_metrics(
+        &mut self,
+        meta: SendMeta,
+        result: Result<OwnedDeliveryResult, Canceled>,
+    ) -> (ReportIntent, OtapPdata) {
         let SendMeta {
             signal_type,
             topic,
@@ -796,16 +819,7 @@ impl KafkaExporter {
                 );
                 self.metrics
                     .record_success(signal_type, export_start.elapsed(), payload_bytes);
-                if let Err(e) = reporter.ack(pdata).await {
-                    if let Some(eh) = effect_handler {
-                        eh.info(&format!(
-                            "Failed to report ack for Kafka export (export succeeded): {}",
-                            e
-                        ))
-                        .await;
-                    }
-                }
-                return;
+                return (ReportIntent::Ack, pdata);
             }
             Ok(Err((kafka_err, _owned_message))) => kafka_err,
             Err(_canceled) => rdkafka::error::KafkaError::Canceled,
@@ -833,19 +847,40 @@ impl KafkaExporter {
             permanent = permanent,
             error = %kafka_err,
         );
-        let reason = kafka_err.to_string();
-        let nack_result = if permanent {
-            reporter.nack_permanent(reason, pdata).await
-        } else {
-            reporter.nack(reason, pdata).await
+        (
+            ReportIntent::Nack {
+                reason: kafka_err.to_string(),
+                permanent,
+            },
+            pdata,
+        )
+    }
+
+    /// Reports the ack/nack for a finalized delivery to the upstream via the
+    /// reporter.
+    async fn report_completion(
+        intent: ReportIntent,
+        pdata: OtapPdata,
+        reporter: &dyn AckNackReporter,
+        effect_handler: Option<&EffectHandler<OtapPdata>>,
+    ) {
+        let (report_result, context) = match intent {
+            ReportIntent::Ack => (
+                reporter.ack(pdata).await,
+                "ack for Kafka export (export succeeded)",
+            ),
+            ReportIntent::Nack { reason, permanent } => {
+                let result = if permanent {
+                    reporter.nack_permanent(reason, pdata).await
+                } else {
+                    reporter.nack(reason, pdata).await
+                };
+                (result, "nack for Kafka export failure")
+            }
         };
-        if let Err(e) = nack_result {
+        if let Err(e) = report_result {
             if let Some(eh) = effect_handler {
-                eh.info(&format!(
-                    "Failed to report nack for Kafka export failure: {}",
-                    e
-                ))
-                .await;
+                eh.info(&format!("Failed to report {context}: {e}")).await;
             }
         }
     }
@@ -853,8 +888,8 @@ impl KafkaExporter {
     /// Drain in-flight deliveries on shutdown, bounded by `deadline`.
     ///
     /// Flushes the producer so queued messages get one final chance to be
-    /// delivered, then purges anything still queued so we never block past the
-    /// deadline.
+    /// delivered within the deadline, then unconditionally purges anything still
+    /// queued or in flight.
     async fn drain_and_flush(
         &mut self,
         deadline: Instant,
@@ -874,12 +909,15 @@ impl KafkaExporter {
                 "kafka.exporter.shutdown.flush_failed",
                 error = %e,
             );
-            // Flush timed out or failed; purge anything still queued (in-flight
-            // and not-yet-queued) so the producer drop does not block. Purged
-            // messages trigger their delivery callbacks with a purge error.
-            self.producer
-                .purge(rdkafka::producer::PurgeConfig::default().queue().inflight());
         }
+
+        // Purge anything still queued or in flight after the bounded flush so
+        // every tracked delivery future resolves promptly (delivered, or a
+        // purge/`Canceled` error). A record that already delivered is a no-op
+        // here; anything else has its delivery callback fired so the drain loop
+        // can finalize it without waiting on the broker's delivery timeout.
+        self.producer
+            .purge(rdkafka::producer::PurgeConfig::default().queue().inflight());
     }
 
     /// Applies a live configuration change pushed via
@@ -1190,19 +1228,43 @@ impl Exporter<OtapPdata> for KafkaExporter {
                     // Graceful shutdown: ingress is already closed by the
                     // engine's receiver-first drain. Flush the producer (bounded
                     // by `deadline`) so pipelined deliveries get a final chance,
-                    // then finalize every tracked in-flight delivery so its
-                    // ack/nack is reported before we return, then purge anything
-                    // still queued so we never block past the deadline.
+                    // then purge anything still queued or in flight so every
+                    // tracked delivery future resolves promptly.
                     self.drain_and_flush(deadline, &effect_handler).await;
+
+                    // Drain and finalize every tracked in-flight delivery.
+                    let shutdown_deadline = tokio::time::Instant::from_std(deadline);
+                    let mut abandoned_reports = 0usize;
                     while !in_flight.is_empty() {
                         let (meta, result) = in_flight.next_completion().await;
-                        self.finalize_send_completion(
-                            meta,
-                            result,
-                            &ack_nack_reporter,
-                            Some(&effect_handler),
+                        // Always record the metric so accounting is complete even
+                        // past the deadline.
+                        let (intent, pdata) = self.record_completion_metrics(meta, result);
+                        // Report the ack/nack only while there is deadline budget
+                        // left; a report that cannot start or complete before the
+                        // deadline is abandoned rather than allowed to block.
+                        let reported = tokio::time::timeout_at(
+                            shutdown_deadline,
+                            Self::report_completion(
+                                intent,
+                                pdata,
+                                &ack_nack_reporter,
+                                Some(&effect_handler),
+                            ),
                         )
-                        .await;
+                        .await
+                        .is_ok();
+                        if !reported {
+                            abandoned_reports += 1;
+                        }
+                    }
+                    if abandoned_reports > 0 {
+                        otel_warn!(
+                            "kafka.exporter.shutdown.deadline_exceeded",
+                            message = "Kafka in-flight ack/nack reports abandoned at the \
+                                       shutdown deadline",
+                            abandoned = abandoned_reports,
+                        );
                     }
 
                     effect_handler.info("Kafka exporter stopped").await;
@@ -4249,46 +4311,43 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (shutdown stall, isolated mechanism): with a small
-        /// `max_in_flight = 20` (still above the harness's 16-slot completion
-        /// channel), the broker deterministically fails every produce request so
-        /// each subscribed batch is nacked immediately (no broker-timing
-        /// dependence), and the routed nacks are never consumed.
-        /// Guarantees: the finalize loop cannot make progress past the
-        /// completion channel's capacity when the channel has no consumer unless
-        /// it is bounded by the deadline -- so the node still returns its
-        /// terminal state within the deadline plus a bounded slack. This isolates
-        /// the "full completion channel blocks the finalize loop" mechanism from
-        /// broker round-trip timing (the sends fail deterministically), so the
-        /// stall, if present, is attributable solely to the unbounded finalize
-        /// loop rather than to slow delivery.
+        /// Scenario (shutdown drain, completion channel at capacity): the
+        /// in-flight set is filled to exactly the harness's 16-slot completion
+        /// channel capacity (`max_in_flight = 16`) against a reachable broker
+        /// whose round-trip is stalled far past the deadline, so every send is
+        /// still in flight (no steady-state completion) when a graceful shutdown
+        /// arrives, and the routed nacks are never consumed.
+        /// Guarantees: the shutdown drain must report exactly capacity-many
+        /// subscriber nacks onto the never-drained completion channel; because
+        /// the drain bounds each ack/nack report by the deadline, it cannot block
+        /// once the channel fills, so the node returns its terminal state within
+        /// the deadline plus a bounded flush/purge slack while still accounting
+        /// every in-flight send exactly once (`success + failure == N`). This
+        /// isolates the "completion channel fills during the shutdown drain"
+        /// boundary from a larger backlog.
         #[tokio::test]
-        async fn finalize_reporting_deadline_bounded_when_completion_channel_full() {
+        async fn shutdown_drain_bounded_when_completion_channel_fills() {
             let topic = "it-finalize-channel-full";
-            // Above the 16-slot completion channel so the finalize loop must
-            // send more completions than the channel can buffer without a
-            // consumer.
-            const N: usize = 20;
+            // Exactly the harness completion-channel capacity (16): all N sends
+            // are admitted and stay in flight until shutdown, and the drain must
+            // report N nacks onto the 16-slot never-drained channel -- filling it
+            // exactly.
+            const N: usize = 16;
             with_cluster(
                 KafkaTestCluster::builder().topic(topic),
                 |cluster| async move {
-                    // Fail every produce request deterministically so each
-                    // subscribed batch is nacked without depending on broker
-                    // round-trip timing.
-                    cluster
-                        .faults()
-                        .fail_produce(&[RDKafkaRespErr::RD_KAFKA_RESP_ERR_POLICY_VIOLATION; N]);
-
                     let cfg = KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it")
                         .with_logs(SignalConfig::new(topic.into(), MessageFormat::OtlpProto))
                         .with_max_in_flight(N)
-                        // Long per-delivery bound so the records are still
-                        // in flight (awaiting their injected failure) when the
-                        // shutdown drain finalizes them.
-                        .with_timeout_ms(30_000)
+                        .with_timeout_ms(500)
                         .try_into()
                         .expect("config should be valid");
                     let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    // Stall the reachable broker far past the shutdown deadline so
+                    // the sends stay in flight through shutdown (no steady-state
+                    // completion), and the shutdown drain purges + finalizes them.
+                    cluster.faults().round_trip_time(1, Duration::from_secs(30));
 
                     for _ in 0..N {
                         exporter
@@ -4297,9 +4356,9 @@ pub mod test_support {
                             .expect("send subscribed pdata");
                     }
 
-                    // Never drain the completion channel: once it fills, any
-                    // further finalize send must block unless the loop is
-                    // deadline-bounded.
+                    // Never drain the completion channel: once the shutdown drain
+                    // fills it, any further report must be abandoned at the
+                    // deadline rather than block.
                     let shutdown_deadline = Duration::from_millis(500);
                     let bound = Duration::from_secs(4);
                     let start = Instant::now();
@@ -4309,12 +4368,13 @@ pub mod test_support {
                     })
                     .await
                     .expect(
-                        "finalize loop must not block once the completion channel \
-                         fills with unconsumed nacks; it must be deadline-bounded",
+                        "the shutdown drain must not block once the completion \
+                         channel fills with unconsumed nacks; it must be \
+                         deadline-bounded",
                     );
                     assert!(
                         start.elapsed() < bound,
-                        "finalize loop blocked on a full completion channel: {:?}",
+                        "shutdown drain blocked on a full completion channel: {:?}",
                         start.elapsed(),
                     );
 
@@ -4325,10 +4385,14 @@ pub mod test_support {
                         success + failure,
                         N as u64,
                         "every in-flight send is accounted exactly once even when \
-                         the completion channel fills",
+                         the completion channel fills during the shutdown drain",
                     );
 
-                    cluster.faults().clear_produce_failures();
+                    // Restore normal latency so any deadline-exceeded off-path
+                    // work can settle before the cluster is torn down.
+                    cluster
+                        .faults()
+                        .round_trip_time(1, Duration::from_millis(1));
                 },
             )
             .await;
