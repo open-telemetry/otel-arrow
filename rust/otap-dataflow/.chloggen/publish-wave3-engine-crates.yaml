@@ -1,0 +1,5 @@
+change_type: enhancement
+component: engine
+note: Publish the telemetry, state, engine, admin, and controller crates as versioned crates.io packages.
+issues: [1340]
+subtext:
