@@ -8344,6 +8344,10 @@ mod test {
         test_extend_attrs_sparse_multi_scope::<KqlParser>().await
     }
 
+    /// Scenario: call the `now()` UDF and assign the value to a timestamp column. Doing this for
+    /// multiple batches with a slight delay.
+    /// Guarantees: the current time is assigned, and we don't inadvertently fold the current time
+    /// to an inlined static during planning.
     #[tokio::test]
     async fn test_set_timestamps_to_current_time() {
         let log_records = vec![LogRecord::build().finish()];
