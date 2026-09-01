@@ -1,0 +1,5 @@
+change_type: enhancement
+component: otap
+note: Avoid quadratic resource and scope scans in the OTAP metrics view by resolving each resource's and scope's representative row from the pre-computed row group
+issues: [3964]
+subtext:

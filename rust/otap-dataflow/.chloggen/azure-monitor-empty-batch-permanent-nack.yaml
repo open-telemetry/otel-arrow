@@ -1,5 +1,0 @@
-change_type: bug_fix
-component: pipeline
-note: Azure Monitor exporter now permanently rejects empty batches instead of allowing them to be retried.
-issues: [3891]
-subtext:

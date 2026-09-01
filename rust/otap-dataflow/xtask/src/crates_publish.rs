@@ -514,7 +514,32 @@ mod tests {
             .iter()
             .map(|name| {
                 let dependencies: &[&str] = match *name {
+                    "otel-arrow-dfe-admin" => &[
+                        "otel-arrow-dfe-admin-types",
+                        "otel-arrow-dfe-config",
+                        "otel-arrow-dfe-engine",
+                        "otel-arrow-dfe-state",
+                        "otel-arrow-dfe-telemetry",
+                    ],
                     "otel-arrow-dfe-admin-types" => &["otel-arrow-dfe-config"],
+                    "otel-arrow-dfe-controller" => &[
+                        "otel-arrow-dfe-admin",
+                        "otel-arrow-dfe-config",
+                        "otel-arrow-dfe-engine",
+                        "otel-arrow-dfe-state",
+                        "otel-arrow-dfe-telemetry",
+                        "otel-arrow-dfe-telemetry-macros",
+                    ],
+                    "otel-arrow-dfe-engine" => &[
+                        "otel-arrow-dfe-channel",
+                        "otel-arrow-dfe-component-inventory-syntax",
+                        "otel-arrow-dfe-config",
+                        "otel-arrow-dfe-engine-macros",
+                        "otel-arrow-dfe-pdata",
+                        "otel-arrow-dfe-state",
+                        "otel-arrow-dfe-telemetry",
+                        "otel-arrow-dfe-telemetry-macros",
+                    ],
                     "otel-arrow-dfe-engine-macros" => {
                         &["otel-arrow-dfe-component-inventory-syntax"]
                     }
@@ -528,6 +553,16 @@ mod tests {
                     "otel-arrow-dfe-query-engine" => {
                         &["otel-arrow-dfe-config", "otel-arrow-dfe-pdata"]
                     }
+                    "otel-arrow-dfe-state" => {
+                        &["otel-arrow-dfe-config", "otel-arrow-dfe-telemetry"]
+                    }
+                    "otel-arrow-dfe-telemetry" => &[
+                        "otel-arrow-dfe-config",
+                        "otel-arrow-dfe-expohisto",
+                        "otel-arrow-dfe-pdata",
+                        "otel-arrow-dfe-pdata-views",
+                        "otel-arrow-dfe-telemetry-macros",
+                    ],
                     _ => &[],
                 };
                 package(name, None, dependencies)

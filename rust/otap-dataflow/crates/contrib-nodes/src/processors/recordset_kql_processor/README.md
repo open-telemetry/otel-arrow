@@ -19,7 +19,7 @@ will be lower.
 ## Overview
 
 This processor integrates the experimental KQL "recordset" engine from
-`rust/experimental/data_engine` to enable powerful data transformations within
+`rust/contrib/data_engine` to enable powerful data transformations within
 OTAP pipelines.  This was developed as a prototype as we prepare for a direct
 column-oriented implementation, it is functional and production quality however
 not an optimized implementation.
