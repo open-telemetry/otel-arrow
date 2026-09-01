@@ -1,0 +1,7 @@
+change_type: breaking
+component: pipeline
+note: >-
+  Migrated traffic generator receiver telemetry from flat counters to dimensioned metric populations with enum attributes.
+issues: [3530]
+subtext: |
+  Migration: Update queries: runs -> `smooth.runs{outcome}`, sends -> `smooth.payload.send{result}`, scalar -> `.other`. Removed `signals.produced` & `completion.completions` (use `node.output` instead).
