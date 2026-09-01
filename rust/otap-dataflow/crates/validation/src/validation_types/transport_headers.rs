@@ -13,6 +13,7 @@
 //! For **deny** checks, `None` entries are acceptable -- a signal without
 //! headers cannot contain a forbidden key.
 
+use otel_arrow_dfe_config::ContextEntryRef;
 use otel_arrow_dfe_config::transport_headers::TransportHeaders;
 use serde::{Deserialize, Serialize};
 
@@ -20,7 +21,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TransportHeaderKeyValue {
     /// Header key (stored/logical name).
-    pub key: String,
+    pub key: ContextEntryRef,
     /// Expected header value (UTF-8 text).
     pub value: String,
 }
@@ -28,9 +29,9 @@ pub struct TransportHeaderKeyValue {
 impl TransportHeaderKeyValue {
     /// Create a new transport header key/value pair.
     #[must_use]
-    pub fn new(key: impl Into<String>, value: impl Into<String>) -> Self {
+    pub fn new(key: impl AsRef<str>, value: impl Into<String>) -> Self {
         Self {
-            key: key.into(),
+            key: ContextEntryRef::parse(key.as_ref()).expect("invalid context entry reference"),
             value: value.into(),
         }
     }
@@ -48,7 +49,7 @@ impl TransportHeaderKeyValue {
 #[must_use]
 pub fn validate_transport_header_require_keys(
     suv: &[Option<TransportHeaders>],
-    keys: &[String],
+    keys: &[ContextEntryRef],
 ) -> bool {
     if keys.is_empty() {
         return true;
@@ -64,7 +65,7 @@ pub fn validate_transport_header_require_keys(
         };
         for key in keys {
             // check that key exists
-            if headers.find_by_name(key).next().is_none() {
+            if headers.find_by_name(key.as_str()).next().is_none() {
                 return false;
             }
         }
@@ -103,7 +104,7 @@ pub fn validate_transport_header_require_key_values(
             None => return false,
         };
         'pairs: for pair in pairs {
-            for header in headers.find_by_name(&pair.key) {
+            for header in headers.find_by_name(pair.key.as_str()) {
                 match std::str::from_utf8(&header.value) {
                     Ok(value_str) if value_str == pair.value => continue 'pairs,
                     _ => continue,
@@ -124,7 +125,7 @@ pub fn validate_transport_header_require_key_values(
 #[must_use]
 pub fn validate_transport_header_deny_keys(
     suv: &[Option<TransportHeaders>],
-    keys: &[String],
+    keys: &[ContextEntryRef],
 ) -> bool {
     if keys.is_empty() {
         return true;
@@ -132,7 +133,7 @@ pub fn validate_transport_header_deny_keys(
 
     for headers in suv.iter().flatten() {
         for key in keys {
-            if headers.find_by_name(key).next().is_some() {
+            if headers.find_by_name(key.as_str()).next().is_some() {
                 return false;
             }
         }

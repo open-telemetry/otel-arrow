@@ -14,6 +14,15 @@
 
 use crate::error::Error;
 
+/// Deserializes a JSON config value into the expected configuration type `T`.
+pub fn deserialize_typed_config<T: serde::de::DeserializeOwned>(
+    config: &serde_json::Value,
+) -> Result<T, Error> {
+    serde_json::from_value(config.clone()).map_err(|error| Error::InvalidUserConfig {
+        error: error.to_string(),
+    })
+}
+
 /// Validates that a JSON config value can be deserialized into the expected
 /// configuration type `T`.
 ///
@@ -28,9 +37,7 @@ use crate::error::Error;
 pub fn validate_typed_config<T: serde::de::DeserializeOwned>(
     config: &serde_json::Value,
 ) -> Result<(), Error> {
-    let _: T = serde_json::from_value(config.clone()).map_err(|e| Error::InvalidUserConfig {
-        error: e.to_string(),
-    })?;
+    let _: T = deserialize_typed_config(config)?;
     Ok(())
 }
 

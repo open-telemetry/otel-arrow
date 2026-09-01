@@ -7657,6 +7657,7 @@ dependencies = [
  "parking_lot",
  "prost 0.14.4",
  "secrecy",
+ "serde",
  "serde_json",
  "serde_yaml",
  "smallvec",

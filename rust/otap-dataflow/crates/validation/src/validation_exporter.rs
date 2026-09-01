@@ -14,7 +14,7 @@ use otel_arrow_dfe_config::transport_headers::TransportHeaders;
 use otel_arrow_dfe_engine::config::ExporterConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_engine::context_declaration::{
-    ContextDeclaration, ContextDeclarationProvider, ContextReadSelector,
+    ContextDeclaration, ContextDeclarationConfig, ContextDeclarationProvider, ContextReadSelector,
 };
 use otel_arrow_dfe_engine::control::NodeControlMsg;
 use otel_arrow_dfe_engine::error::Error as EngineError;
@@ -126,74 +126,81 @@ pub static VALIDATION_EXPORTER_FACTORY: ExporterFactory<OtapPdata> = ExporterFac
 
 #[distributed_slice(otel_arrow_dfe_engine::context_declaration::CONTEXT_DECLARATION_PROVIDERS)]
 static VALIDATION_EXPORTER_CONTEXT_DECLARATIONS: ContextDeclarationProvider =
-    ContextDeclarationProvider::from_config(
+    ContextDeclarationProvider::from_typed_config::<ValidationExporterConfig>(
         VALIDATION_EXPORTER_URN,
-        validation_exporter_declarations,
     );
 
 context_access! {
-    struct RequireAccess {
+    struct ValidationAccess {
         keys,
         key_values,
+        deny,
     }
 
-    const REQUIRE_ACCESS;
+    const VALIDATION_ACCESS;
 }
 
-/// Declaration-only projection of validation config.
-#[derive(Deserialize)]
-struct ValidationDeclConfig {
-    #[serde(default)]
-    validations: Vec<ValidationInstructions>,
-}
+impl ContextDeclarationConfig for ValidationExporterConfig {
+    fn context_declarations(
+        &self,
+    ) -> Result<Vec<ContextDeclaration>, otel_arrow_dfe_config::error::Error> {
+        let mut require_key_names = std::collections::BTreeSet::new();
+        let mut require_key_value_names = std::collections::BTreeSet::new();
+        let mut deny_names = std::collections::BTreeSet::new();
 
-/// Declares sorted require-key bindings; deny checks remain runtime-only.
-fn validation_exporter_declarations(
-    config: &serde_json::Value,
-) -> Result<Vec<ContextDeclaration>, otel_arrow_dfe_config::error::Error> {
-    let config: ValidationDeclConfig = serde_json::from_value(config.clone()).map_err(|e| {
-        otel_arrow_dfe_config::error::Error::InvalidUserConfig {
-            error: format!("validation exporter declaration provider: {e}"),
-        }
-    })?;
-
-    let mut require_key_names = std::collections::BTreeSet::new();
-    let mut require_key_value_names = std::collections::BTreeSet::new();
-
-    for instruction in &config.validations {
-        match instruction {
-            ValidationInstructions::TransportHeaderRequireKey { keys } => {
-                for key in keys {
-                    let _ = require_key_names.insert(key.clone());
+        for instruction in &self.validations {
+            match instruction {
+                ValidationInstructions::TransportHeaderRequireKey { keys } => {
+                    for key in keys {
+                        let _ = require_key_names.insert(key.clone());
+                    }
                 }
-            }
-            ValidationInstructions::TransportHeaderRequireKeyValue { pairs } => {
-                for pair in pairs {
-                    let _ = require_key_value_names.insert(pair.key.clone());
+                ValidationInstructions::TransportHeaderRequireKeyValue { pairs } => {
+                    for pair in pairs {
+                        let _ = require_key_value_names.insert(pair.key.clone());
+                    }
                 }
+                ValidationInstructions::TransportHeaderDeny { keys } => {
+                    deny_names.extend(keys.iter().cloned());
+                }
+                ValidationInstructions::Equivalence
+                | ValidationInstructions::SignalDrop { .. }
+                | ValidationInstructions::BatchItems { .. }
+                | ValidationInstructions::BatchBytes { .. }
+                | ValidationInstructions::AttributeDeny { .. }
+                | ValidationInstructions::AttributeRequireKey { .. }
+                | ValidationInstructions::AttributeRequireKeyValue { .. }
+                | ValidationInstructions::AttributeNoDuplicate => {}
             }
-            _ => {}
         }
-    }
 
-    let mut declarations = Vec::new();
-    if !require_key_names.is_empty() {
-        declarations.push(ContextDeclaration::Consumes {
-            access: REQUIRE_ACCESS.keys,
-            selector: ContextReadSelector::Registers {
-                names: require_key_names.into_iter().collect(),
-            },
-        });
+        let mut declarations = Vec::new();
+        if !require_key_names.is_empty() {
+            declarations.push(ContextDeclaration::Consumes {
+                access: VALIDATION_ACCESS.keys,
+                selector: ContextReadSelector::Entries {
+                    entries: require_key_names.into_iter().collect(),
+                },
+            });
+        }
+        if !require_key_value_names.is_empty() {
+            declarations.push(ContextDeclaration::Consumes {
+                access: VALIDATION_ACCESS.key_values,
+                selector: ContextReadSelector::Entries {
+                    entries: require_key_value_names.into_iter().collect(),
+                },
+            });
+        }
+        if !deny_names.is_empty() {
+            declarations.push(ContextDeclaration::Consumes {
+                access: VALIDATION_ACCESS.deny,
+                selector: ContextReadSelector::Entries {
+                    entries: deny_names.into_iter().collect(),
+                },
+            });
+        }
+        Ok(declarations)
     }
-    if !require_key_value_names.is_empty() {
-        declarations.push(ContextDeclaration::Consumes {
-            access: REQUIRE_ACCESS.key_values,
-            selector: ContextReadSelector::Registers {
-                names: require_key_value_names.into_iter().collect(),
-            },
-        });
-    }
-    Ok(declarations)
 }
 
 impl ValidationExporter {
@@ -334,7 +341,7 @@ mod tests {
     use otel_arrow_dfe_engine::context_declaration::{ContextDeclaration, ContextReadSelector};
 
     /// Scenario: Validation config requires context keys and key-values.
-    /// Guarantees: each binding is sorted and deduplicated; deny is excluded.
+    /// Guarantees: each context-reading validation has a sorted, deduplicated binding.
     #[test]
     fn validation_requires_produce_consumer_declarations() {
         let config = serde_json::json!({
@@ -355,25 +362,59 @@ mod tests {
             ]
         });
 
-        let decls = validation_exporter_declarations(&config).unwrap();
-        assert_eq!(decls.len(), 2);
+        let decls = (VALIDATION_EXPORTER_CONTEXT_DECLARATIONS.declarations)(&config).unwrap();
+        assert_eq!(decls.len(), 3);
         assert_eq!(
             decls[0],
             ContextDeclaration::Consumes {
-                access: REQUIRE_ACCESS.keys,
-                selector: ContextReadSelector::Registers {
-                    names: vec!["x-request-id".into(), "x-tenant-id".into()].into_boxed_slice(),
+                access: VALIDATION_ACCESS.keys,
+                selector: ContextReadSelector::Entries {
+                    entries: vec!["x-request-id".into(), "x-tenant-id".into()].into_boxed_slice(),
                 },
             }
         );
         assert_eq!(
             decls[1],
             ContextDeclaration::Consumes {
-                access: REQUIRE_ACCESS.key_values,
-                selector: ContextReadSelector::Registers {
-                    names: vec!["x-tenant-id".into()].into_boxed_slice(),
+                access: VALIDATION_ACCESS.key_values,
+                selector: ContextReadSelector::Entries {
+                    entries: vec!["x-tenant-id".into()].into_boxed_slice(),
                 },
             }
+        );
+        assert_eq!(
+            decls[2],
+            ContextDeclaration::Consumes {
+                access: VALIDATION_ACCESS.deny,
+                selector: ContextReadSelector::Entries {
+                    entries: vec!["x-secret".into()].into_boxed_slice(),
+                },
+            }
+        );
+    }
+
+    /// Scenario: Validation config contains only a transport-header deny check.
+    /// Guarantees: absence assertions declare the entries they inspect.
+    #[test]
+    fn validation_deny_only_declares_context_entries() {
+        let config = serde_json::json!({
+            "suv_input": "suv",
+            "validations": [
+                {
+                    "type": "transport_header_deny",
+                    "keys": ["X-Secret"]
+                }
+            ]
+        });
+
+        assert_eq!(
+            (VALIDATION_EXPORTER_CONTEXT_DECLARATIONS.declarations)(&config).unwrap(),
+            vec![ContextDeclaration::Consumes {
+                access: VALIDATION_ACCESS.deny,
+                selector: ContextReadSelector::Entries {
+                    entries: vec!["x-secret".into()].into_boxed_slice(),
+                },
+            }]
         );
     }
 
@@ -388,7 +429,7 @@ mod tests {
             ]
         });
 
-        let decls = validation_exporter_declarations(&config).unwrap();
+        let decls = (VALIDATION_EXPORTER_CONTEXT_DECLARATIONS.declarations)(&config).unwrap();
         assert!(decls.is_empty());
     }
 }

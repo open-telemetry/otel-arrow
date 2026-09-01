@@ -19,6 +19,8 @@ use std::hash::Hash;
 pub mod byte_units;
 /// Config URI providers for resolving configuration from file:, env:, or bare paths.
 pub mod config_provider;
+/// Pipeline context entry reference configuration.
+pub mod context;
 pub mod conversion;
 pub mod engine;
 /// Environment variable substitution for raw config text.
@@ -53,6 +55,7 @@ pub use topic::{
 /// Validation helpers for node configuration.
 pub mod validation;
 
+pub use context::ContextEntryRef;
 pub use conversion::ConversionOptions;
 
 /// Signal types

@@ -13,6 +13,7 @@ use attributes::{
     validate_require_key_values, validate_require_keys,
 };
 use batch::{validate_batch_bytes, validate_batch_items};
+use otel_arrow_dfe_config::ContextEntryRef;
 use otel_arrow_dfe_config::transport_headers::TransportHeaders;
 use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
 use otel_arrow_dfe_pdata::testing::equiv::validate_equivalent;
@@ -88,7 +89,7 @@ pub enum ValidationInstructions {
     /// Require specific transport header keys to be present on SUV messages.
     TransportHeaderRequireKey {
         /// Header keys (stored/logical names) that must be present.
-        keys: Vec<String>,
+        keys: Vec<ContextEntryRef>,
     },
     /// Require specific transport header key/value pairs on SUV messages.
     TransportHeaderRequireKeyValue {
@@ -98,7 +99,7 @@ pub enum ValidationInstructions {
     /// Forbid specific transport header keys on SUV messages.
     TransportHeaderDeny {
         /// Header keys (stored/logical names) that must NOT be present.
-        keys: Vec<String>,
+        keys: Vec<ContextEntryRef>,
     },
 }
 impl ValidationInstructions {

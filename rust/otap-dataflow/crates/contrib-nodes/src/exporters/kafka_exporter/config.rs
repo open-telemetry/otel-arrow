@@ -11,6 +11,7 @@ use crate::common::kafka::{
     DebugContext, LogLevel, MessageFormat, debug_list_to_string, default_message_format_header,
     validate_kafka_topic,
 };
+use otel_arrow_dfe_config::ContextEntryRef;
 use rdkafka::ClientConfig;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -68,7 +69,7 @@ pub struct SignalConfig {
     /// policy stores the header under a custom `store_as` name, this value must
     /// equal that stored name.
     #[serde(default)]
-    topic_from_transport_header: Option<String>,
+    topic_from_transport_header: Option<ContextEntryRef>,
 
     /// Enable partitioning by transport headers (default: false).
     ///
@@ -142,14 +143,15 @@ impl SignalConfig {
 
     /// The transport header name for dynamic topic routing, if set.
     #[must_use]
-    pub fn topic_from_transport_header(&self) -> Option<&str> {
-        self.topic_from_transport_header.as_deref()
+    pub fn topic_from_transport_header(&self) -> Option<&ContextEntryRef> {
+        self.topic_from_transport_header.as_ref()
     }
 
     /// Set the transport header name for dynamic topic routing.
     #[must_use]
-    pub fn with_topic_from_transport_header(mut self, key: impl Into<String>) -> Self {
-        self.topic_from_transport_header = Some(key.into());
+    pub fn with_topic_from_transport_header(mut self, key: impl AsRef<str>) -> Self {
+        self.topic_from_transport_header =
+            Some(ContextEntryRef::parse(key.as_ref()).expect("invalid context entry reference"));
         self
     }
 
@@ -674,7 +676,7 @@ fn validate_signal_topics(signal: &SignalConfig) -> Result<(), String> {
 impl TryFrom<KafkaExporterConfigBuilder> for KafkaExporterConfig {
     type Error = String;
 
-    fn try_from(mut builder: KafkaExporterConfigBuilder) -> Result<Self, Self::Error> {
+    fn try_from(builder: KafkaExporterConfigBuilder) -> Result<Self, Self::Error> {
         if builder.client_id.is_empty() {
             return Err("client_id can't be empty".to_string());
         }
@@ -749,25 +751,6 @@ impl TryFrom<KafkaExporterConfigBuilder> for KafkaExporterConfig {
         // Validate TLS configuration when present
         if let Some(ref tls) = builder.tls {
             tls.validate().map_err(|e| format!("tls: {e}"))?;
-        }
-
-        // Normalize each signal's dynamic-routing header key to match how
-        // transport headers store their logical names. Captured headers are
-        // lowercased on ingress (`wire_name.to_ascii_lowercase()`), so a natural
-        // config like `X-Target-Topic` would otherwise never match and silently
-        // fall back to the static topic. Normalizing once here means the router
-        // can do a plain equality check without re-normalizing per message.
-        for signal in [
-            builder.traces.as_mut(),
-            builder.metrics.as_mut(),
-            builder.logs.as_mut(),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            if let Some(header) = signal.topic_from_transport_header.as_mut() {
-                *header = header.to_ascii_lowercase();
-            }
         }
 
         Ok(Self(builder))
@@ -2130,7 +2113,11 @@ mod tests {
 
         let config: KafkaExporterConfig = serde_json::from_str(json).expect("valid config");
         let logs = config.logs().expect("logs should be configured");
-        assert_eq!(logs.topic_from_transport_header(), Some("x_target_topic"));
+        assert_eq!(
+            logs.topic_from_transport_header()
+                .map(ContextEntryRef::as_str),
+            Some("x_target_topic")
+        );
     }
 
     #[test]
@@ -2151,7 +2138,12 @@ mod tests {
         let signal = SignalConfig::new("otlp_logs".into(), MessageFormat::OtlpProto)
             .with_topic_from_transport_header("x_target_topic");
 
-        assert_eq!(signal.topic_from_transport_header(), Some("x_target_topic"));
+        assert_eq!(
+            signal
+                .topic_from_transport_header()
+                .map(ContextEntryRef::as_str),
+            Some("x_target_topic")
+        );
         assert_eq!(signal.topic(), "otlp_logs");
     }
 
@@ -2261,9 +2253,18 @@ mod tests {
         let metrics = config.metrics().expect("metrics configured");
         let logs = config.logs().expect("logs configured");
 
-        assert_eq!(traces.topic_from_transport_header(), Some("x_traces_topic"));
+        assert_eq!(
+            traces
+                .topic_from_transport_header()
+                .map(ContextEntryRef::as_str),
+            Some("x_traces_topic")
+        );
         assert!(metrics.topic_from_transport_header().is_none());
-        assert_eq!(logs.topic_from_transport_header(), Some("x_logs_topic"));
+        assert_eq!(
+            logs.topic_from_transport_header()
+                .map(ContextEntryRef::as_str),
+            Some("x_logs_topic")
+        );
     }
 
     #[test]
@@ -2286,11 +2287,19 @@ mod tests {
 
         let config: KafkaExporterConfig = serde_json::from_str(json).expect("valid config");
         assert_eq!(
-            config.traces().unwrap().topic_from_transport_header(),
+            config
+                .traces()
+                .unwrap()
+                .topic_from_transport_header()
+                .map(ContextEntryRef::as_str),
             Some("x-traces-topic")
         );
         assert_eq!(
-            config.logs().unwrap().topic_from_transport_header(),
+            config
+                .logs()
+                .unwrap()
+                .topic_from_transport_header()
+                .map(ContextEntryRef::as_str),
             Some("x-target-topic")
         );
     }

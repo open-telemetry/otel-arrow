@@ -42,7 +42,7 @@ use otel_arrow_dfe_engine::ExporterFactory;
 use otel_arrow_dfe_engine::config::ExporterConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_engine::context_declaration::{
-    ContextDeclaration, ContextDeclarationProvider, ContextReadSelector,
+    ContextDeclaration, ContextDeclarationConfig, ContextDeclarationProvider, ContextReadSelector,
 };
 use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otel_arrow_dfe_engine::error::Error as EngineError;
@@ -62,7 +62,6 @@ use rdkafka::message::{Header, OwnedHeaders};
 use rdkafka::producer::Producer;
 use rdkafka::producer::future_producer::OwnedDeliveryResult;
 use regex::Regex;
-use serde::Deserialize;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -343,7 +342,7 @@ pub static KAFKA_EXPORTER_FACTORY: ExporterFactory<OtapPdata> = ExporterFactory 
 
 #[distributed_slice(otel_arrow_dfe_engine::context_declaration::CONTEXT_DECLARATION_PROVIDERS)]
 static KAFKA_EXPORTER_CONTEXT_DECLARATIONS: ContextDeclarationProvider =
-    ContextDeclarationProvider::from_config(KAFKA_EXPORTER_URN, kafka_exporter_declarations);
+    ContextDeclarationProvider::from_typed_config::<KafkaExporterConfig>(KAFKA_EXPORTER_URN);
 
 context_access! {
     struct KafkaAccess {
@@ -356,42 +355,38 @@ context_access! {
     const LOGS_ACCESS;
 }
 
-/// Declares configured per-signal topic and partition context reads.
-fn kafka_exporter_declarations(
-    config: &serde_json::Value,
-) -> Result<Vec<ContextDeclaration>, otel_arrow_dfe_config::error::Error> {
-    let config =
-        KafkaExporterConfig::deserialize(config).map_err(|e| ConfigError::InvalidUserConfig {
-            error: format!("kafka exporter declaration provider: {e}"),
-        })?;
+impl ContextDeclarationConfig for KafkaExporterConfig {
+    fn context_declarations(
+        &self,
+    ) -> Result<Vec<ContextDeclaration>, otel_arrow_dfe_config::error::Error> {
+        let mut decls = Vec::new();
+        let signals = [
+            (TRACES_ACCESS, self.traces()),
+            (METRICS_ACCESS, self.metrics()),
+            (LOGS_ACCESS, self.logs()),
+        ];
 
-    let mut decls = Vec::new();
-    let signals = [
-        (TRACES_ACCESS, config.traces()),
-        (METRICS_ACCESS, config.metrics()),
-        (LOGS_ACCESS, config.logs()),
-    ];
-
-    for (access, signal_cfg) in signals {
-        if let Some(cfg) = signal_cfg {
-            if let Some(header) = cfg.topic_from_transport_header() {
-                decls.push(ContextDeclaration::Consumes {
-                    access: access.topic,
-                    selector: ContextReadSelector::Registers {
-                        names: vec![header.to_string()].into_boxed_slice(),
-                    },
-                });
-            }
-            if cfg.partition_by_transport_headers() {
-                decls.push(ContextDeclaration::Consumes {
-                    access: access.partition,
-                    selector: ContextReadSelector::All,
-                });
+        for (access, signal_cfg) in signals {
+            if let Some(cfg) = signal_cfg {
+                if let Some(header) = cfg.topic_from_transport_header() {
+                    decls.push(ContextDeclaration::Consumes {
+                        access: access.topic,
+                        selector: ContextReadSelector::Entries {
+                            entries: vec![header.clone()].into_boxed_slice(),
+                        },
+                    });
+                }
+                if cfg.partition_by_transport_headers() {
+                    decls.push(ContextDeclaration::Consumes {
+                        access: access.partition,
+                        selector: ContextReadSelector::All,
+                    });
+                }
             }
         }
-    }
 
-    Ok(decls)
+        Ok(decls)
+    }
 }
 
 impl KafkaExporter {
@@ -1667,15 +1662,15 @@ pub mod test_support {
                 }
             });
 
-            let decls = kafka_exporter_declarations(&config).unwrap();
+            let decls = (KAFKA_EXPORTER_CONTEXT_DECLARATIONS.declarations)(&config).unwrap();
             assert_eq!(decls.len(), 2);
 
             assert_eq!(
                 decls[0],
                 ContextDeclaration::Consumes {
                     access: TRACES_ACCESS.topic,
-                    selector: ContextReadSelector::Registers {
-                        names: vec!["x-traces-topic".into()].into_boxed_slice(),
+                    selector: ContextReadSelector::Entries {
+                        entries: vec!["x-traces-topic".into()].into_boxed_slice(),
                     },
                 },
             );
@@ -1701,7 +1696,7 @@ pub mod test_support {
                 }
             });
 
-            let decls = kafka_exporter_declarations(&config).unwrap();
+            let decls = (KAFKA_EXPORTER_CONTEXT_DECLARATIONS.declarations)(&config).unwrap();
             assert!(decls.is_empty());
         }
 
