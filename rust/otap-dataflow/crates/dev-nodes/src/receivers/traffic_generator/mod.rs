@@ -118,7 +118,7 @@ pub static TRAFFIC_GENERATOR_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFact
             ))
         },
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    validate_config: validate_config,
+    validate_config,
 };
 
 /// Validates the Traffic Generator receiver configuration at config load time.
