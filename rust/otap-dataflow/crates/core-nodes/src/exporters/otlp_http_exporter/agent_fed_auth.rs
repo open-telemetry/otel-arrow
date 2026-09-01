@@ -60,14 +60,9 @@ impl AgentFedAuth {
             })
     }
 
-    /// Whether the provider must be checked before another request is admitted.
+    /// Whether the provider must be polled to obtain or replace the cached credential.
     pub(crate) fn should_poll(&self) -> bool {
         self.lookup_required || !self.is_ready()
-    }
-
-    /// Requires a fresh provider check before the pending batch can be sent.
-    pub(crate) fn require_request_check(&mut self) {
-        self.lookup_required = true;
     }
 
     /// When the cached credential crosses the shared usability margin.
@@ -129,7 +124,7 @@ impl AgentFedAuth {
             {
                 "agent-fed bearer token at/near expiry; awaiting refresh"
             }
-            Some(_) => "awaiting agent-fed credential snapshot check",
+            Some(_) => "agent-fed credential refresh pending",
             None => "agent-fed bearer token unavailable",
         }
     }
@@ -537,7 +532,7 @@ mod tests {
         assert!(failure.to_string().contains("credential is unavailable"));
     }
 
-    /// Scenario: Agent-fed readiness changes from unavailable to checking to rejected.
+    /// Scenario: Agent-fed readiness changes from unavailable to rejected.
     /// Guarantees: Each operator-facing not-ready reason identifies the current state.
     #[tokio::test]
     async fn reports_each_not_ready_reason() {
@@ -553,12 +548,6 @@ mod tests {
 
         auth.poll_credential().await.unwrap();
         let (_, generation) = auth.header().unwrap();
-        auth.require_request_check();
-        assert_eq!(
-            auth.not_ready_reason(),
-            "awaiting agent-fed credential snapshot check"
-        );
-
         auth.invalidate(generation);
         assert_eq!(
             auth.not_ready_reason(),

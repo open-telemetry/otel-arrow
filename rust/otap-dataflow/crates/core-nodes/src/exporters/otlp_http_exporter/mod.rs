@@ -143,16 +143,6 @@ impl AuthState {
         }
     }
 
-    fn requires_request_check(&self) -> bool {
-        matches!(self, Self::AgentFed(_))
-    }
-
-    fn require_request_check(&mut self) {
-        if let Self::AgentFed(auth) = self {
-            auth.require_request_check();
-        }
-    }
-
     fn refresh_deadline(&self) -> Option<Instant> {
         match self {
             Self::None => None,
@@ -457,7 +447,6 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                 })?;
 
         let mut inflight_exports = InFlightExports::new();
-        let mut pending_pdata: Option<(OtapPdata, Instant)> = None;
 
         let mut logs_proto_encoder = LogsProtoBytesEncoder::new();
         let mut metrics_proto_encoder = MetricsProtoBytesEncoder::new();
@@ -499,9 +488,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
             // back-pressures upstream instead of being accepted and NACK'd. Control
             // messages remain enabled while intake is gated, so waiting neither
             // drops data nor prevents shutdown.
-            let accepting_pdata = pending_pdata.is_none()
-                && auth.is_ready()
-                && inflight_exports.len() < max_in_flight;
+            let accepting_pdata = auth.is_ready() && inflight_exports.len() < max_in_flight;
 
             // Instant at which a currently-usable token crosses the usability
             // margin. Used to wake the loop so `accepting_pdata` re-evaluates
@@ -517,15 +504,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                 armed_margin_deadline = auth_margin_deadline;
             }
 
-            let (msg, request_auth_checked, pending_started_at) = if pending_pdata.is_some()
-                && auth.is_ready()
-            {
-                let Some((pdata, started_at)) = pending_pdata.take() else {
-                    continue;
-                };
-                (Message::PData(pdata), true, Some(started_at))
-            } else {
-                let msg = tokio::select! {
+            let msg = tokio::select! {
                 biased;
 
                 // Wake when the cached token reaches its usability margin so the
@@ -538,8 +517,9 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                 }
 
                 // Drive either provider through one cancellation-safe branch.
-                // Agent-fed auth checks before each batch and reuses the validated
-                // header when the provider returns the same Arc snapshot.
+                // Agent-fed auth polls at startup, at the expiry margin, and
+                // after a matching 401. A usable cached snapshot stays off the
+                // per-batch admission path.
                 failure = auth.poll_update(), if auth.should_poll() => {
                     if let Some(failure) = failure {
                         self.metrics.record_auth_failure(failure.error_type());
@@ -582,23 +562,11 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                     otel_debug!("otlp.exporter.http.receive");
                     msg
                 }
-                    };
-                (msg, false, None)
             };
 
             match msg {
                 Message::Control(NodeControlMsg::Shutdown { deadline, reason }) => {
                     otel_info!("otlp.exporter.http.shutdown", reason = reason);
-                    if let Some((pdata, started_at)) = pending_pdata.take() {
-                        let signal_type = pdata.signal_type();
-                        let nack = NackMsg::new(auth.not_ready_reason(), pdata);
-                        _ = effect_handler.notify_nack(nack).await;
-                        self.metrics.record_failure(
-                            signal_type,
-                            OtlpHttpExporterErrorType::Authentication,
-                            started_at.elapsed(),
-                        );
-                    }
                     while !inflight_exports.is_empty() {
                         if let Some(completed) = inflight_exports.next_completion().await {
                             let rejected_auth = finalize_completed_export(
@@ -621,12 +589,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                     mut metrics_reporter,
                 }) => _ = self.metrics.report(&mut metrics_reporter),
                 Message::PData(pdata) => {
-                    let export_started_at = pending_started_at.unwrap_or_else(Instant::now);
-                    if !request_auth_checked && auth.requires_request_check() {
-                        auth.require_request_check();
-                        pending_pdata = Some((pdata, export_started_at));
-                        continue;
-                    }
+                    let export_started_at = Instant::now();
                     let signal_type = pdata.signal_type();
                     let (context, payload) = pdata.into_parts();
 
@@ -2272,10 +2235,10 @@ mod test {
         );
     }
 
-    /// Scenario: A non-expiring agent-fed snapshot rotates while the exporter is idle.
-    /// Guarantees: The first later batch rechecks the provider and uses the replacement token.
+    /// Scenario: A provider offers a replacement for a usable non-expiring cached snapshot.
+    /// Guarantees: A later batch uses the cached snapshot without polling the provider.
     #[test]
-    fn test_agent_fed_non_expiring_snapshot_rotates_while_idle() {
+    fn test_agent_fed_non_expiring_snapshot_stays_cached() {
         otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let tokio_rt = Runtime::new().unwrap();
         let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
@@ -2287,8 +2250,8 @@ mod test {
         wait_for_port_ready(&endpoint_addr);
 
         let provider = RotatingAgentFedProvider::new([
-            BearerToken::without_expiry("initial-token".to_owned()),
             BearerToken::without_expiry("rotated-token".to_owned()),
+            BearerToken::without_expiry("replacement-token".to_owned()),
         ]);
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let exporter = exporter_with_agent_fed_provider(
@@ -2333,10 +2296,10 @@ mod test {
         );
     }
 
-    /// Scenario: Several batches use one unchanged agent-fed snapshot while responses are delayed.
-    /// Guarantees: Snapshot checks do not prevent the exporter from filling `max_in_flight`.
+    /// Scenario: Several batches use one cached agent-fed snapshot while responses are delayed.
+    /// Guarantees: Steady-state admission avoids provider lookups and fills `max_in_flight`.
     #[test]
-    fn test_agent_fed_snapshot_reuse_preserves_max_in_flight() {
+    fn test_agent_fed_snapshot_cache_stays_off_batch_admission_path() {
         otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         const MAX_IN_FLIGHT: usize = 4;
         let tokio_rt = Runtime::new().unwrap();
@@ -2402,11 +2365,12 @@ mod test {
         assert_eq!(
             peak.load(Ordering::SeqCst),
             MAX_IN_FLIGHT,
-            "unchanged snapshot checks must not serialize HTTP exports"
+            "cached authentication must not serialize HTTP exports"
         );
-        assert!(
-            calls.load(Ordering::Relaxed) >= MAX_IN_FLIGHT,
-            "the provider must still be checked before every admitted batch"
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            1,
+            "the provider must only be called for the initial credential"
         );
     }
 

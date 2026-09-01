@@ -148,11 +148,11 @@ its token stream stays live for the exporter's lifetime.
 ### Agent-fed credentials
 
 An embedding host can instead bind `agent_fed_credential_provider`. The exporter
-reads one current credential snapshot for every export attempt, validates that
-its token is non-empty and safely outside the expiry margin, and sends it as the
-bearer credential. This observes host-side rotation without restarting the
-pipeline. Vendor attributes in the snapshot are not used by OTLP/HTTP because
-the configured OTLP endpoint remains authoritative.
+loads and validates a current credential snapshot before accepting input, then
+caches its bearer header across export attempts. It refreshes the snapshot when
+the token reaches its expiry margin or after the destination rejects that
+snapshot with HTTP 401. Vendor attributes in the snapshot are not used by
+OTLP/HTTP because the configured OTLP endpoint remains authoritative.
 
 ```yaml
 nodes:
@@ -172,8 +172,10 @@ The host sets the token by publishing an `Arc<AgentFedCredentialSnapshot>`
 containing a `BearerToken`; there is no token field under the exporter. The host
 must return a clone of the same `Arc` while that snapshot is current and publish
 a new `Arc` when either the token or its generation changes. The exporter checks
-the provider before each batch but reuses the already validated header when
-`Arc` identity is unchanged, avoiding repeated header allocation and parsing.
+the provider at startup, at the token's expiry margin, and after HTTP 401. A
+usable cached snapshot requires no provider call, timeout setup, header
+allocation, or header parsing on the per-batch admission path. A non-expiring
+snapshot remains cached until it is rejected or the pipeline restarts.
 
 An unavailable, malformed, empty, expired, or near-expiry token backpressures
 new input rather than sending an unauthenticated request. Each lookup has a
