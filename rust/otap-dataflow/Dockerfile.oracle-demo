@@ -10,7 +10,7 @@ RUN apt-get update \
 WORKDIR /build/rust/otap-dataflow
 
 COPY proto /build/proto
-COPY rust/experimental /build/rust/experimental
+COPY rust/contrib /build/rust/contrib
 COPY rust/otap-dataflow /build/rust/otap-dataflow
 COPY THIRD_PARTY_NOTICES.txt /build/THIRD_PARTY_NOTICES.txt
 
