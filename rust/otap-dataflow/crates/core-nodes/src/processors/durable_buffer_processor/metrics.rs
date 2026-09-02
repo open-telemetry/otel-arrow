@@ -3,14 +3,14 @@
 
 //! Metric declarations for the durable buffer processor.
 
-use otap_df_config::SignalType;
-use otap_df_engine::context::PipelineContext;
-use otap_df_telemetry::common_attributes::SignalAttributes;
-use otap_df_telemetry::error::Error;
-use otap_df_telemetry::instrument::{Counter, Gauge, ObserveCounter};
-use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet};
-use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_telemetry::common_attributes::SignalAttributes;
+use otel_arrow_dfe_telemetry::error::Error;
+use otel_arrow_dfe_telemetry::instrument::{Counter, Gauge};
+use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet};
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 
 /// Metrics that do not have a bounded item dimension.
 #[metric_set(name = "processor.durable_buffer")]
@@ -124,22 +124,36 @@ pub(super) struct LossAttributes {
     pub(super) reason: LossReason,
 }
 
-/// Aggregate storage loss metrics partitioned by retention reason.
+/// Physical storage reclaimed by retention.
+#[metric_set(
+    name = "processor.durable_buffer.reclaimed",
+    measurement_attributes = LossAttributes
+)]
+#[derive(Debug, Default, Clone)]
+pub(super) struct DurableBufferReclaimedMetrics {
+    /// Number of physical segment files removed.
+    #[metric(unit = "{segment}")]
+    pub(super) segments: Counter<u64>,
+    /// Full persisted bytes reclaimed from removed segment files.
+    #[metric(unit = "By")]
+    pub(super) bytes: Counter<u64>,
+}
+
+/// Logical loss metrics partitioned by retention reason.
 #[metric_set(
     name = "processor.durable_buffer.loss",
     measurement_attributes = LossAttributes
 )]
 #[derive(Debug, Default, Clone)]
 pub(super) struct DurableBufferLossMetrics {
-    /// Number of segments lost.
-    #[metric(unit = "{segment}")]
-    pub(super) segments: ObserveCounter<u64>,
-    /// Number of bundles lost.
+    /// Number of bundles attributed to retention loss.
+    ///
+    /// This may be only the unresolved subset of a removed segment.
     #[metric(unit = "{bundle}")]
-    pub(super) bundles: ObserveCounter<u64>,
-    /// Number of items lost.
-    #[metric(unit = "{item}")]
-    pub(super) items: ObserveCounter<u64>,
+    pub(super) bundles: Counter<u64>,
+    /// Logical payload bytes attributed to retention loss.
+    #[metric(unit = "By")]
+    pub(super) bytes: Counter<u64>,
 }
 
 #[attribute_set(item, measurement)]
@@ -151,12 +165,12 @@ pub(super) struct SignalLossAttributes {
 
 /// Item loss metrics partitioned by signal and retention reason.
 #[metric_set(
-    name = "processor.durable_buffer.item_loss",
+    name = "processor.durable_buffer.loss",
     measurement_attributes = SignalLossAttributes
 )]
 #[derive(Debug, Default, Clone)]
-pub(super) struct DurableBufferItemLossMetrics {
-    /// Number of items lost.
+pub(super) struct DurableBufferLossItemMetrics {
+    /// Number of items in bundles attributed to retention loss.
     #[metric(unit = "{item}")]
     pub(super) items: Counter<u64>,
 }
@@ -167,8 +181,9 @@ pub(super) struct DurableBufferMetrics {
     pub(super) bundle_metrics: MeasurementMetricSet<DurableBufferBundleMetrics>,
     pub(super) ingest_metrics: MeasurementMetricSet<DurableBufferIngestMetrics>,
     pub(super) item_metrics: MeasurementMetricSet<DurableBufferItemMetrics>,
+    pub(super) reclaimed_metrics: MeasurementMetricSet<DurableBufferReclaimedMetrics>,
     pub(super) loss_metrics: MeasurementMetricSet<DurableBufferLossMetrics>,
-    pub(super) item_loss_metrics: MeasurementMetricSet<DurableBufferItemLossMetrics>,
+    pub(super) loss_item_metrics: MeasurementMetricSet<DurableBufferLossItemMetrics>,
 }
 
 impl DurableBufferMetrics {
@@ -178,8 +193,9 @@ impl DurableBufferMetrics {
             bundle_metrics: DurableBufferBundleMetrics::register(pipeline_ctx),
             ingest_metrics: DurableBufferIngestMetrics::register(pipeline_ctx),
             item_metrics: DurableBufferItemMetrics::register(pipeline_ctx),
+            reclaimed_metrics: DurableBufferReclaimedMetrics::register(pipeline_ctx),
             loss_metrics: DurableBufferLossMetrics::register(pipeline_ctx),
-            item_loss_metrics: DurableBufferItemLossMetrics::register(pipeline_ctx),
+            loss_item_metrics: DurableBufferLossItemMetrics::register(pipeline_ctx),
         }
     }
 
@@ -189,8 +205,9 @@ impl DurableBufferMetrics {
             .and_then(|()| reporter.report_measurement(&mut self.bundle_metrics))
             .and_then(|()| reporter.report_measurement(&mut self.ingest_metrics))
             .and_then(|()| reporter.report_measurement(&mut self.item_metrics))
+            .and_then(|()| reporter.report_measurement(&mut self.reclaimed_metrics))
             .and_then(|()| reporter.report_measurement(&mut self.loss_metrics))
-            .and_then(|()| reporter.report_measurement(&mut self.item_loss_metrics))
+            .and_then(|()| reporter.report_measurement(&mut self.loss_item_metrics))
     }
 
     pub(super) fn bundles_for(
@@ -214,12 +231,19 @@ impl DurableBufferMetrics {
         self.loss_metrics.with(LossAttributes { reason })
     }
 
-    pub(super) fn item_loss_for(
+    pub(super) fn reclaimed_for(
+        &mut self,
+        reason: LossReason,
+    ) -> &mut DurableBufferReclaimedMetrics {
+        self.reclaimed_metrics.with(LossAttributes { reason })
+    }
+
+    pub(super) fn loss_items_for(
         &mut self,
         signal: SignalType,
         reason: LossReason,
-    ) -> &mut DurableBufferItemLossMetrics {
-        self.item_loss_metrics
+    ) -> &mut DurableBufferLossItemMetrics {
+        self.loss_item_metrics
             .with(SignalLossAttributes { signal, reason })
     }
 }

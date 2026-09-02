@@ -17,9 +17,9 @@ use crate::node::{NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::processor::{ProcessorWrapper, ProcessorWrapperRuntime};
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::testing::{CtrlMsgCounters, setup_test_runtime, test_node};
-use otap_df_telemetry::InternalTelemetrySystem;
-use otap_df_telemetry::registry::TelemetryRegistryHandle;
-use otap_df_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_telemetry::InternalTelemetrySystem;
+use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use std::fmt::Debug;
 use std::future::Future;
 use std::marker::PhantomData;
@@ -264,7 +264,7 @@ pub struct ValidationPhase {
     rt: tokio::runtime::Runtime,
     local_tasks: LocalSet,
     counters: CtrlMsgCounters,
-    metrics_collection_handle: JoinHandle<Result<(), otap_df_telemetry::error::Error>>,
+    metrics_collection_handle: JoinHandle<Result<(), otel_arrow_dfe_telemetry::error::Error>>,
 }
 
 impl<PData: Clone + Debug + 'static> Default for TestRuntime<PData> {
@@ -340,7 +340,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
         // Set up test channels for the processor
         let (pdata_sender, pdata_receiver) = match &processor {
             ProcessorWrapper::Local { .. } => {
-                let (sender, receiver) = otap_df_channel::mpsc::Channel::new(100);
+                let (sender, receiver) = otel_arrow_dfe_channel::mpsc::Channel::new(100);
                 (
                     Sender::Local(LocalSender::mpsc(sender)),
                     Receiver::Local(LocalReceiver::mpsc(receiver)),
@@ -366,7 +366,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
         // We need this because prepare_runtime expects both to be set
         let dummy_receiver = match &processor {
             ProcessorWrapper::Local { .. } => {
-                let (_, receiver) = otap_df_channel::mpsc::Channel::new(1);
+                let (_, receiver) = otel_arrow_dfe_channel::mpsc::Channel::new(1);
                 Receiver::Local(LocalReceiver::mpsc(receiver))
             }
             ProcessorWrapper::Shared { .. } => {

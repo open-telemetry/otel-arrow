@@ -15,13 +15,15 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
   prepare-release:
     permissions:
       contents: read
+      pull-requests: read
     runs-on: ubuntu-latest
-    environment: release
+    environment: ${{ !inputs.dry_run && 'release' || '' }}
     steps:
       - name: Checkout (dry run)
         if: inputs.dry_run
@@ -62,6 +64,11 @@ jobs:
       - name: Validate inputs
         run: ./.github/workflows/scripts/validate-version.sh "${{ inputs.version }}"
 
+      - name: Record release base commit
+        id: release_base
+        run: |
+          git fetch --quiet origin main
+          echo "sha=$(git rev-parse origin/main)" >> "$GITHUB_OUTPUT"
       - name: Get last released version
         id: last_version
         run: |
@@ -90,24 +97,31 @@ jobs:
           # Renders pending entries from go/.chloggen/ and
           # rust/otap-dataflow/.chloggen/ into their respective CHANGELOG.md
           # files under the new `## v${{ inputs.version }}` heading, then
-          # deletes the consumed .yaml entry files.
+          # deletes the consumed .yaml entry files. If a tree has no entries,
+          # its summary template records that the version is for repo parity.
           make chlog-install
           make chlog-update VERSION="v${{ inputs.version }}"
 
       - name: Bump Rust crate versions
         run: |
           # Rust crates currently track the same release version as Go.
-          # Replace the version in both [workspace.package] and the root
-          # [package] section (both have `version = "X.Y.Z"` at column 0).
-          sed -i 's/^version = "[0-9]\+\.[0-9]\+\.[0-9]\+"/version = "${{ inputs.version }}"/g' rust/otap-dataflow/Cargo.toml
+          # Replace the workspace/root package versions and same-release
+          # dependency constraints in the workspace manifest.
+          CURRENT_VERSION=$(sed -n 's/^version = "\([0-9]\+\.[0-9]\+\.[0-9]\+\)"/\1/p' rust/otap-dataflow/Cargo.toml | head -1)
+          CURRENT_VERSION_PATTERN=$(printf '%s' "${CURRENT_VERSION}" | sed 's/\./\\./g')
+          sed -i "s/${CURRENT_VERSION_PATTERN}/${{ inputs.version }}/g" rust/otap-dataflow/Cargo.toml
           echo "Updated rust/otap-dataflow/Cargo.toml to ${{ inputs.version }}"
 
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
-          toolchain: stable
+          toolchain: 1.98.0
 
       - name: Update Rust lockfile
         run: cargo generate-lockfile --manifest-path rust/otap-dataflow/Cargo.toml
+
+      - name: Validate Rust crates.io publish plan
+        run: cargo xtask crates-publish check
+        working-directory: rust/otap-dataflow
 
       - name: Extract release notes for PR body
         id: changelog
@@ -176,8 +190,8 @@ jobs:
           ## File Changes
           The following files would be modified:
           - `go/.chloggen/auto-dependency-updates.yaml`, `rust/otap-dataflow/.chloggen/auto-dependency-updates.yaml` - Auto-generated entries aggregating renovate[bot]/dependabot[bot] PRs (created only when such commits exist for the tree)
-          - `go/CHANGELOG.md` - Render pending `go/.chloggen/*.yaml` entries under `## v${{ inputs.version }}`
-          - `rust/otap-dataflow/CHANGELOG.md` - Render pending `rust/otap-dataflow/.chloggen/*.yaml` entries under `## v${{ inputs.version }}`
+          - `go/CHANGELOG.md` - Render pending `go/.chloggen/*.yaml` entries, or a repository parity note when empty, under `## v${{ inputs.version }}`
+          - `rust/otap-dataflow/CHANGELOG.md` - Render pending `rust/otap-dataflow/.chloggen/*.yaml` entries, or a repository parity note when empty, under `## v${{ inputs.version }}`
           - `go/.chloggen/*.yaml`, `rust/otap-dataflow/.chloggen/*.yaml` - Consumed entries deleted
           - `rust/otap-dataflow/Cargo.toml` - Bump workspace and root package version to ${{ inputs.version }}
 
@@ -199,7 +213,12 @@ jobs:
 
       - name: Create release branch and commit changes
         if: "!inputs.dry_run"
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          ./.github/workflows/scripts/verify-release-window.sh \
+            "${{ steps.release_base.outputs.sha }}"
+
           # Configure git for otelbot
           git config user.name '${{ steps.app-token.outputs.app-slug }}[bot]'
           git config user.email '${{ steps.get-user-id.outputs.user-id }}+${{ steps.app-token.outputs.app-slug }}[bot]@users.noreply.github.com'
@@ -258,6 +277,14 @@ jobs:
               --base main \
               --label release
           fi
+
+      - name: Verify release window remains stable
+        if: "!inputs.dry_run"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ./.github/workflows/scripts/verify-release-window.sh \
+            "${{ steps.release_base.outputs.sha }}"
 
       - name: Summary
         run: |

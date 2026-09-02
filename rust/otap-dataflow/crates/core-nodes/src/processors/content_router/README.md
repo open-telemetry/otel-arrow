@@ -172,15 +172,12 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 #### `processor.content_router`
 
-| Metric | Unit | Description |
-| --- | --- | --- |
-| `processor.content_router.signals_routed` | `{msg}` | Number of messages routed to a named port. |
-| `processor.content_router.signals_routed_default` | `{msg}` | Number of messages routed to the default output. |
-| `processor.content_router.signals_nacked` | `{msg}` | Number of messages NACKed (no route match, missing key, mixed batch, conversion error, or send failure). |
-| `processor.content_router.signals_no_routing_key` | `{msg}` | Number of messages where the routing key was missing. |
-| `processor.content_router.signals_conversion_error` | `{msg}` | Number of messages that failed due to internal conversion errors. |
-| `processor.content_router.signals_rejected_route_full` | `{msg}` | Number of messages rejected because the selected route was full. |
-| `processor.content_router.signals_rejected_route_closed` | `{msg}` | Number of messages rejected because the selected route was closed. |
+| Metric | Attributes | Unit | Description |
+| --- | --- | --- | --- |
+| `processor.content_router.messages` | `outcome`, `reason` | `{message}` | Number of messages processed by the content router. |
+
+The `outcome` attribute is one of: `success`, `failure`, `refused`.
+The `reason` attribute is one of: `matched_route`, `default_route_no_match`, `default_route_missing_key`, `no_matching_route`, `missing_routing_key`, `mixed_batch`, `conversion_error`, `route_full`, `route_closed`, `node_shutdown`.
 
 ### Events
 

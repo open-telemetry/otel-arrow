@@ -57,7 +57,7 @@ use tokio::sync::Notify;
 use tokio::time::{Instant as TokioInstant, Sleep, sleep_until};
 
 // TODO: Consider deduplicating the keyed blocked-sender waiter logic with
-// `otap-df-channel` by extracting a shared `sender_waiters.rs` there.
+// `otel-arrow-dfe-channel` by extracting a shared `sender_waiters.rs` there.
 // The current `mpsc` and `mpmc` waiters carry the same tombstone pattern;
 // this crate fixes it locally first to keep this PR isolated.
 //
@@ -282,7 +282,7 @@ struct State<PData, Meta = ()> {
     /// bounded FIFO subset of blocked senders without waking every waiter.
     ///
     /// The keyed waiter-slot structure is adapted from the local MPSC channel
-    /// in `otap-df-channel`. The reuse is intentionally narrow: only the
+    /// in `otel-arrow-dfe-channel`. The reuse is intentionally narrow: only the
     /// blocked-sender waiting mechanism is borrowed here, while control
     /// admission and delivery remain specific to `Inner`.
     sender_waiters: RefCell<Option<SenderWaiters>>,

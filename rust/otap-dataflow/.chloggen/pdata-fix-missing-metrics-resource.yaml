@@ -1,5 +1,0 @@
-change_type: bug_fix
-component: pdata
-note: Prevent metrics encoding panics from missing resources or misaligned scope schema rows.
-issues: [3565]
-subtext:

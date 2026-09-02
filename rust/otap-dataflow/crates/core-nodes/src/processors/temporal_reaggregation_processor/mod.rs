@@ -6,6 +6,11 @@
 //! This processor decreases telemetry volume by reaggregating metrics collected
 //! at a higher frequency into a lower one.
 
+otel_arrow_dfe_telemetry::otel_component_scope!(
+    urn = TEMPORAL_REAGGREGATION_PROCESSOR_URN,
+    target = "otel.processor.temporal_reaggregation",
+);
+
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -13,40 +18,39 @@ use async_trait::async_trait;
 use hashbrown::HashMap;
 use hashbrown::hash_map::EntryRef::{Occupied, Vacant};
 use linkme::distributed_slice;
-use otap_df_config::SignalType;
-use otap_df_config::error::Error as ConfigError;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
-use otap_df_engine::ProducerEffectHandlerExtension;
-use otap_df_engine::WakeupError;
-use otap_df_engine::config::ProcessorConfig;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::{
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_engine::MessageSourceLocalEffectHandlerExtension;
+use otel_arrow_dfe_engine::ProducerEffectHandlerExtension;
+use otel_arrow_dfe_engine::WakeupError;
+use otel_arrow_dfe_engine::config::ProcessorConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::control::{
     AckMsg, CallData, NackMsg, NodeControlMsg, WakeupRevision, WakeupSlot,
 };
-use otap_df_engine::error::{Error, ProcessorErrorKind};
-use otap_df_engine::local::processor as local;
-use otap_df_engine::message::Message;
-use otap_df_engine::node::NodeId;
-use otap_df_engine::processor::{ProcessorRuntimeRequirements, ProcessorWrapper};
-use otap_df_engine::{ConsumerEffectHandlerExtension, Interests};
-use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
-use otap_df_otap::accessory::slots::{Key as SlotKey, State as SlotState};
-use otap_df_otap::pdata::{Context, OtapPdata, PeerAddrMerger};
-use otap_df_pdata::otap::OtapArrowRecords;
-use otap_df_pdata::views::otap::OtapMetricsView;
-use otap_df_pdata::views::otlp::bytes::metrics::RawMetricsData;
-use otap_df_pdata::{OtapPayload, OtapPayloadHelpers};
-use otap_df_pdata_views::views::common::InstrumentationScopeView;
-use otap_df_pdata_views::views::metrics::{
+use otel_arrow_dfe_engine::error::{Error, ProcessorErrorKind};
+use otel_arrow_dfe_engine::local::processor as local;
+use otel_arrow_dfe_engine::message::Message;
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::processor::{ProcessorRuntimeRequirements, ProcessorWrapper};
+use otel_arrow_dfe_engine::{ConsumerEffectHandlerExtension, Interests};
+use otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES;
+use otel_arrow_dfe_otap::accessory::slots::{Key as SlotKey, State as SlotState};
+use otel_arrow_dfe_otap::pdata::{Context, OtapPdata, PeerAddrMerger};
+use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
+use otel_arrow_dfe_pdata::views::otap::OtapMetricsView;
+use otel_arrow_dfe_pdata::views::otlp::bytes::metrics::RawMetricsData;
+use otel_arrow_dfe_pdata::{OtapPayload, OtapPayloadHelpers, PayloadData};
+use otel_arrow_dfe_pdata_views::views::common::InstrumentationScopeView;
+use otel_arrow_dfe_pdata_views::views::metrics::{
     AggregationTemporality, DataType, DataView, ExponentialHistogramDataPointView,
     ExponentialHistogramView, GaugeView, HistogramDataPointView, HistogramView, MetricView,
     MetricsView, NumberDataPointView, ResourceMetricsView, ScopeMetricsView, SumView,
     SummaryDataPointView, SummaryView,
 };
-use otap_df_pdata_views::views::resource::ResourceView;
-use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::otel_warn;
+use otel_arrow_dfe_pdata_views::views::resource::ResourceView;
+use otel_arrow_dfe_telemetry::common_attributes::Outcome;
 
 mod builder;
 mod config;
@@ -59,7 +63,7 @@ use self::identity::{
     HashBuffer, MetricId, MetricIdRef, ResourceId, ScopeId, ScopeIdRef, StreamId, StreamIdRef,
     metric_id_of, resource_id_of, scope_id_of, stream_id_of,
 };
-use self::telemetry::TemporalReaggregationMetrics;
+use self::telemetry::{ErrorType, FlushReason, TemporalReaggregationMetrics};
 
 /// Errors that can occur during view processing.
 #[derive(thiserror::Error, Debug)]
@@ -121,22 +125,23 @@ pub const TEMPORAL_REAGGREGATION_PROCESSOR_URN: &str = "urn:otel:processor:tempo
 
 /// Register the temporal reaggregation processor as an OTAP processor factory.
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Processor)]
+#[otel_arrow_dfe_engine::component_inventory(category = Processor)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
-pub static TEMPORAL_REAGGREGATION_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> =
-    otap_df_engine::ProcessorFactory {
-        name: TEMPORAL_REAGGREGATION_PROCESSOR_URN,
-        create:
-            |pipeline_ctx: PipelineContext,
-             node: NodeId,
-             node_config: Arc<NodeUserConfig>,
-             proc_cfg: &ProcessorConfig,
-             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
-                create_temporal_reaggregation_processor(pipeline_ctx, node, node_config, proc_cfg)
-            },
-        wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-        validate_config: otap_df_config::validation::validate_typed_config::<Config>,
-    };
+pub static TEMPORAL_REAGGREGATION_PROCESSOR_FACTORY: otel_arrow_dfe_engine::ProcessorFactory<
+    OtapPdata,
+> = otel_arrow_dfe_engine::ProcessorFactory {
+    name: TEMPORAL_REAGGREGATION_PROCESSOR_URN,
+    create:
+        |pipeline_ctx: PipelineContext,
+         node: NodeId,
+         node_config: Arc<NodeUserConfig>,
+         proc_cfg: &ProcessorConfig,
+         _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
+            create_temporal_reaggregation_processor(pipeline_ctx, node, node_config, proc_cfg)
+        },
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<Config>,
+};
 
 /// Factory function to create a [`TemporalReaggregationProcessor`].
 pub fn create_temporal_reaggregation_processor(
@@ -206,7 +211,7 @@ const FLUSH_WAKEUP_SLOT: WakeupSlot = WakeupSlot(0);
 /// [`OtapArrowRecords`] batch.
 pub struct TemporalReaggregationProcessor {
     /// Processor metrics
-    metrics: MetricSet<TemporalReaggregationMetrics>,
+    metrics: TemporalReaggregationMetrics,
 
     /// The collection period for aggregating metrics before emitting a batch
     collection_period: Duration,
@@ -291,19 +296,21 @@ impl local::Processor<OtapPdata> for TemporalReaggregationProcessor {
                 NodeControlMsg::Wakeup { revision, .. } => {
                     if self.wakeup_revision == Some(revision) {
                         self.wakeup_revision = None;
-                        self.metrics.flushes_timer.inc();
-                        self.flush(effect_handler, None).await?;
+                        self.flush(effect_handler, None, FlushReason::Timer).await?;
                     }
 
                     Ok(())
                 }
                 NodeControlMsg::Ack(msg) => self.handle_ack(effect_handler, msg).await,
                 NodeControlMsg::Nack(msg) => self.handle_nack(effect_handler, msg).await,
-                NodeControlMsg::Shutdown { .. } => self.flush(effect_handler, None).await,
+                NodeControlMsg::Shutdown { .. } => {
+                    self.flush(effect_handler, None, FlushReason::Shutdown)
+                        .await
+                }
                 NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
                 } => {
-                    _ = metrics_reporter.report(&mut self.metrics);
+                    _ = self.metrics.report(&mut metrics_reporter);
                     Ok(())
                 }
                 _ => Ok(()),
@@ -321,8 +328,8 @@ impl local::Processor<OtapPdata> for TemporalReaggregationProcessor {
         // We may need up to one inbound slot and three outbound slots.
         //
         // The inbound slot is used to track the inbound request context and is
-        // needed if either there are ack/nack interests on the context OR if some of
-        // the data is aggregable meaning we won't just pass the whole batch
+        // needed if the context requires completion tracking OR if some of the
+        // data is aggregable, meaning we won't just pass the whole batch
         // through untouched.
         //
         // One outbound slot may be needed to flush the existing batch if we
@@ -344,7 +351,7 @@ impl TemporalReaggregationProcessor {
         pipeline_ctx: PipelineContext,
         config: &serde_json::Value,
     ) -> Result<Self, ConfigError> {
-        let metrics = pipeline_ctx.register_metrics::<TemporalReaggregationMetrics>();
+        let metrics = TemporalReaggregationMetrics::new(&pipeline_ctx);
         let config: Config =
             serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
                 error: e.to_string(),
@@ -618,12 +625,13 @@ impl TemporalReaggregationProcessor {
         effect_handler: &mut local::EffectHandler<OtapPdata>,
         pdata: OtapPdata,
     ) -> Result<(), Error> {
-        let result = match pdata.payload_ref() {
-            OtapPayload::OtapArrowRecords(records) => match OtapMetricsView::try_from(records) {
+        let result = match pdata.payload_ref().data() {
+            PayloadData::OtapArrowRecords(records) => match OtapMetricsView::try_from(records) {
                 Ok(view) => self.process_view(effect_handler, &view).await,
                 Err(e) => {
                     otel_warn!(telemetry::VIEW_CREATION_FAILED_EVENT, error = %e);
-                    self.metrics.batches_rejected.inc();
+                    // local failure, not a downstream refusal
+                    self.metrics.record_failure(ErrorType::ViewCreation);
                     let msg = format!("Failed to create view: {:#}", e);
                     effect_handler
                         .notify_nack(NackMsg::new_permanent(msg, pdata))
@@ -632,7 +640,7 @@ impl TemporalReaggregationProcessor {
                     return Ok(());
                 }
             },
-            OtapPayload::OtlpBytes(otlp) => {
+            PayloadData::OtlpBytes(otlp) => {
                 let view = RawMetricsData::new(otlp.as_bytes());
                 self.process_view(effect_handler, &view).await
             }
@@ -641,25 +649,27 @@ impl TemporalReaggregationProcessor {
         match result {
             Ok(agg_result) => match agg_result {
                 AggregationResult::NoAggregations => {
-                    Ok(effect_handler.send_message_with_source_node(pdata).await?)
+                    self.try_send_message_with_metrics(effect_handler, pdata)
+                        .await
                 }
                 AggregationResult::SomeAggregations(records) => {
                     // The aggregated portion of this input has been folded into
                     // the in-progress builder; remember its peer_addr so the
                     // next flush can compute the merged output peer_addr.
                     self.aggregated_peer.push(pdata.peer_addr());
-                    // Pass data through if there are no subscribers -- but we
-                    // still need a wakeup to flush the aggregated portion.
+                    // Pass data through directly if no completion routing or
+                    // metrics unwinding depends on the inbound context.
                     let (inbound_ctx, _) = pdata.into_parts();
-                    if !inbound_ctx.has_subscribers() {
-                        self.ensure_wakeup_scheduled(effect_handler)?;
-                        let pt_pdata =
-                            OtapPdata::new(inbound_ctx, OtapPayload::OtapArrowRecords(records));
+                    if !inbound_ctx.needs_completion_tracking() {
+                        if let Err(e) = self.ensure_wakeup_scheduled(effect_handler) {
+                            self.metrics.record_failure(ErrorType::Internal);
+                            return Err(e);
+                        }
+                        let pt_pdata = OtapPdata::new(inbound_ctx, OtapPayload::from(records));
 
-                        effect_handler
-                            .send_message_with_source_node(pt_pdata)
-                            .await?;
-                        return Ok(());
+                        return self
+                            .try_send_message_with_metrics(effect_handler, pt_pdata)
+                            .await;
                     }
 
                     // The partial-passthrough output represents exactly one
@@ -674,8 +684,15 @@ impl TemporalReaggregationProcessor {
                         flushed: false,
                     };
 
-                    let inbound_calldata: CallData =
-                        self.record_pending_and_handle_wakeup(effect_handler, tracker)?;
+                    let inbound_calldata_res =
+                        self.record_pending_and_handle_wakeup(effect_handler, tracker);
+                    let inbound_calldata: CallData = match inbound_calldata_res {
+                        Ok(call_data) => call_data,
+                        Err(e) => {
+                            self.metrics.record_failure(ErrorType::Internal);
+                            return Err(e);
+                        }
+                    };
 
                     // safety: See [`TemporalReaggregationProcessor::accept_pdata`].
                     // We always expect one inbound and three outbound slots available
@@ -686,8 +703,7 @@ impl TemporalReaggregationProcessor {
                     // Subscribe to the outbound
                     let outbound_calldata: CallData = outbound_key.into();
                     let context = Context::with_capacity(1);
-                    let mut pt_pdata =
-                        OtapPdata::new(context, OtapPayload::OtapArrowRecords(records));
+                    let mut pt_pdata = OtapPdata::new(context, OtapPayload::from(records));
                     if let Some(addr) = passthrough_peer {
                         pt_pdata.set_peer_addr(addr);
                     }
@@ -698,20 +714,22 @@ impl TemporalReaggregationProcessor {
                         &mut pt_pdata,
                     );
 
-                    Ok(effect_handler
-                        .send_message_with_source_node(pt_pdata)
-                        .await?)
+                    self.try_send_message_with_metrics(effect_handler, pt_pdata)
+                        .await
                 }
                 AggregationResult::AllAggregated => {
                     // The full input was folded into the in-progress builder;
                     // remember its peer_addr for the next flush.
                     self.aggregated_peer.push(pdata.peer_addr());
-                    // Nothing to passthrough and no subscribers so we don't
-                    // care about ack/nack -- but we still need a wakeup to
-                    // flush the aggregated data.
+                    // If no completion routing or metrics unwinding depends on
+                    // the inbound context, only schedule the aggregate flush.
                     let (inbound_ctx, _) = pdata.into_parts();
-                    if !inbound_ctx.has_subscribers() {
-                        self.ensure_wakeup_scheduled(effect_handler)?;
+                    if !inbound_ctx.needs_completion_tracking() {
+                        if let Err(e) = self.ensure_wakeup_scheduled(effect_handler) {
+                            self.metrics.record_failure(ErrorType::Internal);
+                            return Err(e);
+                        }
+                        self.metrics.record_success();
                         return Ok(());
                     }
 
@@ -723,8 +741,12 @@ impl TemporalReaggregationProcessor {
                         flushed: false,
                     };
 
-                    _ = self.record_pending_and_handle_wakeup(effect_handler, tracker)?;
+                    if let Err(e) = self.record_pending_and_handle_wakeup(effect_handler, tracker) {
+                        self.metrics.record_failure(ErrorType::Internal);
+                        return Err(e);
+                    }
 
+                    self.metrics.record_success();
                     Ok(())
                 }
             },
@@ -732,11 +754,17 @@ impl TemporalReaggregationProcessor {
                 // Engine errors are fatal, we propagate those up the stack
                 ProcessingError::Engine { source } => Err(source),
 
-                // This is our classic "bad data" case where even after flushing
-                // the current batch, it failed on retry due to being oversized
-                // in some way. We can't handle it, so it gets a nack.
+                // Classic "bad data" case: even after flushing the current batch
+                // and retrying, the input is still too large to aggregate.
+                // Record the actionable error cause from source, not the control-flow reason.
                 ProcessingError::AggregationRetryFailed { source } => {
-                    self.metrics.batches_rejected.inc();
+                    let error_type = match source {
+                        AggregationError::IdOverflow => ErrorType::IdOverflow,
+                        AggregationError::StreamCardinalityExceeded => {
+                            ErrorType::StreamCardinalityExceeded
+                        }
+                    };
+                    self.metrics.record_failure(error_type);
                     let msg = format!("Failed to aggregate batch: {:#}", source);
                     effect_handler
                         .notify_nack(NackMsg::new_permanent(msg, pdata))
@@ -754,10 +782,28 @@ impl TemporalReaggregationProcessor {
     /// the data appended before the checkpoint is clean and should be sent
     /// downstream, while the partial data from the failed call is discarded
     /// by slicing the record batches.
+    ///
+    async fn try_send_message_with_metrics(
+        &mut self,
+        effect_handler: &mut local::EffectHandler<OtapPdata>,
+        pdata: OtapPdata,
+    ) -> Result<(), Error> {
+        let send_res = effect_handler.send_message_with_source_node(pdata).await;
+        if send_res.is_ok() {
+            self.metrics.record_success();
+        } else {
+            self.metrics.record_failure(ErrorType::OutputSend);
+        }
+        Ok(send_res?)
+    }
+
+    /// Records a `flushes` metric only when records are actually emitted (non-empty flush).
+    /// The metric is recorded after the send result is known so that outcome is accurate.
     async fn flush(
         &mut self,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
         checkpoint: Option<Checkpoint>,
+        reason: FlushReason,
     ) -> Result<(), Error> {
         let records = self.builder.finish(checkpoint);
         // Snapshot the merged peer_addr from every input that contributed to
@@ -769,6 +815,7 @@ impl TemporalReaggregationProcessor {
         // scheduled whenever we start aggregating a new batch
         self.cancel_current_wakeup(effect_handler);
 
+        // Empty flush - nothing to emit, skip the metric entirely
         if records.is_empty() {
             return Ok(());
         }
@@ -778,12 +825,18 @@ impl TemporalReaggregationProcessor {
         // Nobody was subscribed to anything here
         if pending_flush_calldata.is_empty() {
             let context = Context::default();
-            let mut pdata = OtapPdata::new(context, OtapPayload::OtapArrowRecords(records));
+            let mut pdata = OtapPdata::new(context, OtapPayload::from(records));
             if let Some(addr) = merged_peer {
                 pdata.set_peer_addr(addr);
             }
-            effect_handler.send_message_with_source_node(pdata).await?;
-            return Ok(());
+            let res = effect_handler.send_message_with_source_node(pdata).await;
+            let outcome = if res.is_ok() {
+                Outcome::Success
+            } else {
+                Outcome::Failure
+            };
+            self.metrics.record_flush(outcome, reason);
+            return Ok(res?);
         }
 
         // safety: See [`TemporalReaggregationProcessor::accept_pdata`].
@@ -805,7 +858,7 @@ impl TemporalReaggregationProcessor {
         let outbound_key = outbound_slot.insert(pending_flush_calldata);
         let outbound_calldata: CallData = outbound_key.into();
         let outbound_ctx = Context::with_capacity(1);
-        let mut pdata = OtapPdata::new(outbound_ctx, OtapPayload::OtapArrowRecords(records));
+        let mut pdata = OtapPdata::new(outbound_ctx, OtapPayload::from(records));
         if let Some(addr) = merged_peer {
             pdata.set_peer_addr(addr);
         }
@@ -815,8 +868,14 @@ impl TemporalReaggregationProcessor {
             &mut pdata,
         );
 
-        effect_handler.send_message_with_source_node(pdata).await?;
-        Ok(())
+        let res = effect_handler.send_message_with_source_node(pdata).await;
+        let outcome = if res.is_ok() {
+            Outcome::Success
+        } else {
+            Outcome::Failure
+        };
+        self.metrics.record_flush(outcome, reason);
+        Ok(res?)
     }
 
     async fn process_view<V: MetricsView>(
@@ -837,9 +896,30 @@ impl TemporalReaggregationProcessor {
                 // data back into a fresh one. This prevents complex ack/nack
                 // scenarios where a single input batch has representation in
                 // multiple output batches.
-                AggregationError::IdOverflow | AggregationError::StreamCardinalityExceeded => {
-                    self.metrics.flushes_overflow.inc();
-                    self.flush(effect_handler, Some(checkpoint)).await?;
+                AggregationError::IdOverflow => {
+                    // Flush first with the correct reason, metric is recorded inside flush()
+                    // after the send result is known - not before.
+                    let flush_reason = FlushReason::IdOverflow;
+                    if let Err(e) = self
+                        .flush(effect_handler, Some(checkpoint), flush_reason)
+                        .await
+                    {
+                        self.metrics.record_failure(ErrorType::OutputSend);
+                        return Err(e.into());
+                    }
+                    Ok(self
+                        .aggregate_view(view)
+                        .inspect_err(|_| self.clear_state())?)
+                }
+                AggregationError::StreamCardinalityExceeded => {
+                    let flush_reason = FlushReason::StreamCardinalityExceeded;
+                    if let Err(e) = self
+                        .flush(effect_handler, Some(checkpoint), flush_reason)
+                        .await
+                    {
+                        self.metrics.record_failure(ErrorType::OutputSend);
+                        return Err(e.into());
+                    }
                     Ok(self
                         .aggregate_view(view)
                         .inspect_err(|_| self.clear_state())?)
@@ -1426,13 +1506,13 @@ mod tests {
     use std::future::Future;
     use std::net::SocketAddr;
 
-    use otap_df_engine::testing::processor::TestContext;
-    use otap_df_pdata::otap::OtapBatchStore;
-    use otap_df_pdata::otlp::metrics::MetricType;
-    use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
-    use otap_df_pdata::proto::opentelemetry::metrics::v1::AggregationTemporality;
-    use otap_df_pdata::proto::opentelemetry::metrics::v1::summary_data_point::ValueAtQuantile;
-    use otap_df_pdata::{metrics, record_batch};
+    use otel_arrow_dfe_engine::testing::processor::TestContext;
+    use otel_arrow_dfe_pdata::otap::OtapBatchStore;
+    use otel_arrow_dfe_pdata::otlp::metrics::MetricType;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::AggregationTemporality;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::summary_data_point::ValueAtQuantile;
+    use otel_arrow_dfe_pdata::{metrics, record_batch};
     use serde_json::json;
     use smallvec::smallvec;
 
@@ -2134,12 +2214,28 @@ mod tests {
                 assert_eq!(output.len(), 2, "expected early flush + wakeup flush");
                 assert_output_metric_count(&output[0], max_metrics);
                 assert_output_metric_count(&output[1], 2);
+
+                let snaps = collect_telemetry(&mut ctx).await;
+                assert_eq!(
+                    metric_count(&snaps, "operations", Some("success"), None, None),
+                    2
+                );
+                assert_eq!(metric_count(&snaps, "failures", None, None, None), 0);
+                assert_eq!(
+                    metric_count(
+                        &snaps,
+                        "flushes",
+                        Some("success"),
+                        Some("id_overflow"),
+                        None
+                    ),
+                    1
+                );
             },
         );
     }
 
-    #[test]
-    fn test_stream_cardinality_overflow_triggers_early_flush() {
+    fn test_stream_cardinality_triggers_early_flush(data1: MetricsData, data2: MetricsData) {
         // Configure the processor to allow at most 2 unique streams in a batch.
         // Send a batch with 2 streams (fills to the limit), then a second batch
         // with 1 new stream. The new stream should trigger a cardinality overflow:
@@ -2148,20 +2244,85 @@ mod tests {
         run_processor_test(
             json!({ "max_stream_cardinality": 2 }),
             |mut ctx| async move {
-                let batch1 = make_otlp_bytes_pdata(make_n_gauge_metrics(2));
-                // Use offset to ensure distinct metric names from the first batch.
-                let batch2 = make_otlp_bytes_pdata(make_n_gauge_metrics_with_offset(1, 2));
+                let batch1 = make_otlp_bytes_pdata(data1.clone());
+                let batch2 = make_otlp_bytes_pdata(data2.clone());
 
                 ctx.process(Message::PData(batch1)).await.unwrap();
-                ctx.process(Message::PData(batch2)).await.unwrap();
-                let _ = ctx.fire_wakeup().await.unwrap();
+                let output1 = ctx.drain_pdata().await;
+                assert_eq!(output1.len(), 0, "expected no output after first batch");
 
-                let output = ctx.drain_pdata().await;
-                assert_eq!(output.len(), 2, "expected early flush + wakeup flush");
-                assert_output_metric_count(&output[0], 2);
-                assert_output_metric_count(&output[1], 1);
+                ctx.process(Message::PData(batch2)).await.unwrap();
+                let output2 = ctx.drain_pdata().await;
+                assert_eq!(
+                    output2.len(),
+                    1,
+                    "expected early flush of first batch when limit exceeded"
+                );
+                assert_output_otlp_equivalent(&output2[0], data1);
+
+                let _ = ctx.fire_wakeup().await.unwrap();
+                let output3 = ctx.drain_pdata().await;
+                assert_eq!(output3.len(), 1, "expected wakeup flush of second batch");
+                assert_output_otlp_equivalent(&output3[0], data2);
+
+                let snaps = collect_telemetry(&mut ctx).await;
+                assert_eq!(
+                    metric_count(&snaps, "operations", Some("success"), None, None),
+                    2
+                );
+                assert_eq!(metric_count(&snaps, "failures", None, None, None), 0);
+                assert_eq!(
+                    metric_count(
+                        &snaps,
+                        "flushes",
+                        Some("success"),
+                        Some("stream_cardinality_exceeded"),
+                        None
+                    ),
+                    1
+                );
             },
         );
+    }
+
+    /// Scenario: A stream cardinality overflow occurs when processing Gauge metrics.
+    ///
+    /// Guarantees: The processor flushes the previous batch immediately and processes the new metric in a fresh batch.
+    #[test]
+    fn test_gauge_stream_cardinality_overflow_triggers_early_flush() {
+        let data1 = make_n_gauge_metrics_with_offset(2, 0);
+        let data2 = make_n_gauge_metrics_with_offset(1, 2);
+        test_stream_cardinality_triggers_early_flush(data1, data2);
+    }
+
+    /// Scenario: A stream cardinality overflow occurs when processing Histogram metrics.
+    ///
+    /// Guarantees: The processor flushes the previous batch immediately and processes the new metric in a fresh batch.
+    #[test]
+    fn test_histogram_stream_cardinality_overflow_triggers_early_flush() {
+        let data1 = make_n_histogram_metrics_with_offset(2, 0);
+        let data2 = make_n_histogram_metrics_with_offset(1, 2);
+        test_stream_cardinality_triggers_early_flush(data1, data2);
+    }
+
+    /// Scenario: A stream cardinality overflow occurs when processing ExponentialHistogram metrics.
+    ///
+    /// Guarantees: The processor flushes the previous batch immediately and processes the new metric in a fresh batch.
+    #[test]
+    fn test_exp_histogram_stream_cardinality_overflow_triggers_early_flush() {
+        let data1 = make_n_exp_histogram_metrics_with_offset(2, 0);
+        let data2 = make_n_exp_histogram_metrics_with_offset(1, 2);
+        test_stream_cardinality_triggers_early_flush(data1, data2);
+    }
+
+    /// Scenario: A stream cardinality overflow occurs when processing Summary metrics.
+    ///
+    /// Guarantees: The processor flushes the previous batch immediately and processes the new metric in a fresh batch.
+    #[test]
+    fn test_summary_stream_cardinality_overflow_triggers_early_flush() {
+        let data1 = make_n_summary_metrics_with_offset(2, 0);
+        let data2 = make_n_summary_metrics_with_offset(1, 2);
+        test_stream_cardinality_triggers_early_flush(data1, data2);
     }
 
     #[test]
@@ -2433,13 +2594,13 @@ mod tests {
             assert_eq!(output.len(), 1);
             // Both streams should be present: verify by converting the output
             // to OTLP and checking we have 2 resource_metrics entries.
-            let actual = match output[0].payload_ref() {
-                OtapPayload::OtapArrowRecords(r) => r,
+            let actual = match output[0].payload_ref().data() {
+                PayloadData::OtapArrowRecords(r) => r,
                 _ => panic!("expected OtapArrowRecords payload"),
             };
             let otlp = otap_to_otlp(actual);
             let md = match otlp {
-                otap_df_pdata::proto::OtlpProtoMessage::Metrics(md) => md,
+                otel_arrow_dfe_pdata::proto::OtlpProtoMessage::Metrics(md) => md,
                 _ => panic!("expected metrics"),
             };
             assert_eq!(
@@ -2603,6 +2764,13 @@ mod tests {
             let output = ctx.drain_pdata().await;
             assert_eq!(output.len(), 1, "delta sum should pass through immediately");
             assert_output_otlp_equivalent(&output[0], input_data);
+
+            let snaps = collect_telemetry(&mut ctx).await;
+            assert_eq!(
+                metric_count(&snaps, "operations", Some("success"), None, None),
+                1
+            );
+            assert_eq!(metric_count(&snaps, "failures", None, None, None), 0);
         });
     }
 
@@ -2756,6 +2924,13 @@ mod tests {
             assert!(
                 output.is_empty(),
                 "all-aggregatable batch should not emit anything immediately"
+            );
+
+            let _ = ctx.fire_wakeup().await.unwrap();
+            let snaps = collect_telemetry(&mut ctx).await;
+            assert_eq!(
+                metric_count(&snaps, "flushes", Some("success"), Some("timer"), None),
+                1
             );
         });
     }
@@ -3085,7 +3260,7 @@ mod tests {
             // Full passthrough forwards original OTLP bytes unchanged -
             // just verify something was emitted, the payload format is preserved.
             assert!(
-                matches!(output[0].payload_ref(), OtapPayload::OtlpBytes(_)),
+                matches!(output[0].payload_ref().data(), PayloadData::OtlpBytes(_)),
                 "full passthrough should preserve OTLP bytes payload"
             );
         });
@@ -3393,6 +3568,54 @@ mod tests {
         run_test(config, actions);
     }
 
+    /// Scenario: A single input batch is too large to aggregate and exceeds the cardinality limit.
+    /// Guarantees: The batch is permanently rejected, recording exactly one failed operation
+    /// and one `stream_cardinality_exceeded` failure diagnostic.
+    #[test]
+    fn test_telemetry_batch_rejected_cardinality_limit() {
+        let too_many = u16::MAX as usize + 1;
+        run_processor_test(json!({}), move |mut ctx| async move {
+            let payload = make_otlp_payload_from_metrics(make_n_gauge_metrics(too_many));
+            let context = Context::with_capacity(1);
+            let pdata = OtapPdata::new(context, payload);
+
+            // This will return Ok(()) but generate a NackMsg internally and record failure metrics
+            ctx.process(Message::PData(pdata)).await.unwrap();
+
+            let snaps = collect_telemetry(&mut ctx).await;
+
+            // Should have 1 failed operation
+            assert_eq!(
+                metric_count(&snaps, "operations", Some("failure"), None, None),
+                1
+            );
+            assert_eq!(
+                metric_count(&snaps, "operations", Some("success"), None, None),
+                0
+            );
+
+            // Should have exactly 1 diagnostic matching the failure
+            assert_eq!(
+                metric_count(
+                    &snaps,
+                    "failures",
+                    None,
+                    None,
+                    Some("stream_cardinality_exceeded")
+                ),
+                1
+            );
+            assert_eq!(
+                metric_count(&snaps, "failures", None, None, Some("id_overflow")),
+                0
+            );
+            assert_eq!(
+                metric_count(&snaps, "failures", None, None, Some("view_creation")),
+                0
+            );
+        });
+    }
+
     /// Sending an ack whose calldata has the wrong number of elements
     /// (0 or 2 instead of exactly 1) should be silently ignored.
     #[test]
@@ -3571,6 +3794,12 @@ mod tests {
                 "fire_wakeup should return false when no data has been sent"
             );
             assert!(ctx.drain_pdata().await.is_empty());
+
+            let snaps = collect_telemetry(&mut ctx).await;
+            assert_eq!(
+                metric_count(&snaps, "flushes", None, Some("timer"), None),
+                0
+            );
         });
     }
 
@@ -3665,5 +3894,97 @@ mod tests {
             },
         ];
         run_test(config, actions);
+    }
+
+    // --- Telemetry Tests ---
+
+    use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+
+    /// Helper to collect current telemetry snapshots from the processor.
+    async fn collect_telemetry(
+        ctx: &mut TestContext<OtapPdata>,
+    ) -> Vec<otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot> {
+        let (metrics_rx, reporter) = MetricsReporter::create_new_and_receiver(10);
+        ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+            metrics_reporter: reporter,
+        }))
+        .await
+        .unwrap();
+
+        let mut snaps = Vec::new();
+        while let Ok(snap) = metrics_rx.try_recv() {
+            snaps.push(snap);
+        }
+        snaps
+    }
+
+    /// Helper to count the occurrences of a metric with specific attribute values.
+    fn metric_count(
+        snaps: &[otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot],
+        metric_name: &str,
+        outcome: Option<&str>,
+        reason: Option<&str>,
+        error_type: Option<&str>,
+    ) -> u64 {
+        let mut total = 0;
+        for s in snaps {
+            if s.descriptor().name != "processor.temporal_reaggregation" {
+                continue;
+            }
+            if let Some(idx) = s
+                .descriptor()
+                .metrics
+                .iter()
+                .position(|f| f.name == metric_name)
+            {
+                let mut match_outcome = true;
+                let mut match_reason = true;
+                let mut match_error = true;
+
+                if let Some(o) = outcome {
+                    if s.measurement_attribute_value("outcome") != Some(o) {
+                        match_outcome = false;
+                    }
+                }
+                if let Some(r) = reason {
+                    if s.measurement_attribute_value("reason") != Some(r) {
+                        match_reason = false;
+                    }
+                }
+                if let Some(e) = error_type {
+                    if s.measurement_attribute_value("error.type") != Some(e) {
+                        match_error = false;
+                    }
+                }
+
+                if match_outcome && match_reason && match_error {
+                    total += s.get_metrics()[idx].to_u64_lossy();
+                }
+            }
+        }
+        total
+    }
+
+    /// Scenario: An aggregatable metrics batch remains buffered when shutdown begins.
+    /// Guarantees: Shutdown emits one non-empty successful flush with the `shutdown` reason.
+    #[test]
+    fn test_shutdown_flush() {
+        run_processor_test(json!({}), |mut ctx| async move {
+            let batch = make_otlp_bytes_pdata(make_n_gauge_metrics(1));
+            ctx.process(Message::PData(batch)).await.unwrap();
+
+            ctx.process(Message::Control(NodeControlMsg::Shutdown {
+                deadline: Instant::now() + Duration::from_secs(5),
+                reason: "test".to_string(),
+            }))
+            .await
+            .unwrap();
+
+            let snaps = collect_telemetry(&mut ctx).await;
+            assert_eq!(
+                metric_count(&snaps, "flushes", Some("success"), Some("shutdown"), None),
+                1
+            );
+        });
     }
 }

@@ -6,7 +6,7 @@
 use std::num::{NonZeroU16, NonZeroUsize};
 use std::time::Duration;
 
-use otap_df_config::error::Error as ConfigError;
+use otel_arrow_dfe_config::error::Error as ConfigError;
 use serde::{Deserialize, Serialize};
 
 const DEFAULT_PERIOD_SECONDS: u64 = 60;

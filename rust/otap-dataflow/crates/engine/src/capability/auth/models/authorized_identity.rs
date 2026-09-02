@@ -73,7 +73,8 @@ impl ClaimValue {
 ///
 /// - `principal`: an optional canonical, human-facing name for the caller. It is
 ///   *best-effort* and its exact meaning is per-scheme (an SA username for a
-///   Kubernetes SAT authorizer, `sub` for OIDC, a SPIFFE SAN or Subject DN for
+///   Kubernetes service-account-token auth, `sub` for OIDC, a SPIFFE SAN or
+///   Subject DN for
 ///   mutual TLS). Use it for logging and coarse identity, not for policy
 ///   matching.
 /// - `scheme`: an optional tag naming the authentication method that produced

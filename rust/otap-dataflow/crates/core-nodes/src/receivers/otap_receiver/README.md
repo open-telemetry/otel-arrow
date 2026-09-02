@@ -66,15 +66,36 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 ### Metric Sets
 
-#### `receiver.otap`
+#### `receiver.otap.batches`
 
-| Metric | Unit | Description |
-| --- | --- | --- |
-| `receiver.otap.acks_sent` | `{acks}` | Number of acks sent. |
-| `receiver.otap.nacks_sent` | `{nacks}` | Number of nacks sent. |
-| `receiver.otap.acks_nacks_invalid_or_expired` | `{ack_or_nack}` | Number of invalid/expired acks/nacks. |
-| `receiver.otap.rejected_requests` | `{requests}` | Number of OTAP RPCs rejected before entering the pipeline. |
-| `receiver.otap.refused_memory_pressure` | `{requests}` | Number of OTAP RPCs rejected specifically because memory pressure was active. |
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `receiver.otap.batches.started` | `{batch}` | `signal` | Number of batches admitted to the pipeline send path. |
+| `receiver.otap.batches.completed` | `{batch}` | `signal` | Number of admitted batches whose receiver work terminated. |
+| `receiver.otap.batches.payload_size` | `By` | `signal` | Protobuf-encoded batch bytes after gRPC transport decompression. |
+
+#### `receiver.otap.acknowledgements`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `receiver.otap.acknowledgements.responses` | `{response}` | `signal`, `outcome` | Number of routed or invalid acknowledgement responses. |
+
+`signal` is one of `traces`, `metrics`, or `logs`. `outcome` is `success` for
+an ACK sent to the client, `refused` for a NACK sent to the client, and
+`failure` when the acknowledgement route was invalid or expired.
+
+#### `receiver.otap.rejections`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `receiver.otap.rejections.streams` | `{stream}` | `error.type` | Number of OTAP streaming RPCs rejected before pipeline admission. |
+| `receiver.otap.rejections.batches` | `{batch}` | `error.type` | Number of OTAP batches rejected within admitted streams. |
+
+The OTAP receiver emits the bounded `error.type` values `memory_pressure`,
+`concurrency_limit`, and `invalid_request`.
+
+Fatal gRPC serving failures are surfaced through component failure diagnostics,
+not a terminal-only metric that cannot be handed off on an error return.
 
 ### Events
 

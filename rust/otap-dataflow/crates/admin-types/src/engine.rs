@@ -4,8 +4,8 @@
 //! Shared engine-scoped admin models.
 
 use crate::pipelines::{Condition, RolloutStatus, ShutdownStatus, Status as PipelineStatus};
-use otap_df_config::engine::OtelDataflowSpec;
-use otap_df_config::{PipelineGroupId, PipelineId};
+use otel_arrow_dfe_config::engine::OtelDataflowSpec;
+use otel_arrow_dfe_config::{PipelineGroupId, PipelineId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 

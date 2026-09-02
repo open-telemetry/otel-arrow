@@ -3,10 +3,10 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use otap_df_config::tls::{TlsConfig, TlsServerConfig};
-use otap_df_otap::tls_utils::build_reloadable_server_config;
-use otap_df_telemetry::{otel_debug, otel_info};
-use otap_test_tls_certs::generate_self_signed_cert as generate_cert;
+use otel_arrow_dfe_config::tls::{TlsConfig, TlsServerConfig};
+use otel_arrow_dfe_otap::tls_utils::build_reloadable_server_config;
+use otel_arrow_dfe_telemetry::{otel_debug, otel_info};
+use otel_arrow_dfe_test_tls_certs::generate_self_signed_cert as generate_cert;
 use rustls_pki_types::pem::PemObject;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use std::fs;
@@ -16,7 +16,7 @@ use tempfile::TempDir;
 
 #[tokio::test]
 async fn test_mtls_client_cert_verification() {
-    otap_df_otap::crypto::ensure_crypto_provider();
+    otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
 
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let path = temp_dir.path();
@@ -120,7 +120,7 @@ async fn test_mtls_client_cert_verification() {
 async fn test_mtls_missing_client_cert() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    otap_df_otap::crypto::ensure_crypto_provider();
+    otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
 
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let path = temp_dir.path();
@@ -224,7 +224,7 @@ async fn test_mtls_missing_client_cert() {
 async fn test_mtls_wrong_client_cert() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    otap_df_otap::crypto::ensure_crypto_provider();
+    otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
 
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let path = temp_dir.path();
@@ -351,7 +351,7 @@ async fn test_mtls_wrong_client_cert() {
 
 #[tokio::test]
 async fn test_build_server_config_corrupted_pem() {
-    otap_df_otap::crypto::ensure_crypto_provider();
+    otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
 
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let path = temp_dir.path();
@@ -397,7 +397,7 @@ async fn test_build_server_config_corrupted_pem() {
 /// the server's trusted CA file changes and verification succeeds/fails accordingly.
 #[tokio::test]
 async fn test_mtls_ca_hot_reload() {
-    otap_df_otap::crypto::ensure_crypto_provider();
+    otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
 
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let path = temp_dir.path();
@@ -633,7 +633,7 @@ async fn test_mtls_ca_hot_reload() {
 /// 3. Continue accepting clients that were previously trusted
 #[tokio::test]
 async fn test_mtls_ca_reload_with_corrupted_file() {
-    otap_df_otap::crypto::ensure_crypto_provider();
+    otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
 
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let path = temp_dir.path();
@@ -771,7 +771,7 @@ async fn test_mtls_ca_reload_with_corrupted_file() {
 /// The server should continue using the last known good CA.
 #[tokio::test]
 async fn test_mtls_ca_reload_file_deleted() {
-    otap_df_otap::crypto::ensure_crypto_provider();
+    otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
 
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let path = temp_dir.path();

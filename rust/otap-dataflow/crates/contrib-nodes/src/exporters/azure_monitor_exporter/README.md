@@ -65,14 +65,9 @@ cargo build --release \
   --features azure-monitor-exporter,azure-identity-auth-extension
 ```
 
-The `azure_identity_auth` extension talks to Azure over TLS and needs a
-process-wide `rustls` crypto provider. The workspace binary's default build
-already enables `crypto-ring`; if you build a custom binary, enable exactly one
-`crypto-*` feature (`crypto-ring`, `crypto-aws-lc`, `crypto-openssl`, or
-`crypto-symcrypt`), otherwise token acquisition panics at runtime with "No
-provider set". See the
-[extension README](../../../../contrib-extensions/src/azure_identity_auth/README.md)
-for details.
+The extension also requires a `rustls` crypto provider feature; see
+[Building](../../../../contrib-extensions/src/azure_identity_auth/README.md#building)
+in the extension README.
 
 ## Verify the exporter is registered
 
@@ -140,57 +135,21 @@ The exporter obtains OAuth bearer tokens from the
 [`azure_identity_auth`](../../../../contrib-extensions/src/azure_identity_auth/README.md)
 extension through the `bearer_token_provider` capability. Wiring has two parts:
 
-1. Declare the extension instance in the pipeline's `extensions:` section.
+1. Declare the extension instance in the pipeline's `extensions:` section, with
+   `scope: "https://monitor.azure.com/.default"`.
 2. Bind it on the exporter node via the node's `capabilities:` map, e.g.
-   `bearer_token_provider: <instance-name>`.
+   `bearer_token_provider: <instance-name>`, as shown under
+   [Getting Started](#getting-started).
 
-The authentication flow is chosen by the extension's `method` field:
+The authentication flow, identity, scope, and startup behavior are configured on
+the extension. See the
+[extension README](../../../../contrib-extensions/src/azure_identity_auth/README.md)
+for the full configuration reference, the supported methods
+(`managed_identity`, `development`, `workload_identity`), and its telemetry.
 
-- `managed_identity` (aliases: `msi`, `managedidentity`) - Azure Managed
-  Identity. Set `client_id` for a user-assigned identity; omit it for the
-  system-assigned identity.
-- `development` (aliases: `dev`, `developer`, `cli`) - local Azure developer
-  credentials (Azure CLI / Azure Developer CLI).
-- `workload_identity` (aliases: `wif`, `workloadidentity`) - Workload Identity
-  Federation. Reads a projected federated ServiceAccount token and exchanges it
-  with Entra ID for an access token. Useful for Kubernetes workloads without a
-  managed identity (e.g. self-hosted or non-AKS clusters). Uses `client_id`,
-  `tenant_id`, and `token_file_path`, each falling back to the standard
-  `AZURE_CLIENT_ID` / `AZURE_TENANT_ID` / `AZURE_FEDERATED_TOKEN_FILE`
-  environment variables injected by the Azure Workload Identity webhook.
-
-```yaml
-groups:
-  default:
-    pipelines:
-      main:
-        extensions:
-          azure_identity:
-            type: "urn:microsoft:extension:azure_identity_auth"
-            config:
-              method: workload_identity
-              scope: "https://monitor.azure.com/.default"
-              # All fields below are optional; fall back to the standard AZURE_* env vars.
-              client_id: "00000000-0000-0000-0000-000000000000"
-              tenant_id: "11111111-1111-1111-1111-111111111111"
-              token_file_path: "/var/run/secrets/azure/tokens/azure-identity-token"
-
-        nodes:
-          azure-monitor-exporter:
-            type: "urn:microsoft:exporter:azure_monitor"
-            capabilities:
-              bearer_token_provider: azure_identity
-            config:
-              api:
-                dcr_endpoint: "https://my-workspace.eastus-1.ingest.monitor.azure.com"
-                stream_name: "Custom-MyLogTable_CL"
-                dcr: "dcr-abc123def456"
-```
-
-For the full extension configuration reference (including `scope` and
-`startup_timeout`), see the
-[`azure_identity_auth` extension README](../../../../contrib-extensions/src/azure_identity_auth/README.md)
-and its [design doc](../../../../contrib-extensions/src/azure_identity_auth/design.md).
+Until the extension publishes a usable token, the exporter stops accepting new
+batches and applies backpressure upstream rather than exporting unauthenticated;
+it resumes as soon as a token arrives, and nothing is dropped.
 
 ## Usage
 

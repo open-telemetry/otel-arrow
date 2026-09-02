@@ -5,9 +5,9 @@ use arc_swap::ArcSwap;
 use base64::prelude::*;
 use futures::{Stream, StreamExt};
 use notify::{Event, RecursiveMode, Watcher};
-use otap_df_config::tls::TlsClientConfig;
-use otap_df_config::tls::TlsServerConfig;
-use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
+use otel_arrow_dfe_config::tls::TlsClientConfig;
+use otel_arrow_dfe_config::tls::TlsServerConfig;
+use otel_arrow_dfe_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
 use rustls::RootCertStore;
 use rustls::pki_types::CertificateDer;
 use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
@@ -1593,7 +1593,12 @@ where
     }
 }
 
-pub(crate) async fn read_file_with_limit_async(path: &Path) -> Result<Vec<u8>, io::Error> {
+/// Reads a file, rejecting anything larger than `MAX_TLS_FILE_SIZE` (4MB).
+///
+/// Shared by every component that loads certificate, key, or credential
+/// material from disk, so a misconfigured or hostile path cannot OOM the
+/// collector.
+pub async fn read_file_with_limit_async(path: &Path) -> Result<Vec<u8>, io::Error> {
     let metadata = tokio::fs::metadata(path).await?;
     if metadata.len() > MAX_TLS_FILE_SIZE {
         return Err(io::Error::new(
@@ -1609,7 +1614,9 @@ pub(crate) async fn read_file_with_limit_async(path: &Path) -> Result<Vec<u8>, i
     tokio::fs::read(path).await
 }
 
-fn read_file_with_limit_sync(path: &Path) -> Result<Vec<u8>, io::Error> {
+/// Blocking counterpart to [`read_file_with_limit_async`], for callers that
+/// load PEM material outside an async context.
+pub fn read_file_with_limit_sync(path: &Path) -> Result<Vec<u8>, io::Error> {
     let metadata = std::fs::metadata(path)?;
     if metadata.len() > MAX_TLS_FILE_SIZE {
         return Err(io::Error::new(
@@ -1628,8 +1635,8 @@ fn read_file_with_limit_sync(path: &Path) -> Result<Vec<u8>, io::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_config::tls::TlsConfig;
-    use otap_test_tls_certs as tls_certs;
+    use otel_arrow_dfe_config::tls::TlsConfig;
+    use otel_arrow_dfe_test_tls_certs as tls_certs;
     use std::fs;
     use tempfile::TempDir;
 

@@ -1,0 +1,136 @@
+name: {{suite_name}}
+# Exporter-isolation topology.
+#
+#   load-generator (DFE traffic_generator -> otlp exporter)
+#     -> kafka-producer (BENCHMARKED otlp receiver -> kafka EXPORTER)
+#     -> kafka-broker
+#     -> backend-service (DFE kafka RECEIVER -> perf sink)   [fixed ref]
+#
+# Only the kafka-producer varies between variants; the DFE consumer side is
+# identical across every variant so it is not a confounding variable.
+components:
+  load-generator:
+    deployment:
+      docker:
+        image: {{df_engine_image}}
+        network: testbed
+        ports:
+          - "8085:8080"
+        volumes:
+          - '{{data_dir}}/loadgen-config.rendered.yaml:/home/nonroot/config.yaml:ro'
+        command:
+          - "--config"
+          - "./config.yaml"
+          - "--http-admin-bind"
+          - "0.0.0.0:8080"
+    monitoring:
+      docker_component:
+        allocated_cores: 1
+      prometheus:
+        endpoint: http://localhost:8085/api/v1/telemetry/metrics?format=prometheus&reset=false
+  kafka-producer:
+    deployment:
+      docker:
+        image: {{df_engine_image}}
+        network: testbed
+        ports:
+          - "8086:8080"
+        volumes:
+          - '{{data_dir}}/kafka-producer-config.rendered.yaml:/home/nonroot/config.yaml:ro'
+        command:
+          - "--config"
+          - "./config.yaml"
+          - "--http-admin-bind"
+          - "0.0.0.0:8080"
+    monitoring:
+      docker_component:
+        allocated_cores: 1
+      prometheus:
+        endpoint: http://localhost:8086/api/v1/telemetry/metrics?format=prometheus&reset=false
+  kafka-broker:
+    deployment:
+      docker:
+        image: {{kafka_image}}
+        network: testbed
+        ports:
+          - "9094:9094"
+        environment:
+          - KAFKA_NODE_ID=1
+          - KAFKA_PROCESS_ROLES=broker,controller
+          - KAFKA_CONTROLLER_QUORUM_VOTERS=1@kafka-broker:9093
+          - KAFKA_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094
+          - KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://kafka-broker:9092,EXTERNAL://localhost:9094
+          - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
+          - KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER
+          - KAFKA_INTER_BROKER_LISTENER_NAME=PLAINTEXT
+          - KAFKA_AUTO_CREATE_TOPICS_ENABLE=true
+          - KAFKA_MESSAGE_MAX_BYTES=10485760
+          - KAFKA_REPLICA_FETCH_MAX_BYTES=10485760
+          - KAFKA_NUM_PARTITIONS=1
+          - KAFKA_LOG_RETENTION_MS=300000
+          - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+          - CLUSTER_ID=benchmark-kafka-cluster-id
+    monitoring:
+      docker_component:
+        allocated_cores: 1
+  backend-service:
+    deployment:
+      docker:
+        image: {{df_engine_image}}
+        network: testbed
+        ports:
+          - "8087:8080"
+        volumes:
+          - '{{data_dir}}/backend-config.rendered.yaml:/home/nonroot/config.yaml:ro'
+        command:
+          - "--config"
+          - "./config.yaml"
+          - "--http-admin-bind"
+          - "0.0.0.0:8080"
+    monitoring:
+      docker_component:
+        allocated_cores: 1
+      prometheus:
+        endpoint: http://localhost:8087/api/v1/telemetry/metrics?format=prometheus&reset=false
+
+{%- set signal = variables.signal | default("logs") %}
+{%- if signal == "logs" %}
+{%- set log_weight = 100 %}{%- set metric_weight = 0 %}{%- set trace_weight = 0 %}
+{%- elif signal == "metrics" %}
+{%- set log_weight = 0 %}{%- set metric_weight = 100 %}{%- set trace_weight = 0 %}
+{%- elif signal == "traces" %}
+{%- set log_weight = 0 %}{%- set metric_weight = 0 %}{%- set trace_weight = 100 %}
+{%- endif %}
+
+{% macro forward_variables() -%}
+{%- for k, v in variables.items() %}
+        {{ k }}: {{ v | tojson }}
+{%- endfor %}
+        variables: {{ variables | tojson }}
+{%- endmacro -%}
+
+tests:
+{%- for rate in ['100k', '200k', '300k', '400k', '600k', '800k', '1000k'] %}
+{%- set loadgen_end = {'100k': 3, '200k': 4, '300k': 5, '400k': 6, '600k': 8, '800k': 10, '1000k': 12}[rate] %}
+  - name: {{rate}}
+    from_template:
+      path: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/steps/df-engine-kafka-export.yaml
+      variables:{{ forward_variables() }}
+        data_dir: {{data_dir}}
+        test_dir: {{data_dir}}/tests/{{rate}}
+        report_name: "DF Engine Kafka Exporter {{rate}} - {{suite_name}}"
+        observation_interval: {{observation_interval}}
+        signals_per_second: 100000
+{%- if rate == '1000k' %}
+        loadgen_max_batch_size: 1000
+{%- endif %}
+        log_weight: {{log_weight}}
+        metric_weight: {{metric_weight}}
+        trace_weight: {{trace_weight}}
+        producer_core_start: 0
+        producer_core_end: 0
+        backend_core_start: 2
+        backend_core_end: 2
+        loadgen_core_start: 3
+        loadgen_core_end: {{loadgen_end}}
+{%- endfor %}

@@ -1,0 +1,47 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  batch:
+    send_batch_size: 8192
+    send_batch_max_size: 8192
+    timeout: 200ms
+  attributes:
+    actions:
+      - key: benchmark.transform
+        value: applied
+        action: upsert
+
+exporters:
+  clickhouse:
+    endpoint: http://clickhouse:8123
+    database: otelcol_comparison
+    username: default
+    password: test
+    async_insert: false
+    create_schema: true
+    compress: lz4
+    sending_queue:
+      enabled: true
+      num_consumers: 10
+      queue_size: 1000
+    retry_on_failure:
+      enabled: false
+
+service:
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8086
+  pipelines:
+    logs:
+      receivers: [otlp]
+      processors: [batch, attributes]
+      exporters: [clickhouse]

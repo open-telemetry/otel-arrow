@@ -13,16 +13,16 @@ use datafusion::common::cast::as_boolean_array;
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::prelude::SessionContext;
 use datafusion::scalar::ScalarValue;
-use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::otap::filter::IdBitmapPool;
-use otap_df_pdata::schema::consts;
+use otel_arrow_dfe_pdata::OtapArrowRecords;
+use otel_arrow_dfe_pdata::otap::filter::IdBitmapPool;
+use otel_arrow_dfe_pdata::schema::consts;
 
 use crate::error::{Error, Result};
 use crate::pipeline::expr::DataScope;
 use crate::pipeline::id_mask::IdMask;
 
 use super::eval::{eval_datafusion_expr_value, invert_id_mask, join_and_eval_value};
-use super::{LeafEval, ScopedExpr, ScopedValue};
+use super::{LeafEval, ScopedExpr, ScopedValue, ShortCircuitStrategy};
 
 pub struct ScopedIdMask {
     pub scope: Option<DataScope>,
@@ -50,11 +50,13 @@ impl ScopedExpr {
                 eval,
                 default_null_children,
                 align_children_to_root,
+                short_circuit,
             } => execute_join_and_eval_as_id_mask(
                 children.as_mut_slice(),
                 eval,
                 *default_null_children,
                 *align_children_to_root,
+                short_circuit.as_ref(),
                 otap_batch,
                 session_ctx,
                 pool,
@@ -177,6 +179,7 @@ fn execute_join_and_eval_as_id_mask(
     eval: &mut LeafEval,
     default_null_children: bool,
     align_children_to_root: bool,
+    short_circuit: Option<&ShortCircuitStrategy>,
     otap_batch: &OtapArrowRecords,
     session_ctx: &SessionContext,
     pool: &mut IdBitmapPool,
@@ -188,6 +191,7 @@ fn execute_join_and_eval_as_id_mask(
         eval,
         default_null_children,
         align_children_to_root,
+        short_circuit,
         otap_batch,
         session_ctx,
     )?;

@@ -11,8 +11,8 @@ use arrow::compute::kernels::cast;
 use arrow::compute::kernels::numeric::add;
 use arrow::compute::max;
 use arrow::datatypes::{DataType, Field, Schema, UInt16Type, UInt32Type};
-use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otap_df_pdata::schema::{consts, update_schema_metadata};
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_dfe_pdata::schema::{consts, update_schema_metadata};
 use uuid::Uuid;
 
 use super::error::ParquetExporterError;
@@ -217,13 +217,13 @@ pub mod test {
     use std::collections::HashMap;
 
     use arrow::array::UInt16Array;
-    use otap_df_pdata::Consumer;
-    use otap_df_pdata::otap::{
+    use otel_arrow_dfe_pdata::Consumer;
+    use otel_arrow_dfe_pdata::otap::{
         Metrics, OtapArrowRecords, Traces, from_record_messages, testing::complete_batch,
     };
-    use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-    use otap_df_pdata::schema::consts::metadata;
-    use otap_df_pdata::schema::get_schema_metadata;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+    use otel_arrow_dfe_pdata::schema::consts::metadata;
+    use otel_arrow_dfe_pdata::schema::get_schema_metadata;
 
     use crate::exporters::parquet_exporter::fixtures::{
         SimpleDataGenOptions, create_simple_logs_arrow_record_batches,
@@ -402,7 +402,7 @@ pub mod test {
 
     #[test]
     fn test_can_handle_u32_ids() {
-        use otap_df_pdata::otap::raw_batch_store::RawTracesStore;
+        use otel_arrow_dfe_pdata::otap::raw_batch_store::RawTracesStore;
 
         let span_events = RecordBatch::try_new(
             Arc::new(Schema::new(vec![

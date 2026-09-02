@@ -4,9 +4,9 @@
 //! Errors for the controller crate.
 
 use miette::Diagnostic;
-use otap_df_config::TopicName;
-use otap_df_config::policy::CoreAllocation;
-use otap_df_config::topic::TopicBackendKind;
+use otel_arrow_dfe_config::TopicName;
+use otel_arrow_dfe_config::policy::CoreAllocation;
+use otel_arrow_dfe_config::topic::TopicBackendKind;
 
 /// Errors that can occur in the controller crate.
 #[derive(thiserror::Error, Debug, Diagnostic)]
@@ -16,20 +16,20 @@ pub enum Error {
     InvalidConfiguration {
         /// A list of errors that occurred during parsing or validating the configuration.
         #[related]
-        errors: Vec<otap_df_config::error::Error>,
+        errors: Vec<otel_arrow_dfe_config::error::Error>,
     },
 
     /// An error originating from the admin module.
     #[error("Admin module error: {0}")]
-    AdminError(#[from] otap_df_admin::error::Error),
+    AdminError(#[from] otel_arrow_dfe_admin::error::Error),
 
     /// Observed state module error.
     #[error("Observed state error: {0}")]
-    ObservedStateError(#[from] otap_df_state::error::Error),
+    ObservedStateError(#[from] otel_arrow_dfe_state::error::Error),
 
     /// Telemetry system error.
     #[error("Telemetry error: {0}")]
-    TelemetryError(#[from] otap_df_telemetry::error::Error),
+    TelemetryError(#[from] otel_arrow_dfe_telemetry::error::Error),
 
     /// Memory limiter configuration or runtime initialization error.
     #[error("Memory limiter error: {message}")]
@@ -109,6 +109,24 @@ pub enum Error {
         policy: &'static str,
         /// The configured policy value.
         value: String,
+    },
+
+    /// A topic policy is incompatible with the selected runtime mode.
+    #[error(
+        "Topic `{topic}` policy `{policy}={value}` requires mode `{required_mode}`, but selected mode is `{selected_mode}`"
+    )]
+    #[diagnostic(code(data_plane::invalid_topic_policy_for_mode), url(docsrs))]
+    InvalidTopicPolicyForMode {
+        /// The declared topic name.
+        topic: TopicName,
+        /// The incompatible policy key.
+        policy: &'static str,
+        /// The configured policy value.
+        value: String,
+        /// The runtime mode required by this policy.
+        required_mode: &'static str,
+        /// The selected runtime mode.
+        selected_mode: String,
     },
 
     /// A cycle was detected in the global topic wiring graph.

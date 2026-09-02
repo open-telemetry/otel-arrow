@@ -1,0 +1,44 @@
+version: otel_dataflow/v1
+policies:
+  channel_capacity:
+    control:
+      node: 100
+      pipeline: 100
+    pdata: 100
+engine:
+  telemetry:
+    logs:
+      level: info
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: urn:otel:receiver:otap
+            config:
+              listening_addr: 0.0.0.0:4317
+              response_stream_channel_size: 100
+              compression_method: zstd
+          transform:
+            type: urn:otel:processor:attribute
+            config:
+              apply_to: [signal]
+              actions:
+                - action: upsert
+                  key: benchmark.transform
+                  value: applied
+          exporter:
+            type: urn:otel:exporter:clickhouse
+            config:
+              endpoint: http://{{clickhouse_hostname}}:8123
+              database: {{clickhouse_database}}
+              username: default
+              password: test
+              async_insert: false
+              max_in_flight: 10
+        connections:
+          - from: receiver
+            to: transform
+          - from: transform
+            to: exporter

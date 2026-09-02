@@ -1,0 +1,74 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+use std::fmt::Debug;
+
+use crate::*;
+
+pub trait MapValue: Debug {
+    fn is_empty(&self) -> bool;
+
+    fn len(&self) -> usize;
+
+    fn contains_key(&self, key: &str) -> bool;
+
+    fn get(&self, key: &str) -> Option<&dyn AsValue>;
+
+    // Note: Used to update the RefCell borrow when accessing sub-elements of
+    // the source or variables which use interior mutability. In maps that
+    // have dynamic elements a string message will be returned indicating lack
+    // of support for this method
+    fn get_static(&self, key: &str) -> Result<Option<&(dyn AsStaticValue + 'static)>, String>;
+
+    fn get_items<'a>(&'a self, item_callback: &mut MapValueIteratorCallback<'a, '_>) -> bool;
+
+    fn to_string(&self) -> ValueString<'_> {
+        let mut values = serde_json::Map::new();
+
+        self.get_items(&mut |key, value| {
+            values.insert(key.into(), value.to_json_value());
+            true
+        });
+
+        ValueString::Owned(serde_json::Value::Object(values).to_string())
+    }
+}
+
+pub type MapValueIteratorCallback<'a, 'b> = dyn FnMut(&str, Value<'a>) -> bool + 'b;
+
+pub(crate) fn equal_to(
+    query_location: &QueryLocation,
+    left: &dyn MapValue,
+    right: &dyn MapValue,
+    case_insensitive: bool,
+) -> Result<bool, ExpressionError> {
+    if left.len() != right.len() {
+        return Ok(false);
+    }
+
+    let mut e = None;
+
+    let completed = left.get_items(&mut |k, left_value| match right.get(k) {
+        Some(right_value) => {
+            let r = Value::are_values_equal(
+                query_location,
+                &left_value,
+                &right_value.to_value(),
+                case_insensitive,
+            );
+            if let Err(exp_e) = r {
+                e = Some(exp_e);
+                false
+            } else {
+                r.unwrap()
+            }
+        }
+        None => false,
+    });
+
+    if let Some(exp_e) = e {
+        Err(exp_e)
+    } else {
+        Ok(completed)
+    }
+}

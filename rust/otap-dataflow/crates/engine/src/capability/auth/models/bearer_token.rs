@@ -89,6 +89,25 @@ impl BearerToken {
         Self::with_expiry(secret, absolute_to_monotonic(expires_on))
     }
 
+    /// Creates a token from a secret and a **relative** lifetime.
+    ///
+    /// Token endpoints commonly report a lifetime as "seconds from now" (e.g.
+    /// OAuth 2.0 `expires_in`, RFC 6749 section 5.1) rather than an absolute
+    /// instant. Building a [`SystemTime`] from that to hand to
+    /// [`from_absolute_expiry`](Self::from_absolute_expiry) panics on overflow,
+    /// so this constructor centralizes the safe conversion: an issuer reporting
+    /// an absurd or sentinel lifetime is treated as no known expiry (`None`)
+    /// rather than crashing the node.
+    ///
+    /// It also avoids the wall-clock round-trip
+    /// [`from_absolute_expiry`](Self::from_absolute_expiry) has to perform, so
+    /// it cannot pick up clock skew between the two reads. Prefer it whenever
+    /// the issuer reports a relative lifetime.
+    #[must_use]
+    pub fn from_relative_expiry(secret: impl Into<SecretString>, expires_in: Duration) -> Self {
+        Self::with_expiry(secret, Instant::now().checked_add(expires_in))
+    }
+
     /// Creates a token from a whole `Authorization` header value, with no
     /// expiry.
     ///
@@ -222,6 +241,45 @@ mod tests {
         if let Some(expiry) = token.expires_on() {
             assert!(expiry > Instant::now());
         }
+    }
+
+    /// Scenario: build a token from a relative lifetime of 60s.
+    /// Guarantees: the stored monotonic expiry lands ~60s ahead of construction
+    /// time, so an issuer's `expires_in` is carried through faithfully.
+    #[test]
+    fn from_relative_expiry_offsets_from_now() {
+        let before = Instant::now();
+        let token = BearerToken::from_relative_expiry("s".to_owned(), Duration::from_secs(60));
+        let after = Instant::now();
+        let expiry = token.expires_on().expect("future expiry is set");
+        assert!(expiry >= before + Duration::from_secs(60));
+        assert!(expiry <= after + Duration::from_secs(60));
+    }
+
+    /// Scenario: build a token from a relative lifetime large enough that
+    /// offsetting `Instant` (or a wall-clock `SystemTime`) would overflow.
+    /// Guarantees: construction yields no known expiry instead of panicking, so
+    /// an issuer reporting an absurd or sentinel lifetime cannot crash the node.
+    #[test]
+    fn from_relative_expiry_does_not_panic_on_absurd_lifetime() {
+        let token = BearerToken::from_relative_expiry("s".to_owned(), Duration::MAX);
+        assert_eq!(token.expires_on(), None);
+        assert_eq!(token.expose_token(), "s");
+    }
+
+    /// Scenario: build a token from a zero relative lifetime.
+    /// Guarantees: the expiry is "now" rather than `None`, so an already-spent
+    /// token is treated as expired instead of never-expiring.
+    #[test]
+    fn from_relative_expiry_zero_expires_immediately() {
+        let before = Instant::now();
+        let token = BearerToken::from_relative_expiry("s".to_owned(), Duration::ZERO);
+        let after = Instant::now();
+        let expiry = token
+            .expires_on()
+            .expect("zero lifetime still sets an expiry");
+        assert!(expiry >= before);
+        assert!(expiry <= after);
     }
 
     /// Scenario: clone a token and compare the exposed secret of both handles.

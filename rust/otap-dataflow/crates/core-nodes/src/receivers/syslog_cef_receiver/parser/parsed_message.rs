@@ -5,7 +5,7 @@ use crate::receivers::syslog_cef_receiver::parser::{
     cef::CefMessage, rfc3164::Rfc3164Message, rfc5424::Rfc5424Message,
 };
 use chrono::{DateTime, Datelike, Local, NaiveDateTime, TimeZone, Utc};
-use otap_df_pdata::encode::record::attributes::StrKeysAttributesRecordBatchBuilder;
+use otel_arrow_dfe_pdata::encode::record::attributes::StrKeysAttributesRecordBatchBuilder;
 
 // Common attribute key constants for both RFC5424 and RFC3164 messages
 const SYSLOG_FACILITY: &str = "syslog.facility";

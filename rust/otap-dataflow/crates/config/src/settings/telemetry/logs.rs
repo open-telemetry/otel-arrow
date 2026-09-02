@@ -6,6 +6,7 @@
 use crate::error::Error;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use tracing_subscriber::EnvFilter;
 
 /// Internal logs configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -20,7 +21,12 @@ pub struct LogsConfig {
     /// specified, the default is `"info,h2=off,hyper=off"` which silences known
     /// noisy HTTP dependencies.
     ///
-    /// The `RUST_LOG` environment variable, if set, takes precedence over this field.
+    /// At startup, a valid `RUST_LOG` environment variable takes precedence over this field.
+    /// A subsequent successful full-engine reconciliation makes this field authoritative.
+    ///
+    /// Successful full-engine reconciliation applies changes to this field to running
+    /// subscribers without restarting the engine. Reconciled span-scoped directives apply
+    /// to spans created after the update, but not to spans that are already active.
     ///
     /// [env-filter]: https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#directives
     #[serde(default)]
@@ -61,9 +67,17 @@ pub struct InternalLogTapConfig {
 ///
 /// Defaults to `"info,h2=off,hyper=off"`.
 ///
+/// At startup, a valid `RUST_LOG` environment variable takes precedence over this value.
+/// A subsequent successful full-engine reconciliation makes this value authoritative.
+///
+/// Successful full-engine reconciliation applies changes to this value to running
+/// subscribers without restarting the engine. Reconciled span-scoped directives apply
+/// to spans created after the update, but not to spans that are already active.
+///
 /// [env-filter]: https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#directives
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
-#[serde(transparent)]
+#[serde(try_from = "String", into = "String")]
+#[schemars(with = "String")]
 pub struct LogLevel(String);
 
 impl Default for LogLevel {
@@ -77,6 +91,23 @@ impl LogLevel {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl TryFrom<String> for LogLevel {
+    type Error = Error;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        _ = EnvFilter::try_new(&value).map_err(|error| Error::InvalidUserConfig {
+            error: format!("invalid logs.level directive: {error}"),
+        })?;
+        Ok(Self(value))
+    }
+}
+
+impl From<LogLevel> for String {
+    fn from(value: LogLevel) -> Self {
+        value.0
     }
 }
 
@@ -388,6 +419,16 @@ mod tests {
     #[test]
     fn test_validate_default_succeeds() {
         assert!(LogsConfig::default().validate().is_ok());
+    }
+
+    /// Scenario: logs.level contains a malformed EnvFilter directive.
+    /// Guarantees: deserialization rejects the directive before typed config is constructed.
+    #[test]
+    fn test_deserialize_rejects_invalid_log_level_directive() {
+        let error = serde_yaml::from_str::<LogsConfig>("level: 'info,['")
+            .expect_err("invalid log level should fail deserialization");
+
+        assert!(error.to_string().contains("invalid logs.level directive"));
     }
 
     #[test]

@@ -229,14 +229,26 @@ pub trait RecordBundle {
     /// metric data points, or spans obtained by scanning the protobuf
     /// wire format.
     ///
-    /// Returns `0` if the item count is unknown (e.g. WAL replay bundles
-    /// whose format pre-dates this field).
-    ///
-    /// **Implementors:** override this to return a meaningful value;
-    /// the default `0` will cause item-level metrics to under-count.
+    /// Returns `0` if the item count is unavailable.
     #[must_use]
     fn item_count(&self) -> u64 {
         0
+    }
+
+    /// Returns whether [`Self::item_count`] is authoritative.
+    #[must_use]
+    fn item_count_is_known(&self) -> bool {
+        true
+    }
+
+    /// Returns the authoritative logical byte size of this bundle.
+    ///
+    /// This describes the current logical payload representation, not its
+    /// encoded WAL size, finalized segment-file size, or retained allocation
+    /// capacity. Returns `None` when the adapter cannot measure it exactly.
+    #[must_use]
+    fn byte_count(&self) -> Option<u64> {
+        None
     }
 }
 

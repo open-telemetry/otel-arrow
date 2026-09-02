@@ -28,35 +28,37 @@ use arrow::compute::kernels::merge::merge;
 use arrow::compute::{and_not, cast, filter, max, take};
 use arrow::datatypes::{DataType, Field, Fields, Schema, UInt16Type};
 use async_trait::async_trait;
-use data_engine_expressions::QueryLocation;
 use datafusion::config::ConfigOptions;
 use datafusion::execution::TaskContext;
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::prelude::SessionContext;
 use datafusion::scalar::ScalarValue;
-use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::arrays::ByteArrayAccessor;
-use otap_df_pdata::encode::record::array::dictionary::DictionaryOptions;
-use otap_df_pdata::encode::record::array::{
+use otel_arrow_contrib_data_engine_expressions::QueryLocation;
+use otel_arrow_dfe_pdata::OtapArrowRecords;
+use otel_arrow_dfe_pdata::arrays::ByteArrayAccessor;
+use otel_arrow_dfe_pdata::encode::record::array::dictionary::DictionaryOptions;
+use otel_arrow_dfe_pdata::encode::record::array::{
     ArrayAppendNulls, ArrayAppendSlice, ArrayOptions, BinaryArrayBuilder,
 };
-use otap_df_pdata::error::Error as PdataError;
-use otap_df_pdata::otap::Logs;
-use otap_df_pdata::otap::filter::IdBitmapPool;
-use otap_df_pdata::otap::transform::concatenate::{Cardinality, FieldInfo, estimate_cardinality};
-use otap_df_pdata::otap::transform::upsert_attributes::{
+use otel_arrow_dfe_pdata::error::Error as PdataError;
+use otel_arrow_dfe_pdata::otap::Logs;
+use otel_arrow_dfe_pdata::otap::filter::IdBitmapPool;
+use otel_arrow_dfe_pdata::otap::transform::concatenate::{
+    Cardinality, FieldInfo, estimate_cardinality,
+};
+use otel_arrow_dfe_pdata::otap::transform::upsert_attributes::{
     AttributeUpsert, EMPTY_U16_ATTRS_RECORD_BATCH, upsert_attributes,
 };
-use otap_df_pdata::otlp::attributes::{
+use otel_arrow_dfe_pdata::otlp::attributes::{
     AttributeValueType,
     cbor::{
         SerializedAttributeScalarValue, SerializedValueMutation, SerializedValuePathElement,
         SerializedValuePathMutation, mutate_cbor_bytes_many,
     },
 };
-use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otap_df_pdata::schema::consts::metadata;
-use otap_df_pdata::schema::{consts, get_field_metadata, update_field_metadata};
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_dfe_pdata::schema::consts::metadata;
+use otel_arrow_dfe_pdata::schema::{consts, get_field_metadata, update_field_metadata};
 
 use crate::error::{Error, Result};
 use crate::pipeline::PipelineStage;
@@ -2446,6 +2448,8 @@ fn try_upsert_array_in_columns(
 
 #[cfg(test)]
 mod test {
+    use std::time::Duration;
+
     use arrow::{
         array::{Array, StringArray, StructArray, UInt8Array, UInt16Array},
         compute::{
@@ -2454,8 +2458,8 @@ mod test {
         },
         datatypes::DataType,
     };
-    use data_engine_kql_parser::{KqlParser, Parser};
-    use otap_df_pdata::{
+    use otel_arrow_contrib_data_engine_kql_parser::{KqlParser, Parser};
+    use otel_arrow_dfe_pdata::{
         OtapArrowRecords,
         otap::Logs,
         otlp::attributes::AttributeValueType,
@@ -2475,7 +2479,7 @@ mod test {
             otap_to_otlp, otlp_to_otap, to_logs_data, to_metrics_data, to_traces_data,
         },
     };
-    use otap_df_query_engine_languages::{opl::parser::OplParser, ottl::OttlParser};
+    use otel_arrow_dfe_query_engine_languages::{opl::parser::OplParser, ottl::OttlParser};
 
     use crate::{
         parser::default_parser_options,
@@ -8338,5 +8342,54 @@ mod test {
     #[tokio::test]
     async fn test_extend_attrs_sparse_multi_scope_kql_parser() {
         test_extend_attrs_sparse_multi_scope::<KqlParser>().await
+    }
+
+    /// Scenario: call the `now()` UDF and assign the value to a timestamp column. Doing this for
+    /// multiple batches with a slight delay.
+    /// Guarantees: the current time is assigned, and we don't inadvertently fold the current time
+    /// to an inlined static during planning.
+    #[tokio::test]
+    async fn test_set_timestamps_to_current_time() {
+        let log_records = vec![LogRecord::build().finish()];
+        assert_eq!(log_records[0].time_unix_nano, 0);
+
+        let pipeline_expr = OplParser::parse_with_options(
+            "logs | set time_unix_nano = now()",
+            default_parser_options(),
+        )
+        .unwrap()
+        .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let result = pipeline
+            .execute(otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(
+                log_records.clone(),
+            ))))
+            .await
+            .unwrap();
+
+        let OtlpProtoMessage::Logs(logs_data) = otap_to_otlp(&result) else {
+            panic!("Invalid signal type")
+        };
+
+        let log_record = &logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert!(log_record.time_unix_nano > 0);
+
+        // execute again a moment later, and ensure we get a newer timestamp
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        let result = pipeline
+            .execute(otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(
+                log_records.clone(),
+            ))))
+            .await
+            .unwrap();
+
+        let OtlpProtoMessage::Logs(logs_data) = otap_to_otlp(&result) else {
+            panic!("Invalid signal type")
+        };
+        let log_record2 = &logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert!(log_record2.time_unix_nano > 0);
+
+        assert!(log_record2.time_unix_nano > log_record.time_unix_nano);
     }
 }

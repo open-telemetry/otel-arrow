@@ -152,6 +152,11 @@ type_name = {
     "Log"
   | "Metric"
   | "Span"
+  | "Gauge"
+  | "Summary"
+  | "Sum"
+  | "Histogram"
+  | "ExponentialHistogram"
 }
 
 type_check_op = @{ "is" }
@@ -173,8 +178,17 @@ expression = {
     or_expression
 }
 
+metric_type_source = {
+    "gauges"
+  | "sums"
+  | "histograms"
+  | "exponential_histograms"
+  | "summaries"
+}
+
 source = {
-    "logs"
+    metric_type_source
+  | "logs"
   | "metrics"
   | "traces"
   | "signals"

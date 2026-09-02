@@ -1,6 +1,11 @@
 // Selection details controller for node/edge side panel rendering.
 // Builds detail panels from normalized graph data and synchronizes channel
 // chart hover with the global timeline.
+import {
+  summarizeChannelReceiverMetrics,
+  summarizeChannelSenderMetrics,
+} from "./charts-controller.js";
+
 function findMetric(metrics, name) {
   if (!metrics) return null;
   return metrics.find((metric) => metric.name === name) || null;
@@ -9,12 +14,10 @@ function findMetric(metrics, name) {
 function buildChannelLegendRows(point) {
   if (!point) return [];
   return [
-    { label: "send.count", value: point.sendRate, color: "rgba(34,197,94,0.9)" },
-    { label: "recv.count", value: point.recvRate, color: "rgba(56,189,248,0.9)" },
-    { label: "send.error_full", value: point.sendErrorFullRate, color: "rgba(248,113,113,0.95)" },
-    { label: "send.error_closed", value: point.sendErrorClosedRate, color: "rgba(239,68,68,0.9)" },
-    { label: "recv.error_empty", value: point.recvErrorEmptyRate, color: "rgba(244,63,94,0.9)" },
-    { label: "recv.error_closed", value: point.recvErrorClosedRate, color: "rgba(225,29,72,0.9)" },
+    { label: "sender messages (success)", value: point.sendRate, color: "rgba(34,197,94,0.9)" },
+    { label: "receiver messages", value: point.recvRate, color: "rgba(56,189,248,0.9)" },
+    { label: "send failures (full)", value: point.sendErrorFullRate, color: "rgba(248,113,113,0.95)" },
+    { label: "send failures (closed)", value: point.sendErrorClosedRate, color: "rgba(239,68,68,0.9)" },
   ];
 }
 
@@ -50,7 +53,6 @@ export function createSelectionDetailsController({
   renderAttributes,
   renderMetricTable,
   renderNodeMetricTable,
-  metricMap,
   calcRate,
   buildNodeSummary,
   escapeHtml,
@@ -187,8 +189,6 @@ export function createSelectionDetailsController({
     const recvData = points.map((point) => point.recvRate);
     const sendErrorFullData = points.map((point) => point.sendErrorFullRate);
     const sendErrorClosedData = points.map((point) => point.sendErrorClosedRate);
-    const recvErrorEmptyData = points.map((point) => point.recvErrorEmptyRate);
-    const recvErrorClosedData = points.map((point) => point.recvErrorClosedRate);
 
     const currentChart = getChart();
     if (currentChart && currentChart.canvas !== canvas) {
@@ -207,7 +207,7 @@ export function createSelectionDetailsController({
           labels,
           datasets: [
             {
-              label: "send.count msg/s",
+              label: "sender messages (success) msg/s",
               data: sendData,
               borderWidth: 2,
               tension: 0.25,
@@ -215,7 +215,7 @@ export function createSelectionDetailsController({
               pointRadius: 0,
             },
             {
-              label: "recv.count msg/s",
+              label: "receiver messages msg/s",
               data: recvData,
               borderWidth: 2,
               tension: 0.25,
@@ -223,7 +223,7 @@ export function createSelectionDetailsController({
               pointRadius: 0,
             },
             {
-              label: "send.error_full msg/s",
+              label: "send failures (full) msg/s",
               data: sendErrorFullData,
               borderWidth: 2,
               tension: 0.25,
@@ -232,30 +232,12 @@ export function createSelectionDetailsController({
               pointRadius: 0,
             },
             {
-              label: "send.error_closed msg/s",
+              label: "send failures (closed) msg/s",
               data: sendErrorClosedData,
               borderWidth: 2,
               tension: 0.25,
               borderColor: "rgba(239,68,68,0.9)",
               borderDash: [2, 2],
-              pointRadius: 0,
-            },
-            {
-              label: "recv.error_empty msg/s",
-              data: recvErrorEmptyData,
-              borderWidth: 2,
-              tension: 0.25,
-              borderColor: "rgba(244,63,94,0.9)",
-              borderDash: [6, 2],
-              pointRadius: 0,
-            },
-            {
-              label: "recv.error_closed msg/s",
-              data: recvErrorClosedData,
-              borderWidth: 2,
-              tension: 0.25,
-              borderColor: "rgba(225,29,72,0.9)",
-              borderDash: [1, 2],
               pointRadius: 0,
             },
           ],
@@ -302,8 +284,6 @@ export function createSelectionDetailsController({
     chart.data.datasets[1].data = recvData;
     chart.data.datasets[2].data = sendErrorFullData;
     chart.data.datasets[3].data = sendErrorClosedData;
-    chart.data.datasets[4].data = recvErrorEmptyData;
-    chart.data.datasets[5].data = recvErrorClosedData;
     chart.options.scales.x.ticks.color = theme.tick;
     chart.options.scales.y.ticks.color = theme.tick;
     chart.options.scales.x.grid.color = theme.grid;
@@ -386,8 +366,8 @@ export function createSelectionDetailsController({
             ? "rgba(251,191,36,0.9)"
             : "rgba(52,211,153,0.9)";
 
-    const senderMetricsMap = metricMap(channel.sender?.metrics || []);
-    const receiverMetricsMap = metricMap(channel.receiver?.metrics || []);
+    const senderMetrics = summarizeChannelSenderMetrics(channel.sender?.metrics || []);
+    const receiverMetrics = summarizeChannelReceiverMetrics(channel.receiver?.metrics || []);
     const channelId = edge.channelId || channel?.id || edge.id;
     const channelDisplayId = edge.channelDisplayId || channel?.displayId || channelId;
     const sourceDisplayId = edge.sourceDisplayId || senderAttrs["node.id"] || edge.source;
@@ -401,27 +381,17 @@ export function createSelectionDetailsController({
     const sendRate =
       seriesPoint?.sendRate ??
       edgeRates?.sendRate ??
-      calcRate(senderMetricsMap["send.count"] ?? 0, lastSampleSeconds);
+      calcRate(senderMetrics.send, lastSampleSeconds);
     const recvRate =
       seriesPoint?.recvRate ??
       edgeRates?.recvRate ??
-      calcRate(receiverMetricsMap["recv.count"] ?? 0, lastSampleSeconds);
+      calcRate(receiverMetrics.recv, lastSampleSeconds);
     const sendErrRate =
       seriesPoint
         ? (seriesPoint.sendErrorFullRate || 0) + (seriesPoint.sendErrorClosedRate || 0)
         : edgeRates?.sendErrorRate ??
           calcRate(
-            (senderMetricsMap["send.error_full"] ?? 0) +
-              (senderMetricsMap["send.error_closed"] ?? 0),
-            lastSampleSeconds
-          );
-    const recvErrRate =
-      seriesPoint
-        ? (seriesPoint.recvErrorEmptyRate || 0) + (seriesPoint.recvErrorClosedRate || 0)
-        : edgeRates?.recvErrorRate ??
-          calcRate(
-            (receiverMetricsMap["recv.error_empty"] ?? 0) +
-              (receiverMetricsMap["recv.error_closed"] ?? 0),
+            senderMetrics.sendErrorFull + senderMetrics.sendErrorClosed,
             lastSampleSeconds
           );
 
@@ -436,7 +406,7 @@ export function createSelectionDetailsController({
     const safeSenderName = escapeHtml(senderName);
     const safeSenderType = escapeHtml(senderType);
     const safeSendRate = escapeHtml(formatRateWithUnit(sendRate, "message"));
-    const safeSendErrRate = escapeHtml(formatRateWithUnit(sendErrRate, "error"));
+    const safeSendErrRate = escapeHtml(formatRateWithUnit(sendErrRate, "failure"));
     const safeChannelTitle = escapeHtml(channelTitle);
     const safeCapacityValue = escapeHtml(capacityValue);
     const safeQueuePercent = escapeHtml(queuePercent);
@@ -444,7 +414,6 @@ export function createSelectionDetailsController({
     const safeTargetDisplayId = escapeHtml(targetDisplayId);
     const safeReceiverType = escapeHtml(receiverAttrs["node.type"] || "node");
     const safeRecvRate = escapeHtml(formatRateWithUnit(recvRate, "message"));
-    const safeRecvErrRate = escapeHtml(formatRateWithUnit(recvErrRate, "error"));
     const safeWindowLabel = escapeHtml(formatWindowLabel());
 
     edgeDetailBody.innerHTML = `
@@ -453,7 +422,7 @@ export function createSelectionDetailsController({
           <div class="channel-end-label">Sender</div>
           <div class="channel-end-id">${safeSenderName} <span class="text-slate-400 text-xs">(${safeSenderType})</span></div>
           <div class="mt-2 text-xs text-slate-400">Rate: <span class="font-mono text-slate-200">${safeSendRate}</span></div>
-          <div class="mt-1 text-xs text-slate-400">Errors: <span class="font-mono text-slate-200">${safeSendErrRate}</span></div>
+          <div class="mt-1 text-xs text-slate-400">Send failures: <span class="font-mono text-slate-200">${safeSendErrRate}</span></div>
         </div>
         <div class="channel-mid">
           <div class="channel-mid-title">${safeChannelTitle}</div>
@@ -476,28 +445,19 @@ export function createSelectionDetailsController({
           <div class="channel-end-label">Receiver</div>
           <div class="channel-end-id">${safeTargetDisplayId} <span class="text-slate-400 text-xs">(${safeReceiverType})</span></div>
           <div class="mt-2 text-xs text-slate-400">Rate: <span class="font-mono text-slate-200">${safeRecvRate}</span></div>
-          <div class="mt-1 text-xs text-slate-400">Errors: <span class="font-mono text-slate-200">${safeRecvErrRate}</span></div>
         </div>
       </div>
       <div class="mt-6 grid gap-6 md:grid-cols-[1fr_0.9fr_1fr]">
         <div>
           <div class="text-xs uppercase tracking-wide text-slate-400">Metrics</div>
-          <div class="mt-2 text-xs">${renderMetricTable(
-            (channel.sender?.metrics || []).filter(
-              (metric) =>
-                metric.name !== "send.error_full" && metric.name !== "send.error_closed"
-            )
-          )}</div>
+          <div class="mt-2 text-xs">${renderMetricTable(channel.sender?.metrics || [])}</div>
         </div>
         <div></div>
         <div class="channel-metrics-right">
           <div class="text-xs uppercase tracking-wide text-slate-400">Metrics</div>
           <div class="mt-2 text-xs">${renderMetricTable(
             (channel.receiver?.metrics || []).filter(
-              (metric) =>
-                metric.name !== "capacity" &&
-                metric.name !== "recv.error_empty" &&
-                metric.name !== "recv.error_closed"
+              (metric) => metric.name !== "capacity" && metric.name !== "queue.depth"
             )
           )}</div>
         </div>

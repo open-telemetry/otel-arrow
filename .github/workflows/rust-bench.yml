@@ -20,7 +20,7 @@ jobs:
       matrix:
         folder:
           - otap-dataflow
-          - experimental/query_engine
+          - contrib/data_engine
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -45,5 +45,5 @@ jobs:
         with:
           toolchain: stable
       - name: cargo bench contrib-nodes (all features)
-        run: cargo bench --locked -p otap-df-contrib-nodes --all-features
+        run: cargo bench --locked -p otel-arrow-dfe-contrib-nodes --all-features
         working-directory: ./rust/otap-dataflow

@@ -31,7 +31,7 @@ use receiver_wrapper_deps::*;
 mod common_wrapper_deps {
     pub(super) use crate::common::kafka::MessageFormat;
     pub(super) use crate::common::kafka::node_harness::KafkaTopics;
-    pub(super) use otap_df_pdata::OtlpProtoBytes;
+    pub(super) use otel_arrow_dfe_pdata::OtlpProtoBytes;
     pub(super) use prost::Message as _;
 }
 
@@ -40,9 +40,9 @@ mod common_wrapper_deps {
 mod exporter_wrapper_deps {
     pub(super) use crate::common::kafka::node_harness::KafkaExporterHarness;
     pub(super) use bytes::Bytes;
-    pub(super) use otap_df_otap::pdata::{Context, OtapPdata};
-    pub(super) use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
-    pub(super) use otap_df_pdata::proto::opentelemetry::logs::v1::{
+    pub(super) use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
+    pub(super) use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+    pub(super) use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{
         LogRecord, ResourceLogs, ScopeLogs,
     };
 }
@@ -51,9 +51,9 @@ mod exporter_wrapper_deps {
 #[cfg(feature = "kafka-receiver")]
 mod receiver_wrapper_deps {
     pub(super) use crate::common::kafka::node_harness::KafkaReceiverHarness;
-    pub(super) use otap_df_pdata::TryIntoWithOptions;
-    pub(super) use otap_df_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
-    pub(super) use otap_df_pdata::proto::opentelemetry::trace::v1::{
+    pub(super) use otel_arrow_dfe_pdata::TryIntoWithOptions;
+    pub(super) use otel_arrow_dfe_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
+    pub(super) use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::{
         ResourceSpans, ScopeSpans, Span,
     };
 }

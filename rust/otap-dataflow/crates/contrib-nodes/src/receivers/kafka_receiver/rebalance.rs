@@ -43,17 +43,220 @@
 //! the assigned generation is what rejects a stale ack during that window --
 //! before it can advance the tracker or roll back the committed offset.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 #[cfg(feature = "aws")]
 use crate::common::kafka::aws::AwsMskAuthClientContext;
-use otap_df_telemetry::{otel_error, otel_info, otel_warn};
 use rdkafka::ClientContext;
 use rdkafka::client::OAuthToken;
 use rdkafka::consumer::{BaseConsumer, CommitMode, Consumer, ConsumerContext, Rebalance};
 use rdkafka::topic_partition_list::{Offset, TopicPartitionList};
+
+/// Delay before retrying a partition resume that failed during assignment.
+const ASSIGNMENT_RESUME_INITIAL_BACKOFF: Duration = Duration::from_millis(100);
+/// Maximum delay between assignment-resume attempts.
+const ASSIGNMENT_RESUME_MAX_BACKOFF: Duration = Duration::from_secs(5);
+/// Maximum assignment-resume attempts performed by one receive-loop turn.
+const MAX_DUE_ASSIGNMENT_RESUMES_PER_TURN: usize = 8;
+
+type PartitionKey = (String, i32);
+
+/// Consumer operation used by rebalance-time resume handling and its tests.
+pub(crate) trait PartitionResumeOperations {
+    /// Resume every partition in `tpl`.
+    fn resume_partitions(&self, tpl: &TopicPartitionList)
+    -> Result<(), rdkafka::error::KafkaError>;
+}
+
+impl<C: ConsumerContext> PartitionResumeOperations for BaseConsumer<C> {
+    fn resume_partitions(
+        &self,
+        tpl: &TopicPartitionList,
+    ) -> Result<(), rdkafka::error::KafkaError> {
+        self.resume(tpl)
+    }
+}
+
+impl<C: ConsumerContext> PartitionResumeOperations for rdkafka::consumer::StreamConsumer<C> {
+    fn resume_partitions(
+        &self,
+        tpl: &TopicPartitionList,
+    ) -> Result<(), rdkafka::error::KafkaError> {
+        self.resume(tpl)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResumePhase {
+    Assign,
+    Revoke,
+}
+
+impl ResumePhase {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Assign => "assign",
+            Self::Revoke => "revoke",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct AssignmentResumeRetryState {
+    generation: u64,
+    failures: u32,
+    deadline: Option<Instant>,
+    version: u64,
+}
+
+#[derive(Debug)]
+struct DueAssignmentResume {
+    topic: String,
+    partition: i32,
+    generation: u64,
+    failures: u32,
+    version: u64,
+}
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct ScheduledAssignmentResume {
+    deadline: Instant,
+    version: u64,
+    topic: String,
+    partition: i32,
+}
+
+/// Deduplicated, deadline-ordered retry state for assignment resume failures.
+///
+/// Entries are bounded by the consumer's assigned partitions. `version`
+/// prevents an in-flight receive-loop attempt from overwriting a newer callback
+/// update for the same partition.
+#[derive(Debug, Default)]
+struct AssignmentResumeRetries {
+    entries: HashMap<PartitionKey, AssignmentResumeRetryState>,
+    deadlines: BTreeSet<ScheduledAssignmentResume>,
+    next_version: u64,
+}
+
+impl AssignmentResumeRetries {
+    fn schedule(
+        &mut self,
+        topic: String,
+        partition: i32,
+        generation: u64,
+        failures: u32,
+        now: Instant,
+    ) {
+        let key = (topic.clone(), partition);
+        self.remove(&key);
+        self.next_version = self.next_version.wrapping_add(1);
+        let version = self.next_version;
+        let deadline = now + assignment_resume_backoff(failures);
+        let _ = self.deadlines.insert(ScheduledAssignmentResume {
+            deadline,
+            version,
+            topic,
+            partition,
+        });
+        let _ = self.entries.insert(
+            key,
+            AssignmentResumeRetryState {
+                generation,
+                failures,
+                deadline: Some(deadline),
+                version,
+            },
+        );
+    }
+
+    fn remove(&mut self, key: &PartitionKey) {
+        if let Some(state) = self.entries.remove(key)
+            && let Some(deadline) = state.deadline
+        {
+            let _ = self.deadlines.remove(&ScheduledAssignmentResume {
+                deadline,
+                version: state.version,
+                topic: key.0.clone(),
+                partition: key.1,
+            });
+        }
+    }
+
+    fn next_deadline(&self) -> Option<Instant> {
+        self.deadlines.first().map(|entry| entry.deadline)
+    }
+
+    fn take_due(&mut self, now: Instant, limit: usize) -> Vec<DueAssignmentResume> {
+        let mut due = Vec::with_capacity(limit);
+        while due.len() < limit {
+            let Some(scheduled) = self.deadlines.first() else {
+                break;
+            };
+            if scheduled.deadline > now {
+                break;
+            }
+            let Some(scheduled) = self.deadlines.pop_first() else {
+                break;
+            };
+            let key = (scheduled.topic.clone(), scheduled.partition);
+            let Some(state) = self.entries.get_mut(&key) else {
+                continue;
+            };
+            if state.version != scheduled.version || state.deadline != Some(scheduled.deadline) {
+                continue;
+            }
+            state.deadline = None;
+            due.push(DueAssignmentResume {
+                topic: scheduled.topic,
+                partition: scheduled.partition,
+                generation: state.generation,
+                failures: state.failures,
+                version: scheduled.version,
+            });
+        }
+        due
+    }
+
+    fn complete(&mut self, retry: &DueAssignmentResume) {
+        let key = (retry.topic.clone(), retry.partition);
+        if self
+            .entries
+            .get(&key)
+            .is_some_and(|state| state.version == retry.version)
+        {
+            self.remove(&key);
+        }
+    }
+
+    fn reschedule(&mut self, retry: &DueAssignmentResume, now: Instant) {
+        let key = (retry.topic.clone(), retry.partition);
+        let Some(state) = self.entries.get_mut(&key) else {
+            return;
+        };
+        if state.version != retry.version || state.deadline.is_some() {
+            return;
+        }
+        state.failures = retry.failures.saturating_add(1);
+        let deadline = now + assignment_resume_backoff(state.failures);
+        state.deadline = Some(deadline);
+        let _ = self.deadlines.insert(ScheduledAssignmentResume {
+            deadline,
+            version: state.version,
+            topic: retry.topic.clone(),
+            partition: retry.partition,
+        });
+    }
+}
+
+fn assignment_resume_backoff(failures: u32) -> Duration {
+    let exponent = failures.saturating_sub(1).min(31);
+    ASSIGNMENT_RESUME_INITIAL_BACKOFF
+        .saturating_mul(1_u32 << exponent)
+        .min(ASSIGNMENT_RESUME_MAX_BACKOFF)
+}
 
 /// The set of topic-partitions currently assigned to this consumer, each tagged
 /// with a per-partition **ownership generation**.
@@ -165,6 +368,10 @@ pub(crate) struct RebalanceState {
     /// with the generation at revoke time. Drained by the loop, which then
     /// purges the tracker (only for state not newer than the revoke generation).
     revoked: Mutex<Vec<RevokedPartition>>,
+    /// Newly assigned partitions whose immediate resume failed. The receive
+    /// loop retries these with capped backoff until resume succeeds or the
+    /// ownership generation changes.
+    assignment_resume_retries: Mutex<AssignmentResumeRetries>,
     /// Monotonic allocator for per-partition ownership generations. Advanced in
     /// [`set_assignment`](Self::set_assignment) for each partition that is
     /// *newly* acquired (not-owned -> owned), so a partition reacquired after a
@@ -188,6 +395,8 @@ pub(crate) struct RebalanceState {
     partition_revocations: AtomicU64,
     /// Count of commit failures during pre-rebalance revoke (callback-incremented).
     rebalance_commit_errors: AtomicU64,
+    /// Count of failed resume operations while clearing rebalance pause state.
+    rebalance_resume_errors: AtomicU64,
     /// Count of offset commits acknowledged by the broker, observed on the
     /// commit callback (callback-incremented). Covers the receiver's async
     /// steady-state commits and the sync pre-rebalance commit.
@@ -198,7 +407,7 @@ pub(crate) struct RebalanceState {
 }
 
 /// A batch of rebalance counter deltas drained by the receive loop and folded
-/// into the receiver's [`MetricSet`](otap_df_telemetry::metrics::MetricSet).
+/// into the receiver's [`MetricSet`](otel_arrow_dfe_telemetry::metrics::MetricSet).
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct RebalanceMetricsDelta {
     /// Rebalance (assign) events since the last drain.
@@ -209,11 +418,13 @@ pub(crate) struct RebalanceMetricsDelta {
     pub(crate) partition_revocations: u64,
     /// Current number of partitions owned by this consumer at drain time.
     ///
-    /// Unlike the other fields (which are counter deltas), this is a
-    /// point-in-time snapshot used to drive the `partitions_assigned` gauge.
+    /// Unlike the other fields (which are counter deltas), this is an absolute
+    /// snapshot used to drive `receiver.kafka.consumer.group.partitions`.
     pub(crate) partitions_owned: u64,
     /// Commit failures during revoke since the last drain.
     pub(crate) rebalance_commit_errors: u64,
+    /// Resume failures while clearing rebalance pause state since the last drain.
+    pub(crate) rebalance_resume_errors: u64,
     /// Broker-acknowledged offset commits since the last drain.
     pub(crate) offset_commits: u64,
     /// Broker-rejected offset commits since the last drain.
@@ -233,6 +444,7 @@ impl RebalanceMetricsDelta {
             && self.partition_assignments == 0
             && self.partition_revocations == 0
             && self.rebalance_commit_errors == 0
+            && self.rebalance_resume_errors == 0
             && self.offset_commits == 0
             && self.offset_commit_errors == 0
     }
@@ -248,12 +460,14 @@ impl RebalanceState {
         Self {
             assigned: Mutex::new(AssignedPartitions::new()),
             revoked: Mutex::new(Vec::new()),
+            assignment_resume_retries: Mutex::new(AssignmentResumeRetries::default()),
             committable: Mutex::new(HashMap::new()),
             auto_commit,
             rebalances_total: AtomicU64::new(0),
             partition_assignments: AtomicU64::new(0),
             partition_revocations: AtomicU64::new(0),
             rebalance_commit_errors: AtomicU64::new(0),
+            rebalance_resume_errors: AtomicU64::new(0),
             offset_commits: AtomicU64::new(0),
             offset_commit_errors: AtomicU64::new(0),
             generation_allocator: AtomicU64::new(0),
@@ -316,6 +530,53 @@ impl RebalanceState {
         std::mem::take(&mut *guard)
     }
 
+    /// Earliest pending assignment-resume retry deadline.
+    #[must_use]
+    pub(crate) fn next_assignment_resume_deadline(&self) -> Option<Instant> {
+        lock_ignore_poison(&self.assignment_resume_retries).next_deadline()
+    }
+
+    /// Retry due assignment resumes without blocking the rebalance callback.
+    pub(crate) fn process_due_assignment_resumes<O: PartitionResumeOperations + ?Sized>(
+        &self,
+        consumer: &O,
+    ) {
+        self.process_due_assignment_resumes_at(consumer, Instant::now());
+    }
+
+    fn process_due_assignment_resumes_at<O: PartitionResumeOperations + ?Sized>(
+        &self,
+        consumer: &O,
+        now: Instant,
+    ) {
+        let due = lock_ignore_poison(&self.assignment_resume_retries)
+            .take_due(now, MAX_DUE_ASSIGNMENT_RESUMES_PER_TURN);
+        for retry in due {
+            if self.current_generation(&retry.topic, retry.partition) != retry.generation {
+                lock_ignore_poison(&self.assignment_resume_retries).complete(&retry);
+                continue;
+            }
+
+            let mut tpl = TopicPartitionList::new();
+            let _ = tpl.add_partition(&retry.topic, retry.partition);
+            match consumer.resume_partitions(&tpl) {
+                Ok(()) => {
+                    lock_ignore_poison(&self.assignment_resume_retries).complete(&retry);
+                    otel_info!(
+                        "kafka.rebalance.resume.recovered",
+                        topic = %retry.topic,
+                        partition = retry.partition,
+                        attempts = retry.failures,
+                    );
+                }
+                Err(error) => {
+                    self.record_resume_failure(ResumePhase::Assign, &error);
+                    lock_ignore_poison(&self.assignment_resume_retries).reschedule(&retry, now);
+                }
+            }
+        }
+    }
+
     /// Drain accumulated rebalance metric counters into a delta.
     ///
     /// The counter fields are swapped to zero; `partitions_owned` is a
@@ -327,6 +588,7 @@ impl RebalanceState {
             partition_revocations: self.partition_revocations.swap(0, Ordering::Relaxed),
             partitions_owned: self.lock_assigned().len() as u64,
             rebalance_commit_errors: self.rebalance_commit_errors.swap(0, Ordering::Relaxed),
+            rebalance_resume_errors: self.rebalance_resume_errors.swap(0, Ordering::Relaxed),
             offset_commits: self.offset_commits.swap(0, Ordering::Relaxed),
             offset_commit_errors: self.offset_commit_errors.swap(0, Ordering::Relaxed),
         }
@@ -434,6 +696,12 @@ impl RebalanceState {
             }
         }
 
+        // Pause state is client-local and survives revocation/reassignment in
+        // librdkafka. Clear it while these partitions are still assigned so a
+        // later acquisition by this consumer cannot remain paused forever after
+        // the receive loop discards its retry deadline.
+        self.resume_rebalance_partitions(consumer, tpl, ResumePhase::Revoke);
+
         // Look up each partition's ownership generation and drop it from the assigned
         // set. Queue every revoked partition (tagged with its own generation) for the
         // receive loop to purge from the tracker; the generation lets the purge skip
@@ -489,9 +757,10 @@ impl RebalanceState {
     /// Replace the assigned set with the *complete* assignment `full`.
     ///
     /// `full` must be the consumer's entire current assignment, not a rebalance
-    /// delta. The `partition_assignments` metric is incremented only by the number
-    /// of partitions that are newly present (not previously owned), so
-    /// cooperative-sticky rebalances that retain partitions don't re-count them.
+    /// delta. `receiver.kafka.consumer.group.partition.assignments` is incremented
+    /// only by the number of partitions that are newly present (not previously
+    /// owned), so cooperative-sticky rebalances that retain partitions don't
+    /// re-count them.
     ///
     /// All partitions **newly acquired** in this rebalance share a single fresh
     /// ownership generation (the allocator is bumped at most once per call, and
@@ -664,6 +933,66 @@ impl RebalanceState {
                 );
                 self.merge_assignment(tpl);
             }
+        }
+
+        // `tpl` is the newly-assigned delta under cooperative rebalancing and
+        // the full newly-owned set under eager rebalancing. Resume exactly this
+        // set so retained partitions with an active retry remain paused.
+        self.resume_rebalance_partitions(base_consumer, tpl, ResumePhase::Assign);
+    }
+
+    fn resume_rebalance_partitions<O: PartitionResumeOperations + ?Sized>(
+        &self,
+        consumer: &O,
+        tpl: &TopicPartitionList,
+        phase: ResumePhase,
+    ) {
+        match consumer.resume_partitions(tpl) {
+            Ok(()) => self.clear_assignment_resume_retries(tpl),
+            Err(error) => {
+                self.record_resume_failure(phase, &error);
+                if phase == ResumePhase::Assign {
+                    self.schedule_assignment_resume_retries(tpl, Instant::now());
+                } else {
+                    self.clear_assignment_resume_retries(tpl);
+                }
+            }
+        }
+    }
+
+    fn record_resume_failure(&self, phase: ResumePhase, error: &rdkafka::error::KafkaError) {
+        let _ = self.rebalance_resume_errors.fetch_add(1, Ordering::Relaxed);
+        otel_error!(
+            "kafka.rebalance.resume.fail",
+            phase = phase.as_str(),
+            "exception.type" = "rdkafka",
+            "exception.message" = %error,
+        );
+    }
+
+    fn schedule_assignment_resume_retries(&self, tpl: &TopicPartitionList, now: Instant) {
+        let partitions = topic_partitions(tpl);
+        let assigned = self.lock_assigned();
+        let owned = partitions
+            .into_iter()
+            .filter_map(|(topic, partition)| {
+                assigned
+                    .generation(&topic, partition)
+                    .map(|generation| (topic, partition, generation))
+            })
+            .collect::<Vec<_>>();
+        drop(assigned);
+
+        let mut retries = lock_ignore_poison(&self.assignment_resume_retries);
+        for (topic, partition, generation) in owned {
+            retries.schedule(topic, partition, generation, 1, now);
+        }
+    }
+
+    fn clear_assignment_resume_retries(&self, tpl: &TopicPartitionList) {
+        let mut retries = lock_ignore_poison(&self.assignment_resume_retries);
+        for key in topic_partitions(tpl) {
+            retries.remove(&key);
         }
     }
 }
@@ -883,8 +1212,88 @@ impl ConsumerContext for RebalancingConsumerContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::kafka::test::cluster::KafkaTestCluster;
+    use crate::common::kafka::test::with_cluster;
+    use rdkafka::ClientConfig;
+    use std::collections::VecDeque;
     use std::sync::Arc;
 
+    // ---- Shared test helpers ----
+
+    /// Builds a real `BaseConsumer` wired to the receiver's rebalance context
+    /// against the mock `cluster`, so the private `handle_assign` / `handle_revoke`
+    /// methods can be driven for real while assertions stay on the deterministic
+    /// in-memory rebalance state (not the async broker outcome).
+    fn mock_base_consumer(
+        cluster: &KafkaTestCluster,
+        group: &str,
+        state: Arc<RebalanceState>,
+    ) -> BaseConsumer<RebalancingConsumerContext> {
+        let ctx = RebalancingConsumerContext::Default(state);
+        ClientConfig::new()
+            .set("bootstrap.servers", cluster.bootstrap_servers())
+            .set("group.id", group)
+            .set("enable.auto.commit", "false")
+            .set("auto.offset.reset", "earliest")
+            .create_with_context(ctx)
+            .expect("failed to create mock base consumer")
+    }
+
+    struct ScriptedResumeConsumer {
+        results: Mutex<VecDeque<Result<(), rdkafka::error::KafkaError>>>,
+        attempts: AtomicU64,
+    }
+
+    impl ScriptedResumeConsumer {
+        fn new(results: Vec<Result<(), rdkafka::error::KafkaError>>) -> Self {
+            Self {
+                results: Mutex::new(results.into()),
+                attempts: AtomicU64::new(0),
+            }
+        }
+    }
+
+    impl PartitionResumeOperations for ScriptedResumeConsumer {
+        fn resume_partitions(
+            &self,
+            _tpl: &TopicPartitionList,
+        ) -> Result<(), rdkafka::error::KafkaError> {
+            let _ = self.attempts.fetch_add(1, Ordering::Relaxed);
+            lock_ignore_poison(&self.results)
+                .pop_front()
+                .unwrap_or(Ok(()))
+        }
+    }
+
+    // ---- Construction and configuration ----
+
+    /// Scenario (construction and configuration): a `RebalanceState` is built with
+    /// auto-commit on and off.
+    /// Guarantees: `is_auto_commit()` reflects the constructor argument, so the rebalance
+    /// callbacks know whether to short-circuit.
+    #[test]
+    fn state_auto_commit_flag() {
+        assert!(RebalanceState::new(true).is_auto_commit());
+        assert!(!RebalanceState::new(false).is_auto_commit());
+    }
+
+    /// Scenario (construction and configuration): a `RebalanceState` is shared via `Arc`
+    /// across the callback thread and the receive loop.
+    /// Guarantees: the auto-commit flag is visible through every clone, so all holders
+    /// agree on whether manual commit handling is active.
+    #[test]
+    fn auto_commit_state_shared_across_arc() {
+        let state = Arc::new(RebalanceState::new(true));
+        let clone = Arc::clone(&state);
+        assert!(clone.is_auto_commit());
+    }
+
+    // ---- Consumer-group rebalancing ----
+
+    /// Scenario (consumer-group rebalancing): partitions are added to, removed from, and
+    /// queried on an `AssignedPartitions` set.
+    /// Guarantees: add/remove/contains behave consistently and removing a topic's last
+    /// partition drops the topic entry, so the owned-set bookkeeping stays accurate.
     #[test]
     fn assigned_partitions_add_remove_contains() {
         let mut ap = AssignedPartitions::new();
@@ -911,6 +1320,10 @@ mod tests {
         assert!(!ap.topics.contains_key("metrics"));
     }
 
+    /// Scenario (consumer-group rebalancing): an already-owned partition is re-added with a
+    /// different generation.
+    /// Guarantees: the existing generation is retained (not overwritten), so a partition
+    /// kept across a rebalance keeps its ownership generation.
     #[test]
     fn add_partition_keeps_existing_generation() {
         let mut ap = AssignedPartitions::new();
@@ -922,6 +1335,10 @@ mod tests {
         assert_eq!(ap.generation("traces", 9), None);
     }
 
+    /// Scenario (consumer-group rebalancing): an unknown partition or topic is removed from
+    /// the assigned set.
+    /// Guarantees: the removal reports `false` and changes nothing, so spurious revocations
+    /// cannot corrupt the owned set.
     #[test]
     fn remove_unknown_partition_is_noop() {
         let mut ap = AssignedPartitions::new();
@@ -932,62 +1349,10 @@ mod tests {
         assert!(ap.contains("traces", 0));
     }
 
-    #[test]
-    fn state_auto_commit_flag() {
-        assert!(RebalanceState::new(true).is_auto_commit());
-        assert!(!RebalanceState::new(false).is_auto_commit());
-    }
-
-    #[test]
-    fn refresh_and_drain_committable_via_build() {
-        let state = RebalanceState::new(false);
-        let mut snapshot = HashMap::new();
-        let _ = snapshot.insert(("traces".to_string(), 0), 100);
-        let _ = snapshot.insert(("traces".to_string(), 1), 200);
-        let _ = snapshot.insert(("metrics".to_string(), 0), 300);
-        state.set_committable_snapshot(snapshot);
-
-        // Only the requested revoked partitions appear in the commit TPL.
-        let revoked = vec![("traces".to_string(), 0), ("metrics".to_string(), 0)];
-        let committable = lock_ignore_poison(&state.committable);
-        let tpl = build_commit_tpl(&committable, &revoked);
-        assert_eq!(tpl.count(), 2);
-        let map = tpl.to_topic_map();
-        assert_eq!(
-            map.get(&("traces".to_string(), 0)),
-            Some(&Offset::Offset(100))
-        );
-        assert_eq!(
-            map.get(&("metrics".to_string(), 0)),
-            Some(&Offset::Offset(300))
-        );
-        // Partition 1 of traces was not in the revoked list.
-        assert!(!map.contains_key(&("traces".to_string(), 1)));
-    }
-
-    #[test]
-    fn build_commit_tpl_skips_unknown_offsets() {
-        let mut committable = HashMap::new();
-        let _ = committable.insert(("traces".to_string(), 0), 100);
-        // partition 5 has no committable offset
-        let revoked = vec![("traces".to_string(), 0), ("traces".to_string(), 5)];
-        let tpl = build_commit_tpl(&committable, &revoked);
-        assert_eq!(tpl.count(), 1);
-    }
-
-    #[test]
-    fn drain_revoked_empty_then_populated() {
-        let state = RebalanceState::new(false);
-        assert!(state.drain_revoked().is_empty());
-
-        state.push_revoked_for_test("traces", 0, 0);
-        state.push_revoked_for_test("traces", 1, 0);
-        let drained = state.drain_revoked();
-        assert_eq!(drained.len(), 2);
-        // Second drain is empty again.
-        assert!(state.drain_revoked().is_empty());
-    }
-
+    /// Scenario (consumer-group rebalancing): a full assignment is applied that retains
+    /// some partitions and acquires others.
+    /// Guarantees: only newly-acquired partitions get a fresh generation while retained
+    /// ones keep theirs, so generation churn is scoped to genuine acquisitions.
     #[test]
     fn set_assignment_allocates_generation_for_new_partitions_only() {
         let state = RebalanceState::new(false);
@@ -1012,6 +1377,10 @@ mod tests {
         assert!(state.current_generation("traces", 1) > e0);
     }
 
+    /// Scenario (consumer-group rebalancing): a single rebalance acquires several
+    /// partitions at once.
+    /// Guarantees: all partitions acquired in that rebalance share one freshly-allocated
+    /// generation (the allocator bumps at most once per call).
     #[test]
     fn set_assignment_shares_one_generation_across_partitions() {
         // All partitions acquired in a single rebalance share one generation,
@@ -1048,6 +1417,10 @@ mod tests {
         assert_eq!(state.current_generation("traces", 2), 2);
     }
 
+    /// Scenario (consumer-group rebalancing): the additive-merge fallback adds several
+    /// partitions in one call.
+    /// Guarantees: all partitions merged in that call share one freshly-allocated
+    /// generation, matching the full-assignment path.
     #[test]
     fn merge_assignment_shares_one_generation_across_partitions() {
         let state = RebalanceState::new(false);
@@ -1068,6 +1441,10 @@ mod tests {
         assert_eq!(state.current_generation("traces", 2), 2);
     }
 
+    /// Scenario (consumer-group rebalancing): a partition is revoked and later reassigned
+    /// to this consumer via `set_assignment`.
+    /// Guarantees: the reacquired partition receives a strictly greater generation than its
+    /// prior ownership period, so stale acks cannot be mistaken for the new period.
     #[test]
     fn reacquired_partition_gets_greater_generation() {
         // A partition revoked and later reassigned to this consumer must get a
@@ -1090,6 +1467,10 @@ mod tests {
         assert!(state.current_generation("traces", 0) > first);
     }
 
+    /// Scenario (consumer-group rebalancing): the assignment-query-failure fallback merges
+    /// a cooperative delta that reports only a newly-gained partition.
+    /// Guarantees: retained partitions survive with their original generation and only the
+    /// new partition is added and counted, so the fallback never drops an owned partition.
     #[test]
     fn merge_assignment_adds_new_without_dropping_retained() {
         // The assignment-query-failure fallback must never drop a retained
@@ -1118,6 +1499,10 @@ mod tests {
         assert_eq!(state.drain_metrics().partition_assignments, 1);
     }
 
+    /// Scenario (consumer-group rebalancing): the merge fallback is given a partition the
+    /// consumer already owns.
+    /// Guarantees: nothing changes -- no generation churn and no assignment count -- so
+    /// re-reporting an owned partition is inert.
     #[test]
     fn merge_assignment_is_noop_for_already_owned() {
         let state = RebalanceState::new(false);
@@ -1134,6 +1519,10 @@ mod tests {
         assert_eq!(state.drain_metrics().partition_assignments, 0);
     }
 
+    /// Scenario (consumer-group rebalancing): revoked partitions are queued with their
+    /// ownership generation and then drained.
+    /// Guarantees: each drained revocation carries its generation tag, so the receive loop
+    /// can purge only same-or-older tracker state.
     #[test]
     fn drain_revoked_preserves_generation_tag() {
         // Revocations carry the generation of the ownership period being
@@ -1152,6 +1541,10 @@ mod tests {
         assert_eq!(drained[1].generation, 2);
     }
 
+    /// Scenario (consumer-group rebalancing): a new full assignment replaces a prior one
+    /// that owned different partitions.
+    /// Guarantees: the old partitions are dropped, the new ones owned, and the assignment
+    /// counter reflects only newly-acquired partitions across both assignments.
     #[test]
     fn set_assignment_replaces_and_counts_new_partitions() {
         let state = RebalanceState::new(false);
@@ -1178,6 +1571,10 @@ mod tests {
         assert_eq!(delta.partition_assignments, 3);
     }
 
+    /// Scenario (consumer-group rebalancing): a cooperative-sticky rebalance stores the
+    /// full queried assignment that keeps one partition, drops another, and gains a third.
+    /// Guarantees: the retained partition stays assigned (its acks are not rejected as
+    /// revoked), so storing the full set -- not the delta -- preserves ownership.
     #[test]
     fn set_assignment_retains_partitions_across_cooperative_rebalance() {
         // Regression: under the cooperative-sticky protocol, post_rebalance
@@ -1209,30 +1606,7 @@ mod tests {
         assert_eq!(delta.partition_assignments, 3);
     }
 
-    /// Scenario: a full assignment is applied via `handle_assign`'s
-    /// `set_assignment` and then drained.
-    /// Guarantees: `partitions_owned` reports the current assignment size (a
-    /// gauge snapshot) even though it is delivered alongside counter deltas, so
-    /// the receiver's `partitions_assigned` gauge tracks live ownership.
-    #[test]
-    fn drain_metrics_reports_current_owned_count() {
-        let state = RebalanceState::new(false);
-
-        let mut tpl = TopicPartitionList::new();
-        let _ = tpl.add_partition("traces", 0);
-        let _ = tpl.add_partition("traces", 1);
-        state.set_assignment(&tpl);
-
-        assert_eq!(state.drain_metrics().partitions_owned, 2);
-
-        // A subsequent full assignment that shrinks ownership is reflected.
-        let mut smaller = TopicPartitionList::new();
-        let _ = smaller.add_partition("traces", 0);
-        state.set_assignment(&smaller);
-        assert_eq!(state.drain_metrics().partitions_owned, 1);
-    }
-
-    /// Scenario: `set_assignment` counts only genuinely-new partitions while
+    /// Scenario (consumer-group rebalancing): `set_assignment` counts only genuinely-new partitions while
     /// retaining previously-owned ones.
     /// Guarantees: the `partition_assignments` counter is bumped solely for
     /// newly-acquired partitions (retained ones excluded) and current ownership
@@ -1259,7 +1633,304 @@ mod tests {
         assert!(state.is_assigned("traces", 1));
     }
 
-    /// Scenario: each `handle_assign`-driven assignment increments the rebalance
+    /// Scenario (consumer-group rebalancing): partitions are revoked down to an empty assignment.
+    /// Guarantees: `AssignedPartitions::len` and the drained `partitions_owned`
+    /// snapshot both reach zero, which is the signal the receiver uses to emit
+    /// the `kafka.assignment.became_empty` event.
+    #[test]
+    fn owned_count_reaches_zero_after_full_revocation() {
+        let state = RebalanceState::new(false);
+        let mut tpl = TopicPartitionList::new();
+        let _ = tpl.add_partition("traces", 0);
+        state.set_assignment(&tpl);
+        assert_eq!(state.lock_assigned().len(), 1);
+
+        // Simulate the revoke bookkeeping dropping the only owned partition.
+        {
+            let mut assigned = state.lock_assigned();
+            assert!(assigned.remove_partition("traces", 0));
+            assert_eq!(assigned.len(), 0);
+        }
+        assert_eq!(state.drain_metrics().partitions_owned, 0);
+    }
+
+    /// Scenario (consumer-group rebalancing): the revoked queue is drained while empty and
+    /// again after revocations are queued.
+    /// Guarantees: an empty drain returns nothing and a populated drain returns then clears
+    /// the queue, so revocations are delivered exactly once to the receive loop.
+    #[test]
+    fn drain_revoked_empty_then_populated() {
+        let state = RebalanceState::new(false);
+        assert!(state.drain_revoked().is_empty());
+
+        state.push_revoked_for_test("traces", 0, 0);
+        state.push_revoked_for_test("traces", 1, 0);
+        let drained = state.drain_revoked();
+        assert_eq!(drained.len(), 2);
+        // Second drain is empty again.
+        assert!(state.drain_revoked().is_empty());
+    }
+
+    /// Scenario: an immediate assignment resume fails once and the receive-loop retry succeeds.
+    /// Guarantees: the failed assignment remains scheduled with bounded backoff until a later
+    /// resume succeeds, after which no retry deadline remains to leave the partition stuck paused.
+    #[test]
+    fn assignment_resume_failure_is_retried_until_success() {
+        let state = RebalanceState::new(false);
+        state.assign_for_test("traces", 0, 7);
+        let mut tpl = TopicPartitionList::new();
+        let _ = tpl.add_partition("traces", 0);
+        let consumer = ScriptedResumeConsumer::new(vec![
+            Err(rdkafka::error::KafkaError::ClientCreation(
+                "resume failed".to_string(),
+            )),
+            Ok(()),
+        ]);
+
+        state.resume_rebalance_partitions(&consumer, &tpl, ResumePhase::Assign);
+        let retry_deadline = state
+            .next_assignment_resume_deadline()
+            .expect("failed assignment resume must schedule a retry");
+        assert_eq!(consumer.attempts.load(Ordering::Relaxed), 1);
+        assert_eq!(state.drain_metrics().rebalance_resume_errors, 1);
+
+        state.process_due_assignment_resumes_at(&consumer, retry_deadline);
+
+        assert_eq!(consumer.attempts.load(Ordering::Relaxed), 2);
+        assert!(state.next_assignment_resume_deadline().is_none());
+        assert_eq!(state.drain_metrics().rebalance_resume_errors, 0);
+    }
+
+    /// Scenario (consumer-group rebalancing): `handle_assign` runs against a live
+    /// consumer whose `assignment()` query succeeds, so it takes the full-query
+    /// (`Ok`) path rather than the merge fallback.
+    /// Guarantees: the queried full assignment is stored (the assigned partition
+    /// becomes owned with a real generation) and the rebalance/assignment
+    /// counters advance, so the cooperative full-`assignment()` dispatch records
+    /// the complete owned set.
+    #[tokio::test]
+    async fn handle_assign_query_path_stores_full_assignment() {
+        const TOPIC: &str = "rebalance-handle-assign-traces";
+        with_cluster(
+            KafkaTestCluster::builder().topic_with(TOPIC, 1, 1),
+            |cluster| async move {
+                let state = Arc::new(RebalanceState::new(false));
+                let consumer =
+                    mock_base_consumer(&cluster, "handle-assign-group", Arc::clone(&state));
+
+                // Assign the partition so the consumer's own `assignment()` query
+                // returns a non-empty full set (the Ok dispatch path).
+                let mut tpl = TopicPartitionList::new();
+                let _ = tpl.add_partition(TOPIC, 0);
+                consumer.assign(&tpl).expect("assign");
+
+                state.handle_assign(&consumer, &tpl);
+
+                assert!(
+                    state.is_assigned(TOPIC, 0),
+                    "the queried full assignment should be stored as owned",
+                );
+                assert!(
+                    state.current_generation(TOPIC, 0) >= 1,
+                    "a newly-acquired partition should get a real (>=1) generation",
+                );
+                let delta = state.drain_metrics();
+                assert_eq!(delta.rebalances_total, 1, "one assign event counted");
+                assert_eq!(
+                    delta.partition_assignments, 1,
+                    "one newly-acquired partition counted",
+                );
+            },
+        )
+        .await;
+    }
+
+    /// Scenario (consumer-group rebalancing): `handle_revoke` runs against a live
+    /// consumer for a subset of currently-owned partitions, with a committable
+    /// snapshot in place.
+    /// Guarantees: the revoke is scoped to only the requested partitions -- they
+    /// are dropped from the assigned set, queued for tracker purge tagged with
+    /// their ownership generation, and counted in `partition_revocations`, while
+    /// a non-revoked owned partition stays assigned -- so a rebalance commits and
+    /// releases only the partitions being revoked.
+    #[tokio::test]
+    async fn handle_revoke_is_scoped_and_tags_generation() {
+        const TOPIC: &str = "rebalance-handle-revoke-traces";
+        with_cluster(
+            KafkaTestCluster::builder().topic_with(TOPIC, 2, 1),
+            |cluster| async move {
+                let state = Arc::new(RebalanceState::new(false));
+                let consumer =
+                    mock_base_consumer(&cluster, "handle-revoke-group", Arc::clone(&state));
+
+                // Own both partitions with a known generation.
+                let mut full = TopicPartitionList::new();
+                let _ = full.add_partition(TOPIC, 0);
+                let _ = full.add_partition(TOPIC, 1);
+                state.set_assignment(&full);
+                let gen0 = state.current_generation(TOPIC, 0);
+                assert!(gen0 >= 1);
+                let _ = state.drain_metrics(); // reset counters after setup
+
+                // A committable snapshot so the scoped commit has offsets to use.
+                let mut snapshot = HashMap::new();
+                let _ = snapshot.insert((TOPIC.to_string(), 0), 42_i64);
+                let _ = snapshot.insert((TOPIC.to_string(), 1), 99_i64);
+                state.set_committable_snapshot(snapshot);
+
+                // Revoke only partition 0.
+                let mut revoke = TopicPartitionList::new();
+                let _ = revoke.add_partition(TOPIC, 0);
+                state.handle_revoke(&consumer, &revoke);
+
+                // Scoping: partition 0 released, partition 1 retained.
+                assert!(
+                    !state.is_assigned(TOPIC, 0),
+                    "revoked partition 0 must be dropped from the assigned set",
+                );
+                assert!(
+                    state.is_assigned(TOPIC, 1),
+                    "non-revoked partition 1 must remain assigned",
+                );
+
+                // Revoked partition queued for purge, tagged with its generation.
+                let drained = state.drain_revoked();
+                assert_eq!(drained.len(), 1, "only the revoked partition is queued");
+                assert_eq!(drained[0].partition, 0);
+                assert_eq!(
+                    drained[0].generation, gen0,
+                    "the revocation carries the ownership generation being revoked",
+                );
+
+                // Only the genuinely-owned revoked partition is counted.
+                assert_eq!(
+                    state.drain_metrics().partition_revocations,
+                    1,
+                    "exactly one owned partition was revoked",
+                );
+            },
+        )
+        .await;
+    }
+
+    /// Scenario (consumer-group rebalancing): a partition is assigned, revoked,
+    /// then reassigned to the same consumer through the real
+    /// `handle_assign`/`handle_revoke` methods.
+    /// Guarantees: the reacquired partition receives a strictly greater ownership
+    /// generation than its prior period, so acks stamped with the old generation
+    /// cannot be mistaken for the new ownership after a return.
+    #[tokio::test]
+    async fn reacquired_partition_via_handle_gets_greater_generation() {
+        const TOPIC: &str = "rebalance-handle-reacquire-traces";
+        with_cluster(
+            KafkaTestCluster::builder().topic_with(TOPIC, 1, 1),
+            |cluster| async move {
+                let state = Arc::new(RebalanceState::new(false));
+                let consumer =
+                    mock_base_consumer(&cluster, "handle-reacquire-group", Arc::clone(&state));
+
+                let mut tpl = TopicPartitionList::new();
+                let _ = tpl.add_partition(TOPIC, 0);
+
+                // Assign -> generation g1.
+                consumer.assign(&tpl).expect("assign");
+                state.handle_assign(&consumer, &tpl);
+                let g1 = state.current_generation(TOPIC, 0);
+                assert!(g1 >= 1);
+
+                // Revoke (drops from the assigned set; also unassign on the
+                // consumer so the next query reflects the reacquisition).
+                state.handle_revoke(&consumer, &tpl);
+                consumer.unassign().expect("unassign");
+                assert!(!state.is_assigned(TOPIC, 0));
+
+                // Reassign -> strictly greater generation g2.
+                consumer.assign(&tpl).expect("reassign");
+                state.handle_assign(&consumer, &tpl);
+                let g2 = state.current_generation(TOPIC, 0);
+                assert!(
+                    g2 > g1,
+                    "a reacquired partition must get a strictly greater generation ({g2} > {g1})",
+                );
+            },
+        )
+        .await;
+    }
+
+    // ---- Offset guarantees ----
+
+    /// Scenario (offset guarantees): a committable snapshot is set and a commit TPL is
+    /// built scoped to a subset of revoked partitions.
+    /// Guarantees: only the requested revoked partitions with a known committable offset
+    /// appear in the commit TPL, so a pre-revoke commit is scoped to exactly those
+    /// partitions.
+    #[test]
+    fn refresh_and_drain_committable_via_build() {
+        let state = RebalanceState::new(false);
+        let mut snapshot = HashMap::new();
+        let _ = snapshot.insert(("traces".to_string(), 0), 100);
+        let _ = snapshot.insert(("traces".to_string(), 1), 200);
+        let _ = snapshot.insert(("metrics".to_string(), 0), 300);
+        state.set_committable_snapshot(snapshot);
+
+        // Only the requested revoked partitions appear in the commit TPL.
+        let revoked = vec![("traces".to_string(), 0), ("metrics".to_string(), 0)];
+        let committable = lock_ignore_poison(&state.committable);
+        let tpl = build_commit_tpl(&committable, &revoked);
+        assert_eq!(tpl.count(), 2);
+        let map = tpl.to_topic_map();
+        assert_eq!(
+            map.get(&("traces".to_string(), 0)),
+            Some(&Offset::Offset(100))
+        );
+        assert_eq!(
+            map.get(&("metrics".to_string(), 0)),
+            Some(&Offset::Offset(300))
+        );
+        // Partition 1 of traces was not in the revoked list.
+        assert!(!map.contains_key(&("traces".to_string(), 1)));
+    }
+
+    /// Scenario (offset guarantees): a commit TPL is built for a revoked partition that has
+    /// no committable offset.
+    /// Guarantees: partitions without a committable offset are omitted from the TPL, so the
+    /// receiver never commits an offset it does not have.
+    #[test]
+    fn build_commit_tpl_skips_unknown_offsets() {
+        let mut committable = HashMap::new();
+        let _ = committable.insert(("traces".to_string(), 0), 100);
+        // partition 5 has no committable offset
+        let revoked = vec![("traces".to_string(), 0), ("traces".to_string(), 5)];
+        let tpl = build_commit_tpl(&committable, &revoked);
+        assert_eq!(tpl.count(), 1);
+    }
+
+    // ---- Operational visibility ----
+
+    /// Scenario (operational visibility): a full assignment is applied via `handle_assign`'s
+    /// `set_assignment` and then drained.
+    /// Guarantees: `partitions_owned` reports the current assignment size (an
+    /// absolute snapshot) even though it is delivered alongside counter deltas,
+    /// so `receiver.kafka.consumer.group.partitions` tracks live ownership.
+    #[test]
+    fn drain_metrics_reports_current_owned_count() {
+        let state = RebalanceState::new(false);
+
+        let mut tpl = TopicPartitionList::new();
+        let _ = tpl.add_partition("traces", 0);
+        let _ = tpl.add_partition("traces", 1);
+        state.set_assignment(&tpl);
+
+        assert_eq!(state.drain_metrics().partitions_owned, 2);
+
+        // A subsequent full assignment that shrinks ownership is reflected.
+        let mut smaller = TopicPartitionList::new();
+        let _ = smaller.add_partition("traces", 0);
+        state.set_assignment(&smaller);
+        assert_eq!(state.drain_metrics().partitions_owned, 1);
+    }
+
+    /// Scenario (operational visibility): each `handle_assign`-driven assignment increments the rebalance
     /// event counter once.
     /// Guarantees: `rebalances_total` counts assign events (not partitions), so
     /// operators can distinguish rebalance frequency from partition churn.
@@ -1281,28 +1952,101 @@ mod tests {
         assert_eq!(state.drain_metrics().rebalances_total, 0, "drain resets");
     }
 
-    /// Scenario: partitions are revoked down to an empty assignment.
-    /// Guarantees: `AssignedPartitions::len` and the drained `partitions_owned`
-    /// snapshot both reach zero, which is the signal the receiver uses to emit
-    /// the `kafka.assignment.became_empty` event.
+    /// Scenario (operational visibility): a freshly-drained rebalance metrics delta with no
+    /// events is inspected.
+    /// Guarantees: `is_empty()` reports true only when every counter delta is zero, so the
+    /// receive loop skips redundant metric folds on idle ticks.
     #[test]
-    fn owned_count_reaches_zero_after_full_revocation() {
+    fn metrics_delta_is_empty() {
         let state = RebalanceState::new(false);
-        let mut tpl = TopicPartitionList::new();
-        let _ = tpl.add_partition("traces", 0);
-        state.set_assignment(&tpl);
-        assert_eq!(state.lock_assigned().len(), 1);
-
-        // Simulate the revoke bookkeeping dropping the only owned partition.
-        {
-            let mut assigned = state.lock_assigned();
-            assert!(assigned.remove_partition("traces", 0));
-            assert_eq!(assigned.len(), 0);
-        }
-        assert_eq!(state.drain_metrics().partitions_owned, 0);
+        assert!(state.drain_metrics().is_empty());
     }
 
-    /// Scenario: partition tokens are appended to a structured-log buffer.
+    /// Scenario (operational visibility): successful and failed commit outcomes are
+    /// recorded on the shared rebalance state.
+    /// Guarantees: successes increment `offset_commits` and failures increment
+    /// `offset_commit_errors`, so a commit failure is counted distinctly from a success.
+    #[test]
+    fn record_commit_result_counts_success_and_failure() {
+        let state = RebalanceState::new(false);
+
+        state.record_commit_result(&Ok(()));
+        state.record_commit_result(&Ok(()));
+        state.record_commit_result(&Err(rdkafka::error::KafkaError::ClientCreation(
+            "boom".to_string(),
+        )));
+
+        let delta = state.drain_metrics();
+        assert_eq!(delta.offset_commits, 2);
+        assert_eq!(delta.offset_commit_errors, 1);
+
+        // Draining resets the counters.
+        let empty = state.drain_metrics();
+        assert_eq!(empty.offset_commits, 0);
+        assert_eq!(empty.offset_commit_errors, 0);
+    }
+
+    /// Scenario (operational visibility): a commit outcome is recorded and the metrics
+    /// delta is inspected.
+    /// Guarantees: the recorded outcome makes the delta non-empty, so the receive loop
+    /// folds commit metrics on the next reconcile rather than skipping them.
+    #[test]
+    fn commit_result_makes_delta_non_empty() {
+        let state = RebalanceState::new(false);
+        state.record_commit_result(&Ok(()));
+        assert!(!state.drain_metrics().is_empty());
+    }
+
+    /// Scenario (operational visibility): commit outcomes are delivered through the real
+    /// `ConsumerContext::commit_callback`.
+    /// Guarantees: the callback folds one success and one failure into
+    /// `offset_commits`/`offset_commit_errors`, so the librdkafka wiring records async
+    /// commit outcomes correctly.
+    #[test]
+    fn commit_callback_folds_results_via_context() {
+        // Exercise the callback through the real ConsumerContext impl to ensure
+        // the wiring (auto-commit gate + state folding) is correct.
+        let state = Arc::new(RebalanceState::new(false));
+        let ctx = RebalancingConsumerContext::Default(Arc::clone(&state));
+        let empty_tpl = TopicPartitionList::new();
+
+        ctx.commit_callback(Ok(()), &empty_tpl);
+        ctx.commit_callback(
+            Err(rdkafka::error::KafkaError::ClientCreation(
+                "boom".to_string(),
+            )),
+            &empty_tpl,
+        );
+
+        let delta = state.drain_metrics();
+        assert_eq!(delta.offset_commits, 1);
+        assert_eq!(delta.offset_commit_errors, 1);
+    }
+
+    /// Scenario (operational visibility): commit callbacks arrive while the receiver is in
+    /// auto-commit mode.
+    /// Guarantees: the callback records nothing (librdkafka owns offsets), so auto-commit
+    /// mode keeps the manual commit metrics clean.
+    #[test]
+    fn commit_callback_is_noop_in_auto_commit() {
+        let state = Arc::new(RebalanceState::new(true));
+        let ctx = RebalancingConsumerContext::Default(Arc::clone(&state));
+        let empty_tpl = TopicPartitionList::new();
+
+        ctx.commit_callback(Ok(()), &empty_tpl);
+        ctx.commit_callback(
+            Err(rdkafka::error::KafkaError::ClientCreation(
+                "boom".to_string(),
+            )),
+            &empty_tpl,
+        );
+
+        let delta = state.drain_metrics();
+        assert_eq!(delta.offset_commits, 0);
+        assert_eq!(delta.offset_commit_errors, 0);
+    }
+
+    /// Scenario (operational visibility): partition tokens are appended to a structured-log buffer.
     /// Guarantees: `PartitionListFmt` eagerly builds a stable, compact,
     /// comma-separated `topic-partition` string (no leading/trailing comma, no
     /// truncation marker when nothing was dropped) so assignment/revocation logs
@@ -1325,7 +2069,7 @@ mod tests {
         assert!(!fmt.as_str().ends_with("..."));
     }
 
-    /// Scenario: more `topic-partition` tokens are appended than the entry cap
+    /// Scenario (operational visibility): more `topic-partition` tokens are appended than the entry cap
     /// `MAX_LISTED_PARTITIONS` permits.
     /// Guarantees: the rendered list is capped at `MAX_LISTED_PARTITIONS`
     /// tokens, a single trailing `...` marker signals the drop, `truncated()`
@@ -1357,7 +2101,7 @@ mod tests {
         assert!(!rendered.contains(&format!("traces:{MAX_LISTED_PARTITIONS}")));
     }
 
-    /// Scenario: exactly the cap number of tokens are appended.
+    /// Scenario (operational visibility): exactly the cap number of tokens are appended.
     /// Guarantees: a list at the cap boundary is fully rendered with no trailing
     /// `...` marker and `truncated()` stays `false`, so the marker has no
     /// off-by-one at the boundary.
@@ -1375,85 +2119,5 @@ mod tests {
         // Exactly `MAX_LISTED_PARTITIONS` tokens => one fewer comma.
         let commas = rendered.matches(',').count() as u64;
         assert_eq!(commas, MAX_LISTED_PARTITIONS - 1);
-    }
-
-    #[test]
-    fn metrics_delta_is_empty() {
-        let state = RebalanceState::new(false);
-        assert!(state.drain_metrics().is_empty());
-    }
-
-    #[test]
-    fn record_commit_result_counts_success_and_failure() {
-        let state = RebalanceState::new(false);
-
-        state.record_commit_result(&Ok(()));
-        state.record_commit_result(&Ok(()));
-        state.record_commit_result(&Err(rdkafka::error::KafkaError::ClientCreation(
-            "boom".to_string(),
-        )));
-
-        let delta = state.drain_metrics();
-        assert_eq!(delta.offset_commits, 2);
-        assert_eq!(delta.offset_commit_errors, 1);
-
-        // Draining resets the counters.
-        let empty = state.drain_metrics();
-        assert_eq!(empty.offset_commits, 0);
-        assert_eq!(empty.offset_commit_errors, 0);
-    }
-
-    #[test]
-    fn commit_result_makes_delta_non_empty() {
-        let state = RebalanceState::new(false);
-        state.record_commit_result(&Ok(()));
-        assert!(!state.drain_metrics().is_empty());
-    }
-
-    #[test]
-    fn commit_callback_folds_results_via_context() {
-        // Exercise the callback through the real ConsumerContext impl to ensure
-        // the wiring (auto-commit gate + state folding) is correct.
-        let state = Arc::new(RebalanceState::new(false));
-        let ctx = RebalancingConsumerContext::Default(Arc::clone(&state));
-        let empty_tpl = TopicPartitionList::new();
-
-        ctx.commit_callback(Ok(()), &empty_tpl);
-        ctx.commit_callback(
-            Err(rdkafka::error::KafkaError::ClientCreation(
-                "boom".to_string(),
-            )),
-            &empty_tpl,
-        );
-
-        let delta = state.drain_metrics();
-        assert_eq!(delta.offset_commits, 1);
-        assert_eq!(delta.offset_commit_errors, 1);
-    }
-
-    #[test]
-    fn commit_callback_is_noop_in_auto_commit() {
-        let state = Arc::new(RebalanceState::new(true));
-        let ctx = RebalancingConsumerContext::Default(Arc::clone(&state));
-        let empty_tpl = TopicPartitionList::new();
-
-        ctx.commit_callback(Ok(()), &empty_tpl);
-        ctx.commit_callback(
-            Err(rdkafka::error::KafkaError::ClientCreation(
-                "boom".to_string(),
-            )),
-            &empty_tpl,
-        );
-
-        let delta = state.drain_metrics();
-        assert_eq!(delta.offset_commits, 0);
-        assert_eq!(delta.offset_commit_errors, 0);
-    }
-
-    #[test]
-    fn auto_commit_state_shared_across_arc() {
-        let state = Arc::new(RebalanceState::new(true));
-        let clone = Arc::clone(&state);
-        assert!(clone.is_auto_commit());
     }
 }

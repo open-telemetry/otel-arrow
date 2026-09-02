@@ -17,6 +17,7 @@ convention registry and emitted by the system, including:
 - metric names, units, instrument semantics, and attribute sets
 - metric sets: the shared attribute set + grouped metrics for an entity
 - event names (LogRecord `event_name`), event attributes, and event body shape
+- instrumentation scope names and attributes
 - trace span names and attributes (when tracing is implemented)
 - project-defined entity attributes and their semantics
 
@@ -43,6 +44,7 @@ At minimum, stability MUST be declared for:
 - each metric
 - each metric set
 - each event name
+- each instrumentation scope naming convention
 - each project-defined attribute that is part of stable signals
 - each trace span name (when implemented)
 
@@ -74,6 +76,7 @@ For **stable** signals, the following are breaking changes and require:
 Breaking changes include:
 
 - renaming metrics, metric sets, event names, span names, or attribute keys
+- changing an `InstrumentationScope.name` or its identity semantics
 - changing units
 - changing instrument semantic meaning (counter vs gauge semantics,
   monotonicity, temporality assumptions)
@@ -138,6 +141,30 @@ For stable events:
     events
   - if richer payload is required, prefer introducing a new event name and
     deprecating the old one
+
+### Instrumentation scopes
+
+`InstrumentationScope.name` identifies the logical software unit that produced
+telemetry. In this project, a
+[`tracing` target](https://docs.rs/tracing/latest/tracing/struct.Metadata.html#method.target)
+becomes the scope name when an event is exported through OTLP.
+
+For stable instrumentation scopes:
+
+- the scope naming convention and identity semantics MUST remain stable
+- runtime values such as node IDs, pipeline IDs, endpoints, and tenant names
+  MUST NOT be embedded in the scope name
+- changing from a package scope to a component scope is breaking for exact-name
+  queries, allowlists, dashboards, and scope-based aggregation
+- component scopes MUST remain a stable projection of the registered component
+  URN: remove `urn:` and replace colon separators with dots
+
+A scope-name migration MUST provide an old-to-new mapping and example query or
+filter updates. Duplicating every event under both scope names is generally not
+appropriate because it doubles log records and can trigger alerts twice. When
+dual emission is unsafe, the migration plan MUST instead use release notes, a
+documented transition window, and query compatibility that accepts both old and
+new names where practical.
 
 ### Traces
 

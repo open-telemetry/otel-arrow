@@ -378,9 +378,6 @@
             Completion buffered: <span id="control-completion-pending-sends" class="font-mono">n/a</span>
           </div>
           <div class="text-xs text-slate-400 mt-1">
-            Delayed data queued: <span id="control-delayed-data-queued" class="font-mono">n/a</span>
-          </div>
-          <div class="text-xs text-slate-400 mt-1">
             Timers active: <span id="control-timers-active" class="font-mono">n/a</span>
           </div>
           <div class="metric-card-chart hidden" data-chart="control-backlog">
@@ -393,17 +390,11 @@
             Runtime activity
           </div>
           <div class="flex items-baseline gap-2">
-            <span id="control-delayed-data-sent-rate" class="text-2xl font-semibold">n/a</span>
-            <span class="text-xs text-slate-400"><span class="metric-legend" data-metric="control.runtime.delayed_data.sent.rate">delayed wakeups/s</span></span>
-          </div>
-          <div class="text-xs text-slate-400 mt-2">
-            Timer ticks/s: <span id="control-timer-tick-rate" class="font-mono">n/a</span>
+            <span id="control-timer-tick-rate" class="text-2xl font-semibold">n/a</span>
+            <span class="text-xs text-slate-400"><span class="metric-legend" data-metric="control.runtime.timer_tick.sent.rate">timer ticks/s</span></span>
           </div>
           <div class="text-xs text-slate-400 mt-1">
             Telemetry wakeups/s: <span id="control-collect-telemetry-rate" class="font-mono">n/a</span>
-          </div>
-          <div class="text-xs text-slate-400 mt-1">
-            Returned during drain/s: <span id="control-delay-return-rate" class="font-mono">n/a</span>
           </div>
           <div class="metric-card-chart hidden" data-chart="control-runtime-flow">
             <canvas id="pipeChartControlRuntimeFlow"></canvas>

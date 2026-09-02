@@ -11,13 +11,13 @@ use crate::control::NodeControlMsg;
 use crate::effect_handler::SourceTagging;
 use crate::error::Error;
 use crate::message::{Receiver, Sender};
-use otap_df_channel::error::SendError;
-use otap_df_config::PortName;
-use otap_df_config::node::NodeUserConfig;
+use otel_arrow_dfe_channel::error::SendError;
+use otel_arrow_dfe_config::PortName;
+use otel_arrow_dfe_config::node::NodeUserConfig;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-pub use otap_df_config::NodeId as NodeName;
+pub use otel_arrow_dfe_config::NodeId as NodeName;
 
 /// Common trait for nodes in the pipeline.
 #[async_trait::async_trait(?Send)]
@@ -46,7 +46,7 @@ pub struct NodeId {
     /// A unique integer.
     pub index: usize,
 
-    /// A unique name as defined by otap_df_config.
+    /// A unique name as defined by otel_arrow_dfe_config.
     pub name: NodeName,
 }
 

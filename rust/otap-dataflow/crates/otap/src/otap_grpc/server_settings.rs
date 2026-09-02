@@ -5,8 +5,8 @@
 
 use crate::compression::{self, CompressionMethod};
 use crate::otap_grpc::otlp::server_new::OtlpServerSettings;
-use otap_df_config::byte_units;
-use otap_df_config::tls::TlsServerConfig;
+use otel_arrow_dfe_config::byte_units;
+use otel_arrow_dfe_config::tls::TlsServerConfig;
 use serde::Deserialize;
 use std::net::SocketAddr;
 use std::time::Duration;

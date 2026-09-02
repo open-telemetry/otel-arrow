@@ -13,7 +13,7 @@ mod pipeline_rt_status;
 pub mod pipeline_status;
 pub mod store;
 
-use otap_df_telemetry::event::ObservedEvent;
+use otel_arrow_dfe_telemetry::event::ObservedEvent;
 use serde::Serialize;
 
 /// A ring buffer for storing recent observed events.

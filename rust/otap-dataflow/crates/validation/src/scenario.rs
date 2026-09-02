@@ -12,7 +12,7 @@ use crate::template::render_jinja;
 use crate::traffic::MessageType;
 use crate::traffic::{Capture, Generator, TlsConfig};
 use minijinja::context;
-use otap_df_test_net::try_pick_unused_loopback_tcp_port;
+use otel_arrow_dfe_test_net::try_pick_unused_loopback_tcp_port;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;

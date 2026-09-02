@@ -1,11 +1,14 @@
 [package]
-name = "otap-df-admin"
+name = "otel-arrow-dfe-admin"
 description = "OTAP dataflow engine admin endpoints"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true
 license.workspace = true
-publish.workspace = true
+readme = "README.md"
+publish = true
+keywords = ["telemetry", "opentelemetry", "otlp", "otap", "admin"]
+categories = ["web-programming"]
 edition.workspace = true
 rust-version.workspace = true
 
@@ -18,11 +21,11 @@ live-logs-ws = ["axum/ws"]
 jemalloc-pprof = ["dep:jemalloc_pprof"]
 
 [dependencies]
-otap-df-admin-types = { workspace = true }
-otap-df-config = { workspace = true }
-otap-df-state = { workspace = true }
-otap-df-telemetry = { workspace = true }
-otap-df-engine = { workspace = true }
+otel-arrow-dfe-admin-types = { workspace = true }
+otel-arrow-dfe-config = { workspace = true }
+otel-arrow-dfe-state = { workspace = true }
+otel-arrow-dfe-telemetry = { workspace = true }
+otel-arrow-dfe-engine = { workspace = true }
 
 thiserror = { workspace = true }
 serde = { workspace = true }
@@ -36,7 +39,8 @@ include_dir = { workspace = true }
 mime_guess = { workspace = true }
 
 [target.'cfg(not(windows))'.dependencies]
+pprof = { workspace = true }
 jemalloc_pprof = { workspace = true, optional = true }
 
 [dev-dependencies]
-otap-df-telemetry-macros = { workspace = true }
+otel-arrow-dfe-telemetry-macros = { workspace = true }

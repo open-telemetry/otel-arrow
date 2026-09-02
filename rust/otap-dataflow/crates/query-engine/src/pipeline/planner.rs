@@ -5,7 +5,10 @@
 
 use std::collections::HashSet;
 
-use data_engine_expressions::{
+use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
+use datafusion::logical_expr::Expr;
+use datafusion::prelude::SessionContext;
+use otel_arrow_contrib_data_engine_expressions::{
     BooleanScalarExpression, BooleanValue, DataExpression, Expression, IntegerValue,
     LogicalExpression, MapSelector, MoveTransformExpression, MutableValueExpression,
     OutputExpression, PipelineExpression, PipelineFunction, PipelineFunctionExpression,
@@ -13,14 +16,13 @@ use data_engine_expressions::{
     ScalarExpression, SetTransformExpression, SourceScalarExpression, StaticScalarExpression,
     StringValue, TransformExpression, ValueAccessor,
 };
-use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
-use datafusion::logical_expr::Expr;
-use datafusion::prelude::SessionContext;
-use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::otap::transform::{AttributesTransform, DeleteTransform, RenameTransform};
-use otap_df_pdata::otlp::attributes::cbor::SerializedValuePathElement;
-use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otap_df_pdata::schema::consts;
+use otel_arrow_dfe_pdata::OtapArrowRecords;
+use otel_arrow_dfe_pdata::otap::transform::{
+    AttributesTransform, DeleteTransform, RenameTransform,
+};
+use otel_arrow_dfe_pdata::otlp::attributes::cbor::SerializedValuePathElement;
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_dfe_pdata::schema::consts;
 
 use crate::consts::{ATTRIBUTES_FIELD_NAME, RESOURCES_FIELD_NAME, SCOPE_FIELD_NAME};
 use crate::error::{Error, Result};
@@ -1131,9 +1133,9 @@ pub enum AttributesIdentifier {
 
 #[cfg(test)]
 mod test {
-    use data_engine_kql_parser::Parser;
-    use otap_df_pdata::{OtapArrowRecords, otap::Logs};
-    use otap_df_query_engine_languages::opl::parser::OplParser;
+    use otel_arrow_contrib_data_engine_kql_parser::Parser;
+    use otel_arrow_dfe_pdata::{OtapArrowRecords, otap::Logs};
+    use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
 
     use crate::pipeline::{Pipeline, planner::PipelinePlanner};
 

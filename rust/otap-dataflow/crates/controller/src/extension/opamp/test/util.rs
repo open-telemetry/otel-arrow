@@ -22,11 +22,11 @@ use axum::{
 };
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
-use otap_df_admin::{
+use otel_arrow_dfe_admin::{
     ControlPlane, ControlPlaneError, EngineConfigReconcileRequest, EngineConfigReconcileState,
     EngineConfigReconcileStatus,
 };
-use otap_df_config::{
+use otel_arrow_dfe_config::{
     engine::{EngineConfig, OtelDataflowSpec},
     pipeline_group::PipelineGroupConfig,
     policy::Policies,
@@ -103,7 +103,8 @@ impl ControlPlane for MockControlPlane {
         _pipeline_group_id: &str,
         _pipeline_id: &str,
         _timeout_secs: u64,
-    ) -> Result<otap_df_admin::ShutdownStatus, ControlPlaneError> {
+        _initiator: otel_arrow_dfe_admin::PipelineShutdownInitiator,
+    ) -> Result<otel_arrow_dfe_admin::ShutdownStatus, ControlPlaneError> {
         Err(not_implemented())
     }
 
@@ -111,8 +112,8 @@ impl ControlPlane for MockControlPlane {
         &self,
         _pipeline_group_id: &str,
         _pipeline_id: &str,
-        _request: otap_df_admin::ReconfigureRequest,
-    ) -> Result<otap_df_admin::RolloutStatus, ControlPlaneError> {
+        _request: otel_arrow_dfe_admin::ReconfigureRequest,
+    ) -> Result<otel_arrow_dfe_admin::RolloutStatus, ControlPlaneError> {
         Err(not_implemented())
     }
 
@@ -120,7 +121,7 @@ impl ControlPlane for MockControlPlane {
         &self,
         _pipeline_group_id: &str,
         _pipeline_id: &str,
-    ) -> Result<Option<otap_df_admin::PipelineDetails>, ControlPlaneError> {
+    ) -> Result<Option<otel_arrow_dfe_admin::PipelineDetails>, ControlPlaneError> {
         Err(not_implemented())
     }
 
@@ -129,7 +130,7 @@ impl ControlPlane for MockControlPlane {
         _pipeline_group_id: &str,
         _pipeline_id: &str,
         _rollout_id: &str,
-    ) -> Result<Option<otap_df_admin::RolloutStatus>, ControlPlaneError> {
+    ) -> Result<Option<otel_arrow_dfe_admin::RolloutStatus>, ControlPlaneError> {
         Err(not_implemented())
     }
 
@@ -138,7 +139,7 @@ impl ControlPlane for MockControlPlane {
         _pipeline_group_id: &str,
         _pipeline_id: &str,
         _shutdown_id: &str,
-    ) -> Result<Option<otap_df_admin::ShutdownStatus>, ControlPlaneError> {
+    ) -> Result<Option<otel_arrow_dfe_admin::ShutdownStatus>, ControlPlaneError> {
         Err(not_implemented())
     }
 }

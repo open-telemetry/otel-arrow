@@ -18,10 +18,11 @@ compares it against a checked-in baseline to detect new or removed components.
 This enables automated component tracking for threat modeling, documentation
 coverage, and security review.
 
-The macro lands in the **existing `otap-df-engine-macros` crate** alongside the
-already-shipped `#[pipeline_factory]` and `#[capability]` attribute macros -- no
-new proc-macro crate is required. A small `ComponentMeta` struct + a
-`COMPONENT_INVENTORY` distributed slice in `otap-df-engine` is the only new
+The macro lands in the **existing `otel-arrow-dfe-engine-macros` crate**
+alongside the already-shipped `#[pipeline_factory]` and `#[capability]`
+attribute macros -- no new proc-macro crate is required. A small
+`ComponentMeta` struct + a
+`COMPONENT_INVENTORY` distributed slice in `otel-arrow-dfe-engine` is the only new
 runtime surface, mirroring the existing `#[capability]` -> `KNOWN_CAPABILITIES`
 mechanism.
 
@@ -73,8 +74,8 @@ and a URN in its `name` field. To make it show up in the inventory, add one
 attribute:
 
 ```rust
-use otap_df_engine_macros::component_inventory;
-use otap_df_engine::inventory::Category;
+use otel_arrow_dfe_engine_macros::component_inventory;
+use otel_arrow_dfe_engine::inventory::Category;
 
 #[component_inventory(
     category = Receiver,
@@ -156,8 +157,8 @@ the regenerated baseline so reviewers see the new component in the diff.
 
 | Change | Crate | Notes |
 | --- | --- | --- |
-| `#[component_inventory]` attribute macro | **existing** `otap-df-engine-macros` (`crates/engine-macros/`) | Third macro alongside `pipeline_factory` and `capability`; new `component_inventory.rs` module + a `#[proc_macro_attribute]` in `lib.rs`. |
-| `ComponentMeta` + `Category` + `COMPONENT_INVENTORY` slice | **existing** `otap-df-engine` (`crates/engine/`) | New `inventory` module; owns the distributed slice exactly as `capability` owns `KNOWN_CAPABILITIES`. |
+| `#[component_inventory]` attribute macro | **existing** `otel-arrow-dfe-engine-macros` (`crates/engine-macros/`) | Third macro alongside `pipeline_factory` and `capability`; new `component_inventory.rs` module + a `#[proc_macro_attribute]` in `lib.rs`. |
+| `ComponentMeta` + `Category` + `COMPONENT_INVENTORY` slice | **existing** `otel-arrow-dfe-engine` (`crates/engine/`) | New `inventory` module; owns the distributed slice exactly as `capability` owns `KNOWN_CAPABILITIES`. |
 | `component-inventory` subcommand | **existing** `xtask` | New task arm in the hand-rolled dispatch + `print_help`; a source scanner like `structure_check`. |
 
 No new workspace members. This mirrors the precedent already accepted in this
@@ -228,7 +229,7 @@ pub struct ComponentMeta {
 ### Collection mechanism
 
 ```rust
-// otap_df_engine::inventory
+// otel_arrow_dfe_engine::inventory
 #[doc(hidden)]
 #[allow(unsafe_code)]
 #[linkme::distributed_slice]
@@ -240,12 +241,12 @@ unchanged:
 
 ```rust
 #[allow(unsafe_code)]
-#[::linkme::distributed_slice(::otap_df_engine::inventory::COMPONENT_INVENTORY)]
+#[::linkme::distributed_slice(::otel_arrow_dfe_engine::inventory::COMPONENT_INVENTORY)]
 #[linkme(crate = ::linkme)]
-static _COMPONENT_META_OTLP_RECEIVER: ::otap_df_engine::inventory::ComponentMeta =
-    ::otap_df_engine::inventory::ComponentMeta {
+static _COMPONENT_META_OTLP_RECEIVER: ::otel_arrow_dfe_engine::inventory::ComponentMeta =
+    ::otel_arrow_dfe_engine::inventory::ComponentMeta {
         id: OTLP_RECEIVER_URN,             // read from the factory `name`
-        category: ::otap_df_engine::inventory::Category::Receiver,
+        category: ::otel_arrow_dfe_engine::inventory::Category::Receiver,
         description: Some("OTLP unary gRPC receiver on port 4317"),
         file: file!(),
         line: line!(),
@@ -315,8 +316,8 @@ automate comparison.
 ### Implementation plan
 
 - **Phase 1 -- macro + metadata module** (1 PR): add `#[component_inventory]` to
-  `otap-df-engine-macros`; add `ComponentMeta` + `Category` + `COMPONENT_INVENTORY`
-  to `otap-df-engine`; unit tests for macro expansion.
+  `otel-arrow-dfe-engine-macros`; add `ComponentMeta` + `Category` + `COMPONENT_INVENTORY`
+  to `otel-arrow-dfe-engine`; unit tests for macro expansion.
 - **Phase 2 -- annotate existing components** (1 PR): annotate the ~30 factory
   statics and the non-factory components; generate the initial
   `components-baseline.json`; add the contributor guide
@@ -340,10 +341,10 @@ automate comparison.
 
 ## Rationale and alternatives
 
-- **Why reuse `otap-df-engine-macros` and `linkme`?** The `#[capability]` ->
-  `KNOWN_CAPABILITIES` mechanism is the exact precedent, already accepted and
-  shipping. Reusing it means no new crates, no new dependency, and a pattern
-  maintainers already know.
+- **Why reuse `otel-arrow-dfe-engine-macros` and `linkme`?** The
+  `#[capability]` -> `KNOWN_CAPABILITIES` mechanism is the exact precedent,
+  already accepted and shipping. Reusing it means no new crates, no new
+  dependency, and a pattern maintainers already know.
 - **Why URN-as-id instead of a separate kebab-case id?** Every factory already
   has a unique, structured URN in its `name` field. Reusing it removes a whole
   class of "id does not match the component" bugs and means contributors write
@@ -353,9 +354,9 @@ automate comparison.
 - **Why a `Category` enum instead of a string?** Compile-time rejection of
   misspellings (`Reciever`), and it can be cross-checked against the URN
   segment. Requested by maintainers to avoid silent bad entries.
-- **Rejected: two new crates** (`otap-df-component-inventory` +
-  `-macros`). Unnecessary: `otap-df-engine-macros` already exists as the home
-  for engine attribute macros.
+- **Rejected: two new crates** (`otel-arrow-dfe-component-inventory` +
+  `-macros`). Unnecessary: `otel-arrow-dfe-engine-macros` already exists as the
+  home for engine attribute macros.
 - **Rejected: a runtime registry/CLI-at-runtime.** The data is only needed by
   offline tooling; keeping it link-time and zero-cost avoids any runtime impact.
 - **Impact of not doing this:** component/threat-model drift stays a manual,
@@ -419,6 +420,6 @@ automate comparison.
 - **Emit the inventory as a build artifact** (JSON) attached to releases, so
   downstream consumers can fetch it without building.
 - **A shared `*-types` crate** exposing `ComponentMeta`/`Category` for consumers
-  that want the struct without depending on `otap-df-engine`.
+  that want the struct without depending on `otel-arrow-dfe-engine`.
 - **Extend the `xtask` check** to diff attributes (not just presence) against
   the baseline, catching e.g. a port or auth change.

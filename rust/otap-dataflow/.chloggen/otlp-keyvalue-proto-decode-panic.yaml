@@ -1,4 +1,0 @@
-change_type: bug_fix
-component: pdata
-note: fixes panic proto decoding `common::KeyValue` with invalid field lengths
-issues: [3672]

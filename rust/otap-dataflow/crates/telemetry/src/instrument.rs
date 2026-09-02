@@ -11,11 +11,11 @@
 //!
 //! Gauges are instantaneous values that are set via `set`.
 
-use otap_df_expohisto::{Error as HistogramError, HistogramNN};
+use otel_arrow_dfe_expohisto::{Error as HistogramError, HistogramNN};
 
 /// Bucket totals recovered by [`DistributionValue::scan_buckets`], re-exported so
-/// callers need not depend on `otap_df_expohisto` directly.
-pub use otap_df_expohisto::BucketTotals;
+/// callers need not depend on `otel_arrow_dfe_expohisto` directly.
+pub use otel_arrow_dfe_expohisto::BucketTotals;
 use std::fmt::Debug;
 use std::ops::{AddAssign, SubAssign};
 use std::time::Instant;
@@ -907,6 +907,16 @@ impl<const N: usize> Histogram<N> {
         check_hist_update(self.0.update(value), "Histogram::record rejected value");
     }
 
+    /// Merges another same-tier histogram into this one.
+    ///
+    /// Both histograms retain their exact aggregate statistics while their
+    /// bucket ranges are reconciled at the coarsest scale needed to fit the
+    /// combined observations.
+    #[inline]
+    pub fn merge(&mut self, other: Self) {
+        check_hist_update(self.0.merge_from(&other.0), "Histogram::merge overflow");
+    }
+
     /// Returns `true` when no observations have been recorded this interval.
     #[inline]
     #[must_use]
@@ -1400,6 +1410,22 @@ mod tests {
         let hist_b = normal_of(&[3.5]);
         hist_a.merge(&hist_b);
         assert_eq!(hist_a.count(), 3);
+    }
+
+    /// Scenario: Two normal histogram instruments contain disjoint observation ranges.
+    /// Guarantees: Direct instrument merging retains their combined count, sum, minimum, and maximum.
+    #[test]
+    fn histogram_merge_accumulates_same_tier_observations() {
+        let mut left = HistogramNormal::default();
+        left.record(1.0);
+        left.record(4.0);
+        let mut right = HistogramNormal::default();
+        right.record(16.0);
+        right.record(64.0);
+
+        left.merge(right);
+
+        assert_eq!(left.get().summary(), (4, 85.0, 1.0, 64.0));
     }
 
     /// Scenario: The normal tier is asked to record a negative value in a debug

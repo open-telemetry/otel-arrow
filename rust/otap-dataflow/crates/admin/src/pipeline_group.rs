@@ -39,12 +39,12 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::Utc;
-use otap_df_admin_types::{
+use otel_arrow_dfe_admin_types::{
     groups::{ShutdownResponse, ShutdownStatus, Status as GroupsStatus},
     operations::{DeleteOptions, OperationOptions},
 };
-use otap_df_config::pipeline_group::PipelineGroupConfig;
-use otap_df_telemetry::otel_info;
+use otel_arrow_dfe_config::pipeline_group::PipelineGroupConfig;
+use otel_arrow_dfe_telemetry::otel_info;
 use std::time::{Duration, Instant};
 
 /// All the routes for pipeline groups.
@@ -248,11 +248,11 @@ mod tests {
         RolloutStatus, ShutdownStatus,
     };
     use axum::body::to_bytes;
-    use otap_df_admin_types::operations::{OperationError, OperationErrorKind};
-    use otap_df_config::observed_state::ObservedStateSettings;
-    use otap_df_engine::memory_limiter::MemoryPressureState;
-    use otap_df_state::store::ObservedStateStore;
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_admin_types::operations::{OperationError, OperationErrorKind};
+    use otel_arrow_dfe_config::observed_state::ObservedStateSettings;
+    use otel_arrow_dfe_engine::memory_limiter::MemoryPressureState;
+    use otel_arrow_dfe_state::store::ObservedStateStore;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use std::sync::Arc;
 
     #[derive(Clone)]
@@ -277,6 +277,7 @@ mod tests {
             _pipeline_group_id: &str,
             _pipeline_id: &str,
             _timeout_secs: u64,
+            _initiator: crate::PipelineShutdownInitiator,
         ) -> Result<ShutdownStatus, ControlPlaneError> {
             Err(ControlPlaneError::PipelineNotFound)
         }
@@ -351,6 +352,7 @@ mod tests {
             controller,
             terminal_control_plane_permits: Arc::new(tokio::sync::Semaphore::new(1)),
             heap_profile_permits: Arc::new(tokio::sync::Semaphore::new(1)),
+            cpu_profile_permits: Arc::new(tokio::sync::Semaphore::new(1)),
             log_tap: None,
             memory_pressure_state: MemoryPressureState::default(),
             target_info: Arc::from(""),
@@ -708,7 +710,7 @@ mod tests {
         let metrics_registry = TelemetryRegistryHandle::new();
         let store =
             ObservedStateStore::new(&ObservedStateSettings::default(), metrics_registry.clone());
-        let reporter = store.reporter(otap_df_config::observed_state::SendPolicy::default());
+        let reporter = store.reporter(otel_arrow_dfe_config::observed_state::SendPolicy::default());
 
         let cancel = tokio_util::sync::CancellationToken::new();
         let cancel_clone = cancel.clone();
@@ -717,25 +719,24 @@ mod tests {
             let _ = store_clone.run(cancel_clone).await;
         });
 
-        let key = otap_df_config::DeployedPipelineKey {
+        let key = otel_arrow_dfe_config::DeployedPipelineKey {
             pipeline_group_id: "default".into(),
             pipeline_id: "main".into(),
             core_id: 0,
             deployment_generation: 1,
         };
-        reporter.report(otap_df_telemetry::event::EngineEvent::admitted(
+        reporter.report(otel_arrow_dfe_telemetry::event::EngineEvent::admitted(
             key.clone(),
             None,
         ));
-        reporter.report(otap_df_telemetry::event::EngineEvent::ready(
+        reporter.report(otel_arrow_dfe_telemetry::event::EngineEvent::ready(
             key.clone(),
             None,
         ));
-        reporter.report(otap_df_telemetry::event::EngineEvent::shutdown_requested(
-            key.clone(),
-            None,
-        ));
-        reporter.report(otap_df_telemetry::event::EngineEvent::drained(
+        reporter.report(
+            otel_arrow_dfe_telemetry::event::EngineEvent::shutdown_requested(key.clone(), None),
+        );
+        reporter.report(otel_arrow_dfe_telemetry::event::EngineEvent::drained(
             key.clone(),
             None,
         ));
@@ -781,7 +782,7 @@ mod tests {
         let metrics_registry = TelemetryRegistryHandle::new();
         let store =
             ObservedStateStore::new(&ObservedStateSettings::default(), metrics_registry.clone());
-        let reporter = store.reporter(otap_df_config::observed_state::SendPolicy::default());
+        let reporter = store.reporter(otel_arrow_dfe_config::observed_state::SendPolicy::default());
 
         let cancel = tokio_util::sync::CancellationToken::new();
         let cancel_clone = cancel.clone();
@@ -790,17 +791,17 @@ mod tests {
             let _ = store_clone.run(cancel_clone).await;
         });
 
-        let key = otap_df_config::DeployedPipelineKey {
+        let key = otel_arrow_dfe_config::DeployedPipelineKey {
             pipeline_group_id: "default".into(),
             pipeline_id: "main".into(),
             core_id: 0,
             deployment_generation: 1,
         };
-        reporter.report(otap_df_telemetry::event::EngineEvent::admitted(
+        reporter.report(otel_arrow_dfe_telemetry::event::EngineEvent::admitted(
             key.clone(),
             None,
         ));
-        reporter.report(otap_df_telemetry::event::EngineEvent::ready(
+        reporter.report(otel_arrow_dfe_telemetry::event::EngineEvent::ready(
             key.clone(),
             None,
         ));

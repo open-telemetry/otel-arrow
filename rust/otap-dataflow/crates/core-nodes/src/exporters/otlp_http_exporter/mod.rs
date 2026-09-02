@@ -10,73 +10,92 @@
 //! - JSON encoding payloads (currently only proto is supported and it's not configurable)
 //! - Unit test metrics reporting
 
+otel_arrow_dfe_telemetry::otel_component_scope!(
+    urn = OTLP_HTTP_EXPORTER_URN,
+    target = "otel.exporter.otlp_http",
+);
+
 use std::num::NonZeroUsize;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use futures::StreamExt;
 use http::{HeaderMap, HeaderValue, StatusCode};
 use linkme::distributed_slice;
-use otap_df_config::SignalType;
-use otap_df_config::error::Error as ConfigError;
-use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::config::ExporterConfig;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
-use otap_df_engine::error::{Error as EngineError, ExporterErrorKind};
-use otap_df_engine::exporter::ExporterWrapper;
-use otap_df_engine::local::capability::auth::bearer_token_provider::BearerTokenProvider;
-use otap_df_engine::local::exporter::{EffectHandler, Exporter};
-use otap_df_engine::message::{ExporterInbox, Message};
-use otap_df_engine::node::NodeId;
-use otap_df_engine::terminal_state::TerminalState;
-use otap_df_engine::wiring_contract::WiringContract;
-use otap_df_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_engine::config::ExporterConfig;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
+use otel_arrow_dfe_engine::error::{Error as EngineError, ExporterErrorKind};
+use otel_arrow_dfe_engine::exporter::ExporterWrapper;
+use otel_arrow_dfe_engine::local::capability::auth::bearer_token_provider::BearerTokenProvider;
+use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
+use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
+use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_engine::wiring_contract::WiringContract;
+use otel_arrow_dfe_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
 #[cfg(test)]
-use otap_df_pdata::TryIntoWithOptions;
-use otap_df_pdata::otlp::logs::LogsProtoBytesEncoder;
-use otap_df_pdata::otlp::metrics::MetricsProtoBytesEncoder;
-use otap_df_pdata::otlp::traces::TracesProtoBytesEncoder;
-use otap_df_pdata::otlp::{ProtoBuffer, ProtoBytesEncoder};
-use otap_df_pdata::proto::opentelemetry::collector::logs::v1::{
+use otel_arrow_dfe_pdata::TryIntoWithOptions;
+use otel_arrow_dfe_pdata::otlp::logs::LogsProtoBytesEncoder;
+use otel_arrow_dfe_pdata::otlp::metrics::MetricsProtoBytesEncoder;
+use otel_arrow_dfe_pdata::otlp::traces::TracesProtoBytesEncoder;
+use otel_arrow_dfe_pdata::otlp::{ProtoBuffer, ProtoBytesEncoder};
+use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::{
     ExportLogsPartialSuccess, ExportLogsServiceResponse,
 };
-use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::{
+use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::{
     ExportMetricsPartialSuccess, ExportMetricsServiceResponse,
 };
-use otap_df_pdata::proto::opentelemetry::collector::trace::v1::{
+use otel_arrow_dfe_pdata::proto::opentelemetry::collector::trace::v1::{
     ExportTracePartialSuccess, ExportTraceServiceResponse,
 };
-use otap_df_pdata::{OtapPayload, OtapPayloadHelpers};
-use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
-use otap_df_telemetry::metrics::MeasurementMetricSet;
-use otap_df_telemetry::{otel_debug, otel_info, otel_warn};
+use otel_arrow_dfe_pdata::{OtapPayload, OtapPayloadHelpers, PayloadData};
 use prost::Message as _;
 use reqwest::{Client, Response};
 use secrecy::ExposeSecret;
 
 use self::config::Config;
 use crate::exporters::otlp_grpc_exporter::InFlightExports;
-use otap_df_otap::OTAP_EXPORTER_FACTORIES;
-use otap_df_otap::metrics::ExporterPDataExportMetrics;
-use otap_df_otap::otlp_http::client_settings::{HttpClientError, HttpClientSettings};
-use otap_df_otap::otlp_http::{LOGS_PATH, METRICS_PATH, PROTOBUF_CONTENT_TYPE, TRACES_PATH};
-use otap_df_otap::pdata::{Context, OtapPdata};
+use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
+use otel_arrow_dfe_otap::bearer_auth::{BearerAuth, BearerAuthEvents, apply_auth_rejection};
+use otel_arrow_dfe_otap::otlp_http::client_settings::{HttpClientError, HttpClientSettings};
+use otel_arrow_dfe_otap::otlp_http::{
+    LOGS_PATH, METRICS_PATH, PROTOBUF_CONTENT_TYPE, RpcStatus, TRACES_PATH,
+};
+use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
 
-use self::bearer_auth::BearerAuth;
-
-mod bearer_auth;
 mod config;
+mod metrics;
+
+use self::metrics::{OtlpHttpExporterErrorType, OtlpHttpExporterMetrics};
 
 /// The URN for the OTLP HTTP exporter
 pub const OTLP_HTTP_EXPORTER_URN: &str = "urn:otel:exporter:otlp_http";
 
+/// Raises the shared bearer-auth warnings under this exporter's event namespace.
+const HTTP_BEARER_AUTH_EVENTS: BearerAuthEvents = BearerAuthEvents {
+    invalid_token: |error| {
+        otel_warn!("otlp.exporter.http.invalid_bearer_token", error = %error);
+    },
+    token_stream_closed: || {
+        otel_warn!(
+            "otlp.exporter.http.token_stream_closed",
+            message = "bearer token provider closed its stream; \
+                no further token refreshes will arrive"
+        );
+    },
+};
+
 /// Exporter that sends OTLP data via HTTP
 pub struct OtlpHttpExporter {
     config: Config,
-    pdata_metrics: MeasurementMetricSet<ExporterPDataExportMetrics>,
+    metrics: OtlpHttpExporterMetrics,
     /// Optional bearer token provider resolved from the
     /// `bearer_token_provider` capability. When bound, a fresh
     /// `Authorization: Bearer <token>` is injected on every outgoing
@@ -86,7 +105,7 @@ pub struct OtlpHttpExporter {
 
 /// Declare the OTLP HTTP Exporter as a local exporter factory
 #[allow(unsafe_code)]
-#[otap_df_engine::component_inventory(category = Exporter)]
+#[otel_arrow_dfe_engine::component_inventory(category = Exporter)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static OTLP_HTTP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: OTLP_HTTP_EXPORTER_URN,
@@ -118,13 +137,13 @@ fn factory_create(
     node: NodeId,
     node_config: Arc<NodeUserConfig>,
     exporter_config: &ExporterConfig,
-    capabilities: &otap_df_engine::capability::registry::Capabilities,
+    capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
 ) -> Result<ExporterWrapper<OtapPdata>, ConfigError> {
     // Optionally resolve a bound bearer token provider. Absent binding keeps the
     // default (no-auth) behavior; a bound provider (e.g. the `azure_identity_auth`
     // extension) supplies refreshed OAuth tokens.
     let token_provider = capabilities
-        .optional_local::<otap_df_engine::capability::auth::bearer_token_provider::BearerTokenProvider>()
+        .optional_local::<otel_arrow_dfe_engine::capability::auth::bearer_token_provider::BearerTokenProvider>()
         .map_err(|e| ConfigError::InvalidUserConfig {
             error: e.to_string(),
         })?;
@@ -143,10 +162,10 @@ impl OtlpHttpExporter {
         config: &serde_json::Value,
         token_provider: Option<Box<dyn BearerTokenProvider>>,
     ) -> Result<Self, ConfigError> {
-        let pdata_metrics = ExporterPDataExportMetrics::register(&pipeline_ctx);
+        let metrics = OtlpHttpExporterMetrics::register(&pipeline_ctx);
 
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
-            otap_df_config::error::Error::InvalidUserConfig {
+            otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
             }
         })?;
@@ -217,7 +236,7 @@ impl OtlpHttpExporter {
 
         Ok(Self {
             config,
-            pdata_metrics,
+            metrics,
             token_provider,
         })
     }
@@ -229,6 +248,7 @@ struct CompletedExport {
     context: Context,
     saved_payload: OtapPayload,
     signal_type: SignalType,
+    export_started_at: Instant,
     /// Generation of the bearer token stamped on this request (`None` when no
     /// provider is bound). Echoed back so a 401 invalidates exactly the token
     /// that was used, not a newer one already cached (see
@@ -305,10 +325,20 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
         // the token subscription, the cached `Authorization` header, and token
         // usability; the loop below stays auth-agnostic -- it only asks whether
         // it may send and stamps the header the adapter hands back.
-        let mut auth = self.token_provider.take().map(BearerAuth::new);
-        // Constant for the whole run (the adapter is created once), so precompute
-        // it for the auth-aware retry decision in `finalize_completed_export`.
-        let auth_bound = auth.is_some();
+        let mut auth = self
+            .token_provider
+            .take()
+            .map(|provider| BearerAuth::new(provider, HTTP_BEARER_AUTH_EVENTS));
+
+        // Timer that fires when the cached token crosses its usability margin.
+        // Hoisted out of the loop and re-armed only when the deadline actually
+        // moves (i.e. when a refresh is cached), so a busy exporter does not pay
+        // a timer-wheel registration per message. It starts already elapsed and
+        // is only polled once armed, since the `select!` arm below is guarded on
+        // a deadline being present.
+        let margin_sleep = tokio::time::sleep_until(tokio::time::Instant::now());
+        tokio::pin!(margin_sleep);
+        let mut armed_margin_deadline: Option<Instant> = None;
 
         loop {
             // Admit pdata only when auth is ready (a usable token is cached, or no
@@ -327,21 +357,24 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
             // (and gates) before a near-expiry batch is admitted, since the recv
             // arm below may already be parked when the margin is reached.
             let token_margin_deadline = auth.as_ref().and_then(BearerAuth::refresh_deadline);
+            if token_margin_deadline != armed_margin_deadline {
+                if let Some(deadline) = token_margin_deadline {
+                    margin_sleep
+                        .as_mut()
+                        .reset(tokio::time::Instant::from_std(deadline));
+                }
+                armed_margin_deadline = token_margin_deadline;
+            }
 
             let msg = tokio::select! {
                 biased;
 
                 // Wake when the cached token reaches its usability margin so the
-                // next loop iteration gates intake. The `async` block keeps this
-                // lazy; the `None` arm is unreachable while the guard holds.
-                () = async {
-                    match token_margin_deadline {
-                        Some(deadline) => {
-                            tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await
-                        }
-                        None => std::future::pending().await,
-                    }
-                }, if token_margin_deadline.is_some() => {
+                // next loop iteration gates intake. Guarded because the timer is
+                // left elapsed whenever nothing is armed; once it fires,
+                // `refresh_deadline` returns `None`, which closes the guard and
+                // keeps the arm from busy-looping.
+                () = &mut margin_sleep, if token_margin_deadline.is_some() => {
                     continue;
                 }
 
@@ -370,8 +403,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                         let rejected_generation = finalize_completed_export(
                             completed,
                             &effect_handler,
-                            &mut self.pdata_metrics,
-                            auth_bound,
+                            &mut self.metrics,
                         )
                         .await;
                         // Server rejected the token this request used (401); drop
@@ -401,8 +433,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                             let rejected_generation = finalize_completed_export(
                                 completed,
                                 &effect_handler,
-                                &mut self.pdata_metrics,
-                                auth_bound,
+                                &mut self.metrics,
                             )
                             .await;
                             // Honor a 401 even while draining, so a later
@@ -412,13 +443,14 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                     }
                     return Ok(TerminalState::new(
                         deadline,
-                        self.pdata_metrics.terminal_snapshots(),
+                        self.metrics.terminal_snapshots(),
                     ));
                 }
                 Message::Control(NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
-                }) => _ = metrics_reporter.report_measurement(&mut self.pdata_metrics),
+                }) => _ = self.metrics.report(&mut metrics_reporter),
                 Message::PData(pdata) => {
+                    let export_started_at = Instant::now();
                     let signal_type = pdata.signal_type();
                     let (context, payload) = pdata.into_parts();
 
@@ -429,19 +461,18 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                     // may yet arrive, so nothing is dropped.
                     if let Some(a) = auth.as_ref() {
                         if !a.is_ready() {
-                            let mut nack = NackMsg::new(
+                            let export_duration = export_started_at.elapsed();
+                            // `NackMsg::new` is retryable by construction.
+                            let nack = NackMsg::new(
                                 a.not_ready_reason(),
                                 OtapPdata::new(context, payload),
                             );
-                            nack.permanent = false;
                             _ = effect_handler.notify_nack(nack).await;
-                            self.pdata_metrics
-                                .with(SignalOutcomeAttributes {
-                                    signal: signal_type,
-                                    outcome: Outcome::Failure,
-                                })
-                                .messages
-                                .inc();
+                            self.metrics.record_failure(
+                                signal_type,
+                                OtlpHttpExporterErrorType::Authentication,
+                                export_duration,
+                            );
                             continue;
                         }
                     }
@@ -470,8 +501,8 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
 
                     // proto encode the payload into the request body, while keeping a copy of the
                     // original payload if the context allows it to be returned.
-                    let (uncompressed, saved_payload) = match payload {
-                        OtapPayload::OtlpBytes(mut otlp_bytes) => {
+                    let (uncompressed, saved_payload) = match payload.into_data() {
+                        PayloadData::OtlpBytes(mut otlp_bytes) => {
                             if context.may_return_payload() {
                                 // use cheap clone of bytes as the request body
                                 let body = otlp_bytes.clone_bytes();
@@ -482,7 +513,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                                 (Uncompressed::Bytes(body), otlp_bytes.into())
                             }
                         }
-                        OtapPayload::OtapArrowRecords(mut otap_batch) => {
+                        PayloadData::OtapArrowRecords(mut otap_batch) => {
                             // encode the OTAP batch as protobuf request body
                             proto_buffer.clear();
                             let encode_result =
@@ -502,6 +533,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                             }
 
                             if let Err(e) = encode_result {
+                                let export_duration = export_started_at.elapsed();
                                 // encoding error, we must have received an invalid structured batch
                                 let mut nack = NackMsg::new(
                                     e.to_string(),
@@ -509,13 +541,11 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                                 );
                                 nack.permanent = true;
                                 _ = effect_handler.notify_nack(nack).await;
-                                self.pdata_metrics
-                                    .with(SignalOutcomeAttributes {
-                                        signal: signal_type,
-                                        outcome: Outcome::Failure,
-                                    })
-                                    .messages
-                                    .inc();
+                                self.metrics.record_failure(
+                                    signal_type,
+                                    OtlpHttpExporterErrorType::Encoding,
+                                    export_duration,
+                                );
                                 continue;
                             }
 
@@ -532,19 +562,18 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                             if let Err(e) =
                                 method.encode(uncompressed_slice, &mut compressed_buffer)
                             {
+                                let export_duration = export_started_at.elapsed();
                                 let mut nack = NackMsg::new(
                                     e.to_string(),
                                     OtapPdata::new(context, saved_payload),
                                 );
                                 nack.permanent = true;
                                 _ = effect_handler.notify_nack(nack).await;
-                                self.pdata_metrics
-                                    .with(SignalOutcomeAttributes {
-                                        signal: signal_type,
-                                        outcome: Outcome::Failure,
-                                    })
-                                    .messages
-                                    .inc();
+                                self.metrics.record_failure(
+                                    signal_type,
+                                    OtlpHttpExporterErrorType::Compression,
+                                    export_duration,
+                                );
                                 continue;
                             }
                             Bytes::copy_from_slice(&compressed_buffer)
@@ -575,8 +604,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                                 let rejected_generation = finalize_completed_export(
                                     completed,
                                     &effect_handler,
-                                    &mut self.pdata_metrics,
-                                    auth_bound,
+                                    &mut self.metrics,
                                 )
                                 .await;
                                 // Honor a 401 here too, so the next force-drained
@@ -615,6 +643,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                             context,
                             saved_payload,
                             signal_type,
+                            export_started_at,
                             token_generation,
                         }
                     })
@@ -691,11 +720,12 @@ impl From<ExportTraceServiceResponse> for ServiceResponse {
 
 #[derive(thiserror::Error, Debug)]
 enum ServiceRequestError {
-    #[error("An error occurred sending HTTP request: {err}{}", format_source(err))]
-    RequestError {
-        #[from]
-        err: reqwest::Error,
-    },
+    #[error(
+        "An error occurred sending HTTP request: {err}{}{}",
+        format_source(err),
+        format_error_body(detail)
+    )]
+    RequestError { err: reqwest::Error, detail: String },
 
     #[error("An error occurred decoding response body: {0}")]
     DecodeError(#[from] prost::DecodeError),
@@ -704,35 +734,60 @@ enum ServiceRequestError {
     BodyTooLarge { body_size: usize, max_size: usize },
 }
 
+impl From<reqwest::Error> for ServiceRequestError {
+    fn from(err: reqwest::Error) -> Self {
+        Self::RequestError {
+            err,
+            detail: String::new(),
+        }
+    }
+}
+
 impl ServiceRequestError {
+    /// Classifies this terminal request failure for bounded diagnostic metrics.
+    fn error_type(&self) -> OtlpHttpExporterErrorType {
+        match self {
+            Self::RequestError { err, .. } => {
+                if err.is_timeout() {
+                    OtlpHttpExporterErrorType::Timeout
+                } else if let Some(status) = err.status() {
+                    OtlpHttpExporterErrorType::from_status(status)
+                } else {
+                    OtlpHttpExporterErrorType::Transport
+                }
+            }
+            Self::DecodeError(_) => OtlpHttpExporterErrorType::ResponseDecode,
+            Self::BodyTooLarge { .. } => OtlpHttpExporterErrorType::ResponseTooLarge,
+        }
+    }
+
     fn is_retryable(&self) -> bool {
         match self {
-            Self::RequestError { err: req_err } => {
-                match req_err.status() {
-                    Some(status) => {
-                        // we received a non-200 response. The OTLP HTTP spec defines certain
-                        // status codes for which the client may retry the request
-                        // https://opentelemetry.io/docs/specs/otlp/#retryable-response-codes
-                        status == StatusCode::TOO_MANY_REQUESTS
-                            || status == StatusCode::BAD_GATEWAY
-                            || status == StatusCode::SERVICE_UNAVAILABLE
-                            || status == StatusCode::GATEWAY_TIMEOUT
-                    }
-                    None => {
-                        // we've encountered some other kind of error sending the request. For
-                        // example, maybe there was connection refused, the server disconnected
-                        // without sending a response, or there was non HTTP timeout.
-                        //
-                        // The OTLP spec isn't entirely clear on what to do here, but it does
-                        // instruct to adhere to HTTP spec and explicitly states to retry on
-                        // server disconnects
-                        // https://opentelemetry.io/docs/specs/otlp/#all-other-responses
-                        //
-                        // we'll do something reasonable here and retry on these errors which
-                        // may be transient, network related
-                        req_err.is_connect() || req_err.is_timeout()
-                    }
-                }
+            Self::RequestError { err: req_err, .. } => {
+                // For requests that received an HTTP response, reqwest retains
+                // the response status in the error returned by
+                // `error_for_status_ref`. Other errors are failures sending the
+                // request, such as connection refused, server disconnect, or a
+                // non-HTTP timeout.
+                //
+                // The OTLP spec isn't entirely clear on what to do here, but it does
+                // instruct to adhere to HTTP spec and explicitly states to retry on
+                // server disconnects
+                // https://opentelemetry.io/docs/specs/otlp/#all-other-responses
+                //
+                // We'll retry transient transport failures and the status codes
+                // OTLP permits clients to retry.
+                req_err.is_connect()
+                    || req_err.is_timeout()
+                    || matches!(
+                        req_err.status(),
+                        Some(
+                            StatusCode::TOO_MANY_REQUESTS
+                                | StatusCode::BAD_GATEWAY
+                                | StatusCode::SERVICE_UNAVAILABLE
+                                | StatusCode::GATEWAY_TIMEOUT
+                        )
+                    )
             }
 
             Self::BodyTooLarge { .. } | ServiceRequestError::DecodeError(_) => {
@@ -749,14 +804,16 @@ impl ServiceRequestError {
 
     /// Whether this is an HTTP 401 Unauthorized response. When a bearer token
     /// provider is bound this is treated as retryable, because it usually means
-    /// the cached token lapsed or a refresh raced; the batch can succeed once a
-    /// fresh token is in use. 403 Forbidden is intentionally excluded: it
-    /// signals a scope or permission problem that a token refresh will not fix.
+    /// the cached token lapsed or a refresh raced; the batch can succeed once the
+    /// provider publishes its next token. Recovery waits for that provider's own
+    /// refresh schedule - rejecting a token only drops the exporter's cached
+    /// copy, it does not make the provider refresh early. 403 Forbidden is
+    /// intentionally excluded: it signals a scope or permission problem that a
+    /// token refresh will not fix.
     fn is_auth_failure(&self) -> bool {
         matches!(
             self,
-            Self::RequestError { err }
-                if err.status() == Some(StatusCode::UNAUTHORIZED)
+            Self::RequestError { err, .. } if err.status() == Some(StatusCode::UNAUTHORIZED)
         )
     }
 }
@@ -776,12 +833,80 @@ fn format_source(e: &reqwest::Error) -> String {
     }
 }
 
+/// Formats captured HTTP error detail for inclusion in a request error's display
+/// message, so a backend rejection includes its explanation alongside reqwest's
+/// status and URL diagnostic.
+fn format_error_body(body: &str) -> String {
+    if body.is_empty() {
+        String::new()
+    } else {
+        format!(": {body}")
+    }
+}
+
+const MAX_ERROR_BODY_LOG_LENGTH: usize = 4096;
+const ERROR_BODY_READ_TIMEOUT: Duration = Duration::from_secs(1);
+
+fn error_body_summary(body: &Bytes, truncated: bool) -> String {
+    let summary = if truncated {
+        String::from_utf8_lossy(body).into_owned()
+    } else {
+        RpcStatus::decode(body.clone())
+            .ok()
+            .filter(|status| !status.message.is_empty())
+            .map(|status| format!("{} (RPC code {})", status.message, status.code))
+            .unwrap_or_else(|| String::from_utf8_lossy(body).into_owned())
+    };
+
+    if truncated {
+        format!("{summary}... <truncated>")
+    } else {
+        summary
+    }
+}
+
+/// Reads a bounded prefix of a failed HTTP response body for diagnostics. The
+/// timeout prevents an indefinitely streaming error response from occupying an
+/// export slot when the configured HTTP request timeout is unset. Returns a
+/// boolean that indicates when truncation occurs.
+async fn collect_error_body_prefix(response: Response) -> Result<(Bytes, bool), reqwest::Error> {
+    let mut buf = BytesMut::with_capacity(MAX_ERROR_BODY_LOG_LENGTH);
+    let mut stream = response.bytes_stream();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        let remaining = MAX_ERROR_BODY_LOG_LENGTH - buf.len();
+        let prefix_len = remaining.min(chunk.len());
+        buf.extend_from_slice(&chunk[..prefix_len]);
+        if prefix_len < chunk.len() {
+            return Ok((buf.freeze(), true));
+        }
+    }
+
+    Ok((buf.freeze(), false))
+}
+
 async fn query_result_to_service_response(
     signal_type: &SignalType,
     max_response_body_len: usize,
     result: Result<Response, reqwest::Error>,
 ) -> Result<ServiceResponse, ServiceRequestError> {
-    let resp = result?.error_for_status()?;
+    let resp = result?;
+    if let Err(err) = resp.error_for_status_ref() {
+        // `error_for_status_ref` preserves the response, while its error keeps
+        // reqwest's status and URL classification used below. Read only a small,
+        // time-bounded prefix because diagnostics must not hold an export slot on
+        // an unbounded or indefinitely streaming error response.
+        let detail =
+            match tokio::time::timeout(ERROR_BODY_READ_TIMEOUT, collect_error_body_prefix(resp))
+                .await
+            {
+                Ok(Ok((body, truncated))) => error_body_summary(&body, truncated),
+                Ok(Err(error)) => format!("<failed to read response body: {error}>"),
+                Err(_) => "<timed out reading response body>".to_string(),
+            };
+        return Err(ServiceRequestError::RequestError { err, detail });
+    }
     let mut body = collect_body(resp, max_response_body_len).await?;
 
     let service_resp = match signal_type {
@@ -823,30 +948,20 @@ async fn collect_body(response: Response, max_len: usize) -> Result<Bytes, Servi
     Ok(buf.freeze())
 }
 
-/// Applies a 401 rejection reported by [`finalize_completed_export`] to the
-/// bearer adapter: drops the rejected token generation so a retry waits for a
-/// fresh token instead of reusing the rejected one. A no-op when no provider is
-/// bound (`rejected_generation` is `None`) or the rejection is stale (a newer
-/// token was already cached), per [`BearerAuth::invalidate`]'s generation guard.
-fn apply_auth_rejection(auth: &mut Option<BearerAuth>, rejected_generation: Option<u64>) {
-    if let (Some(generation), Some(adapter)) = (rejected_generation, auth.as_mut()) {
-        adapter.invalidate(generation);
-    }
-}
-
 async fn finalize_completed_export(
     completed: CompletedExport,
     effect_handler: &EffectHandler<OtapPdata>,
-    pdata_metrics: &mut MeasurementMetricSet<ExporterPDataExportMetrics>,
-    auth_bound: bool,
+    metrics: &mut OtlpHttpExporterMetrics,
 ) -> Option<u64> {
     let CompletedExport {
         result,
         context,
         saved_payload,
         signal_type,
+        export_started_at,
         token_generation,
     } = completed;
+    let export_duration = export_started_at.elapsed();
 
     let pdata = OtapPdata::new(context, saved_payload);
 
@@ -877,6 +992,7 @@ async fn finalize_completed_export(
                         partial_success.error_message, partial_success.rejected
                     ),
                     retryable,
+                    OtlpHttpExporterErrorType::PartialRejection,
                 ))
             }
         }),
@@ -884,19 +1000,40 @@ async fn finalize_completed_export(
             // With a bearer token provider bound, a 401 usually means the cached
             // token lapsed or a refresh raced, so retry rather than drop; record
             // the rejected generation so the caller invalidates exactly the token
-            // that was used before the retry.
-            let auth_failure = auth_bound && e.is_auth_failure();
+            // that was used before the retry. A stamped generation is what "a
+            // provider is bound" means for this request: the dispatch path only
+            // reaches a send with a usable token cached, so the generation is
+            // `Some` exactly when the request carried a refreshable credential.
+            let auth_failure = token_generation.is_some() && e.is_auth_failure();
             if auth_failure {
                 rejected_generation = token_generation;
             }
             let retryable = e.is_retryable() || auth_failure;
-            Some((e.to_string(), retryable))
+            let error_type = e.error_type();
+            Some((e.to_string(), retryable, error_type))
         }
     };
 
-    let export_and_notify_success = match err {
-        None => effect_handler.notify_ack(AckMsg::new(pdata)).await.is_ok(),
-        Some((err_msg, retryable)) => {
+    // Record the backend result before routing its Ack/Nack. Notification
+    // delivery is a separate pipeline concern and must not redefine or suppress
+    // the terminal HTTP export outcome.
+    if let Some((_, _, error_type)) = &err {
+        metrics.record_failure(signal_type, *error_type, export_duration);
+    } else {
+        metrics.record_success(signal_type, export_duration);
+    }
+
+    match err {
+        None => {
+            if let Err(error) = effect_handler.notify_ack(AckMsg::new(pdata)).await {
+                otel_warn!(
+                    "otlp.exporter.http.notification_error",
+                    message = "Failed to route the terminal OTLP HTTP Ack notification",
+                    error = %error
+                );
+            }
+        }
+        Some((err_msg, retryable, _)) => {
             otel_warn!(
                 "otlp.exporter.http.export_error",
                 message = err_msg,
@@ -904,23 +1041,15 @@ async fn finalize_completed_export(
             );
             let mut nack = NackMsg::new(&err_msg, pdata);
             nack.permanent = !retryable;
-            _ = effect_handler.notify_nack(nack).await;
-            false
+            if let Err(error) = effect_handler.notify_nack(nack).await {
+                otel_warn!(
+                    "otlp.exporter.http.notification_error",
+                    message = "Failed to route the terminal OTLP HTTP Nack notification",
+                    error = %error
+                );
+            }
         }
-    };
-
-    let outcome = if export_and_notify_success {
-        Outcome::Success
-    } else {
-        Outcome::Failure
-    };
-    pdata_metrics
-        .with(SignalOutcomeAttributes {
-            signal: signal_type,
-            outcome,
-        })
-        .messages
-        .inc();
+    }
 
     rejected_generation
 }
@@ -1033,29 +1162,30 @@ mod test {
     use hyper::server::conn::http1;
     use hyper::service::service_fn;
     use hyper_util::rt::TokioIo;
-    use otap_df_config::PortName;
-    use otap_df_engine::Interests;
-    use otap_df_engine::context::ControllerContext;
-    use otap_df_engine::control::{PipelineCompletionMsg, runtime_ctrl_msg_channel};
-    use otap_df_engine::shared::message::SharedSender;
-    use otap_df_engine::testing::exporter::TestRuntime;
-    use otap_df_engine::testing::node::test_node;
-    use otap_df_pdata::OtapArrowRecords;
-    use otap_df_pdata::OtlpProtoBytes;
-    use otap_df_pdata::otap::Logs;
-    use otap_df_pdata::proto::OtlpProtoMessage;
-    use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-    use otap_df_pdata::proto::opentelemetry::logs::v1::{
+    use otel_arrow_dfe_config::PortName;
+    use otel_arrow_dfe_engine::Interests;
+    use otel_arrow_dfe_engine::context::ControllerContext;
+    use otel_arrow_dfe_engine::control::{PipelineCompletionMsg, runtime_ctrl_msg_channel};
+    use otel_arrow_dfe_engine::shared::message::SharedSender;
+    use otel_arrow_dfe_engine::testing::exporter::TestRuntime;
+    use otel_arrow_dfe_engine::testing::node::test_node;
+    use otel_arrow_dfe_pdata::OtapArrowRecords;
+    use otel_arrow_dfe_pdata::OtlpProtoBytes;
+    use otel_arrow_dfe_pdata::otap::Logs;
+    use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{
         LogRecord, LogsData, ResourceLogs, ScopeLogs,
     };
-    use otap_df_pdata::proto::opentelemetry::metrics::v1::{
+    use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
         Metric, MetricsData, ResourceMetrics, ScopeMetrics,
     };
-    use otap_df_pdata::proto::opentelemetry::trace::v1::{ResourceSpans, TracesData};
-    use otap_df_pdata::testing::equiv::assert_equivalent;
-    use otap_df_pdata::testing::round_trip::otlp_to_otap;
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
-    use otap_df_telemetry::reporter::MetricsReporter;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::{ResourceSpans, TracesData};
+    use otel_arrow_dfe_pdata::testing::equiv::assert_equivalent;
+    use otel_arrow_dfe_pdata::testing::round_trip::otlp_to_otap;
+    use otel_arrow_dfe_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 
     use parking_lot::lock_api::Mutex;
     use prost::Message;
@@ -1064,18 +1194,19 @@ mod test {
     use tokio_util::task::TaskTracker;
 
     use {
-        otap_df_config::tls::{TlsClientConfig, TlsConfig, TlsServerConfig},
-        otap_test_tls_certs::{ExtendedKeyUsage, generate_ca},
+        otel_arrow_dfe_config::tls::{TlsClientConfig, TlsConfig, TlsServerConfig},
+        otel_arrow_dfe_test_tls_certs::{ExtendedKeyUsage, generate_ca},
         tempfile::TempDir,
     };
 
     use super::*;
 
-    use otap_df_otap::otap_grpc::common::AckRegistry;
-    use otap_df_otap::otlp_http::client_settings::HttpClientSettings;
-    use otap_df_otap::otlp_http::{HttpServerSettings, serve, tune_max_concurrent_requests};
-    use otap_df_otap::otlp_metrics::OtlpReceiverMetrics;
-    use otap_df_otap::testing::TestCallData;
+    use otel_arrow_dfe_otap::bearer_auth::test_support::MockTokenProvider;
+    use otel_arrow_dfe_otap::otap_grpc::common::AckRegistry;
+    use otel_arrow_dfe_otap::otlp_http::client_settings::HttpClientSettings;
+    use otel_arrow_dfe_otap::otlp_http::{HttpServerSettings, serve, tune_max_concurrent_requests};
+    use otel_arrow_dfe_otap::otlp_metrics::OtlpReceiverMetrics;
+    use otel_arrow_dfe_otap::testing::TestCallData;
 
     /// run test HTTP server serving OTLP HTTP API. Internally, this uses the OTLP HTTP server that
     /// is used in OTLP Receiver. This returns a cancellation token (to shutdown the server when
@@ -1094,7 +1225,7 @@ mod test {
         let (runtime_ctrl_msg_tx, _runtime_ctrl_msg_rx) = runtime_ctrl_msg_channel(10);
         let (_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(5);
         let server_effect_handler =
-            otap_df_engine::shared::receiver::EffectHandler::<OtapPdata>::new(
+            otel_arrow_dfe_engine::shared::receiver::EffectHandler::<OtapPdata>::new(
                 server_node_id,
                 msg_senders,
                 Some(port_name),
@@ -1119,7 +1250,7 @@ mod test {
                 server_settings,
                 ack_registry,
                 Arc::new(Mutex::new(server_metrics)),
-                otap_df_engine::memory_limiter::SharedReceiverAdmissionState::default(),
+                otel_arrow_dfe_engine::memory_limiter::SharedReceiverAdmissionState::default(),
                 None,
                 None,
                 server_cancellation_token,
@@ -1137,19 +1268,42 @@ mod test {
 
     /// run an http server that returns error for any request
     ///
-    /// if `status_err` is Some, server will return this status code with empty body
-    /// if `status_err` is false, server will return 200 status code with body that
+    /// if `status_err` is Some, server will return this status code with an error body
+    /// if `status_err` is None, server will return 200 status code with body that
     /// indicates only a partial success
     fn run_error_server(
         tokio_rt: &Runtime,
         endpoint_addr: &str,
         status_err: Option<u16>,
     ) -> CancellationToken {
+        run_error_server_with_body(
+            tokio_rt,
+            endpoint_addr,
+            status_err,
+            Bytes::from_static(b"test backend rejected payload"),
+        )
+    }
+
+    /// Same as [`run_error_server`] but with a caller-supplied error response body, so
+    /// tests can exercise a valid `RpcStatus` payload, plain text, an empty body, or
+    /// invalid UTF-8 bytes.
+    fn run_error_server_with_body(
+        tokio_rt: &Runtime,
+        endpoint_addr: &str,
+        status_err: Option<u16>,
+        error_body: Bytes,
+    ) -> CancellationToken {
         let server_cancellation_token = CancellationToken::new();
         let server_cancellation_token2 = server_cancellation_token.clone();
         let endpoint_addr = endpoint_addr.to_string();
         _ = tokio_rt.spawn(async move {
-            serve_errors(endpoint_addr, server_cancellation_token, status_err).await
+            serve_errors(
+                endpoint_addr,
+                server_cancellation_token,
+                status_err,
+                error_body,
+            )
+            .await
         });
 
         server_cancellation_token2
@@ -1159,6 +1313,7 @@ mod test {
         endpoint_addr: String,
         shutdown_token: CancellationToken,
         status_err: Option<u16>,
+        error_body: Bytes,
     ) {
         let listener = tokio::net::TcpListener::bind(endpoint_addr).await.unwrap();
         let tracker = TaskTracker::new();
@@ -1168,14 +1323,17 @@ mod test {
                 accept_result = listener.accept() => {
                     let (stream, peer_addr) = accept_result.unwrap();
                     let shutdown_token = shutdown_token.clone();
+                    let error_body = error_body.clone();
                     drop(tracker.spawn(async move {
                         let io = TokioIo::new(stream);
-                        let conn = http1::Builder::new().serve_connection(io, service_fn(|req| async move {
+                        let conn = http1::Builder::new().serve_connection(io, service_fn(move |req| {
+                            let error_body = error_body.clone();
+                            async move {
                             if let Some(status) = status_err {
 
                                 Ok::<_, hyper::Error>(Response::builder()
                                     .status(status)
-                                    .body(Full::new(Bytes::from("".as_bytes().to_vec())))
+                                    .body(Full::new(error_body.clone()))
                                     .unwrap())
                             } else {
                                 let mut body = Vec::new();
@@ -1217,6 +1375,7 @@ mod test {
                                     .body(Full::new(Bytes::from(body)))
                                     .unwrap())
                             }
+                        }
                         }));
                         let mut conn = std::pin::pin!(conn);
 
@@ -1362,10 +1521,10 @@ mod test {
     fn test_auth_failure_is_retryable_when_provider_bound() {
         // With a bearer token provider bound, a 401 from the backend (e.g. the
         // cached token lapsed) must be NACK'd as retryable, not permanently
-        // dropped, so the batch can succeed once a fresh token is in use.
-        otap_df_otap::crypto::ensure_crypto_provider();
+        // dropped, so the batch can succeed once the provider publishes again.
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let tokio_rt = Runtime::new().unwrap();
-        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let endpoint_addr = format!("127.0.0.1:{port}");
         let endpoint = format!("http://{endpoint_addr}");
 
@@ -1383,7 +1542,7 @@ mod test {
         let mut bytes = Vec::new();
         logs_batch.encode(&mut bytes).unwrap();
         let pdatas = subscribe_pdatas(
-            vec![OtapPdata::new_default(OtapPayload::OtlpBytes(
+            vec![OtapPdata::new_default(OtapPayload::from(
                 OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes)),
             ))],
             false,
@@ -1432,9 +1591,9 @@ mod test {
     // permission problem is not fixed by refreshing the token.
     #[test]
     fn test_forbidden_is_permanent_even_when_provider_bound() {
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let tokio_rt = Runtime::new().unwrap();
-        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let endpoint_addr = format!("127.0.0.1:{port}");
         let endpoint = format!("http://{endpoint_addr}");
 
@@ -1450,7 +1609,7 @@ mod test {
         let mut bytes = Vec::new();
         logs_batch.encode(&mut bytes).unwrap();
         let pdatas = subscribe_pdatas(
-            vec![OtapPdata::new_default(OtapPayload::OtlpBytes(
+            vec![OtapPdata::new_default(OtapPayload::from(
                 OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes)),
             ))],
             false,
@@ -1498,9 +1657,9 @@ mod test {
     fn test_configured_headers_sent_on_wire() {
         use std::collections::HashMap;
 
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let tokio_rt = Runtime::new().unwrap();
-        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let endpoint_addr = format!("127.0.0.1:{port}");
 
         let captured: Arc<parking_lot::Mutex<Option<HeaderMap>>> =
@@ -1552,61 +1711,6 @@ mod test {
         );
     }
 
-    /// Test double for the `BearerTokenProvider` capability with configurable
-    /// stream behavior. `tokens` are published on the stream in order; when
-    /// `keep_open` is true the stream stays pending after draining them (never
-    /// ends), and when false it ends once they are drained (simulating a
-    /// provider that closes its stream).
-    struct MockTokenProvider {
-        tokens: Vec<String>,
-        keep_open: bool,
-        /// Expiry applied to every published token (`None` = non-expiring).
-        expires_on: Option<Instant>,
-    }
-
-    impl MockTokenProvider {
-        /// A provider that publishes a single non-expiring token and keeps its
-        /// stream open.
-        fn new(token: &str) -> Self {
-            Self {
-                tokens: vec![token.to_string()],
-                keep_open: true,
-                expires_on: None,
-            }
-        }
-    }
-
-    #[async_trait(?Send)]
-    impl BearerTokenProvider for MockTokenProvider {
-        async fn get_token(
-            &self,
-        ) -> Result<
-            otap_df_engine::capability::auth::BearerToken,
-            otap_df_engine::capability::CapabilityError,
-        > {
-            // Not exercised by the exporter (it consumes `token_stream`); return
-            // the first configured token for completeness.
-            Ok(otap_df_engine::capability::auth::BearerToken::with_expiry(
-                self.tokens.first().cloned().unwrap_or_default(),
-                None,
-            ))
-        }
-
-        fn token_stream(
-            &self,
-        ) -> otap_df_engine::capability::auth::bearer_token_provider::TokenStream {
-            let expires_on = self.expires_on;
-            let published = futures::stream::iter(self.tokens.clone().into_iter().map(move |t| {
-                otap_df_engine::capability::auth::BearerToken::with_expiry(t, expires_on)
-            }));
-            if self.keep_open {
-                published.chain(futures::stream::pending()).boxed()
-            } else {
-                published.boxed()
-            }
-        }
-    }
-
     /// Build an `OtlpHttpExporter` wrapped for the test runtime with a bound
     /// bearer token provider.
     fn exporter_with_provider(
@@ -1614,7 +1718,7 @@ mod test {
         config: Config,
         provider: MockTokenProvider,
     ) -> ExporterWrapper<OtapPdata> {
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTLP_HTTP_EXPORTER_URN));
         let telemetry_registry_handle = test_runtime.metrics_registry();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle.clone());
@@ -1629,7 +1733,7 @@ mod test {
         ExporterWrapper::local(
             OtlpHttpExporter {
                 config,
-                pdata_metrics: ExporterPDataExportMetrics::register(&pipeline_ctx),
+                metrics: OtlpHttpExporterMetrics::register(&pipeline_ctx),
                 token_provider: Some(Box::new(provider)),
             },
             node_id,
@@ -1644,9 +1748,9 @@ mod test {
         // `authorization` bearer token on the outbound request, and that the
         // token takes precedence over a statically configured `authorization`
         // header.
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let tokio_rt = Runtime::new().unwrap();
-        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let endpoint_addr = format!("127.0.0.1:{port}");
         let endpoint = format!("http://{endpoint_addr}");
 
@@ -1677,7 +1781,7 @@ mod test {
         let mut bytes = Vec::new();
         logs_batch.encode(&mut bytes).unwrap();
         let pdatas = subscribe_pdatas(
-            vec![OtapPdata::new_default(OtapPayload::OtlpBytes(
+            vec![OtapPdata::new_default(OtapPayload::from(
                 OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes)),
             ))],
             false,
@@ -1718,9 +1822,9 @@ mod test {
     fn test_bearer_token_unavailable_nacks_and_sends_nothing() {
         // Provider is bound but never publishes a token: batches must be NACK'd
         // as retryable and no request may reach the server.
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let tokio_rt = Runtime::new().unwrap();
-        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let endpoint_addr = format!("127.0.0.1:{port}");
         let endpoint = format!("http://{endpoint_addr}");
 
@@ -1746,7 +1850,7 @@ mod test {
         let mut bytes = Vec::new();
         logs_batch.encode(&mut bytes).unwrap();
         let pdatas = subscribe_pdatas(
-            vec![OtapPdata::new_default(OtapPayload::OtlpBytes(
+            vec![OtapPdata::new_default(OtapPayload::from(
                 OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes)),
             ))],
             false,
@@ -1803,9 +1907,9 @@ mod test {
         // expiry and keeps its stream open. The exporter must refuse to send it (a
         // request could outlive the token), NACK retryably (a refresh may still
         // arrive), and send nothing to the server.
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let tokio_rt = Runtime::new().unwrap();
-        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let endpoint_addr = format!("127.0.0.1:{port}");
         let endpoint = format!("http://{endpoint_addr}");
 
@@ -1831,7 +1935,7 @@ mod test {
         let mut bytes = Vec::new();
         logs_batch.encode(&mut bytes).unwrap();
         let pdatas = subscribe_pdatas(
-            vec![OtapPdata::new_default(OtapPayload::OtlpBytes(
+            vec![OtapPdata::new_default(OtapPayload::from(
                 OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes)),
             ))],
             false,
@@ -1889,9 +1993,9 @@ mod test {
         // A malformed token (header-invalid bytes) is dropped via the error arm
         // (incrementing `auth_token_errors`); the subsequent valid token is what
         // reaches the wire.
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let tokio_rt = Runtime::new().unwrap();
-        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let endpoint_addr = format!("127.0.0.1:{port}");
         let endpoint = format!("http://{endpoint_addr}");
 
@@ -1917,7 +2021,7 @@ mod test {
         let mut bytes = Vec::new();
         logs_batch.encode(&mut bytes).unwrap();
         let pdatas = subscribe_pdatas(
-            vec![OtapPdata::new_default(OtapPayload::OtlpBytes(
+            vec![OtapPdata::new_default(OtapPayload::from(
                 OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes)),
             ))],
             false,
@@ -1957,9 +2061,9 @@ mod test {
     fn test_last_token_reused_after_stream_closes() {
         // The provider publishes one token then closes its stream; subsequent
         // batches must keep using the cached token.
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let tokio_rt = Runtime::new().unwrap();
-        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let endpoint_addr = format!("127.0.0.1:{port}");
         let endpoint = format!("http://{endpoint_addr}");
 
@@ -1988,10 +2092,10 @@ mod test {
         // the second must reuse the cached token.
         let pdatas = subscribe_pdatas(
             vec![
-                OtapPdata::new_default(OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(
+                OtapPdata::new_default(OtapPayload::from(OtlpProtoBytes::ExportLogsRequest(
                     Bytes::from(bytes.clone()),
                 ))),
-                OtapPdata::new_default(OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(
+                OtapPdata::new_default(OtapPayload::from(OtlpProtoBytes::ExportLogsRequest(
                     Bytes::from(bytes),
                 ))),
             ],
@@ -2084,7 +2188,7 @@ mod test {
         let (runtime_ctrl_msg_tx, _runtime_ctrl_msg_rx) = runtime_ctrl_msg_channel(10);
         let (_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(5);
         let server_effect_handler =
-            otap_df_engine::shared::receiver::EffectHandler::<OtapPdata>::new(
+            otel_arrow_dfe_engine::shared::receiver::EffectHandler::<OtapPdata>::new(
                 server_node_id,
                 msg_senders,
                 Some(port_name),
@@ -2110,7 +2214,7 @@ mod test {
                 server_settings,
                 ack_registry,
                 Arc::new(Mutex::new(server_metrics)),
-                otap_df_engine::memory_limiter::SharedReceiverAdmissionState::default(),
+                otel_arrow_dfe_engine::memory_limiter::SharedReceiverAdmissionState::default(),
                 None,
                 None,
                 server_cancellation_token,
@@ -2130,7 +2234,7 @@ mod test {
         test_runtime: &TestRuntime<OtapPdata>,
         config: Config,
     ) -> (PipelineContext, ExporterWrapper<OtapPdata>) {
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTLP_HTTP_EXPORTER_URN));
         let telemetry_registry_handle = test_runtime.metrics_registry();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle.clone());
@@ -2147,7 +2251,7 @@ mod test {
         let exporter = ExporterWrapper::local(
             OtlpHttpExporter {
                 config,
-                pdata_metrics: ExporterPDataExportMetrics::register(&pipeline_ctx),
+                metrics: OtlpHttpExporterMetrics::register(&pipeline_ctx),
                 token_provider: None,
             },
             node_id.clone(),
@@ -2181,13 +2285,17 @@ mod test {
         }]);
 
         let traces_batch = TracesData::new(vec![ResourceSpans {
-            scope_spans: vec![otap_df_pdata::proto::opentelemetry::trace::v1::ScopeSpans {
-                spans: vec![otap_df_pdata::proto::opentelemetry::trace::v1::Span {
-                    name: "span".into(),
+            scope_spans: vec![
+                otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::ScopeSpans {
+                    spans: vec![
+                        otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::Span {
+                            name: "span".into(),
+                            ..Default::default()
+                        },
+                    ],
                     ..Default::default()
-                }],
-                ..Default::default()
-            }],
+                },
+            ],
             ..Default::default()
         }]);
 
@@ -2301,7 +2409,7 @@ mod test {
 
     #[test]
     fn test_exports_otlp_signals() {
-        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let endpoint_addr = format!("127.0.0.1:{}", port);
         let endpoint = format!("http://{endpoint_addr}");
 
@@ -2319,19 +2427,19 @@ mod test {
 
         let mut bytes = Vec::new();
         logs_batch.encode(&mut bytes).unwrap();
-        pdatas.push(OtapPdata::new_default(OtapPayload::OtlpBytes(
+        pdatas.push(OtapPdata::new_default(OtapPayload::from(
             OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes)),
         )));
 
         let mut bytes = Vec::new();
         metrics_batch.encode(&mut bytes).unwrap();
-        pdatas.push(OtapPdata::new_default(OtapPayload::OtlpBytes(
+        pdatas.push(OtapPdata::new_default(OtapPayload::from(
             OtlpProtoBytes::ExportMetricsRequest(Bytes::from(bytes)),
         )));
 
         let mut bytes = Vec::new();
         traces_batch.encode(&mut bytes).unwrap();
-        pdatas.push(OtapPdata::new_default(OtapPayload::OtlpBytes(
+        pdatas.push(OtapPdata::new_default(OtapPayload::from(
             OtlpProtoBytes::ExportTracesRequest(Bytes::from(bytes)),
         )));
 
@@ -2425,7 +2533,7 @@ mod test {
     }
 
     fn run_error_status_code_test(status: u16, retryable: bool) {
-        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let endpoint_addr = format!("127.0.0.1:{}", port);
         let endpoint = format!("http://{endpoint_addr}");
 
@@ -2438,9 +2546,9 @@ mod test {
 
         let (logs_batch, _, _) = gen_batches_for_each_signal_type();
 
-        let pdatas = vec![OtapPdata::new_default(OtapPayload::OtapArrowRecords(
-            otlp_to_otap(&OtlpProtoMessage::Logs(logs_batch.clone())),
-        ))];
+        let pdatas = vec![OtapPdata::new_default(OtapPayload::from(otlp_to_otap(
+            &OtlpProtoMessage::Logs(logs_batch.clone()),
+        )))];
         let pdatas = subscribe_pdatas(pdatas, false);
 
         test_runtime
@@ -2479,7 +2587,8 @@ mod test {
 
                                 assert!(
                                     nack.reason.contains("HTTP status")
-                                        && nack.reason.contains(&status.to_string()),
+                                        && nack.reason.contains(&status.to_string())
+                                        && nack.reason.contains("test backend rejected payload"),
                                     "unexpected error message in Nack: {}",
                                     nack.reason
                                 );
@@ -2503,8 +2612,8 @@ mod test {
             })
     }
 
-    /// Scenario: The OTLP HTTP server returns retryable and permanent non-success statuses.
-    /// Guarantees: Each consumed request yields one Nack and exactly one failed export outcome.
+    /// Scenario: The OTLP HTTP server returns retryable and permanent statuses with an error body.
+    /// Guarantees: Each Nack includes the response body and records exactly one failed outcome.
     #[test]
     fn test_handles_non_200_response_status() {
         let test_cases = [(500, false), (429, true), (503, true), (504, true)];
@@ -2514,15 +2623,149 @@ mod test {
         }
     }
 
+    /// Scenario: A non-2xx HTTP response body is a valid `RpcStatus` protobuf message,
+    /// plain text, empty, or invalid UTF-8.
+    /// Guarantees: the response body is read exactly once (no double-consume), the
+    /// NACK reason is deterministic and never panics regardless of body shape, and a
+    /// decodable `RpcStatus` message surfaces its human-readable message and code;
+    /// a larger body is capped at the diagnostic prefix limit.
+    #[test]
+    fn test_handles_non_200_response_body_variants() {
+        // Wire-compatible stand-in for `otel_arrow_dfe_otap::otlp_http::RpcStatus`: same field
+        // numbers/types for `code` (tag 1) and `message` (tag 2), which is all this test
+        // needs to produce bytes the exporter's real `RpcStatus::decode` understands. The
+        // real type's `details` field is private to its crate and irrelevant here (proto3
+        // repeated fields default to empty when absent from the wire).
+        #[derive(Clone, PartialEq, ::prost::Message)]
+        struct TestRpcStatus {
+            #[prost(int32, tag = "1")]
+            code: i32,
+            #[prost(string, tag = "2")]
+            message: String,
+        }
+
+        let rpc_status_body = {
+            let status = TestRpcStatus {
+                code: 3,
+                message: "invalid resource attribute".to_string(),
+            };
+            let mut buf = Vec::new();
+            status.encode(&mut buf).unwrap();
+            Bytes::from(buf)
+        };
+
+        let test_cases: [(Bytes, Option<&str>); 5] = [
+            // A valid RpcStatus body surfaces its decoded message and code.
+            (
+                rpc_status_body,
+                Some("invalid resource attribute (RPC code 3)"),
+            ),
+            // Plain (non-protobuf) text is passed through verbatim.
+            (
+                Bytes::from_static(b"plain text rejection reason"),
+                Some("plain text rejection reason"),
+            ),
+            // An empty body must not panic and yields no appended detail.
+            (Bytes::new(), None),
+            // Invalid UTF-8 (and not a valid RpcStatus) must not panic; it falls back
+            // to a lossy string conversion.
+            (Bytes::from_static(&[0xff, 0xfe, 0xfd]), None),
+            // Diagnostic capture stops after the bounded 4 KiB prefix rather than
+            // waiting for or retaining the whole backend error response.
+            (
+                Bytes::from(vec![b'x'; MAX_ERROR_BODY_LOG_LENGTH + 1]),
+                Some("... <truncated>"),
+            ),
+        ];
+
+        for (error_body, expected_fragment) in test_cases {
+            let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
+            let endpoint_addr = format!("127.0.0.1:{}", port);
+            let endpoint = format!("http://{endpoint_addr}");
+
+            let config = default_test_config(endpoint);
+
+            let tokio_rt = Runtime::new().unwrap();
+            let test_runtime = TestRuntime::<OtapPdata>::new();
+            let (_, exporter) = setup_exporter(&test_runtime, config);
+            let server_cancellation_token =
+                run_error_server_with_body(&tokio_rt, &endpoint_addr, Some(400), error_body);
+
+            let (logs_batch, _, _) = gen_batches_for_each_signal_type();
+
+            let pdatas = vec![OtapPdata::new_default(OtapPayload::from_otap(
+                otlp_to_otap(&OtlpProtoMessage::Logs(logs_batch.clone())),
+            ))];
+            let pdatas = subscribe_pdatas(pdatas, false);
+
+            test_runtime
+                .set_exporter(exporter)
+                .run_test(|ctx| {
+                    Box::pin(async move {
+                        for pdata in pdatas {
+                            ctx.send_pdata(pdata).await.unwrap();
+                        }
+
+                        ctx.send_shutdown(
+                            Instant::now() + Duration::from_millis(200),
+                            "test complete",
+                        )
+                        .await
+                        .unwrap();
+                    })
+                })
+                .run_validation(|mut ctx, result| {
+                    Box::pin(async move {
+                        result.unwrap();
+
+                        server_cancellation_token.cancel();
+
+                        let mut pipeline_completion_rx =
+                            ctx.take_pipeline_completion_receiver().unwrap();
+                        let msg = pipeline_completion_rx
+                            .recv()
+                            .await
+                            .expect("expected a pipeline completion message");
+
+                        match msg {
+                            PipelineCompletionMsg::DeliverNack { nack } => {
+                                assert!(
+                                    nack.reason.contains("HTTP status")
+                                        && nack.reason.contains("400"),
+                                    "unexpected error message in Nack: {}",
+                                    nack.reason
+                                );
+                                assert!(
+                                    nack.permanent,
+                                    "400 must be a permanent (non-retryable) failure"
+                                );
+                                if let Some(expected_fragment) = expected_fragment {
+                                    assert!(
+                                        nack.reason.contains(expected_fragment),
+                                        "Nack reason `{}` did not contain expected fragment `{}`",
+                                        nack.reason,
+                                        expected_fragment
+                                    );
+                                }
+                            }
+                            PipelineCompletionMsg::DeliverAck { .. } => {
+                                panic!("unexpected Ack message")
+                            }
+                        }
+                    })
+                });
+        }
+    }
+
     /// Scenario: An OTLP HTTP export finishes with a terminal service-request error.
-    /// Guarantees: Finalization records exactly one failure for the exported signal.
+    /// Guarantees: Finalization records one paired failure count and duration for the signal.
     #[test]
     fn failed_export_finalization_records_one_terminal_outcome() {
         let registry = TelemetryRegistryHandle::new();
         let controller = ControllerContext::new(registry);
         let pipeline_ctx =
             controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
-        let mut metrics = ExporterPDataExportMetrics::register(&pipeline_ctx);
+        let mut metrics = OtlpHttpExporterMetrics::register(&pipeline_ctx);
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let effect_handler = EffectHandler::new(test_node("test-exporter"), metrics_reporter);
@@ -2534,6 +2777,7 @@ mod test {
             context: Context::default(),
             saved_payload: OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into(),
             signal_type: SignalType::Logs,
+            export_started_at: Instant::now(),
             token_generation: None,
         };
 
@@ -2541,11 +2785,11 @@ mod test {
             completed,
             &effect_handler,
             &mut metrics,
-            false,
         ));
 
         assert_eq!(
             metrics
+                .exports
                 .get(SignalOutcomeAttributes {
                     signal: SignalType::Logs,
                     outcome: Outcome::Failure,
@@ -2556,6 +2800,7 @@ mod test {
         );
         assert_eq!(
             metrics
+                .exports
                 .get(SignalOutcomeAttributes {
                     signal: SignalType::Logs,
                     outcome: Outcome::Success,
@@ -2564,11 +2809,99 @@ mod test {
                 .get(),
             0
         );
+        assert_eq!(
+            metrics
+                .exports
+                .get(SignalOutcomeAttributes {
+                    signal: SignalType::Logs,
+                    outcome: Outcome::Failure,
+                })
+                .duration_seconds
+                .get()
+                .count(),
+            1
+        );
+        let snapshots = metrics.terminal_snapshots();
+        assert!(snapshots.iter().any(|snapshot| {
+            snapshot.descriptor().name == "exporter.otlp_http.failures"
+                && snapshot.measurement_attribute_value("signal") == Some("logs")
+                && snapshot.measurement_attribute_value("error.type") == Some("response_too_large")
+                && snapshot.get_metrics()[0].to_u64_lossy() == 1
+        }));
+    }
+
+    /// Scenario: A zero-rejection partial success cannot deliver its upstream Ack notification.
+    /// Guarantees: The backend success is recorded once without a failure classification.
+    #[test]
+    fn successful_export_is_recorded_when_ack_notification_fails() {
+        let registry = TelemetryRegistryHandle::new();
+        let controller = ControllerContext::new(registry);
+        let pipeline_ctx =
+            controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let mut metrics = OtlpHttpExporterMetrics::register(&pipeline_ctx);
+
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let mut effect_handler = EffectHandler::new(test_node("test-exporter"), metrics_reporter);
+        let (completion_tx, completion_rx) =
+            otel_arrow_dfe_engine::control::pipeline_completion_msg_channel(1);
+        drop(completion_rx);
+        effect_handler.set_pipeline_completion_msg_sender(completion_tx);
+        let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into())
+            .test_subscribe_to(Interests::ACKS, TestCallData::default().into(), 123);
+        let (context, saved_payload) = pdata.into_parts();
+        let completed = CompletedExport {
+            result: Ok(ServiceResponse {
+                partial_success: Some(PartialSuccess {
+                    rejected: 0,
+                    error_message: "informational warning".to_owned(),
+                }),
+            }),
+            context,
+            saved_payload,
+            signal_type: SignalType::Logs,
+            export_started_at: Instant::now(),
+            token_generation: None,
+        };
+
+        let _ = Runtime::new().unwrap().block_on(finalize_completed_export(
+            completed,
+            &effect_handler,
+            &mut metrics,
+        ));
+
+        assert_eq!(
+            metrics
+                .exports
+                .get(SignalOutcomeAttributes {
+                    signal: SignalType::Logs,
+                    outcome: Outcome::Success,
+                })
+                .messages
+                .get(),
+            1
+        );
+        assert_eq!(
+            metrics
+                .exports
+                .get(SignalOutcomeAttributes {
+                    signal: SignalType::Logs,
+                    outcome: Outcome::Failure,
+                })
+                .messages
+                .get(),
+            0
+        );
+        assert!(
+            metrics
+                .terminal_snapshots()
+                .iter()
+                .all(|snapshot| snapshot.descriptor().name != "exporter.otlp_http.failures")
+        );
     }
 
     #[test]
     fn test_handles_connection_refused_errors() {
-        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let endpoint_addr = format!("127.0.0.1:{}", port);
         let endpoint = format!("http://{endpoint_addr}");
 
@@ -2581,9 +2914,9 @@ mod test {
 
         let (logs_batch, _, _) = gen_batches_for_each_signal_type();
 
-        let pdatas = vec![OtapPdata::new_default(OtapPayload::OtapArrowRecords(
-            otlp_to_otap(&OtlpProtoMessage::Logs(logs_batch.clone())),
-        ))];
+        let pdatas = vec![OtapPdata::new_default(OtapPayload::from(otlp_to_otap(
+            &OtlpProtoMessage::Logs(logs_batch.clone()),
+        )))];
         let pdatas = subscribe_pdatas(pdatas, false);
 
         test_runtime
@@ -2645,7 +2978,7 @@ mod test {
 
     #[test]
     fn test_handles_partial_success() {
-        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let endpoint_addr = format!("127.0.0.1:{}", port);
         let endpoint = format!("http://{endpoint_addr}");
 
@@ -2662,19 +2995,19 @@ mod test {
         let mut pdatas = vec![];
         let mut bytes = Vec::new();
         logs_batch.encode(&mut bytes).unwrap();
-        pdatas.push(OtapPdata::new_default(OtapPayload::OtlpBytes(
+        pdatas.push(OtapPdata::new_default(OtapPayload::from(
             OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes)),
         )));
 
         let mut bytes = Vec::new();
         metrics_batch.encode(&mut bytes).unwrap();
-        pdatas.push(OtapPdata::new_default(OtapPayload::OtlpBytes(
+        pdatas.push(OtapPdata::new_default(OtapPayload::from(
             OtlpProtoBytes::ExportMetricsRequest(Bytes::from(bytes)),
         )));
 
         let mut bytes = Vec::new();
         traces_batch.encode(&mut bytes).unwrap();
-        pdatas.push(OtapPdata::new_default(OtapPayload::OtlpBytes(
+        pdatas.push(OtapPdata::new_default(OtapPayload::from(
             OtlpProtoBytes::ExportTracesRequest(Bytes::from(bytes)),
         )));
 
@@ -2741,7 +3074,7 @@ mod test {
 
     #[test]
     fn test_handles_response_body_too_large() {
-        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let endpoint_addr = format!("127.0.0.1:{}", port);
         let endpoint = format!("http://{endpoint_addr}");
 
@@ -2762,7 +3095,7 @@ mod test {
         let mut pdatas = vec![];
         let mut bytes = Vec::new();
         logs_batch.encode(&mut bytes).unwrap();
-        pdatas.push(OtapPdata::new_default(OtapPayload::OtlpBytes(
+        pdatas.push(OtapPdata::new_default(OtapPayload::from(
             OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes)),
         )));
 
@@ -2854,7 +3187,7 @@ mod test {
 
     #[test]
     fn test_nacks_for_otap_payloads_when_context_indicates_no_payload_return() {
-        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let endpoint_addr = format!("127.0.0.1:{}", port);
         let endpoint = format!("http://{endpoint_addr}");
 
@@ -2867,9 +3200,9 @@ mod test {
 
         let (logs_batch, _, _) = gen_batches_for_each_signal_type();
 
-        let pdatas = vec![OtapPdata::new_default(OtapPayload::OtapArrowRecords(
-            otlp_to_otap(&OtlpProtoMessage::Logs(logs_batch.clone())),
-        ))];
+        let pdatas = vec![OtapPdata::new_default(OtapPayload::from(otlp_to_otap(
+            &OtlpProtoMessage::Logs(logs_batch.clone()),
+        )))];
 
         let pdatas = subscribe_pdatas(pdatas, true);
 
@@ -2906,8 +3239,8 @@ mod test {
                             PipelineCompletionMsg::DeliverNack { nack } => {
                                 ack_count += 1;
 
-                                match nack.refused.payload() {
-                                    OtapPayload::OtapArrowRecords(otap_batch) => {
+                                match nack.refused.payload().into_data() {
+                                    PayloadData::OtapArrowRecords(otap_batch) => {
                                         let logs_batch = otap_batch.get(ArrowPayloadType::Logs).unwrap();
                                         assert!(
                                             logs_batch.num_rows() > 0,
@@ -2938,7 +3271,7 @@ mod test {
 
     #[test]
     fn test_nacks_for_otlp_payloads_when_context_indicates_no_payload_return() {
-        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let endpoint_addr = format!("127.0.0.1:{}", port);
         let endpoint = format!("http://{endpoint_addr}");
 
@@ -2954,7 +3287,7 @@ mod test {
         let mut pdatas = vec![];
         let mut bytes = Vec::new();
         logs_batch.encode(&mut bytes).unwrap();
-        pdatas.push(OtapPdata::new_default(OtapPayload::OtlpBytes(
+        pdatas.push(OtapPdata::new_default(OtapPayload::from(
             OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes)),
         )));
 
@@ -2993,8 +3326,8 @@ mod test {
                             PipelineCompletionMsg::DeliverNack { nack } => {
                                 ack_count += 1;
 
-                                match nack.refused.payload() {
-                                    OtapPayload::OtlpBytes(proto_bytes) => {
+                                match nack.refused.payload().into_data() {
+                                    PayloadData::OtlpBytes(proto_bytes) => {
                                         assert!(
                                             !proto_bytes.as_bytes().is_empty(),
                                             "expected payload bytes to be returned in Nack, but it was empty"
@@ -3024,7 +3357,7 @@ mod test {
 
     #[test]
     fn test_export_otap_signals() {
-        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let endpoint_addr = format!("127.0.0.1:{}", port);
         let endpoint = format!("http://{endpoint_addr}");
 
@@ -3039,15 +3372,15 @@ mod test {
         let (logs_batch, metrics_batch, traces_batch) = gen_batches_for_each_signal_type();
 
         let pdatas = vec![
-            OtapPdata::new_default(OtapPayload::OtapArrowRecords(otlp_to_otap(
-                &OtlpProtoMessage::Logs(logs_batch.clone()),
-            ))),
-            OtapPdata::new_default(OtapPayload::OtapArrowRecords(otlp_to_otap(
-                &OtlpProtoMessage::Metrics(metrics_batch.clone()),
-            ))),
-            OtapPdata::new_default(OtapPayload::OtapArrowRecords(otlp_to_otap(
-                &OtlpProtoMessage::Traces(traces_batch.clone()),
-            ))),
+            OtapPdata::new_default(OtapPayload::from(otlp_to_otap(&OtlpProtoMessage::Logs(
+                logs_batch.clone(),
+            )))),
+            OtapPdata::new_default(OtapPayload::from(otlp_to_otap(&OtlpProtoMessage::Metrics(
+                metrics_batch.clone(),
+            )))),
+            OtapPdata::new_default(OtapPayload::from(otlp_to_otap(&OtlpProtoMessage::Traces(
+                traces_batch.clone(),
+            )))),
         ];
         let pdatas = subscribe_pdatas(pdatas, false);
 
@@ -3139,15 +3472,15 @@ mod test {
 
     #[test]
     pub fn test_uses_endpoint_overrides_if_provided() {
-        let logs_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let logs_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let logs_endpoint_addr = format!("127.0.0.1:{}", logs_port);
         let logs_endpoint = format!("http://{logs_endpoint_addr}/v1/logs");
 
-        let metrics_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let metrics_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let metrics_endpoint_addr = format!("127.0.0.1:{}", metrics_port);
         let metrics_endpoint = format!("http://{metrics_endpoint_addr}/v1/metrics");
 
-        let traces_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let traces_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let traces_endpoint_addr = format!("127.0.0.1:{}", traces_port);
         let traces_endpoint = format!("http://{traces_endpoint_addr}/v1/traces");
 
@@ -3172,15 +3505,15 @@ mod test {
         let (logs_batch, metrics_batch, traces_batch) = gen_batches_for_each_signal_type();
 
         let pdatas = vec![
-            OtapPdata::new_default(OtapPayload::OtapArrowRecords(otlp_to_otap(
-                &OtlpProtoMessage::Logs(logs_batch.clone()),
-            ))),
-            OtapPdata::new_default(OtapPayload::OtapArrowRecords(otlp_to_otap(
-                &OtlpProtoMessage::Metrics(metrics_batch.clone()),
-            ))),
-            OtapPdata::new_default(OtapPayload::OtapArrowRecords(otlp_to_otap(
-                &OtlpProtoMessage::Traces(traces_batch.clone()),
-            ))),
+            OtapPdata::new_default(OtapPayload::from(otlp_to_otap(&OtlpProtoMessage::Logs(
+                logs_batch.clone(),
+            )))),
+            OtapPdata::new_default(OtapPayload::from(otlp_to_otap(&OtlpProtoMessage::Metrics(
+                metrics_batch.clone(),
+            )))),
+            OtapPdata::new_default(OtapPayload::from(otlp_to_otap(&OtlpProtoMessage::Traces(
+                traces_batch.clone(),
+            )))),
         ];
 
         test_runtime
@@ -3240,7 +3573,7 @@ mod test {
         client_tls_config: TlsClientConfig,
         server_tls_config: TlsServerConfig,
     ) {
-        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let endpoint_addr = format!("127.0.0.1:{}", port);
         let endpoint = format!("https://localhost:{port}");
 
@@ -3261,9 +3594,9 @@ mod test {
 
         let (logs_batch, _, _) = gen_batches_for_each_signal_type();
 
-        let pdatas = vec![OtapPdata::new_default(OtapPayload::OtapArrowRecords(
-            otlp_to_otap(&OtlpProtoMessage::Logs(logs_batch.clone())),
-        ))];
+        let pdatas = vec![OtapPdata::new_default(OtapPayload::from(otlp_to_otap(
+            &OtlpProtoMessage::Logs(logs_batch.clone()),
+        )))];
         let pdatas = subscribe_pdatas(pdatas, false);
 
         test_runtime
@@ -3344,7 +3677,7 @@ mod test {
         expected_err_content: &'static str,
         expect_permanent_nack: bool,
     ) {
-        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let endpoint_addr = format!("127.0.0.1:{}", port);
         let endpoint = format!("https://localhost:{port}");
 
@@ -3365,9 +3698,9 @@ mod test {
 
         let (logs_batch, _, _) = gen_batches_for_each_signal_type();
 
-        let pdatas = vec![OtapPdata::new_default(OtapPayload::OtapArrowRecords(
-            otlp_to_otap(&OtlpProtoMessage::Logs(logs_batch.clone())),
-        ))];
+        let pdatas = vec![OtapPdata::new_default(OtapPayload::from(otlp_to_otap(
+            &OtlpProtoMessage::Logs(logs_batch.clone()),
+        )))];
         let pdatas = subscribe_pdatas(pdatas, false);
 
         test_runtime
@@ -3462,7 +3795,7 @@ mod test {
 
     #[test]
     fn test_tls_server_only_ca_pem_from_str() {
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -3509,7 +3842,7 @@ mod test {
 
     #[test]
     fn test_tls_server_only_ca_pem_from_file() {
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -3557,7 +3890,7 @@ mod test {
 
     #[test]
     fn test_tls_server_insecure_skip_verify_true() {
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -3605,7 +3938,7 @@ mod test {
 
     #[test]
     fn test_tls_server_failure_no_ca_configured() {
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -3655,7 +3988,7 @@ mod test {
 
     #[test]
     fn test_tls_server_failure_invalid_ca_configured() {
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
         let ca = generate_ca("Test CA");
@@ -3705,7 +4038,7 @@ mod test {
 
     #[test]
     fn test_tls_server_failure_server_name_mismatch() {
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
         let ca = generate_ca("Test CA");
@@ -3753,7 +4086,7 @@ mod test {
 
     #[test]
     fn test_tls_mtls_success_cert_pem() {
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -3805,7 +4138,7 @@ mod test {
 
     #[test]
     fn test_tls_mtls_success_cert_file() {
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -3858,7 +4191,7 @@ mod test {
 
     #[test]
     fn test_tls_mtls_failure_wrong_client_cert() {
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -3919,7 +4252,7 @@ mod test {
 
     #[test]
     fn test_start_returns_error_if_mtls_cert_without_key() {
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -3928,7 +4261,7 @@ mod test {
         let client = ca.issue_leaf("Test Client", None, Some(ExtendedKeyUsage::ClientAuth));
         client.write_to_dir(path, "client");
 
-        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let endpoint = format!("https://localhost:{port}");
 
         let config = Config {
@@ -3974,7 +4307,7 @@ mod test {
 
     #[test]
     fn test_start_returns_error_if_mtls_key_without_cert() {
-        otap_df_otap::crypto::ensure_crypto_provider();
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -3983,7 +4316,7 @@ mod test {
         let client = ca.issue_leaf("Test Client", None, Some(ExtendedKeyUsage::ClientAuth));
         client.write_to_dir(path, "client");
 
-        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let endpoint = format!("https://localhost:{port}");
 
         let config = Config {
@@ -4063,10 +4396,10 @@ mod test {
     }
 
     fn run_compression_round_trip(
-        compression: Option<otap_df_otap::compression::CompressionMethod>,
+        compression: Option<otel_arrow_dfe_otap::compression::CompressionMethod>,
         expected_encoding: Option<&'static str>,
     ) {
-        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         let endpoint_addr = format!("127.0.0.1:{port}");
         let endpoint = format!("http://{endpoint_addr}");
 
@@ -4141,9 +4474,9 @@ mod test {
         wait_for_port_ready(&endpoint_addr);
 
         let (logs_batch, _, _) = gen_batches_for_each_signal_type();
-        let pdatas = vec![OtapPdata::new_default(OtapPayload::OtapArrowRecords(
-            otlp_to_otap(&OtlpProtoMessage::Logs(logs_batch.clone())),
-        ))];
+        let pdatas = vec![OtapPdata::new_default(OtapPayload::from(otlp_to_otap(
+            &OtlpProtoMessage::Logs(logs_batch.clone()),
+        )))];
         let pdatas = subscribe_pdatas(pdatas, false);
 
         test_runtime
@@ -4168,7 +4501,7 @@ mod test {
                         "unexpected content-encoding header"
                     );
                     let decoded = decode_with(captured.content_encoding.as_deref(), &captured.body);
-                    let decoded_req = otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest::decode(decoded.as_slice())
+                    let decoded_req = otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest::decode(decoded.as_slice())
                         .expect("body did not decode as ExportLogsServiceRequest");
                     let received_logs = LogsData {
                         resource_logs: decoded_req.resource_logs,
@@ -4186,7 +4519,7 @@ mod test {
     #[test]
     fn test_export_with_gzip_compression() {
         run_compression_round_trip(
-            Some(otap_df_otap::compression::CompressionMethod::Gzip),
+            Some(otel_arrow_dfe_otap::compression::CompressionMethod::Gzip),
             Some("gzip"),
         );
     }
@@ -4194,7 +4527,7 @@ mod test {
     #[test]
     fn test_export_with_zstd_compression() {
         run_compression_round_trip(
-            Some(otap_df_otap::compression::CompressionMethod::Zstd),
+            Some(otel_arrow_dfe_otap::compression::CompressionMethod::Zstd),
             Some("zstd"),
         );
     }
@@ -4202,7 +4535,7 @@ mod test {
     #[test]
     fn test_export_with_deflate_compression() {
         run_compression_round_trip(
-            Some(otap_df_otap::compression::CompressionMethod::Deflate),
+            Some(otel_arrow_dfe_otap::compression::CompressionMethod::Deflate),
             Some("deflate"),
         );
     }

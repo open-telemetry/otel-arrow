@@ -41,6 +41,10 @@ box, and hit Save. Remote configuration is complete desired state, not a patch,
 so this payload preserves both pipelines from the startup config while changing
 `signals_per_second` from `10` to `20`:
 
+The extension accepts JSON and YAML remote configuration. The opamp-go example
+UI does not send a content type, so the extension detects either format. Other
+servers should set `application/json`, `application/yaml`, or `text/yaml`.
+
 ```json
 {
   "version": "otel_dataflow/v1",
@@ -55,7 +59,7 @@ so this payload preserves both pipelines from the startup config while changing
             "heartbeat_interval": "5s",
             "agent_description": {
               "identifying_attributes": {
-                "service.name": "otap-df-engine"
+                "service.name": "otel-arrow-dfe-engine"
               }
             }
           }
@@ -115,9 +119,9 @@ Expected sequence, visible in the server log and the engine log:
    updates the traffic generator to 20 signals per second.
 3. The next reply reports `RemoteConfigStatus=APPLIED` and `Healthy=true`.
 
-Pushing an invalid config (for example malformed JSON) is reported back as
-`RemoteConfigStatus=FAILED` with an error message, and the previously running
-pipelines are left untouched.
+Pushing an invalid config (for example malformed JSON or YAML) is reported back
+as `RemoteConfigStatus=FAILED` with an error message, and the previously
+running pipelines are left untouched.
 
 ### 4. Clean up
 

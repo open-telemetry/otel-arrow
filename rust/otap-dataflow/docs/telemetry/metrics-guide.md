@@ -124,7 +124,7 @@ In this project, ObserveUpDownCounter is used for observed totals like
 `otelcol.pipeline.memory_usage` and
 `otelcol.tokio.runtime.task_active_count`, while Gauge is used for instantaneous
 values like `otelcol.pipeline.cpu_utilization` and
-`channel.receiver.capacity`.
+`channel.receiver.capacity` or `channel.receiver.queue.depth`.
 
 Guideline:
 

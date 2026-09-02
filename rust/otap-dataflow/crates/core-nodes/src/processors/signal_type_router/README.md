@@ -133,15 +133,7 @@ subscription across the topic hop, while `disabled` does not.
 
 ## Observability
 
-The signal type router exposes per-signal counters for:
-
-- received messages
-- messages routed to named routes
-- messages routed to the default output
-- route-local NACKed messages
-- dropped messages
-- selected-route full rejections
-- selected-route closed rejections
+The signal type router exposes a single `signals.decision` measurement metric, broken down by `signal`, `outcome`, and `reason` attributes.
 
 Selected-route NACKs include a machine-readable `NackCause`:
 
@@ -156,31 +148,22 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 ### Metric Sets
 
-#### `processor.signal_type_router`
+#### `processor.type_router`
 
 | Metric | Unit | Description |
 | --- | --- | --- |
-| `processor.signal_type_router.signals_received_logs` | `{msg}` | Number of log messages received by the router. |
-| `processor.signal_type_router.signals_received_metrics` | `{msg}` | Number of metric messages received by the router. |
-| `processor.signal_type_router.signals_received_traces` | `{msg}` | Number of trace messages received by the router. |
-| `processor.signal_type_router.signals_routed_named_logs` | `{msg}` | Number of log messages routed to a named port. |
-| `processor.signal_type_router.signals_routed_named_metrics` | `{msg}` | Number of metric messages routed to a named port. |
-| `processor.signal_type_router.signals_routed_named_traces` | `{msg}` | Number of trace messages routed to a named port. |
-| `processor.signal_type_router.signals_routed_default_logs` | `{msg}` | Number of log messages routed via the default port. |
-| `processor.signal_type_router.signals_routed_default_metrics` | `{msg}` | Number of metric messages routed via the default port. |
-| `processor.signal_type_router.signals_routed_default_traces` | `{msg}` | Number of trace messages routed via the default port. |
-| `processor.signal_type_router.signals_nacked_logs` | `{msg}` | Number of log messages NACKed due to route-local rejection. |
-| `processor.signal_type_router.signals_nacked_metrics` | `{msg}` | Number of metric messages NACKed due to route-local rejection. |
-| `processor.signal_type_router.signals_nacked_traces` | `{msg}` | Number of trace messages NACKed due to route-local rejection. |
-| `processor.signal_type_router.signals_rejected_route_full_logs` | `{msg}` | Number of log messages rejected because the selected route was full. |
-| `processor.signal_type_router.signals_rejected_route_full_metrics` | `{msg}` | Number of metric messages rejected because the selected route was full. |
-| `processor.signal_type_router.signals_rejected_route_full_traces` | `{msg}` | Number of trace messages rejected because the selected route was full. |
-| `processor.signal_type_router.signals_rejected_route_closed_logs` | `{msg}` | Number of log messages rejected because the selected route was closed. |
-| `processor.signal_type_router.signals_rejected_route_closed_metrics` | `{msg}` | Number of metric messages rejected because the selected route was closed. |
-| `processor.signal_type_router.signals_rejected_route_closed_traces` | `{msg}` | Number of trace messages rejected because the selected route was closed. |
-| `processor.signal_type_router.signals_dropped_logs` | `{msg}` | Number of log messages dropped due to routing failure. |
-| `processor.signal_type_router.signals_dropped_metrics` | `{msg}` | Number of metric messages dropped due to routing failure. |
-| `processor.signal_type_router.signals_dropped_traces` | `{msg}` | Number of trace messages dropped due to routing failure. |
+| `processor.type_router.signals.decision` | `{message}` | Number of messages with a given routing outcome. |
+
+The `signals.decision` metric includes `signal`, `outcome`, and `reason` attributes to describe the terminal routing result:
+
+| Terminal routing result | `outcome` | `reason` |
+| --- | --- | --- |
+| Named signal output accepted | `success` | `named_route` |
+| Default accepted because the named output is unwired | `success` | `default_route_unwired` |
+| Selected output is full | `refused` | `route_full` |
+| Selected output is closed | `refused` | `route_closed` |
+| Neither the named nor default output exists | `failure` | `no_available_route` |
+| Shutdown cancels parked work | `failure` | `node_shutdown` |
 
 ### Events
 

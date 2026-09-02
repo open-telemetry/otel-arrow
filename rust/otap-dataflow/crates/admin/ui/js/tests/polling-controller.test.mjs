@@ -3,13 +3,14 @@ import assert from "node:assert/strict";
 
 import { deriveClientDeltas } from "../polling-controller.js";
 
-// Verifies client-side delta derivation for cumulative snapshots across polls.
+// Scenario: A cumulative channel outcome bucket is observed across two admin polls.
+// Guarantees: The first sample establishes a baseline and the second exposes only its delta.
 test("deriveClientDeltas computes per-series deltas and initializes baseline", () => {
   const state = { clientDeltaPrevBySeries: new Map() };
   const set = {
     name: "channel.sender",
     attributes: { "channel.id": "ch1" },
-    metrics: [{ name: "send.count", value: 10 }],
+    metrics: [{ name: "messages", value: 10, attributes: { outcome: "success" } }],
   };
 
   const first = deriveClientDeltas([set], state, 1_000);
@@ -19,7 +20,7 @@ test("deriveClientDeltas computes per-series deltas and initializes baseline", (
     [
       {
         ...set,
-        metrics: [{ name: "send.count", value: 16 }],
+        metrics: [{ name: "messages", value: 16, attributes: { outcome: "success" } }],
       },
     ],
     state,
@@ -28,8 +29,8 @@ test("deriveClientDeltas computes per-series deltas and initializes baseline", (
   assert.equal(second[0].metrics[0].value, 6);
 });
 
-// Verifies counter reset handling: negative deltas are clamped to zero and
-// the baseline is updated for subsequent polls.
+// Scenario: A cumulative counter restarts at a lower value between admin polls.
+// Guarantees: Reset handling prevents a negative spike and advances the next baseline.
 test("deriveClientDeltas handles counter resets without negative spikes", () => {
   const state = { clientDeltaPrevBySeries: new Map() };
   const attrs = { "pipeline.id": "p1", "core.id": "0" };
@@ -73,8 +74,8 @@ test("deriveClientDeltas handles counter resets without negative spikes", () => 
   assert.equal(recovered[0].metrics[0].value, 8);
 });
 
-// Verifies only delta-eligible metrics are transformed and series identity
-// remains isolated by metric attributes.
+// Scenario: A gauge and two signal buckets with identical channel scope arrive together.
+// Guarantees: Gauges remain unchanged and datapoint attributes isolate cumulative baselines.
 test("deriveClientDeltas leaves gauges unchanged and separates attribute scopes", () => {
   const state = { clientDeltaPrevBySeries: new Map() };
 
@@ -88,12 +89,12 @@ test("deriveClientDeltas leaves gauges unchanged and separates attribute scopes"
       {
         name: "channel.receiver",
         attributes: { "channel.id": "ch1", "core.id": "0" },
-        metrics: [{ name: "recv.count", value: 8 }],
+        metrics: [{ name: "messages", value: 8, attributes: { signal: "logs" } }],
       },
       {
         name: "channel.receiver",
-        attributes: { "channel.id": "ch1", "core.id": "1" },
-        metrics: [{ name: "recv.count", value: 3 }],
+        attributes: { "channel.id": "ch1", "core.id": "0" },
+        metrics: [{ name: "messages", value: 3, attributes: { signal: "traces" } }],
       },
     ],
     state,
@@ -110,12 +111,12 @@ test("deriveClientDeltas leaves gauges unchanged and separates attribute scopes"
       {
         name: "channel.receiver",
         attributes: { "channel.id": "ch1", "core.id": "0" },
-        metrics: [{ name: "recv.count", value: 11 }],
+        metrics: [{ name: "messages", value: 11, attributes: { signal: "logs" } }],
       },
       {
         name: "channel.receiver",
-        attributes: { "channel.id": "ch1", "core.id": "1" },
-        metrics: [{ name: "recv.count", value: 9 }],
+        attributes: { "channel.id": "ch1", "core.id": "0" },
+        metrics: [{ name: "messages", value: 9, attributes: { signal: "traces" } }],
       },
     ],
     state,

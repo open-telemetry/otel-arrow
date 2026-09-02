@@ -526,7 +526,7 @@ Use this when:
 - You have other durability guarantees (e.g., upstream acknowledgement)
 
 ```rust
-use quiver::{QuiverConfig, DurabilityMode};
+use otel_arrow_dfe_quiver::{QuiverConfig, DurabilityMode};
 
 let mut config = QuiverConfig::default();
 config.durability = DurabilityMode::SegmentOnly;
@@ -820,7 +820,7 @@ future versions to extend the footer without breaking backwards compatibility:
 +-------------------------------------------------------------------------+
 |                         Batch Manifest                                  |
 |  Encoded as Arrow IPC (self-describing schema)                          |
-|  Columns: bundle_index, slot_refs (List<Struct>)                        |
+|  Columns: bundle_index, item_count, slot_refs (List<Struct>)            |
 +-------------------------------------------------------------------------+
 |                         Footer (variable size, version-dependent)       |
 |  Version 1 (34 bytes):                                                  |
@@ -1410,7 +1410,7 @@ pub async fn next_bundle(
 #### Cancellation Support
 
 Quiver supports cooperative cancellation via `tokio_util::sync::CancellationToken`,
-which is re-exported as `quiver::CancellationToken` for convenience.
+which is re-exported as `otel_arrow_dfe_quiver::CancellationToken` for convenience.
 
 **Use cases**:
 
@@ -1421,7 +1421,7 @@ which is re-exported as `quiver::CancellationToken` for convenience.
 #### Example: Graceful shutdown pattern
 
 ```rust
-use quiver::CancellationToken;
+use otel_arrow_dfe_quiver::CancellationToken;
 use std::time::Duration;
 
 // Create a shared cancellation token
@@ -1513,7 +1513,7 @@ With the async API and cancellation support, the durable buffer processor integr
 becomes straightforward:
 
 ```rust
-use quiver::CancellationToken;
+use otel_arrow_dfe_quiver::CancellationToken;
 use std::time::Duration;
 
 struct DurableBuffer {

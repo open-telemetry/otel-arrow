@@ -609,6 +609,9 @@ shared registry synchronization.
 
 ## Prior art
 
+- [Memory Resource Management](../docs/memory-resource-management.md) maps the
+  process, allocator, retained-work, receiver, and future tenant mechanisms and
+  their intended use cases.
 - The existing [process-wide memory limiter](../docs/memory-limiter-phase1.md)
   already classifies process memory pressure and sheds ingress under hard
   pressure.

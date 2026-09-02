@@ -1,6 +1,9 @@
 # Admin Interface
 
-`otap-df-admin` provides:
+This crate is currently pre-1.0. Its public API may evolve between minor
+releases.
+
+`otel-arrow-dfe-admin` provides:
 
 - admin, health, status, and telemetry HTTP endpoints;
 - live pipeline mutation endpoints for create, replace, resize, rollout
@@ -55,6 +58,10 @@ For the operator guide to live pipeline mutation, see
   (e.g. `_RJEM_MALLOC_CONF="prof:true,prof_active:true,lg_prof_sample:19"`
   on macOS, or `MALLOC_CONF` on Linux). Returns `application/x-protobuf`.
   Returns HTTP 500 if profiling is unavailable or not activated.
+- `GET /api/v1/debug/pprof/profile`: collect a CPU profile in pprof format.
+  Optional query parameters: `seconds` (sampling duration, default 30) and
+  `frequency` (sampling frequency in Hz, default 100). Returns
+  `application/x-protobuf`. Not available on Windows.
 
 ## Embedded UI layout (crate-relative)
 

@@ -22,6 +22,7 @@ struct RuntimeRecoveryAttempt {
     attempt: usize,
     target_key: DeployedPipelineKey,
     resolved: ResolvedPipelineConfig,
+    placement: LivePipelinePlacement,
     backoff: Duration,
 }
 
@@ -76,16 +77,23 @@ impl<
     pub(super) fn launch_regular_pipeline_instance(
         self: &Arc<Self>,
         resolved_pipeline: &ResolvedPipelineConfig,
+        placement: &LivePipelinePlacement,
         core_id: usize,
         deployment_generation: u64,
     ) -> Result<DeployedPipelineKey, Error> {
         let thread_id = self.next_thread_id();
-        let num_cores = self
-            .assigned_cores_for_resolved(resolved_pipeline)
-            .map_err(|err| Error::PipelineRuntimeError {
-                source: Box::new(io::Error::other(format!("{err:?}"))),
-            })?
-            .len();
+        let core_placement =
+            placement
+                .core(core_id)
+                .ok_or_else(|| Error::PipelineRuntimeError {
+                    source: Box::new(io::Error::other(format!(
+                        "core {core_id} is not present in resolved placement for {}:{}",
+                        resolved_pipeline.pipeline_group_id.as_ref(),
+                        resolved_pipeline.pipeline_id.as_ref()
+                    ))),
+                })?;
+        let num_cores = placement.placement.core_count();
+        let live_config = self.engine_config_snapshot();
         let deployed_key = DeployedPipelineKey {
             pipeline_group_id: resolved_pipeline.pipeline_group_id.clone(),
             pipeline_id: resolved_pipeline.pipeline_id.clone(),
@@ -96,6 +104,8 @@ impl<
             self.pipeline_factory,
             deployed_key.clone(),
             CoreId { id: core_id },
+            core_placement.numa_node_id,
+            Arc::clone(&placement.listener_group_snapshot),
             num_cores,
             resolved_pipeline.pipeline.clone(),
             resolved_pipeline.policies.channel_capacity.clone(),
@@ -109,11 +119,7 @@ impl<
             self.engine_tracing_setup.clone(),
             self.telemetry_reporting_interval,
             self.memory_pressure_tx.clone(),
-            &self
-                .state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .live_config,
+            &live_config,
             &self.declared_topics,
             Arc::downgrade(self),
             thread_id,
@@ -372,20 +378,12 @@ impl<
             return;
         };
         let policy = current_record.resolved.policies.runtime_recovery.clone();
-        let assigned_cores = match self.assigned_cores_for_resolved(&current_record.resolved) {
-            Ok(assigned_cores) => assigned_cores,
-            Err(err) => {
-                self.fail_runtime_recovery(
-                    &pipeline_key,
-                    failed_key.core_id,
-                    failed_key.deployment_generation,
-                    0,
-                    policy.max_restarts,
-                    format!("failed to resolve recovery core allocation: {err:?}"),
-                );
-                return;
-            }
-        };
+        let assigned_cores: Vec<_> = current_record
+            .placement
+            .cores
+            .iter()
+            .map(|core| core.core_id.id)
+            .collect();
         if !assigned_cores.contains(&failed_key.core_id) {
             return;
         }
@@ -631,6 +629,7 @@ impl<
 
             let target_key = match self.launch_regular_pipeline_instance(
                 &attempt.resolved,
+                &attempt.placement,
                 core_id,
                 attempt.target_key.deployment_generation,
             ) {
@@ -808,13 +807,19 @@ impl<
             return RuntimeRecoveryAttemptDecision::Exhausted;
         }
 
-        let Some(resolved) = state
-            .logical_pipelines
-            .get(pipeline_key)
-            .map(|record| record.resolved.clone())
+        let Some((resolved, placement, placement_generation)) =
+            state.logical_pipelines.get(pipeline_key).map(|record| {
+                (
+                    record.resolved.clone(),
+                    record.placement.clone(),
+                    record.placement_generation,
+                )
+            })
         else {
             return RuntimeRecoveryAttemptDecision::Exhausted;
         };
+        let placement =
+            self.live_pipeline_placement_from(&resolved, placement, placement_generation);
         let attempt = recovery.restart_count + 1;
         let target_generation = {
             // Recovery and rollouts share this counter. Generations must remain
@@ -843,6 +848,7 @@ impl<
                 deployment_generation: target_generation,
             },
             resolved,
+            placement,
             backoff: runtime_recovery_backoff(policy, attempt),
         }))
     }
@@ -1204,7 +1210,7 @@ impl<
                 message = "Runtime recovery was fatal and coordinated shutdown dispatch failed.",
             );
         }
-        self.controller_thread.unpark();
+        self.release_instance_wait();
     }
 
     /// Waits for a specific deployed instance to report admitted plus ready.
@@ -1807,11 +1813,43 @@ impl<
     }
 
     /// Starts a tracked shutdown operation for one logical pipeline.
+    #[cfg(test)]
     pub(super) fn request_shutdown_pipeline(
         self: &Arc<Self>,
         pipeline_group_id: &str,
         pipeline_id: &str,
         timeout_secs: u64,
+    ) -> Result<ShutdownStatus, ControlPlaneError> {
+        self.request_shutdown_pipeline_for_initiator(
+            pipeline_group_id,
+            pipeline_id,
+            timeout_secs,
+            None,
+        )
+    }
+
+    /// Starts a tracked shutdown with its external initiator.
+    pub(super) fn request_shutdown_pipeline_with_initiator(
+        self: &Arc<Self>,
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+        timeout_secs: u64,
+        initiator: PipelineShutdownInitiator,
+    ) -> Result<ShutdownStatus, ControlPlaneError> {
+        self.request_shutdown_pipeline_for_initiator(
+            pipeline_group_id,
+            pipeline_id,
+            timeout_secs,
+            Some(initiator),
+        )
+    }
+
+    fn request_shutdown_pipeline_for_initiator(
+        self: &Arc<Self>,
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+        timeout_secs: u64,
+        initiator: Option<PipelineShutdownInitiator>,
     ) -> Result<ShutdownStatus, ControlPlaneError> {
         // Keep the reservation alive until active_shutdowns contains the
         // accepted operation. A failure in the cancel-to-insert window is then
@@ -1828,6 +1866,7 @@ impl<
             pipeline_id,
             timeout_secs,
             None,
+            initiator,
         )
     }
 
@@ -1837,6 +1876,7 @@ impl<
         pipeline_id: &str,
         timeout_secs: u64,
         engine_operation_id: Option<&str>,
+        initiator: Option<PipelineShutdownInitiator>,
     ) -> Result<ShutdownStatus, ControlPlaneError> {
         self.cancel_runtime_recoveries_for_pipeline(&PipelineKey::new(
             pipeline_group_id.to_owned().into(),
@@ -1847,22 +1887,65 @@ impl<
             pipeline_id,
             timeout_secs,
             engine_operation_id,
+            initiator,
         )?;
         self.spawn_shutdown_for_engine_operation(plan, engine_operation_id)
     }
 
-    /// Blocks until all active runtime instances have exited.
+    /// Blocks until all active runtime instances have exited, or until the wait
+    /// is released via [`release_instance_wait`](Self::release_instance_wait).
     pub(crate) fn wait_until_all_instances_exit(&self) {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        while state.active_instances > 0 {
+        while state.active_instances > 0 && !state.instance_wait_released {
             state = self
                 .state_changed
                 .wait(state)
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
         }
+    }
+
+    /// Blocks until an explicit global shutdown has been requested and every
+    /// runtime instance has exited, or until the wait is released after a fatal
+    /// controller failure.
+    ///
+    /// Unlike [`wait_until_all_instances_exit`](Self::wait_until_all_instances_exit),
+    /// this does not return merely because there are currently no active
+    /// instances. Standard engine mode must remain alive for live-control
+    /// operations even when it starts empty or the last pipeline stops.
+    pub(crate) fn wait_until_global_shutdown_drains_or_released(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        while !state.instance_wait_released
+            && (!state.global_shutdown_requested || state.active_instances > 0)
+        {
+            state = self
+                .state_changed
+                .wait(state)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+    }
+
+    /// Releases [`wait_until_all_instances_exit`](Self::wait_until_all_instances_exit)
+    /// unconditionally, even if runtime instances are still active.
+    ///
+    /// This is a fatal-shutdown escape hatch: when a controller extension fails
+    /// or runtime recovery is exhausted, the engine tears down regardless of
+    /// whether the graceful drain of pipeline instances completes. The main
+    /// controller thread must not block forever if that drain stalls. The latch
+    /// is one-way for the current run, after which the controller proceeds to
+    /// teardown.
+    pub(crate) fn release_instance_wait(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.instance_wait_released = true;
+        self.state_changed.notify_all();
     }
 
     /// Blocks until all non-observability runtime instances have exited.

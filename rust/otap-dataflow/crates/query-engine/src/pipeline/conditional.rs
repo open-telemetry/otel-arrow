@@ -13,9 +13,9 @@ use async_trait::async_trait;
 use datafusion::config::ConfigOptions;
 use datafusion::execution::TaskContext;
 use datafusion::prelude::SessionContext;
-use otap_df_pdata::OtapArrowRecords;
+use otel_arrow_dfe_pdata::OtapArrowRecords;
 
-use otap_df_pdata::otap::filter::{IdBitmapPool, filter_otap_batch};
+use otel_arrow_dfe_pdata::otap::filter::{IdBitmapPool, filter_otap_batch};
 
 use crate::error::Result;
 use crate::pipeline::concat::{
@@ -168,6 +168,11 @@ impl PipelineStage for ConditionalPipelineStage {
 
             // update the list of rows that were already selected by branches
             already_selected_vec = or(&already_selected_vec, &predicate_selection_vec)?;
+
+            if branch_selection_vec.true_count() == 0 {
+                // no rows selected - no sense executing the branch on zero rows
+                continue;
+            }
 
             // create a batch with only the rows that match the condition
             //
@@ -346,8 +351,8 @@ mod test {
         },
     };
     use arrow::array::UInt16Array;
-    use data_engine_parser_abstractions::Parser;
-    use otap_df_pdata::{
+    use otel_arrow_contrib_data_engine_parser_abstractions::Parser;
+    use otel_arrow_dfe_pdata::{
         otap::Logs,
         proto::opentelemetry::{
             arrow::v1::ArrowPayloadType,
@@ -357,7 +362,7 @@ mod test {
         schema::consts,
         testing::round_trip::{otap_to_otlp, to_logs_data},
     };
-    use otap_df_pdata::{
+    use otel_arrow_dfe_pdata::{
         proto::{
             OtlpProtoMessage,
             opentelemetry::{
@@ -368,7 +373,7 @@ mod test {
         },
         testing::round_trip::{otlp_to_otap, to_metrics_data, to_traces_data},
     };
-    use otap_df_query_engine_languages::opl::parser::OplParser;
+    use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
 
     use super::*;
 

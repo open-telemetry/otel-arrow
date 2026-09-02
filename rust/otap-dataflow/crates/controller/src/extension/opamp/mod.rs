@@ -25,12 +25,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use linkme::distributed_slice;
-use otap_df_admin::{
+use otel_arrow_dfe_admin::{
     ControlPlaneError, EngineConfigReconcileRequest, EngineConfigReconcileState,
     EngineConfigReconcileStatus,
 };
-use otap_df_config::engine::OtelDataflowSpec;
-use otap_df_state::phase::PipelinePhase;
+use otel_arrow_dfe_config::engine::OtelDataflowSpec;
+use otel_arrow_dfe_state::phase::PipelinePhase;
 use prost::Message as _;
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
@@ -39,11 +39,6 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
-
-use otap_df_config::PipelineKey;
-use otap_df_config::error::Error as ConfigError;
-use otap_df_state::pipeline_status::PipelineStatus;
-use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
 
 use crate::extension::opamp::config::Config;
 use crate::extension::opamp::consts::health_status;
@@ -61,6 +56,9 @@ use crate::{
     CONTROLLER_EXTENSION_FACTORIES, ControllerExtensionContext, ControllerExtensionError,
     ControllerExtensionFactory, ControllerExtensionTaskFactory,
 };
+use otel_arrow_dfe_config::PipelineKey;
+use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_state::pipeline_status::PipelineStatus;
 
 pub mod config;
 pub mod consts;
@@ -69,6 +67,11 @@ pub mod proto;
 mod util;
 
 const CONTROL_EXTENSION_URN: &str = "urn:otel:extension:opamp";
+
+otel_arrow_dfe_telemetry::otel_component_scope!(
+    urn = CONTROL_EXTENSION_URN,
+    target = "otel.extension.opamp",
+);
 
 /// Custom capability type - represents the custom message which can be sent by this OpAMP agent
 /// implementation containing the full pipeline status.
@@ -699,6 +702,31 @@ struct ReplyError {
     config_hash: Vec<u8>,
 }
 
+fn parse_remote_engine_config(content_type: &str, body: &[u8]) -> Result<OtelDataflowSpec, String> {
+    let media_type = content_type
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    match media_type.as_str() {
+        "application/json" => serde_json::from_slice(body).map_err(|error| error.to_string()),
+        "application/yaml" | "application/x-yaml" | "text/yaml" | "text/x-yaml" => {
+            serde_yaml::from_slice(body).map_err(|error| error.to_string())
+        }
+        // Preserve the historical empty-as-JSON behavior, then support servers such as
+        // opamp-go that omit the content type for YAML payloads.
+        "" => serde_json::from_slice(body).or_else(|json_error| {
+            serde_yaml::from_slice(body).map_err(|yaml_error| {
+                format!("could not parse as JSON ({json_error}) or YAML ({yaml_error})")
+            })
+        }),
+        other => Err(format!(
+            "unsupported content type `{other}`; expected JSON or YAML"
+        )),
+    }
+}
+
 /// Decide what must be done with the ServerToAgent message
 fn handle_server_to_agent_message(
     message: ServerToAgent,
@@ -843,51 +871,38 @@ fn handle_server_to_agent_message(
                     .config_map
                     .get(&config.remote_config_key)
                 {
-                    // assume empty content type to be JSON
-                    if config_file.content_type == "application/json"
-                        || config_file.content_type.is_empty()
-                    {
-                        if !config_file.body.is_empty() {
-                            match serde_json::from_slice::<OtelDataflowSpec>(&config_file.body) {
-                                Ok(engine_config) => {
-                                    otel_debug!(
-                                        "opamp.controller_extension.remote_config.accepted"
-                                    );
-                                    updates.engine_config = Some(EngineConfigUpdate {
-                                        engine_config,
-                                        config_hash: remote_config.config_hash,
-                                    })
-                                }
-                                Err(e) => {
-                                    let message = "Remote configuration was rejected; the current engine configuration remains active".to_string();
-                                    otel_error!(
-                                        "opamp.controller_extension.message.invalid_config_json",
-                                        message = message,
-                                        error =? e,
-                                    );
-                                    reply.reply_error = Some(ReplyError {
-                                        message,
-                                        config_hash: remote_config.config_hash,
-                                    })
-                                }
+                    if !config_file.body.is_empty() {
+                        match parse_remote_engine_config(
+                            &config_file.content_type,
+                            &config_file.body,
+                        ) {
+                            Ok(engine_config) => {
+                                otel_debug!("opamp.controller_extension.remote_config.accepted");
+                                updates.engine_config = Some(EngineConfigUpdate {
+                                    engine_config,
+                                    config_hash: remote_config.config_hash,
+                                })
                             }
-                        } else {
-                            otel_debug!(
-                                "opamp.controller_extension.remote_config.empty",
-                                message = "Ignoring empty remote configuration body"
-                            );
+                            Err(error) => {
+                                let message = format!(
+                                    "Remote configuration was rejected: {error}; the current engine configuration remains active"
+                                );
+                                otel_error!(
+                                    "opamp.controller_extension.message.invalid_config",
+                                    message = message,
+                                    error = error,
+                                );
+                                reply.reply_error = Some(ReplyError {
+                                    message,
+                                    config_hash: remote_config.config_hash,
+                                })
+                            }
                         }
                     } else {
-                        let message = "Invalid content type. expected application/json".to_string();
-                        otel_error!(
-                            "opamp.controller_extension.message.invalid_serialized_config",
-                            message = message,
-                            received = config_file.content_type,
+                        otel_debug!(
+                            "opamp.controller_extension.remote_config.empty",
+                            message = "Ignoring empty remote configuration body"
                         );
-                        reply.reply_error = Some(ReplyError {
-                            message,
-                            config_hash: remote_config.config_hash,
-                        })
                     }
                 } else {
                     otel_warn!(
@@ -1602,12 +1617,13 @@ fn pipeline_status_custom_message(
 mod test {
     use std::{borrow::Cow, sync::Arc};
 
-    use otap_df_config::{
+    use otel_arrow_dfe_admin::ControlPlane;
+    use otel_arrow_dfe_config::{
         extension::{ExtensionUrn, ExtensionUserConfig},
         observed_state::ObservedStateSettings,
     };
-    use otap_df_state::store::ObservedStateStore;
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_state::store::ObservedStateStore;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 
     use crate::extension::opamp::proto::opamp::v1::{
         AgentRemoteConfig, AnyValue, RetryInfo, ServerErrorResponse, any_value::Value,
@@ -1634,7 +1650,7 @@ mod test {
         expected_exchanges: usize,
         mut config: Config,
     ) -> Vec<AgentToServer> {
-        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
         config.endpoint = format!("ws://127.0.0.1:{port}/v1/opamp");
 
         let cancellation_token = CancellationToken::new();
@@ -1910,9 +1926,112 @@ mod test {
         let applied = &requests[1];
         let status = applied.remote_config_status.as_ref().unwrap();
         assert_eq!(status.status, RemoteConfigStatuses::Failed as i32);
+        assert!(
+            status.error_message.contains("expected value at line"),
+            "status should include the JSON parser error: {}",
+            status.error_message
+        );
+        assert!(
+            status
+                .error_message
+                .ends_with("the current engine configuration remains active"),
+            "status should explain that the existing config remains active: {}",
+            status.error_message
+        );
+    }
+
+    /// Scenario: an OpAMP config file declares a standard YAML media type.
+    /// Guarantees: all supported YAML media types deserialize the engine config.
+    #[test]
+    fn test_parse_remote_yaml_content_types() {
+        let body = serde_yaml::to_string(&test_config()).expect("test config should serialize");
+
+        for content_type in [
+            "application/yaml",
+            "application/x-yaml",
+            "text/yaml",
+            "text/x-yaml; charset=utf-8",
+        ] {
+            let parsed = parse_remote_engine_config(content_type, body.as_bytes())
+                .expect("YAML remote config should parse");
+            assert_eq!(parsed.version, "otel_dataflow/v1");
+        }
+    }
+
+    /// Scenario: an OpAMP config file contains JSON and omits its content type.
+    /// Guarantees: format detection preserves the historical JSON behavior.
+    #[test]
+    fn test_parse_remote_json_without_content_type() {
+        let body = serde_json::to_vec(&test_config()).expect("test config should serialize");
+
+        let parsed = parse_remote_engine_config("", &body)
+            .expect("JSON remote config without a content type should parse");
+
+        assert_eq!(parsed.version, "otel_dataflow/v1");
+    }
+
+    /// Scenario: an OpAMP config file declares an unsupported media type or malformed YAML.
+    /// Guarantees: parsing rejects the payload with an actionable format error.
+    #[test]
+    fn test_parse_remote_config_rejects_unsupported_or_malformed_payload() {
+        let unsupported = parse_remote_engine_config("text/plain", b"version: otel_dataflow/v1")
+            .expect_err("unsupported media type should fail");
+        assert!(unsupported.contains("unsupported content type `text/plain`"));
+
+        let malformed = parse_remote_engine_config("application/yaml", b"version: [")
+            .expect_err("malformed YAML should fail");
+        assert!(!malformed.is_empty());
+    }
+
+    /// Scenario: the opamp-go example UI sends YAML without a content type.
+    /// Guarantees: the agent detects YAML, reconciles it, and reports the config as applied.
+    #[tokio::test]
+    async fn test_yaml_config_without_content_type_is_applied() {
+        let control_plane = Arc::new(MockControlPlane::new(empty_engine_config()));
+        let desired = test_config();
+        let body = serde_yaml::to_string(&desired).expect("test config should serialize");
+        let responses = vec![
+            Some(ServerToAgent {
+                remote_config: Some(AgentRemoteConfig {
+                    config_hash: vec![5, 1, 4],
+                    config: Some(AgentConfigMap {
+                        config_map: HashMap::from_iter([(
+                            "".into(),
+                            AgentConfigFile {
+                                content_type: String::new(),
+                                body: body.into_bytes(),
+                            },
+                        )]),
+                    }),
+                }),
+                instance_uid: EXPECTED_INSTANCE_UID_BYTES.to_vec(),
+                ..Default::default()
+            }),
+            None,
+        ];
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "instance_uid": EXPECTED_INSTANCE_UID_STR,
+            "endpoint": "",
+        }))
+        .expect("OpAMP test config should parse");
+
+        let requests =
+            run_web_socket_test_with_config(responses, Arc::clone(&control_plane), 3, config).await;
+
+        assert_eq!(requests.len(), 3);
         assert_eq!(
-            status.error_message,
-            "Remote configuration was rejected; the current engine configuration remains active"
+            requests[2]
+                .remote_config_status
+                .as_ref()
+                .expect("applied response should include remote config status")
+                .status,
+            RemoteConfigStatuses::Applied as i32
+        );
+        assert_eq!(
+            control_plane
+                .engine_config_snapshot()
+                .expect("effective config should be available"),
+            desired
         );
     }
 
@@ -2012,14 +2131,14 @@ mod test {
             Vec<
                 Box<
                     dyn FnOnce(
-                        otap_df_config::DeployedPipelineKey,
-                    ) -> otap_df_telemetry::event::EngineEvent,
+                        otel_arrow_dfe_config::DeployedPipelineKey,
+                    ) -> otel_arrow_dfe_telemetry::event::EngineEvent,
                 >,
             >,
         )>,
     ) -> HashMap<PipelineKey, PipelineStatus> {
-        use otap_df_config::observed_state::ObservedStateSettings;
-        use otap_df_state::store::ObservedStateStore;
+        use otel_arrow_dfe_config::observed_state::ObservedStateSettings;
+        use otel_arrow_dfe_state::store::ObservedStateStore;
 
         let telemetry_registry_handle = TelemetryRegistryHandle::default();
         let store =
@@ -2049,7 +2168,7 @@ mod test {
             );
 
             for event_fn in events {
-                let deployed_key = otap_df_config::DeployedPipelineKey {
+                let deployed_key = otel_arrow_dfe_config::DeployedPipelineKey {
                     pipeline_group_id: Cow::Owned(group_id.to_owned()),
                     pipeline_id: Cow::Owned(pipeline_id.to_owned()),
                     core_id: 0,
@@ -2070,7 +2189,7 @@ mod test {
 
     #[tokio::test]
     async fn test_pipeline_health_running() {
-        use otap_df_telemetry::event::EngineEvent;
+        use otel_arrow_dfe_telemetry::event::EngineEvent;
 
         let snapshot = build_status_snapshot(vec![(
             "group1",
@@ -2091,7 +2210,7 @@ mod test {
 
     #[tokio::test]
     async fn test_pipeline_health_failed() {
-        use otap_df_telemetry::event::{EngineEvent, ErrorSummary};
+        use otel_arrow_dfe_telemetry::event::{EngineEvent, ErrorSummary};
 
         let snapshot = build_status_snapshot(vec![(
             "group1",
@@ -2123,7 +2242,7 @@ mod test {
 
     #[tokio::test]
     async fn test_pipeline_health_stopped() {
-        use otap_df_telemetry::event::EngineEvent;
+        use otel_arrow_dfe_telemetry::event::EngineEvent;
 
         let snapshot = build_status_snapshot(vec![(
             "group1",
@@ -2146,7 +2265,7 @@ mod test {
 
     #[tokio::test]
     async fn test_pipeline_health_starting() {
-        use otap_df_telemetry::event::EngineEvent;
+        use otel_arrow_dfe_telemetry::event::EngineEvent;
 
         // Only send admitted (not ready) -- pipeline is in Starting phase
         let snapshot = build_status_snapshot(vec![(
@@ -2165,7 +2284,7 @@ mod test {
 
     #[tokio::test]
     async fn test_pipeline_health_stopping() {
-        use otap_df_telemetry::event::EngineEvent;
+        use otel_arrow_dfe_telemetry::event::EngineEvent;
 
         // admitted -> ready -> shutdown_requested puts it into Draining
         let snapshot = build_status_snapshot(vec![(
@@ -2209,7 +2328,7 @@ mod test {
 
     #[tokio::test]
     async fn test_component_health_aggregates_pipeline_groups() {
-        use otap_df_telemetry::event::{EngineEvent, ErrorSummary};
+        use otel_arrow_dfe_telemetry::event::{EngineEvent, ErrorSummary};
 
         let snapshot = build_status_snapshot(vec![
             (

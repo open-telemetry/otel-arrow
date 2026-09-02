@@ -6,8 +6,10 @@
 use std::vec;
 
 use ::pest::{Parser as _, iterators::Pair};
-use data_engine_expressions::{PipelineFunction, QueryLocation, ScalarExpression};
-use data_engine_parser_abstractions::{
+use otel_arrow_contrib_data_engine_expressions::{
+    PipelineFunction, QueryLocation, ScalarExpression,
+};
+use otel_arrow_contrib_data_engine_parser_abstractions::{
     Parser, ParserError, ParserOptions, ParserResult, ParserState, to_query_location,
 };
 
@@ -142,13 +144,14 @@ pub(crate) fn invalid_child_rule_error(
 
 #[cfg(test)]
 mod test {
-    use data_engine_expressions::{
-        DataExpression, DiscardDataExpression, EqualToLogicalExpression, LogicalExpression,
-        MatchesLogicalExpression, NotLogicalExpression, QueryLocation, RegexScalarExpression,
-        ScalarExpression, SourceScalarExpression, StaticScalarExpression, StringScalarExpression,
-        ValueAccessor,
+    use otel_arrow_contrib_data_engine_expressions::{
+        BooleanScalarExpression, BranchDataExpression, DataExpression, DataExpressionBranch,
+        DiscardDataExpression, EqualToLogicalExpression, GetRecordTypeScalarExpression,
+        LogicalExpression, MatchesLogicalExpression, NotLogicalExpression, QueryLocation,
+        RegexScalarExpression, ScalarExpression, SourceScalarExpression, StaticScalarExpression,
+        StringScalarExpression, ValueAccessor,
     };
-    use data_engine_parser_abstractions::Parser;
+    use otel_arrow_contrib_data_engine_parser_abstractions::Parser;
     use regex::Regex;
 
     use super::OplParser;
@@ -366,6 +369,61 @@ mod test {
                 pretty_assertions::assert_eq!(&branch_exprs[0], &expected);
             }
             other => panic!("expected Conditional, got {other:?}"),
+        }
+    }
+
+    /// Scenario: Parse OPL pipelines that use plural concrete metric types as source.
+    /// Guarantees: The parser produces a query plan that only processes rows that have the
+    /// selected metric type
+    #[test]
+    fn test_parses_program_for_metrics_types() {
+        let test_cases = [
+            ("gauges", "Gauge"),
+            ("sums", "Sum"),
+            ("histograms", "Histogram"),
+            ("exponential_histograms", "ExponentialHistogram"),
+            ("summaries", "Summary"),
+        ];
+
+        for (source, metric_type_name) in test_cases {
+            let query = format!("{source} | where true");
+            let pipeline = OplParser::parse(&query).unwrap().pipeline;
+            let expressions = pipeline.get_expressions();
+            assert_eq!(expressions.len(), 1);
+            pretty_assertions::assert_eq!(
+                expressions[0],
+                DataExpression::Branch(
+                    BranchDataExpression::new(QueryLocation::new_fake(), true).with_branch(
+                        DataExpressionBranch::new(
+                            QueryLocation::new_fake(),
+                            Some(LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                                QueryLocation::new_fake(),
+                                ScalarExpression::GetRecordType(
+                                    GetRecordTypeScalarExpression::new(QueryLocation::new_fake())
+                                ),
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        metric_type_name
+                                    )
+                                )),
+                                false
+                            ))),
+                            vec![DataExpression::Discard(
+                                DiscardDataExpression::new(QueryLocation::new_fake())
+                                    .with_predicate(LogicalExpression::Scalar(
+                                        ScalarExpression::Static(StaticScalarExpression::Boolean(
+                                            BooleanScalarExpression::new(
+                                                QueryLocation::new_fake(),
+                                                false
+                                            )
+                                        ))
+                                    ))
+                            )]
+                        )
+                    )
+                )
+            )
         }
     }
 }

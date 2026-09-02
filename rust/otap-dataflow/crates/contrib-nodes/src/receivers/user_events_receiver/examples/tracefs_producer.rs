@@ -6,7 +6,7 @@
 //! Run on Linux with a kernel that supports user_events:
 //!
 //! ```bash
-//! cargo run -p otap-df-contrib-nodes \
+//! cargo run -p otel-arrow-dfe-contrib-nodes \
 //!   --features user_events-receiver \
 //!   --example user_events_tracefs_producer
 //! ```
@@ -22,7 +22,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
     let event_name = args
         .next()
-        .unwrap_or_else(|| "otap_df_tracefs_demo".to_owned());
+        .unwrap_or_else(|| "otel_arrow_dfe_tracefs_demo".to_owned());
     let count = args
         .next()
         .map(|value| value.parse::<u32>())

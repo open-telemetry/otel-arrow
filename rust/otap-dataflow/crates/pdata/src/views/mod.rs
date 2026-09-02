@@ -35,13 +35,13 @@ pub mod otlp;
 /// helpers for writing benchmarks against view implementations
 #[cfg(feature = "bench")]
 pub mod bench_helpers {
-    use otap_df_pdata_views::views::common::{
+    use otel_arrow_dfe_pdata_views::views::common::{
         AnyValueView, AttributeView, InstrumentationScopeView, ValueType,
     };
-    use otap_df_pdata_views::views::logs::{
+    use otel_arrow_dfe_pdata_views::views::logs::{
         LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView,
     };
-    use otap_df_pdata_views::views::resource::ResourceView;
+    use otel_arrow_dfe_pdata_views::views::resource::ResourceView;
     use std::hint::black_box;
 
     /// noop visit `AnyValueView``
