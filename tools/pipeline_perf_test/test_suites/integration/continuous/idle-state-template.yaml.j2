@@ -43,7 +43,7 @@ tests:
           run:
             pre:
               - render_template:
-                  template_path: 'test_suites/integration/templates/configs/engine/continuous/otlp-attr-otlp-idle.yaml'
+                  template_path: 'test_suites/integration/templates/configs/engine/continuous/otlp-attr-otlp-idle.yaml.j2'
                   output_path: ./test_suites/integration/configs/engine/config.rendered.yaml
                   variables:
                     backend_hostname: localhost

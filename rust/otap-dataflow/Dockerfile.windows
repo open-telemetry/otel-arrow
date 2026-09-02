@@ -1,0 +1,33 @@
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+
+# This Dockerfile packages a pre-built df_engine.exe into a Windows container.
+# The binary must be built on the host before building this image.
+#
+# Build steps from the rust/otap-dataflow directory:
+#   cargo build --release --features mimalloc
+#   docker build -f Dockerfile.windows -t df_engine_win .
+#
+# The binary is expected at target/release/df_engine.exe relative to the build
+# context (the rust/otap-dataflow directory).
+#
+# The base image tag must match the Windows version on the host. GitHub Actions
+# windows-latest uses Windows Server 2025 which requires ltsc2025.
+#
+# MAINTENANCE: this tag is coupled to the runner OS. Windows containers cannot
+# run a base image newer than the host kernel, so when GitHub moves
+# windows-latest to a newer Windows Server release this image must be bumped in
+# lockstep or `docker run` fails with a version-mismatch error. The tag is not
+# digest-pinned precisely because it has to track the host.
+#
+# The binary is built with `-C target-feature=+crt-static`, so a smaller
+# nanoserver base may work here and would cut several GB from the per-run image
+# pull. Left as servercore until that is verified.
+
+FROM mcr.microsoft.com/windows/servercore:ltsc2025
+
+WORKDIR C:\\dataflow
+
+COPY target/release/df_engine.exe C:/dataflow/df_engine.exe
+
+ENTRYPOINT ["C:\\dataflow\\df_engine.exe"]

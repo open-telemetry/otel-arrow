@@ -18,18 +18,19 @@ use datafusion::functions::math::log10;
 use datafusion::functions::string::{
     concat, concat_ws, ends_with, lower, ltrim, replace, rtrim, starts_with, upper, uuid,
 };
-use datafusion::logical_expr::ScalarUDFImpl;
 use datafusion::logical_expr::expr::ScalarFunction;
 use datafusion::logical_expr::simplify::{ExprSimplifyResult, SimplifyContext};
 use datafusion::logical_expr::{BinaryExpr, Expr, Operator, ScalarUDF, col, lit, not};
+use datafusion::logical_expr::{ScalarUDFImpl, cast};
 use datafusion::prelude::{binary_expr, lit_timestamp_nano};
 use otel_arrow_contrib_data_engine_expressions::{
     BinaryMathematicalScalarExpression, BooleanValue, CaptureTextScalarExpression,
-    CoalesceScalarExpression, CollectionScalarExpression, CombineScalarExpression, DateTimeValue,
-    DoubleValue, Expression, IntegerValue, InvokeFunctionArgument, InvokeFunctionScalarExpression,
-    JoinTextScalarExpression, LogicalExpression, MathScalarExpression, PipelineFunction,
-    PipelineFunctionImplementation, ReplaceTextScalarExpression, ScalarExpression,
-    StaticScalarExpression, StringScalarExpression, StringValue, TextScalarExpression, ValueType,
+    CoalesceScalarExpression, CollectionScalarExpression, CombineScalarExpression,
+    ConvertScalarExpression, DateTimeValue, DoubleValue, Expression, IntegerValue,
+    InvokeFunctionArgument, InvokeFunctionScalarExpression, JoinTextScalarExpression,
+    LogicalExpression, MathScalarExpression, PipelineFunction, PipelineFunctionImplementation,
+    ReplaceTextScalarExpression, ScalarExpression, StaticScalarExpression, StringScalarExpression,
+    StringValue, TextScalarExpression, ValueType,
 };
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_pdata::otlp::metrics::MetricType;
@@ -39,7 +40,7 @@ use otel_arrow_dfe_pdata::schema::consts;
 use crate::consts::SHA1_FUNC_NAME;
 use crate::consts::{
     ENCODE_FUNC_NAME, ENDS_WITH_FUNC_NAME, FNV_FUNC_NAME, FORMAT_DATETIME_FUNC_NAME, LOG_FUNC_NAME,
-    LOWER_CASE_FUNC_NAME, LTRIM_FUNC_NAME, MD5_FUNC_NAME, MURMUR3_FUNC_NAME,
+    LOWER_CASE_FUNC_NAME, LTRIM_FUNC_NAME, MD5_FUNC_NAME, MURMUR3_FUNC_NAME, NOW_FUNC_NAME,
     REGEXP_SUBSTR_FUNC_NAME, RTRIM_FUNC_NAME, SHA256_FUNC_NAME, SHA512_FUNC_NAME,
     STARTS_WITH_FUNC_NAME, UPPER_CASE_FUNC_NAME, UUID_FUNC_NAME, UUIDV7_FUNC_NAME, XXH3_FUNC_NAME,
     XXH128_FUNC_NAME,
@@ -48,7 +49,7 @@ use crate::error::{Error, Result};
 use crate::pipeline::assign::leaf_requires_dict_downcast;
 use crate::pipeline::expr::join::is_one_to_many;
 use crate::pipeline::expr::types::{
-    ExprLogicalType, coerce_arithmetic, nested_struct_field_type, root_field_type,
+    ExprLogicalType, cast_expr, coerce_arithmetic, nested_struct_field_type, root_field_type,
 };
 use crate::pipeline::expr::{DataScope, VALUE_COLUMN_NAME, arg_column_name};
 use crate::pipeline::expr::{
@@ -60,7 +61,8 @@ use crate::pipeline::functions::is_type::IsTypeFunc;
 #[cfg(feature = "sha1-hash")]
 use crate::pipeline::functions::sha1_hash;
 use crate::pipeline::functions::{
-    arity_range, fnv_hash, murmur3_hash, regexp_substr, substring, uuidv7, xxh3_hash, xxh128_hash,
+    arity_range, fnv_hash, murmur3_hash, now, regexp_substr, substring, uuidv7, xxh3_hash,
+    xxh128_hash,
 };
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
 use crate::pipeline::project::{Projection, ProjectionOptions};
@@ -253,6 +255,10 @@ impl ExprPlanner {
 
             ScalarExpression::Coalesce(coalesce_expr) => {
                 self.plan_coalesce_expr(coalesce_expr, functions)
+            }
+
+            ScalarExpression::Convert(convert_scalar_expression) => {
+                self.plan_type_cast_expr(convert_scalar_expression, functions)
             }
 
             ScalarExpression::InvokeFunction(invoke_expr) => {
@@ -777,7 +783,7 @@ impl ExprPlanner {
             Expr::ScalarFunction(ScalarFunction::new_udf(df_udf.scalar_udf, arg_exprs));
 
         if let Some(data_type) = df_udf.cast_result_to {
-            logical_expr = datafusion::logical_expr::cast(logical_expr, data_type);
+            logical_expr = cast(logical_expr, data_type);
         }
 
         let dict_downcast = source_dict_downcast || df_udf.requires_dict_downcast;
@@ -1755,6 +1761,104 @@ impl ExprPlanner {
         }
     }
 
+    fn plan_type_cast_expr(
+        &self,
+        convert_scalar_expression: &ConvertScalarExpression,
+        functions: &[PipelineFunction],
+    ) -> Result<PlannedOp> {
+        // TODO there are opportunities to optimize this type conversion:
+        //
+        // The convert expression only specifies the logical type that the eval result
+        // should be converted to. For now we're naively casting to the arrow data type
+        // type which will may eventually be converted to yet another type for example:
+        // - if the result is being used in assignment to a dictionary field, we may need
+        //   to convert the cast result to a DictionaryArray
+        // - in the cast of an integer type, the type may be converted to a different int
+        //   according to arithmetic conversion rules or for assignment to a field of a
+        //   different type of integer.
+        //
+        // We may do better here by:
+        // a) implementing a UDF that can do a "logical cast", and apply the cast operation
+        // to only dictionary values if that is what it receives as an argument
+        // b) have an expression optimizer that can check for double casts, for example to
+        // different integer types or from dict to non-dict arrays multiple times, and
+        // collapsing into a single cast to the final target type.
+
+        let (expr_logical_type, arrow_type, inner) = match convert_scalar_expression {
+            ConvertScalarExpression::Integer(inner) => {
+                (ExprLogicalType::AnyInt, DataType::Int64, inner)
+            }
+            ConvertScalarExpression::String(inner) => {
+                (ExprLogicalType::String, DataType::Utf8, inner)
+            }
+            ConvertScalarExpression::Double(inner) => {
+                (ExprLogicalType::Float64, DataType::Float64, inner)
+            }
+            ConvertScalarExpression::Boolean(inner) => {
+                (ExprLogicalType::Boolean, DataType::Boolean, inner)
+            }
+            other => {
+                return Err(Error::NotYetSupportedError {
+                    message: format!("conversion expression not yet supported {other:?}"),
+                });
+            }
+        };
+
+        fn cast_leaf_eval(eval: &mut LeafEval, arrow_type: DataType) -> Result<()> {
+            match eval {
+                LeafEval::DatafusionExpr {
+                    logical_expr,
+                    eval_anyval_as_struct,
+                    projection_opts,
+                    ..
+                } => {
+                    cast_expr(logical_expr, arrow_type);
+                    *eval_anyval_as_struct = false;
+
+                    // arrow-rs's "cast" implementation has a particular quirk where it will apply
+                    // the cast to all the dictionary values before possibly expanding them into a
+                    // non-dict encoded array. This includes dict values that are orphaned, which
+                    // means if we have an expr like `attributes["stringified_int"] as Integer`,
+                    // we will filter the attr record batch by this key and then must ensure there
+                    // are no orphaned values in a post-filter, dict encoded values column, as
+                    // these could cause the cast to unexpectedly fail
+                    projection_opts.sanitize_dicts = true;
+
+                    Ok(())
+                }
+                LeafEval::BatchPredicate(_) => {
+                    // TODO add support for expressions such as `is Log as String` which would
+                    // produce "true" for log batches, and false otherwise
+                    Err(Error::NotYetSupportedError {
+                        message: "casting result of batch predicate not yet supported".into(),
+                    })
+                }
+            }
+        }
+
+        let mut source = self.plan_scalar(inner.get_inner_expression(), functions)?;
+        source.expr_type = expr_logical_type.clone();
+
+        match &mut source.expr {
+            ScopedExpr::BitmapAnd(_, _) | ScopedExpr::BitmapOr(_, _) | ScopedExpr::BitmapNot(_) => {
+                let mut eval = LeafEval::new_df_expr(col(arg_column_name(0)), false)?;
+                cast_leaf_eval(&mut eval, arrow_type)?;
+                source.expr = ScopedExpr::JoinAndEval {
+                    children: vec![source.expr],
+                    eval,
+                    default_null_children: false,
+                    align_children_to_root: false,
+                    short_circuit: None,
+                };
+            }
+            ScopedExpr::Eval { eval, .. } | ScopedExpr::JoinAndEval { eval, .. } => {
+                cast_leaf_eval(eval, arrow_type)?;
+            }
+        }
+
+        Ok(source)
+    }
+
     /// Build a binary operation as either a single `Eval` (same-scope) or `JoinAndEval`
     /// (cross-scope).
     fn build_binary_expr(
@@ -1879,6 +1983,7 @@ impl DataFusionFunctionDef {
             ENDS_WITH_FUNC_NAME => Self::new(ends_with(), ExprLogicalType::Boolean, true, None),
             LOG_FUNC_NAME => Self::new(log10(), ExprLogicalType::Float64, true, None),
             LTRIM_FUNC_NAME => Self::new(ltrim(), ExprLogicalType::String, true, None),
+            NOW_FUNC_NAME => Self::new(now(), ExprLogicalType::TimestampNanosecond, false, None),
             REGEXP_SUBSTR_FUNC_NAME => {
                 Self::new(regexp_substr(), ExprLogicalType::String, false, None)
             }

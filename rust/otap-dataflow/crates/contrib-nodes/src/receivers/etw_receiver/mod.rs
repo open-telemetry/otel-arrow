@@ -41,12 +41,6 @@
 //! registered provider, or `kind: tracelogging` to derive the GUID from the
 //! name without any OS lookup.
 //!
-//! Manifest providers additionally support `event_ids`, an allow-list of up
-//! to 64 unique event IDs filtered server-side by the ETW runtime. This is
-//! rejected for providers that resolve by name-hash (`kind: tracelogging`,
-//! and automatic fallback when no registered provider is found), since those
-//! events cannot be selected by `EventDescriptor.Id`.
-//!
 //! ```yaml
 //! etw:
 //!   type: receiver:etw
@@ -57,7 +51,6 @@
 //!       - name: "Microsoft-Windows-Kernel-Process"
 //!         kind: manifest
 //!         level: information
-//!         event_ids: [1, 2, 15]
 //!       - name: "My-Custom-EventSource"
 //!         kind: tracelogging
 //!     batching:
@@ -102,7 +95,6 @@ use serde_json::Value;
 use tokio::time::{self, MissedTickBehavior};
 
 use std::cell::RefCell;
-use std::collections::HashSet;
 use std::num::NonZeroU16;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -193,24 +185,6 @@ struct ProviderConfig {
     /// When omitted, all keywords are matched.
     #[serde(default)]
     pub keywords: Option<u64>,
-
-    /// Optional allow-list of event IDs (from `EventDescriptor.Id`) to
-    /// capture from this provider. When omitted, all event IDs are
-    /// captured. Filtering happens server-side in the ETW runtime, so
-    /// non-matching events are never delivered to the receiver.
-    ///
-    /// Only meaningful for manifest-based providers (`kind: manifest`, or
-    /// automatic resolution that finds a registered manifest provider):
-    /// manifest events carry a stable, unique ID. Providers resolved by
-    /// name-hash (for example explicit `kind: tracelogging`, or automatic
-    /// fallback when no registered provider is found) cannot be selected by
-    /// event ID and are rejected during ETW session initialization.
-    ///
-    /// At most 64 unique IDs are supported (the underlying ETW scope filter
-    /// silently stops filtering above that count) and the list must not be
-    /// explicitly empty. Duplicate IDs are deduped before being applied.
-    #[serde(default)]
-    pub event_ids: Option<Vec<u16>>,
 }
 
 /// In-memory OTAP log batching policy.
@@ -264,8 +238,6 @@ impl Config {
     /// * At least one provider must be specified.
     /// * Each provider must specify exactly one of `name` or `guid` (not both, not neither).
     /// * A specified `name` or `guid` must not be empty or whitespace-only.
-    /// * `event_ids` must not be an explicitly empty list and supports at
-    ///   most 64 unique IDs.
     ///
     /// # Errors
     ///
@@ -327,44 +299,6 @@ impl Config {
                         "provider[{i}]: 'kind' applies to name-based providers only - remove 'kind' when specifying a 'guid'"
                     ),
                 });
-            }
-
-            if let Some(event_ids) = &provider.event_ids {
-                // event_ids is only meaningful for providers that resolve to a
-                // stable event ID. Tracelogging providers resolve by name-hash, so
-                // their events cannot be filtered by EventDescriptor.Id. Reject this
-                // combination at config time.
-                if provider.kind == Some(ProviderKind::Tracelogging) {
-                    return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
-                        error: format!(
-                            "provider[{i}]: 'event_ids' is not supported for 'kind: tracelogging' - event IDs are uniquely identified only for providers resolved from the registered ETW provider database"
-                        ),
-                    });
-                }
-
-                // one_collect skips the filter entirely when the event list
-                // is empty, which would silently capture everything -
-                // the opposite of what an explicit empty list implies.
-                if event_ids.is_empty() {
-                    return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
-                        error: format!(
-                            "provider[{i}]: 'event_ids' must not be empty - omit the field to capture all event IDs"
-                        ),
-                    });
-                }
-
-                // Above 64 unique IDs the underlying ETW scope filter is
-                // silently dropped and all events flow, so count unique IDs
-                // (duplicates are deduped before being applied and must not
-                // consume slots against the cap).
-                let unique_count = event_ids.iter().collect::<HashSet<_>>().len();
-                if unique_count > 64 {
-                    return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
-                        error: format!(
-                            "provider[{i}]: 'event_ids' supports at most 64 unique event IDs, got {unique_count} - the ETW event-ID filter is silently dropped above that limit"
-                        ),
-                    });
-                }
             }
         }
 
@@ -1057,7 +991,6 @@ mod tests {
             kind: None,
             level: TraceLevel::default(),
             keywords: None,
-            event_ids: None,
         }
     }
 
@@ -1068,7 +1001,6 @@ mod tests {
             kind: None,
             level: TraceLevel::default(),
             keywords: None,
-            event_ids: None,
         }
     }
 
@@ -1120,7 +1052,6 @@ mod tests {
             kind: Some(ProviderKind::Manifest),
             level: TraceLevel::default(),
             keywords: None,
-            event_ids: None,
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1142,127 +1073,6 @@ mod tests {
             kind: Some(ProviderKind::Tracelogging),
             level: TraceLevel::default(),
             keywords: None,
-            event_ids: None,
-        }]);
-        assert!(cfg.validate().is_ok());
-    }
-
-    /// Scenario: A provider configures a well-formed `event_ids` allow-list
-    /// under automatic or manifest-based resolution.
-    /// Guarantees: `Config::validate` accepts the list for automatic (kind:
-    /// None) and manifest-based resolution (kind: Manifest), but rejects it
-    /// for explicit tracelogging (kind: Tracelogging) since hash-resolved
-    /// providers cannot be filtered by EventDescriptor.Id.
-    #[test]
-    fn validate_accepts_event_ids_regardless_of_kind() {
-        // Automatic (kind: None) and manifest should be accepted
-        for kind in [None, Some(ProviderKind::Manifest)] {
-            let cfg = make_config(vec![ProviderConfig {
-                name: Some("Microsoft-Windows-Kernel-Process".to_string()),
-                guid: None,
-                kind,
-                level: TraceLevel::default(),
-                keywords: None,
-                event_ids: Some(vec![1, 2, 15]),
-            }]);
-            assert!(
-                cfg.validate().is_ok(),
-                "validate must accept event_ids for kind={kind:?}"
-            );
-        }
-
-        // Tracelogging should be rejected
-        let cfg = make_config(vec![ProviderConfig {
-            name: Some("My-Custom-EventSource".to_string()),
-            guid: None,
-            kind: Some(ProviderKind::Tracelogging),
-            level: TraceLevel::default(),
-            keywords: None,
-            event_ids: Some(vec![1, 2, 15]),
-        }]);
-        let err = cfg.validate().unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("'event_ids' is not supported for 'kind: tracelogging'"),
-            "validate must reject event_ids for kind: tracelogging, got: {msg}"
-        );
-    }
-
-    /// Scenario: A provider configures an explicitly empty `event_ids` list.
-    /// Guarantees: `Config::validate` rejects the config, since `one_collect`
-    /// skips the filter entirely when the event list is empty, which would
-    /// silently capture everything instead of nothing.
-    #[test]
-    fn validate_rejects_empty_event_ids() {
-        let cfg = make_config(vec![ProviderConfig {
-            name: Some("Microsoft-Windows-Kernel-Process".to_string()),
-            guid: None,
-            kind: Some(ProviderKind::Manifest),
-            level: TraceLevel::default(),
-            keywords: None,
-            event_ids: Some(vec![]),
-        }]);
-        let err = cfg.validate().unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("'event_ids' must not be empty"),
-            "unexpected error: {msg}"
-        );
-    }
-
-    /// Scenario: A provider configures more than 64 unique `event_ids`.
-    /// Guarantees: `Config::validate` rejects the config, since the
-    /// underlying ETW scope filter is silently dropped above 64 IDs
-    /// (capturing everything) rather than truncated.
-    #[test]
-    fn validate_rejects_more_than_64_event_ids() {
-        let cfg = make_config(vec![ProviderConfig {
-            name: Some("Microsoft-Windows-Kernel-Process".to_string()),
-            guid: None,
-            kind: Some(ProviderKind::Manifest),
-            level: TraceLevel::default(),
-            keywords: None,
-            event_ids: Some((1..=65).collect()),
-        }]);
-        let err = cfg.validate().unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("supports at most 64 unique event IDs"),
-            "unexpected error: {msg}"
-        );
-    }
-
-    /// Scenario: A provider configures exactly 64 unique `event_ids`.
-    /// Guarantees: `Config::validate` accepts the config, since 64 is the
-    /// documented cap rather than a rejected boundary.
-    #[test]
-    fn validate_accepts_exactly_64_event_ids() {
-        let cfg = make_config(vec![ProviderConfig {
-            name: Some("Microsoft-Windows-Kernel-Process".to_string()),
-            guid: None,
-            kind: Some(ProviderKind::Manifest),
-            level: TraceLevel::default(),
-            keywords: None,
-            event_ids: Some((1..=64).collect()),
-        }]);
-        assert!(cfg.validate().is_ok());
-    }
-
-    /// Scenario: A provider configures `event_ids` with duplicate values that
-    /// exceed 64 raw entries but fewer than 64 unique values.
-    /// Guarantees: `Config::validate` accepts the config, since the 64-ID cap
-    /// is checked against unique IDs (duplicates never consume extra slots).
-    #[test]
-    fn validate_counts_unique_event_ids_not_raw_length() {
-        let mut ids: Vec<u16> = (1..=64).collect();
-        ids.extend((1..=10).collect::<Vec<u16>>()); // 10 duplicates, 74 raw entries
-        let cfg = make_config(vec![ProviderConfig {
-            name: Some("Microsoft-Windows-Kernel-Process".to_string()),
-            guid: None,
-            kind: Some(ProviderKind::Manifest),
-            level: TraceLevel::default(),
-            keywords: None,
-            event_ids: Some(ids),
         }]);
         assert!(cfg.validate().is_ok());
     }
@@ -1310,7 +1120,6 @@ mod tests {
             kind: None,
             level: TraceLevel::default(),
             keywords: None,
-            event_ids: None,
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1328,7 +1137,6 @@ mod tests {
             kind: None,
             level: TraceLevel::default(),
             keywords: None,
-            event_ids: None,
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1348,7 +1156,6 @@ mod tests {
                 kind: None,
                 level: TraceLevel::default(),
                 keywords: None,
-                event_ids: None,
             },
         ]);
         let err = cfg.validate().unwrap_err();
