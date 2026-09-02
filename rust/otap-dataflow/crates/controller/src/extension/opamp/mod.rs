@@ -19,6 +19,7 @@
 //!
 //! See [config] for more configuration options.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -104,6 +105,36 @@ fn validate_config(config: &serde_json::Value) -> Result<(), ConfigError> {
             error: e.to_string(),
         })?;
 
+    // check that we can create a client config from this config
+    if let Some(tls_client_config) = &config.tls {
+        // this function is async because internally it uses various tokio fs utils to read certs
+        // from the filesystem, and loads system roots into a tokio OnceCell. Because it's async
+        // we either do this validation in current runtime (if we're in an async context), or
+        // otherwise spawn a new async runtime for this
+        let client_connector_fut = create_client_config(tls_client_config);
+
+        let connector_init_result = if tokio::runtime::Handle::try_current().is_ok() {
+            // we're in an async runtime, but it might be a single threaded runtime so we can't
+            // just block_on. Spin up another thread w/ a new runtime to call the future.
+            std::thread::scope(|s| {
+                s.spawn(|| {
+                    tokio::runtime::Runtime::new()
+                        .expect("can create async runtime")
+                        .block_on(client_connector_fut)
+                })
+                .join()
+                .expect("can join thread")
+            })
+        } else {
+            tokio::runtime::Runtime::new()
+                .expect("can create async runtime")
+                .block_on(client_connector_fut)
+        };
+
+        // return the config error related to TLS config if one was encountered
+        _ = connector_init_result?;
+    }
+
     config
         .validate()
         .map_err(|e| ConfigError::InvalidUserConfig {
@@ -120,9 +151,24 @@ fn start(
         serde_json::from_value(context.extension.config.clone()).expect("config validated");
 
     Ok(Box::new(move |cancellation_token| {
-        Box::pin(
-            async move { run_websocket_connect_loop(context, config, cancellation_token).await },
-        )
+        Box::pin(async move {
+            let client_tls_config = if let Some(tls_client_config) = &config.tls {
+                // safety: we've validated we can create the client TLS config from the supplied
+                // TLS config in the call to `validate_config`
+                create_client_config(tls_client_config)
+                    .await
+                    .expect("create TLS client config")
+            } else {
+                None
+            };
+
+            let connector = match client_tls_config {
+                Some(client_tls_config) => Connector::Rustls(Arc::new(client_tls_config)),
+                None => Connector::Plain,
+            };
+
+            run_websocket_connect_loop(context, config, connector, cancellation_token).await
+        })
     }))
 }
 
@@ -218,6 +264,7 @@ enum Phase {
 async fn run_websocket_connect_loop(
     context: ControllerExtensionContext,
     config: Config,
+    connector: Connector,
     cancellation_token: CancellationToken,
 ) -> Result<(), ControllerExtensionError> {
     let mut session_state = SessionState::try_new(&config)?;
@@ -228,8 +275,13 @@ async fn run_websocket_connect_loop(
 
     loop {
         // connect websocket
-        let Some(ws_stream) =
-            connect_websocket(&config, &cancellation_token, &mut retry_connect_backoff).await
+        let Some(ws_stream) = connect_websocket(
+            &config,
+            connector.clone(),
+            &cancellation_token,
+            &mut retry_connect_backoff,
+        )
+        .await
         else {
             break;
         };
@@ -275,25 +327,26 @@ async fn run_websocket_connect_loop(
 /// `None` if cancelled before connecting.
 async fn connect_websocket(
     config: &Config,
+    connector: Connector,
     cancellation_token: &CancellationToken,
     backoff: &mut ExponentialBackoff,
 ) -> Option<WebSocketStream<MaybeTlsStream<TcpStream>>> {
+    // TODO - need better logic also or at least commentary about why we're doing this
+    let endpoint = if matches!(connector, Connector::Rustls(_)) {
+        Cow::Owned(config.endpoint.replace("ws://", "wss://"))
+    } else {
+        Cow::Borrowed(&config.endpoint)
+    };
+
     loop {
-        // TODO this connector can be created once and passed into this function
-        let connector = connector(config).await;
-        
-        // TODO - this is kind of crappy having to clone this, need better logic also
-        let endpoint = if matches!(connector, Connector::Rustls(_)) {
-            config.endpoint.replace("ws://", "wss://")
-        } else {
-            config.endpoint.clone()
-        };
-        println!("connecting endpoint {endpoint:?}");
-
-
         let connect_result = cancellation_token
             // .run_until_cancelled(connect_async(&config.endpoint))
-            .run_until_cancelled(connect_async_tls_with_config(&endpoint, None, false, Some(connector)))
+            .run_until_cancelled(connect_async_tls_with_config(
+                endpoint.as_ref(),
+                None,
+                false,
+                Some(connector.clone()),
+            ))
             .await?;
 
         match connect_result {
@@ -318,24 +371,6 @@ async fn connect_websocket(
                     .await?;
             }
         }
-    }
-}
-
-async fn connector(config: &Config) -> Connector {
-    match &config.tls {
-        Some(tls_client_config) => {
-            println!("connecting TLS");
-            // TODO initialize this elsewhere
-            let connector = create_client_config(tls_client_config)
-                .await
-                .unwrap()
-                .unwrap();
-            Connector::Rustls(Arc::new(connector))
-        }
-        None => { 
-            println!("connecting not tls");
-            Connector::Plain
-        },
     }
 }
 
@@ -1699,6 +1734,16 @@ mod test {
             format!("ws://localhost:{port}/v1/opamp")
         };
 
+        let client_tls_config = if let Some(tls_client_config) = &config.tls {
+            create_client_config(tls_client_config).await.unwrap()
+        } else {
+            None
+        };
+        let connector = match client_tls_config {
+            Some(client_tls_config) => Connector::Rustls(Arc::new(client_tls_config)),
+            None => Connector::Plain,
+        };
+
         let cancellation_token = CancellationToken::new();
         let mut server = if let Some(server_tls_config) = server_tls_config {
             MockWebSocketServer::new_tls(port, mock_server_responses, server_tls_config)
@@ -1732,9 +1777,11 @@ mod test {
 
         let client_cancellation_token = cancellation_token.clone();
         let client_handle = tokio::spawn(async move {
-            let result = run_websocket_connect_loop(context, config, client_cancellation_token).await;
+            let result =
+                run_websocket_connect_loop(context, config, connector, client_cancellation_token)
+                    .await;
             println!("OOPS - WS connect loop exited with error {result:?}");
-            return result
+            return result;
         });
 
         server_state
@@ -2180,7 +2227,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_client_configured_with_server_tls() {
+    async fn test_client_configured_with_server_tls_pem() {
         otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().unwrap();
         let path = temp_dir.path();
@@ -2225,6 +2272,192 @@ mod test {
         .await;
         assert_eq!(requests.len(), 3);
     }
+
+    #[tokio::test]
+    async fn test_client_configured_with_server_tls_file() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path();
+        let ca = generate_ca("Test CA");
+        let server = ca.issue_leaf(
+            "localhost",
+            Some("localhost"),
+            Some(ExtendedKeyUsage::ServerAuth),
+        );
+        server.write_to_dir(path, "server");
+        ca.write_cert_to_dir(path, "ca");
+
+        let control_plane = Arc::new(MockControlPlane::new(empty_engine_config()));
+        let responses = vec![
+            Some(server_to_agent_with_config(&test_config(), vec![5, 1, 4])),
+            None,
+            None,
+        ];
+
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "instance_uid": EXPECTED_INSTANCE_UID_STR,
+            "endpoint": "",
+            "tls": {
+                "ca_file": &path.join("ca.crt")
+            }
+        }))
+        .unwrap();
+
+        let requests = run_web_socket_test_with_config(
+            responses,
+            control_plane,
+            3,
+            config,
+            Some(TlsServerConfig {
+                config: TlsConfig {
+                    cert_file: Some(path.join("server.crt")),
+                    key_file: Some(path.join("server.key")),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+        )
+        .await;
+        assert_eq!(requests.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_client_configured_with_server_tls_bad_cert() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path();
+        let ca = generate_ca("Test CA");
+        let server = ca.issue_leaf(
+            "localhost",
+            Some("localhost"),
+            Some(ExtendedKeyUsage::ServerAuth),
+        );
+        server.write_to_dir(path, "server");
+
+        let control_plane = Arc::new(MockControlPlane::new(empty_engine_config()));
+        let responses = vec![
+            Some(server_to_agent_with_config(&test_config(), vec![5, 1, 4])),
+            None,
+            None,
+        ];
+
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "instance_uid": EXPECTED_INSTANCE_UID_STR,
+            "endpoint": "",
+            "tls": {
+                "ca_file": &path.join("ca.crt")
+            }
+        }))
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_client_configured_with_client_tls_from_pems() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path();
+        let ca = generate_ca("Test CA");
+        let server_cert = ca.issue_leaf(
+            "localhost",
+            Some("localhost"),
+            Some(ExtendedKeyUsage::ServerAuth),
+        );
+        let client_cert = ca.issue_leaf("Test Client", None, Some(ExtendedKeyUsage::ClientAuth));
+        server_cert.write_to_dir(path, "server");
+        client_cert.write_to_dir(path, "client");
+
+        let control_plane = Arc::new(MockControlPlane::new(empty_engine_config()));
+        let responses = vec![
+            Some(server_to_agent_with_config(&test_config(), vec![5, 1, 4])),
+            None,
+            None,
+        ];
+
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "instance_uid": EXPECTED_INSTANCE_UID_STR,
+            "endpoint": "",
+            "tls": {
+                "cert_pem": &client_cert.cert_pem,
+                "key_pem": &client_cert.key_pem,
+                "ca_pem": &ca.cert_pem
+            }
+        }))
+        .unwrap();
+
+        let requests = run_web_socket_test_with_config(
+            responses,
+            control_plane,
+            3,
+            config,
+            Some(TlsServerConfig {
+                config: TlsConfig {
+                    cert_file: Some(path.join("server.crt")),
+                    key_file: Some(path.join("server.key")),
+                    ..Default::default()
+                },
+                client_ca_pem: Some(ca.cert_pem.to_string()),
+                ..Default::default()
+            }),
+        )
+        .await;
+        assert_eq!(requests.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_client_configured_with_client_tls_from_files() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path();
+        let ca = generate_ca("Test CA");
+        let server_cert = ca.issue_leaf(
+            "localhost",
+            Some("localhost"),
+            Some(ExtendedKeyUsage::ServerAuth),
+        );
+        let client_cert = ca.issue_leaf("Test Client", None, Some(ExtendedKeyUsage::ClientAuth));
+        server_cert.write_to_dir(path, "server");
+        client_cert.write_to_dir(path, "client");
+
+        let control_plane = Arc::new(MockControlPlane::new(empty_engine_config()));
+        let responses = vec![
+            Some(server_to_agent_with_config(&test_config(), vec![5, 1, 4])),
+            None,
+            None,
+        ];
+
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "instance_uid": EXPECTED_INSTANCE_UID_STR,
+            "endpoint": "",
+            "tls": {
+                "cert_file": &path.join("client.crt"),
+                "key_file": &path.join("client.key"),
+                "ca_pem": &ca.cert_pem
+            }
+        }))
+        .unwrap();
+
+        let requests = run_web_socket_test_with_config(
+            responses,
+            control_plane,
+            3,
+            config,
+            Some(TlsServerConfig {
+                config: TlsConfig {
+                    cert_file: Some(path.join("server.crt")),
+                    key_file: Some(path.join("server.key")),
+                    ..Default::default()
+                },
+                client_ca_pem: Some(ca.cert_pem.to_string()),
+                ..Default::default()
+            }),
+        )
+        .await;
+        assert_eq!(requests.len(), 3);
+    }
+
+    // TODO other tLS test cases:
+    // - server TLS invalid server cert
+    // - non existent server ca
 
     /// Helper: create an ObservedStateStore, spawn its consumer loop, send engine events to
     /// transition pipelines into the desired phases, wait for propagation, then return a snapshot
