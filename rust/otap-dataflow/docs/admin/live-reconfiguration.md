@@ -98,19 +98,41 @@ traffic flip across the whole pipeline.
 - Empty pipeline groups can be created through the group lifecycle endpoint.
   The first endpoint version allows group-level settings but rejects create
   payloads that already contain pipelines or group-local topic declarations.
-- Runtime topic broker mutation is rejected. In practice this means:
-  - no new or removed declared topics;
-  - no change to the selected topic mode;
-  - no change to topic backend or topic policies.
 - Full-engine reconciliation rejects desired configs that would change runtime
   topic profiles. Deleting or restoring pipelines that use `receiver:topic` or
   `exporter:topic` can therefore be rejected even when the YAML is otherwise
   valid.
-- Per-pipeline reconfiguration does not mutate group-level or engine-level
-  policy. Full-engine reconciliation can update those fields after all
-  requested pipeline rollouts and deletions succeed.
+- Full-engine reconciliation uses fail-closed capability admission. Runtime log
+  level and `engine.custom` metadata are mutable. All other current and future
+  `engine` fields require restart until they gain an explicit live-apply path.
+  If one request combines supported changes with any unsupported change, the
+  complete request is rejected before rollout planning starts.
+- With `delete_missing: false`, omitted groups and pipelines remain in the
+  effective target.
 - There is no dedicated scale endpoint. Scale-only changes use the same `PUT`
   endpoint as topology changes.
+
+### Full-Config Reconciliation Capabilities
+
+| Configuration area | Live behavior | Rejection kind or action |
+| --- | --- | --- |
+| Regular pipeline topology, node config, and pipeline-level policies | Applied through create, replace, resize, or no-op rollout | Accepted when validation and planning succeed |
+| `engine.telemetry.logs.level` | Applied to running log subscribers | Accepted |
+| `engine.custom` | Committed as application-owned metadata | Accepted |
+| Other current or future `engine` fields | Startup-owned unless an explicit live-apply path is added | `unsupported_mutation`; restart required |
+| Process memory limiter | Process-wide sampler is created at startup | `unsupported_mutation`; restart required |
+| Topic declaration description | Committed as metadata; broker behavior is unchanged | Accepted |
+| Topic additions, removals, backend, selected mode, policies, or inferred runtime profile | Topic broker registry is created at startup | `unsupported_mutation`; restart required |
+| System observability pipeline | Created at startup | `unsupported_mutation`; restart required |
+| Top-level policies, or group policies inherited by current or requested pipelines | Shared inheritance cannot be committed atomically across several pipeline rollouts | `unsupported_mutation`; move effective settings to pipeline-level policies and retry |
+
+Policies on empty groups are metadata-only and may be reconciled. Admission
+rejects a group policy change when either the current or requested group
+contains pipelines.
+
+`unsupported_mutation` means the submitted configuration cannot be applied by
+this live operation. The message and table identify whether the caller should
+restart the process or rewrite the request into a supported scope before retrying.
 
 ## Consistency Model
 
@@ -124,6 +146,13 @@ an engine-scoped consistency guard. While one of those operations is active,
 other config-mutating lifecycle operations return `409 Conflict`. This prevents
 full-config reconciliation, group creation, group deletion, and pipeline
 deletion from interleaving with each other or with per-pipeline rollouts.
+
+Capability admission completes before full-engine reconciliation enters rollout
+planning. This prevents an unsupported field from being silently committed or
+from partially applying an otherwise supported request. It does not make
+planning or execution across several pipelines atomic: a valid request can
+still fail during planning, and a later rollout can fail after an earlier
+rollout has succeeded. The response reports that partial progress.
 
 Rollout planning validates a candidate by patching one pipeline into the
 controller's current in-memory `OtelDataflowSpec` snapshot and running full

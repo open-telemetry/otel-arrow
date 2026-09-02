@@ -125,6 +125,8 @@ pub enum OperationErrorKind {
     Conflict,
     /// The request was rejected as invalid.
     InvalidRequest,
+    /// The requested live mutation is not supported in its submitted form.
+    UnsupportedMutation,
     /// The server failed while processing the request.
     Internal,
 }
