@@ -73,6 +73,9 @@ const LAG_FETCH_PARTITION_TIMEOUT: Duration = Duration::from_secs(5);
 /// Total deadline for a single off-loop consumer-lag refresh.
 const LAG_REFRESH_TOTAL_DEADLINE: Duration = Duration::from_secs(15);
 
+/// Max character limit for kafka group instance id
+const MAX_GROUP_INSTANCE_ID_LEN: usize = 249;
+
 type LagRefreshTask = (
     tokio::task::JoinHandle<Option<f64>>,
     tokio::time::Instant,
@@ -308,13 +311,7 @@ impl KafkaReceiver {
             } else {
                 format!("{base_id}-g{generation}")
             };
-            // Kafka limits group.instance.id to 249 characters. The generation
-            // (and, on a multi-core pipeline, core) suffix is appended after the
-            // base config was validated, so an otherwise valid configured id can
-            // resolve past the limit here. Reject it with a clear error at build
-            // time instead of letting the broker refuse the static-member join
-            // opaquely at runtime.
-            const MAX_GROUP_INSTANCE_ID_LEN: usize = 249;
+
             if resolved.len() > MAX_GROUP_INSTANCE_ID_LEN {
                 return Err(ConfigError::InvalidUserConfig {
                     error: format!(
