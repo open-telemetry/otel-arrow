@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788367368121,
+  "lastUpdate": 1788377230672,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -29743,6 +29743,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 102.54,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "geukhanuslu@gmail.com",
+            "name": "Gokhan Uslu",
+            "username": "gouslu"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "afb7c08889ab957b4a9f420564efd65f44978f41",
+          "message": "feat(otlp): add optional bearer token authorization (#3878)\n\n# Change summary\n\n- Optionally bind the `bearer_token_authorizer` capability to the OTLP\nreceiver; receivers without a binding preserve existing unauthenticated\nbehavior.\n- Authorize OTLP/HTTP and OTLP/gRPC requests before the body is sized,\nread, or decoded, using one shared ****** path.\n- Require exactly one `Authorization` header and enforce the RFC 6750\n****** separator and token grammar.\n- Map outcomes to protocol-appropriate responses and bounded rejection\ntelemetry: missing or invalid credentials return `UNAUTHENTICATED`/HTTP\n401 with `error.type=authentication`; denials return\n`PERMISSION_DENIED`/HTTP 403 with `error.type=permission_denied`; and an\nauthorizer that reaches no decision fails closed with `UNAVAILABLE`/HTTP\n503 and `error.type=authorization_unavailable`.\n- Preserve admission, rate-limit, global-concurrency, ACK/NACK, and\nshutdown behavior while authorization is enabled.\n\n## Related issue\n\n#3883 was resolved by #3930. A bound extension that cannot satisfy the\nrequested capability execution model now fails explicitly instead of\nbeing treated as unconfigured.\n\n## Validation\n\n- HTTP and gRPC coverage for optional authorization, allowed and denied\nrequests, malformed, missing, non-UTF-8, and duplicate credentials,\nauthorizer failures, status mapping, and rejection telemetry.\n- RFC 6750 coverage for valid token characters and padding, required\nspace separators, and invalid token syntax.\n- End-to-end ordering coverage: a request with an invalid token and an\noversized body returns 401 rather than 413, pinning that credentials are\nchecked before the body is sized or read.\n- Receiver-level coverage for bound and unbound authorizer\nconfigurations across both protocols.\n\n## User-facing changes\n\nOTLP HTTP and gRPC receivers can now enforce bearer-token authorization\nwhen a `bearer_token_authorizer` capability is bound. Existing\nconfigurations without that capability remain unchanged.\n\n---------\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>",
+          "timestamp": "2026-09-02T17:38:08Z",
+          "tree_id": "9ec25e698a117bad1c1078e751989d5565b76bb8",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/afb7c08889ab957b4a9f420564efd65f44978f41"
+        },
+        "date": 1788377214498,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 83.33,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.71,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.88,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.7,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 70.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.82,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 115.23,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 102.6,
             "unit": "MB"
           }
         ]
