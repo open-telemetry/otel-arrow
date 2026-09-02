@@ -7648,7 +7648,6 @@ dependencies = [
  "otel-arrow-dfe-channel",
  "otel-arrow-dfe-component-inventory-syntax",
  "otel-arrow-dfe-config",
- "otel-arrow-dfe-engine",
  "otel-arrow-dfe-engine-macros",
  "otel-arrow-dfe-pdata",
  "otel-arrow-dfe-state",
