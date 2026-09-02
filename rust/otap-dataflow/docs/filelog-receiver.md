@@ -173,6 +173,13 @@ duplicate replay. It does not authorize skipping the data. If the source bytes
 have disappeared, the receiver cannot reconstruct them even when its checkpoint
 is intact.
 
+In this document, reconciliation is a bounded discovery pass that compares
+current filesystem evidence with the receiver's tracked view. It may find new
+candidates, refresh existing ones, or identify files that may have disappeared;
+an incomplete pass cannot prove that an unseen file was removed. The
+[Phase 1 terminology](filelog-receiver-phase1-spec.md#terminology) defines the
+related inventory and identity terms.
+
 ## Decisions requested
 
 Reviewers are asked to approve or challenge all of the following decisions and
@@ -763,7 +770,8 @@ migration. Its absence is a release blocker.
 
 ## Detailed specification references
 
-- [Phase 1 scope and terminology](filelog-receiver-phase1-spec.md#phase-1-scope)
+- [Phase 1 terminology](filelog-receiver-phase1-spec.md#terminology)
+- [Phase 1 scope](filelog-receiver-phase1-spec.md#phase-1-scope)
 - [Complete proposed configuration and validation](filelog-receiver-phase1-spec.md#proposed-configuration-contract)
 - [Discovery reconciliation](filelog-receiver-phase1-spec.md#discovery-reconciliation)
 - [Identity and local ownership](filelog-receiver-phase1-spec.md#identity-and-local-ownership)
