@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788308995409,
+  "lastUpdate": 1788318331628,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -29023,6 +29023,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 102.48,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "drewrelmas@gmail.com",
+            "name": "Drew Relmas",
+            "username": "drewrelmas"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "472f629526da86fcdeefcdd7cffb7725570f4b68",
+          "message": "feat(topic): Enable configuration of broadcast `ack_mode: all` topics (PR 3/3) (#3745)\n\n# Change Summary\n\nExpose the all-subscriber broadcast Ack consensus added by #3352 through\ntopic configuration.\n\n```yaml\npolicies:\n  broadcast:\n    on_lag: disconnect\n    ack_mode: all\n  ack_propagation:\n    mode: auto\n```\n\n```text\n                              -> subscriber branch A\nproducer -> broadcast topic -|\n                              -> subscriber branch B\n```\n\nThe topic returns one outcome upstream. `first` uses the first branch\noutcome. `all` snapshots the eligible subscribers at publish time and\nAcks only if every required branch Acks; a required Nack or\ndisappearance before Acking resolves Nack.\n\nThis PR:\n\n- Adds `broadcast.ack_mode` with `first` as the default.\n- Restricts `all` to broadcast-only topics with `on_lag: disconnect`.\n- Maps the configured mode into the topic runtime.\n- Documents retry, durable-buffer, timeout, and non-transactional\nsemantics.\n- Neither retry nor durable buffering creates a distributed transaction.\nA successful external export is not rolled back if another branch later\nfails.\n- Adds three runnable samples covering the main behaviors.\n\n### Samples\n\nAll samples run on one core. They show what changes between `first` and\n`all`, where branches can define their Ack boundary, and how the\nrequired lag policy handles a subscriber that cannot keep up.\n\n#### `first` versus `all`\n\n`topic_broadcast_ack_modes.yaml` publishes 10 messages to identical\nfast-Ack and delayed-Nack branch topologies.\n\n| `ack_mode` | `published.messages` | `end.to.end.acks` |\n`end.to.end.nacks` | Fast exporter | Delayed exporter | Demonstrates |\n| --- | ---: | ---: | ---: | --- | --- | --- |\n| `first` | 10 | 10 | 0 | `recv.count = 10`, 10 Ack | `recv.count = 10`,\n10 Nack | The first Ack wins even though the other exporter Nacks |\n| `all` | 10 | 0 | 10 | `recv.count = 10`, 10 Ack | `recv.count = 10`,\n10 Nack | The exporter Nack prevents aggregate Ack |\n\n#### Retry versus durable acceptance\n\n`topic_broadcast_ack_all.yaml` contrasts two branch-local recovery\nboundaries.\n\n| Branch topology | `published.messages` | `end.to.end.acks` |\n`end.to.end.nacks` | Healthy exporter | Failing exporter | Demonstrates\n|\n| --- | ---: | ---: | ---: | --- | --- | --- |\n| Retry | 100 | 0 | 100 | `recv.count = 100`, 100 Ack | `recv.count =\n600`, 600 Nack | Topic waits for terminal exporter outcomes |\n| Durable buffer | 100 | 100 | 0 | `recv.count = 100`, 100 Ack |\n`recv.count = 2147`, 2147 Nack at snapshot | Topic Acks after durable\nacceptance while export retries continue |\n\n`recv.count` comes from the `channel.receiver` metric set with\n`channel.kind = pdata`. Exporter outcomes are derived from deterministic\ncomponent behavior: `noop` Acks and `error` Nacks every receive. Retry\nattempt counts are timing- and snapshot-dependent.\n\n#### Lag-triggered disconnect\n\n`topic_broadcast_disconnect.yaml` uses a small broadcast queue and\nconstrained slow branch to trigger `topic_receiver.lag_disconnect`.\n\n| `published.messages` | `end.to.end.acks` | `end.to.end.nacks` |\n`outcome.timeouts` | Fast exporter | Slow exporter | Demonstrates |\n| ---: | ---: | ---: | ---: | --- | --- | --- |\n| 100 | 76 | 24 | 0 | `recv.count = 100`, 100 Ack | `recv.count = 14`,\n14 Ack | Topic Nacks come from subscriber disconnect, not exporter\nfailure |\n\nIn this run, 14 messages Acked while both subscribers were active, 24\nmessages still waiting for the slow subscriber Nacked when it\ndisconnected, and the remaining 62 messages Acked with only the fast\nsubscriber eligible:\n\n```text\n14 Ack before disconnect + 24 Nack at disconnect + 62 Ack after disconnect = 100 published\n```\n\nThe exact split is scheduling-dependent; the stable behavior is a lag\ndisconnect, nonzero Nacks, zero timeouts, and complete resolution.\n\n## What issue does this PR close?\n\n<!--We highly recommend correlation of every PR to an issue-->\n\n* Closes #2252\n\n## How are these changes tested?\n\nUnit tests, local engine runs\n\n## Are there any user-facing changes?\n\nYes. Broadcast-only topics can opt into all-subscriber Ack consensus\nwith `broadcast.ack_mode: all` and `broadcast.on_lag: disconnect`.\n\n### Changelog\n\n<!--\nUser-facing changes need a .chloggen/*.yaml entry. Copy the\nTEMPLATE.yaml\nin go/.chloggen/ or rust/otap-dataflow/.chloggen/ and fill in the\nfields.\nIf not required, include `chore` in the PR title.\n-->\n\n* [x] Added a `.chloggen/*.yaml` entry\n* [ ] This PR is a `chore` (indicated in title)\n* [ ] This is a documentation-only PR.",
+          "timestamp": "2026-09-02T02:17:24Z",
+          "tree_id": "53b666049474d676a8195a8935af7746857cd414",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/472f629526da86fcdeefcdd7cffb7725570f4b68"
+        },
+        "date": 1788318315993,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 83.29,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.53,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 70.67,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.82,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.39,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 115.2,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 102.6,
             "unit": "MB"
           }
         ]
