@@ -54,6 +54,8 @@ pub trait CodecEffectHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::test_node;
+    use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 
     fn requires_codec_effect_handler<T: CodecEffectHandler>() {}
 
@@ -68,8 +70,23 @@ mod tests {
         requires_codec_effect_handler::<crate::local::exporter::EffectHandler<()>>();
         requires_codec_effect_handler::<crate::shared::exporter::EffectHandler<()>>();
 
-        let first = PipelineRuntimeServices::new().unwrap();
-        let second = first.clone();
-        assert!(first.shares_state_with(&second));
+        let runtime_services = PipelineRuntimeServices::new().unwrap();
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let local = crate::local::exporter::EffectHandler::<()>::new(
+            test_node("local"),
+            metrics_reporter.clone(),
+            runtime_services.clone(),
+        );
+        let shared = crate::shared::exporter::EffectHandler::<()>::new(
+            test_node("shared"),
+            metrics_reporter,
+            runtime_services.clone(),
+        );
+
+        assert!(
+            local
+                .codec_service()
+                .shares_state_with(shared.codec_service())
+        );
     }
 }

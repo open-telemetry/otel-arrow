@@ -5612,8 +5612,11 @@ pub mod test_support {
                 vec![],
             );
             let (_rx, reporter) = MetricsReporter::create_new_and_receiver(1);
-            let mut eh: EffectHandler<OtapPdata> =
-                EffectHandler::new(test_node("hdr-test"), reporter);
+            let mut eh: EffectHandler<OtapPdata> = EffectHandler::new(
+                test_node("hdr-test"),
+                reporter,
+                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+            );
             eh.set_propagation_policy(Some(policy));
 
             let headers = KafkaExporter::build_kafka_headers(
@@ -5674,8 +5677,11 @@ pub mod test_support {
             context.set_transport_headers(transport);
 
             let (_rx, reporter) = MetricsReporter::create_new_and_receiver(1);
-            let eh: EffectHandler<OtapPdata> =
-                EffectHandler::new(test_node("hdr-test-none"), reporter);
+            let eh: EffectHandler<OtapPdata> = EffectHandler::new(
+                test_node("hdr-test-none"),
+                reporter,
+                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+            );
 
             let headers = KafkaExporter::build_kafka_headers(
                 MessageFormat::OtlpProto,

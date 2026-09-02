@@ -18,7 +18,9 @@ use otel_arrow_dfe_engine::local::message::{LocalReceiver, LocalSender};
 use otel_arrow_dfe_engine::message::{Receiver as PDataReceiver, Sender as PDataSender};
 use otel_arrow_dfe_engine::node::{NodeWithPDataReceiver, NodeWithPDataSender};
 use otel_arrow_dfe_engine::testing::exporter::create_test_pipeline_context;
-use otel_arrow_dfe_engine::testing::{create_not_send_channel, setup_test_runtime, test_node};
+use otel_arrow_dfe_engine::testing::{
+    create_not_send_channel, setup_test_runtime, test_node, test_pipeline_runtime_services,
+};
 use otel_arrow_dfe_engine::topic::{
     TopicBroadcastAckMode, TopicBroadcastOnLagPolicy, TopicBroker, TopicOptions, TopicSet,
 };
@@ -129,6 +131,8 @@ fn topic_exporter_to_topic_receiver_transfers_pdata() {
         let receiver_ctrl_tx = runtime_ctrl_tx.clone();
         let exporter_completion_tx = pipeline_completion_tx.clone();
         let receiver_completion_tx = pipeline_completion_tx.clone();
+        let runtime_services = test_pipeline_runtime_services();
+        let exporter_runtime_services = runtime_services.clone();
 
         let exporter_task = tokio::task::spawn_local(async move {
             exporter
@@ -137,6 +141,7 @@ fn topic_exporter_to_topic_receiver_transfers_pdata() {
                     exporter_completion_tx,
                     exporter_metrics,
                     Interests::empty(),
+                    exporter_runtime_services,
                 )
                 .await
         });
@@ -147,6 +152,7 @@ fn topic_exporter_to_topic_receiver_transfers_pdata() {
                     receiver_completion_tx,
                     receiver_metrics,
                     Interests::empty(),
+                    runtime_services,
                 )
                 .await
         });
@@ -282,6 +288,8 @@ fn topic_receiver_applies_source_tag_when_enabled() {
         let receiver_ctrl_tx = runtime_ctrl_tx.clone();
         let exporter_completion_tx = pipeline_completion_tx.clone();
         let receiver_completion_tx = pipeline_completion_tx.clone();
+        let runtime_services = test_pipeline_runtime_services();
+        let exporter_runtime_services = runtime_services.clone();
 
         let exporter_task = tokio::task::spawn_local(async move {
             exporter
@@ -290,6 +298,7 @@ fn topic_receiver_applies_source_tag_when_enabled() {
                     exporter_completion_tx,
                     exporter_metrics,
                     Interests::empty(),
+                    exporter_runtime_services,
                 )
                 .await
         });
@@ -300,6 +309,7 @@ fn topic_receiver_applies_source_tag_when_enabled() {
                     receiver_completion_tx,
                     receiver_metrics,
                     Interests::empty(),
+                    runtime_services,
                 )
                 .await
         });

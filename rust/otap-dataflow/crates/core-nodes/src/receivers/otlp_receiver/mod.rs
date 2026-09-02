@@ -1147,6 +1147,7 @@ mod tests {
                 Some("out".into()),
                 runtime_ctrl_tx,
                 metrics_reporter,
+                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
             );
             let request_effect_handler = effect_handler.clone();
 

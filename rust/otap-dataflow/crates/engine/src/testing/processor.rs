@@ -403,7 +403,11 @@ impl<PData: Debug + 'static> TestPhase<PData> {
         self.rt.block_on(async move {
             let mut runtime = self
                 .processor
-                .prepare_runtime(metrics_reporter, Interests::empty())
+                .prepare_runtime(
+                    metrics_reporter,
+                    Interests::empty(),
+                    super::create_test_pipeline_runtime_services(),
+                )
                 .await
                 .expect("Failed to prepare runtime");
 

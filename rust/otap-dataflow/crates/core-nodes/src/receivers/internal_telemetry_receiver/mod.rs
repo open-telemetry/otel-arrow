@@ -837,6 +837,7 @@ mod tests {
                 None,
                 runtime_ctrl_tx,
                 metrics_reporter,
+                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
             );
 
             let _error = InternalTelemetryReceiver::process_metric_batch(
@@ -883,6 +884,7 @@ mod tests {
                 None,
                 runtime_ctrl_tx,
                 metrics_reporter,
+                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
             );
 
             InternalTelemetryReceiver::process_metric_batch(&effect_handler, &registry, None)
@@ -955,6 +957,7 @@ mod tests {
                 None,
                 runtime_ctrl_tx,
                 metrics_reporter,
+                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
             );
 
             let (ctrl_tx, ctrl_rx) = create_not_send_channel::<NodeControlMsg<OtapPdata>>(1);
@@ -1036,6 +1039,7 @@ mod tests {
                 None,
                 runtime_ctrl_tx,
                 metrics_reporter,
+                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
             );
 
             let deadline = StdInstant::now() + Duration::from_millis(50);
@@ -1090,6 +1094,7 @@ mod tests {
                 None,
                 runtime_ctrl_tx,
                 metrics_reporter,
+                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
             );
 
             let result = InternalTelemetryReceiver::flush_terminal_telemetry(
@@ -1168,6 +1173,7 @@ mod tests {
                 None,
                 runtime_ctrl_tx,
                 metrics_reporter,
+                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
             );
 
             let (ctrl_tx, ctrl_rx) = create_not_send_channel::<NodeControlMsg<OtapPdata>>(4);

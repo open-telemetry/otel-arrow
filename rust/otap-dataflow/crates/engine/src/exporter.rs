@@ -284,15 +284,15 @@ impl<PData> ExporterWrapper<PData> {
         }
     }
 
-    /// Starts the exporter and begins exporting incoming data.
+    /// Starts the exporter using the services owned by its pipeline runtime.
     pub async fn start(
         self,
         runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<PData>,
         pipeline_completion_msg_tx: PipelineCompletionMsgSender<PData>,
         metrics_reporter: MetricsReporter,
         node_interests: Interests,
+        runtime_services: PipelineRuntimeServices,
     ) -> Result<TerminalState, Error> {
-        let runtime_services = PipelineRuntimeServices::new()?;
         self.start_with_completion_metrics(
             runtime_ctrl_msg_tx,
             pipeline_completion_msg_tx,
@@ -325,7 +325,7 @@ impl<PData> ExporterWrapper<PData> {
                 },
                 metrics_reporter,
             ) => {
-                let mut effect_handler = local::EffectHandler::new_with_runtime_services(
+                let mut effect_handler = local::EffectHandler::new(
                     node_id.clone(),
                     metrics_reporter,
                     runtime_services.clone(),
@@ -366,11 +366,8 @@ impl<PData> ExporterWrapper<PData> {
                 },
                 metrics_reporter,
             ) => {
-                let mut effect_handler = shared::EffectHandler::new_with_runtime_services(
-                    node_id.clone(),
-                    metrics_reporter,
-                    runtime_services,
-                );
+                let mut effect_handler =
+                    shared::EffectHandler::new(node_id.clone(), metrics_reporter, runtime_services);
                 let pdata_rx = pdata_receiver.ok_or_else(|| Error::ExporterError {
                     exporter: effect_handler.exporter_id(),
                     kind: ExporterErrorKind::Configuration,

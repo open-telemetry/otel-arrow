@@ -1346,7 +1346,11 @@ mod test {
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(16);
         runtime.block_on(local_tasks.run_until(async move {
             let processor_runtime = processor
-                .prepare_runtime(metrics_reporter, Interests::empty())
+                .prepare_runtime(
+                    metrics_reporter,
+                    Interests::empty(),
+                    otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+                )
                 .await
                 .expect("prepare processor runtime");
             let mut ctx = TestContext::new(processor_runtime);

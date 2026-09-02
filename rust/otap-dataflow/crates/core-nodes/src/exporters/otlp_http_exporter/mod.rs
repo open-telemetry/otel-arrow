@@ -1231,6 +1231,7 @@ mod test {
                 Some(port_name),
                 runtime_ctrl_msg_tx,
                 metrics_reporter,
+                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
             );
 
         let mut server_settings = HttpServerSettings {
@@ -2194,6 +2195,7 @@ mod test {
                 Some(port_name),
                 runtime_ctrl_msg_tx,
                 metrics_reporter,
+                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
             );
 
         let mut server_settings = HttpServerSettings {
@@ -2768,7 +2770,11 @@ mod test {
         let mut metrics = OtlpHttpExporterMetrics::register(&pipeline_ctx);
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let effect_handler = EffectHandler::new(test_node("test-exporter"), metrics_reporter);
+        let effect_handler = EffectHandler::new(
+            test_node("test-exporter"),
+            metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
         let completed = CompletedExport {
             result: Err(ServiceRequestError::BodyTooLarge {
                 body_size: 2,
@@ -2841,7 +2847,11 @@ mod test {
         let mut metrics = OtlpHttpExporterMetrics::register(&pipeline_ctx);
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let mut effect_handler = EffectHandler::new(test_node("test-exporter"), metrics_reporter);
+        let mut effect_handler = EffectHandler::new(
+            test_node("test-exporter"),
+            metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
         let (completion_tx, completion_rx) =
             otel_arrow_dfe_engine::control::pipeline_completion_msg_channel(1);
         drop(completion_rx);

@@ -144,29 +144,10 @@ pub struct EffectHandler<PData> {
 
 /// Implementation for the `!Send` effect handler.
 impl<PData> EffectHandler<PData> {
-    /// Creates a new local (!Send) `EffectHandler` with the given receiver name and timer request sender.
-    #[cfg(any(test, feature = "test-utils"))]
+    /// Creates a new local (!Send) `EffectHandler` with the given receiver configuration and
+    /// pipeline runtime services.
     #[must_use]
     pub fn new(
-        node_id: NodeId,
-        msg_senders: HashMap<PortName, Sender<PData>>,
-        default_port: Option<PortName>,
-        node_request_sender: RuntimeCtrlMsgSender<PData>,
-        metrics_reporter: MetricsReporter,
-    ) -> Self {
-        let runtime_services =
-            PipelineRuntimeServices::new().expect("the linked pdata codec registry must be valid");
-        Self::new_with_runtime_services(
-            node_id,
-            msg_senders,
-            default_port,
-            node_request_sender,
-            metrics_reporter,
-            runtime_services,
-        )
-    }
-
-    pub(crate) fn new_with_runtime_services(
         node_id: NodeId,
         msg_senders: HashMap<PortName, Sender<PData>>,
         default_port: Option<PortName>,
@@ -388,7 +369,14 @@ mod tests {
 
         let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
+        let eh = EffectHandler::new(
+            test_node("recv"),
+            senders,
+            None,
+            ctrl_tx,
+            metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
+        );
 
         eh.send_message_to("b", 42).await.unwrap();
 
@@ -409,7 +397,14 @@ mod tests {
 
         let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
+        let eh = EffectHandler::new(
+            test_node("recv"),
+            senders,
+            None,
+            ctrl_tx,
+            metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
+        );
 
         eh.send_message(7).await.unwrap();
         assert_eq!(rx.recv().await.unwrap(), 7);
@@ -432,6 +427,7 @@ mod tests {
             Some("a".into()),
             ctrl_tx,
             metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
         );
 
         eh.send_message(11).await.unwrap();
@@ -455,7 +451,14 @@ mod tests {
 
         let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
+        let eh = EffectHandler::new(
+            test_node("recv"),
+            senders,
+            None,
+            ctrl_tx,
+            metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
+        );
 
         let res = eh.send_message(5).await;
         assert!(res.is_err());
@@ -484,7 +487,14 @@ mod tests {
 
         let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
+        let eh = EffectHandler::new(
+            test_node("recv"),
+            senders,
+            None,
+            ctrl_tx,
+            metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
+        );
 
         let ports: HashSet<_> = eh.connected_ports().into_iter().collect();
         let expected: HashSet<_> = [Cow::from("a"), Cow::from("b")].into_iter().collect();
@@ -505,6 +515,7 @@ mod tests {
             Some("out".into()),
             ctrl_tx,
             metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
         );
 
         // Should succeed when channel has capacity
@@ -526,6 +537,7 @@ mod tests {
             Some("out".into()),
             ctrl_tx,
             metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
         );
 
         // First send should succeed
@@ -549,7 +561,14 @@ mod tests {
 
         let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
+        let eh = EffectHandler::new(
+            test_node("recv"),
+            senders,
+            None,
+            ctrl_tx,
+            metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
+        );
 
         // Should return configuration error when no default sender
         let result = eh.try_send_message(99);
@@ -567,7 +586,14 @@ mod tests {
 
         let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
+        let eh = EffectHandler::new(
+            test_node("recv"),
+            senders,
+            None,
+            ctrl_tx,
+            metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
+        );
 
         // Should succeed when sending to a specific port
         assert!(eh.try_send_message_to("b", 42).is_ok());
@@ -584,7 +610,14 @@ mod tests {
 
         let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
+        let eh = EffectHandler::new(
+            test_node("recv"),
+            senders,
+            None,
+            ctrl_tx,
+            metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
+        );
 
         // First send should succeed
         assert!(eh.try_send_message_to("out", 1).is_ok());
@@ -604,7 +637,14 @@ mod tests {
 
         let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
+        let eh = EffectHandler::new(
+            test_node("recv"),
+            senders,
+            None,
+            ctrl_tx,
+            metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
+        );
 
         // Should return error for unknown port
         let result = eh.try_send_message_to("unknown", 99);

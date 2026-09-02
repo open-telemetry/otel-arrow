@@ -24,7 +24,7 @@ prost = { workspace = true }
 otel-arrow-dfe-control-channel = { workspace = true }
 otel-arrow-dfe-config = { workspace = true }
 otel-arrow-dfe-channel = { workspace = true }
-otel-arrow-dfe-engine = { workspace = true }
+otel-arrow-dfe-engine = { workspace = true, features = ["test-utils"] }
 otel-arrow-dfe-telemetry = { workspace = true }
 otel-arrow-dfe-telemetry-macros = { workspace = true }
 otel-arrow-dfe-pdata = { workspace = true, features = ["bench", "testing"] }

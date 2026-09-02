@@ -832,6 +832,7 @@ mod tests {
             None,
             ctrl_tx,
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
         (
             OtapBatchService::new(effect_handler, state, metrics, SignalType::Logs, None),

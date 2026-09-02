@@ -315,27 +315,9 @@ impl<PData> ReceiverWrapper<PData> {
         }
     }
 
-    /// Starts the receiver and begins receiver incoming data.
+    /// Starts the receiver using the services owned by its pipeline runtime.
     #[doc(hidden)]
     pub async fn start(
-        self,
-        runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<PData>,
-        pipeline_completion_msg_tx: PipelineCompletionMsgSender<PData>,
-        metrics_reporter: MetricsReporter,
-        node_interests: Interests,
-    ) -> Result<TerminalState, Error> {
-        let runtime_services = PipelineRuntimeServices::new()?;
-        self.start_with_runtime_services(
-            runtime_ctrl_msg_tx,
-            pipeline_completion_msg_tx,
-            metrics_reporter,
-            node_interests,
-            runtime_services,
-        )
-        .await
-    }
-
-    pub(crate) async fn start_with_runtime_services(
         self,
         runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<PData>,
         pipeline_completion_msg_tx: PipelineCompletionMsgSender<PData>,
@@ -369,7 +351,7 @@ impl<PData> ReceiverWrapper<PData> {
                 };
                 let default_port = user_config.default_output.clone();
                 let ctrl_msg_chan = local::ControlChannel::new(Receiver::Local(control_receiver));
-                let mut effect_handler = local::EffectHandler::new_with_runtime_services(
+                let mut effect_handler = local::EffectHandler::new(
                     node_id,
                     msg_senders,
                     default_port,
@@ -410,7 +392,7 @@ impl<PData> ReceiverWrapper<PData> {
                 };
                 let default_port = user_config.default_output.clone();
                 let ctrl_msg_chan = shared::ControlChannel::new(control_receiver);
-                let mut effect_handler = shared::EffectHandler::new_with_runtime_services(
+                let mut effect_handler = shared::EffectHandler::new(
                     node_id,
                     msg_senders,
                     default_port,

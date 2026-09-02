@@ -169,7 +169,11 @@ fn create_processor() -> ProcessorState {
         .expect("failed to build setup runtime");
 
     let runtime = rt
-        .block_on(wrapper.prepare_runtime(reporter, Interests::empty()))
+        .block_on(wrapper.prepare_runtime(
+            reporter,
+            Interests::empty(),
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        ))
         .expect("failed to prepare runtime");
 
     match runtime {

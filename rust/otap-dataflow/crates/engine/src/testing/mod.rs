@@ -17,6 +17,7 @@
 use crate::attributes::{ExtensionScopeAttributeSet, PipelineAttributeSet};
 use crate::context::{ControllerContext, ExtensionContext, PipelineContext};
 use crate::control::NodeControlMsg;
+use crate::runtime_services::PipelineRuntimeServices;
 use otel_arrow_dfe_channel::mpsc;
 use otel_arrow_dfe_config::node::NodeKind;
 use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
@@ -36,6 +37,25 @@ pub mod processor;
 pub mod receiver;
 
 pub use node::{test_node, test_nodes};
+
+/// Creates fresh pipeline runtime services for one logical test pipeline.
+///
+/// Tests that construct multiple effect handlers for the same pipeline should clone the returned
+/// value and inject one clone into each handler.
+///
+/// # Panics
+///
+/// Panics when the test binary links invalid pdata codec registrations. Such registrations are a
+/// test assembly error; tests for registry validation should construct the registry directly.
+#[cfg(any(test, feature = "test-utils"))]
+#[must_use]
+pub fn test_pipeline_runtime_services() -> PipelineRuntimeServices {
+    create_test_pipeline_runtime_services()
+}
+
+fn create_test_pipeline_runtime_services() -> PipelineRuntimeServices {
+    PipelineRuntimeServices::new().expect("test binary must link valid pdata codec registrations")
+}
 
 /// Create a minimal [`PipelineContext`] suitable for unit tests that
 /// need to register metrics or construct engine objects.

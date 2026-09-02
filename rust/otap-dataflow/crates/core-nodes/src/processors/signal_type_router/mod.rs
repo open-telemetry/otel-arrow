@@ -1356,7 +1356,13 @@ mod tests {
 
             let mut senders = HashMap::new();
             let _ = senders.insert(route_port.into(), Sender::Local(LocalSender::mpsc(tx)));
-            let mut eh = LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+            let mut eh = LocalEffectHandler::new(
+                node_id.clone(),
+                senders,
+                None,
+                reporter.clone(),
+                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+            );
             let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(4);
             eh.set_pipeline_completion_msg_sender(completion_tx);
 
@@ -1473,7 +1479,7 @@ mod tests {
                 let mut senders = HashMap::new();
                 let _ = senders.insert(PORT_LOGS.into(), Sender::Local(LocalSender::mpsc(tx_logs)));
                 let mut eh =
-                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone(), otel_arrow_dfe_engine::testing::test_pipeline_runtime_services());
 
                 // Send a logs pdata -> should route to named port
                 let pdata = OtapPdata::new_default(OtapArrowRecords::Logs(Logs::default()).into());
@@ -1554,7 +1560,7 @@ assert_eq!(
                 let mut senders = HashMap::new();
                 let _ = senders.insert(PORT_LOGS.into(), Sender::Local(LocalSender::mpsc(tx_logs)));
                 let mut eh =
-                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone(), otel_arrow_dfe_engine::testing::test_pipeline_runtime_services());
                 let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(4);
                 eh.set_pipeline_completion_msg_sender(completion_tx);
 
@@ -1675,7 +1681,7 @@ assert_eq!(
                 let mut senders = HashMap::new();
                 let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx_out)));
                 let mut eh =
-                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone(), otel_arrow_dfe_engine::testing::test_pipeline_runtime_services());
 
                 let pdata = OtapPdata::new_default(OtapArrowRecords::Logs(Logs::default()).into());
                 router
@@ -1751,7 +1757,7 @@ assert_eq!(
                 let mut senders = HashMap::new();
                 let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx_out)));
                 let mut eh =
-                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone(), otel_arrow_dfe_engine::testing::test_pipeline_runtime_services());
                 let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(4);
                 eh.set_pipeline_completion_msg_sender(completion_tx);
 
@@ -1884,7 +1890,7 @@ assert_eq!(
                     Sender::Local(LocalSender::mpsc(tx_metrics)),
                 );
                 let mut eh =
-                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone(), otel_arrow_dfe_engine::testing::test_pipeline_runtime_services());
                 let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(4);
                 eh.set_pipeline_completion_msg_sender(completion_tx);
 
@@ -1999,7 +2005,7 @@ assert_eq!(
                 let mut senders = HashMap::new();
                 let _ = senders.insert(PORT_TRACES.into(), Sender::Local(LocalSender::mpsc(tx)));
                 let mut eh =
-                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone(), otel_arrow_dfe_engine::testing::test_pipeline_runtime_services());
 
                 let pdata =
                     OtapPdata::new_default(OtapArrowRecords::Traces(Default::default()).into());
@@ -2070,7 +2076,7 @@ assert_eq!(
                 let mut senders = HashMap::new();
                 let _ = senders.insert(PORT_TRACES.into(), Sender::Local(LocalSender::mpsc(tx)));
                 let mut eh =
-                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone(), otel_arrow_dfe_engine::testing::test_pipeline_runtime_services());
 
                 let pdata =
                     OtapPdata::new_default(OtapArrowRecords::Traces(Default::default()).into());
@@ -2168,7 +2174,7 @@ assert_eq!(
                 let mut senders = HashMap::new();
                 let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx)));
                 let mut eh =
-                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone(), otel_arrow_dfe_engine::testing::test_pipeline_runtime_services());
 
                 let pdata =
                     OtapPdata::new_default(OtapArrowRecords::Traces(Default::default()).into());
@@ -2239,7 +2245,7 @@ assert_eq!(
                 let mut senders = HashMap::new();
                 let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx)));
                 let mut eh =
-                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone(), otel_arrow_dfe_engine::testing::test_pipeline_runtime_services());
 
                 let pdata =
                     OtapPdata::new_default(OtapArrowRecords::Traces(Default::default()).into());
@@ -2338,7 +2344,7 @@ assert_eq!(
                 let mut senders = HashMap::new();
                 let _ = senders.insert(PORT_METRICS.into(), Sender::Local(LocalSender::mpsc(tx)));
                 let mut eh =
-                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone(), otel_arrow_dfe_engine::testing::test_pipeline_runtime_services());
 
                 let pdata =
                     OtapPdata::new_default(OtapArrowRecords::Metrics(Default::default()).into());
@@ -2409,7 +2415,7 @@ assert_eq!(
                 let mut senders = HashMap::new();
                 let _ = senders.insert(PORT_METRICS.into(), Sender::Local(LocalSender::mpsc(tx)));
                 let mut eh =
-                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone(), otel_arrow_dfe_engine::testing::test_pipeline_runtime_services());
 
                 let pdata =
                     OtapPdata::new_default(OtapArrowRecords::Metrics(Default::default()).into());
@@ -2507,7 +2513,7 @@ assert_eq!(
                 let mut senders = HashMap::new();
                 let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx)));
                 let mut eh =
-                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone(), otel_arrow_dfe_engine::testing::test_pipeline_runtime_services());
 
                 let pdata =
                     OtapPdata::new_default(OtapArrowRecords::Metrics(Default::default()).into());
@@ -2578,7 +2584,7 @@ assert_eq!(
                 let mut senders = HashMap::new();
                 let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx)));
                 let mut eh =
-                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone(), otel_arrow_dfe_engine::testing::test_pipeline_runtime_services());
 
                 let pdata =
                     OtapPdata::new_default(OtapArrowRecords::Metrics(Default::default()).into());

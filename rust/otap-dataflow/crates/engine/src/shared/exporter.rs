@@ -107,16 +107,9 @@ pub struct EffectHandler<PData> {
 
 impl<PData> EffectHandler<PData> {
     /// Creates a new shared (Send) `EffectHandler` with the given exporter node id and the metrics
-    /// exporter.
-    #[cfg(any(test, feature = "test-utils"))]
+    /// exporter and pipeline runtime services.
     #[must_use]
-    pub fn new(node_id: NodeId, metrics_reporter: MetricsReporter) -> Self {
-        let runtime_services =
-            PipelineRuntimeServices::new().expect("the linked pdata codec registry must be valid");
-        Self::new_with_runtime_services(node_id, metrics_reporter, runtime_services)
-    }
-
-    pub(crate) fn new_with_runtime_services(
+    pub fn new(
         node_id: NodeId,
         metrics_reporter: MetricsReporter,
         runtime_services: PipelineRuntimeServices,

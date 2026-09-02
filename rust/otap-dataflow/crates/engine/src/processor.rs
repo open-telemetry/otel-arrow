@@ -477,18 +477,9 @@ impl<PData> ProcessorWrapper<PData> {
     }
 
     /// Prepare the processor runtime components without starting the processing loop.
-    /// This allows external control over the message processing loop.
+    /// This allows external control over the message processing loop while preserving the
+    /// pipeline-owned runtime-service lifecycle.
     pub async fn prepare_runtime(
-        self,
-        metrics_reporter: MetricsReporter,
-        node_interests: Interests,
-    ) -> Result<ProcessorWrapperRuntime<PData>, Error> {
-        let runtime_services = PipelineRuntimeServices::new()?;
-        self.prepare_runtime_with_services(metrics_reporter, node_interests, runtime_services)
-            .await
-    }
-
-    async fn prepare_runtime_with_services(
         self,
         metrics_reporter: MetricsReporter,
         node_interests: Interests,
@@ -529,7 +520,7 @@ impl<PData> ProcessorWrapper<PData> {
                     node_interests,
                 );
                 let default_port = user_config.default_output.clone();
-                let mut effect_handler = local::EffectHandler::new_with_runtime_services(
+                let mut effect_handler = local::EffectHandler::new(
                     node_id,
                     pdata_senders,
                     default_port,
@@ -579,7 +570,7 @@ impl<PData> ProcessorWrapper<PData> {
                     node_interests,
                 );
                 let default_port = user_config.default_output.clone();
-                let mut effect_handler = shared::EffectHandler::new_with_runtime_services(
+                let mut effect_handler = shared::EffectHandler::new(
                     node_id,
                     pdata_senders,
                     default_port,
@@ -597,18 +588,18 @@ impl<PData> ProcessorWrapper<PData> {
         }
     }
 
-    /// Start the processor and run the message processing loop.
+    /// Start the processor using the services owned by its pipeline runtime.
     pub async fn start(
         self,
         runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<PData>,
         pipeline_completion_msg_tx: PipelineCompletionMsgSender<PData>,
         metrics_reporter: MetricsReporter,
         node_interests: Interests,
+        runtime_services: PipelineRuntimeServices,
     ) -> Result<(), Error>
     where
         PData: ReceivedAtNode + FlowMetricHook,
     {
-        let runtime_services = PipelineRuntimeServices::new()?;
         self.start_with_completion_metrics(
             runtime_ctrl_msg_tx,
             pipeline_completion_msg_tx,
@@ -659,11 +650,7 @@ impl<PData> ProcessorWrapper<PData> {
         PData: ReceivedAtNode + FlowMetricHook,
     {
         let runtime = self
-            .prepare_runtime_with_services(
-                metrics_reporter.clone(),
-                node_interests,
-                runtime_services,
-            )
+            .prepare_runtime(metrics_reporter.clone(), node_interests, runtime_services)
             .await?;
 
         match runtime {
@@ -1035,7 +1022,6 @@ mod tests {
     use crate::processor::{
         Error, ProcessorRuntimeRequirements, ProcessorWrapper, validate_local_wakeup_requirements,
     };
-    use crate::runtime_services::PipelineRuntimeServices;
     use crate::shared::message::{SharedReceiver, SharedSender};
     use crate::shared::processor as shared;
     use crate::testing::processor::TestRuntime;
@@ -1350,6 +1336,7 @@ mod tests {
             std::collections::HashMap::new(),
             None,
             metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
         );
         handler.set_flow_roles(
             true,
@@ -1399,6 +1386,7 @@ mod tests {
             std::collections::HashMap::new(),
             None,
             metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
         );
         handler.set_flow_roles(
             false,
@@ -1453,6 +1441,7 @@ mod tests {
             std::collections::HashMap::new(),
             None,
             metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
         );
         // A decision node that is neither start nor end of the flow range.
         // Drop-only: needs no per-message timing.
@@ -1563,7 +1552,7 @@ mod tests {
                             true,
                             true,
                             crate::terminal_state::TerminalMetricsDeadline::default(),
-                            PipelineRuntimeServices::new().unwrap(),
+                            crate::testing::test_pipeline_runtime_services(),
                         )
                         .await
                 });
@@ -1781,7 +1770,7 @@ mod tests {
                 true, // flow_metrics_active
                 false,
                 crate::terminal_state::TerminalMetricsDeadline::default(),
-                PipelineRuntimeServices::new().unwrap(),
+                crate::testing::test_pipeline_runtime_services(),
             )
             .await;
 
@@ -2023,7 +2012,7 @@ mod tests {
                 true,
                 false,
                 crate::terminal_state::TerminalMetricsDeadline::default(),
-                PipelineRuntimeServices::new().unwrap(),
+                crate::testing::test_pipeline_runtime_services(),
             )
             .await;
 

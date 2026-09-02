@@ -2565,6 +2565,7 @@ mod telemetry_tests {
                 None,
                 pipe_tx,
                 reporter.clone(),
+                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
             );
 
             let (ctrl_tx, ctrl_rx) = otel_arrow_dfe_channel::mpsc::Channel::new(16);
@@ -2680,6 +2681,7 @@ mod telemetry_tests {
                 None,
                 pipe_tx,
                 reporter.clone(),
+                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
             );
 
             let (ctrl_tx, ctrl_rx) = otel_arrow_dfe_channel::mpsc::Channel::new(8);
@@ -2776,6 +2778,7 @@ mod telemetry_tests {
                 None,
                 pipe_tx,
                 reporter.clone(),
+                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
             );
 
             let (ctrl_tx, ctrl_rx) = otel_arrow_dfe_channel::mpsc::Channel::new(16);
@@ -2875,6 +2878,7 @@ mod telemetry_tests {
                 None,
                 pipe_tx,
                 reporter.clone(),
+                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
             );
             let (ctrl_tx, ctrl_rx) = otel_arrow_dfe_channel::mpsc::Channel::new(16);
             let ctrl_rx = otel_arrow_dfe_engine::message::Receiver::Local(
@@ -2983,6 +2987,7 @@ mod telemetry_tests {
                 None,
                 pipe_tx,
                 reporter.clone(),
+                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
             );
             let (ctrl_tx, ctrl_rx) = otel_arrow_dfe_channel::mpsc::Channel::new(16);
             let ctrl_rx = otel_arrow_dfe_engine::message::Receiver::Local(
@@ -3097,6 +3102,7 @@ mod telemetry_tests {
                 None,
                 pipe_tx,
                 reporter.clone(),
+                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
             );
 
             let (ctrl_tx, ctrl_rx) = otel_arrow_dfe_channel::mpsc::Channel::new(16);
@@ -3195,6 +3201,7 @@ mod telemetry_tests {
                 None,
                 pipe_tx,
                 reporter.clone(),
+                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
             );
 
             let (ctrl_tx, ctrl_rx) = otel_arrow_dfe_channel::mpsc::Channel::new(16);
@@ -3296,6 +3303,7 @@ mod telemetry_tests {
                 None,
                 pipe_tx,
                 reporter.clone(),
+                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
             );
 
             let (ctrl_tx, ctrl_rx) = otel_arrow_dfe_channel::mpsc::Channel::new(16);
@@ -3398,6 +3406,7 @@ mod telemetry_tests {
                 None,
                 pipe_tx,
                 reporter.clone(),
+                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
             );
 
             let (ctrl_tx, ctrl_rx) = otel_arrow_dfe_channel::mpsc::Channel::new(16);

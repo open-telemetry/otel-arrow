@@ -842,7 +842,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             let receiver_runtime_services = runtime_services.clone();
             let fut = async move {
                 match receiver
-                    .start_with_runtime_services(
+                    .start(
                         runtime_ctrl_msg_tx,
                         pipeline_completion_msg_tx,
                         effect_metrics_reporter,
