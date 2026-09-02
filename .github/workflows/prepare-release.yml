@@ -23,8 +23,13 @@ jobs:
       contents: read
       pull-requests: read
     runs-on: ubuntu-latest
-    environment: ${{ !inputs.dry_run && 'release' || '' }}
     steps:
+      - name: Validate dispatch ref
+        if: "!inputs.dry_run && github.ref != 'refs/heads/main'"
+        run: |
+          echo "Non-dry-run release preparation must run from main"
+          exit 1
+
       - name: Checkout (dry run)
         if: inputs.dry_run
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
