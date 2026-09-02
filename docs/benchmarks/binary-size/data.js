@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788330504177,
+  "lastUpdate": 1788367368121,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -29594,6 +29594,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 115.2,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 102.54,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "a.lockett@f5.com",
+            "name": "albertlockett",
+            "username": "albertlockett"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "cd0a2b4971359014cf25de4cad9365548f421fcb",
+          "message": "feat(query-engine/OPL): support cast for primitive types (#3971)\n\n# Change summary\n\n<!--Replace with a brief summary of the change in this PR-->\n\nAdds a syntax to OPL that can be used to cast the result of some\nexpression to a different primitive type.\n\nThe syntax has the form: `<expr> as <type>` where supported types for\nnow are `String`, `Double`, `Integer` and `Boolean`.\n\n```kql\n// cast time unix nano to integer, so can assign to an AnyValue\nlog | set attributes[\"exec.time.nanos\"] = now() as Integer \n```\n\nThis PR also adds initial/best-effort support to to the OTAP query\nengine to evaluate such expressions.\n\nCast rules:\n- `<Int/Double/Bool> as String` results in stringified number. e.g.\n`\"1\", \"2.3\" or \"true\"`\n- `<Int> as <Double>` as expected\n- `<String> as <Int/Double/Bool>` - String is parsed as int, decimal, or\nfrom `\"true\"`, `\"false\"`. fails to execute if unparsable\n- `<timestamp> as Int` - to nanoseconds since unix epoch\n- `<timestamp> as Double` - to nanoseconds since unix epoch, but as a\nf64\n- `<timestamp> as String` - iso 8601 with nanosecond precision\n- `<timestamp> as Boolean>` - fails to execute\n\nThere is clearly some future optimization and refinement we could add to\nsuch a feature. For example:\n- Perhaps we _don't_ want string parsing to fail\n- The cast target type is logical, so we could apply the cast only to\ndictionary values, but we do not\n- We could be more intelligent about the target type for integers --\ncurrently we always cast to an int64 and let arithmetic or assignment\nrules worry about choosing the correct type afterward\n- Improve type checking to detect incompatible casts at planning time\nwhen possible.\n\nAll this can happen in followups.\n\nOne note to explain part of the implementation.. when we plan an\nexpression like `attributes[\"x\"] == \"Y\" and attributes[\"z\"] == \"y2\"`,\nthis will get planned as a variant of our expr called\n`ScopedExpr::BitmapAnd`, which is supposed to produce a boolean array.\nPresumably, someone may wish to cast this to some other type. To support\nthis, we make this expr child of a `JoinAndEval` variant of\n`ScopedExpr`, where the \"join\" basically just materializes a record\nbatch with a single boolean column, and then applies the cast to this.\nHowever, our \"single column join\" would omit the ID columns, which meant\nwe couldn't figure out which rows these casted booleans were associated\nwith from the original batch. So this PR also makes some changes to\ncorrect that in `join.rs`.\n\n## Related issue\n\n<!--We highly recommend correlation of every PR to an issue-->\n\n* Closes #3972\n\n## Validation\n\nunit tests\n\n<!--How did you confirm your change has the intended effect?-->\n\n## User-facing changes\n\nyes this new syntax is available for users to configure in their\ntransform processor programs.\n\n<!--\nDescribe the impact, or write `None`.\nUser-facing changes require a `.chloggen/*.yaml` entry. If no entry is\nneeded,\ninclude `chore` in the PR title. Documentation-only changes are exempt.\n-->",
+          "timestamp": "2026-09-02T15:22:22Z",
+          "tree_id": "773768640230e8392a037b0066bed81934dc4edc",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/cd0a2b4971359014cf25de4cad9365548f421fcb"
+        },
+        "date": 1788367351682,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 83.31,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.53,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.7,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 70.67,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.82,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.39,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 115.22,
             "unit": "MB"
           },
           {
