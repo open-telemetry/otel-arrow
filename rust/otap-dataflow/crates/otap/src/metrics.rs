@@ -24,18 +24,37 @@ pub struct ReceiverReceivedMetrics {
     /// Encoded application payload size observed before receiver decoding.
     #[metric(name = "payload.size", unit = "By")]
     pub payload_size: Counter<u64>,
-    /// Receiver-local time from observing the classified message through termination.
-    /// Downstream processing and Ack/Nack completion are excluded.
-    #[metric(unit = "s")]
-    pub duration: HistogramNormal,
 }
 
 impl ReceiverReceivedMetrics {
     /// Records one classified external message when receiver-local handling terminates.
     #[inline]
-    pub fn record(&mut self, duration: Duration, payload_size: u64) {
+    pub fn record(&mut self, payload_size: u64) {
         self.messages.inc();
         self.payload_size.add(payload_size);
+    }
+}
+
+/// Receiver-defined local processing of classified external messages.
+#[metric_set(
+    name = "receiver.processing",
+    measurement_attributes = SignalAttributes
+)]
+#[derive(Debug, Default, Clone)]
+pub struct ReceiverProcessingMetrics {
+    /// Component-defined receiver-local processing time.
+    ///
+    /// Each receiver documents its stable start and end boundary. Downstream
+    /// processing, batching wait, handoff wait, and Ack/Nack completion are
+    /// excluded.
+    #[metric(unit = "s")]
+    pub duration: HistogramNormal,
+}
+
+impl ReceiverProcessingMetrics {
+    /// Records one receiver-local processing operation.
+    #[inline]
+    pub fn record(&mut self, duration: Duration) {
         self.duration.record(duration.as_secs_f64());
     }
 }
@@ -50,16 +69,32 @@ pub struct ExporterAttemptedMetrics {
     /// Number of PData messages submitted across export attempts.
     #[metric(unit = "{message}")]
     pub messages: Counter<u64>,
-    /// Time spent performing export attempts.
-    #[metric(unit = "s")]
-    pub duration: HistogramNormal,
 }
 
 impl ExporterAttemptedMetrics {
     /// Records one export attempt.
     #[inline]
-    pub fn record(&mut self, duration: Duration) {
+    pub fn record(&mut self) {
         self.messages.inc();
+    }
+}
+
+/// Optional duration accounting for individual exporter attempts.
+#[metric_set(
+    name = "exporter.attempted",
+    measurement_attributes = SignalOutcomeAttributes
+)]
+#[derive(Debug, Default, Clone)]
+pub struct ExporterAttemptedDurationMetrics {
+    /// Time spent performing export attempts, including backend latency.
+    #[metric(unit = "s")]
+    pub duration: HistogramNormal,
+}
+
+impl ExporterAttemptedDurationMetrics {
+    /// Records the duration of one export attempt.
+    #[inline]
+    pub fn record(&mut self, duration: Duration) {
         self.duration.record(duration.as_secs_f64());
     }
 }
@@ -177,6 +212,14 @@ mod tests {
         ExporterAttemptedItemsMetrics::register(&pipeline_ctx)
     }
 
+    fn new_attempted_duration_metrics() -> MeasurementMetricSet<ExporterAttemptedDurationMetrics> {
+        let registry = TelemetryRegistryHandle::new();
+        let controller = ControllerContext::new(registry);
+        let pipeline_ctx =
+            controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        ExporterAttemptedDurationMetrics::register(&pipeline_ctx)
+    }
+
     fn new_attempted_payload_metrics() -> MeasurementMetricSet<ExporterAttemptedPayloadMetrics> {
         let registry = TelemetryRegistryHandle::new();
         let controller = ControllerContext::new(registry);
@@ -191,6 +234,14 @@ mod tests {
         let pipeline_ctx =
             controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         ReceiverReceivedMetrics::register(&pipeline_ctx)
+    }
+
+    fn new_processing_metrics() -> MeasurementMetricSet<ReceiverProcessingMetrics> {
+        let registry = TelemetryRegistryHandle::new();
+        let controller = ControllerContext::new(registry);
+        let pipeline_ctx =
+            controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        ReceiverProcessingMetrics::register(&pipeline_ctx)
     }
 
     fn new_export_metrics() -> MeasurementMetricSet<ExporterExportMetrics> {
@@ -209,7 +260,7 @@ mod tests {
         ReceiverMessageMetrics::register(&pipeline_ctx)
     }
 
-    /// Scenario: Shared received and attempted sets produce terminal snapshots.
+    /// Scenario: Shared receiver and exporter sets produce boundary snapshots.
     /// Guarantees: Metric namespaces, units, and bounded dimensions match the external-boundary contract.
     #[test]
     fn external_boundary_metric_descriptors_are_stable() {
@@ -219,7 +270,7 @@ mod tests {
                 signal: SignalType::Metrics,
                 outcome: Outcome::Success,
             })
-            .record(Duration::from_millis(10), 64);
+            .record(64);
         let received_snapshot = received
             .terminal_snapshots()
             .into_iter()
@@ -253,6 +304,34 @@ mod tests {
                 .descriptor()
                 .metrics
                 .iter()
+                .all(|metric| metric.name != "duration")
+        );
+
+        let mut processing = new_processing_metrics();
+        processing
+            .with(SignalAttributes {
+                signal: SignalType::Metrics,
+            })
+            .record(Duration::from_millis(10));
+        let processing_snapshot = processing
+            .terminal_snapshots()
+            .into_iter()
+            .next()
+            .expect("processing snapshot");
+        assert_eq!(processing_snapshot.descriptor().name, "receiver.processing");
+        assert_eq!(
+            processing_snapshot.measurement_attribute_value("signal"),
+            Some("metrics")
+        );
+        assert_eq!(
+            processing_snapshot.measurement_attribute_value("outcome"),
+            None
+        );
+        assert!(
+            processing_snapshot
+                .descriptor()
+                .metrics
+                .iter()
                 .any(|metric| metric.name == "duration" && metric.unit == "s")
         );
 
@@ -262,7 +341,7 @@ mod tests {
                 signal: SignalType::Logs,
                 outcome: Outcome::Success,
             })
-            .record(Duration::from_millis(20));
+            .record();
         let attempted_snapshot = attempted
             .terminal_snapshots()
             .into_iter()
@@ -290,6 +369,37 @@ mod tests {
                 .metrics
                 .iter()
                 .all(|metric| metric.name != "payload.size")
+        );
+        assert!(
+            attempted_snapshot
+                .descriptor()
+                .metrics
+                .iter()
+                .all(|metric| metric.name != "duration")
+        );
+
+        let mut attempted_duration = new_attempted_duration_metrics();
+        attempted_duration
+            .with(SignalOutcomeAttributes {
+                signal: SignalType::Logs,
+                outcome: Outcome::Success,
+            })
+            .record(Duration::from_millis(20));
+        let attempted_duration_snapshot = attempted_duration
+            .terminal_snapshots()
+            .into_iter()
+            .next()
+            .expect("attempted duration snapshot");
+        assert_eq!(
+            attempted_duration_snapshot.descriptor().name,
+            "exporter.attempted"
+        );
+        assert!(
+            attempted_duration_snapshot
+                .descriptor()
+                .metrics
+                .iter()
+                .any(|metric| metric.name == "duration" && metric.unit == "s")
         );
 
         let mut attempted_payload = new_attempted_payload_metrics();
@@ -351,13 +461,13 @@ mod tests {
                 signal: SignalType::Logs,
                 outcome: Outcome::Failure,
             })
-            .record(Duration::from_millis(10));
+            .record();
         metrics
             .with(SignalOutcomeAttributes {
                 signal: SignalType::Logs,
                 outcome: Outcome::Success,
             })
-            .record(Duration::from_millis(20));
+            .record();
 
         let failed = metrics.get(SignalOutcomeAttributes {
             signal: SignalType::Logs,

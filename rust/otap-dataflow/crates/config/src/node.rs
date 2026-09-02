@@ -185,6 +185,16 @@ pub struct NodePolicies {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NodeTelemetryPolicy {
+    /// Opt this node into component-owned duration measurements, such as
+    /// `receiver.processing.duration`, `processor.compute.*.duration`, or
+    /// `exporter.attempted.duration`.
+    ///
+    /// Off by default because duration instrumentation requires clock reads on
+    /// the data path. `runtime_metrics: detailed` enables component duration
+    /// for every node without this flag.
+    #[serde(default)]
+    pub duration: bool,
+
     /// Opt this node into per-signal input/output item counts on its
     /// `node.input` / `node.output` metric sets.
     ///
@@ -529,7 +539,7 @@ mod tests {
         assert!(cfg.outputs.is_empty());
     }
 
-    /// Scenario: a node config opts into item counts and payload size through its restricted policy block.
+    /// Scenario: a node config opts into duration, item counts, and payload size through its restricted policy block.
     /// Guarantees: node telemetry configuration stays namespaced under `policies` with independent measurement controls.
     #[test]
     fn node_user_config_parses_measurement_policy() {
@@ -537,6 +547,7 @@ mod tests {
 type: "processor:batch"
 policies:
   telemetry:
+    duration: true
     item_counts: true
     size: true
 "#;
@@ -546,8 +557,19 @@ policies:
             .as_ref()
             .and_then(|policies| policies.telemetry.as_ref())
             .expect("node telemetry policy");
+        assert!(telemetry.duration);
         assert!(telemetry.item_counts);
         assert!(telemetry.size);
+    }
+
+    /// Scenario: a node telemetry policy omits every optional measurement.
+    /// Guarantees: component duration, item counts, and size measurements remain disabled by default.
+    #[test]
+    fn node_telemetry_policy_defaults_optional_measurements_off() {
+        let telemetry = NodeTelemetryPolicy::default();
+        assert!(!telemetry.duration);
+        assert!(!telemetry.item_counts);
+        assert!(!telemetry.size);
     }
 
     #[test]

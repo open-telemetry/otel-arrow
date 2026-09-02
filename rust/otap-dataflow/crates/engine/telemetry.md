@@ -34,12 +34,14 @@ control-plane metrics. Its default value is `basic`.
 | `none` | No channel or node input/output metrics. |
 | `basic` | `channel.*` metrics. |
 | `normal` | `basic`, plus `node.input.messages` and `node.output.messages`. A node can also opt into item and size metrics. |
-| `detailed` | `normal`, plus node duration, item, and size metrics for every node. |
+| `detailed` | `normal`, plus node duration, component duration, item, and size metrics for every node. |
 
 At `normal`, enable the optional measurements on an individual node with
-`policies.telemetry.item_counts: true` and/or
-`policies.telemetry.size: true`. These node options do not enable node metrics
-when the pipeline level is `none` or `basic`.
+`policies.telemetry.duration: true`,
+`policies.telemetry.item_counts: true`, and/or
+`policies.telemetry.size: true`. The duration option controls component-owned
+metrics such as `receiver.processing.duration` and
+`exporter.attempted.duration`, as well as `processor.compute.*.duration`.
 
 Node kind determines which side exists:
 
