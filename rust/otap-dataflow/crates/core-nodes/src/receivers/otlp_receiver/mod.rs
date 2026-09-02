@@ -3444,8 +3444,10 @@ mod tests {
                 unit: RateLimitUnit::RequestBytes,
                 pressure: RateLimitPressure::Soft,
                 token_bucket: TokenBucketPolicy {
-                    allow: request_weight,
-                    interval: Duration::from_secs(1),
+                    // Keep the bucket saturated for the entire test so the request
+                    // deterministically reaches the pre-decode rejection path.
+                    allow: 1,
+                    interval: Duration::from_secs(60 * 60),
                     burst: Some(burst),
                 },
             },
@@ -3490,10 +3492,13 @@ mod tests {
                 _ = request
                     .metadata_mut()
                     .insert("authorization", "Bearer allowed".parse().unwrap());
-                let status = logs_client
-                    .export(request)
+                let result = logs_client.export(request).await;
+
+                ctx.send_shutdown(Instant::now(), "Test complete")
                     .await
-                    .expect_err("rate limit should reject request");
+                    .expect("Failed to send shutdown");
+
+                let status = result.expect_err("rate limit should reject request");
 
                 assert_eq!(status.code(), tonic::Code::ResourceExhausted);
                 let (expected_message, expected_pushback) = if oversized {
@@ -3533,10 +3538,6 @@ mod tests {
                         0
                     );
                 }
-
-                ctx.send_shutdown(Instant::now(), "Test complete")
-                    .await
-                    .expect("Failed to send shutdown");
             }) as Pin<Box<dyn Future<Output = ()>>>
         };
 
