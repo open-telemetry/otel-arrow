@@ -1413,8 +1413,6 @@ mod tests {
             .validate(|_| async move {});
     }
 
- 
-
     #[test]
     fn test_insert_attrs_with_u32_parent_ids() {
         let input = MetricsData {
