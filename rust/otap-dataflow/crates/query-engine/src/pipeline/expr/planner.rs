@@ -39,7 +39,7 @@ use otel_arrow_dfe_pdata::schema::consts;
 use crate::consts::SHA1_FUNC_NAME;
 use crate::consts::{
     ENCODE_FUNC_NAME, ENDS_WITH_FUNC_NAME, FNV_FUNC_NAME, FORMAT_DATETIME_FUNC_NAME, LOG_FUNC_NAME,
-    LOWER_CASE_FUNC_NAME, LTRIM_FUNC_NAME, MD5_FUNC_NAME, MURMUR3_FUNC_NAME,
+    LOWER_CASE_FUNC_NAME, LTRIM_FUNC_NAME, MD5_FUNC_NAME, MURMUR3_FUNC_NAME, NOW_FUNC_NAME,
     REGEXP_SUBSTR_FUNC_NAME, RTRIM_FUNC_NAME, SHA256_FUNC_NAME, SHA512_FUNC_NAME,
     STARTS_WITH_FUNC_NAME, UPPER_CASE_FUNC_NAME, UUID_FUNC_NAME, UUIDV7_FUNC_NAME, XXH3_FUNC_NAME,
     XXH128_FUNC_NAME,
@@ -60,7 +60,8 @@ use crate::pipeline::functions::is_type::IsTypeFunc;
 #[cfg(feature = "sha1-hash")]
 use crate::pipeline::functions::sha1_hash;
 use crate::pipeline::functions::{
-    arity_range, fnv_hash, murmur3_hash, regexp_substr, substring, uuidv7, xxh3_hash, xxh128_hash,
+    arity_range, fnv_hash, murmur3_hash, now, regexp_substr, substring, uuidv7, xxh3_hash,
+    xxh128_hash,
 };
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
 use crate::pipeline::project::{Projection, ProjectionOptions};
@@ -1879,6 +1880,7 @@ impl DataFusionFunctionDef {
             ENDS_WITH_FUNC_NAME => Self::new(ends_with(), ExprLogicalType::Boolean, true, None),
             LOG_FUNC_NAME => Self::new(log10(), ExprLogicalType::Float64, true, None),
             LTRIM_FUNC_NAME => Self::new(ltrim(), ExprLogicalType::String, true, None),
+            NOW_FUNC_NAME => Self::new(now(), ExprLogicalType::TimestampNanosecond, false, None),
             REGEXP_SUBSTR_FUNC_NAME => {
                 Self::new(regexp_substr(), ExprLogicalType::String, false, None)
             }
