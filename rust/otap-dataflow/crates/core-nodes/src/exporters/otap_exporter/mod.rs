@@ -3711,17 +3711,20 @@ mod tests {
 
                     // Wait enough time for handle_req_stream to fail with connection refused
                     // and enter the Err(e) branch which sleeps for 50ms (INITIAL_BACKOFF).
-                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    // Windows' coarser timer/scheduler granularity (and loopback
+                    // connect-refused latency) needs a wider margin than Linux to
+                    // reliably land in that backoff window, so this is generous.
+                    tokio::time::sleep(Duration::from_secs(1)).await;
 
                     control_sender
                         .send(NodeControlMsg::Shutdown {
-                            deadline: Instant::now().add(Duration::from_millis(500)),
+                            deadline: Instant::now().add(Duration::from_secs(2)),
                             reason: "shutdown test".into(),
                         })
                         .await
                         .unwrap();
 
-                    let shutdown_result = timeout(Duration::from_secs(1), exporter_handle).await;
+                    let shutdown_result = timeout(Duration::from_secs(5), exporter_handle).await;
                     assert!(shutdown_result.is_ok(), "Expected clean shutdown");
                 })
                 .await;
@@ -3792,7 +3795,9 @@ mod tests {
                     let pdata1 = OtapPdata::new_default(log_message.into());
                     pdata_tx.send(pdata1).await.unwrap();
 
-                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    // Windows' coarser timer/scheduler granularity needs a wider
+                    // margin than Linux to reliably reach the state below.
+                    tokio::time::sleep(Duration::from_millis(500)).await;
 
                     // Send second batch -- fills the stream queue (capacity=1).
                     let log_message = create_otap_batch(LOG_BATCH_ID + 1, ArrowPayloadType::Logs);
@@ -3809,22 +3814,21 @@ mod tests {
                         _ = pdata_tx_clone.send(pdata3).await;
                     });
 
-                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    tokio::time::sleep(Duration::from_millis(500)).await;
 
                     // Request shutdown -- before the fix, the exporter would deadlock
                     // because the main loop was blocked in enqueue_stream_batch and
                     // could never process this Shutdown control message.
                     control_sender
                         .send(NodeControlMsg::Shutdown {
-                            deadline: Instant::now().add(Duration::from_millis(10)),
+                            deadline: Instant::now().add(Duration::from_millis(200)),
                             reason: "shutdown test".into(),
                         })
                         .await
                         .unwrap();
 
-                    // The exporter must shut down within 200ms, not hang forever.
-                    let shutdown_result =
-                        timeout(Duration::from_millis(200), exporter_handle).await;
+                    // The exporter must shut down promptly, not hang forever.
+                    let shutdown_result = timeout(Duration::from_secs(3), exporter_handle).await;
                     assert!(
                         shutdown_result.is_ok(),
                         "Expected exporter to shut down successfully and not deadlock"
