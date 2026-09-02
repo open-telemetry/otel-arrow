@@ -30,9 +30,10 @@ The receiver preserves ordering within each file and provides at-least-once
 delivery after emission when no explicitly configured loss policy authorizes
 progress. Crash recovery of uncommitted records requires both a valid durable
 checkpoint and the corresponding source bytes. The receiver is not a durable
-telemetry spool. Ordinary move/create rotation is supported; copytruncate
-remains best-effort because portable filesystem observation cannot close its
-destructive copy-to-truncate gap.
+telemetry spool. Ordinary move/create rotation is supported. Copytruncate
+copies the active file to another path and then truncates the original in
+place; bytes written between those steps can be destroyed before the receiver
+observes them, so capture remains best-effort.
 
 Phase 2 may improve local throughput and discovery latency without changing
 ownership. Phase 3 is a conceptual target that adds shared identity resolution,
@@ -100,9 +101,9 @@ than capabilities deferred to a later delivery phase.
 - Destination-specific body conversion, field mapping, or delivery behavior.
 - Durable telemetry spooling or recovery after required source bytes disappear.
 - Guaranteed copytruncate capture or unconditional "never lose data" claims.
-- Permanent identity derived from deployment topology or one mutable evidence
-  source, including path, native file ID, fingerprint, CPU, thread, NUMA node,
-  or deployment generation.
+- Treating a path, native file locator, fingerprint, or runtime placement value
+  as permanent file identity. The receiver assigns an opaque durable `file_id`
+  and reconnects it only through validated identity evidence.
 - Universal latency, throughput, memory, or production-readiness claims.
 
 ### Phase 1 exclusions
@@ -187,8 +188,8 @@ accepted compromises:
 | D6 | Reconnect ordinary progress only through a validated exact runtime locator, initial fingerprint, and committed-frontier continuity guard | A changed locator never transfers progress; the frontier guard also detects likely reuse of an `Active` locator whose common prefix still matches |
 | D7 | A Nack never authorizes progress. Advance after one matching aggregate Ack, except when an explicitly selected loss policy separately authorizes advancement after terminal retry exhaustion | The engine/topic runtime, not filelog, aggregates a nonempty required-subscriber membership; topology validation must reject a path that cannot provide all-required completion |
 | D8 | Run blocking filesystem and checkpoint work on fixed dedicated threads | Blocking work must not stall the current-thread runtime or create an unbounded worker pool |
-| D9 | Keep decoding and framing in the receiver; keep semantic interpretation in processors | Framing determines source progress; interpretation must remain reusable |
-| D10 | Emit raw OTAP logs with bounded source provenance | The receiver does not embed destination or Stanza-style operator logic |
+| D9 | In Phase 1, keep source decoding and framing in the receiver and semantic interpretation in processors | Framing determines source progress; a future codec may translate only after filelog has formed a complete record |
+| D10 | Emit raw OTAP logs with bounded source provenance in Phase 1 | A later optional encoded representation may carry complete framed bytes without moving file ownership or checkpointing out of the receiver |
 | D11 | Bound readers, descriptors, buffers, batches, channels, retries, maps, candidate populations, and scheduling turns | Overload and memory behavior must remain predictable |
 | D12 | Support move/create rotation and describe copytruncate as best-effort | Portable observation cannot guarantee copytruncate capture |
 | D13 | Retain one receiver-wide in-flight batch plus at most one bounded already-framed carry-over record | This preserves progress correctness without rereading a completed record from mutable source bytes |
@@ -233,11 +234,11 @@ severity fields when those meanings are intrinsic to that representation.
 
 A future codec-aware path may preserve and batch a complete framed message in
 its known encoded representation, forward it transparently, or decode it to
-native OTAP when a consumer requires native fields. Codec participation does
-not move discovery, source ranges, framing, provenance, or checkpoint ownership
-out of filelog, and Phase 1 does not depend on the pluggable-codec series. The
-encoded payload contract must preserve filelog provenance and delivery context
-before such an optimization is enabled.
+native OTAP when a consumer requires native fields. The registered codec may be
+implemented through a supported WASM module. Filelog still owns discovery,
+source ranges, framing, provenance, and checkpoint progress, and Phase 1 does
+not depend on the pluggable-codec series. The encoded payload contract must
+preserve filelog provenance and delivery context before such a path is enabled.
 
 A fixed, independently decodable telemetry format can use a PData codec.
 Application-specific JSON or CSV whose meaning depends on configured field
