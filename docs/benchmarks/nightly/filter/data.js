@@ -1,294 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788313974722,
+  "lastUpdate": 1788370380702,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "name": "Pritish Nahar",
-            "username": "pritishnahar95",
-            "email": "pritishnahar@gmail.com"
-          },
-          "committer": {
-            "name": "GitHub",
-            "username": "web-flow",
-            "email": "noreply@github.com"
-          },
-          "id": "30bb3bcf917814b46140bb48a008acb0953cdee9",
-          "message": "doc: make auth extension READMEs the full config reference (#3696)\n\n# Change Summary\n\nThe oauth2_client_auth and azure_identity_auth READMEs only summarized\nthe extensions and deferred to design.md, so operators had to read\ndesign docs or consumer exporter READMEs to find configuration options.\nConsumer READMEs in turn duplicated provider details that drift out of\nsync.\n\nRewrite both extension READMEs as standalone usage guides: metadata,\ngetting started, build/feature gates, complete config field tables\n(including grant-specific and method-specific fields), validation rules,\ntelemetry, and troubleshooting. Design rationale and lifecycle detail\nstay in design.md.\n\nRemove the duplicated provider configuration from the Azure Monitor and\nOTLP HTTP exporter READMEs, which now document only the capability\nbinding and link to the extension. Update the contrib-extensions catalog\nto link usage and design docs and state the ownership rule.\n\n## What issue does this PR close?\n\n* Related to #3479 \n* Related to #3356\n\n## How are these changes tested?\n\nn/a\n\n## Are there any user-facing changes?\n\nn/a\n\n### Changelog\n\n* [ ] Added a `.chloggen/*.yaml` entry\n* [ ] This PR is a `chore` (indicated in title)\n* [x] This is a documentation-only PR.",
-          "timestamp": "2026-08-07T22:28:56Z",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/30bb3bcf917814b46140bb48a008acb0953cdee9"
-        },
-        "date": 1786211200372,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": 96.875,
-            "unit": "%",
-            "extra": "Nightly - Filter/OTAP-FILTER-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 39.598281135174624,
-            "unit": "%",
-            "extra": "Nightly - Filter/OTAP-FILTER-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 40.09584255842558,
-            "unit": "%",
-            "extra": "Nightly - Filter/OTAP-FILTER-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 17.805989583333332,
-            "unit": "MiB",
-            "extra": "Nightly - Filter/OTAP-FILTER-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 18.265625,
-            "unit": "MiB",
-            "extra": "Nightly - Filter/OTAP-FILTER-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 98324.38330143424,
-            "unit": "logs/sec",
-            "extra": "Nightly - Filter/OTAP-FILTER-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 3072.63697816982,
-            "unit": "logs/sec",
-            "extra": "Nightly - Filter/OTAP-FILTER-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.002207,
-            "unit": "seconds",
-            "extra": "Nightly - Filter/OTAP-FILTER-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 229732.98625322865,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Filter/OTAP-FILTER-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 1166989.0424533049,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Filter/OTAP-FILTER-OTLP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 74.7673701401805,
-            "unit": "bytes/log",
-            "extra": "Nightly - Filter/OTAP-FILTER-OTLP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 96.875,
-            "unit": "%",
-            "extra": "Nightly - Filter/OTLP-FILTER-OTAP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 65.24156683129337,
-            "unit": "%",
-            "extra": "Nightly - Filter/OTLP-FILTER-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 65.65080310077519,
-            "unit": "%",
-            "extra": "Nightly - Filter/OTLP-FILTER-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 17.898828125,
-            "unit": "MiB",
-            "extra": "Nightly - Filter/OTLP-FILTER-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 18.84765625,
-            "unit": "MiB",
-            "extra": "Nightly - Filter/OTLP-FILTER-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 98328.98391461151,
-            "unit": "logs/sec",
-            "extra": "Nightly - Filter/OTLP-FILTER-OTAP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 3072.7807473316097,
-            "unit": "logs/sec",
-            "extra": "Nightly - Filter/OTLP-FILTER-OTAP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.002654,
-            "unit": "seconds",
-            "extra": "Nightly - Filter/OTLP-FILTER-OTAP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 674668.2159083593,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Filter/OTLP-FILTER-OTAP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 3009241.47918326,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Filter/OTLP-FILTER-OTAP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 219.56275809598142,
-            "unit": "bytes/log",
-            "extra": "Nightly - Filter/OTLP-FILTER-OTAP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 96.875,
-            "unit": "%",
-            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 64.45101396723221,
-            "unit": "%",
-            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 64.8362719467863,
-            "unit": "%",
-            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 16.95390625,
-            "unit": "MiB",
-            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 17.36328125,
-            "unit": "MiB",
-            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 98329.83934637521,
-            "unit": "logs/sec",
-            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 3072.8074795742255,
-            "unit": "logs/sec",
-            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.002132,
-            "unit": "seconds",
-            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 241519.33250866274,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 3021456.6372431293,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 78.59891454772433,
-            "unit": "bytes/log",
-            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 96.875,
-            "unit": "%",
-            "extra": "Nightly - Filter/OTAP-FILTER-OTAP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 43.62934484676407,
-            "unit": "%",
-            "extra": "Nightly - Filter/OTAP-FILTER-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 44.252375724777735,
-            "unit": "%",
-            "extra": "Nightly - Filter/OTAP-FILTER-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 18.654166666666665,
-            "unit": "MiB",
-            "extra": "Nightly - Filter/OTAP-FILTER-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 18.98046875,
-            "unit": "MiB",
-            "extra": "Nightly - Filter/OTAP-FILTER-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 98327.36122854003,
-            "unit": "logs/sec",
-            "extra": "Nightly - Filter/OTAP-FILTER-OTAP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 3072.730038391876,
-            "unit": "logs/sec",
-            "extra": "Nightly - Filter/OTAP-FILTER-OTAP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.002017,
-            "unit": "seconds",
-            "extra": "Nightly - Filter/OTAP-FILTER-OTAP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 662893.2196118868,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Filter/OTAP-FILTER-OTAP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 1155252.8122570405,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Filter/OTAP-FILTER-OTAP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 215.73428557974273,
-            "unit": "bytes/log",
-            "extra": "Nightly - Filter/OTAP-FILTER-OTAP - Egress Bytes Per Log"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -25300,6 +25014,292 @@ window.BENCHMARK_DATA = {
             "value": 44.580641048130026,
             "unit": "bytes/log",
             "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - Egress Bytes Per Log"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "renovate[bot]",
+            "username": "renovate[bot]",
+            "email": "29139614+renovate[bot]@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "11b92ef5b8a51aea55be14a84c9232760a6f5095",
+          "message": "fix(deps): update module google.golang.org/grpc to v1.83.1 [security] (#3974)\n\nThis PR contains the following updates:\n\n| Package | Change |\n[Age](https://docs.renovatebot.com/merge-confidence/) |\n[Confidence](https://docs.renovatebot.com/merge-confidence/) |\n|---|---|---|---|\n| [google.golang.org/grpc](https://redirect.github.com/grpc/grpc-go) |\n`v1.82.1` → `v1.83.1` |\n![age](https://developer.mend.io/api/mc/badges/age/go/google.golang.org%2fgrpc/v1.83.1?slim=true)\n|\n![confidence](https://developer.mend.io/api/mc/badges/confidence/go/google.golang.org%2fgrpc/v1.82.1/v1.83.1?slim=true)\n|\n\n---\n\n> [!WARNING]\n> Some dependencies could not be looked up. Check the [Dependency\nDashboard](../issues/417) for more information.\n\n---\n\n### gRPC-Go: Heap Memory Exhaustion (OOM) via HTTP/2 DATA Frame\nFragmentation\n[CVE-2026-84304](https://nvd.nist.gov/vuln/detail/CVE-2026-84304) /\n[GHSA-vp52-pcj8-j9qc](https://redirect.github.com/advisories/GHSA-vp52-pcj8-j9qc)\n\n<details>\n<summary>More information</summary>\n\n#### Details\n##### Impact\nAn unauthenticated remote attacker can initiate a gRPC stream and\npurposefully fragment their payload into millions of tiny (e.g., 1-byte)\nHTTP/2 DATA frames. Even if the total payload volume falls within the\nconfigured connection and stream flow-control windows, each independent\nfragment incurs memory overhead due to internal tracking structures and\nqueue allocation.\n\nRepeated fragmentation massively inflates the heap space consumed by the\nstream. An attacker multiplexing multiple concurrent streams can exhaust\nthe memory bounds of the runtime, forcing a runtime panic or OutOfMemory\ncondition and leading to a remote Denial of Service (DoS).\n\n##### Patches\nThe change to fix this issue is merged in `master` and a patch release,\n1.83.1, has been published that contains this fix.\n\n##### Workarounds\nThis vulnerability is mitigated by implementing receive buffer\ncompaction. Consecutive small data buffers are automatically coalesced\ninto larger buffers from a shared pool once the overhead is perceived to\nbe excessive relative to actual payload data, drastically minimizing\nper-frame memory overheads.\n\nThis behavior is enabled by default. A temporary escape hatch is\nprovided via the environment variable\n`GRPC_GO_EXPERIMENTAL_ENABLE_RECEIVE_BUFFER_COMPACTION=false` to disable\nthe feature if unforeseen issues arise, but it will be removed in a\nfuture release.\n\n#### Severity\n- CVSS Score: 8.7 / 10 (High)\n- Vector String:\n`CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:H/SC:N/SI:N/SA:N`\n\n#### References\n-\n[https://github.com/grpc/grpc-go/security/advisories/GHSA-vp52-pcj8-j9qc](https://redirect.github.com/grpc/grpc-go/security/advisories/GHSA-vp52-pcj8-j9qc)\n-\n[https://nvd.nist.gov/vuln/detail/CVE-2026-84304](https://nvd.nist.gov/vuln/detail/CVE-2026-84304)\n-\n[https://github.com/grpc/grpc-go/pull/9331](https://redirect.github.com/grpc/grpc-go/pull/9331)\n-\n[https://github.com/grpc/grpc-go/pull/9333](https://redirect.github.com/grpc/grpc-go/pull/9333)\n-\n[https://github.com/grpc/grpc-go/commit/7354d9c8debb4bcf2225bf429857078de310c176](https://redirect.github.com/grpc/grpc-go/commit/7354d9c8debb4bcf2225bf429857078de310c176)\n-\n[https://github.com/grpc/grpc-go/commit/8cfeca0e1ee5ea0980dcc320e20240fa1079ec77](https://redirect.github.com/grpc/grpc-go/commit/8cfeca0e1ee5ea0980dcc320e20240fa1079ec77)\n-\n[https://github.com/grpc/grpc-go/releases/tag/v1.83.1](https://redirect.github.com/grpc/grpc-go/releases/tag/v1.83.1)\n-\n[https://github.com/advisories/GHSA-vp52-pcj8-j9qc](https://redirect.github.com/advisories/GHSA-vp52-pcj8-j9qc)\n\nThis data is provided by the [GitHub Advisory\nDatabase](https://redirect.github.com/advisories/GHSA-vp52-pcj8-j9qc)\n([CC-BY\n4.0](https://redirect.github.com/github/advisory-database/blob/main/LICENSE.md)).\n</details>\n\n---\n\n### gRPC-Go: Heap Memory Exhaustion (OOM) via HTTP/2 DATA Frame\nFragmentation\n[CVE-2026-84304](https://nvd.nist.gov/vuln/detail/CVE-2026-84304) /\n[GHSA-vp52-pcj8-j9qc](https://redirect.github.com/advisories/GHSA-vp52-pcj8-j9qc)\n\n<details>\n<summary>More information</summary>\n\n#### Details\n##### Impact\nAn unauthenticated remote attacker can initiate a gRPC stream and\npurposefully fragment their payload into millions of tiny (e.g., 1-byte)\nHTTP/2 DATA frames. Even if the total payload volume falls within the\nconfigured connection and stream flow-control windows, each independent\nfragment incurs memory overhead due to internal tracking structures and\nqueue allocation.\n\nRepeated fragmentation massively inflates the heap space consumed by the\nstream. An attacker multiplexing multiple concurrent streams can exhaust\nthe memory bounds of the runtime, forcing a runtime panic or OutOfMemory\ncondition and leading to a remote Denial of Service (DoS).\n\n##### Patches\nThe change to fix this issue is merged in `master` and a patch release,\n1.83.1, has been published that contains this fix.\n\n##### Workarounds\nThis vulnerability is mitigated by implementing receive buffer\ncompaction. Consecutive small data buffers are automatically coalesced\ninto larger buffers from a shared pool once the overhead is perceived to\nbe excessive relative to actual payload data, drastically minimizing\nper-frame memory overheads.\n\nThis behavior is enabled by default. A temporary escape hatch is\nprovided via the environment variable\n`GRPC_GO_EXPERIMENTAL_ENABLE_RECEIVE_BUFFER_COMPACTION=false` to disable\nthe feature if unforeseen issues arise, but it will be removed in a\nfuture release.\n\n#### Severity\n- CVSS Score: 8.7 / 10 (High)\n- Vector String:\n`CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:H/SC:N/SI:N/SA:N`\n\n#### References\n-\n[https://github.com/grpc/grpc-go/security/advisories/GHSA-vp52-pcj8-j9qc](https://redirect.github.com/grpc/grpc-go/security/advisories/GHSA-vp52-pcj8-j9qc)\n-\n[https://nvd.nist.gov/vuln/detail/CVE-2026-84304](https://nvd.nist.gov/vuln/detail/CVE-2026-84304)\n-\n[https://github.com/grpc/grpc-go/pull/9331](https://redirect.github.com/grpc/grpc-go/pull/9331)\n-\n[https://github.com/grpc/grpc-go/pull/9333](https://redirect.github.com/grpc/grpc-go/pull/9333)\n-\n[https://github.com/grpc/grpc-go/commit/7354d9c8debb4bcf2225bf429857078de310c176](https://redirect.github.com/grpc/grpc-go/commit/7354d9c8debb4bcf2225bf429857078de310c176)\n-\n[https://github.com/grpc/grpc-go/commit/8cfeca0e1ee5ea0980dcc320e20240fa1079ec77](https://redirect.github.com/grpc/grpc-go/commit/8cfeca0e1ee5ea0980dcc320e20240fa1079ec77)\n-\n[https://github.com/grpc/grpc-go](https://redirect.github.com/grpc/grpc-go)\n-\n[https://github.com/grpc/grpc-go/releases/tag/v1.83.1](https://redirect.github.com/grpc/grpc-go/releases/tag/v1.83.1)\n\nThis data is provided by\n[OSV](https://osv.dev/vulnerability/GHSA-vp52-pcj8-j9qc) and the [GitHub\nAdvisory Database](https://redirect.github.com/github/advisory-database)\n([CC-BY\n4.0](https://redirect.github.com/github/advisory-database/blob/main/LICENSE.md)).\n</details>\n\n---\n\n### Release Notes\n\n<details>\n<summary>grpc/grpc-go (google.golang.org/grpc)</summary>\n\n###\n[`v1.83.1`](https://redirect.github.com/grpc/grpc-go/releases/tag/v1.83.1):\nRelease 1.83.1\n\n[Compare\nSource](https://redirect.github.com/grpc/grpc-go/compare/v1.83.0...v1.83.1)\n\n### Security\n\n- xds/rbac: Fix a bug where nested `Principal` or `Permission` rules\nwith `:scheme` or `grpc-` prefixed header matchers were not rejected,\nwhich could cause DENY rules to fail open.\n([#&#8203;9258](https://redirect.github.com/grpc/grpc-go/issues/9258))\n  - Special Thanks: [@&#8203;nvxbug](https://redirect.github.com/nvxbug)\n- xds/rbac: Fix a bug where the `host` header matcher was not being\nreplaced with `:authority` in nested `Principal` or `Permission` rules.\n([#&#8203;9258](https://redirect.github.com/grpc/grpc-go/issues/9258))\n  - Special Thanks: [@&#8203;nvxbug](https://redirect.github.com/nvxbug)\n- xds/rbac: Fix a bug where a header matcher whose name was not\nlowercase, such as `X-Role`, matched no header, which could cause DENY\nrules to fail open.\n([#&#8203;9332](https://redirect.github.com/grpc/grpc-go/issues/9332))\n- Special Thanks: [@&#8203;alimony](https://redirect.github.com/alimony)\n- xds/rbac: Fix a bug where a `:scheme` or `grpc-` prefixed header\nmatcher was accepted when its name was not lowercase.\n([#&#8203;9332](https://redirect.github.com/grpc/grpc-go/issues/9332))\n- Special Thanks: [@&#8203;alimony](https://redirect.github.com/alimony)\n- xds/rbac: Fix a bug where a `Host` header matcher was not replaced\nwith `:authority`.\n([#&#8203;9332](https://redirect.github.com/grpc/grpc-go/issues/9332))\n- Special Thanks: [@&#8203;alimony](https://redirect.github.com/alimony)\n\n### Performance\n\n- transport: Restrict memory overhead of buffering small data frames.\n([#&#8203;9331](https://redirect.github.com/grpc/grpc-go/issues/9331))\n\n###\n[`v1.83.0`](https://redirect.github.com/grpc/grpc-go/releases/tag/v1.83.0):\nRelease 1.83.0\n\n[Compare\nSource](https://redirect.github.com/grpc/grpc-go/compare/v1.82.2...v1.83.0)\n\n### Security\n\n- server: Stop reading from connections when flooded by HTTP/2 frames to\nmitigate resource exhaustion. The default value for this limit is 100\nframes, excluding DATA and HEADERS, and may be changed by setting\nenvironment variable\n`GRPC_GO_EXPERIMENTAL_CONTROL_BUFFER_THROTTLE_LIMIT`.\n- xds/rbac: Support `Metadata` and `RequestedServerName` permissions\nmatcher fields. If present in a DENY rule, previously these would be\nignored and fail-open.\n- xds/rbac: Fix panic when parsing unsupported fields in\n`NotRule`/`NotId` permissions.\n- xds/rbac: Support the deprecated `source_ip` principal identifier by\ntreating it as equivalent to `direct_remote_ip`.\n- xds: Fix panic when parsing route header matchers configured with\nempty `exact_match`, `prefix_match`, or `suffix_match` strings.\n([#&#8203;9223](https://redirect.github.com/grpc/grpc-go/issues/9223))\n\n### New Features\n\n- xds/googlec2p: Enable DirectPath over Interconnect support for\non-premises clients via the `force-xds` target URI query parameter.\n([#&#8203;9133](https://redirect.github.com/grpc/grpc-go/issues/9133))\n- xds: Enable xDS configuration to control which fields get propagated\nfrom ORCA backend metric reports to LRS load reports.\n([#&#8203;9145](https://redirect.github.com/grpc/grpc-go/issues/9145))\n- authz: Add `OnPolicyUpdate` callback to `FileWatcherOptions` to notify\nwhen an authz policy is loaded or updated.\n([#&#8203;9142](https://redirect.github.com/grpc/grpc-go/issues/9142))\n- Special Thanks: [@&#8203;hnefatl](https://redirect.github.com/hnefatl)\n- xds: Add support for the GCP Authentication HTTP Filter, which\nautomatically fetches and attaches GCP Service Account Identity JWT\ntokens to outgoing RPCs.\n- This feature can be enabled by setting environment variable\n`GRPC_EXPERIMENTAL_XDS_GCP_AUTHENTICATION_FILTER=true`.\n([#&#8203;9119](https://redirect.github.com/grpc/grpc-go/issues/9119))\n- xds: Add support for xDS-based HTTP CONNECT proxies.\n- This feature can be enabled by setting environment variable\n`GRPC_EXPERIMENTAL_XDS_HTTP_CONNECT=true`.\n([#&#8203;9151](https://redirect.github.com/grpc/grpc-go/issues/9151))\n- xds: Add support for `contains_match` in route header matchers.\n([#&#8203;9223](https://redirect.github.com/grpc/grpc-go/issues/9223))\n\n### Bug Fixes\n\n- credentials/alts: Fix panic when processing malformed frames by\nvalidating that the message frame length exceeds the message type field\nsize.\n([#&#8203;9197](https://redirect.github.com/grpc/grpc-go/issues/9197))\n- grpc: Fix compilation on Plan 9 targets (`GOOS=plan9`), broken since\nv1.81.0.\n([#&#8203;9255](https://redirect.github.com/grpc/grpc-go/issues/9255))\n- Special Thanks:\n[@&#8203;Yusufihsangorgel](https://redirect.github.com/Yusufihsangorgel)\n\n###\n[`v1.82.2`](https://redirect.github.com/grpc/grpc-go/releases/tag/v1.82.2):\nRelease 1.82.2\n\n[Compare\nSource](https://redirect.github.com/grpc/grpc-go/compare/v1.82.1...v1.82.2)\n\n### Security\n\n- server: Reject requests missing both `:authority` and `Host` headers\nwith HTTP 400 and status `Internal`.\n([#&#8203;9365](https://redirect.github.com/grpc/grpc-go/pull/9365))\n- Special Thanks:\n[@&#8203;winklemad](https://redirect.github.com/winklemad)\n\n</details>\n\n---\n\n### Configuration\n\n📅 **Schedule**: (UTC)\n\n- Branch creation\n  - At any time (no schedule defined)\n- Automerge\n  - At any time (no schedule defined)\n\n🚦 **Automerge**: Disabled by config. Please merge this manually once you\nare satisfied.\n\n♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the\nrebase/retry checkbox.\n\n🔕 **Ignore**: Close this PR and you won't be reminded about this update\nagain.\n\n---\n\n- [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check\nthis box\n\n---\n\nThis PR was generated by [Mend Renovate](https://mend.io/renovate/).\nView the [repository job\nlog](https://developer.mend.io/github/open-telemetry/otel-arrow).\n\n<!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0NC40OS4wIiwidXBkYXRlZEluVmVyIjoiNDQuNTcuMyIsInRhcmdldEJyYW5jaCI6Im1haW4iLCJsYWJlbHMiOlsiYXJlYTpzZWN1cml0eSIsImRlcGVuZGVuY2llcyJdfQ==-->\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>",
+          "timestamp": "2026-09-02T16:29:14Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/11b92ef5b8a51aea55be14a84c9232760a6f5095"
+        },
+        "date": 1788370379398,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": 96.92796325683594,
+            "unit": "%",
+            "extra": "Nightly - Filter/OTAP-FILTER-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 40.05614852759596,
+            "unit": "%",
+            "extra": "Nightly - Filter/OTAP-FILTER-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 40.58457935285054,
+            "unit": "%",
+            "extra": "Nightly - Filter/OTAP-FILTER-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 19.534244791666666,
+            "unit": "MiB",
+            "extra": "Nightly - Filter/OTAP-FILTER-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 19.84765625,
+            "unit": "MiB",
+            "extra": "Nightly - Filter/OTAP-FILTER-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 98318.59642031281,
+            "unit": "logs/sec",
+            "extra": "Nightly - Filter/OTAP-FILTER-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 3020.3791981137783,
+            "unit": "logs/sec",
+            "extra": "Nightly - Filter/OTAP-FILTER-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.007366,
+            "unit": "seconds",
+            "extra": "Nightly - Filter/OTAP-FILTER-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 200928.52791025853,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Filter/OTAP-FILTER-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 1167791.074188291,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Filter/OTAP-FILTER-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 66.52427219593423,
+            "unit": "bytes/log",
+            "extra": "Nightly - Filter/OTAP-FILTER-OTLP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 96.875,
+            "unit": "%",
+            "extra": "Nightly - Filter/OTAP-FILTER-OTAP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 43.99617397924202,
+            "unit": "%",
+            "extra": "Nightly - Filter/OTAP-FILTER-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 44.51237507711289,
+            "unit": "%",
+            "extra": "Nightly - Filter/OTAP-FILTER-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 19.84375,
+            "unit": "MiB",
+            "extra": "Nightly - Filter/OTAP-FILTER-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 20.44921875,
+            "unit": "MiB",
+            "extra": "Nightly - Filter/OTAP-FILTER-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 98327.6938927213,
+            "unit": "logs/sec",
+            "extra": "Nightly - Filter/OTAP-FILTER-OTAP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 3072.740434147541,
+            "unit": "logs/sec",
+            "extra": "Nightly - Filter/OTAP-FILTER-OTAP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.001814,
+            "unit": "seconds",
+            "extra": "Nightly - Filter/OTAP-FILTER-OTAP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 630344.756111458,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Filter/OTAP-FILTER-OTAP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 1157501.957992651,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Filter/OTAP-FILTER-OTAP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 205.14090585276924,
+            "unit": "bytes/log",
+            "extra": "Nightly - Filter/OTAP-FILTER-OTAP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 96.875,
+            "unit": "%",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTAP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 65.28439709541529,
+            "unit": "%",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 65.71911179883946,
+            "unit": "%",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 19.244791666666668,
+            "unit": "MiB",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 20.046875,
+            "unit": "MiB",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 98320.23871620698,
+            "unit": "logs/sec",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTAP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 3072.507459881468,
+            "unit": "logs/sec",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTAP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.007991,
+            "unit": "seconds",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTAP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 639980.1418940721,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTAP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 3021786.8020951534,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTAP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 208.29246153197667,
+            "unit": "bytes/log",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTAP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 96.875,
+            "unit": "%",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 64.41369497721594,
+            "unit": "%",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 64.77241208748744,
+            "unit": "%",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 17.838802083333334,
+            "unit": "MiB",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 18.25390625,
+            "unit": "MiB",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 98329.72463243933,
+            "unit": "logs/sec",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 3072.803894763729,
+            "unit": "logs/sec",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002202,
+            "unit": "seconds",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 211300.5377330901,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 3022700.4033905184,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 68.7647324624786,
+            "unit": "bytes/log",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - Egress Bytes Per Log"
           }
         ]
       }
