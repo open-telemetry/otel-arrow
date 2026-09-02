@@ -3977,20 +3977,34 @@ async fn has_active_instances_checks_multiple_state_fields() {
         .unwrap();
 
     // At this point, the instance is launching but NOT yet registered.
-    // The "new guard" (active_engine_operation.is_some()) keeps has_active_instances() true.
+    // The "pending lifecycle work" predicate keeps has_active_instances() true.
     assert!(control_plane.has_active_instances());
 
-    // Allow the launch to finish
-    allow_launch_tx.send(()).unwrap();
-
-    // Give it a moment to complete initialization
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    // We can also trigger a clean shutdown to ensure the test cleans up properly.
+    // Request shutdown concurrently while launch is paused
     control_plane.shutdown_all(1).unwrap();
 
-    // The result might be a timeout Error(504) or Ok(()) depending on timing of test exit,
-    // but the key assertion was that it did not return immediately above.
+    // Verify it does not complete early
+    assert!(control_plane.has_active_instances());
+
+    // Allow the launch to finish, which will now register the instance *after* global_shutdown_requested is true.
+    allow_launch_tx.send(()).unwrap();
+
+    // The newly registered instance should immediately receive the shutdown message and exit.
+    // We poll has_active_instances until it becomes false (or we timeout).
+    let start = Instant::now();
+    let mut completed = false;
+    while start.elapsed() < Duration::from_secs(5) {
+        if !control_plane.has_active_instances() {
+            completed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    assert!(
+        completed,
+        "Shutdown did not eventually complete after registration race"
+    );
 }
 
 /// Scenario: one core in a two-core regular pipeline exits with a runtime error
