@@ -1339,7 +1339,7 @@ mod tests {
             resource_logs: vec![ResourceLogs {
                 scope_logs: vec![ScopeLogs {
                     log_records: vec![
-                        LogRecord::build().finish(), 
+                        LogRecord::build().finish(),
                         LogRecord::build().finish(),
                         LogRecord::build().finish(),
                     ],
@@ -1384,10 +1384,6 @@ mod tests {
                 let out = ctx.drain_pdata().await;
                 let first = out.into_iter().next().expect("one output").payload();
 
-                let otap: OtapArrowRecords = first.clone().try_into_with_default().unwrap();
-                let rb = otap.get(ArrowPayloadType::LogAttrs).unwrap();
-                println!("{:?}{:?}", rb.schema(), rb);
-
                 let otlp_bytes: OtlpProtoBytes =
                     first.try_into_with_default().expect("convert to otlp");
                 let bytes = match otlp_bytes {
@@ -1416,6 +1412,8 @@ mod tests {
             })
             .validate(|_| async move {});
     }
+
+ 
 
     #[test]
     fn test_insert_attrs_with_u32_parent_ids() {
