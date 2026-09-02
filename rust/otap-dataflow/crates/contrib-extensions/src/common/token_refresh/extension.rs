@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Flat File Credentials extension.
+//! Bearer token provider extension built on the shared background refresh machinery.
 use async_trait::async_trait;
 use futures::StreamExt;
 use otel_arrow_dfe_engine::capability::auth::BearerToken;
