@@ -8,7 +8,7 @@
 
 use super::config::{HeaderExtraction, KafkaReceiverConfig};
 use super::error::KafkaReceiverError;
-use super::headers::HeaderExtractions;
+use super::headers::{HeaderExtractions, decode_syslog_logs};
 use super::identity::{DeliveryGeneration, OwnershipGeneration};
 use super::metrics::{KafkaReceiverMetrics, KafkaReceiverRejectionReason};
 use super::offset_tracker::OffsetTracker;
@@ -16,7 +16,7 @@ use super::rebalance::{RebalanceState, RebalancingConsumerContext};
 use super::retry::RetryManager;
 #[cfg(feature = "aws")]
 use crate::common::kafka::security::build_aws_msk_context;
-use crate::common::kafka::{MSG_FORMAT_OTAP, MSG_FORMAT_OTLP, MessageFormat};
+use crate::common::kafka::{MSG_FORMAT_OTAP, MSG_FORMAT_OTLP, MSG_FORMAT_SYSLOG, MessageFormat};
 use async_trait::async_trait;
 use bytes::Bytes;
 use linkme::distributed_slice;
@@ -169,6 +169,7 @@ fn detect_message_format(
     {
         value if value == Some(MSG_FORMAT_OTLP) => MessageFormat::OtlpProto,
         value if value == Some(MSG_FORMAT_OTAP) => MessageFormat::OtapProto,
+        value if value == Some(MSG_FORMAT_SYSLOG) => MessageFormat::Syslog,
         _ => default,
     }
 }
@@ -421,6 +422,7 @@ impl KafkaReceiver {
                     message_format,
                     HeaderExtractions::apply_otlp_traces,
                     HeaderExtractions::apply_otap_traces,
+                    reject_syslog_extractions,
                     decode_traces_payload,
                 )
                 .map_err(KafkaReceiverError::TracesDecode)
@@ -438,6 +440,7 @@ impl KafkaReceiver {
                     message_format,
                     HeaderExtractions::apply_otlp_metrics,
                     HeaderExtractions::apply_otap_metrics,
+                    reject_syslog_extractions,
                     decode_metrics_payload,
                 )
                 .map_err(KafkaReceiverError::MetricsDecode)
@@ -455,6 +458,7 @@ impl KafkaReceiver {
                     message_format,
                     HeaderExtractions::apply_otlp_logs,
                     HeaderExtractions::apply_otap_logs,
+                    HeaderExtractions::apply_syslog_logs,
                     decode_logs_payload,
                 )
                 .map_err(KafkaReceiverError::LogsDecode)
@@ -1646,6 +1650,9 @@ fn decode_traces_payload(
                 .into(),
             ))
         }
+        MessageFormat::Syslog => Err(EngineError::PdataConversionError {
+            error: "syslog encoding is only supported for logs".to_string(),
+        }),
     }
 }
 
@@ -1676,6 +1683,9 @@ fn decode_metrics_payload(
                 .into(),
             ))
         }
+        MessageFormat::Syslog => Err(EngineError::PdataConversionError {
+            error: "syslog encoding is only supported for logs".to_string(),
+        }),
     }
 }
 
@@ -1706,7 +1716,21 @@ fn decode_logs_payload(
                 .into(),
             ))
         }
+        MessageFormat::Syslog => Ok(OtapPdata::new(
+            Context::default(),
+            decode_syslog_logs(data)?.into(),
+        )),
     }
+}
+
+/// Reject Syslog extraction for traces and metrics.
+fn reject_syslog_extractions(
+    _extractions: &HeaderExtractions,
+    _data: &[u8],
+) -> Result<OtapPdata, EngineError> {
+    Err(EngineError::PdataConversionError {
+        error: "syslog encoding is only supported for logs".to_string(),
+    })
 }
 
 /// Decode a Kafka payload with optional header extraction applied to resource
@@ -1724,17 +1748,20 @@ fn decode_with_extractions(
     message_format: MessageFormat,
     apply_otlp: fn(&HeaderExtractions, &[u8]) -> Result<OtapPdata, EngineError>,
     apply_otap: fn(&HeaderExtractions, &[u8]) -> Result<OtapPdata, EngineError>,
+    apply_syslog: fn(&HeaderExtractions, &[u8]) -> Result<OtapPdata, EngineError>,
     decode: fn(&[u8], MessageFormat) -> Result<OtapPdata, EngineError>,
 ) -> Result<OtapPdata, EngineError> {
     if !extractors.is_empty() {
         let extractions = match message_format {
             MessageFormat::OtlpProto => HeaderExtractions::otlp(kafka_message, extractors),
             MessageFormat::OtapProto => HeaderExtractions::otap(kafka_message, extractors),
+            MessageFormat::Syslog => HeaderExtractions::otap(kafka_message, extractors),
         };
         if extractions.has_any() {
             return match message_format {
                 MessageFormat::OtlpProto => apply_otlp(&extractions, data),
                 MessageFormat::OtapProto => apply_otap(&extractions, data),
+                MessageFormat::Syslog => apply_syslog(&extractions, data),
             };
         }
     }
@@ -6184,6 +6211,70 @@ mod tests {
         );
     }
 
+    /// Scenario (routing and payload correctness): one RFC 5424 message is received in a
+    /// Kafka record configured for Syslog.
+    /// Guarantees: the shared Syslog parser produces exactly one OpenTelemetry log record.
+    #[test]
+    fn decode_logs_payload_syslog_rfc5424() {
+        let input = b"<34>1 2003-10-11T22:14:15.003Z host app - ID47 - Test message";
+        let mut pdata = decode_logs_payload(input, MessageFormat::Syslog).expect("decode Syslog");
+        let proto: OtlpProtoBytes = pdata
+            .take_payload()
+            .try_into_with_default()
+            .expect("convert Syslog Arrow logs to OTLP");
+        let request = ExportLogsServiceRequest::decode(proto.as_bytes()).expect("decode OTLP logs");
+
+        assert_eq!(request.resource_logs.len(), 1);
+        assert_eq!(request.resource_logs[0].scope_logs.len(), 1);
+        assert_eq!(request.resource_logs[0].scope_logs[0].log_records.len(), 1);
+    }
+
+    /// Scenario (routing and payload correctness): an RFC 3164 message contains a CEF body.
+    /// Guarantees: Kafka Syslog decoding reuses the existing CEF mapping and emits CEF
+    /// attributes on the OpenTelemetry log record.
+    #[test]
+    fn decode_logs_payload_syslog_with_embedded_cef() {
+        let input = b"<34>Oct 11 22:14:15 firewall CEF:0|Vendor|Product|2.0|signature-123|Intrusion detected|7|act=blocked";
+        let mut pdata =
+            decode_logs_payload(input, MessageFormat::Syslog).expect("decode Syslog CEF");
+        let proto: OtlpProtoBytes = pdata
+            .take_payload()
+            .try_into_with_default()
+            .expect("convert Syslog Arrow logs to OTLP");
+        let request = ExportLogsServiceRequest::decode(proto.as_bytes()).expect("decode OTLP logs");
+        let attributes = &request.resource_logs[0].scope_logs[0].log_records[0].attributes;
+
+        assert!(attributes.iter().any(|attribute| {
+            attribute.key == "cef.device_vendor"
+                && attribute
+                    .value
+                    .as_ref()
+                    .and_then(|value| value.value.as_ref())
+                    .is_some_and(|value| {
+                        matches!(value, any_value::Value::StringValue(value) if value == "Vendor")
+                    })
+        }));
+    }
+
+    /// Scenario (routing and payload correctness): an empty Kafka record is decoded as
+    /// Syslog.
+    /// Guarantees: malformed Syslog returns a recoverable per-message error instead of
+    /// panicking or stalling the consumer loop.
+    #[test]
+    fn decode_logs_payload_empty_syslog_returns_error() {
+        let result = decode_logs_payload(b"", MessageFormat::Syslog);
+        assert!(result.is_err());
+    }
+
+    /// Scenario (routing and payload correctness): a traces or metrics message-format
+    /// header requests Syslog.
+    /// Guarantees: runtime header overrides cannot route Syslog bytes into non-log signals.
+    #[test]
+    fn decode_non_logs_payload_syslog_returns_error() {
+        assert!(decode_traces_payload(b"message", MessageFormat::Syslog).is_err());
+        assert!(decode_metrics_payload(b"message", MessageFormat::Syslog).is_err());
+    }
+
     /// Scenario (routing and payload correctness): undecodable bytes are passed to the OTAP
     /// traces decoder.
     /// Guarantees: decode returns an error rather than panicking, so a malformed OTAP
@@ -6788,6 +6879,91 @@ mod tests {
                         }
                     }
                 }
+
+                receiver.shutdown(Duration::from_secs(5));
+                receiver.await_stopped().await;
+            },
+        )
+        .await;
+    }
+
+    /// Scenario (routing and payload correctness): a raw Syslog Kafka record carries an
+    /// `x-tenant-id` header configured for resource-attribute extraction.
+    /// Guarantees: Syslog uses the shared extraction orchestration and emits the header
+    /// value as the `tenant.id` resource attribute on the decoded log.
+    #[tokio::test]
+    async fn test_kafka_receiver_logs_header_extraction_syslog() {
+        const TOPIC: &str = "test-logs-headers-syslog";
+        with_cluster(
+            KafkaTestCluster::builder().topic(TOPIC),
+            |cluster| async move {
+                let producer = cluster.producer().build();
+                let tenant_value = "acme-corp";
+                let syslog = b"<34>1 2003-10-11T22:14:15.003Z host app - ID47 - Test message";
+
+                producer
+                    .send_full(
+                        SendRecord::new(TOPIC, syslog)
+                            .header("x-tenant-id", tenant_value.as_bytes())
+                            .header("MessageFormat", MSG_FORMAT_SYSLOG),
+                    )
+                    .await
+                    .expect("send Syslog message");
+
+                let mut resource_attrs_from_headers = HashMap::new();
+                let _ = resource_attrs_from_headers.insert(
+                    "x-tenant-id".to_string(),
+                    HeaderExtraction {
+                        key: "tenant.id".to_string(),
+                        value_type: AttributeValueType::String,
+                    },
+                );
+
+                let cfg = KafkaReceiverConfig::try_from(
+                    KafkaReceiverConfigBuilder::new(
+                        cluster.bootstrap_servers(),
+                        "test-group",
+                        "test-client",
+                    )
+                    .with_logs(
+                        SignalConfig::new(vec![TOPIC.to_string()])
+                            .with_encoding(MessageFormat::Syslog),
+                    )
+                    .with_commit(CommitConfig {
+                        mode: ConfigCommitMode::Auto,
+                        interval_ms: Some(1000),
+                    })
+                    .with_auto_offset_reset(AutoOffsetReset::Earliest)
+                    .with_isolation_level(IsolationLevel::ReadUncommitted)
+                    .with_resource_attrs_from_headers(resource_attrs_from_headers),
+                )
+                .expect("test config valid");
+                let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+
+                let mut pdata = receiver.recv_pdata().await;
+                let otlp: OtlpProtoBytes = pdata
+                    .take_payload()
+                    .try_into_with_default()
+                    .expect("convert Syslog Arrow logs to OTLP");
+                let result =
+                    ExportLogsServiceRequest::decode(otlp.as_bytes()).expect("decode OTLP logs");
+                let resource = result.resource_logs[0]
+                    .resource
+                    .as_ref()
+                    .expect("log should have a resource");
+                let tenant_attr = resource
+                    .attributes
+                    .iter()
+                    .find(|attribute| attribute.key == "tenant.id")
+                    .expect("resource should contain tenant.id");
+
+                assert!(matches!(
+                    tenant_attr
+                        .value
+                        .as_ref()
+                        .and_then(|value| value.value.as_ref()),
+                    Some(any_value::Value::StringValue(value)) if value == tenant_value
+                ));
 
                 receiver.shutdown(Duration::from_secs(5));
                 receiver.await_stopped().await;

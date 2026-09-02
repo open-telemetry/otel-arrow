@@ -1,0 +1,5 @@
+change_type: enhancement
+component: pipeline
+note: "Add Syslog decoding for Kafka log topics, including RFC 3164, RFC 5424, and embedded CEF messages."
+issues: [3837]
+subtext: "Set a logs signal encoding to `syslog`, or use a `MessageFormat: syslog` Kafka header. Each Kafka record must contain one complete Syslog message."
