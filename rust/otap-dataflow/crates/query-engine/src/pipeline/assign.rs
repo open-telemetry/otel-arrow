@@ -8434,6 +8434,21 @@ mod test {
             result,
             AnyValue::new_string("1970-01-01T00:00:00.000000005"),
         );
+
+        // test cast from result of function call
+        let query = r#"logs | set attributes["result"] = now() as Integer"#;
+        let result = exec_logs_pipeline::<OplParser>(query, logs_data.clone()).await;
+        let log_record = &result.resource_logs[0].scope_logs[0].log_records[0];
+        let result = log_record
+            .attributes
+            .iter()
+            .find(|kv| kv.key == "result")
+            .map(|kv| kv.value.clone().unwrap().value.unwrap())
+            .unwrap();
+        let any_value::Value::IntValue(value) = result else {
+            panic!("invalid anyvalue {result:?} expected int variant")
+        };
+        assert!(value > 0);
     }
 
     /// Scenario: cast various types of primitives to other primitives
