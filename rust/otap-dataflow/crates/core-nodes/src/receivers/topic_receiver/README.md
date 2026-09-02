@@ -75,21 +75,14 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 #### `receiver.topic`
 
-| Metric | Unit | Description |
-| --- | --- | --- |
-| `receiver.topic.forwarded_messages` | `{item}` | Number of messages forwarded to downstream. |
-| `receiver.topic.forward_failures` | `{item}` | Number of forward failures to downstream channel. |
-| `receiver.topic.lagged_notifications` | `{event}` | Number of lag notifications emitted by broadcast subscriptions. |
-| `receiver.topic.lagged_messages` | `{item}` | Total messages missed across lag notifications. |
-| `receiver.topic.lag_disconnects` | `{event}` | Number of broadcast subscriptions disconnected because of lag. |
-| `receiver.topic.downstream_backpressure_events` | `{event}` | Number of downstream backpressure events (>= 500ms blocked). |
-| `receiver.topic.downstream_blocked_ms` | `ms` | Total milliseconds blocked while forwarding to downstream. |
-| `receiver.topic.bridged_downstream_acks` | `{item}` | Number of downstream ACK controls successfully bridged to topic ack. |
-| `receiver.topic.bridged_downstream_nacks` | `{item}` | Number of downstream NACK controls successfully bridged to topic nack. |
-| `receiver.topic.bridge_controls_ignored_propagation_disabled` | `{event}` | Number of downstream ACK/NACK controls ignored because topic Ack/Nack propagation is disabled for this receiver. |
-| `receiver.topic.bridge_missing_calldata` | `{event}` | Number of downstream ACK/NACK controls missing the bridged topic message id in calldata. |
-| `receiver.topic.bridge_invalid_or_untracked_id` | `{event}` | Number of downstream ACK/NACK controls carrying an id that is not currently tracked by the topic runtime. With the current raw `message_id` bridge this also includes invalid or forged ids; those causes are not distinguishable yet. |
-| `receiver.topic.bridge_runtime_failures` | `{event}` | Number of downstream ACK/NACK controls that failed to bridge for some runtime reason other than an unknown message id. |
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `receiver.topic.forward` | `{message}` | `outcome` | Number of messages forwarded dimensionalized by `outcome` (`Success`, `Failed`). |
+| `receiver.topic.lag` | `{event}` | `event_type` | Number of lag events emitted by broadcast subscriptions, dimensionalized by `event_type` (`Notification`, `Disconnect`). |
+| `receiver.topic.bridge` | `{control}` | `outcome` | Number of downstream ACK/NACK bridge controls, dimensionalized by `outcome` (`Ack`, `Nack`, `IgnoredPropagationDisabled`, `MissingCalldata`, `InvalidOrUntrackedId`, `RuntimeFailure`). |
+| `receiver.topic.other.lagged_messages` | `{message}` | | Total messages missed across lag notifications. |
+| `receiver.topic.other.downstream_backpressure_events` | `{event}` | | Number of downstream backpressure events (>= 500ms blocked). |
+| `receiver.topic.other.downstream_blocked_ms` | `ms` | | Total milliseconds blocked while forwarding to downstream. |
 
 ### Events
 
