@@ -131,9 +131,33 @@ jobs:
         if: matrix.os != 'ubuntu-24.04-arm'
         run: cargo nextest archive --locked --workspace --archive-file nextest-archive.tar.zst
         working-directory: ./rust/${{ matrix.folder }}
-      - name: Build and archive tests (Incomplete)
+      - name: Build reduced-feature ARM test archive
         if: matrix.os == 'ubuntu-24.04-arm'
+        shell: bash
+        env:
+          # This job repeatedly died with exit 143 while compiling
+          # `otel-arrow-dfe`. Instrumented runs showed severe memory pressure:
+          # MemAvailable fell from 5.3 to 2.2 GB and swap reached 99% usage,
+          # while disk remained around 30%. Disabling debuginfo reduced swap
+          # use to about 9 MB and disk use by about 11 GB, and the build
+          # completed at the default job concurrency.
+          # `nextest archive` builds under the test profile, so TEST_DEBUG is
+          # the lever; DEV_DEBUG is defensive cover for any dev-profile step.
+          CARGO_PROFILE_TEST_DEBUG: "0"
+          CARGO_PROFILE_DEV_DEBUG: "0"
         run: |
+          # Record live resource usage; remove once stability is established.
+          (
+            while true; do
+              echo "[resources] $(date -u +%T)"
+              awk '/^(MemTotal|MemAvailable|SwapTotal|SwapFree):/' /proc/meminfo
+              df -m / "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/rust/${{ matrix.folder }}"
+              sleep 15
+            done
+          ) &
+          sampler_pid=$!
+          trap 'kill "$sampler_pid" 2>/dev/null || true' EXIT
+
           cargo nextest archive \
             --locked \
             --no-default-features \
