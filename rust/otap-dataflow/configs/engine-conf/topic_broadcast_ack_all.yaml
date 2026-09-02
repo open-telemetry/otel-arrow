@@ -1,0 +1,288 @@
+version: otel_dataflow/v1
+
+# Contrast two strict broadcast delivery boundaries. Both topics use:
+#
+#   broadcast.ack_mode: all
+#   broadcast.on_lag: disconnect
+#   ack_propagation.mode: auto
+#
+# Scenario 1 - retry branches:
+#
+#   topic receiver -> retry -> exporter
+#
+# The topic waits for terminal exporter outcomes. The failing branch retries
+# for two seconds, then Nacks, so every aggregate topic outcome is Nack.
+#
+# Scenario 2 - durable branches:
+#
+#   topic receiver -> durable buffer -> exporter
+#
+# The topic waits for durable persistence. The failing exporter keeps retrying
+# from branch-local storage, but every aggregate topic outcome is Ack because
+# both branches persisted the data.
+#
+# This sample does not intentionally trigger subscriber lag. `disconnect` is
+# the required safety policy for `ack_mode: all`; see
+# topic_broadcast_disconnect.yaml for a sample that exercises it.
+#
+# For a fresh run, remove the sample buffer directory:
+#   rm -rf /tmp/otel-arrow-topic-broadcast-ack-all
+#
+# Run on one core:
+#   cargo run --bin df_engine -- \
+#     --num-cores 1 \
+#     --config configs/engine-conf/topic_broadcast_ack_all.yaml
+#
+# Inspect topic outcomes:
+#   curl -s 'http://127.0.0.1:8085/api/v1/telemetry/metrics?format=json' \
+#     | jq '[.metric_sets[]
+#       | select(.name == "exporter.topic")
+#       | {
+#           pipeline: .attributes["pipeline.id"].String,
+#           metrics: [.metrics[]
+#             | select(.name == "published.messages"
+#                 or .name == "end.to.end.acks"
+#                 or .name == "end.to.end.nacks"
+#                 or .name == "tracked.in.flight")
+#             | {name, value}]
+#         }] | sort_by(.pipeline)'
+#
+# Inspect exporter attempts:
+#   curl -s 'http://127.0.0.1:8085/api/v1/telemetry/metrics?format=json' \
+#     | jq '[.metric_sets[]
+#       | select(.name == "channel.receiver"
+#           and .attributes["channel.kind"].String == "pdata"
+#           and (.attributes["node.id"].String == "sink"
+#             or .attributes["node.id"].String == "failing_exporter"))
+#       | {
+#           pipeline: .attributes["pipeline.id"].String,
+#           exporter: .attributes["node.id"].String,
+#           attempts: (.metrics[]
+#             | select(.name == "recv.count")
+#             | .value)
+#         }] | sort_by(.pipeline)'
+#
+# Expected after both producers emit 100 messages:
+#
+# - retry_producer: 100 published, 0 Ack, 100 Nack
+# - durable_producer: 100 published, 100 Ack, 0 Nack
+# - both healthy exporters consume 100 messages
+# - the observed run had retry_failing consume 600 attempts
+# - durable_failing keeps consuming retry attempts after the topic has Acked
+
+policies:
+  channel_capacity:
+    control:
+      node: 64
+      pipeline: 64
+    pdata: 100
+  health: {}
+  telemetry:
+    pipeline_metrics: true
+    tokio_metrics: true
+    runtime_metrics: basic
+  resources:
+    core_allocation:
+      type: all_cores
+
+engine:
+  http_admin:
+    bind_address: 127.0.0.1:8085
+  telemetry:
+    logs:
+      level: info
+  observability:
+    pipeline:
+      nodes:
+        internal_telemetry_receiver:
+          type: receiver:internal_telemetry
+          config: {}
+        internal_telemetry_sink:
+          type: exporter:noop
+          config: null
+      connections:
+        - from: internal_telemetry_receiver
+          to: internal_telemetry_sink
+
+groups:
+  strict_broadcast:
+    policies:
+      resources:
+        core_allocation:
+          type: core_count
+          count: 1
+
+    topics:
+      retry_completion:
+        description: "Ack after every exporter branch reaches a terminal result"
+        policies:
+          broadcast:
+            queue_capacity: 100
+            on_lag: disconnect
+            ack_mode: all
+          ack_propagation:
+            mode: auto
+            max_in_flight: 128
+            timeout: 10s
+
+      durable_acceptance:
+        description: "Ack after every branch durably persists the message"
+        policies:
+          broadcast:
+            queue_capacity: 100
+            on_lag: disconnect
+            ack_mode: all
+          ack_propagation:
+            mode: auto
+            max_in_flight: 128
+            timeout: 10s
+
+    pipelines:
+      retry_producer:
+        nodes:
+          traffic_gen:
+            type: receiver:traffic_generator
+            config:
+              enable_ack_nack: true
+              data_source: synthetic
+              generation_strategy: pre_generated
+              traffic_config:
+                signals_per_second: 100
+                max_batch_size: 1
+                max_signal_count: 100
+                metric_weight: 0
+                trace_weight: 0
+                log_weight: 1
+          topic_exporter:
+            type: exporter:topic
+            config:
+              topic: retry_completion
+        connections:
+          - from: traffic_gen
+            to: topic_exporter
+
+      retry_healthy:
+        nodes:
+          topic_receiver:
+            type: receiver:topic
+            config:
+              topic: retry_completion
+              subscription:
+                mode: broadcast
+          retry:
+            type: processor:retry
+            config:
+              initial_interval: 100ms
+              max_interval: 500ms
+              max_elapsed_time: 2s
+              multiplier: 2
+          sink:
+            type: exporter:noop
+            config: null
+        connections:
+          - from: topic_receiver
+            to: retry
+          - from: retry
+            to: sink
+
+      retry_failing:
+        nodes:
+          topic_receiver:
+            type: receiver:topic
+            config:
+              topic: retry_completion
+              subscription:
+                mode: broadcast
+          retry:
+            type: processor:retry
+            config:
+              initial_interval: 100ms
+              max_interval: 500ms
+              max_elapsed_time: 2s
+              multiplier: 2
+          failing_exporter:
+            type: exporter:error
+            config:
+              message: "simulated retry-branch failure"
+        connections:
+          - from: topic_receiver
+            to: retry
+          - from: retry
+            to: failing_exporter
+
+      durable_producer:
+        nodes:
+          traffic_gen:
+            type: receiver:traffic_generator
+            config:
+              enable_ack_nack: true
+              data_source: synthetic
+              generation_strategy: pre_generated
+              traffic_config:
+                signals_per_second: 100
+                max_batch_size: 1
+                max_signal_count: 100
+                metric_weight: 0
+                trace_weight: 0
+                log_weight: 1
+          topic_exporter:
+            type: exporter:topic
+            config:
+              topic: durable_acceptance
+        connections:
+          - from: traffic_gen
+            to: topic_exporter
+
+      durable_healthy:
+        nodes:
+          topic_receiver:
+            type: receiver:topic
+            config:
+              topic: durable_acceptance
+              subscription:
+                mode: broadcast
+          durable_buffer:
+            type: processor:durable_buffer
+            config:
+              path: /tmp/otel-arrow-topic-broadcast-ack-all/healthy
+              poll_interval: 10ms
+              retention_size_cap: "300MB"
+              size_cap_policy: backpressure
+              max_segment_open_duration: 100ms
+          sink:
+            type: exporter:noop
+            config: null
+        connections:
+          - from: topic_receiver
+            to: durable_buffer
+          - from: durable_buffer
+            to: sink
+
+      durable_failing:
+        nodes:
+          topic_receiver:
+            type: receiver:topic
+            config:
+              topic: durable_acceptance
+              subscription:
+                mode: broadcast
+          durable_buffer:
+            type: processor:durable_buffer
+            config:
+              path: /tmp/otel-arrow-topic-broadcast-ack-all/failing
+              poll_interval: 10ms
+              retention_size_cap: "300MB"
+              size_cap_policy: backpressure
+              max_segment_open_duration: 100ms
+              initial_retry_interval: 100ms
+              max_retry_interval: 500ms
+              retry_multiplier: 2
+          failing_exporter:
+            type: exporter:error
+            config:
+              message: "simulated durable-branch failure"
+        connections:
+          - from: topic_receiver
+            to: durable_buffer
+          - from: durable_buffer
+            to: failing_exporter

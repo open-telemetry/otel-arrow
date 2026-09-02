@@ -524,12 +524,12 @@ impl PipelineContext {
         } else if let Some(entity_key) = node_entity_key() {
             for_entity(handle, entity_key)
         } else {
-            #[cfg(feature = "test-utils")]
+            #[cfg(any(test, feature = "test-utils"))]
             {
                 with_scope(self, handle)
             }
 
-            #[cfg(not(feature = "test-utils"))]
+            #[cfg(not(any(test, feature = "test-utils")))]
             {
                 let _ = with_scope;
                 panic!(
