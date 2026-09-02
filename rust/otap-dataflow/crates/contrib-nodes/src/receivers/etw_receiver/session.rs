@@ -1124,7 +1124,7 @@ fn spawn_etw_session(
                 return Err(Error::ConfigError(Box::new(
                     otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                         error: format!(
-                            "provider[{i}]: 'event_ids' is only supported for providers resolved from the registered ETW provider database; this provider resolved by name-hash and cannot be filtered by EventDescriptor.Id"
+                            "provider[{i}]: 'event_ids' is not supported for providers resolved by name-hash; EventDescriptor.Id filtering requires stable event IDs"
                         ),
                     },
                 )));
@@ -1815,7 +1815,7 @@ mod tests {
         let err = spawn_etw_session(&config, vec![tx], telemetry).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("'event_ids' is only supported for providers resolved from the registered ETW provider database"),
+            msg.contains("'event_ids' is not supported for providers resolved by name-hash"),
             "expected hash-resolution event_ids rejection, got: {msg}"
         );
     }

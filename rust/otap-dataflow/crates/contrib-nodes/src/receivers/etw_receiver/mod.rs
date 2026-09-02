@@ -41,10 +41,11 @@
 //! registered provider, or `kind: tracelogging` to derive the GUID from the
 //! name without any OS lookup.
 //!
-//! Manifest providers additionally support `event_ids`, an allow-list of up
-//! to 64 unique event IDs filtered server-side by the ETW runtime. This is
-//! rejected for providers that resolve by name-hash (`kind: tracelogging`,
-//! and automatic fallback when no registered provider is found), since those
+//! Providers resolved from the registered ETW provider database (manifest or
+//! classic MOF) additionally support `event_ids`, an allow-list of up to 64
+//! unique event IDs filtered server-side by the ETW runtime. This is rejected
+//! for providers that resolve by name-hash (`kind: tracelogging`, and
+//! automatic fallback when no registered provider is found), since those
 //! events cannot be selected by `EventDescriptor.Id`.
 //!
 //! ```yaml
@@ -337,7 +338,7 @@ impl Config {
                 if provider.kind == Some(ProviderKind::Tracelogging) {
                     return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                         error: format!(
-                            "provider[{i}]: 'event_ids' is not supported for 'kind: tracelogging' - event IDs are uniquely identified only for providers resolved from the registered ETW provider database"
+                            "provider[{i}]: 'event_ids' is not supported for 'kind: tracelogging' - TraceLogging/EventSource events report EventDescriptor.Id = 0, so ID filtering cannot select individual events"
                         ),
                     });
                 }
