@@ -1,7 +1,8 @@
 # Compares per-signal node and flow input/output metrics.
 #
 # Three pipelines in the same engine:
-#   - `full`: detailed node metrics and a one-processor flow around `sampler`.
+#   - `full`: detailed node metrics, a one-processor flow around `sampler`,
+#     and a pass-through filter that emits processor compute duration.
 #   - `partial`: only `sampler` opts into node item and size measurements.
 #   - `no_output`: a filter opts into component duration and drops every log
 #     batch without sending.
@@ -48,6 +49,8 @@
 #     (sampling only targets logs). This shows the per-signal accounting
 #     isolating the affected signal.
 #   - noop `node.input.*` reflects the surviving per-signal volume.
+#   - `duration_probe` emits `processor.compute.duration` because detailed
+#     runtime metrics enable component duration globally.
 #   - In `no_output`, the receiver, filter input, flow input, flow compute, and
 #     flow dropped metrics are present. Filter `node.output.*`,
 #     `flow.output.*`, and noop `node.input.*` are absent because no PData
@@ -161,6 +164,10 @@ groups:
                   emit: 1
                   out_of: 3
 
+          duration_probe:
+            type: processor:filter
+            config: {}
+
           noop:
             type: exporter:noop
             config:
@@ -169,6 +176,8 @@ groups:
           - from: receiver
             to: sampler
           - from: sampler
+            to: duration_probe
+          - from: duration_probe
             to: noop
 
       # Same topology, but only the sampler opts into items and size. The

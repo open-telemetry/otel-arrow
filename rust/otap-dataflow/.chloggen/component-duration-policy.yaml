@@ -1,6 +1,6 @@
-change_type: enhancement
+change_type: breaking
 component: pipeline
-note: "Make receiver and exporter duration metrics opt-in and separate receiver processing duration from terminal received outcomes."
+note: "Make component duration opt-in and replace processor compute duration instruments with an outcome-dimensioned seconds histogram."
 issues: [3822]
 subtext: |
-  Enable component duration for all nodes with `runtime_metrics: detailed`, or for selected nodes with `policies.telemetry.duration: true`.
+  Migration: Query `processor.compute.duration` by `outcome` and interpret values as seconds. Enable duration with `runtime_metrics: detailed` or per-node `duration: true`.

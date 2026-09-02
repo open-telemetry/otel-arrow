@@ -146,13 +146,13 @@ mod tests {
         let _ = cd.timed(active, || Ok::<_, &str>(std::hint::black_box(43)));
         let _ = cd.timed(active, || Err::<i32, _>("fail"));
 
-        let success_snap = cd.acc_success.borrow().get();
-        assert_eq!(success_snap.count, 2);
-        assert!(success_snap.min >= 0.0);
+        let (success_count, _, success_min, _) = cd.acc_success.borrow().get().summary();
+        assert_eq!(success_count, 2);
+        assert!(success_min >= 0.0);
 
-        let failed_snap = cd.acc_failed.borrow().get();
-        assert_eq!(failed_snap.count, 1);
-        assert!(failed_snap.min >= 0.0);
+        let (failed_count, _, failed_min, _) = cd.acc_failed.borrow().get().summary();
+        assert_eq!(failed_count, 1);
+        assert!(failed_min >= 0.0);
     }
 
     /// Scenario: processor compute timing runs without the component-duration interest.
@@ -165,8 +165,8 @@ mod tests {
         let _ = cd.timed(Interests::empty(), || Ok::<_, &str>(1));
         let _ = cd.timed(Interests::empty(), || Err::<i32, _>("fail"));
 
-        assert_eq!(cd.acc_success.borrow().get().count, 0);
-        assert_eq!(cd.acc_failed.borrow().get().count, 0);
+        assert_eq!(cd.acc_success.borrow().get().count(), 0);
+        assert_eq!(cd.acc_failed.borrow().get().count(), 0);
     }
 
     /// Scenario: successful and failed processor compute observations are reported.
