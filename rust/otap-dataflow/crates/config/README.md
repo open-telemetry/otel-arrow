@@ -216,7 +216,8 @@ topics:
         on_full: drop_newest
       broadcast:
         queue_capacity: 4096
-        on_lag: drop_oldest
+        on_lag: disconnect
+        ack_mode: all
       ack_propagation:
         mode: auto
         max_in_flight: 1024
@@ -241,6 +242,10 @@ declaration with explicit errors.
 - `policies.broadcast.on_lag`:
   - `drop_oldest` (default)
   - `disconnect`
+- `policies.broadcast.ack_mode`:
+  - `first` (default)
+  - `all` (broadcast-only and requires `on_lag: disconnect` and
+    `ack_propagation.mode: auto`)
 - `policies.ack_propagation.mode`:
   - `disabled` (default)
   - `auto`
@@ -254,13 +259,51 @@ declaration with explicit errors.
 `policies.ack_propagation.timeout` apply to tracked publish outcomes when
 Ack/Nack propagation is enabled.
 
-Current limitation: in broadcast mode, `ack_propagation.mode: auto` does not
-aggregate acknowledgements across all subscribers. The first broadcast
-subscriber Ack/Nack resolves the upstream message, so upstream completion does
-not mean all broadcast subscribers processed the message. This matters
-especially with `broadcast.on_lag: drop_oldest`, where one subscriber may miss
-a message that another subscriber still Acks upstream. Future enhancements are
-tracked in [GH-2252](https://github.com/open-telemetry/otel-arrow/issues/2252).
+With `ack_propagation.mode: auto`, `broadcast.ack_mode: all` waits for every
+broadcast subscriber eligible at publish time. Any required Nack, or a required
+subscriber disappearing before Acking, resolves upstream as Nack. Subscribers
+added after publish are not required. An empty subscriber snapshot resolves
+immediately as Nack, so a producer cannot report successful delivery before any
+topic receiver subscribes during startup or live reconfiguration. Recovery
+still requires the upstream source to retry or durably buffer Nacked messages.
+
+Startup rejects `all` with disabled Ack propagation, `drop_oldest`,
+balanced-only topics, and mixed topics.
+
+`all + drop_oldest` has ambiguous recovery semantics. Advancing a lagging
+subscriber skips required deliveries before they reach that branch's retry or
+durable buffer. Replaying upstream would publish to every branch again and can
+duplicate destinations that already succeeded, so the combination is rejected
+rather than presenting that Nack as safely recoverable.
+
+Choose the branch component based on what upstream Ack should mean:
+
+```text
+export completion:  receiver -> retry          -> exporter
+durable acceptance: receiver -> durable buffer -> exporter
+```
+
+With retry processors, aggregate Ack means every exporter branch eventually
+succeeded; terminal failure in any branch Nacks upstream. With durable buffers,
+aggregate Ack means every branch persisted the message; exporters then retry
+independently from branch-local storage. Set `ack_propagation.timeout` longer
+than the retry budget or expected durable write latency, respectively.
+
+`ack_mode: all` is not transactional. If exporter A succeeds and exporter B
+ultimately fails, A's export is not rolled back; the tracked publish resolves
+according to whether every branch durably accepted the message. Export
+completion remains the responsibility of each durable buffer.
+
+See
+[`topic_broadcast_ack_all.yaml`](../../configs/engine-conf/topic_broadcast_ack_all.yaml)
+for runnable `all + disconnect` scenarios contrasting retry-based export
+completion with durable branch acceptance.
+
+See
+[`topic_broadcast_ack_modes.yaml`](../../configs/engine-conf/topic_broadcast_ack_modes.yaml)
+for the same fast-Ack and delayed-Nack branches under `first` and `all`, and
+[`topic_broadcast_disconnect.yaml`](../../configs/engine-conf/topic_broadcast_disconnect.yaml)
+for a lagging subscriber terminated by the required `disconnect` policy.
 
 Topic declaration precedence (for a pipeline in a given group):
 
@@ -275,6 +318,8 @@ Topic declaration precedence (for a pipeline in a given group):
 - queue capacities remain topic-scope only
 - broadcast lag handling remains topic-scope only via
   `policies.broadcast.on_lag`
+- broadcast Ack aggregation remains topic-scope only via
+  `policies.broadcast.ack_mode`
 - Ack/Nack tracking limits remain topic-scope only via
   `policies.ack_propagation`
 

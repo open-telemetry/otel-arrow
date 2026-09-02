@@ -2448,6 +2448,8 @@ fn try_upsert_array_in_columns(
 
 #[cfg(test)]
 mod test {
+    use std::time::Duration;
+
     use arrow::{
         array::{Array, StringArray, StructArray, UInt8Array, UInt16Array},
         compute::{
@@ -8340,5 +8342,54 @@ mod test {
     #[tokio::test]
     async fn test_extend_attrs_sparse_multi_scope_kql_parser() {
         test_extend_attrs_sparse_multi_scope::<KqlParser>().await
+    }
+
+    /// Scenario: call the `now()` UDF and assign the value to a timestamp column. Doing this for
+    /// multiple batches with a slight delay.
+    /// Guarantees: the current time is assigned, and we don't inadvertently fold the current time
+    /// to an inlined static during planning.
+    #[tokio::test]
+    async fn test_set_timestamps_to_current_time() {
+        let log_records = vec![LogRecord::build().finish()];
+        assert_eq!(log_records[0].time_unix_nano, 0);
+
+        let pipeline_expr = OplParser::parse_with_options(
+            "logs | set time_unix_nano = now()",
+            default_parser_options(),
+        )
+        .unwrap()
+        .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let result = pipeline
+            .execute(otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(
+                log_records.clone(),
+            ))))
+            .await
+            .unwrap();
+
+        let OtlpProtoMessage::Logs(logs_data) = otap_to_otlp(&result) else {
+            panic!("Invalid signal type")
+        };
+
+        let log_record = &logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert!(log_record.time_unix_nano > 0);
+
+        // execute again a moment later, and ensure we get a newer timestamp
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        let result = pipeline
+            .execute(otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(
+                log_records.clone(),
+            ))))
+            .await
+            .unwrap();
+
+        let OtlpProtoMessage::Logs(logs_data) = otap_to_otlp(&result) else {
+            panic!("Invalid signal type")
+        };
+        let log_record2 = &logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert!(log_record2.time_unix_nano > 0);
+
+        assert!(log_record2.time_unix_nano > log_record.time_unix_nano);
     }
 }
