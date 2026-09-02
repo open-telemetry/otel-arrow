@@ -23,8 +23,13 @@ jobs:
       contents: read
       pull-requests: read
     runs-on: ubuntu-latest
-    environment: ${{ !inputs.dry_run && 'release' || '' }}
     steps:
+      - name: Validate dispatch ref
+        if: "!inputs.dry_run && github.ref != 'refs/heads/main'"
+        run: |
+          echo "Non-dry-run release preparation must run from main"
+          exit 1
+
       - name: Checkout (dry run)
         if: inputs.dry_run
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -97,7 +102,8 @@ jobs:
           # Renders pending entries from go/.chloggen/ and
           # rust/otap-dataflow/.chloggen/ into their respective CHANGELOG.md
           # files under the new `## v${{ inputs.version }}` heading, then
-          # deletes the consumed .yaml entry files.
+          # deletes the consumed .yaml entry files. If a tree has no entries,
+          # its summary template records that the version is for repo parity.
           make chlog-install
           make chlog-update VERSION="v${{ inputs.version }}"
 
@@ -189,8 +195,8 @@ jobs:
           ## File Changes
           The following files would be modified:
           - `go/.chloggen/auto-dependency-updates.yaml`, `rust/otap-dataflow/.chloggen/auto-dependency-updates.yaml` - Auto-generated entries aggregating renovate[bot]/dependabot[bot] PRs (created only when such commits exist for the tree)
-          - `go/CHANGELOG.md` - Render pending `go/.chloggen/*.yaml` entries under `## v${{ inputs.version }}`
-          - `rust/otap-dataflow/CHANGELOG.md` - Render pending `rust/otap-dataflow/.chloggen/*.yaml` entries under `## v${{ inputs.version }}`
+          - `go/CHANGELOG.md` - Render pending `go/.chloggen/*.yaml` entries, or a repository parity note when empty, under `## v${{ inputs.version }}`
+          - `rust/otap-dataflow/CHANGELOG.md` - Render pending `rust/otap-dataflow/.chloggen/*.yaml` entries, or a repository parity note when empty, under `## v${{ inputs.version }}`
           - `go/.chloggen/*.yaml`, `rust/otap-dataflow/.chloggen/*.yaml` - Consumed entries deleted
           - `rust/otap-dataflow/Cargo.toml` - Bump workspace and root package version to ${{ inputs.version }}
 

@@ -1,5 +1,8 @@
 # Pipeline Engine
 
+This crate is currently pre-1.0. Its public API may evolve between minor
+releases.
+
 ## Introduction
 
 The `otel-arrow-dfe-engine` crate is the in-core execution engine for OTAP Dataflow.
