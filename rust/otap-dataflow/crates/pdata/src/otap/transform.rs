@@ -1325,7 +1325,7 @@ fn replace_id_column(
     }
 
     let schema = update_field_metadata(
-        &Schema::new(fields),
+        &Schema::new(fields).with_metadata(schema.metadata().clone()),
         consts::ID,
         metadata::COLUMN_ENCODING,
         encoding,
