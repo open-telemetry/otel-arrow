@@ -14,7 +14,7 @@ exclude = [
 resolver = "2"
 
 [workspace.package]
-version = "0.53.0"
+version = "0.54.0"
 authors = ["OpenTelemetry"]
 edition = "2024"
 repository = "https://github.com/open-telemetry/otel-arrow"
@@ -24,7 +24,7 @@ rust-version = "1.87.0"
 
 [package]
 name = "otel-arrow-dfe"
-version = "0.53.0"
+version = "0.54.0"
 description = "OTel-Arrow Dataflow Engine supporting natively OTLP and OTAP Data Formats"
 edition.workspace = true
 repository.workspace = true
@@ -57,26 +57,26 @@ tikv-jemallocator = { workspace = true, optional = true }
 
 [workspace.dependencies]
 otel-arrow-dfe-admin-api = { path = "crates/admin-api" }
-otel-arrow-dfe-admin-types = { version = "0.53.0", path = "crates/admin-types" }
-otel-arrow-dfe-pdata-otlp-macros = { version = "0.53.0", path = "./crates/pdata/src/otlp/macros"}
-otel-arrow-dfe-pdata-otlp-model = { version = "0.53.0", path = "./crates/pdata/src/otlp/model"}
-otel-arrow-dfe-config = { version = "0.53.0", path = "crates/config" }
+otel-arrow-dfe-admin-types = { version = "0.54.0", path = "crates/admin-types" }
+otel-arrow-dfe-pdata-otlp-macros = { version = "0.54.0", path = "./crates/pdata/src/otlp/macros"}
+otel-arrow-dfe-pdata-otlp-model = { version = "0.54.0", path = "./crates/pdata/src/otlp/model"}
+otel-arrow-dfe-config = { version = "0.54.0", path = "crates/config" }
 otel-arrow-dfe-contrib-extensions = { path = "crates/contrib-extensions" }
 otel-arrow-dfe-contrib-nodes = { path = "crates/contrib-nodes" }
 otel-arrow-dfe-control-channel = { path = "crates/control-channel" }
-otel-arrow-dfe-controller = { path = "crates/controller" }
+otel-arrow-dfe-controller = { version = "0.54.0", path = "crates/controller" }
 otel-arrow-dfe-core-nodes = { path = "crates/core-nodes" }
 otel-arrow-dfe-dev-nodes = { path = "crates/dev-nodes" }
-otel-arrow-dfe-engine = { path = "crates/engine" }
-otel-arrow-dfe-expohisto = { version = "0.53.0", path = "crates/expohisto" }
+otel-arrow-dfe-engine = { version = "0.54.0", path = "crates/engine" }
+otel-arrow-dfe-expohisto = { version = "0.54.0", path = "crates/expohisto" }
 otel-arrow-dfe-otap = { path = "crates/otap" }
 otel-arrow-dfe-wasm-host = { path = "crates/wasm-host" }
 otel-arrow-dfe-test-tls-certs = { path = "crates/otap-test-tls-certs" }
 otel-arrow-dfe-test-net = { path = "crates/otap-test-net" }
-otel-arrow-dfe-pdata = { version = "0.53.0", path = "crates/pdata" }
-otel-arrow-dfe-pdata-views = { version = "0.53.0", path = "crates/pdata-views" }
-otel-arrow-dfe-telemetry = { path = "crates/telemetry" }
-otel-arrow-dfe-quiver = { version = "0.53.0", path = "crates/quiver" }
+otel-arrow-dfe-pdata = { version = "0.54.0", path = "crates/pdata" }
+otel-arrow-dfe-pdata-views = { version = "0.54.0", path = "crates/pdata-views" }
+otel-arrow-dfe-telemetry = { version = "0.54.0", path = "crates/telemetry" }
+otel-arrow-dfe-quiver = { version = "0.54.0", path = "crates/quiver" }
 otel-arrow-contrib-data-engine-expressions = "0.1.0"
 otel-arrow-contrib-data-engine-kql-parser = "0.1.0"
 otel-arrow-contrib-data-engine-parser-abstractions = "0.1.0"
@@ -260,8 +260,8 @@ cpu-time = "1.0.0"
 one_collect = "0.1.35021"
 
 # TODO: un-pin these dependencies as soon as Arc support is available in a released version: https://github.com/open-telemetry/otel-arrow/issues/3551
-azure_core = { git = "https://github.com/Azure/azure-sdk-for-rust.git", rev = "b28858626ec4ec2188f14b55f20159eb2b9580e9", default-features = false }
-azure_identity = { git = "https://github.com/Azure/azure-sdk-for-rust.git", rev = "b28858626ec4ec2188f14b55f20159eb2b9580e9", default-features = false }
+azure_core = { git = "https://github.com/Azure/azure-sdk-for-rust.git", rev = "aacb2060111920f9fca2f72bff7e401e8a7198ce", default-features = false }
+azure_identity = { git = "https://github.com/Azure/azure-sdk-for-rust.git", rev = "aacb2060111920f9fca2f72bff7e401e8a7198ce", default-features = false }
 flate2 = "1.1.5"
 
 # Keep reqwest default features off to avoid pulling in default-tls (and aws-lc-rs via reqwest's rustls feature).
@@ -276,14 +276,14 @@ eventheader_dynamic = "0.5.0"
 include_dir = "0.7.4"
 mime_guess = "2.0.5"
 minijinja = "2"
-otel-arrow-dfe-admin = { path = 'crates/admin' }
-otel-arrow-dfe-channel = { version = "0.53.0", path = 'crates/channel' }
-otel-arrow-dfe-engine-macros = { version = "0.53.0", path = 'crates/engine-macros' }
-otel-arrow-dfe-component-inventory-syntax = { version = "0.53.0", path = 'crates/component-inventory-syntax' }
-otel-arrow-dfe-query-engine-languages = { version = "0.53.0", path = 'crates/query-engine-languages' }
-otel-arrow-dfe-query-engine = { version = "0.53.0", path = 'crates/query-engine' }
-otel-arrow-dfe-state = { path = 'crates/state' }
-otel-arrow-dfe-telemetry-macros = { version = "0.53.0", path = 'crates/telemetry-macros' }
+otel-arrow-dfe-admin = { version = "0.54.0", path = 'crates/admin' }
+otel-arrow-dfe-channel = { version = "0.54.0", path = 'crates/channel' }
+otel-arrow-dfe-engine-macros = { version = "0.54.0", path = 'crates/engine-macros' }
+otel-arrow-dfe-component-inventory-syntax = { version = "0.54.0", path = 'crates/component-inventory-syntax' }
+otel-arrow-dfe-query-engine-languages = { version = "0.54.0", path = 'crates/query-engine-languages' }
+otel-arrow-dfe-query-engine = { version = "0.54.0", path = 'crates/query-engine' }
+otel-arrow-dfe-state = { version = "0.54.0", path = 'crates/state' }
+otel-arrow-dfe-telemetry-macros = { version = "0.54.0", path = 'crates/telemetry-macros' }
 prost-build = "0.14"
 ratatui = "0.30"
 testcontainers = "0.27"
