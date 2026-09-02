@@ -2448,6 +2448,8 @@ fn try_upsert_array_in_columns(
 
 #[cfg(test)]
 mod test {
+    use std::time::Duration;
+
     use arrow::{
         array::{Array, StringArray, StructArray, UInt8Array, UInt16Array},
         compute::{
@@ -8340,5 +8342,324 @@ mod test {
     #[tokio::test]
     async fn test_extend_attrs_sparse_multi_scope_kql_parser() {
         test_extend_attrs_sparse_multi_scope::<KqlParser>().await
+    }
+
+    /// Scenario: call the `now()` UDF and assign the value to a timestamp column. Doing this for
+    /// multiple batches with a slight delay.
+    /// Guarantees: the current time is assigned, and we don't inadvertently fold the current time
+    /// to an inlined static during planning.
+    #[tokio::test]
+    async fn test_set_timestamps_to_current_time() {
+        let log_records = vec![LogRecord::build().finish()];
+        assert_eq!(log_records[0].time_unix_nano, 0);
+
+        let pipeline_expr = OplParser::parse_with_options(
+            "logs | set time_unix_nano = now()",
+            default_parser_options(),
+        )
+        .unwrap()
+        .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let result = pipeline
+            .execute(otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(
+                log_records.clone(),
+            ))))
+            .await
+            .unwrap();
+
+        let OtlpProtoMessage::Logs(logs_data) = otap_to_otlp(&result) else {
+            panic!("Invalid signal type")
+        };
+
+        let log_record = &logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert!(log_record.time_unix_nano > 0);
+
+        // execute again a moment later, and ensure we get a newer timestamp
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        let result = pipeline
+            .execute(otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(
+                log_records.clone(),
+            ))))
+            .await
+            .unwrap();
+
+        let OtlpProtoMessage::Logs(logs_data) = otap_to_otlp(&result) else {
+            panic!("Invalid signal type")
+        };
+        let log_record2 = &logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert!(log_record2.time_unix_nano > 0);
+
+        assert!(log_record2.time_unix_nano > log_record.time_unix_nano);
+    }
+
+    // Scenario: cast timestamps to int64
+    // Guarantees: timestamp can be casted to int64
+    #[tokio::test]
+    async fn test_assign_attr_from_casted_timestamp_literal() {
+        let logs_data = to_logs_data(vec![LogRecord::build().time_unix_nano(5u64).finish()]);
+
+        fn assert_result(result: LogsData, expected: AnyValue) {
+            assert_eq!(result.resource_logs.len(), 1);
+            assert_eq!(result.resource_logs[0].scope_logs.len(), 1);
+            assert_eq!(result.resource_logs[0].scope_logs[0].log_records.len(), 1);
+
+            let log_record = &result.resource_logs[0].scope_logs[0].log_records[0];
+            let result = log_record
+                .attributes
+                .iter()
+                .find(|kv| kv.key == "result")
+                .unwrap();
+            assert_eq!(result.value.as_ref().unwrap(), &expected);
+        }
+
+        // test from literal as cast source
+        let query =
+            r#"logs | set attributes["result"] = timestamp"1970-01-01T00:00:01.1" as Integer"#;
+        let result = exec_logs_pipeline::<OplParser>(query, logs_data.clone()).await;
+        assert_result(result, AnyValue::new_int(1100000000));
+
+        // test from field as cast source
+        let query = r#"logs | set attributes["result"] = time_unix_nano as Integer"#;
+        let result = exec_logs_pipeline::<OplParser>(query, logs_data.clone()).await;
+        assert_result(result, AnyValue::new_int(5));
+
+        let query = r#"logs | set attributes["result"] = time_unix_nano as Double"#;
+        let result = exec_logs_pipeline::<OplParser>(query, logs_data.clone()).await;
+        assert_result(result, AnyValue::new_double(5.0));
+
+        let query = r#"logs | set attributes["result"] = time_unix_nano as String"#;
+        let result = exec_logs_pipeline::<OplParser>(query, logs_data.clone()).await;
+        assert_result(
+            result,
+            AnyValue::new_string("1970-01-01T00:00:00.000000005"),
+        );
+
+        // test cast from result of function call
+        let query = r#"logs | set attributes["result"] = now() as Integer"#;
+        let result = exec_logs_pipeline::<OplParser>(query, logs_data.clone()).await;
+        let log_record = &result.resource_logs[0].scope_logs[0].log_records[0];
+        let result = log_record
+            .attributes
+            .iter()
+            .find(|kv| kv.key == "result")
+            .map(|kv| kv.value.clone().unwrap().value.unwrap())
+            .unwrap();
+        let any_value::Value::IntValue(value) = result else {
+            panic!("invalid anyvalue {result:?} expected int variant")
+        };
+        assert!(value > 0);
+    }
+
+    /// Scenario: cast various types of primitives to other primitives
+    /// Guarantees: casting behaviour is as expected
+    #[tokio::test]
+    async fn test_cast_success_different_types() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("bool_attr", AnyValue::new_bool(true)),
+                    KeyValue::new("bool_false", AnyValue::new_bool(false)),
+                    KeyValue::new("int_attr", AnyValue::new_int(5)),
+                    KeyValue::new("int_zero", AnyValue::new_int(0)),
+                    KeyValue::new("double_attr", AnyValue::new_double(6.2)),
+                    KeyValue::new("double_zero", AnyValue::new_double(0.0)),
+                    KeyValue::new("str_attr_numeric", AnyValue::new_string("5")),
+                    KeyValue::new("str_attr_decimal", AnyValue::new_string("6.7")),
+                    KeyValue::new("str_attr_bool", AnyValue::new_string("true")),
+                    KeyValue::new("str_attr_non_numeric", AnyValue::new_string("hello2")),
+                ])
+                .finish(),
+        ]);
+
+        fn assert_result(result: LogsData, expected: AnyValue) {
+            assert_eq!(result.resource_logs.len(), 1);
+            assert_eq!(result.resource_logs[0].scope_logs.len(), 1);
+            assert_eq!(result.resource_logs[0].scope_logs[0].log_records.len(), 1);
+
+            let log_record = &result.resource_logs[0].scope_logs[0].log_records[0];
+            let result = log_record
+                .attributes
+                .iter()
+                .find(|kv| kv.key == "result")
+                .unwrap();
+            assert_eq!(result.value.as_ref().unwrap(), &expected);
+        }
+
+        // from bool
+        let query = r#"logs | set attributes["result"] = attributes["bool_attr"] as Integer"#;
+        let result = exec_logs_pipeline::<OplParser>(query, logs_data.clone()).await;
+        assert_result(result, AnyValue::new_int(1));
+
+        let query = r#"logs | set attributes["result"] = attributes["bool_attr"] as String"#;
+        let result = exec_logs_pipeline::<OplParser>(query, logs_data.clone()).await;
+        assert_result(result, AnyValue::new_string("true"));
+
+        let query = r#"logs | set attributes["result"] = attributes["bool_attr"] as Double"#;
+        let result = exec_logs_pipeline::<OplParser>(query, logs_data.clone()).await;
+        assert_result(result, AnyValue::new_double(1.0));
+
+        // from false bool
+        let query = r#"logs | set attributes["result"] = attributes["bool_false"] as Integer"#;
+        let result = exec_logs_pipeline::<OplParser>(query, logs_data.clone()).await;
+        assert_result(result, AnyValue::new_int(0));
+
+        let query = r#"logs | set attributes["result"] = attributes["bool_false"] as String"#;
+        let result = exec_logs_pipeline::<OplParser>(query, logs_data.clone()).await;
+        assert_result(result, AnyValue::new_string("false"));
+
+        let query = r#"logs | set attributes["result"] = attributes["bool_false"] as Double"#;
+        let result = exec_logs_pipeline::<OplParser>(query, logs_data.clone()).await;
+        assert_result(result, AnyValue::new_double(0.0));
+
+        // from int
+        let query = r#"logs | set attributes["result"] = attributes["int_attr"] as Boolean"#;
+        let result = exec_logs_pipeline::<OplParser>(query, logs_data.clone()).await;
+        assert_result(result, AnyValue::new_bool(true));
+
+        let query = r#"logs | set attributes["result"] = attributes["int_zero"] as Boolean"#;
+        let result = exec_logs_pipeline::<OplParser>(query, logs_data.clone()).await;
+        assert_result(result, AnyValue::new_bool(false));
+
+        let query = r#"logs | set attributes["result"] = attributes["int_attr"] as String"#;
+        let result = exec_logs_pipeline::<OplParser>(query, logs_data.clone()).await;
+        assert_result(result, AnyValue::new_string("5"));
+
+        let query = r#"logs | set attributes["result"] = attributes["int_attr"] as Double"#;
+        let result = exec_logs_pipeline::<OplParser>(query, logs_data.clone()).await;
+        assert_result(result, AnyValue::new_double(5.0));
+
+        // from double
+        let query = r#"logs | set attributes["result"] = attributes["double_attr"] as Integer"#;
+        let result = exec_logs_pipeline::<OplParser>(query, logs_data.clone()).await;
+        assert_result(result, AnyValue::new_int(6));
+
+        let query = r#"logs | set attributes["result"] = attributes["double_attr"] as String"#;
+        let result = exec_logs_pipeline::<OplParser>(query, logs_data.clone()).await;
+        assert_result(result, AnyValue::new_string("6.2"));
+
+        let query = r#"logs | set attributes["result"] = attributes["double_attr"] as Boolean"#;
+        let result = exec_logs_pipeline::<OplParser>(query, logs_data.clone()).await;
+        assert_result(result, AnyValue::new_bool(true));
+
+        let query = r#"logs | set attributes["result"] = attributes["double_zero"] as Boolean"#;
+        let result = exec_logs_pipeline::<OplParser>(query, logs_data.clone()).await;
+        assert_result(result, AnyValue::new_bool(false));
+
+        // from numberic string
+        let query =
+            r#"logs | set attributes["result"] = attributes["str_attr_numeric"] as Integer"#;
+        let result = exec_logs_pipeline::<OplParser>(query, logs_data.clone()).await;
+        assert_result(result, AnyValue::new_int(5));
+
+        let query = r#"logs | set attributes["result"] = attributes["str_attr_numeric"] as Double"#;
+        let result = exec_logs_pipeline::<OplParser>(query, logs_data.clone()).await;
+        assert_result(result, AnyValue::new_double(5.0));
+
+        // from decimal string
+        let query = r#"logs | set attributes["result"] = attributes["str_attr_decimal"] as Double"#;
+        let result = exec_logs_pipeline::<OplParser>(query, logs_data.clone()).await;
+        assert_result(result, AnyValue::new_double(6.7));
+    }
+
+    /// Scenario: cast a string column to some type requiring parsing but the string is unparsable
+    /// Guarantees: handled by producing execution error
+    #[tokio::test]
+    async fn test_cast_unparsable_strings() {
+        async fn assert_cast_error(query: &str, expected_error: &str) {
+            let logs_data = to_logs_data(vec![
+                LogRecord::build()
+                    .attributes(vec![
+                        KeyValue::new("str_attr_numeric", AnyValue::new_string("5")),
+                        KeyValue::new("str_attr_decimal", AnyValue::new_string("6.7")),
+                        KeyValue::new("str_attr_bool", AnyValue::new_string("true")),
+                        KeyValue::new("str_attr_non_numeric", AnyValue::new_string("hello")),
+                    ])
+                    .finish(),
+            ]);
+
+            let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
+                .unwrap()
+                .pipeline;
+            let mut pipeline = Pipeline::new(pipeline_expr);
+            let err = pipeline
+                .execute(otlp_to_otap(&OtlpProtoMessage::Logs(logs_data)))
+                .await
+                .unwrap_err();
+            let err_msg = err.to_string();
+            assert!(
+                err_msg.contains(expected_error),
+                "unexpected error: {err_msg} - {err:?}",
+            )
+        }
+
+        assert_cast_error(
+            r#"logs | set attributes["result"] = attributes["str_attr_numeric"] as Boolean"#,
+            "Cannot cast value '5' to value of Boolean type",
+        )
+        .await;
+
+        assert_cast_error(
+            r#"logs | set attributes["result"] = attributes["str_attr_non_numeric"] as Boolean"#,
+            "Cannot cast value 'hello' to value of Boolean type",
+        )
+        .await;
+
+        assert_cast_error(
+            r#"logs | set attributes["result"] = attributes["str_attr_decimal"] as Integer"#,
+            "Cannot cast string '6.7' to value of Int64 type",
+        )
+        .await;
+
+        assert_cast_error(
+            r#"logs | set attributes["result"] = attributes["str_attr_non_numeric"] as Double"#,
+            "Cannot cast string 'hello' to value of Float64 type",
+        )
+        .await;
+
+        assert_cast_error(
+            r#"logs | set attributes["result"] = attributes["str_attr_bool"] as Double"#,
+            "Cannot cast string 'true' to value of Float64 type",
+        )
+        .await;
+
+        assert_cast_error(
+            r#"logs | set attributes["result"] = attributes["str_attr_bool"] as Integer"#,
+            "Cannot cast string 'true' to value of Int64 type",
+        )
+        .await;
+    }
+
+    /// Scenario: cast the boolean array produced by expressions that will be planned as either a
+    /// bitmap and, or something with a predicate applied to the batch
+    /// Guarantees: the cast will be applied to the results of these expression evaluations
+    #[tokio::test]
+    async fn test_cast_boolean_from_non_df_expr_evaluations() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("foo", AnyValue::new_string("hello")),
+                    KeyValue::new("bar", AnyValue::new_string("world")),
+                ])
+                .finish(),
+        ]);
+
+        fn assert_result(result: LogsData, expected: AnyValue) {
+            assert_eq!(result.resource_logs.len(), 1);
+            assert_eq!(result.resource_logs[0].scope_logs.len(), 1);
+            assert_eq!(result.resource_logs[0].scope_logs[0].log_records.len(), 1);
+
+            let log_record = &result.resource_logs[0].scope_logs[0].log_records[0];
+            let result = log_record
+                .attributes
+                .iter()
+                .find(|kv| kv.key == "result")
+                .unwrap();
+            assert_eq!(result.value.as_ref().unwrap(), &expected);
+        }
+
+        let query = r#"logs | set attributes["result"] = (attributes["foo"] == "hello" and attributes["bar"] == "world") as String"#;
+        let result = exec_logs_pipeline::<OplParser>(query, logs_data.clone()).await;
+        assert_result(result, AnyValue::new_string("true"));
     }
 }
