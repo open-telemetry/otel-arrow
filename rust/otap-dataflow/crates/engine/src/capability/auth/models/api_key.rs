@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 static HTTP_HEADER_NAME_ATTRIBUTE: &str = "http.header_name";
-static HTTP_SCHEME_ATTRIBUTE: &str = "http.scheme";
+static HTTP_HEADER_SCHEME_ATTRIBUTE: &str = "http.header_scheme";
 
 /// An API Key.
 ///
@@ -56,7 +56,7 @@ impl ApiKey {
 
     /// Adds expiry to an API Key.
     #[must_use]
-    pub fn with_expiry(mut self, expires_on: Instant) -> Self {
+    pub const fn with_expiry(mut self, expires_on: Instant) -> Self {
         self.expires_on = Some(expires_on);
         self
     }
@@ -64,8 +64,6 @@ impl ApiKey {
     /// Adds `http.header_name` attribute to an API Key.
     #[must_use]
     pub fn with_http_header_name_attribute(mut self, header_name: &str) -> Self {
-        let header_name = header_name.trim();
-        assert!(!header_name.is_empty());
         let mut attributes = self
             .attributes
             .map(Arc::unwrap_or_clone)
@@ -75,16 +73,14 @@ impl ApiKey {
         self
     }
 
-    /// Adds `http.scheme` attribute to an API Key.
+    /// Adds `http.header_scheme` attribute to an API Key.
     #[must_use]
-    pub fn with_http_scheme_attribute(mut self, scheme: &str) -> Self {
-        let scheme = scheme.trim();
-        assert!(!scheme.is_empty());
+    pub fn with_http_header_scheme_attribute(mut self, header_scheme: &str) -> Self {
         let mut attributes = self
             .attributes
             .map(Arc::unwrap_or_clone)
             .unwrap_or_default();
-        attributes[HTTP_SCHEME_ATTRIBUTE] = Value::String(scheme.into());
+        attributes[HTTP_HEADER_SCHEME_ATTRIBUTE] = Value::String(header_scheme.into());
         self.attributes = Some(Arc::new(attributes));
         self
     }
@@ -106,7 +102,7 @@ impl ApiKey {
 
     /// Gets the API Key expiry.
     #[must_use]
-    pub fn get_expires_on(&self) -> Option<Instant> {
+    pub const fn get_expires_on(&self) -> Option<Instant> {
         self.expires_on
     }
 
@@ -125,13 +121,13 @@ impl ApiKey {
         None
     }
 
-    /// Gets the API Key `http.scheme` attribute.
+    /// Gets the API Key `http.header_scheme` attribute.
     #[must_use]
-    pub fn get_http_scheme_attribute(&self) -> Option<&str> {
+    pub fn get_http_header_scheme_attribute(&self) -> Option<&str> {
         if let Some(scheme_value) = self
             .attributes
             .as_ref()
-            .and_then(|v| v.get(HTTP_SCHEME_ATTRIBUTE))
+            .and_then(|v| v.get(HTTP_HEADER_SCHEME_ATTRIBUTE))
             && let Value::String(scheme_value) = scheme_value
         {
             return Some(scheme_value.as_str());
