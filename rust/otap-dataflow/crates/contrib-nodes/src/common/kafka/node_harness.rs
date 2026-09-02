@@ -465,6 +465,38 @@ mod exporter_harness {
                 Err(e) => panic!("kafka-test: exporter task panicked: {e}"),
             }
         }
+
+        /// Awaits the spawned exporter task, then drains and counts every
+        /// Ack/Nack unwind message that was buffered on the (never-consumed)
+        /// completion channel, returning both the [`TerminalState`] and the
+        /// buffered count.
+        ///
+        /// Awaiting the task first guarantees the node has dropped its completion
+        /// sender, so the drain sees exactly the messages the node managed to
+        /// report (bounded by channel capacity) and then observes the closed
+        /// channel -- letting a test distinguish "buffered at capacity" from
+        /// "reports abandoned at the shutdown deadline".
+        ///
+        /// # Panics
+        ///
+        /// Panics if the task panicked or the exporter node returned an error
+        /// instead of a terminal state.
+        pub(crate) async fn await_terminal_state_draining_completions(
+            mut self,
+        ) -> (TerminalState, usize) {
+            let terminal_state = match self.join.await {
+                Ok(Ok(terminal_state)) => terminal_state,
+                Ok(Err(e)) => panic!("kafka-test: exporter node returned an error: {e:?}"),
+                Err(e) => panic!("kafka-test: exporter task panicked: {e}"),
+            };
+            let mut buffered = 0usize;
+            // The node has exited and dropped its sender, so `recv` yields every
+            // buffered message and then `Err` (closed) -- a bounded drain.
+            while self.completion_rx.recv().await.is_ok() {
+                buffered += 1;
+            }
+            (terminal_state, buffered)
+        }
     }
 }
 

@@ -4311,28 +4311,29 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (shutdown drain, completion channel at capacity): the
-        /// in-flight set is filled to exactly the harness's 16-slot completion
-        /// channel capacity (`max_in_flight = 16`) against a reachable broker
-        /// whose round-trip is stalled far past the deadline, so every send is
-        /// still in flight (no steady-state completion) when a graceful shutdown
-        /// arrives, and the routed nacks are never consumed.
-        /// Guarantees: the shutdown drain must report exactly capacity-many
-        /// subscriber nacks onto the never-drained completion channel; because
-        /// the drain bounds each ack/nack report by the deadline, it cannot block
-        /// once the channel fills, so the node returns its terminal state within
-        /// the deadline plus a bounded flush/purge slack while still accounting
-        /// every in-flight send exactly once (`success + failure == N`). This
-        /// isolates the "completion channel fills during the shutdown drain"
-        /// boundary from a larger backlog.
+        /// Scenario (shutdown drain, completion channel overflows): the in-flight
+        /// set is filled to one MORE than the harness's 16-slot completion channel
+        /// capacity (`max_in_flight = 17`) against a reachable broker whose
+        /// round-trip is stalled far past the deadline, so every send is still in
+        /// flight (no steady-state completion) when a graceful shutdown arrives,
+        /// and the routed nacks are never consumed.
+        /// Guarantees: the shutdown drain buffers exactly capacity-many (16)
+        /// subscriber nacks onto the never-drained completion channel and then,
+        /// because each ack/nack report is bounded by the deadline, ABANDONS the
+        /// remaining report(s) rather than blocking on the full channel -- so the
+        /// node returns its terminal state within the deadline plus a bounded
+        /// flush/purge slack while still accounting every in-flight send exactly
+        /// once (`success + failure == N`, since metrics are recorded before the
+        /// report attempt). This exercises the deadline-abandonment branch that a
+        /// backlog sized exactly to capacity would leave untouched.
         #[tokio::test]
         async fn shutdown_drain_bounded_when_completion_channel_fills() {
             let topic = "it-finalize-channel-full";
-            // Exactly the harness completion-channel capacity (16): all N sends
-            // are admitted and stay in flight until shutdown, and the drain must
-            // report N nacks onto the 16-slot never-drained channel -- filling it
-            // exactly.
-            const N: usize = 16;
+            // The harness completion channel holds 16. Send one MORE so the drain
+            // fills the channel with 16 buffered nacks and must abandon at least
+            // one report (N - CHANNEL_CAP) at the deadline instead of blocking.
+            const CHANNEL_CAP: usize = 16;
+            const N: usize = CHANNEL_CAP + 1;
             with_cluster(
                 KafkaTestCluster::builder().topic(topic),
                 |cluster| async move {
@@ -4356,15 +4357,18 @@ pub mod test_support {
                             .expect("send subscribed pdata");
                     }
 
-                    // Never drain the completion channel: once the shutdown drain
-                    // fills it, any further report must be abandoned at the
-                    // deadline rather than block.
+                    // Never drain the completion channel DURING shutdown: once the
+                    // drain fills it, any further report must be abandoned at the
+                    // deadline rather than block. Awaiting the terminal state
+                    // first (node exits, drops its sender), then draining the
+                    // buffered nacks, is wrapped in an outer bound so a blocked
+                    // drain fails loudly instead of hanging.
                     let shutdown_deadline = Duration::from_millis(500);
                     let bound = Duration::from_secs(4);
                     let start = Instant::now();
-                    let ts = tokio::time::timeout(bound, async {
+                    let (ts, buffered) = tokio::time::timeout(bound, async {
                         exporter.shutdown(shutdown_deadline).await;
-                        exporter.await_terminal_state().await
+                        exporter.await_terminal_state_draining_completions().await
                     })
                     .await
                     .expect(
@@ -4378,6 +4382,17 @@ pub mod test_support {
                         start.elapsed(),
                     );
 
+                    // The drain buffers exactly channel capacity, then abandons the
+                    // overflow: N (17) sends produce CHANNEL_CAP (16) buffered nacks,
+                    // proving at least one report was abandoned at the deadline.
+                    assert_eq!(
+                        buffered,
+                        CHANNEL_CAP,
+                        "drain should buffer exactly channel capacity nacks and \
+                         abandon the overflow ({} report(s)) at the deadline",
+                        N - CHANNEL_CAP,
+                    );
+
                     let snaps = ts.metrics();
                     let success = kafka_exports(snaps, "logs", "success");
                     let failure = kafka_exports(snaps, "logs", "failure");
@@ -4385,7 +4400,8 @@ pub mod test_support {
                         success + failure,
                         N as u64,
                         "every in-flight send is accounted exactly once even when \
-                         the completion channel fills during the shutdown drain",
+                         the completion channel fills and reports are abandoned \
+                         during the shutdown drain",
                     );
 
                     // Restore normal latency so any deadline-exceeded off-path

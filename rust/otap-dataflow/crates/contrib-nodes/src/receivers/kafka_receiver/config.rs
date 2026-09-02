@@ -331,6 +331,10 @@ pub struct KafkaReceiverConfigBuilder {
     /// generation suffix keeps a new pipeline instance from being fenced as a
     /// duplicate static member of the old instance during a live-reconfiguration
     /// cutover.
+    ///
+    /// Kafka limits `group.instance.id` to 249 characters, and the limit applies
+    /// to the resolved value (configured value plus suffixes); receiver
+    /// construction fails if the resolved id exceeds it.
     #[serde(default)]
     group_instance_id: Option<String>,
 

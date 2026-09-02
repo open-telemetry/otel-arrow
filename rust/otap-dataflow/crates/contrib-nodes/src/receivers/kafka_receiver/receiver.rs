@@ -308,6 +308,25 @@ impl KafkaReceiver {
             } else {
                 format!("{base_id}-g{generation}")
             };
+            // Kafka limits group.instance.id to 249 characters. The generation
+            // (and, on a multi-core pipeline, core) suffix is appended after the
+            // base config was validated, so an otherwise valid configured id can
+            // resolve past the limit here. Reject it with a clear error at build
+            // time instead of letting the broker refuse the static-member join
+            // opaquely at runtime.
+            const MAX_GROUP_INSTANCE_ID_LEN: usize = 249;
+            if resolved.len() > MAX_GROUP_INSTANCE_ID_LEN {
+                return Err(ConfigError::InvalidUserConfig {
+                    error: format!(
+                        "resolved group.instance.id '{resolved}' is {} characters, \
+                         exceeding the Kafka maximum of {MAX_GROUP_INSTANCE_ID_LEN}; \
+                         shorten the configured group_instance_id (the pipeline \
+                         appends a generation and, on multi-core pipelines, a core \
+                         suffix)",
+                        resolved.len()
+                    ),
+                });
+            }
             config.set_group_instance_id(resolved);
         }
 
@@ -2366,6 +2385,91 @@ mod tests {
             receiver.config.group_instance_id(),
             None,
             "unset group.instance.id should remain absent"
+        );
+    }
+
+    /// Scenario (construction and configuration): the configured `group.instance.id`
+    /// is short enough on its own, but appending the single-core generation suffix
+    /// pushes the resolved id one character past Kafka's 249-character limit.
+    /// Guarantees: receiver construction fails with a clear configuration error
+    /// (naming group.instance.id and the 249-character limit) instead of deferring
+    /// an opaque static-member join rejection to the broker.
+    #[test]
+    fn new_rejects_group_instance_id_when_resolved_exceeds_kafka_limit() {
+        // Single-core suffix is "-g0" (3 chars); a 247-char base resolves to 250.
+        let base = "a".repeat(247);
+        let cfg = make_config_with_group_instance_id(&base);
+        let ctx = make_pipeline_ctx_with(0, 1);
+        let err = match KafkaReceiver::new(ctx, cfg) {
+            Ok(_) => panic!("resolved group.instance.id over 249 chars must be rejected"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            err.contains("group.instance.id"),
+            "error should name group.instance.id: {err}"
+        );
+        assert!(
+            err.contains("249"),
+            "error should cite the 249-character Kafka limit: {err}"
+        );
+    }
+
+    /// Scenario (construction and configuration): the configured `group.instance.id`
+    /// is sized so that appending the single-core generation suffix resolves to
+    /// exactly Kafka's 249-character limit.
+    /// Guarantees: the boundary value is accepted (the limit is inclusive), so the
+    /// off-by-one is guarded -- 249 builds while 250 is rejected.
+    #[test]
+    fn new_accepts_group_instance_id_at_kafka_limit_boundary() {
+        // Single-core suffix is "-g0" (3 chars); a 246-char base resolves to 249.
+        let base = "a".repeat(246);
+        let cfg = make_config_with_group_instance_id(&base);
+        let ctx = make_pipeline_ctx_with(0, 1);
+        let receiver =
+            KafkaReceiver::new(ctx, cfg).expect("resolved id of exactly 249 chars must build");
+        let resolved = receiver
+            .config
+            .group_instance_id()
+            .expect("resolved id present");
+        assert_eq!(
+            resolved.len(),
+            249,
+            "resolved id should sit exactly on the inclusive 249-character limit"
+        );
+        assert_eq!(resolved, format!("{base}-g0"));
+    }
+
+    /// Scenario (construction and configuration): a receiver is built on a multi-core
+    /// pipeline whose deployment generation and core id are both multi-digit values.
+    /// Guarantees: the resolved `group.instance.id` embeds the full multi-digit
+    /// generation and core id (`-g{gen}-{core}`), so wide deployments still yield a
+    /// correctly formatted distinct static member per (generation, core).
+    #[test]
+    fn new_suffixes_group_instance_id_with_multi_digit_generation_and_core() {
+        let cfg = make_config_with_group_instance_id("instance-1");
+        let ctx = make_pipeline_ctx_with_generation(12, 16, 123);
+        let receiver = KafkaReceiver::new(ctx, cfg).expect("receiver should build");
+        assert_eq!(
+            receiver.config.group_instance_id(),
+            Some("instance-1-g123-12"),
+            "multi-digit generation and core id must both appear in full"
+        );
+    }
+
+    /// Scenario (construction and configuration): a receiver is built on a single-core
+    /// pipeline whose deployment generation is a multi-digit value.
+    /// Guarantees: the resolved `group.instance.id` embeds the full multi-digit
+    /// generation with no core suffix (`-g{gen}`), so a long-lived pipeline that has
+    /// been reconfigured many times still resolves to a correctly formatted id.
+    #[test]
+    fn new_suffixes_group_instance_id_with_multi_digit_generation_single_core() {
+        let cfg = make_config_with_group_instance_id("instance-1");
+        let ctx = make_pipeline_ctx_with_generation(0, 1, 1024);
+        let receiver = KafkaReceiver::new(ctx, cfg).expect("receiver should build");
+        assert_eq!(
+            receiver.config.group_instance_id(),
+            Some("instance-1-g1024"),
+            "single-core pipeline embeds the full multi-digit generation and no core"
         );
     }
 
