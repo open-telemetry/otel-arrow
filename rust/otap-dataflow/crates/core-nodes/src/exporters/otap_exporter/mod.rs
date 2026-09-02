@@ -68,12 +68,10 @@ use serde_json::Value;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tonic::metadata::MetadataMap;
 use tonic::transport::Channel;
@@ -912,6 +910,30 @@ struct CorrelatedPdata {
     export_started_at: Instant,
 }
 
+/// How `create_req_stream` settled the first pdata's terminal outcome.
+///
+/// `create_req_stream` sends exactly one of these, once, after it finishes
+/// handling the first pdata (success or failure) and before it moves on to
+/// the remaining batches. `fail_stream_open_pdata` awaits this to learn what,
+/// if anything, it still needs to do: the `oneshot::Receiver::await`
+/// establishes a happens-before relationship with whichever branch of
+/// `create_req_stream` sent it, so the outer side can never observe a
+/// stale/empty `correlation_rx` for a correlation that was already
+/// published, nor double-report a failure `create_req_stream` already sent
+/// directly.
+#[derive(Debug)]
+enum FirstPdataOutcome {
+    /// The first pdata was successfully encoded and handed to
+    /// `correlation_tx`; the outer side should drain it from
+    /// `correlation_rx` (it is guaranteed to be there or already consumed)
+    /// and report it under its own error policy (e.g. NACK on shutdown).
+    Correlated,
+    /// The first pdata already reached a terminal outcome (encoding or
+    /// correlation-enqueue failure) and was reported directly via
+    /// `pdata_metrics_tx`; the outer side must not report it again.
+    ReportedDirectly,
+}
+
 async fn stream_arrow_batches<T: StreamingArrowService>(
     mut client: T,
     signal_type: SignalType,
@@ -958,11 +980,11 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
                 // Clone first_pdata before moving it into the stream, so we can
                 // NACK it if the connection fails before the stream is polled.
                 let first_pdata_fallback = first_pdata.clone();
-                // The request stream can fail the first pdata directly (for
-                // example, during encoding), without sending a correlation.
-                // Track that terminal outcome so the shutdown fallback does
-                // not NACK the same pdata a second time.
-                let first_pdata_handled = Arc::new(AtomicBool::new(false));
+                // The request stream settles the first pdata's terminal
+                // outcome exactly once (see `FirstPdataOutcome`) and reports
+                // it here; the shutdown/connect-error fallback below awaits
+                // it to learn whether it still needs to act.
+                let (first_pdata_outcome_tx, first_pdata_outcome_rx) = oneshot::channel();
 
                 // create the request stream
                 let req_stream = create_req_stream(
@@ -975,7 +997,7 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
                     pdata_metrics_tx.clone(),
                     worker_metrics.request_metrics(),
                     correlation_tx.clone(),
-                    first_pdata_handled.clone(),
+                    first_pdata_outcome_tx,
                 );
 
                 // Attach the configured static `headers` as the stream's initial
@@ -1033,7 +1055,7 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
                             &mut correlation_rx,
                             first_pdata_fallback,
                             first_export_started_at,
-                            first_pdata_handled,
+                            first_pdata_outcome_rx,
                             OtapExporterErrorType::Shutdown,
                         )
                         .await;
@@ -1067,7 +1089,7 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
                             &mut correlation_rx,
                             first_pdata_fallback,
                             first_export_started_at,
-                            first_pdata_handled,
+                            first_pdata_outcome_rx,
                             error_type,
                         )
                         .await;
@@ -1104,9 +1126,30 @@ async fn fail_stream_open_pdata(
     correlation_rx: &mut Receiver<CorrelatedPdata>,
     first_pdata_fallback: OtapPdata,
     first_export_started_at: Instant,
-    first_pdata_handled: Arc<AtomicBool>,
+    first_pdata_outcome_rx: oneshot::Receiver<FirstPdataOutcome>,
     error_type: OtapExporterErrorType,
 ) {
+    // `create_req_stream` runs concurrently (as a stream driven by Tonic's
+    // request-body polling) and can still be settling the first pdata's
+    // outcome after this function starts running -- for example, publishing
+    // a correlation just as this function is about to decide there is
+    // nothing to drain. Awaiting `first_pdata_outcome_rx` before touching
+    // `correlation_rx` or the fallback avoids that race: the sender is only
+    // dropped after `create_req_stream` has fully committed the outcome
+    // (published the correlation or sent the direct failure), so once we
+    // resume, `correlation_rx` cannot be missing a correlation that was
+    // already published, and we cannot double-report a failure that was
+    // already sent directly.
+    //
+    // `Err` means the sender was dropped without ever settling an outcome
+    // (e.g. `create_req_stream` never got far enough to reach either
+    // terminal branch), so the fallback clone is still the only record of
+    // this pdata and must be reported.
+    let already_reported = match first_pdata_outcome_rx.await {
+        Ok(FirstPdataOutcome::Correlated) | Err(_) => false,
+        Ok(FirstPdataOutcome::ReportedDirectly) => true,
+    };
+
     let mut drained = false;
     while let Ok(correlated) = correlation_rx.try_recv() {
         drained = true;
@@ -1119,7 +1162,7 @@ async fn fail_stream_open_pdata(
             ))
             .await;
     }
-    if !drained && !first_pdata_handled.load(Ordering::Acquire) {
+    if !drained && !already_reported {
         _ = pdata_metrics_tx
             .send(PDataMetricsUpdate::IncFailed(
                 signal_type,
@@ -1142,7 +1185,7 @@ fn create_req_stream(
     pdata_metrics_tx: Sender<PDataMetricsUpdate>,
     request_metrics: OtapRequestStreamMetricsHandle,
     correlation_tx: Sender<CorrelatedPdata>,
-    first_pdata_handled: Arc<AtomicBool>,
+    first_pdata_outcome_tx: oneshot::Sender<FirstPdataOutcome>,
 ) -> impl IntoStreamingRequest<Message = BatchArrowRecords> {
     stream! {
         let mut producer = Producer::new_with_options(ProducerOptions {
@@ -1169,7 +1212,7 @@ fn create_req_stream(
                             pdata: first_pdata,
                             export_started_at: first_export_started_at,
                         });
-                        first_pdata_handled.store(true, Ordering::Release);
+                        _ = first_pdata_outcome_tx.send(FirstPdataOutcome::Correlated);
                         yield bar;
                     }
                     Err(_) => {
@@ -1181,7 +1224,7 @@ fn create_req_stream(
                                 OtapExporterErrorType::Internal,
                             ))
                             .await;
-                        first_pdata_handled.store(true, Ordering::Release);
+                        _ = first_pdata_outcome_tx.send(FirstPdataOutcome::ReportedDirectly);
                     }
                 }
             }
@@ -1192,7 +1235,7 @@ fn create_req_stream(
                     first_export_started_at.elapsed(),
                     OtapExporterErrorType::Encoding,
                 )).await;
-                first_pdata_handled.store(true, Ordering::Release);
+                _ = first_pdata_outcome_tx.send(FirstPdataOutcome::ReportedDirectly);
             }
         };
 
@@ -2370,6 +2413,169 @@ mod tests {
         })
         .await
         .expect("timed out waiting for IncFailed");
+    }
+
+    /// Scenario: `create_req_stream` does not publish the first pdata's
+    /// correlation and does not signal `FirstPdataOutcome::Correlated` until
+    /// after `fail_stream_open_pdata` has already started waiting on the
+    /// outcome oneshot, reproducing the narrow window in which the two
+    /// sides could otherwise disagree about whether the first pdata has
+    /// been correlated yet.
+    /// Guarantees: `fail_stream_open_pdata` awaits the outcome before
+    /// deciding anything, so it always observes the late-published
+    /// correlation and reports the first pdata as failed exactly once (never
+    /// zero times, dropping it silently, and never twice, via the fallback
+    /// clone).
+    #[tokio::test]
+    async fn test_fail_stream_open_pdata_awaits_late_published_correlation() {
+        use super::{
+            CorrelatedPdata, FirstPdataOutcome, OtapExporterErrorType, PDataMetricsUpdate,
+            fail_stream_open_pdata,
+        };
+
+        let (correlation_tx, mut correlation_rx) = tokio::sync::mpsc::channel(1);
+        let (metrics_tx, mut metrics_rx) = tokio::sync::mpsc::channel(4);
+        let (outcome_tx, outcome_rx) = tokio::sync::oneshot::channel();
+
+        let log_message = create_otap_batch(LOG_BATCH_ID, ArrowPayloadType::Logs);
+        let correlated_pdata = OtapPdata::new_default(log_message.into());
+        let fallback_pdata = correlated_pdata.clone();
+        let export_started_at = Instant::now();
+
+        tokio::join!(
+            fail_stream_open_pdata(
+                &metrics_tx,
+                SignalType::Logs,
+                &mut correlation_rx,
+                fallback_pdata,
+                export_started_at,
+                outcome_rx,
+                OtapExporterErrorType::Shutdown,
+            ),
+            async {
+                // Yield so `fail_stream_open_pdata` reaches its
+                // `first_pdata_outcome_rx.await` before the correlation and
+                // outcome are published, reproducing the race window: an
+                // outer drain that would otherwise fire before the
+                // correlation actually lands in the channel.
+                tokio::task::yield_now().await;
+                correlation_tx
+                    .send(CorrelatedPdata {
+                        batch_id: 1,
+                        pdata: correlated_pdata,
+                        export_started_at,
+                    })
+                    .await
+                    .unwrap();
+                outcome_tx.send(FirstPdataOutcome::Correlated).unwrap();
+            }
+        );
+
+        let update = timeout(Duration::from_secs(1), metrics_rx.recv())
+            .await
+            .expect("timed out waiting for IncFailed")
+            .expect("metrics channel closed");
+        match update {
+            PDataMetricsUpdate::IncFailed(
+                SignalType::Logs,
+                _,
+                _,
+                OtapExporterErrorType::Shutdown,
+            ) => {}
+            _ => panic!("expected a single IncFailed update for the correlated pdata"),
+        }
+
+        // No second report (e.g. of the fallback clone) should follow.
+        assert!(
+            timeout(Duration::from_millis(50), metrics_rx.recv())
+                .await
+                .is_err(),
+            "fail_stream_open_pdata must not report the first pdata twice"
+        );
+    }
+
+    /// Scenario: `create_req_stream` already reported the first pdata's own
+    /// terminal failure directly (e.g. an encoding or correlation-enqueue
+    /// error) and signals `FirstPdataOutcome::ReportedDirectly` while
+    /// `fail_stream_open_pdata` is waiting on the outcome oneshot.
+    /// Guarantees: `fail_stream_open_pdata` does not re-report the fallback
+    /// clone; no metrics update is emitted from the shutdown path.
+    #[tokio::test]
+    async fn test_fail_stream_open_pdata_skips_fallback_when_first_pdata_reported_directly() {
+        use super::{FirstPdataOutcome, OtapExporterErrorType, fail_stream_open_pdata};
+
+        let (_correlation_tx, mut correlation_rx) = tokio::sync::mpsc::channel(1);
+        let (metrics_tx, mut metrics_rx) = tokio::sync::mpsc::channel(4);
+        let (outcome_tx, outcome_rx) = tokio::sync::oneshot::channel();
+
+        let log_message = create_otap_batch(LOG_BATCH_ID, ArrowPayloadType::Logs);
+        let fallback_pdata = OtapPdata::new_default(log_message.into());
+
+        tokio::join!(
+            fail_stream_open_pdata(
+                &metrics_tx,
+                SignalType::Logs,
+                &mut correlation_rx,
+                fallback_pdata,
+                Instant::now(),
+                outcome_rx,
+                OtapExporterErrorType::Shutdown,
+            ),
+            async {
+                tokio::task::yield_now().await;
+                _ = outcome_tx.send(FirstPdataOutcome::ReportedDirectly);
+            }
+        );
+
+        assert!(
+            timeout(Duration::from_millis(50), metrics_rx.recv())
+                .await
+                .is_err(),
+            "fail_stream_open_pdata must not re-report a first pdata already handled directly"
+        );
+    }
+
+    /// Scenario: the request-stream task is torn down before it reaches
+    /// either terminal branch for the first pdata, so the outcome oneshot
+    /// sender is dropped without ever sending.
+    /// Guarantees: `fail_stream_open_pdata` falls back to reporting the
+    /// cloned first pdata as failed, so shutdown never silently drops it.
+    #[tokio::test]
+    async fn test_fail_stream_open_pdata_reports_fallback_when_outcome_sender_dropped() {
+        use super::{OtapExporterErrorType, PDataMetricsUpdate, fail_stream_open_pdata};
+
+        let (_correlation_tx, mut correlation_rx) = tokio::sync::mpsc::channel(1);
+        let (metrics_tx, mut metrics_rx) = tokio::sync::mpsc::channel(4);
+        let (outcome_tx, outcome_rx) = tokio::sync::oneshot::channel();
+        drop(outcome_tx);
+
+        let log_message = create_otap_batch(LOG_BATCH_ID, ArrowPayloadType::Logs);
+        let fallback_pdata = OtapPdata::new_default(log_message.into());
+
+        fail_stream_open_pdata(
+            &metrics_tx,
+            SignalType::Logs,
+            &mut correlation_rx,
+            fallback_pdata,
+            Instant::now(),
+            outcome_rx,
+            OtapExporterErrorType::Shutdown,
+        )
+        .await;
+
+        let update = timeout(Duration::from_secs(1), metrics_rx.recv())
+            .await
+            .expect("timed out waiting for IncFailed")
+            .expect("metrics channel closed");
+        match update {
+            PDataMetricsUpdate::IncFailed(
+                SignalType::Logs,
+                _,
+                _,
+                OtapExporterErrorType::Shutdown,
+            ) => {}
+            _ => panic!("expected the fallback pdata to be reported as failed"),
+        }
     }
 
     /// A stream-creation failure may leave the OTAP exporter in reconnect backoff.
