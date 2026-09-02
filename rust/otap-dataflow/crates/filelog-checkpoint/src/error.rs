@@ -179,6 +179,18 @@ pub enum DecodeError {
         /// Caller-provided maximum record count.
         max: u32,
     },
+    /// An authenticated snapshot count cannot fit in the supplied bytes.
+    #[error(
+        "snapshot declares {declared} records, but {snapshot_bytes} bytes can physically contain at most {max}"
+    )]
+    SnapshotRecordCountExceedsPhysicalMaximum {
+        /// Untrusted record count from the validated snapshot header.
+        declared: u32,
+        /// Maximum complete minimum-width record frames the bytes can contain.
+        max: u64,
+        /// Complete supplied snapshot width.
+        snapshot_bytes: usize,
+    },
     /// A snapshot record violated a self-contained reachable-state rule.
     #[error("snapshot record {file_id:?} is invalid: {reason}")]
     InvalidSnapshotState {

@@ -536,7 +536,13 @@ impl Operation {
                         }
                     }
                     ResetQuarantineAction::KeepFailed => {
-                        // Equality with stored state is deliberately a PR1B rule.
+                        if op.resulting_epoch != op.expected_quarantine_epoch {
+                            return Err(invalid_field(
+                                "reset_quarantined_file.resulting_epoch",
+                                "must equal expected_quarantine_epoch for keep_failed",
+                            ));
+                        }
+                        // All other equality with stored state is deliberately a PR1B rule.
                         require_guard_for_offset(
                             "reset_quarantined_file.new_committed_frontier_guard",
                             &op.new_committed_frontier_guard,
@@ -1249,8 +1255,13 @@ pub enum TransactionScan {
         /// Bytes consumed from the supplied suffix.
         consumed: usize,
     },
-    /// The entire non-empty suffix is a mechanically allowed torn tail.
-    TornTail {
+    /// The supplied non-empty suffix cannot contain the complete transaction
+    /// described by a validated header, or is shorter than a complete header.
+    ///
+    /// This codec does not know whether the slice reaches physical EOF. A
+    /// future store may classify this as a permitted final torn tail only
+    /// after proving EOF; otherwise it must read again without discarding.
+    Incomplete {
         /// Incomplete suffix width.
         bytes: usize,
     },
@@ -1262,6 +1273,9 @@ pub enum TransactionScan {
 /// transaction, advance by `consumed`, and drop it before scanning the next.
 /// This keeps recovery memory bounded by one transaction. The expected
 /// sequence must be nonzero; a fresh WAL generation begins at one.
+///
+/// `TransactionScan::Incomplete` describes only the supplied slice. It never
+/// proves physical EOF and never authorizes truncation or byte discard.
 pub fn scan_next_transaction(
     bytes: &[u8],
     expected_sequence: u64,
@@ -1273,62 +1287,52 @@ pub fn scan_next_transaction(
         return Ok(None);
     }
     if bytes.len() < TX_HEADER_BYTES {
-        return Ok(Some(TransactionScan::TornTail { bytes: bytes.len() }));
+        return Ok(Some(TransactionScan::Incomplete { bytes: bytes.len() }));
     }
     let header_bytes = &bytes[..TX_HEADER_BYTES];
     let mut header = Reader::new(header_bytes);
-    if header.exact(8)? != TX_MAGIC {
+    let magic = header.exact(8)?;
+    let version = header.u16()?;
+    let flags = header.u16()?;
+    let sequence = header.u64()?;
+    let body_len = header.u32()?;
+    let complement = header.u32()?;
+    let op_count = header.u16()?;
+    let reserved = header.u16()?;
+    let stored_header_crc = header.u32()?;
+
+    if magic != TX_MAGIC {
         return Err(DecodeError::BadMagic {
             context: "WAL transaction header",
         });
     }
-    let version = header.u16()?;
     if version != TX_ENVELOPE_VERSION {
         return Err(DecodeError::UnsupportedVersion {
             context: "WAL transaction envelope",
             found: version,
         });
     }
-    let flags = header.u16()?;
     if flags != 0 {
         return Err(DecodeError::ReservedFieldNonZero {
             field: "wal_transaction.tx_flags",
             value: u64::from(flags),
         });
     }
-    let sequence = header.u64()?;
-    let body_len = header.u32()?;
-    let complement = header.u32()?;
-    if complement != !body_len {
-        return Err(DecodeError::LengthComplementMismatch { sequence });
-    }
-    let op_count = header.u16()?;
-    let reserved = header.u16()?;
     if reserved != 0 {
         return Err(DecodeError::ReservedFieldNonZero {
             field: "wal_transaction.reserved",
             value: u64::from(reserved),
         });
     }
-    let stored_header_crc = header.u32()?;
+    if complement != !body_len {
+        return Err(DecodeError::LengthComplementMismatch { sequence });
+    }
     let computed_header_crc = crc32c(&header_bytes[..32]);
     if stored_header_crc != computed_header_crc {
         return Err(DecodeError::ChecksumMismatch {
             context: "WAL transaction header",
             stored: stored_header_crc,
             computed: computed_header_crc,
-        });
-    }
-    if sequence == 0 {
-        return Err(DecodeError::SequenceOutOfOrder {
-            expected: expected_sequence,
-            found: sequence,
-        });
-    }
-    if sequence != expected_sequence {
-        return Err(DecodeError::SequenceOutOfOrder {
-            expected: expected_sequence,
-            found: sequence,
         });
     }
     let body_len_u64 = u64::from(body_len);
@@ -1350,6 +1354,12 @@ pub fn scan_next_transaction(
             max: WAL_MAX_OPS_PER_TX,
         });
     }
+    if sequence != expected_sequence {
+        return Err(DecodeError::SequenceOutOfOrder {
+            expected: expected_sequence,
+            found: sequence,
+        });
+    }
     let body_len_usize =
         usize::try_from(body_len).map_err(|_| DecodeError::ArithmeticOverflow {
             context: "transaction body length to usize",
@@ -1361,7 +1371,7 @@ pub fn scan_next_transaction(
             context: "transaction frame length",
         })?;
     if bytes.len() < needed {
-        return Ok(Some(TransactionScan::TornTail { bytes: bytes.len() }));
+        return Ok(Some(TransactionScan::Incomplete { bytes: bytes.len() }));
     }
     let frame_crc_offset = needed - TX_FRAME_CRC_BYTES;
     let stored_frame_crc =
@@ -1400,6 +1410,10 @@ pub fn encode_wal_header(generation: u64, checkpoint_id: &str) -> Result<Vec<u8>
 }
 
 /// Decodes one exact version 1 WAL header.
+///
+/// This validates and returns the namespace digest encoded in the header. A
+/// future store must compare that digest with the selected checkpoint
+/// namespace before replaying any transaction.
 pub fn decode_wal_header(bytes: &[u8]) -> Result<WalHeader, DecodeError> {
     if bytes.len() != WAL_HEADER_BYTES {
         return Err(DecodeError::InvalidLength {

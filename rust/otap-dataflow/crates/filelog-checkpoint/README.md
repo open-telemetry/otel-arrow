@@ -53,18 +53,25 @@ The codec validates the structure of each operation and transaction. Rules
 that depend on a previously stored record are checked later while replaying the
 operation against the checkpoint table.
 
-For example, a `keep_failed` operation is structurally valid on its own. Replay
-must still confirm that its epoch, offset, frontier guard, fingerprint, and
-framing state match the stored quarantined record exactly.
+For example, the decoder preserves structurally decodable `keep_failed` values
+for later replay checks. The current producer rejects the locally impossible
+case where `resulting_epoch` differs from `expected_quarantine_epoch`. Replay
+must still compare the offset, frontier guard, fingerprint, framing state, and
+all other stored quarantined state exactly.
 
-Snapshot decoding takes the caller's current tracked-file limit. A snapshot
-declaring more records than that limit is rejected before record storage is
-allocated or record bodies are decoded.
+Snapshot decoding takes the caller's current tracked-file limit. Before record
+storage is allocated or a body is decoded, the authenticated count must fit
+both that limit and the maximum number of minimum-width record frames
+physically possible in the supplied snapshot bytes.
 
 WAL recovery is incremental. `scan_next_transaction` returns at most one
 validated transaction, allowing the caller to apply and drop it before
 decoding the next transaction. The codec does not collect the complete WAL in
-memory.
+memory. `TransactionScan::Incomplete` means only that the supplied non-empty
+slice cannot hold the complete next transaction. The codec cannot know whether
+the slice reaches physical EOF and never authorizes truncation; a future store
+must read again unless it independently confirms the permitted final torn-tail
+condition at EOF.
 
 ## Consumers
 

@@ -18,3 +18,7 @@ metadata and non-administrative removal fields, `keep_failed` preservation and
 mutation, the minimum transaction body, the 4,096-operation progress boundary,
 zero-delta finalization, path representations, frontier guards, and framing
 profiles.
+
+The mutated `keep_failed` fixture is intentionally structurally decodable for
+future replay rejection. Its unequal carried epochs are not valid output from
+the current version 1 producer.

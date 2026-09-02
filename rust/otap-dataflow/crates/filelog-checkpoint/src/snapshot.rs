@@ -20,6 +20,11 @@ pub const SNAPSHOT_HEADER_BYTES: usize = 60;
 pub const SNAPSHOT_FOOTER_BYTES: usize = 24;
 const SNAPSHOT_RECORD_LENGTH_BYTES: u64 = size_of::<u32>() as u64;
 const SNAPSHOT_RECORD_CRC_BYTES: u64 = size_of::<u32>() as u64;
+/// Minimum version 1 payload: an Active record with empty bounded fields.
+const SNAPSHOT_MIN_RECORD_PAYLOAD_BYTES: usize = 173;
+/// Minimum complete version 1 record frame, including length and CRC.
+const SNAPSHOT_MIN_RECORD_FRAME_BYTES: usize =
+    size_of::<u32>() + SNAPSHOT_MIN_RECORD_PAYLOAD_BYTES + size_of::<u32>();
 /// Maximum complete version 1 snapshot record frame.
 pub const SNAPSHOT_MAX_RECORD_FRAME_BYTES: u64 =
     SNAPSHOT_RECORD_LENGTH_BYTES + SNAPSHOT_MAX_RECORD_PAYLOAD_BYTES + SNAPSHOT_RECORD_CRC_BYTES;
@@ -340,8 +345,9 @@ pub fn encode_snapshot(
 
 /// Decodes one complete version 1 snapshot for `expected_namespace_digest`.
 ///
-/// `max_records` is checked against the authenticated header count before any
-/// record storage is allocated or any record body is decoded.
+/// The authenticated header count is checked against both `max_records` and
+/// the maximum number of minimum-width frames physically possible in `bytes`
+/// before any record storage is allocated or any record body is decoded.
 pub fn decode_snapshot(
     bytes: &[u8],
     expected_namespace_digest: &[u8; 32],
@@ -394,6 +400,19 @@ pub fn decode_snapshot(
         return Err(DecodeError::SnapshotRecordCountExceedsLimit {
             declared: record_count,
             max: max_records,
+        });
+    }
+    let available_record_region = bytes
+        .len()
+        .saturating_sub(SNAPSHOT_HEADER_BYTES.saturating_add(SNAPSHOT_FOOTER_BYTES));
+    let maximum_physical_records =
+        u64::try_from(available_record_region / SNAPSHOT_MIN_RECORD_FRAME_BYTES)
+            .unwrap_or(u64::MAX);
+    if u64::from(record_count) > maximum_physical_records {
+        return Err(DecodeError::SnapshotRecordCountExceedsPhysicalMaximum {
+            declared: record_count,
+            max: maximum_physical_records,
+            snapshot_bytes: bytes.len(),
         });
     }
 

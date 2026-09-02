@@ -26,14 +26,14 @@ const WAL_HEADER: &[u8] = include_bytes!("fixtures/wal-header.bin");
 
 struct TestScanResult {
     transactions: Vec<Transaction>,
-    torn_tail_bytes: usize,
+    incomplete_bytes: usize,
 }
 
 fn scan_all_for_test(bytes: &[u8]) -> Result<TestScanResult, DecodeError> {
     let mut suffix = bytes;
     let mut expected_sequence = 1u64;
     let mut transactions = Vec::new();
-    let mut torn_tail_bytes = 0;
+    let mut incomplete_bytes = 0;
     while let Some(scan) = scan_next_transaction(suffix, expected_sequence)? {
         match scan {
             TransactionScan::Complete {
@@ -44,15 +44,15 @@ fn scan_all_for_test(bytes: &[u8]) -> Result<TestScanResult, DecodeError> {
                 suffix = &suffix[consumed..];
                 expected_sequence += 1;
             }
-            TransactionScan::TornTail { bytes } => {
-                torn_tail_bytes = bytes;
+            TransactionScan::Incomplete { bytes } => {
+                incomplete_bytes = bytes;
                 break;
             }
         }
     }
     Ok(TestScanResult {
         transactions,
-        torn_tail_bytes,
+        incomplete_bytes,
     })
 }
 
@@ -248,8 +248,10 @@ fn every_operation_fixture_matches_codec() {
     ));
 }
 
-/// Scenario: A keep_failed operation contains values that may conflict with stored state.
-/// Guarantees: PR1A preserves the structural PR1B test case without attempting table-dependent rejection.
+/// Scenario: An independently mutated keep_failed operation carries a
+/// resulting epoch different from its expected quarantine epoch.
+/// Guarantees: The decoder preserves the structurally decodable PR1B fixture,
+/// while the current producer rejects the locally impossible epoch relation.
 #[test]
 fn keep_failed_mutation_remains_structurally_valid() {
     let bytes = include_bytes!("fixtures/operation-keep-failed-mutation.bin");
@@ -259,11 +261,27 @@ fn keep_failed_mutation_remains_structurally_valid() {
         panic!("fixture must carry reset_quarantined_file");
     };
     assert_eq!(operation.action, ResetQuarantineAction::KeepFailed);
+    assert_eq!(operation.expected_quarantine_epoch, 1);
     assert_eq!(operation.resulting_epoch, 99);
-    assert_eq!(
-        encode_operation(&Operation::ResetQuarantinedFile(operation.clone())).unwrap(),
-        bytes
-    );
+    assert!(matches!(
+        encode_operation(&Operation::ResetQuarantinedFile(operation.clone())),
+        Err(EncodeError::InvalidFieldValue {
+            field: "reset_quarantined_file.resulting_epoch",
+            ..
+        })
+    ));
+
+    let transaction_bytes = include_bytes!("fixtures/transaction-keep-failed-mutation.bin");
+    let Some(TransactionScan::Complete { transaction, .. }) =
+        scan_next_transaction(transaction_bytes, 1).unwrap()
+    else {
+        panic!("mutated keep_failed transaction must remain decodable");
+    };
+    let [Operation::ResetQuarantinedFile(decoded)] = transaction.operations.as_slice() else {
+        panic!("mutated transaction must preserve one quarantine operation");
+    };
+    assert_eq!(decoded.expected_quarantine_epoch, 1);
+    assert_eq!(decoded.resulting_epoch, 99);
 }
 
 /// Scenario: Every operation is independently wrapped in a complete one-operation transaction.
@@ -278,7 +296,6 @@ fn every_operation_transaction_fixture_matches_codec() {
         include_bytes!("fixtures/transaction-update-metadata.bin"),
         include_bytes!("fixtures/transaction-quarantine-file.bin"),
         include_bytes!("fixtures/transaction-reset-quarantined-keep-failed.bin"),
-        include_bytes!("fixtures/transaction-keep-failed-mutation.bin"),
         include_bytes!("fixtures/transaction-remove-file.bin"),
         include_bytes!("fixtures/transaction-reset-quarantined-beginning.bin"),
         include_bytes!("fixtures/transaction-reset-quarantined-end.bin"),
@@ -287,7 +304,7 @@ fn every_operation_transaction_fixture_matches_codec() {
     ];
     for bytes in fixtures {
         let scan = scan_all_for_test(bytes).unwrap();
-        assert_eq!(scan.torn_tail_bytes, 0);
+        assert_eq!(scan.incomplete_bytes, 0);
         assert_eq!(scan.transactions.len(), 1);
         assert_eq!(encode_transaction(&scan.transactions[0]).unwrap(), *bytes);
     }
@@ -362,7 +379,7 @@ fn transaction_class_fixtures_are_accepted() {
     ] {
         let scan = scan_all_for_test(bytes).unwrap();
         assert_eq!(scan.transactions[0].operations.len(), 2);
-        assert_eq!(scan.torn_tail_bytes, 0);
+        assert_eq!(scan.incomplete_bytes, 0);
     }
 }
 
@@ -543,9 +560,10 @@ fn framing_profile_fixtures_match_codec() {
 }
 
 /// Scenario: Recovery scans one hundred correctly sequenced transactions and then an empty suffix.
-/// Guarantees: The public scanner returns only one transaction at a time and clean EOF is distinct from a torn tail.
+/// Guarantees: The public scanner returns only one transaction at a time and
+/// an empty slice is distinct from a non-empty incomplete suffix.
 #[test]
-fn transaction_scanning_is_incremental_and_accepts_clean_eof() {
+fn transaction_scanning_is_incremental_and_accepts_empty_suffix() {
     let operation = decode_operation(include_bytes!("fixtures/operation-update-metadata.bin"))
         .unwrap()
         .0;

@@ -1,12 +1,13 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Structural corruption, bounds, invariant, and torn-tail tests.
+//! Structural corruption, bounds, invariant, and incomplete-suffix tests.
 
 use otel_arrow_dfe_filelog_checkpoint::{
-    CommittedFrontierGuard, DecodeError, EncodeError, FileId, FramingResume, LifecycleState,
-    Locator, Operation, QuarantineEvidence, SnapshotRecord, Transaction, TransactionScan,
-    WAL_MAX_OPS_PER_TX, crc32c, decode_current, decode_operation, decode_snapshot,
+    AdvisoryPath, CommittedFrontierGuard, DecodeError, EncodeError, FRAMING_PROFILE_VERSION,
+    FileId, FramingResume, LifecycleState, Locator, Operation, QuarantineEvidence,
+    SNAPSHOT_FOOTER_BYTES, SNAPSHOT_HEADER_BYTES, SnapshotRecord, TX_MIN_BODY_BYTES, Transaction,
+    TransactionScan, WAL_MAX_OPS_PER_TX, crc32c, decode_current, decode_operation, decode_snapshot,
     decode_wal_header, encode_operation, encode_snapshot, encode_transaction, namespace_digest,
     scan_next_transaction,
 };
@@ -20,14 +21,14 @@ const METADATA_OP: &[u8] = include_bytes!("fixtures/operation-update-metadata.bi
 
 struct TestScanResult {
     transactions: Vec<Transaction>,
-    torn_tail_bytes: usize,
+    incomplete_bytes: usize,
 }
 
 fn scan_all_for_test(bytes: &[u8]) -> Result<TestScanResult, DecodeError> {
     let mut suffix = bytes;
     let mut expected_sequence = 1u64;
     let mut transactions = Vec::new();
-    let mut torn_tail_bytes = 0;
+    let mut incomplete_bytes = 0;
     while let Some(scan) = scan_next_transaction(suffix, expected_sequence)? {
         match scan {
             TransactionScan::Complete {
@@ -38,15 +39,15 @@ fn scan_all_for_test(bytes: &[u8]) -> Result<TestScanResult, DecodeError> {
                 suffix = &suffix[consumed..];
                 expected_sequence += 1;
             }
-            TransactionScan::TornTail { bytes } => {
-                torn_tail_bytes = bytes;
+            TransactionScan::Incomplete { bytes } => {
+                incomplete_bytes = bytes;
                 break;
             }
         }
     }
     Ok(TestScanResult {
         transactions,
-        torn_tail_bytes,
+        incomplete_bytes,
     })
 }
 
@@ -310,6 +311,71 @@ fn snapshot_record_count_is_checked_before_record_allocation_and_decode() {
         Err(DecodeError::SnapshotRecordCountExceedsLimit {
             declared: 1,
             max: 0,
+        })
+    );
+}
+
+/// Scenario: Authenticated snapshot headers declare exactly one minimum-width
+/// record, one more record than those bytes can hold, and `u32::MAX` records
+/// in a header-only slice.
+/// Guarantees: Exact physical equality decodes, while impossible counts are
+/// rejected before a deliberately corrupt record body or any allocation.
+#[test]
+fn snapshot_record_count_is_physically_bounded_before_decode() {
+    let namespace = namespace_digest("app-logs").unwrap();
+    let minimum_record = SnapshotRecord {
+        file_id: FileId::from_bytes([0xA1; 16]),
+        file_epoch: 1,
+        committed_offset: 0,
+        committed_frontier_guard: CommittedFrontierGuard::empty(),
+        fingerprint: Vec::new(),
+        ignored_header_bytes: 0,
+        locator: Locator::PosixDevIno { dev: 1, ino: 1 },
+        framing_profile_version: FRAMING_PROFILE_VERSION,
+        framing_profile_digest: [0xB2; 32],
+        framing_resume: FramingResume::Clean,
+        lifecycle_state: LifecycleState::Active,
+        quarantine_evidence: None,
+        last_seen_time_unix_nano: 0,
+        advisory_path: AdvisoryPath::unavailable(),
+    };
+    let exact = encode_snapshot(7, "app-logs", &[minimum_record]).unwrap();
+    assert_eq!(
+        exact.len(),
+        SNAPSHOT_HEADER_BYTES + 181 + SNAPSHOT_FOOTER_BYTES
+    );
+    assert_eq!(
+        decode_snapshot(&exact, &namespace, u32::MAX)
+            .unwrap()
+            .records
+            .len(),
+        1
+    );
+
+    let mut one_more = exact.clone();
+    put_u32(&mut one_more, 52, 2);
+    let header_crc = crc32c(&one_more[..56]);
+    put_u32(&mut one_more, 56, header_crc);
+    one_more[SNAPSHOT_HEADER_BYTES + 4] ^= 1;
+    assert_eq!(
+        decode_snapshot(&one_more, &namespace, u32::MAX),
+        Err(DecodeError::SnapshotRecordCountExceedsPhysicalMaximum {
+            declared: 2,
+            max: 1,
+            snapshot_bytes: exact.len(),
+        })
+    );
+
+    let mut header_only = exact[..SNAPSHOT_HEADER_BYTES].to_vec();
+    put_u32(&mut header_only, 52, u32::MAX);
+    let header_crc = crc32c(&header_only[..56]);
+    put_u32(&mut header_only, 56, header_crc);
+    assert_eq!(
+        decode_snapshot(&header_only, &namespace, u32::MAX),
+        Err(DecodeError::SnapshotRecordCountExceedsPhysicalMaximum {
+            declared: u32::MAX,
+            max: 0,
+            snapshot_bytes: SNAPSHOT_HEADER_BYTES,
         })
     );
 }
@@ -870,7 +936,7 @@ fn wal_encoder_requires_canonical_offset_zero_guards() {
     assert_operation_encode_rejected(reset);
 
     let keep_failed = decode_operation(include_bytes!(
-        "fixtures/operation-keep-failed-mutation.bin"
+        "fixtures/operation-reset-quarantined-keep-failed.bin"
     ))
     .unwrap()
     .0;
@@ -1260,9 +1326,9 @@ fn structural_maximum_fingerprint_operation_is_bounded_and_decodable() {
 }
 
 /// Scenario: Transaction headers carry bad complements, flags, versions, CRCs, or body bounds.
-/// Guarantees: A complete header is fully validated before its declared body can be called torn.
+/// Guarantees: A complete header is fully validated before its declared body can be called incomplete.
 #[test]
-fn transaction_header_corruption_is_rejected_before_torn_tail() {
+fn transaction_header_corruption_is_rejected_before_incomplete() {
     let mut bytes = MIN_TX.to_vec();
     bytes[24] ^= 1;
     assert!(matches!(
@@ -1306,22 +1372,74 @@ fn transaction_header_corruption_is_rejected_before_torn_tail() {
     }
 }
 
-/// Scenario: The final suffix is shorter than a header or shorter than a valid header's declared frame.
-/// Guarantees: Only mechanically incomplete final transactions are classified as torn tails.
+/// Scenario: One header carries multiple faults that are repaired in the
+/// normative validation order.
+/// Guarantees: Reserved fields precede complement/CRC checks, body bounds
+/// precede operation counts, and operation counts precede sequence ordering.
 #[test]
-fn incomplete_final_transaction_is_the_only_torn_tail() {
-    let short = scan_all_for_test(&MIN_TX[..35]).unwrap();
-    assert_eq!(short.torn_tail_bytes, 35);
-    assert!(short.transactions.is_empty());
+fn transaction_header_validation_precedence_matches_the_format() {
+    let mut bytes = MIN_TX.to_vec();
+    put_u64(&mut bytes, 12, 2);
+    put_u32(&mut bytes, 20, TX_MIN_BODY_BYTES as u32 - 1);
+    put_u32(&mut bytes, 24, 0);
+    put_u16(&mut bytes, 28, 0);
+    put_u16(&mut bytes, 30, 1);
+    assert_eq!(
+        scan_next_transaction(&bytes, 1),
+        Err(DecodeError::ReservedFieldNonZero {
+            field: "wal_transaction.reserved",
+            value: 1,
+        })
+    );
+
+    put_u16(&mut bytes, 30, 0);
+    put_u32(&mut bytes, 24, !(TX_MIN_BODY_BYTES as u32 - 1));
+    refresh_transaction_crcs(&mut bytes);
+    assert!(matches!(
+        scan_next_transaction(&bytes, 1),
+        Err(DecodeError::TransactionBodyOutOfBounds { .. })
+    ));
+
+    put_u32(&mut bytes, 20, TX_MIN_BODY_BYTES as u32);
+    put_u32(&mut bytes, 24, !(TX_MIN_BODY_BYTES as u32));
+    refresh_transaction_crcs(&mut bytes);
+    assert_eq!(
+        scan_next_transaction(&bytes, 1),
+        Err(DecodeError::EmptyTransaction { sequence: 2 })
+    );
+
+    put_u16(&mut bytes, 28, 1);
+    refresh_transaction_crcs(&mut bytes);
+    assert_eq!(
+        scan_next_transaction(&bytes, 1),
+        Err(DecodeError::SequenceOutOfOrder {
+            expected: 1,
+            found: 2,
+        })
+    );
+}
+
+/// Scenario: The supplied suffix is shorter than a header or shorter than a
+/// valid header's declared frame.
+/// Guarantees: The codec reports exact incomplete bytes without claiming the
+/// slice reaches physical EOF or authorizing truncation.
+#[test]
+fn incomplete_transaction_suffix_is_reported_without_eof_claim() {
+    assert_eq!(
+        scan_next_transaction(&MIN_TX[..35], 1),
+        Ok(Some(TransactionScan::Incomplete { bytes: 35 }))
+    );
     let missing_frame_crc = scan_all_for_test(&MIN_TX[..MIN_TX.len() - 1]).unwrap();
-    assert_eq!(missing_frame_crc.torn_tail_bytes, MIN_TX.len() - 1);
+    assert_eq!(missing_frame_crc.incomplete_bytes, MIN_TX.len() - 1);
     assert!(missing_frame_crc.transactions.is_empty());
 }
 
-/// Scenario: A valid sequence-1 transaction precedes a mechanically incomplete or complete-corrupt sequence-2 frame.
-/// Guarantees: Incremental recovery drops the first decoded value, reports the exact torn suffix, and still fails closed on complete corruption.
+/// Scenario: A valid sequence-1 transaction precedes an incomplete or
+/// complete-corrupt sequence-2 frame in the supplied slice.
+/// Guarantees: Incremental scanning returns the first transaction, reports the
+/// exact remaining incomplete bytes, and still fails on complete corruption.
 #[test]
-fn torn_tail_after_valid_transaction_is_reported_incrementally() {
+fn incomplete_suffix_after_valid_transaction_is_reported_incrementally() {
     let mut second = MIN_TX.to_vec();
     put_u64(&mut second, 12, 2);
     refresh_transaction_crcs(&mut second);
@@ -1338,9 +1456,9 @@ fn torn_tail_after_valid_transaction_is_reported_incrementally() {
     assert_eq!(transaction.sequence, 1);
     let suffix = &wal[consumed..];
     drop(transaction);
-    let Some(TransactionScan::TornTail { bytes }) = scan_next_transaction(suffix, 2).unwrap()
+    let Some(TransactionScan::Incomplete { bytes }) = scan_next_transaction(suffix, 2).unwrap()
     else {
-        panic!("second transaction must be a torn tail");
+        panic!("second transaction must be incomplete");
     };
     assert_eq!(bytes, suffix.len());
     assert_eq!(bytes, second.len() - 1);
@@ -1362,7 +1480,7 @@ fn torn_tail_after_valid_transaction_is_reported_incrementally() {
 }
 
 /// Scenario: A CRC-valid out-of-sequence header is followed by an incomplete body.
-/// Guarantees: Sequence corruption is reported before incomplete-body torn-tail classification.
+/// Guarantees: Sequence corruption is reported before incomplete-suffix classification.
 #[test]
 fn wrong_sequence_header_with_incomplete_body_is_corruption() {
     let mut bytes = MIN_TX.to_vec();
@@ -1376,7 +1494,7 @@ fn wrong_sequence_header_with_incomplete_body_is_corruption() {
 }
 
 /// Scenario: A complete final transaction has a bad frame CRC or a bad enclosed operation CRC.
-/// Guarantees: Complete corruption is never expanded into automatic torn-tail salvage.
+/// Guarantees: Complete corruption is never reported as an incomplete slice.
 #[test]
 fn complete_bad_crc_transaction_is_corruption() {
     let mut frame_crc = MIN_TX.to_vec();
