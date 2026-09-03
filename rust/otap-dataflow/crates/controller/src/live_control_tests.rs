@@ -28,6 +28,7 @@ use otel_arrow_dfe_telemetry::log_filter::{RuntimeLogFilter, RuntimeLogFilterHan
 use otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot;
 use otel_arrow_dfe_telemetry::tracing_init::ProviderSetup;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Condvar, Mutex, OnceLock};
 use tokio_util::sync::CancellationToken;
 use tracing::{Event, Subscriber};
 use tracing_subscriber::Registry;
@@ -68,6 +69,65 @@ fn test_receiver_create(
     _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
 ) -> Result<ReceiverWrapper<()>, otel_arrow_dfe_config::error::Error> {
     panic!("test receiver factory should not be constructed")
+}
+
+#[derive(Default)]
+struct BlockingReceiverState {
+    entered: bool,
+    release: bool,
+}
+
+fn blocking_receiver_state() -> &'static (Mutex<BlockingReceiverState>, Condvar) {
+    static STATE: OnceLock<(Mutex<BlockingReceiverState>, Condvar)> = OnceLock::new();
+    STATE.get_or_init(|| (Mutex::new(BlockingReceiverState::default()), Condvar::new()))
+}
+
+fn block_test_component_creation() {
+    let (state, changed) = blocking_receiver_state();
+    let mut state = state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    state.entered = true;
+    changed.notify_all();
+    while !state.release {
+        state = changed
+            .wait(state)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+    }
+}
+
+fn blocking_test_receiver_create(
+    pipeline_ctx: PipelineContext,
+    node: otap_df_engine::node::NodeId,
+    node_config: Arc<NodeUserConfig>,
+    receiver_config: &ReceiverConfig,
+    capabilities: &otap_df_engine::capability::registry::Capabilities,
+) -> Result<ReceiverWrapper<()>, otap_df_config::error::Error> {
+    block_test_component_creation();
+    test_receiver_create(
+        pipeline_ctx,
+        node,
+        node_config,
+        receiver_config,
+        capabilities,
+    )
+}
+
+fn blocking_test_exporter_create(
+    pipeline_ctx: PipelineContext,
+    node: otap_df_engine::node::NodeId,
+    node_config: Arc<NodeUserConfig>,
+    exporter_config: &ExporterConfig,
+    capabilities: &otap_df_engine::capability::registry::Capabilities,
+) -> Result<ExporterWrapper<()>, otap_df_config::error::Error> {
+    block_test_component_creation();
+    test_exporter_create(
+        pipeline_ctx,
+        node,
+        node_config,
+        exporter_config,
+        capabilities,
+    )
 }
 
 fn test_exporter_create(
@@ -228,6 +288,61 @@ static TEST_PIPELINE_FACTORY: PipelineFactory<()> = PipelineFactory::new(
     TEST_RECEIVER_FACTORIES,
     TEST_PROCESSOR_FACTORIES,
     TEST_EXPORTER_FACTORIES,
+    &[],
+);
+
+static BLOCKING_TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
+    ReceiverFactory {
+        name: "urn:test:receiver:example",
+        create: blocking_test_receiver_create,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: test_validate_config,
+    },
+    ReceiverFactory {
+        name: "urn:otel:receiver:topic",
+        create: test_receiver_create,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: test_validate_config,
+    },
+    ReceiverFactory {
+        name: "urn:otel:receiver:internal_telemetry",
+        create: test_receiver_create,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: test_validate_config,
+    },
+];
+
+static BLOCKING_TEST_EXPORTER_FACTORIES: &[ExporterFactory<()>] = &[
+    ExporterFactory {
+        name: "urn:test:exporter:example",
+        create: blocking_test_exporter_create,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: test_validate_config,
+    },
+    ExporterFactory {
+        name: "urn:otel:exporter:topic",
+        create: test_exporter_create,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: test_validate_config,
+    },
+    ExporterFactory {
+        name: "urn:otel:exporter:console",
+        create: test_exporter_create,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: test_validate_config,
+    },
+    ExporterFactory {
+        name: "urn:otel:exporter:noop",
+        create: test_exporter_create,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: test_validate_config,
+    },
+];
+
+static BLOCKING_TEST_PIPELINE_FACTORY: PipelineFactory<()> = PipelineFactory::new(
+    BLOCKING_TEST_RECEIVER_FACTORIES,
+    TEST_PROCESSOR_FACTORIES,
+    BLOCKING_TEST_EXPORTER_FACTORIES,
     &[],
 );
 
@@ -3982,6 +4097,178 @@ fn reconcile_engine_config_applies_runtime_log_level() {
     assert_eq!(log_filter_handle.configured_level().as_str(), "warn");
     tracing::dispatcher::with_default(&dispatch, emit_info);
     assert_eq!(event_count.load(Ordering::SeqCst), 0);
+}
+
+/// Scenario: full-config reconciliation raises the log level while pipeline construction is blocked and then fails.
+/// Guarantees: the candidate level is active during rollout, then the prior directives and committed config are restored.
+#[test]
+fn reconcile_engine_config_rolls_back_log_level_after_pipeline_failure() {
+    let mut config = empty_engine_config();
+    config.engine.telemetry.logs.level =
+        serde_json::from_value(serde_json::json!("warn")).expect("warn level should parse");
+    let (runtime, log_filter_handle, log_filter) =
+        test_runtime_with_log_filter(&config, &BLOCKING_TEST_PIPELINE_FACTORY);
+    let event_count = Arc::new(AtomicUsize::new(0));
+    let dispatch = tracing::Dispatch::new(
+        Registry::default()
+            .with(log_filter.layer())
+            .with(CountingLayer(Arc::clone(&event_count))),
+    );
+    let mut desired = engine_config_with_pipeline(simple_pipeline_yaml());
+    desired.engine.telemetry.logs.level =
+        serde_json::from_value(serde_json::json!("info")).expect("info level should parse");
+    let (blocking_state, changed) = blocking_receiver_state();
+    {
+        let mut state = blocking_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.entered = false;
+        state.release = false;
+    }
+
+    let reconcile_runtime = Arc::clone(&runtime);
+    let reconcile = thread::spawn(move || {
+        reconcile_runtime
+            .reconcile_engine_config(reconcile_request(desired, true))
+            .expect("pipeline failure should return terminal status")
+    });
+
+    let state = blocking_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (mut state, wait) = changed
+        .wait_timeout_while(state, Duration::from_secs(5), |state| !state.entered)
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(!wait.timed_out(), "pipeline construction did not start");
+    assert_eq!(log_filter_handle.configured_level().as_str(), "info");
+    tracing::dispatcher::with_default(&dispatch, || {
+        otel_info!("test.controller.runtime_filter_during_reconcile");
+    });
+    assert_eq!(event_count.swap(0, Ordering::SeqCst), 1);
+
+    state.release = true;
+    changed.notify_all();
+    drop(state);
+    let status = reconcile.join().expect("reconciliation thread should join");
+
+    assert_eq!(status.state, EngineConfigReconcileState::Failed);
+    assert_eq!(log_filter_handle.configured_level().as_str(), "warn");
+    assert_eq!(
+        runtime
+            .engine_config_snapshot()
+            .engine
+            .telemetry
+            .logs
+            .level
+            .as_str(),
+        "warn"
+    );
+    tracing::dispatcher::with_default(&dispatch, || {
+        otel_info!("test.controller.runtime_filter_after_failed_reconcile");
+    });
+    assert_eq!(event_count.load(Ordering::SeqCst), 0);
+}
+
+/// Scenario: reconciliation raises the log level and then aborts with a planning error
+/// (core relocation conflict) raised after the level was already applied.
+/// Guarantees: the previous log level and committed engine config are restored when
+/// planning rejects the request instead of returning a terminal rollout status.
+#[test]
+fn reconcile_engine_config_rolls_back_log_level_after_planning_error() {
+    let mut config = engine_config_with_pipeline(
+        r#"
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 2
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    );
+    config.engine.telemetry.logs.level =
+        serde_json::from_value(serde_json::json!("warn")).expect("warn level should parse");
+    let (runtime, log_filter_handle, _log_filter) =
+        test_runtime_with_log_filter(&config, &TEST_PIPELINE_FACTORY);
+    register_existing_pipeline(&runtime, &config);
+
+    let mut desired = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+groups:
+  g1:
+    pipelines:
+      p1:
+        policies:
+          resources:
+            core_allocation:
+              type: core_set
+              set:
+                - start: 2
+                  end: 3
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+      p2:
+        policies:
+          resources:
+            core_allocation:
+              type: core_set
+              set:
+                - start: 0
+                  end: 1
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    )
+    .expect("desired config should parse");
+    desired.engine.telemetry.logs.level =
+        serde_json::from_value(serde_json::json!("info")).expect("info level should parse");
+
+    let err = runtime
+        .reconcile_engine_config(reconcile_request(desired, true))
+        .expect_err("reconcile should reject vacate-before-claim placement");
+
+    match err {
+        ControlPlaneError::InvalidRequest { message } => {
+            assert!(message.contains("conflicts with committed or in-flight"));
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+    assert_eq!(log_filter_handle.configured_level().as_str(), "warn");
+    assert_eq!(
+        runtime
+            .engine_config_snapshot()
+            .engine
+            .telemetry
+            .logs
+            .level
+            .as_str(),
+        "warn"
+    );
 }
 
 /// Scenario: a full-config reconciliation request omits live stopped
