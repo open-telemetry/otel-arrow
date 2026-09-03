@@ -103,7 +103,7 @@ impl LogsConfig {
         self.otlp
             .max_size
             .or(self.otlp.min_size)
-            .expect("validate was called")
+            .expect("checked in validate")
             .get()
     }
 
@@ -136,14 +136,14 @@ impl LogFormatConfig {
     fn lower_limit(self) -> usize {
         self.min_size
             .or(self.max_size)
-            .expect("validate was called")
+            .expect("checked in validate")
             .get()
     }
 
     fn upper_limit(self) -> usize {
         self.max_size
             .or(self.min_size)
-            .expect("validate was called")
+            .expect("checkedin validate")
             .get()
     }
 
