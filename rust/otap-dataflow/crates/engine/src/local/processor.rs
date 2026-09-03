@@ -285,10 +285,9 @@ impl<PData> EffectHandler<PData> {
             input_size: input_size_metric.map(|metrics| (metrics, Cell::new([0; 3]))),
         };
         self.flow.end = EndFlowMetrics {
-            duration: duration_metric.map(|metrics| {
-                let accumulator = metrics.accumulator();
-                (metrics, RefCell::new(accumulator))
-            }),
+            duration: duration_metric
+                .map(FlowDurationMetricSet::into_measurement)
+                .map(RefCell::new),
             output_messages: output_message_metric.map(|metrics| (metrics, Cell::new([0; 3]))),
             output_items: output_items_metric.map(|metrics| (metrics, Cell::new([0; 3]))),
             output_size: output_size_metric.map(|metrics| (metrics, Cell::new([0; 3]))),
@@ -323,10 +322,10 @@ impl<PData> EffectHandler<PData> {
     /// on the next periodic [`report_flow_metrics`] call -- matching the
     /// `ComputeDuration` reporting pattern.
     pub fn record_flow_duration(&self, signal: SignalType, total: u64) {
-        let Some((_, acc_cell)) = self.flow.end.duration.as_ref() else {
+        let Some(measurement) = self.flow.end.duration.as_ref() else {
             return;
         };
-        acc_cell
+        measurement
             .borrow_mut()
             .record(signal, total as f64 / 1_000_000_000.0);
     }
@@ -450,9 +449,10 @@ impl<PData> EffectHandler<PData> {
             }
             let _ = self.core.metrics_reporter.report_measurement(metrics);
         }
-        if let Some((metrics, acc_cell)) = self.flow.end.duration.as_mut() {
-            let drained = acc_cell.borrow_mut().take();
-            metrics.report(drained, &mut self.core.metrics_reporter);
+        if let Some(measurement) = self.flow.end.duration.as_mut() {
+            measurement
+                .borrow_mut()
+                .report(&mut self.core.metrics_reporter);
         }
         if let Some((metrics, acc_cell)) = self.flow.end.output_messages.as_mut() {
             let drained = acc_cell.replace([0; 3]);
@@ -547,11 +547,13 @@ impl<PData> EffectHandler<PData> {
                 .report_measurement_reliably_until(metrics, deadline)
                 .await?;
         }
-        if let Some((metrics, acc_cell)) = self.flow.end.duration.as_mut() {
-            let drained = acc_cell.borrow_mut().take();
-            metrics
-                .report_reliably(drained, &reporter, deadline)
-                .await?;
+        if let Some(measurement) = self.flow.end.duration.as_mut() {
+            let snapshots = measurement.borrow_mut().terminal_snapshots();
+            for snapshot in snapshots {
+                let _ = reporter
+                    .report_snapshot_reliably_until(snapshot, deadline)
+                    .await?;
+            }
         }
         if let Some((metrics, acc_cell)) = self.flow.end.output_messages.as_mut() {
             let drained = acc_cell.replace([0; 3]);
@@ -1375,10 +1377,10 @@ mod tests {
             "start items should accumulate by signal"
         );
 
-        let duration = eh.flow.end.duration.as_ref().unwrap().1.borrow();
+        let duration = eh.flow.end.duration.as_ref().unwrap().borrow();
         assert!(duration.is_empty(SignalType::Traces));
-        assert_eq!(duration.summary(SignalType::Metrics).0, 1);
-        assert_eq!(duration.summary(SignalType::Logs).0, 1);
+        assert_eq!(duration.pending_summary(SignalType::Metrics).0, 1);
+        assert_eq!(duration.pending_summary(SignalType::Logs).0, 1);
         drop(duration);
         let output_acc = eh.flow.end.output_items.as_ref().unwrap().1.get();
         assert_eq!(
@@ -1394,8 +1396,8 @@ mod tests {
             .duration
             .as_ref()
             .unwrap()
-            .0
-            .summary(SignalType::Logs);
+            .borrow()
+            .reported_summary(SignalType::Logs);
         assert_eq!(ms_snap.0, 0, "MetricSet should be empty before report");
 
         // report_flow_metrics drains the accumulator into the MetricSet.
@@ -1407,9 +1409,9 @@ mod tests {
             start_acc_after, [0; 3],
             "start accumulator should be drained"
         );
-        let acc_after = eh.flow.end.duration.as_ref().unwrap().1.borrow();
+        let acc_after = eh.flow.end.duration.as_ref().unwrap().borrow();
         assert_eq!(
-            acc_after.summary(SignalType::Metrics).0,
+            acc_after.pending_summary(SignalType::Metrics).0,
             0,
             "duration accumulator should be drained"
         );
@@ -1423,9 +1425,9 @@ mod tests {
         // Another record + report cycle should work independently.
         eh.record_flow_duration(SignalType::Logs, 500);
         eh.report_flow_metrics();
-        let acc_final = eh.flow.end.duration.as_ref().unwrap().1.borrow();
+        let acc_final = eh.flow.end.duration.as_ref().unwrap().borrow();
         assert_eq!(
-            acc_final.summary(SignalType::Logs).0,
+            acc_final.pending_summary(SignalType::Logs).0,
             0,
             "accumulator drained after second report"
         );

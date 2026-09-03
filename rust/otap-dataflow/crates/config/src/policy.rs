@@ -732,18 +732,6 @@ pub enum DistributionTier {
     Detailed,
 }
 
-impl DistributionTier {
-    /// Returns the stable configuration name for this tier.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Basic => "basic",
-            Self::Normal => "normal",
-            Self::Detailed => "detailed",
-        }
-    }
-}
-
 /// Runtime telemetry policy declarations.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]

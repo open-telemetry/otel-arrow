@@ -256,10 +256,9 @@ impl<PData> EffectHandler<PData> {
             input_size: input_size_metric.map(|metrics| (metrics, Arc::new(Mutex::new([0; 3])))),
         };
         self.flow.end = EndFlowMetrics {
-            duration: duration_metric.map(|metrics| {
-                let accumulator = metrics.accumulator();
-                (metrics, Arc::new(Mutex::new(accumulator)))
-            }),
+            duration: duration_metric
+                .map(FlowDurationMetricSet::into_measurement)
+                .map(|measurement| Arc::new(Mutex::new(measurement))),
             output_messages: output_message_metric
                 .map(|metrics| (metrics, Arc::new(Mutex::new([0; 3])))),
             output_items: output_items_metric
@@ -335,13 +334,13 @@ impl<PData> EffectHandler<PData> {
 
     /// Record `total` nanoseconds as seconds into the shared flow metric histogram.
     pub fn record_flow_duration(&self, signal: SignalType, total: u64) {
-        let Some((_, acc_mutex)) = self.flow.end.duration.as_ref() else {
+        let Some(measurement) = self.flow.end.duration.as_ref() else {
             return;
         };
-        let mut acc = acc_mutex
+        let mut measurement = measurement
             .lock()
             .expect("flow duration accumulator poisoned");
-        acc.record(signal, total as f64 / 1_000_000_000.0);
+        measurement.record(signal, total as f64 / 1_000_000_000.0);
     }
 
     /// Record input items into the shared flow accumulator.
@@ -481,14 +480,11 @@ impl<PData> EffectHandler<PData> {
             }
             let _ = self.core.metrics_reporter.report_measurement(metrics);
         }
-        if let Some((metrics, acc_mutex)) = self.flow.end.duration.as_mut() {
-            let drained = {
-                let mut guard = acc_mutex
-                    .lock()
-                    .expect("flow duration accumulator poisoned");
-                guard.take()
-            };
-            metrics.report(drained, &mut self.core.metrics_reporter);
+        if let Some(measurement) = self.flow.end.duration.as_mut() {
+            measurement
+                .lock()
+                .expect("flow duration accumulator poisoned")
+                .report(&mut self.core.metrics_reporter);
         }
         if let Some((metrics, acc_mutex)) = self.flow.end.output_messages.as_mut() {
             let drained = {
@@ -618,16 +614,18 @@ impl<PData> EffectHandler<PData> {
                 .report_measurement_reliably_until(metrics, deadline)
                 .await?;
         }
-        if let Some((metrics, acc_mutex)) = self.flow.end.duration.as_mut() {
-            let drained = {
-                let mut guard = acc_mutex
+        if let Some(measurement) = self.flow.end.duration.as_mut() {
+            let snapshots = {
+                let mut measurement = measurement
                     .lock()
                     .expect("flow duration accumulator poisoned");
-                guard.take()
+                measurement.terminal_snapshots()
             };
-            metrics
-                .report_reliably(drained, &reporter, deadline)
-                .await?;
+            for snapshot in snapshots {
+                let _ = reporter
+                    .report_snapshot_reliably_until(snapshot, deadline)
+                    .await?;
+            }
         }
         if let Some((metrics, acc_mutex)) = self.flow.end.output_messages.as_mut() {
             let drained = {
@@ -1168,8 +1166,8 @@ mod tests {
             .unwrap();
         assert_eq!(*start_before_report, [0, 20, 10]);
 
-        let before_report = eh.flow.end.duration.as_ref().unwrap().1.lock().unwrap();
-        let (count, sum, _, _) = before_report.summary(SignalType::Logs);
+        let before_report = eh.flow.end.duration.as_ref().unwrap().lock().unwrap();
+        let (count, sum, _, _) = before_report.pending_summary(SignalType::Logs);
         assert_eq!(count, 3);
         assert!((sum - 0.000_006).abs() < f64::EPSILON);
         drop(before_report);
@@ -1194,9 +1192,9 @@ mod tests {
             "start accumulator should be drained"
         );
 
-        let drained = eh.flow.end.duration.as_ref().unwrap().1.lock().unwrap();
+        let drained = eh.flow.end.duration.as_ref().unwrap().lock().unwrap();
         assert_eq!(
-            drained.summary(SignalType::Logs).0,
+            drained.pending_summary(SignalType::Logs).0,
             0,
             "duration accumulator should be drained"
         );

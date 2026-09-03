@@ -173,6 +173,13 @@ The setting is ignored when `compute_duration` is not enabled. Its distribution
 tier is independent of `runtime_metrics`, which controls whether broader metric
 families are enabled.
 
+Each flow's attributes are part of its OTLP instrumentation scope, so flows
+using different tiers have distinct metric stream identities. Some backends
+flatten instrumentation scopes and require one data type per metric name. Use
+the same wire type across flows and deployments when exporting to such a
+backend: `basic` produces `Histogram`, while `normal` and `detailed` produce
+`ExponentialHistogram`.
+
 ### Flow Metrics and Attributes
 
 Flow metrics use the `flow.input`, `flow.output`, `flow.compute`, and
