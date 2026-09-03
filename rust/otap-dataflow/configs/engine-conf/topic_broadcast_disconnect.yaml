@@ -1,0 +1,179 @@
+version: otel_dataflow/v1
+
+# Exercise the lag policy required by `broadcast.ack_mode: all`:
+#
+#                         receiver -> noop
+#   producer -> topic ----|
+#                         receiver -> delay -> noop
+#
+# A small broadcast queue and slow branch cause that subscriber to lag. With
+# `on_lag: disconnect`, the topic terminates the lagging subscription and Nacks
+# messages that were still waiting for it. Future publishes require only the
+# remaining eligible subscriber.
+#
+# Exact Ack/Nack totals depend on scheduling and the point where lag is
+# detected. The stable invariants are:
+#
+# - `published.messages` = `end.to.end.acks` + `end.to.end.nacks`
+# - `end.to.end.nacks` > 0
+# - `outcome.timeouts` = 0
+# - `tracked.in.flight` returns to 0
+# - the fast exporter consumes more messages than the slow exporter
+#
+# Run on one core:
+#   cargo run --bin df_engine -- \
+#     --num-cores 1 \
+#     --config configs/engine-conf/topic_broadcast_disconnect.yaml \
+#     2>&1 | tee /tmp/topic_broadcast_disconnect.log
+#
+# Confirm the slow receiver disconnected because it lagged:
+#   grep 'topic_receiver.lag_disconnect' \
+#     /tmp/topic_broadcast_disconnect.log
+#
+# Inspect topic outcomes:
+#   curl -s 'http://127.0.0.1:8085/api/v1/telemetry/metrics?format=json' \
+#     | jq '[.metric_sets[]
+#       | select(.name == "exporter.topic")
+#       | {
+#           pipeline: .attributes["pipeline.id"].String,
+#           metrics: [.metrics[]
+#             | select(.name == "published.messages"
+#                 or .name == "end.to.end.acks"
+#                 or .name == "end.to.end.nacks"
+#                 or .name == "tracked.in.flight")
+#             | {name, value}]
+#         }]'
+#
+# Compare fast and slow exporter consumption:
+#   curl -s 'http://127.0.0.1:8085/api/v1/telemetry/metrics?format=json' \
+#     | jq '[.metric_sets[]
+#       | select(.name == "channel.receiver"
+#           and .attributes["channel.kind"].String == "pdata"
+#           and .attributes["node.id"].String == "sink")
+#       | {
+#           pipeline: .attributes["pipeline.id"].String,
+#           metric: (.metrics[]
+#             | select(.name == "recv.count")
+#             | {name, value})
+#         }] | sort_by(.pipeline)'
+
+policies:
+  channel_capacity:
+    control:
+      node: 64
+      pipeline: 64
+    pdata: 5
+  health: {}
+  telemetry:
+    pipeline_metrics: true
+    tokio_metrics: true
+    runtime_metrics: basic
+  resources:
+    core_allocation:
+      type: all_cores
+
+engine:
+  http_admin:
+    bind_address: 127.0.0.1:8085
+  telemetry:
+    logs:
+      level: info
+  observability:
+    pipeline:
+      nodes:
+        internal_telemetry_receiver:
+          type: receiver:internal_telemetry
+          config: {}
+        internal_telemetry_sink:
+          type: exporter:noop
+          config: null
+      connections:
+        - from: internal_telemetry_receiver
+          to: internal_telemetry_sink
+
+groups:
+  lag_disconnect:
+    policies:
+      resources:
+        core_allocation:
+          type: core_count
+          count: 1
+
+    topics:
+      strict_delivery:
+        description: "Disconnect a broadcast subscriber that falls behind"
+        policies:
+          broadcast:
+            queue_capacity: 10
+            on_lag: disconnect
+            ack_mode: all
+          ack_propagation:
+            mode: auto
+            max_in_flight: 128
+            timeout: 5s
+
+    pipelines:
+      producer:
+        nodes:
+          traffic_gen:
+            type: receiver:traffic_generator
+            config:
+              enable_ack_nack: true
+              data_source: synthetic
+              generation_strategy: pre_generated
+              traffic_config:
+                signals_per_second: 100
+                max_batch_size: 1
+                max_signal_count: 100
+                metric_weight: 0
+                trace_weight: 0
+                log_weight: 1
+          startup_delay:
+            type: processor:delay
+            config:
+              delay: 25ms
+          topic_exporter:
+            type: exporter:topic
+            config:
+              topic: strict_delivery
+        connections:
+          - from: traffic_gen
+            to: startup_delay
+          - from: startup_delay
+            to: topic_exporter
+
+      fast_branch:
+        nodes:
+          topic_receiver:
+            type: receiver:topic
+            config:
+              topic: strict_delivery
+              subscription:
+                mode: broadcast
+          sink:
+            type: exporter:noop
+            config: null
+        connections:
+          - from: topic_receiver
+            to: sink
+
+      slow_branch:
+        nodes:
+          topic_receiver:
+            type: receiver:topic
+            config:
+              topic: strict_delivery
+              subscription:
+                mode: broadcast
+          delay:
+            type: processor:delay
+            config:
+              delay: 100ms
+          sink:
+            type: exporter:noop
+            config: null
+        connections:
+          - from: topic_receiver
+            to: delay
+          - from: delay
+            to: sink

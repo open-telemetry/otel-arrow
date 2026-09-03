@@ -2078,9 +2078,9 @@ async fn broadcast_all_mode_drop_before_ack_nacks() {
 }
 
 /// Scenario: An `all`-mode tracked message is published with no eligible subscribers.
-/// Guarantees: The upstream receipt resolves immediately as Ack.
+/// Guarantees: The upstream receipt resolves immediately as Nack instead of reporting delivery.
 #[tokio::test]
-async fn broadcast_all_mode_zero_subscribers_acks_immediately() {
+async fn broadcast_all_mode_zero_subscribers_nacks_immediately() {
     let broker = TopicBroker::<u64>::new();
     let topic = all_mode_topic(
         &broker,
@@ -2092,7 +2092,11 @@ async fn broadcast_all_mode_zero_subscribers_acks_immediately() {
 
     let receipt = handle.publish(Arc::new(1)).await.unwrap();
 
-    assert_eq!(receipt.wait_for_outcome().await, TrackedPublishOutcome::Ack);
+    assert!(matches!(
+        receipt.wait_for_outcome().await,
+        TrackedPublishOutcome::Nack { reason }
+            if reason.as_ref() == "broadcast publish had no eligible subscribers"
+    ));
 }
 
 /// Scenario: A subscriber joins after an `all`-mode tracked message is published.
@@ -2861,9 +2865,10 @@ async fn consensus_nack_from_respects_pending_membership() {
     );
 }
 
-// Zero eligible subscribers resolves immediately as Ack without registering.
+/// Scenario: Consensus registration receives an empty eligible-subscriber set.
+/// Guarantees: The receipt Nacks immediately without leaving a tracked entry.
 #[tokio::test]
-async fn consensus_empty_set_resolves_ack_immediately() {
+async fn consensus_empty_set_resolves_nack_immediately() {
     let tracker = TrackedPublishTracker::new();
     let receipt = tracker.register_consensus(
         1,
@@ -2873,7 +2878,11 @@ async fn consensus_empty_set_resolves_ack_immediately() {
         1,
     );
 
-    assert_eq!(receipt.wait_for_outcome().await, TrackedPublishOutcome::Ack);
+    assert!(matches!(
+        receipt.wait_for_outcome().await,
+        TrackedPublishOutcome::Nack { reason }
+            if reason.as_ref() == "broadcast publish had no eligible subscribers"
+    ));
     assert_eq!(
         tracker.resolve_ack_from(1, BroadcastSubscriberId(1)),
         AckFromResult::NotTracked

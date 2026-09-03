@@ -13,7 +13,7 @@ use arrow::util::bit_iterator::BitSliceIterator;
 use smallvec::{SmallVec, smallvec};
 
 use crate::otlp::attributes::AttributeValueType;
-use crate::schema::consts;
+use crate::schema::{consts, is_parent_id_plain_encoded};
 use arrow::array::{
     Array, ArrayData, ArrayRef, ArrowPrimitiveType, BooleanArray, BooleanBufferBuilder,
     DictionaryArray, MutableArrayData, PrimitiveArray, RecordBatch, StringArray, UInt8Array,
@@ -129,6 +129,12 @@ pub fn upsert_attributes<T: ArrowPrimitiveType>(
     existing_attrs: &RecordBatch,
     upserts: &[AttributeUpsert<'_, T>],
 ) -> Result<RecordBatch> {
+    if !is_parent_id_plain_encoded(existing_attrs) {
+        return Err(Error::UnexpectedRecordBatchState {
+            reason: "upsert_attributes expected parent_id column to be plain encoded".into(),
+        });
+    }
+
     let num_existing = existing_attrs.num_rows();
 
     // Resolve each upsert: determine type, target column, extract values, compute counts, and
@@ -2053,6 +2059,8 @@ fn create_new_value_column_batched<T: ArrowPrimitiveType>(
 
 #[cfg(test)]
 mod tests {
+    use crate::schema::FieldExt;
+
     use super::*;
     use arrow::datatypes::UInt32Type;
 
@@ -2784,7 +2792,7 @@ mod tests {
         let strs = dict_utf8_u16(&rows.iter().map(|(_, _, _, s)| *s).collect::<Vec<_>>());
 
         let schema = Schema::new(vec![
-            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
             Field::new(consts::ATTRIBUTE_KEY, keys.data_type().clone(), true),
             Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
             Field::new(consts::ATTRIBUTE_STR, strs.data_type().clone(), true),

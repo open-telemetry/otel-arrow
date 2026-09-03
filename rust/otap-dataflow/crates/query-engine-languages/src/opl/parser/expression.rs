@@ -6,16 +6,16 @@ use std::sync::LazyLock;
 use otel_arrow_contrib_data_engine_expressions::{
     AndLogicalExpression, BinaryMathematicalScalarExpression, BooleanScalarExpression,
     CaptureTextScalarExpression, CoalesceScalarExpression, CollectionScalarExpression,
-    CombineScalarExpression, ContainsLogicalExpression, DateTimeScalarExpression,
-    DoubleScalarExpression, DoubleValue, EqualToLogicalExpression, Expression,
-    GetRecordTypeScalarExpression, GetTypeScalarExpression, GreaterThanLogicalExpression,
-    GreaterThanOrEqualToLogicalExpression, IntegerScalarExpression, IntegerValue,
-    InvokeFunctionArgument, InvokeFunctionScalarExpression, JoinTextScalarExpression,
+    CombineScalarExpression, ContainsLogicalExpression, ConversionScalarExpression,
+    ConvertScalarExpression, DateTimeScalarExpression, DoubleScalarExpression, DoubleValue,
+    EqualToLogicalExpression, Expression, GetRecordTypeScalarExpression, GetTypeScalarExpression,
+    GreaterThanLogicalExpression, GreaterThanOrEqualToLogicalExpression, IntegerScalarExpression,
+    IntegerValue, InvokeFunctionArgument, InvokeFunctionScalarExpression, JoinTextScalarExpression,
     ListScalarExpression, LogicalExpression, MatchesLogicalExpression, MathScalarExpression,
     NotLogicalExpression, NullScalarExpression, OrLogicalExpression, QueryLocation,
     RegexScalarExpression, ReplaceTextScalarExpression, ScalarExpression, SliceScalarExpression,
     SourceScalarExpression, StaticScalarExpression, StringScalarExpression, StringValue,
-    TextScalarExpression, ValueAccessor,
+    TextScalarExpression, ValueAccessor, ValueType,
 };
 use otel_arrow_contrib_data_engine_parser_abstractions::{
     ParserError, parse_standard_double_literal, parse_standard_integer_literal,
@@ -138,8 +138,8 @@ pub(crate) fn parse_and_expression(
     let left_expr = parse_next_child_rule(
         pipeline_builder,
         &mut inner_rules,
-        Rule::type_check_expression,
-        parse_type_check_expression,
+        Rule::type_cast_expression,
+        parse_type_cast_expression,
     )
     .transpose()?
     .ok_or_else(|| no_inner_rule_error(query_location.clone()))?;
@@ -197,6 +197,64 @@ impl From<LogicalOrScalarExpr> for ScalarExpression {
             LogicalOrScalarExpr::Scalar(s) => s,
         }
     }
+}
+
+pub(crate) fn parse_type_cast_expression(
+    rule: Pair<'_, Rule>,
+    pipeline_builder: &dyn PipelineBuilder,
+) -> Result<LogicalOrScalarExpr, ParserError> {
+    let query_location = to_query_location(&rule);
+    let mut inner_rules = rule.into_inner();
+
+    let source_rule = inner_rules
+        .next()
+        .ok_or_else(|| no_inner_rule_error(query_location.clone()))?;
+    let source_scalar_expr = parse_type_check_expression(source_rule, pipeline_builder)?;
+
+    let Some(operator_rule) = inner_rules.next() else {
+        // if there's no operator rule (e.g. only one rule), this is a simple type_check_expression
+        return Ok(source_scalar_expr);
+    };
+
+    if !matches!(operator_rule.as_rule(), Rule::type_cast_op) {
+        return Err(invalid_child_rule_error(
+            query_location,
+            Rule::type_cast_expression,
+            operator_rule.as_rule(),
+        ));
+    }
+
+    let type_name_rule = inner_rules
+        .next()
+        .ok_or_else(|| no_inner_rule_error(query_location.clone()))?;
+
+    let convert_scalar_expr_inner =
+        ConversionScalarExpression::new(query_location.clone(), source_scalar_expr.into());
+    let convert_scalar_expr = match ValueType::from_str_opt(type_name_rule.as_str()) {
+        Some(value_type) => match value_type {
+            ValueType::String => ConvertScalarExpression::String(convert_scalar_expr_inner),
+            ValueType::Integer => ConvertScalarExpression::Integer(convert_scalar_expr_inner),
+            ValueType::Boolean => ConvertScalarExpression::Boolean(convert_scalar_expr_inner),
+            ValueType::Double => ConvertScalarExpression::Double(convert_scalar_expr_inner),
+            _ => {
+                return Err(ParserError::SyntaxNotSupported(
+                    query_location,
+                    format!(
+                        "casting to type '{}' not yet supported",
+                        type_name_rule.as_str()
+                    ),
+                ));
+            }
+        },
+        None => {
+            return Err(ParserError::SyntaxNotSupported(
+                query_location,
+                format!("unknown target type for cast '{}'", type_name_rule.as_str()),
+            ));
+        }
+    };
+
+    Ok(ScalarExpression::Convert(convert_scalar_expr).into())
 }
 
 pub(crate) fn parse_type_check_expression(
@@ -1080,8 +1138,9 @@ mod test {
     use otel_arrow_contrib_data_engine_expressions::{
         AndLogicalExpression, BinaryMathematicalScalarExpression, BooleanScalarExpression,
         CaptureTextScalarExpression, CoalesceScalarExpression, CollectionScalarExpression,
-        CombineScalarExpression, ContainsLogicalExpression, DateTimeScalarExpression,
-        DoubleScalarExpression, EqualToLogicalExpression, GreaterThanLogicalExpression,
+        CombineScalarExpression, ContainsLogicalExpression, ConversionScalarExpression,
+        ConvertScalarExpression, DateTimeScalarExpression, DoubleScalarExpression,
+        EqualToLogicalExpression, GreaterThanLogicalExpression,
         GreaterThanOrEqualToLogicalExpression, IntegerScalarExpression, JoinTextScalarExpression,
         ListScalarExpression, LogicalExpression, MatchesLogicalExpression, MathScalarExpression,
         NotLogicalExpression, NullScalarExpression, OrLogicalExpression, PipelineFunction,
@@ -2514,5 +2573,114 @@ mod test {
             ^\n\
             error: unclosed character class"
         );
+    }
+
+    /// Scenario: parsing a type cast expression to some supported primitive type
+    /// Guarantees: parser produces a result containing the expected expression AST
+    #[test]
+    fn test_parse_cast_to_primitive_expr() {
+        struct ConversionConstructor {
+            converter: Box<dyn Fn(ConversionScalarExpression) -> ConvertScalarExpression>,
+        }
+
+        impl ConversionConstructor {
+            fn new(
+                converter: impl Fn(ConversionScalarExpression) -> ConvertScalarExpression + 'static,
+            ) -> Self {
+                Self {
+                    converter: Box::new(converter),
+                }
+            }
+
+            fn convert(&self, val: ConversionScalarExpression) -> ConvertScalarExpression {
+                (self.converter)(val)
+            }
+        }
+
+        let test_inputs = [
+            (
+                "Integer",
+                ConversionConstructor::new(ConvertScalarExpression::Integer),
+            ),
+            (
+                "String",
+                ConversionConstructor::new(ConvertScalarExpression::String),
+            ),
+            (
+                "Double",
+                ConversionConstructor::new(ConvertScalarExpression::Double),
+            ),
+            (
+                "Boolean",
+                ConversionConstructor::new(ConvertScalarExpression::Boolean),
+            ),
+        ];
+
+        for (type_name, convert_expr_constructor) in test_inputs {
+            let input = format!("some_field as {type_name}");
+            let mut rules = OplPestParser::parse(Rule::expression, input.as_ref()).unwrap();
+
+            let result: ScalarExpression =
+                parse_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                    .unwrap()
+                    .into();
+
+            let expected = ScalarExpression::Convert(convert_expr_constructor.convert(
+                ConversionScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "some_field",
+                            )),
+                        )]),
+                    )),
+                ),
+            ));
+
+            assert_eq!(result, expected);
+        }
+    }
+
+    /// Scenario: parsing a type cast expression where the target type is not a known type
+    /// Guarantees: a parser error is produced with the appropriate error message
+    #[test]
+    fn test_parse_cast_to_invalid_type() {
+        let input = "some_field as NotAType"; // not a known type
+        let mut rules = OplPestParser::parse(Rule::expression, input).unwrap();
+        let error = parse_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+            .unwrap_err();
+        let error_message = error.to_string();
+        assert!(
+            error_message.contains("unknown target type for cast 'NotAType'"),
+            "unexpected error message {:?}",
+            error_message
+        );
+    }
+
+    /// Scenario: parsing a type cast expression where the target type is not yet supported
+    /// Guarantees: a parser error is produced with the appropriate error message
+    #[test]
+    fn test_parse_cast_to_unsupported_type() {
+        let unsupported_type_names = [
+            "Array", "Bytes", "DateTime", "Map", "Null", "Regex", "TimeSpan",
+        ];
+        for unsupported_type_name in unsupported_type_names {
+            let input = format!("some_field as {unsupported_type_name}");
+            let mut rules = OplPestParser::parse(Rule::expression, &input).unwrap();
+            let error =
+                parse_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                    .unwrap_err();
+            let error_message = error.to_string();
+            assert!(
+                error_message.contains(&format!(
+                    "casting to type '{unsupported_type_name}' not yet supported"
+                )),
+                "unexpected error message {:?}",
+                error_message
+            );
+        }
     }
 }
