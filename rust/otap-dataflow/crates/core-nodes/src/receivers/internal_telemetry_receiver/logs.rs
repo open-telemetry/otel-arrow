@@ -485,9 +485,6 @@ impl LogExportState {
                     EncodeFailure::Dropped => {
                         "internal log batch exceeded the encoder limit".to_owned()
                     }
-                    EncodeFailure::Unregistered => {
-                        "internal log scope references an unregistered entity key".to_owned()
-                    }
                 },
             },
         )?;

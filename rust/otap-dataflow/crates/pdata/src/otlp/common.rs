@@ -335,8 +335,6 @@ pub const TRUNCATION_SUFFIX: &[u8] = "[...]".as_bytes();
 pub enum EncodeFailure {
     /// Ran out of space.
     Dropped,
-    /// EntityKey is not registered
-    Unregistered,
 }
 
 /// Result type for buffer write methods.

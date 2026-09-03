@@ -4,6 +4,7 @@
 //! Direct OTLP bytes encoder for tokio-tracing events.
 
 use super::{LogRecord, SavedCallsite};
+use crate::attributes::AttributeValue;
 use crate::event::LogEvent;
 use crate::registry::EntityKey;
 use crate::registry::TelemetryRegistryHandle;
@@ -644,6 +645,15 @@ pub struct ScopeToBytesMap {
     registry: TelemetryRegistryHandle,
 }
 
+/// A dedicated error value indicating that an EntityKey was not
+/// found.
+pub enum MapError {
+    /// EntityKey is not registered
+    NotRegistered,
+    /// Encoding the registered entity's attributes failed.
+    Failed(EncodeFailure),
+}
+
 impl ScopeToBytesMap {
     /// Create a new empty scope attribute cache.
     #[must_use]
@@ -655,27 +665,20 @@ impl ScopeToBytesMap {
     }
 
     /// Get or compute scope attributes for a registered or previously cached entity key.
-    pub fn get_or_encode(&mut self, key: EntityKey) -> Result<Bytes, EncodeFailure> {
+    pub fn get_or_encode(&mut self, key: EntityKey) -> Result<Bytes, MapError> {
         if let Some(cached) = self.cache.get(&key) {
             return Ok(cached.clone());
         }
 
         match self.registry.visit_entity(key, |attrs| {
-            attrs
-                .iter_attributes()
-                .map(|(a, b)| (a, b.clone()))
-                .collect::<Vec<_>>()
+            encode_scope_attributes(attrs.iter_attributes())
         }) {
-            Some(visited) => {
-                let mut buf = ProtoBuffer::with_capacity(128);
-                for (attr_key, attr_value) in visited {
-                    encode_scope_attribute(&mut buf, attr_key, &attr_value)?;
-                }
-                let bytes = buf.into_bytes();
+            Some(Ok(bytes)) => {
                 let _ = self.cache.insert(key, bytes.clone());
                 Ok(bytes)
             }
-            None => Err(EncodeFailure::Unregistered),
+            Some(Err(err)) => Err(MapError::Failed(err)),
+            None => Err(MapError::NotRegistered),
         }
     }
 
@@ -685,12 +688,23 @@ impl ScopeToBytesMap {
     }
 }
 
+/// Encode an iterator of scope attributes.
+fn encode_scope_attributes<'k, 'v>(
+    attrs: impl IntoIterator<Item = (&'k str, &'v AttributeValue)>,
+) -> Result<Bytes, EncodeFailure> {
+    let mut buf = ProtoBuffer::with_capacity(128);
+    for (attr_key, attr_value) in attrs {
+        encode_scope_attribute(&mut buf, attr_key, attr_value)?;
+    }
+    Ok(buf.into_bytes())
+}
+
 /// Encode a single scope attribute as a KeyValue message for InstrumentationScope.attributes.
 #[inline]
 fn encode_scope_attribute(
     buf: &mut ProtoBuffer,
     key: &str,
-    value: &crate::attributes::AttributeValue,
+    value: &AttributeValue,
 ) -> EncodeResult {
     encode_key_value(buf, INSTRUMENTATION_SCOPE_ATTRIBUTES, key, value)
 }
@@ -705,7 +719,7 @@ fn encode_key_value(
     buf: &mut ProtoBuffer,
     outer_field: u64,
     key: &str,
-    value: &crate::attributes::AttributeValue,
+    value: &AttributeValue,
 ) -> EncodeResult {
     buf.encode_len_delimited(outer_field, |buf| {
         buf.encode_string(KEY_VALUE_KEY, key)?;
@@ -715,12 +729,7 @@ fn encode_key_value(
 
 /// Encode an `AttributeValue` as an OTLP AnyValue (the inner value without key wrapping).
 #[inline]
-fn encode_any_value(
-    buf: &mut ProtoBuffer,
-    value: &crate::attributes::AttributeValue,
-) -> EncodeResult {
-    use crate::attributes::AttributeValue;
-
+fn encode_any_value(buf: &mut ProtoBuffer, value: &AttributeValue) -> EncodeResult {
     match value {
         AttributeValue::String(s) => {
             buf.encode_string(ANY_VALUE_STRING_VALUE, s.as_str())?;
@@ -767,8 +776,16 @@ fn encode_scope_logs(
         buf.encode_len_delimited(SCOPE_LOG_SCOPE, |buf| {
             buf.encode_string(INSTRUMENTATION_SCOPE_NAME, target)?;
             for entity_key in context {
-                let b = scope_cache.get_or_encode(*entity_key)?;
-                buf.extend_from_slice(&b)?;
+                match scope_cache.get_or_encode(*entity_key) {
+                    Ok(b) => buf.extend_from_slice(&b)?,
+                    Err(MapError::NotRegistered) => {
+                        buf.extend_from_slice(&encode_scope_attributes(std::iter::once((
+                            "unregistered.entity",
+                            &AttributeValue::Int(entity_key.data().as_ffi() as i64),
+                        )))?)?;
+                    }
+                    Err(MapError::Failed(err)) => return Err(err),
+                }
             }
             Ok(())
         })?;
@@ -840,7 +857,7 @@ mod tests {
     use super::*;
     use crate::__log_record_impl;
     use crate::LogContext;
-    use crate::attributes::{AttributeSetHandler, AttributeValue};
+    use crate::attributes::AttributeSetHandler;
     use crate::descriptor::{AttributeField, AttributeValueType, AttributesDescriptor};
     use crate::event::LogEvent;
     use crate::self_tracing::formatter::format_log_record_to_string;
@@ -1064,6 +1081,39 @@ mod tests {
             ),
         );
         assert_eq!(expected, decoded);
+    }
+
+    /// Scenario: a log references an entity key that has been unregistered.
+    /// Guarantees: the scope records the unregistered entity's FFI key as an int64 attribute.
+    #[test]
+    fn encode_export_logs_request_with_unregistered_entity() {
+        let registry = TelemetryRegistryHandle::new();
+        let entity_key = registry.register_entity(TestScopeAttributes::new("removed", 1));
+        assert!(registry.unregister_entity(entity_key));
+        let mut scope_cache = ScopeToBytesMap::new(registry);
+        let record = __log_record_impl!(Level::INFO, "test.unregistered.entity")
+            .into_record(LogContext::from_buf([entity_key]));
+        let mut events = [LogEvent {
+            time: SystemTime::UNIX_EPOCH,
+            record,
+        }];
+        let mut buf = ProtoBuffer::default();
+
+        encode_export_logs_request(&mut buf, &mut events, &Bytes::new(), &mut scope_cache).unwrap();
+
+        let decoded =
+            ExportLogsServiceRequest::decode(buf.into_bytes()).expect("valid logs request");
+        let scope = decoded.resource_logs[0].scope_logs[0]
+            .scope
+            .as_ref()
+            .expect("scope present");
+        assert_eq!(
+            scope.attributes,
+            [KeyValue::new(
+                "unregistered.entity",
+                AnyValue::new_int(entity_key.data().as_ffi() as i64),
+            )]
+        );
     }
 
     /// Scenario: a batch interleaves records from two entity contexts.
