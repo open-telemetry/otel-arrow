@@ -1,64 +1,12 @@
-# Pipeline Performance Tests - Windows
-#
-# STATUS: EXPERIMENTAL / NON-GATING (informational only).
-#   Hosted GitHub Windows runners are shared, noisy environments with no
-#   dedicated perf hardware. These results are for feasibility and directional
-#   sanity, NOT for absolute regression claims. Every measurement step runs with
-#   `continue-on-error: true` so a failure or a noisy sample never blocks a PR.
-#
-# TEST OBJECTIVE:
-#   Determine whether a meaningful subset of the pipeline perf suite (starting
-#   with idle-state resource usage) is feasible to run on hosted Windows CI,
-#   and characterize the variance so we know how much to trust the numbers.
-#
-# ACCEPTANCE / STABILITY CRITERIA (informational thresholds, see `env` below):
-#   - Job completes within the job `timeout-minutes` budget.
-#   - Idle-memory coefficient of variation (CV = stddev/mean) across
-#     MEASURED_ITERATIONS runs is <= MAX_CV_PERCENT. Above that, results are
-#     treated as directional only.
-#   - Linear memory-scaling fit (R squared) across 1/2/4 cores is reported for
-#     directional sanity, compared to prior Windows runs and the Linux baseline.
-#
-# METHODOLOGY:
-#   - Environment is intentionally unpinned beyond what the repo already pins:
-#     the windows-latest image and whatever Python the runner ships. The Rust
-#     toolchain comes from rust/otap-dataflow/rust-toolchain.toml, which cargo
-#     honors for the build regardless of what the setup action installs.
-#     Exact runner details are captured in the metadata artifact.
-#   - WARMUP_ITERATIONS discarded warmup run(s) before measurement.
-#   - MEASURED_ITERATIONS repeated samples; report median / p95 / stddev / CV
-#     rather than a single datapoint or a bare mean.
-#   - Raw per-run JSON plus machine metadata uploaded as artifacts every run.
-#
-# PROMOTION CRITERIA (when this may become gating):
-#   Once several weeks of history show CV consistently <= MAX_CV_PERCENT and a
-#   stable median across runs, define absolute pass/fail thresholds and remove
-#   the `continue-on-error` markers. Until then this stays experimental.
-
 name: Pipeline Performance Tests - Windows
 permissions:
   contents: read
 
 on:
-  # Nightly at 08:00 UTC (00:00 PT). Offset from the Linux nightly perf job
-  # (16:00 / 00:00 UTC) so the two do not compete for runner capacity. This
-  # gives a baseline sample independent of merge activity.
+  # Nightly baseline sample.
   schedule:
     - cron: "0 8 * * *"
-  # Run on PRs that touch the engine or the perf harness, so a Windows
-  # regression is visible before merge rather than at the next nightly.
-  #
-  # COST NOTE: the broad rust/otap-dataflow/** and tools/pipeline_perf_test/**
-  # paths below mean every push to a matching PR runs this long Windows job.
-  # Expect it to take a significant fraction of the 60 minute timeout because
-  # it includes a multi-GB Windows base image pull, release build, warmup, and
-  # repeated perf samples. It is deliberately non-gating (every measurement
-  # step is continue-on-error), so it costs runner time on each PR iteration
-  # without blocking merge.
-  # If that cost becomes a problem, the cheaper option is to move the
-  # engine/harness paths to a `push: branches: [main]` trigger, matching
-  # pipeline-perf-test-continuous.yml, and keep only the self-test paths
-  # here.
+  # Run for PRs that touch workflow, engine, or perf harness files.
   pull_request:
     paths:
       - '.github/workflows/pipeline-perf-test-windows.yml'
@@ -68,22 +16,15 @@ on:
       - 'tools/pipeline_perf_test/**'
   workflow_dispatch:
 
-# Cancel a superseded run when a PR is pushed again. Without this, a ~60
-# minute job would queue up once per push and several stale runs could be
-# measuring at the same time on shared runners, which skews the numbers as
-# well as burning capacity. Scheduled runs group by ref and are once daily,
-# so they are unaffected.
+# Cancel superseded PR runs.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-# Tunable statistical parameters. These control measurement rigor only; they do
-# not pin any tool/runtime versions. Adjust here, not per-step.
+# Statistical parameters for warmup and repeated measurements.
 env:
-  # Warmup + repetition for statistical rigor.
   WARMUP_ITERATIONS: "1"
   MEASURED_ITERATIONS: "5"
-  # Informational stability threshold (percent). CV above this => "noisy".
   MAX_CV_PERCENT: "15"
 
 jobs:
@@ -208,10 +149,6 @@ jobs:
           python -m pip install --user -r tools/pipeline_perf_test/orchestrator/requirements.txt
           python -m pip install --user -r tools/pipeline_perf_test/load_generator/requirements.txt
 
-      # Warmup + repeated measurement for the 1-core idle test. Warmup runs are
-      # discarded (fill caches / JIT / Docker layer warmup); measured runs are
-      # collected per-iteration so we can report median / p95 / CV instead of a
-      # single, easily-misled datapoint.
       - name: Run idle state test (1 core) - warmup + repeated samples
         if: ${{ !cancelled() }}
         continue-on-error: true
