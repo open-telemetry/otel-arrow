@@ -13,6 +13,10 @@ use super::provider::{
 
 // -- schedule_next timing tests --------------------------------
 
+/// Next-refresh delay used for non-expiring values (~1 year). The loop is still
+/// woken by control messages in the meantime.
+const NON_EXPIRING_REFRESH_SECS: u64 = 365 * 24 * 60 * 60;
+
 // Scenario: Schedule the next refresh for a token expiring in ~1 hour with a 5m buffer.
 // Guarantees: The refresh is scheduled `expiry_buffer` before expiry (~3300s out), ahead of expiry.
 #[tokio::test]
@@ -21,7 +25,11 @@ async fn schedule_next_refreshes_before_expiry() {
         "t".to_owned(),
         Some(Instant::now() + Duration::from_secs(3600)),
     );
-    let refresh_at = schedule_next(token.expires_on(), Duration::from_secs(300));
+    let refresh_at = schedule_next(
+        token.expires_on(),
+        Duration::from_secs(300),
+        Duration::from_secs(NON_EXPIRING_REFRESH_SECS),
+    );
     let secs = refresh_at
         .saturating_duration_since(tokio::time::Instant::now())
         .as_secs_f64();
@@ -37,7 +45,11 @@ async fn schedule_next_floors_near_expiry() {
         "t".to_owned(),
         Some(Instant::now() + Duration::from_secs(5)),
     );
-    let refresh_at = schedule_next(token.expires_on(), Duration::from_secs(300));
+    let refresh_at = schedule_next(
+        token.expires_on(),
+        Duration::from_secs(300),
+        Duration::from_secs(NON_EXPIRING_REFRESH_SECS),
+    );
     let secs = refresh_at
         .saturating_duration_since(tokio::time::Instant::now())
         .as_secs_f64();
@@ -49,7 +61,11 @@ async fn schedule_next_floors_near_expiry() {
 #[tokio::test]
 async fn schedule_next_pushes_non_expiring_far_out() {
     let token = BearerToken::without_expiry("t".to_owned());
-    let refresh_at = schedule_next(token.expires_on(), Duration::from_secs(300));
+    let refresh_at = schedule_next(
+        token.expires_on(),
+        Duration::from_secs(300),
+        Duration::from_secs(NON_EXPIRING_REFRESH_SECS),
+    );
     let secs = refresh_at
         .saturating_duration_since(tokio::time::Instant::now())
         .as_secs();

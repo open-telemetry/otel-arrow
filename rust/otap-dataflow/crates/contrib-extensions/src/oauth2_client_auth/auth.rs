@@ -19,7 +19,6 @@ use oauth2::{
     HttpResponse, RefreshToken, Scope, StandardRevocableToken, TokenResponse, TokenUrl,
 };
 use otel_arrow_dfe_engine::capability::auth::BearerToken;
-use otel_arrow_dfe_engine::capability::auth::bearer_token_provider::TOKEN_USABLE_MARGIN;
 use otel_arrow_dfe_otap::tls_utils::{read_file_with_limit_async, read_file_with_limit_sync};
 use rand::RngExt;
 use reqwest::{Certificate, Identity};
@@ -312,10 +311,6 @@ impl BackgroundProviderSource<BearerToken> for Auth {
 
     fn log_refresh_failure(&self, error: &Error) {
         otel_warn!("oauth2_client_auth.token_refresh_failed", error = %error);
-    }
-
-    fn usable_margin() -> Duration {
-        TOKEN_USABLE_MARGIN
     }
 
     fn expires_on(value: &BearerToken) -> Option<Instant> {

@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Bearer token provider extension built on the shared background refresh machinery.
+use std::time::Duration;
+
 use async_trait::async_trait;
 use futures::StreamExt;
 use otel_arrow_dfe_engine::capability::auth::BearerToken;
@@ -19,6 +21,10 @@ use crate::common::background_refresh::{
 /// The Bearer Token Provider extension.
 pub type TokenProviderExtension<S, M> =
     BackgroundProviderExtension<S, M, BearerToken, BearerTokenProviderCap>;
+
+/// Next-refresh delay used for non-expiring tokens (~1 year). The loop is still
+/// woken by control messages in the meantime.
+pub const NON_EXPIRING_TOKEN_REFRESH_INTERVAL: Duration = Duration::from_secs(365 * 24 * 60 * 60);
 
 #[async_trait]
 impl<S: BackgroundProviderSource<BearerToken>, M: BackgroundProviderMetrics>

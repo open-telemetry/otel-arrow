@@ -54,7 +54,15 @@ fn make_extension(token_url: &str) -> OAuth2ClientAuthExtension {
     let cfg = config_from_json(valid_config_json(token_url)).expect("valid config");
     let auth = Auth::new(&cfg).expect("auth builds");
     let (tx, _rx) = watch::channel(None);
-    OAuth2ClientAuthExtension::new("test-ext", auth, cfg.expiry_buffer, tx, make_tracker())
+    OAuth2ClientAuthExtension::new(
+        "test-ext",
+        auth,
+        TOKEN_USABLE_MARGIN,
+        NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
+        cfg.expiry_buffer,
+        tx,
+        make_tracker(),
+    )
 }
 
 /// Starts a mock token endpoint at `/token` returning the given access token
@@ -108,7 +116,15 @@ fn config_json_with(token_url: &str, extra: serde_json::Value) -> serde_json::Va
 fn extension_from_config(cfg: &Config) -> OAuth2ClientAuthExtension {
     let auth = Auth::new(cfg).expect("auth builds");
     let (tx, _rx) = watch::channel(None);
-    OAuth2ClientAuthExtension::new("test-ext", auth, cfg.expiry_buffer, tx, make_tracker())
+    OAuth2ClientAuthExtension::new(
+        "test-ext",
+        auth,
+        TOKEN_USABLE_MARGIN,
+        NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
+        cfg.expiry_buffer,
+        tx,
+        make_tracker(),
+    )
 }
 
 /// A TLS-terminating token endpoint whose certificate is signed by a throwaway
@@ -705,8 +721,15 @@ async fn request_includes_scope_and_endpoint_params() {
     .expect("valid config");
     let auth = Auth::new(&cfg).expect("auth builds");
     let (tx, _rx) = watch::channel(None);
-    let ext =
-        OAuth2ClientAuthExtension::new("test-ext", auth, cfg.expiry_buffer, tx, make_tracker());
+    let ext = OAuth2ClientAuthExtension::new(
+        "test-ext",
+        auth,
+        TOKEN_USABLE_MARGIN,
+        NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
+        cfg.expiry_buffer,
+        tx,
+        make_tracker(),
+    );
 
     let token = ext
         .get_token()
@@ -734,8 +757,15 @@ async fn oversized_client_secret_file_is_rejected() {
     .expect("valid config");
     let auth = Auth::new(&cfg).expect("auth builds");
     let (tx, _rx) = watch::channel(None);
-    let ext =
-        OAuth2ClientAuthExtension::new("test-ext", auth, cfg.expiry_buffer, tx, make_tracker());
+    let ext = OAuth2ClientAuthExtension::new(
+        "test-ext",
+        auth,
+        TOKEN_USABLE_MARGIN,
+        NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
+        cfg.expiry_buffer,
+        tx,
+        make_tracker(),
+    );
 
     let _ = ext
         .get_token()
@@ -770,8 +800,15 @@ async fn client_secret_file_rotation_takes_effect() {
     .expect("valid config");
     let auth = Auth::new(&cfg).expect("auth builds");
     let (tx, _rx) = watch::channel(None);
-    let ext =
-        OAuth2ClientAuthExtension::new("test-ext", auth, cfg.expiry_buffer, tx, make_tracker());
+    let ext = OAuth2ClientAuthExtension::new(
+        "test-ext",
+        auth,
+        TOKEN_USABLE_MARGIN,
+        NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
+        cfg.expiry_buffer,
+        tx,
+        make_tracker(),
+    );
 
     let _ = ext.get_token().await.expect("first acquisition");
     std::fs::write(&secret_path, "secret-2").expect("rotate secret");
@@ -925,8 +962,15 @@ async fn jwt_bearer_signs_assertion_and_acquires_token() {
     .expect("valid jwt-bearer config");
     let auth = Auth::new(&cfg).expect("auth builds");
     let (tx, _rx) = watch::channel(None);
-    let ext =
-        OAuth2ClientAuthExtension::new("test-ext", auth, cfg.expiry_buffer, tx, make_tracker());
+    let ext = OAuth2ClientAuthExtension::new(
+        "test-ext",
+        auth,
+        TOKEN_USABLE_MARGIN,
+        NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
+        cfg.expiry_buffer,
+        tx,
+        make_tracker(),
+    );
 
     let token = ext.get_token().await.expect("jwt-bearer token acquired");
     assert_eq!(token.expose_token(), "jwt-tok");
@@ -992,8 +1036,15 @@ async fn absurd_expires_in_yields_token_without_expiry_jwt_bearer() {
     .expect("valid jwt-bearer config");
     let auth = Auth::new(&cfg).expect("auth builds");
     let (tx, _rx) = watch::channel(None);
-    let ext =
-        OAuth2ClientAuthExtension::new("test-ext", auth, cfg.expiry_buffer, tx, make_tracker());
+    let ext = OAuth2ClientAuthExtension::new(
+        "test-ext",
+        auth,
+        TOKEN_USABLE_MARGIN,
+        NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
+        cfg.expiry_buffer,
+        tx,
+        make_tracker(),
+    );
 
     let token = ext.get_token().await.expect("jwt-bearer token acquired");
     assert_eq!(token.expose_token(), "no-expiry-jwt-tok");
@@ -1022,8 +1073,15 @@ async fn jwt_bearer_reads_signing_key_from_file() {
     .expect("valid jwt-bearer config");
     let auth = Auth::new(&cfg).expect("auth builds");
     let (tx, _rx) = watch::channel(None);
-    let ext =
-        OAuth2ClientAuthExtension::new("test-ext", auth, cfg.expiry_buffer, tx, make_tracker());
+    let ext = OAuth2ClientAuthExtension::new(
+        "test-ext",
+        auth,
+        TOKEN_USABLE_MARGIN,
+        NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
+        cfg.expiry_buffer,
+        tx,
+        make_tracker(),
+    );
 
     let token = ext.get_token().await.expect("token acquired via key file");
     assert_eq!(token.expose_token(), "jwt-tok");

@@ -27,7 +27,9 @@ use linkme::distributed_slice;
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_config::extension::ExtensionUserConfig;
 use otel_arrow_dfe_engine::ExtensionFactory;
-use otel_arrow_dfe_engine::capability::auth::bearer_token_provider::BearerTokenProvider;
+use otel_arrow_dfe_engine::capability::auth::bearer_token_provider::{
+    BearerTokenProvider, TOKEN_USABLE_MARGIN,
+};
 use otel_arrow_dfe_engine::config::ExtensionConfig;
 use otel_arrow_dfe_engine::context::ExtensionContext;
 use otel_arrow_dfe_engine::extension::wrapper::ExtensionVariant;
@@ -40,7 +42,7 @@ use self::auth::Auth;
 use self::config::Config;
 use self::metrics::AzureIdentityAuthMetrics;
 use crate::common::background_refresh::BackgroundProviderMetricsTracker;
-use crate::common::token_refresh::TokenProviderExtension;
+use crate::common::token_refresh::{NON_EXPIRING_TOKEN_REFRESH_INTERVAL, TokenProviderExtension};
 
 /// The Azure Identity Auth extension: the shared bearer-token refresher driven
 /// by an Azure credential.
@@ -95,6 +97,8 @@ fn create(
     let extension = AzureIdentityAuthExtension::new(
         &name,
         auth,
+        TOKEN_USABLE_MARGIN,
+        NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
         Duration::from_secs(TOKEN_EXPIRY_BUFFER_SECS),
         tx,
         tracker,

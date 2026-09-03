@@ -4,7 +4,7 @@
 //! Azure credential construction and token acquisition.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use async_trait::async_trait;
 use azure_core::credentials::{TokenCredential, TokenRequestOptions};
@@ -14,7 +14,6 @@ use azure_identity::{
     WorkloadIdentityCredentialOptions,
 };
 use otel_arrow_dfe_engine::capability::auth::BearerToken;
-use otel_arrow_dfe_engine::capability::auth::bearer_token_provider::TOKEN_USABLE_MARGIN;
 
 use super::config::{AuthMethod, Config};
 use super::error::Error;
@@ -70,10 +69,6 @@ impl BackgroundProviderSource<BearerToken> for Auth {
 
     fn log_refresh_failure(&self, error: &Error) {
         otel_warn!("azure_identity_auth.token_refresh_failed", error = %error);
-    }
-
-    fn usable_margin() -> Duration {
-        TOKEN_USABLE_MARGIN
     }
 
     fn expires_on(value: &BearerToken) -> Option<Instant> {

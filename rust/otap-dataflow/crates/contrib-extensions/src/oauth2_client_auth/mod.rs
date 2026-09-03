@@ -27,7 +27,9 @@ use linkme::distributed_slice;
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_config::extension::ExtensionUserConfig;
 use otel_arrow_dfe_engine::ExtensionFactory;
-use otel_arrow_dfe_engine::capability::auth::bearer_token_provider::BearerTokenProvider;
+use otel_arrow_dfe_engine::capability::auth::bearer_token_provider::{
+    BearerTokenProvider, TOKEN_USABLE_MARGIN,
+};
 use otel_arrow_dfe_engine::config::ExtensionConfig;
 use otel_arrow_dfe_engine::context::ExtensionContext;
 use otel_arrow_dfe_engine::extension::wrapper::ExtensionVariant;
@@ -40,7 +42,7 @@ use self::auth::Auth;
 use self::config::Config;
 use self::metrics::OAuth2ClientAuthMetrics;
 use crate::common::background_refresh::BackgroundProviderMetricsTracker;
-use crate::common::token_refresh::TokenProviderExtension;
+use crate::common::token_refresh::{NON_EXPIRING_TOKEN_REFRESH_INTERVAL, TokenProviderExtension};
 
 /// The OAuth 2.0 Client Auth extension: the shared bearer-token refresher
 /// driven by an OAuth 2.0 token endpoint.
@@ -88,7 +90,15 @@ fn create(
     // Empty token cache; the background refresh loop publishes the first token.
     let (tx, _rx) = watch::channel(None);
 
-    let extension = OAuth2ClientAuthExtension::new(&name, auth, config.expiry_buffer, tx, tracker);
+    let extension = OAuth2ClientAuthExtension::new(
+        &name,
+        auth,
+        TOKEN_USABLE_MARGIN,
+        NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
+        config.expiry_buffer,
+        tx,
+        tracker,
+    );
 
     ExtensionWrapper::builder(name, ext_config, extension_config)
         .active()

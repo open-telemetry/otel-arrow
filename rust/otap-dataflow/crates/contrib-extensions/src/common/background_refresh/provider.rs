@@ -35,19 +35,15 @@ const MAX_REFRESH_RETRY_SECS: u64 = 300;
 /// extensions so they do not hit the source on the same second. Only
 /// ever moves the refresh earlier, never past the expiry safety buffer.
 const REFRESH_JITTER_SECS: u64 = 60;
-/// Next-refresh delay used for non-expiring values (~1 year). The loop is still
-/// woken by control messages in the meantime.
-const NON_EXPIRING_REFRESH_SECS: u64 = 365 * 24 * 60 * 60;
 
 /// The provider-specific half of a background extension: how one value is
 /// acquired, and how an acquisition failure is logged.
+///
+/// Note: `T` clones should be cheap (typically a refcount bump).
 #[async_trait]
 pub trait BackgroundProviderSource<T>: Send + Sync + 'static {
     /// Error returned by a failed acquisition.
     type Error: std::error::Error + Send + Sync + 'static;
-
-    /// How close to expiration a value stops being usable.
-    fn usable_margin() -> Duration;
 
     /// The monotonic instant at which the value expires, if known.
     fn expires_on(value: &T) -> Option<Instant>;
@@ -110,6 +106,10 @@ struct Inner<
 > {
     /// Provider-specific value source.
     source: S,
+    // How close to expiration a value stops being usable.
+    usable_margin: Duration,
+    /// How often a non-expiring [`T`] should be refreshed.
+    non_expiring_refresh_interval: Duration,
     /// Refresh this far ahead of a value's expiry.
     expiry_buffer: Duration,
     /// Value cache + pub/sub for `value_stream()`.
@@ -134,6 +134,8 @@ impl<S: BackgroundProviderSource<T>, M: BackgroundProviderMetrics, T: Clone, C: 
     pub fn new(
         name: &str,
         source: S,
+        usable_margin: Duration,
+        non_expiring_refresh_interval: Duration,
         expiry_buffer: Duration,
         tx: watch::Sender<Option<T>>,
         metrics: BackgroundProviderMetricsTracker<M>,
@@ -142,6 +144,8 @@ impl<S: BackgroundProviderSource<T>, M: BackgroundProviderMetrics, T: Clone, C: 
             inner: Arc::new(Inner {
                 source,
                 expiry_buffer,
+                usable_margin,
+                non_expiring_refresh_interval,
                 tx,
                 cap_err: CapabilityErrorSource::new(name.to_owned().into()),
                 fetch_lock: tokio::sync::Mutex::new(()),
@@ -162,12 +166,12 @@ impl<S: BackgroundProviderSource<T>, M: BackgroundProviderMetrics, T: Clone, C: 
     pub fn current_fresh_value(&self) -> Option<T> {
         // The value lives inside the watch channel behind a temporary read
         // guard; clone it out so we can return an owned value (and release the
-        // guard, which would otherwise block the writer). `T` clones
-        // are cheap: a refcount bump on the shared secret.
+        // guard, which would otherwise block the writer). Assumes `T` clones
+        // are a cheap refcount bump.
         let value = self.inner.tx.borrow().clone()?;
         match S::expires_on(&value) {
             Some(expires_on) => {
-                if Instant::now() + S::usable_margin() < expires_on {
+                if Instant::now() + self.inner.usable_margin < expires_on {
                     Some(value)
                 } else {
                     None
@@ -275,6 +279,7 @@ impl<S: BackgroundProviderSource<T>, M: BackgroundProviderMetrics, T: Clone, C: 
 pub(crate) fn schedule_next(
     value_expires_on: Option<Instant>,
     expiry_buffer: Duration,
+    non_expiring_refresh_interval: Duration,
 ) -> tokio::time::Instant {
     let now = tokio::time::Instant::now();
     let min_next = now + Duration::from_secs(MIN_REFRESH_INTERVAL_SECS);
@@ -285,7 +290,7 @@ pub(crate) fn schedule_next(
                 .unwrap_or(now);
             target.max(min_next)
         }
-        None => now + Duration::from_secs(NON_EXPIRING_REFRESH_SECS),
+        None => now + non_expiring_refresh_interval,
     }
 }
 
@@ -468,7 +473,10 @@ impl<
                     match outcome {
                         Ok(value) => {
                             next_refresh =
-                                jitter_refresh(schedule_next(S::expires_on(&value), inner.expiry_buffer));
+                                jitter_refresh(schedule_next(
+                                    S::expires_on(&value),
+                                    inner.expiry_buffer,
+                                    inner.non_expiring_refresh_interval));
                             if !ready_signaled {
                                 effect_handler.signal_ready();
                                 ready_signaled = true;

@@ -20,4 +20,4 @@
 
 mod extension;
 
-pub use extension::TokenProviderExtension;
+pub use extension::{NON_EXPIRING_TOKEN_REFRESH_INTERVAL, TokenProviderExtension};
