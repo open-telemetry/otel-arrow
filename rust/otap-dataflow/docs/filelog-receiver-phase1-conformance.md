@@ -225,7 +225,7 @@ unbounded event queue or log flood.
 | `runtime_lease_wait` | Time waiting for local locator ownership |
 | `local_locator_conflicts` | Rejected duplicate local ownership by bounded result |
 | `namespace_lock_wait` | Time waiting for checkpoint namespace |
-| `rotations` | Move/create finalizations by bounded outcome |
+| `rotations` | Move/create finalizations and descriptor-free disappearance containment by bounded outcome |
 | `copytruncate_detected` | Observable truncation detections |
 | `descriptor_evictions` | Completed resident-handle evictions |
 | `descriptor_reopen_failures` | Revalidation/reopen failures by reason |
@@ -421,7 +421,11 @@ while their semantic and format definitions remain normative from version 1.
 | Reader | Reopen same identity | Exact revalidation and deterministic reread |
 | Reader | Reopen mismatch | No read under old identity |
 | Reader | Removed resident identity | Descriptor pinned through finalization |
-| Reader | Removed evicted identity | Honest reopen/late-write failure |
+| Reader | Complete reconciliation proves an evicted, descriptor-free identity disappeared | Report capture limitation; release logical reader and lease; keep durable `Active` state unchanged; begin absence evidence |
+| Reader | Exact locator reappears after descriptor-free disappearance containment | Reconnect existing durable progress after full validation; `start_at` does not apply |
+| Reader | Descriptor-free record reaches retention with no other veto | Ordinary retention eligibility; no stale reader, lease, or rotation wait blocks removal |
+| Reader | Descriptor-free record with retention disabled | Durable `Active` record continues consuming one tracked slot without retaining runtime resources |
+| Reader | Reopen fails transiently without complete disappearance proof | Bounded environmental retry; no detach, progress change, or absence evidence |
 | Decoding | UTF-8/ASCII/UTF-16LE/UTF-16BE/raw | Expected body and source offsets |
 | Decoding | Matching initial BOM | Stripped body; frame owns BOM |
 | Decoding | Conflicting BOM | Configured decode-error policy |
@@ -773,7 +777,14 @@ identity.
 
 A's descriptor was evicted before unlink. Discovery proves disappearance, but the
 unlinked identity cannot be reopened by path. The receiver reports the late-write
-capture limitation and does not pretend A reached a lossless EOF.
+capture limitation and does not pretend A reached a lossless EOF. After resolving any
+existing source delta, it removes A's logical reader, releases A's runtime lease,
+discards volatile framing state, and removes A from rotation-finalization state. A's
+durable record remains `Active` and byte-for-byte unchanged, and ordinary absence
+tracking begins from this complete reconciliation. The record can later expire through
+retention or reconnect if the exact locator becomes observable and passes full
+validation. A temporary reopen failure without complete disappearance proof retries
+instead and does not detach A.
 
 ### Example 20: Copytruncate gap
 

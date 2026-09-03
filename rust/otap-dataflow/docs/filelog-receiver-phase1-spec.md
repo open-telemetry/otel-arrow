@@ -776,8 +776,9 @@ because exclusion requires prompt revocation while disappearance can require des
 dependent late-write capture and rotation finalization.
 
 Transition order for one locator is preserved. A stale removal cannot overtake a later
-observation. Reappearance before the old logical reader and lease finalize is blocked
-and makes the pass incomplete. Reappearance after finalization is a fresh observation.
+observation. Reappearance before the old logical reader and lease are released through
+finalization or descriptor-free disappearance containment is blocked and makes the pass
+incomplete. Reappearance after either release path is a fresh observation.
 
 Exclusion is not disappearance or rotation. After the
 [unresolved-delta invariant](#universal-unresolved-delta-ordering) is satisfied,
@@ -1019,8 +1020,9 @@ One process-local runtime lease exists for each active locator. A lease:
 - is bounded by configured tracked populations;
 - contains no telemetry payload or durable progress;
 - survives temporary descriptor closure and reopen;
-- is released on finalization, exclusion revocation, normal drain, receiver failure,
-  or panic unwinding; and
+- is released on finalization, exclusion revocation, descriptor-free
+  disappearance containment, normal drain, receiver failure, or panic
+  unwinding; and
 - fails closed on registry poisoning, corruption, or inconsistent release.
 
 Lease-map critical sections contain only bounded map operations. No filesystem I/O,
@@ -1142,11 +1144,36 @@ rotation finalization is possible. It is not an eviction victim. On POSIX this p
 reading an unlinked inode. On Windows it permits compatible rename/delete-pending
 continuity.
 
-If the descriptor was evicted before the path disappeared, the receiver cannot portably
-reopen that unlinked or delete-pending identity by path. It reports a
-high-severity capture limitation, keeps the durable record unfinalized, and
-does not claim late-write capture. Phase 1 has no implicit deadline-based loss
-policy for this case.
+If the descriptor was evicted before the path disappeared, the receiver cannot
+portably reopen that unlinked or delete-pending identity by path. A complete
+reconciliation that proves disappearance therefore contains the logical
+reader after the
+[unresolved-delta invariant](#universal-unresolved-delta-ordering) is
+satisfied:
+
+1. Report a high-severity late-write capture limitation.
+2. Remove the logical reader, discard its volatile decoding and framing state,
+   and release its runtime lease.
+3. Remove any rotation-finalization wait or drain state for that reader.
+4. Leave the durable record `Active` and byte-for-byte unchanged. Do not
+   advance its progress, quarantine it, or write `RotatedFinalized`.
+5. Start ordinary runtime absence evidence from that complete reconciliation.
+
+The detached durable record has no logical-reader, descriptor, lease, or
+rotation-finalization veto. It may become eligible for ordinary retention, or
+reconnect its existing progress after full identity and frontier validation if
+the exact locator becomes observable again. `start_at` does not apply on
+reconnection. A transient open or evidence-read failure does not prove
+disappearance and instead follows bounded environmental retry.
+
+When `checkpoint.retention` is zero, the detached record remains in the
+checkpoint and continues consuming one `max_tracked_files` slot until it
+reconnects or audited administration removes it. Containment releases runtime
+resources; it does not implicitly expire durable state.
+
+This containment admits that late writes may have been missed; it does not
+claim a lossless EOF or authorize source progress. Phase 1 has no implicit
+deadline-based loss policy for this case.
 
 Pinned removed handles consume `max_open_files` slots. Waiting present readers cannot
 evict them, and they remain subject to bounded scheduling and finalization deadlines.
@@ -2533,9 +2560,12 @@ can be missed.
 
 If A's descriptor was already evicted before unlink or delete-pending state, portable
 reopen is impossible. The receiver reports the limitation and does not claim
-late-write capture or silently finalize the identity. The record remains
-`Active` until an explicit deterministic failure rule or audited
-administrative action applies.
+late-write capture or silently finalize the identity. After the
+[descriptor-free disappearance containment](#removal-and-pinned-descriptors),
+the durable record remains `Active` and unchanged without retaining a logical
+reader, runtime lease, or rotation-finalization veto. Exact-locator
+reappearance may reconnect it; otherwise ordinary retention or audited
+administration may eventually remove it.
 
 Pinned removed handles consume `max_open_files` slots and are never eviction
 victims. Descriptor pressure pauses or refuses new descriptor admission and
