@@ -1,5 +1,5 @@
 change_type: enhancement
 component: otap
 note: Implement resource and scope name, version, schema_url, and dropped_attributes_count in the OTAP logs view, reading each from its group's representative row in O(1)
-issues: [0000]
+issues: [3993]
 subtext:
