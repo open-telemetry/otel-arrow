@@ -21,7 +21,7 @@ use crate::effect_handler::SourceTagging;
 use crate::entity_context::NodeTelemetryGuard;
 use crate::error::{Error, ProcessorErrorKind};
 use crate::flow_metrics::{
-    FlowDroppedItemsMetrics, FlowDurationMetrics, FlowInputItemsMetrics, FlowInputMessageMetrics,
+    FlowDroppedItemsMetrics, FlowDurationMetricSet, FlowInputItemsMetrics, FlowInputMessageMetrics,
     FlowInputSizeMetrics, FlowOutputItemsMetrics, FlowOutputMessageMetrics, FlowOutputSizeMetrics,
 };
 use crate::local::message::{LocalReceiver, LocalSender};
@@ -629,7 +629,7 @@ impl<PData> ProcessorWrapper<PData> {
         flow_input_message_metric: Option<MeasurementMetricSet<FlowInputMessageMetrics>>,
         flow_input_items_metric: Option<MeasurementMetricSet<FlowInputItemsMetrics>>,
         flow_input_size_metric: Option<MeasurementMetricSet<FlowInputSizeMetrics>>,
-        flow_duration_metric: Option<MeasurementMetricSet<FlowDurationMetrics>>,
+        flow_duration_metric: Option<FlowDurationMetricSet>,
         flow_output_items_metric: Option<MeasurementMetricSet<FlowOutputItemsMetrics>>,
         flow_output_message_metric: Option<MeasurementMetricSet<FlowOutputMessageMetrics>>,
         flow_output_size_metric: Option<MeasurementMetricSet<FlowOutputSizeMetrics>>,
@@ -1384,7 +1384,7 @@ mod tests {
             None,
             None,
             None,
-            Some(duration_metric),
+            Some(duration_metric.into()),
             Some(output_items_metric),
             None,
             None,
@@ -1533,7 +1533,7 @@ mod tests {
                             None,
                             Some(start_metric_set),
                             None,
-                            Some(duration_metric_set),
+                            Some(duration_metric_set.into()),
                             Some(outgoing_metric_set),
                             None,
                             None,

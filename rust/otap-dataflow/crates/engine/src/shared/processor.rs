@@ -41,7 +41,7 @@ use crate::effect_handler::{
 use crate::error::{Error, TypedError};
 use crate::flow_metrics::{
     DecisionFlowMetrics, EndFlowMetrics, FLOW_SIGNALS, FlowDroppedItemsMetrics,
-    FlowDurationMetrics, FlowInputItemsMetrics, FlowInputMessageMetrics, FlowInputSizeMetrics,
+    FlowDurationMetricSet, FlowInputItemsMetrics, FlowInputMessageMetrics, FlowInputSizeMetrics,
     FlowOutputItemsMetrics, FlowOutputMessageMetrics, FlowOutputSizeMetrics, InputFlowMetrics,
     SharedFlowMetricState, flow_signal_index, nanos_u64,
 };
@@ -55,7 +55,6 @@ use async_trait::async_trait;
 use otel_arrow_dfe_config::{PortName, SignalType};
 use otel_arrow_dfe_telemetry::common_attributes::SignalAttributes;
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
-use otel_arrow_dfe_telemetry::instrument::HistogramNormal;
 use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetHandler};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
@@ -205,7 +204,7 @@ impl<PData> EffectHandler<PData> {
         input_message_metric: Option<MeasurementMetricSet<FlowInputMessageMetrics>>,
         input_items_metric: Option<MeasurementMetricSet<FlowInputItemsMetrics>>,
         input_size_metric: Option<MeasurementMetricSet<FlowInputSizeMetrics>>,
-        duration_metric: Option<MeasurementMetricSet<FlowDurationMetrics>>,
+        duration_metric: Option<FlowDurationMetricSet>,
         output_items_metric: Option<MeasurementMetricSet<FlowOutputItemsMetrics>>,
         output_message_metric: Option<MeasurementMetricSet<FlowOutputMessageMetrics>>,
         output_size_metric: Option<MeasurementMetricSet<FlowOutputSizeMetrics>>,
@@ -258,12 +257,8 @@ impl<PData> EffectHandler<PData> {
         };
         self.flow.end = EndFlowMetrics {
             duration: duration_metric.map(|metrics| {
-                (
-                    metrics,
-                    Arc::new(Mutex::new(std::array::from_fn(|_| {
-                        HistogramNormal::default()
-                    }))),
-                )
+                let accumulator = metrics.accumulator();
+                (metrics, Arc::new(Mutex::new(accumulator)))
             }),
             output_messages: output_message_metric
                 .map(|metrics| (metrics, Arc::new(Mutex::new([0; 3])))),
@@ -346,7 +341,7 @@ impl<PData> EffectHandler<PData> {
         let mut acc = acc_mutex
             .lock()
             .expect("flow duration accumulator poisoned");
-        acc[flow_signal_index(signal)].record(total as f64 / 1_000_000_000.0);
+        acc.record(signal, total as f64 / 1_000_000_000.0);
     }
 
     /// Record input items into the shared flow accumulator.
@@ -491,17 +486,9 @@ impl<PData> EffectHandler<PData> {
                 let mut guard = acc_mutex
                     .lock()
                     .expect("flow duration accumulator poisoned");
-                std::mem::take(&mut *guard)
+                guard.take()
             };
-            for (duration, signal) in drained.into_iter().zip(FLOW_SIGNALS) {
-                if !duration.is_empty() {
-                    metrics
-                        .with(SignalAttributes { signal })
-                        .duration
-                        .merge(duration);
-                }
-            }
-            let _ = self.core.metrics_reporter.report_measurement(metrics);
+            metrics.report(drained, &mut self.core.metrics_reporter);
         }
         if let Some((metrics, acc_mutex)) = self.flow.end.output_messages.as_mut() {
             let drained = {
@@ -636,18 +623,10 @@ impl<PData> EffectHandler<PData> {
                 let mut guard = acc_mutex
                     .lock()
                     .expect("flow duration accumulator poisoned");
-                std::mem::take(&mut *guard)
+                guard.take()
             };
-            for (duration, signal) in drained.into_iter().zip(FLOW_SIGNALS) {
-                if !duration.is_empty() {
-                    metrics
-                        .with(SignalAttributes { signal })
-                        .duration
-                        .merge(duration);
-                }
-            }
-            let _ = reporter
-                .report_measurement_reliably_until(metrics, deadline)
+            metrics
+                .report_reliably(drained, &reporter, deadline)
                 .await?;
         }
         if let Some((metrics, acc_mutex)) = self.flow.end.output_messages.as_mut() {
@@ -957,7 +936,7 @@ impl<PData: crate::Unwindable> crate::_private::AckNackRouting<PData> for Effect
 mod tests {
     #![allow(missing_docs)]
     use super::*;
-    use crate::flow_metrics::{FlowAttributeSet, FlowOutputItemsMetrics};
+    use crate::flow_metrics::{FlowAttributeSet, FlowDurationMetrics, FlowOutputItemsMetrics};
     use crate::shared::message::SharedSender;
     use crate::testing::{test_node, test_pipeline_ctx};
     use otel_arrow_dfe_channel::error::SendError;
@@ -1159,7 +1138,7 @@ mod tests {
             None,
             Some(start_metric_set),
             None,
-            Some(duration_metric_set),
+            Some(duration_metric_set.into()),
             Some(outgoing_metric_set),
             None,
             None,
@@ -1190,7 +1169,7 @@ mod tests {
         assert_eq!(*start_before_report, [0, 20, 10]);
 
         let before_report = eh.flow.end.duration.as_ref().unwrap().1.lock().unwrap();
-        let (count, sum, _, _) = before_report[2].get().summary();
+        let (count, sum, _, _) = before_report.summary(SignalType::Logs);
         assert_eq!(count, 3);
         assert!((sum - 0.000_006).abs() < f64::EPSILON);
         drop(before_report);
@@ -1217,7 +1196,7 @@ mod tests {
 
         let drained = eh.flow.end.duration.as_ref().unwrap().1.lock().unwrap();
         assert_eq!(
-            drained[2].get().summary().0,
+            drained.summary(SignalType::Logs).0,
             0,
             "duration accumulator should be drained"
         );

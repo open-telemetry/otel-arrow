@@ -139,6 +139,7 @@ policies:
         bounds:
           start_node: enrich
           end_node: filter
+        duration_distribution: normal
         purpose: transform
         metrics:
           - input_messages
@@ -156,6 +157,20 @@ boundary processors. The engine validates that the end processor is reachable
 from the start processor and rejects interleaved flow ranges. Omit `metrics` to
 enable every supported flow metric. When present, it must not be empty and must
 not repeat a metric.
+
+`duration_distribution` controls the aggregation used by `compute_duration`:
+
+| Value | OTLP representation | Retained data |
+| --- | --- | --- |
+| `basic` | Bucketless `Histogram` | Count, sum, min, and max |
+| `normal` | `ExponentialHistogram` | Normal-resolution buckets and summary statistics |
+| `detailed` | `ExponentialHistogram` | Higher-resolution buckets and summary statistics |
+
+The setting defaults to `normal`. Use `basic` for lower aggregation cost or
+compatibility with consumers that do not support exponential histograms. Basic
+distributions do not retain buckets, so percentiles cannot be reconstructed.
+The setting is ignored when `compute_duration` is not enabled; `none` is not a
+valid aggregation for an enabled duration metric.
 
 ### Flow Metrics and Attributes
 
