@@ -422,7 +422,7 @@ impl KafkaReceiver {
                     message_format,
                     HeaderExtractions::apply_otlp_traces,
                     HeaderExtractions::apply_otap_traces,
-                    reject_syslog_extractions,
+                    reject_syslog_for_non_log_signal,
                     decode_traces_payload,
                 )
                 .map_err(KafkaReceiverError::TracesDecode)
@@ -440,7 +440,7 @@ impl KafkaReceiver {
                     message_format,
                     HeaderExtractions::apply_otlp_metrics,
                     HeaderExtractions::apply_otap_metrics,
-                    reject_syslog_extractions,
+                    reject_syslog_for_non_log_signal,
                     decode_metrics_payload,
                 )
                 .map_err(KafkaReceiverError::MetricsDecode)
@@ -1723,8 +1723,8 @@ fn decode_logs_payload(
     }
 }
 
-/// Reject Syslog extraction for traces and metrics.
-fn reject_syslog_extractions(
+/// Reject Syslog decoding for signal types other than logs.
+fn reject_syslog_for_non_log_signal(
     _extractions: &HeaderExtractions,
     _data: &[u8],
 ) -> Result<OtapPdata, EngineError> {
