@@ -23,8 +23,8 @@ use std::pin::Pin;
 use std::time::Duration;
 use tokio::time::Instant;
 
-pub const LOG_BATCH_MAX_BYTES: usize = 2 * 1024 * 1024;
-const LOG_BATCH_DEFAULT_MIN_BYTES: usize = 64 * 1024;
+pub const LOG_BATCH_MAX_BYTES: NonZeroUsize = NonZeroUsize::new(2 * 1024 * 1024).expect("non-zero");
+const LOG_BATCH_DEFAULT_MIN_BYTES: NonZeroUsize = NonZeroUsize::new(64 * 1024).expect("non-zero");
 const LOG_BATCH_DEFAULT_DURATION: Duration = Duration::from_millis(200);
 const LOG_SCOPE_KEY_VALUE_ESTIMATE: usize = 32;
 
@@ -78,8 +78,8 @@ const fn default_log_batch_otap() -> LogFormatConfig {
 
 pub(super) const fn default_log_batch_otlp() -> LogFormatConfig {
     LogFormatConfig {
-        min_size: NonZeroUsize::new(LOG_BATCH_DEFAULT_MIN_BYTES),
-        max_size: NonZeroUsize::new(LOG_BATCH_MAX_BYTES),
+        min_size: Some(LOG_BATCH_DEFAULT_MIN_BYTES),
+        max_size: Some(LOG_BATCH_MAX_BYTES),
         sizer: Sizer::Bytes,
     }
 }
@@ -102,7 +102,9 @@ impl LogsConfig {
     fn otlp_max_size(self) -> usize {
         self.otlp
             .max_size
-            .map_or(LOG_BATCH_MAX_BYTES, NonZeroUsize::get)
+            .or(self.otlp.min_size)
+            .expect("validate was called")
+            .get()
     }
 
     /// Validate the LogsConfig.
@@ -110,11 +112,11 @@ impl LogsConfig {
         if self
             .otlp
             .min_size
-            .is_some_and(|size| size.get() > LOG_BATCH_MAX_BYTES)
+            .is_some_and(|size| size > LOG_BATCH_MAX_BYTES)
             || self
                 .otlp
                 .max_size
-                .is_some_and(|size| size.get() > LOG_BATCH_MAX_BYTES)
+                .is_some_and(|size| size > LOG_BATCH_MAX_BYTES)
         {
             return Err(ConfigError::InvalidUserConfig {
                 error: format!(
@@ -134,7 +136,14 @@ impl LogFormatConfig {
     fn lower_limit(self) -> usize {
         self.min_size
             .or(self.max_size)
-            .expect("validated log format size")
+            .expect("validate was called")
+            .get()
+    }
+
+    fn upper_limit(self) -> usize {
+        self.max_size
+            .or(self.min_size)
+            .expect("validate was called")
             .get()
     }
 
@@ -172,12 +181,8 @@ impl LogFormatConfig {
                 ),
             });
         }
-        let max_size = self
-            .max_size
-            .or(self.min_size)
-            .expect("checked above")
-            .get();
-        if max_size > LOG_BATCH_MAX_BYTES {
+        let max_size = self.upper_limit();
+        if max_size > LOG_BATCH_MAX_BYTES.get() {
             return Err(ConfigError::InvalidUserConfig {
                 error: format!(
                     "internal telemetry receiver logs {format_name} max_size {max_size} exceeds limit"
