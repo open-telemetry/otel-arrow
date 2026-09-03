@@ -38,7 +38,7 @@ use std::time::Duration;
 /// - A **consumer** must stop sending requests once its cached credential is
 ///   inside this window, so a request cannot outlive the credential it carries
 ///   while in flight, in the presence of clock skew between the consumer, the
-///   Acredential issuer and the service.
+///   credential issuer and the service.
 ///
 /// Fixed rather than configurable so a provider can validate its own refresh
 /// settings against the same value every consumer enforces. It has to cover a

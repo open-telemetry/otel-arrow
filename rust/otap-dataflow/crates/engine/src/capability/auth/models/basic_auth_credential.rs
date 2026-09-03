@@ -69,7 +69,7 @@ impl BasicAuthCredential {
         self.password.expose_secret()
     }
 
-    /// The monotonic instant at which this token expires, if known.
+    /// The monotonic instant at which this credential expires, if known.
     #[must_use]
     pub const fn expires_on(&self) -> Option<Instant> {
         self.expires_on
