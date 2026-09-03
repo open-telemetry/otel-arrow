@@ -23,8 +23,9 @@
 # Component-owned duration has the same global/per-node model:
 #   - `runtime_metrics: detailed` enables it for every component, or
 #   - `policies.telemetry.duration: true` enables it for one node.
-# Per-node opt-ins still require `runtime_metrics: normal` or higher because
-# these measurements extend the input/output metric sets.
+# Per-node item and size opt-ins still require `runtime_metrics: normal` or
+# higher because these measurements extend the input/output metric sets.
+# Component duration can be enabled independently at any runtime metric level.
 #
 # The `full` pipeline lets you compare the sampler's terminal node outcomes
 # against forward-path measurements for the same processor range:
