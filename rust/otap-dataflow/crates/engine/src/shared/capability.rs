@@ -22,7 +22,7 @@ pub mod auth {
     pub mod api_key_provider {
         pub use crate::capability::auth::api_key_provider::shared::ApiKeyProvider;
     }
-    /// Local (Send + Sync) trait variant of the basic-auth-provider capability.
+    /// Shared (Send + Sync) trait variant of the basic-auth-provider capability.
     pub mod basic_auth_provider {
         pub use crate::capability::auth::basic_auth_provider::shared::BasicAuthProvider;
     }
