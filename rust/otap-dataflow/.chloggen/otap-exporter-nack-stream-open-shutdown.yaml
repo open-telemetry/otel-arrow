@@ -1,17 +1,17 @@
 # Use this changelog template to create an entry for release notes.
 
 # One of 'breaking', 'deprecation', 'new_component', 'enhancement', 'bug_fix'
-change_type: enhancement
+change_type: bug_fix
 
 # The name of the component, or a single word describing the area of concern, (e.g. engine, otap).
 # Must be one of the components listed in rust/otap-dataflow/.chloggen/config.yaml.
 component: pipeline
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: The OTLP receiver can now require a bearer token on OTLP/gRPC and OTLP/HTTP requests by binding the `bearer_token_authorizer` capability.
+note: OTAP exporter shutdown now NACKs the batch already sent to the server when a streaming request is still opening.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
-issues: [3878]
+issues: [2720, 3870]
 
 # (Optional) One or more lines of additional information to render under the primary note.
 # These lines will be padded with 2 spaces and then inserted directly into the document.
@@ -19,7 +19,7 @@ issues: [3878]
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
 subtext: |
-  Tokens are checked before the request payload is read. Authentication failures return
-  UNAUTHENTICATED/HTTP 401, denials return PERMISSION_DENIED/HTTP 403, and an authorizer that
-  cannot reach a decision fails closed with UNAVAILABLE/HTTP 503. Receivers without the binding
-  are unchanged.
+  A known gap remains when many batches are queued while the stream is still
+  opening: a batch already pulled off the queue but not yet correlated can
+  still be dropped on shutdown without a NACK. Issue #3870 tracks closing
+  this remaining gap.

@@ -179,11 +179,6 @@ where
     <T as ParentId>::ArrayType: ArrowPrimitiveType,
     <<T as ParentId>::ArrayType as ArrowPrimitiveType>::Native: AddAssign,
 {
-    // if the batch is empty, just skip all this logic and return a batch
-    if record_batch.num_rows() == 0 {
-        return Ok(record_batch.clone());
-    }
-
     // check if the column is already decoded
     let column_encoding = get_field_metadata(
         record_batch.schema_ref(),
@@ -193,6 +188,18 @@ where
     if let Some(metadata::encodings::PLAIN) = column_encoding {
         // column already decoded, nothing to do
         return Ok(record_batch.clone());
+    }
+
+    // if the batch is empty, just skip all this logic and return a batch, but still update the
+    // field metadata incase the caller is relying on it.
+    if record_batch.num_rows() == 0 {
+        let schema = record_batch.schema();
+        return Ok(RecordBatch::new_empty(Arc::new(update_field_metadata(
+            schema.as_ref(),
+            consts::PARENT_ID,
+            metadata::COLUMN_ENCODING,
+            metadata::encodings::PLAIN,
+        ))));
     }
 
     // in the implementation below, to compare the items from the type, key, and value columns to
@@ -1130,7 +1137,11 @@ pub fn apply_attribute_transform(
                 if existing_id_col.null_count() > 0 {
                     // fill nulls in the existing ID column
                     let new_ids = try_fill_null_ids(existing_id_col)?;
-                    let new_parent_batch = replace_id_column(parent_batch, new_ids.clone());
+                    let new_parent_batch = replace_id_column(
+                        parent_batch,
+                        new_ids.clone(),
+                        metadata::encodings::PLAIN,
+                    );
                     otap_batch.set(parent_payload_type, new_parent_batch)?;
                     new_ids
                 } else {
@@ -1151,7 +1162,8 @@ pub fn apply_attribute_transform(
                         0..parent_batch.num_rows() as u32,
                     )),
                 };
-                let new_parent_batch = replace_id_column(parent_batch, new_ids.clone());
+                let new_parent_batch =
+                    replace_id_column(parent_batch, new_ids.clone(), metadata::encodings::PLAIN);
                 otap_batch.set(parent_payload_type, new_parent_batch)?;
                 new_ids
             }
@@ -1290,7 +1302,11 @@ fn try_fill_null_ids_primitive<T: ArrowPrimitiveType>(
     Ok(PrimitiveArray::new(ScalarBuffer::from(new_ids), None))
 }
 
-fn replace_id_column(record_batch: &RecordBatch, id_column: ArrayRef) -> RecordBatch {
+fn replace_id_column(
+    record_batch: &RecordBatch,
+    id_column: ArrayRef,
+    encoding: &str,
+) -> RecordBatch {
     let schema = record_batch.schema();
     let fields = schema.fields();
     let index = fields.find(consts::ID).map(|(i, _)| i);
@@ -1308,10 +1324,17 @@ fn replace_id_column(record_batch: &RecordBatch, id_column: ArrayRef) -> RecordB
         columns.push(id_column);
     }
 
+    let schema = update_field_metadata(
+        &Schema::new(fields).with_metadata(schema.metadata().clone()),
+        consts::ID,
+        metadata::COLUMN_ENCODING,
+        encoding,
+    );
+
     // safety: the ID column we're inserting should have the same length as the existing batch
     // because it has been constructed from the original batch just with nulls filled in, so
     // this construction should not fail
-    RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).expect("can build record batch")
+    RecordBatch::try_new(Arc::new(schema), columns).expect("can build record batch")
 }
 
 /// Apply an [`AttributesTransform`] to an attributes [`RecordBatch`] and return both the
