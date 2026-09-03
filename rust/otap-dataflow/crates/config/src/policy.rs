@@ -700,21 +700,48 @@ const fn default_runtime_recovery_startup_timeout() -> Duration {
 const fn default_runtime_recovery_reset_after() -> Duration {
     Duration::from_secs(60)
 }
-/// Telemetry detail level used to select instrumentation cost and fidelity.
+/// instrumentation overhead.
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum MetricLevel {
-    /// Disable the configurable metric family.
+    /// No instrumentation.
     #[default]
     None,
-    /// Lowest-cost telemetry or summary-only distribution aggregation.
+    /// Channel transport metrics plus shared control-plane state gauges.
     Basic,
-    /// Standard telemetry detail or normal-resolution distribution aggregation.
+    /// Adds per-node produced/consumed outcome metrics (success, failure,
+    /// refused) and shared control-plane message/phase counters.
     Normal,
-    /// Highest telemetry detail or detailed-resolution distribution aggregation.
+    /// Adds pipeline latency measurement (entry timestamps), shared drain
+    /// durations, and completion unwind-depth summaries.
     Detailed,
+}
+
+/// Aggregation fidelity for distribution instruments.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DistributionTier {
+    /// Preserve summary statistics without buckets.
+    Basic,
+    /// Preserve normal-resolution histogram buckets.
+    #[default]
+    Normal,
+    /// Preserve detailed-resolution histogram buckets.
+    Detailed,
+}
+
+impl DistributionTier {
+    /// Returns the stable configuration name for this tier.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Basic => "basic",
+            Self::Normal => "normal",
+            Self::Detailed => "detailed",
+        }
+    }
 }
 
 /// Runtime telemetry policy declarations.
@@ -752,9 +779,9 @@ pub struct FlowMetricConfig {
     ///
     /// Basic preserves count, sum, min, and max without buckets. Normal and
     /// detailed use exponential histograms with increasing resolution. The
-    /// default is normal. None is invalid when compute duration is enabled.
-    #[serde(default = "default_metric_level_normal")]
-    pub duration_distribution: MetricLevel,
+    /// default is normal.
+    #[serde(default)]
+    pub duration_distribution: DistributionTier,
     /// Optional per-flow purpose differentiator, emitted as the `flow.purpose`
     /// scope attribute on every metric this flow produces. Lets OTel View
     /// selectors target distinct flavors of processor work (e.g. `filter`
@@ -830,13 +857,6 @@ impl TelemetryPolicy {
                     }
                 }
             }
-            if flow.has(FlowMetric::ComputeDuration)
-                && flow.duration_distribution == MetricLevel::None
-            {
-                errors.push(format!(
-                    "{path_prefix}.flow_metrics[{idx}].duration_distribution must be basic, normal, or detailed"
-                ));
-            }
         }
         errors
     }
@@ -855,10 +875,6 @@ impl Default for TelemetryPolicy {
 
 const fn default_metric_level_basic() -> MetricLevel {
     MetricLevel::Basic
-}
-
-const fn default_metric_level_normal() -> MetricLevel {
-    MetricLevel::Normal
 }
 
 const fn default_true() -> bool {
@@ -1866,7 +1882,7 @@ hard_limit: 2 GiB
         let policy: super::TelemetryPolicy = serde_yaml::from_str(yaml).expect("parse");
         assert_eq!(
             policy.flow_metrics[0].duration_distribution,
-            super::MetricLevel::Normal
+            super::DistributionTier::Normal
         );
     }
 
@@ -1875,9 +1891,9 @@ hard_limit: 2 GiB
     #[test]
     fn flow_metrics_duration_distribution_tiers_are_parsed() {
         for (name, expected) in [
-            ("basic", super::MetricLevel::Basic),
-            ("normal", super::MetricLevel::Normal),
-            ("detailed", super::MetricLevel::Detailed),
+            ("basic", super::DistributionTier::Basic),
+            ("normal", super::DistributionTier::Normal),
+            ("detailed", super::DistributionTier::Detailed),
         ] {
             let yaml = format!(
                 r#"
@@ -1892,66 +1908,42 @@ hard_limit: 2 GiB
         }
     }
 
-    /// Scenario: A compute-duration flow selects the `none` metric level.
-    /// Guarantees: Policy validation rejects disabling aggregation through the tier field.
+    /// Scenario: A flow selects `none` as its duration distribution tier.
+    /// Guarantees: Deserialization rejects values outside basic, normal, and detailed.
     #[test]
     fn flow_metrics_duration_distribution_rejects_none() {
-        let policies = Policies {
-            telemetry: Some(
-                serde_yaml::from_str(
-                    r#"
-                        flow_metrics:
-                          - id: flow1
-                            bounds: { start_node: a, end_node: b }
-                            metrics: [compute_duration]
-                            duration_distribution: none
-                    "#,
-                )
-                .expect("parse"),
-            ),
-            ..Policies::default()
-        };
-
-        let errors = policies.validation_errors("policies");
-        assert!(
-            errors
-                .iter()
-                .any(|error| error.contains("duration_distribution"))
+        let result = serde_yaml::from_str::<super::TelemetryPolicy>(
+            r#"
+                flow_metrics:
+                  - id: flow1
+                    bounds: { start_node: a, end_node: b }
+                    duration_distribution: none
+            "#,
         );
-    }
 
-    /// Scenario: A flow without compute duration specifies the `none` metric level.
-    /// Guarantees: The irrelevant distribution setting does not invalidate count-only flows.
-    #[test]
-    fn flow_metrics_duration_distribution_is_ignored_without_duration() {
-        let policies = Policies {
-            telemetry: Some(
-                serde_yaml::from_str(
-                    r#"
-                        flow_metrics:
-                          - id: flow1
-                            bounds: { start_node: a, end_node: b }
-                            metrics: [input_items]
-                            duration_distribution: none
-                    "#,
-                )
-                .expect("parse"),
-            ),
-            ..Policies::default()
-        };
-
-        assert!(policies.validation_errors("policies").is_empty());
+        assert!(result.is_err());
     }
 
     /// Scenario: JSON schema is generated for flow duration distribution configuration.
-    /// Guarantees: The field exposes the existing metric-level values to configuration tooling.
+    /// Guarantees: The field exposes only the three distribution tiers to configuration tooling.
     #[test]
     fn flow_metrics_duration_distribution_is_in_schema() {
         let schema = schemars::schema_for!(super::FlowMetricConfig);
         let json = serde_json::to_value(schema).expect("schema should serialize");
         let property = &json["properties"]["duration_distribution"];
         assert_eq!(property["default"], "normal");
-        assert_eq!(property["$ref"], serde_json::json!("#/$defs/MetricLevel"));
+        assert_eq!(
+            property["$ref"],
+            serde_json::json!("#/$defs/DistributionTier")
+        );
+        let variants = json["$defs"]["DistributionTier"]["oneOf"]
+            .as_array()
+            .expect("distribution tier variants");
+        let values = variants
+            .iter()
+            .map(|variant| variant["const"].as_str().expect("string enum value"))
+            .collect::<Vec<_>>();
+        assert_eq!(values, ["basic", "normal", "detailed"]);
     }
 
     #[test]
@@ -1988,7 +1980,7 @@ hard_limit: 2 GiB
                         end_node: "b".to_string(),
                     },
                     metrics: Some(vec![]),
-                    duration_distribution: super::MetricLevel::Normal,
+                    duration_distribution: super::DistributionTier::Normal,
                     purpose: None,
                 }],
                 ..super::TelemetryPolicy::default()
@@ -2017,7 +2009,7 @@ hard_limit: 2 GiB
                         super::FlowMetric::ComputeDuration,
                         super::FlowMetric::ComputeDuration,
                     ]),
-                    duration_distribution: super::MetricLevel::Normal,
+                    duration_distribution: super::DistributionTier::Normal,
                     purpose: None,
                 }],
                 ..super::TelemetryPolicy::default()

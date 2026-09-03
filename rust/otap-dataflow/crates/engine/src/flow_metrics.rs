@@ -33,7 +33,7 @@ use otel_arrow_dfe_telemetry_macros::{attribute_set, metric_set};
 use crate::attributes::PipelineAttributeSet;
 use crate::context::PipelineContext;
 use otel_arrow_dfe_config::SignalType;
-use otel_arrow_dfe_config::policy::{FlowMetric, MetricLevel, TelemetryPolicy};
+use otel_arrow_dfe_config::policy::{DistributionTier, FlowMetric, TelemetryPolicy};
 
 /// Metric set emitted by the start node of a flow range.
 #[metric_set(name = "flow.input", measurement_attributes = SignalAttributes)]
@@ -755,21 +755,15 @@ pub(crate) fn build_flow_metric_state(
         let duration_metric = if flow_config.has(FlowMetric::ComputeDuration) {
             let registrar = pipeline_context.metric_set_registrar_for_entity(entity_key);
             Some(match flow_config.duration_distribution {
-                MetricLevel::Basic => {
+                DistributionTier::Basic => {
                     FlowDurationMetricSet::Basic(FlowDurationBasicMetrics::register(&registrar))
                 }
-                MetricLevel::Normal => {
+                DistributionTier::Normal => {
                     FlowDurationMetricSet::Normal(FlowDurationMetrics::register(&registrar))
                 }
-                MetricLevel::Detailed => FlowDurationMetricSet::Detailed(
+                DistributionTier::Detailed => FlowDurationMetricSet::Detailed(
                     FlowDurationDetailedMetrics::register(&registrar),
                 ),
-                MetricLevel::None => {
-                    return Err(invalid_flow_metric_config(format!(
-                        "flow metric `{}` duration_distribution must be basic, normal, or detailed",
-                        flow_config.id
-                    )));
-                }
             })
         } else {
             None
@@ -1013,7 +1007,7 @@ mod tests {
     use otel_arrow_dfe_telemetry::attributes::{AttributeSetHandler, AttributeValue};
     use otel_arrow_dfe_telemetry::metrics::MetricValue;
 
-    fn one_flow_metric_state(tier: MetricLevel) -> PipelineFlowMetricState {
+    fn one_flow_metric_state(tier: DistributionTier) -> PipelineFlowMetricState {
         let (ctx, _) = test_pipeline_ctx();
         let entity_key = ctx
             .metrics_registry()
@@ -1021,16 +1015,15 @@ mod tests {
         let registrar = ctx.metric_set_registrar_for_entity(entity_key);
         let input_items_metric = FlowInputItemsMetrics::register(&registrar);
         let duration_metric = match tier {
-            MetricLevel::Basic => {
+            DistributionTier::Basic => {
                 FlowDurationMetricSet::Basic(FlowDurationBasicMetrics::register(&registrar))
             }
-            MetricLevel::Normal => {
+            DistributionTier::Normal => {
                 FlowDurationMetricSet::Normal(FlowDurationMetrics::register(&registrar))
             }
-            MetricLevel::Detailed => {
+            DistributionTier::Detailed => {
                 FlowDurationMetricSet::Detailed(FlowDurationDetailedMetrics::register(&registrar))
             }
-            MetricLevel::None => panic!("none is not a duration distribution"),
         };
         let output_items_metric = FlowOutputItemsMetrics::register(&registrar);
         PipelineFlowMetricState {
@@ -1059,7 +1052,7 @@ mod tests {
     /// Guarantees: the flow metric state is active.
     #[test]
     fn nonempty_state_is_active() {
-        let state = one_flow_metric_state(MetricLevel::Normal);
+        let state = one_flow_metric_state(DistributionTier::Normal);
         assert!(state.is_active());
     }
 
@@ -1068,9 +1061,9 @@ mod tests {
     #[test]
     fn duration_tiers_preserve_summary_statistics() {
         for tier in [
-            MetricLevel::Basic,
-            MetricLevel::Normal,
-            MetricLevel::Detailed,
+            DistributionTier::Basic,
+            DistributionTier::Normal,
+            DistributionTier::Detailed,
         ] {
             let mut state = one_flow_metric_state(tier);
             let duration = state.duration_metrics[0].as_mut().unwrap();
@@ -1090,9 +1083,9 @@ mod tests {
     #[test]
     fn duration_tiers_register_matching_descriptors() {
         for (tier, expected) in [
-            (MetricLevel::Basic, Instrument::Mmsc),
-            (MetricLevel::Normal, Instrument::ExponentialHistogram),
-            (MetricLevel::Detailed, Instrument::ExponentialHistogram),
+            (DistributionTier::Basic, Instrument::Mmsc),
+            (DistributionTier::Normal, Instrument::ExponentialHistogram),
+            (DistributionTier::Detailed, Instrument::ExponentialHistogram),
         ] {
             let state = one_flow_metric_state(tier);
             let duration = state.duration_metrics[0].as_ref().unwrap();
@@ -1104,18 +1097,10 @@ mod tests {
     /// Guarantees: The descriptor, distribution value, summary, and delta reset all retain the selected tier.
     #[test]
     fn duration_tiers_report_matching_distribution_values() {
-        for (tier, expected_instrument, expected_tier) in [
-            (MetricLevel::Basic, Instrument::Mmsc, "basic"),
-            (
-                MetricLevel::Normal,
-                Instrument::ExponentialHistogram,
-                "normal",
-            ),
-            (
-                MetricLevel::Detailed,
-                Instrument::ExponentialHistogram,
-                "detailed",
-            ),
+        for (tier, expected_instrument) in [
+            (DistributionTier::Basic, Instrument::Mmsc),
+            (DistributionTier::Normal, Instrument::ExponentialHistogram),
+            (DistributionTier::Detailed, Instrument::ExponentialHistogram),
         ] {
             let mut state = one_flow_metric_state(tier);
             let metrics = state.duration_metrics[0].as_mut().unwrap();
@@ -1136,7 +1121,7 @@ mod tests {
             let [MetricValue::Distribution(value)] = snapshot.get_metrics() else {
                 panic!("expected one distribution value");
             };
-            assert_eq!(value.tier_name(), expected_tier);
+            assert_eq!(value.tier(), tier);
             assert_eq!(value.summary(), (2, 4.0, 1.25, 2.75));
         }
     }
@@ -1145,7 +1130,7 @@ mod tests {
     /// Guarantees: each counter accumulates its item total independently.
     #[test]
     fn direct_record_increments_items() {
-        let mut state = one_flow_metric_state(MetricLevel::Normal);
+        let mut state = one_flow_metric_state(DistributionTier::Normal);
         state.input_items_metrics[0]
             .as_mut()
             .unwrap()
@@ -1221,7 +1206,7 @@ mod tests {
                 end_node: stop.to_string(),
             },
             metrics: None,
-            duration_distribution: MetricLevel::Normal,
+            duration_distribution: DistributionTier::Normal,
             purpose: None,
         }
     }
@@ -1317,14 +1302,14 @@ mod tests {
         assert!(state.output_size_metrics[0].is_none());
     }
 
-    /// Scenario: Flow duration is configured at each supported metric level.
+    /// Scenario: Flow duration is configured at each supported distribution tier.
     /// Guarantees: Runtime registration selects the matching typed metric set and descriptor.
     #[test]
     fn duration_distribution_selects_matching_metric_set() {
         for (tier, expected) in [
-            (MetricLevel::Basic, Instrument::Mmsc),
-            (MetricLevel::Normal, Instrument::ExponentialHistogram),
-            (MetricLevel::Detailed, Instrument::ExponentialHistogram),
+            (DistributionTier::Basic, Instrument::Mmsc),
+            (DistributionTier::Normal, Instrument::ExponentialHistogram),
+            (DistributionTier::Detailed, Instrument::ExponentialHistogram),
         ] {
             let (ctx, _) = test_pipeline_ctx();
             let (names, procs) = test_maps(&["a", "b"], &[]);
@@ -1354,30 +1339,12 @@ mod tests {
         let edges = test_edges(&[("a", "b")], &names);
         let mut flow = sw("items", "a", "b");
         flow.metrics = Some(vec![FlowMetric::InputItems]);
-        flow.duration_distribution = MetricLevel::Detailed;
+        flow.duration_distribution = DistributionTier::Detailed;
 
         let state = build_flow_metric_state(&policy_with(vec![flow]), &names, &procs, &ctx, &edges)
             .expect("count-only flow should build");
 
         assert!(state.duration_metrics[0].is_none());
-    }
-
-    /// Scenario: A compute-duration flow selects the `none` metric level.
-    /// Guarantees: Runtime construction rejects the unsupported aggregation choice.
-    #[test]
-    fn duration_distribution_none_is_rejected() {
-        let (ctx, _) = test_pipeline_ctx();
-        let (names, procs) = test_maps(&["a", "b"], &[]);
-        let edges = test_edges(&[("a", "b")], &names);
-        let mut flow = sw("duration", "a", "b");
-        flow.metrics = Some(vec![FlowMetric::ComputeDuration]);
-        flow.duration_distribution = MetricLevel::None;
-
-        let err = build_flow_metric_state(&policy_with(vec![flow]), &names, &procs, &ctx, &edges)
-            .err()
-            .expect("none must not select a duration aggregation");
-
-        assert_invalid_user_config(&err, "duration");
     }
 
     #[test]

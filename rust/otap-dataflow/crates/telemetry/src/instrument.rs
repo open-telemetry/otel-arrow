@@ -11,6 +11,7 @@
 //!
 //! Gauges are instantaneous values that are set via `set`.
 
+use otel_arrow_dfe_config::policy::DistributionTier;
 use otel_arrow_dfe_expohisto::{Error as HistogramError, HistogramNN};
 
 /// Bucket totals recovered by [`DistributionValue::scan_buckets`], re-exported so
@@ -715,15 +716,22 @@ impl DistributionValue {
         self.count() == 0
     }
 
+    /// Returns the configured aggregation tier represented by this value.
+    #[inline]
+    #[must_use]
+    pub fn tier(&self) -> DistributionTier {
+        match self {
+            Self::Basic(_) => DistributionTier::Basic,
+            Self::Normal(_) => DistributionTier::Normal,
+            Self::Detailed(_) => DistributionTier::Detailed,
+        }
+    }
+
     /// Returns the tier name (`"basic"`, `"normal"`, or `"detailed"`).
     #[inline]
     #[must_use]
     pub fn tier_name(&self) -> &'static str {
-        match self {
-            Self::Basic(_) => "basic",
-            Self::Normal(_) => "normal",
-            Self::Detailed(_) => "detailed",
-        }
+        self.tier().as_str()
     }
 
     /// Returns a `(count, sum, min, max)` summary of this interval's observations.
@@ -856,7 +864,7 @@ impl DistributionValue {
 /// totals they produce.
 impl PartialEq for DistributionValue {
     fn eq(&self, other: &Self) -> bool {
-        self.tier_name() == other.tier_name()
+        self.tier() == other.tier()
             && self.summary() == other.summary()
             && self.scan_buckets(|_| {}) == other.scan_buckets(|_| {})
     }

@@ -169,8 +169,9 @@ not repeat a metric.
 The setting defaults to `normal`. Use `basic` for lower aggregation cost or
 compatibility with consumers that do not support exponential histograms. Basic
 distributions do not retain buckets, so percentiles cannot be reconstructed.
-The setting is ignored when `compute_duration` is not enabled; `none` is not a
-valid aggregation for an enabled duration metric.
+The setting is ignored when `compute_duration` is not enabled. Its distribution
+tier is independent of `runtime_metrics`, which controls whether broader metric
+families are enabled.
 
 ### Flow Metrics and Attributes
 
