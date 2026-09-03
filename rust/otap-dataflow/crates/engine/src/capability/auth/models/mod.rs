@@ -9,11 +9,13 @@
 //! submodules are private; each type is re-exported here and again from
 //! [`super`], so consumers reach them at `capability::auth::<Type>`.
 
+mod api_key;
 mod authorized_identity;
 mod authz_decision;
 mod bearer_token;
 mod deny_reason;
 
+pub use api_key::ApiKey;
 pub use authorized_identity::{AuthorizedIdentity, ClaimValue};
 pub use authz_decision::AuthzDecision;
 pub use bearer_token::BearerToken;
