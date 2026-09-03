@@ -41,7 +41,9 @@ use tokio::sync::watch;
 use self::auth::Auth;
 use self::config::Config;
 use self::metrics::OAuth2ClientAuthMetrics;
-use crate::common::background_refresh::BackgroundProviderMetricsTracker;
+use crate::common::background_refresh::{
+    BackgroundProviderMetricsTracker, BackgroundProviderRefreshPolicy,
+};
 use crate::common::token_refresh::{NON_EXPIRING_TOKEN_REFRESH_INTERVAL, TokenProviderExtension};
 
 /// The OAuth 2.0 Client Auth extension: the shared bearer-token refresher
@@ -93,9 +95,11 @@ fn create(
     let extension = OAuth2ClientAuthExtension::new(
         &name,
         auth,
-        TOKEN_USABLE_MARGIN,
-        NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
-        config.expiry_buffer,
+        BackgroundProviderRefreshPolicy::new(
+            TOKEN_USABLE_MARGIN,
+            NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
+            config.expiry_buffer,
+        ),
         tx,
         tracker,
     );

@@ -41,7 +41,9 @@ use tokio::sync::watch;
 use self::auth::Auth;
 use self::config::Config;
 use self::metrics::AzureIdentityAuthMetrics;
-use crate::common::background_refresh::BackgroundProviderMetricsTracker;
+use crate::common::background_refresh::{
+    BackgroundProviderMetricsTracker, BackgroundProviderRefreshPolicy,
+};
 use crate::common::token_refresh::{NON_EXPIRING_TOKEN_REFRESH_INTERVAL, TokenProviderExtension};
 
 /// The Azure Identity Auth extension: the shared bearer-token refresher driven
@@ -97,9 +99,11 @@ fn create(
     let extension = AzureIdentityAuthExtension::new(
         &name,
         auth,
-        TOKEN_USABLE_MARGIN,
-        NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
-        Duration::from_secs(TOKEN_EXPIRY_BUFFER_SECS),
+        BackgroundProviderRefreshPolicy::new(
+            TOKEN_USABLE_MARGIN,
+            NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
+            Duration::from_secs(TOKEN_EXPIRY_BUFFER_SECS),
+        ),
         tx,
         tracker,
     );

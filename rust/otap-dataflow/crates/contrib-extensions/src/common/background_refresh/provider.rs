@@ -106,12 +106,7 @@ struct Inner<
 > {
     /// Provider-specific value source.
     source: S,
-    // How close to expiration a value stops being usable.
-    usable_margin: Duration,
-    /// How often a non-expiring [`T`] should be refreshed.
-    non_expiring_refresh_interval: Duration,
-    /// Refresh this far ahead of a value's expiry.
-    expiry_buffer: Duration,
+    refresh_policy: BackgroundProviderRefreshPolicy,
     /// Value cache + pub/sub for `value_stream()`.
     tx: watch::Sender<Option<T>>,
     /// Pre-tagged capability error builder.
@@ -126,6 +121,35 @@ struct Inner<
     metrics: Mutex<BackgroundProviderMetricsTracker<M>>,
 }
 
+/// Refresh policy for [`BackgroundProviderExtension`].
+pub struct BackgroundProviderRefreshPolicy {
+    // How close to expiration a value stops being usable.
+    usable_margin: Duration,
+    /// How often a non-expiring value should be refreshed.
+    non_expiring_refresh_interval: Duration,
+    /// Refresh this far ahead of a value's expiry.
+    expiry_buffer: Duration,
+}
+
+impl BackgroundProviderRefreshPolicy {
+    /// Builds a new instance.
+    #[must_use]
+    pub fn new(
+        usable_margin: Duration,
+        mut non_expiring_refresh_interval: Duration,
+        expiry_buffer: Duration,
+    ) -> BackgroundProviderRefreshPolicy {
+        non_expiring_refresh_interval =
+            non_expiring_refresh_interval.max(Duration::from_secs(MIN_REFRESH_INTERVAL_SECS));
+
+        Self {
+            usable_margin,
+            non_expiring_refresh_interval,
+            expiry_buffer,
+        }
+    }
+}
+
 impl<S: BackgroundProviderSource<T>, M: BackgroundProviderMetrics, T: Clone, C: ExtensionCapability>
     BackgroundProviderExtension<S, M, T, C>
 {
@@ -134,18 +158,14 @@ impl<S: BackgroundProviderSource<T>, M: BackgroundProviderMetrics, T: Clone, C: 
     pub fn new(
         name: &str,
         source: S,
-        usable_margin: Duration,
-        non_expiring_refresh_interval: Duration,
-        expiry_buffer: Duration,
+        refresh_policy: BackgroundProviderRefreshPolicy,
         tx: watch::Sender<Option<T>>,
         metrics: BackgroundProviderMetricsTracker<M>,
     ) -> Self {
         Self {
             inner: Arc::new(Inner {
                 source,
-                expiry_buffer,
-                usable_margin,
-                non_expiring_refresh_interval,
+                refresh_policy,
                 tx,
                 cap_err: CapabilityErrorSource::new(name.to_owned().into()),
                 fetch_lock: tokio::sync::Mutex::new(()),
@@ -198,7 +218,7 @@ impl<S: BackgroundProviderSource<T>, M: BackgroundProviderMetrics, T: Clone, C: 
         let value = self.inner.tx.borrow().clone()?;
         match S::expires_on(&value) {
             Some(expires_on) => {
-                if Instant::now() + self.inner.usable_margin < expires_on {
+                if Instant::now() + self.inner.refresh_policy.usable_margin < expires_on {
                     Some(value)
                 } else {
                     None
@@ -494,8 +514,8 @@ impl<
                             next_refresh =
                                 jitter_refresh(schedule_next(
                                     S::expires_on(&value),
-                                    inner.expiry_buffer,
-                                    inner.non_expiring_refresh_interval));
+                                    inner.refresh_policy.expiry_buffer,
+                                    inner.refresh_policy.non_expiring_refresh_interval));
                             if !ready_signaled {
                                 effect_handler.signal_ready();
                                 ready_signaled = true;

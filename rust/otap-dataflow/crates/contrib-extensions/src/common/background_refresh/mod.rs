@@ -10,4 +10,6 @@ mod provider;
 mod tests;
 
 pub use metrics::{BackgroundProviderMetrics, BackgroundProviderMetricsTracker};
-pub use provider::{BackgroundProviderExtension, BackgroundProviderSource};
+pub use provider::{
+    BackgroundProviderExtension, BackgroundProviderRefreshPolicy, BackgroundProviderSource,
+};

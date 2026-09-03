@@ -57,9 +57,11 @@ fn make_extension(token_url: &str) -> OAuth2ClientAuthExtension {
     OAuth2ClientAuthExtension::new(
         "test-ext",
         auth,
-        TOKEN_USABLE_MARGIN,
-        NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
-        cfg.expiry_buffer,
+        BackgroundProviderRefreshPolicy::new(
+            TOKEN_USABLE_MARGIN,
+            NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
+            cfg.expiry_buffer,
+        ),
         tx,
         make_tracker(),
     )
@@ -119,9 +121,11 @@ fn extension_from_config(cfg: &Config) -> OAuth2ClientAuthExtension {
     OAuth2ClientAuthExtension::new(
         "test-ext",
         auth,
-        TOKEN_USABLE_MARGIN,
-        NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
-        cfg.expiry_buffer,
+        BackgroundProviderRefreshPolicy::new(
+            TOKEN_USABLE_MARGIN,
+            NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
+            cfg.expiry_buffer,
+        ),
         tx,
         make_tracker(),
     )
@@ -724,9 +728,11 @@ async fn request_includes_scope_and_endpoint_params() {
     let ext = OAuth2ClientAuthExtension::new(
         "test-ext",
         auth,
-        TOKEN_USABLE_MARGIN,
-        NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
-        cfg.expiry_buffer,
+        BackgroundProviderRefreshPolicy::new(
+            TOKEN_USABLE_MARGIN,
+            NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
+            cfg.expiry_buffer,
+        ),
         tx,
         make_tracker(),
     );
@@ -760,9 +766,11 @@ async fn oversized_client_secret_file_is_rejected() {
     let ext = OAuth2ClientAuthExtension::new(
         "test-ext",
         auth,
-        TOKEN_USABLE_MARGIN,
-        NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
-        cfg.expiry_buffer,
+        BackgroundProviderRefreshPolicy::new(
+            TOKEN_USABLE_MARGIN,
+            NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
+            cfg.expiry_buffer,
+        ),
         tx,
         make_tracker(),
     );
@@ -803,9 +811,11 @@ async fn client_secret_file_rotation_takes_effect() {
     let ext = OAuth2ClientAuthExtension::new(
         "test-ext",
         auth,
-        TOKEN_USABLE_MARGIN,
-        NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
-        cfg.expiry_buffer,
+        BackgroundProviderRefreshPolicy::new(
+            TOKEN_USABLE_MARGIN,
+            NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
+            cfg.expiry_buffer,
+        ),
         tx,
         make_tracker(),
     );
@@ -965,9 +975,11 @@ async fn jwt_bearer_signs_assertion_and_acquires_token() {
     let ext = OAuth2ClientAuthExtension::new(
         "test-ext",
         auth,
-        TOKEN_USABLE_MARGIN,
-        NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
-        cfg.expiry_buffer,
+        BackgroundProviderRefreshPolicy::new(
+            TOKEN_USABLE_MARGIN,
+            NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
+            cfg.expiry_buffer,
+        ),
         tx,
         make_tracker(),
     );
@@ -1039,9 +1051,11 @@ async fn absurd_expires_in_yields_token_without_expiry_jwt_bearer() {
     let ext = OAuth2ClientAuthExtension::new(
         "test-ext",
         auth,
-        TOKEN_USABLE_MARGIN,
-        NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
-        cfg.expiry_buffer,
+        BackgroundProviderRefreshPolicy::new(
+            TOKEN_USABLE_MARGIN,
+            NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
+            cfg.expiry_buffer,
+        ),
         tx,
         make_tracker(),
     );
@@ -1076,9 +1090,11 @@ async fn jwt_bearer_reads_signing_key_from_file() {
     let ext = OAuth2ClientAuthExtension::new(
         "test-ext",
         auth,
-        TOKEN_USABLE_MARGIN,
-        NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
-        cfg.expiry_buffer,
+        BackgroundProviderRefreshPolicy::new(
+            TOKEN_USABLE_MARGIN,
+            NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
+            cfg.expiry_buffer,
+        ),
         tx,
         make_tracker(),
     );
