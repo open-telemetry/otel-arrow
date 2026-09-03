@@ -137,11 +137,13 @@ by `otel-arrow-dfe-otap`:
 warn,otel.receiver.otlp=debug,otel-arrow-dfe-otap=debug
 ```
 
-At startup, a valid `RUST_LOG` environment variable takes precedence over
-`logs.level`. After startup, a successful full-engine reconciliation makes the
-reconciled `logs.level` authoritative and replaces the environment-derived
-filter. This lets an OpAMP or admin control plane reliably change verbosity
-even when the process was launched with `RUST_LOG`.
+A valid `RUST_LOG` environment variable initializes logging during early
+bootstrap, before the engine configuration is active. When the initial engine
+configuration is activated, `logs.level` becomes authoritative and replaces
+the environment-derived filter before the initial pipelines start. Later,
+successful full-engine reconciliations apply the same precedence rule. This
+lets an OpAMP or admin control plane reliably change verbosity even when the
+process was launched with `RUST_LOG`.
 
 ### Limitation: active span state is not reconstructed
 

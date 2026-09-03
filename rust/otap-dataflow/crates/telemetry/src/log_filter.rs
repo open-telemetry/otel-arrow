@@ -18,7 +18,8 @@ use tracing_subscriber::layer::{Context, Layer};
 struct SharedState {
     // Desired config value; startup RUST_LOG may temporarily select a different filter.
     configured_level: ArcSwap<LogLevel>,
-    // The first reconciliation must replace RUST_LOG even when logs.level is unchanged.
+    // Initial configuration activation must replace RUST_LOG even when
+    // logs.level is unchanged.
     startup_override_active: AtomicBool,
     template: ArcSwap<EnvFilter>,
     layers: Mutex<Vec<Weak<ArcSwap<EnvFilter>>>>,
@@ -56,7 +57,7 @@ pub struct RuntimeLogFilter {
     shared: Arc<SharedState>,
 }
 
-/// A cloneable handle for applying reconciled log-level directives.
+/// A cloneable handle for applying configured log-level directives.
 #[derive(Clone)]
 pub struct RuntimeLogFilterHandle {
     shared: Arc<SharedState>,
@@ -130,8 +131,8 @@ impl RuntimeLogFilter {
 
     /// Returns the desired configuration value.
     ///
-    /// Before the first reconciliation this may differ from the effective startup
-    /// filter when `RUST_LOG` supplied that filter.
+    /// Before initial configuration activation this may differ from the
+    /// effective bootstrap filter when `RUST_LOG` supplied that filter.
     #[must_use]
     pub fn configured_level(&self) -> LogLevel {
         self.shared.configured_level.load().as_ref().clone()
@@ -179,8 +180,8 @@ impl RuntimeLogFilterHandle {
 
     /// Returns the desired configuration value.
     ///
-    /// Before the first reconciliation this may differ from the effective startup
-    /// filter when `RUST_LOG` supplied that filter.
+    /// Before initial configuration activation this may differ from the
+    /// effective bootstrap filter when `RUST_LOG` supplied that filter.
     #[must_use]
     pub fn configured_level(&self) -> LogLevel {
         self.shared.configured_level.load().as_ref().clone()
@@ -432,10 +433,10 @@ mod tests {
         });
     }
 
-    /// Scenario: RUST_LOG overrides startup with the same logs.level later reconciled.
-    /// Guarantees: the first reconciliation replaces the environment-derived filter.
+    /// Scenario: RUST_LOG overrides bootstrap with the same logs.level activated by the engine.
+    /// Guarantees: initial configuration activation replaces the environment-derived filter.
     #[test]
-    fn unchanged_runtime_level_overrides_rust_log_startup_filter() {
+    fn initial_activation_overrides_matching_rust_log_startup_filter() {
         crate::with_rust_log(Some("error"), || {
             let count = Arc::new(AtomicUsize::new(0));
             let (filter, handle) = RuntimeLogFilter::new(&level("info"));
@@ -448,7 +449,7 @@ mod tests {
                 assert_eq!(count.swap(0, Ordering::SeqCst), 0);
 
                 handle.apply(&level("info"));
-                tracing::info!("reconciled logs.level permits this event");
+                tracing::info!("activated logs.level permits this event");
                 assert_eq!(count.swap(0, Ordering::SeqCst), 1);
             });
         });

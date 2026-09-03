@@ -1,0 +1,5 @@
+change_type: bug_fix
+component: observability
+note: Apply `engine.telemetry.logs.level` when activating the initial engine configuration instead of waiting for reconciliation.
+issues: [3996]
+subtext:
