@@ -159,10 +159,9 @@ impl TopicRouter {
         signal_config: &SignalConfig,
         context: &'a Context,
     ) -> Option<&'a TransportHeader> {
-        // `topic_from_transport_header` is pre-normalized (lowercased) in
-        // `KafkaExporterConfig::try_from`, matching how transport headers store
-        // their logical names, so a plain equality check is sufficient here.
-        let header_key = signal_config.topic_from_transport_header()?;
+        // `ContextEntryRef` normalizes the configured name during deserialization,
+        // matching how transport headers store their logical names.
+        let header_key = signal_config.topic_from_transport_header()?.as_str();
         context
             .transport_headers()?
             .iter()

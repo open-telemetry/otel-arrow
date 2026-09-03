@@ -15,11 +15,16 @@ use async_trait::async_trait;
 use linkme::distributed_slice;
 use metrics::TrafficGeneratorReceiverMetrics;
 use otel_arrow_dfe_channel::error::{RecvError, SendError};
+use otel_arrow_dfe_config::ContextEntryRef;
 use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_config::transport_headers::{TransportHeader, TransportHeaders};
 use otel_arrow_dfe_engine::MessageSourceLocalEffectHandlerExtension;
 use otel_arrow_dfe_engine::config::ReceiverConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::context_declaration::{
+    ContextDeclaration, ContextDeclarationConfig, ContextDeclarationProvider,
+    ContextDeclarationsBuilder,
+};
 use otel_arrow_dfe_engine::control::CallData;
 use otel_arrow_dfe_engine::error::{Error, ReceiverErrorKind, TypedError};
 use otel_arrow_dfe_engine::local::receiver as local;
@@ -120,6 +125,10 @@ pub static TRAFFIC_GENERATOR_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFact
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<Config>,
 };
+
+#[distributed_slice(otel_arrow_dfe_engine::context_declaration::CONTEXT_DECLARATION_PROVIDERS)]
+static TRAFFIC_GENERATOR_CONTEXT_DECLARATIONS: ContextDeclarationProvider =
+    ContextDeclarationProvider::from_typed_config::<Config>(TRAFFIC_GENERATOR_RECEIVER_URN);
 
 impl TrafficGeneratorReceiver {
     /// creates a new TrafficGeneratorReceiver
@@ -482,19 +491,25 @@ impl TrafficGeneratorReceiver {
 /// random alphabetical string for text headers, or 16 raw random bytes
 /// for binary headers (keys ending in `-bin`).
 ///
+/// # Errors
+///
+/// Returns an error when a configured header is not a valid context entry reference.
+///
 /// Returns `None` when the config map is empty (zero overhead).
 fn build_transport_headers(
     config_headers: &HashMap<String, Option<String>>,
-) -> Option<TransportHeaders> {
+) -> Result<Option<TransportHeaders>, otel_arrow_dfe_config::error::Error> {
     if config_headers.is_empty() {
-        return None;
+        return Ok(None);
     }
     let mut headers = TransportHeaders::with_capacity(config_headers.len());
     for (key, value) in config_headers {
+        let entry = transport_header_entry_ref(key)?;
+        let name = entry.as_str().to_owned();
         // Infer the value kind from the key name, matching the convention
         // used by the header capture policy: keys ending in `-bin` are
         // treated as binary (the gRPC binary metadata convention).
-        if key.ends_with("-bin") {
+        if name.ends_with("-bin") {
             let resolved_value = match value {
                 Some(v) => v.as_bytes().to_vec(),
                 None => {
@@ -503,11 +518,7 @@ fn build_transport_headers(
                     buf.to_vec()
                 }
             };
-            headers.push(TransportHeader::binary(
-                key.clone(),
-                key.clone(),
-                resolved_value,
-            ));
+            headers.push(TransportHeader::binary(name, key.clone(), resolved_value));
         } else {
             let resolved_value = match value {
                 Some(v) => v.as_bytes().to_vec(),
@@ -519,14 +530,16 @@ fn build_transport_headers(
                         .collect()
                 }
             };
-            headers.push(TransportHeader::text(
-                key.clone(),
-                key.clone(),
-                resolved_value,
-            ));
+            headers.push(TransportHeader::text(name, key.clone(), resolved_value));
         }
     }
-    Some(headers)
+    Ok(Some(headers))
+}
+
+fn transport_header_entry_ref(
+    wire_name: &str,
+) -> Result<ContextEntryRef, otel_arrow_dfe_config::error::Error> {
+    ContextEntryRef::parse(wire_name)
 }
 
 /// Waits for a terminal control message after the producer has finished.
@@ -685,7 +698,15 @@ impl local::Receiver<OtapPdata> for TrafficGeneratorReceiver {
                 source_detail: String::new(),
             })?;
 
-        let transport_headers = build_transport_headers(self.config.transport_headers());
+        let transport_headers =
+            build_transport_headers(self.config.transport_headers()).map_err(|error| {
+                Error::ReceiverError {
+                    receiver: effect_handler.receiver_id(),
+                    kind: ReceiverErrorKind::Configuration,
+                    error: error.to_string(),
+                    source_detail: String::new(),
+                }
+            })?;
 
         let run_len = producer.run_len();
 
@@ -756,6 +777,18 @@ impl local::Receiver<OtapPdata> for TrafficGeneratorReceiver {
     }
 }
 
+impl ContextDeclarationConfig for Config {
+    fn context_declarations(
+        &self,
+    ) -> Result<Vec<ContextDeclaration>, otel_arrow_dfe_config::error::Error> {
+        let mut declarations = ContextDeclarationsBuilder::new();
+        for name in self.transport_headers().keys() {
+            declarations.produce(transport_header_entry_ref(name)?)?;
+        }
+        Ok(declarations.finish())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::config::{DataSource, GenerationStrategy};
@@ -765,6 +798,7 @@ mod tests {
     use otel_arrow_dfe_config::node::NodeUserConfig;
     use otel_arrow_dfe_config::transport_headers::ValueKind;
     use otel_arrow_dfe_engine::context::ControllerContext;
+    use otel_arrow_dfe_engine::context_declaration::ContextDeclaration;
     use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
     use otel_arrow_dfe_engine::testing::{
         receiver::{NotSendValidateContext, TestContext, TestRuntime},
@@ -1860,5 +1894,116 @@ mod tests {
             .set_receiver(receiver)
             .run_test(scenario)
             .run_validation(validation);
+    }
+
+    /// Scenario: Traffic generation config contains several context names.
+    /// Guarantees: runtime headers and declarations use the same logical names.
+    #[test]
+    fn traffic_gen_declaration_sorted_headers() {
+        let config = serde_json::json!({
+            "traffic_config": {
+                "signals_per_second": 10,
+                "max_batch_size": 5,
+                "metric_weight": 0,
+                "trace_weight": 0,
+                "log_weight": 1
+            },
+            "data_source": "synthetic",
+            "generation_strategy": "fresh",
+            "transport_headers": {
+                "x-tenant-id": "acme",
+                "X-Request-Id": null,
+                "a-first": "val"
+            }
+        });
+        let decls = (TRAFFIC_GENERATOR_CONTEXT_DECLARATIONS.declarations)(&config).unwrap();
+        assert_eq!(decls.len(), 3);
+
+        let names: Vec<&str> = decls
+            .iter()
+            .map(|d| match d {
+                ContextDeclaration::Produces { entry, .. } => entry.as_str(),
+                other => panic!("unexpected declaration: {other:?}"),
+            })
+            .collect();
+        assert_eq!(names, vec!["a-first", "x-request-id", "x-tenant-id"]);
+
+        let config: Config = serde_json::from_value(config).unwrap();
+        let headers = build_transport_headers(config.transport_headers())
+            .unwrap()
+            .expect("configured headers produce transport headers");
+        let mut runtime_names = headers
+            .iter()
+            .map(|header| header.name.as_str())
+            .collect::<Vec<_>>();
+        runtime_names.sort_unstable();
+        assert_eq!(runtime_names, names);
+    }
+
+    /// Scenario: Configured headers use mixed-case wire names.
+    /// Guarantees: their logical names and binary classification are normalized.
+    #[test]
+    fn traffic_gen_headers_normalize_logical_names() {
+        let headers = build_transport_headers(&HashMap::from([
+            ("X-Request-Id".to_string(), Some("request".to_string())),
+            ("X-Trace-Bin".to_string(), Some("trace".to_string())),
+        ]))
+        .unwrap()
+        .expect("configured headers produce transport headers");
+        let request_header = headers
+            .iter()
+            .find(|header| header.wire_name == "X-Request-Id")
+            .expect("request header is present");
+        let trace_header = headers
+            .iter()
+            .find(|header| header.wire_name == "X-Trace-Bin")
+            .expect("trace header is present");
+
+        assert_eq!(request_header.name, "x-request-id");
+        assert_eq!(request_header.value_kind, ValueKind::Text);
+        assert_eq!(trace_header.name, "x-trace-bin");
+        assert_eq!(trace_header.value_kind, ValueKind::Binary);
+    }
+
+    /// Scenario: Traffic generation config contains no context.
+    /// Guarantees: the factory declares no producers.
+    #[test]
+    fn traffic_gen_declaration_no_headers() {
+        let config = serde_json::json!({
+            "traffic_config": {
+                "signals_per_second": 10,
+                "max_batch_size": 5,
+                "metric_weight": 0,
+                "trace_weight": 0,
+                "log_weight": 1
+            },
+            "data_source": "synthetic",
+            "generation_strategy": "fresh"
+        });
+        let decls = (TRAFFIC_GENERATOR_CONTEXT_DECLARATIONS.declarations)(&config).unwrap();
+        assert!(decls.is_empty());
+    }
+
+    /// Scenario: Configured header names differ only by casing.
+    /// Guarantees: declaration compilation rejects the duplicate logical entry.
+    #[test]
+    fn traffic_gen_declaration_rejects_duplicate_normalized_headers() {
+        let config = serde_json::json!({
+            "traffic_config": {
+                "signals_per_second": 10,
+                "max_batch_size": 5,
+                "metric_weight": 0,
+                "trace_weight": 0,
+                "log_weight": 1
+            },
+            "data_source": "synthetic",
+            "generation_strategy": "fresh",
+            "transport_headers": {
+                "X-Tenant-Id": "acme",
+                "x-tenant-id": "contoso"
+            }
+        });
+
+        assert!((TRAFFIC_GENERATOR_CONTEXT_DECLARATIONS.declarations)(&config).is_err());
     }
 }

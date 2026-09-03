@@ -38,10 +38,12 @@ use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_config::validation::validate_typed_config;
-use otel_arrow_dfe_engine::ConsumerEffectHandlerExtension;
 use otel_arrow_dfe_engine::ExporterFactory;
 use otel_arrow_dfe_engine::config::ExporterConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::context_declaration::{
+    ContextDeclaration, ContextDeclarationConfig, ContextDeclarationProvider, ContextReadSelector,
+};
 use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otel_arrow_dfe_engine::error::Error as EngineError;
 use otel_arrow_dfe_engine::exporter::ExporterWrapper;
@@ -49,6 +51,7 @@ use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
 use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
 use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_engine::{ConsumerEffectHandlerExtension, context_access};
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
 use otel_arrow_dfe_pdata::Producer as PdataProducer;
@@ -336,6 +339,55 @@ pub static KAFKA_EXPORTER_FACTORY: ExporterFactory<OtapPdata> = ExporterFactory 
     validate_config: validate_typed_config::<KafkaExporterConfig>,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
 };
+
+#[distributed_slice(otel_arrow_dfe_engine::context_declaration::CONTEXT_DECLARATION_PROVIDERS)]
+static KAFKA_EXPORTER_CONTEXT_DECLARATIONS: ContextDeclarationProvider =
+    ContextDeclarationProvider::from_typed_config::<KafkaExporterConfig>(KAFKA_EXPORTER_URN);
+
+context_access! {
+    struct KafkaAccess {
+        topic,
+        partition,
+    }
+
+    const TRACES_ACCESS;
+    const METRICS_ACCESS;
+    const LOGS_ACCESS;
+}
+
+impl ContextDeclarationConfig for KafkaExporterConfig {
+    fn context_declarations(
+        &self,
+    ) -> Result<Vec<ContextDeclaration>, otel_arrow_dfe_config::error::Error> {
+        let mut decls = Vec::new();
+        let signals = [
+            (TRACES_ACCESS, self.traces()),
+            (METRICS_ACCESS, self.metrics()),
+            (LOGS_ACCESS, self.logs()),
+        ];
+
+        for (access, signal_cfg) in signals {
+            if let Some(cfg) = signal_cfg {
+                if let Some(header) = cfg.topic_from_transport_header() {
+                    decls.push(ContextDeclaration::Consumes {
+                        access: access.topic,
+                        selector: ContextReadSelector::Entries {
+                            entries: vec![header.clone()].into_boxed_slice(),
+                        },
+                    });
+                }
+                if cfg.partition_by_transport_headers() {
+                    decls.push(ContextDeclaration::Consumes {
+                        access: access.partition,
+                        selector: ContextReadSelector::All,
+                    });
+                }
+            }
+        }
+
+        Ok(decls)
+    }
+}
 
 impl KafkaExporter {
     /// Creates a new Kafka exporter from configuration.
@@ -1495,6 +1547,7 @@ pub mod test_support {
             HeaderPropagationPolicy, PropagationDefault, PropagationSelector,
             PropagationSelectorType,
         };
+        use otel_arrow_dfe_engine::context_declaration::{ContextDeclaration, ContextReadSelector};
         use otel_arrow_dfe_otap::pdata::Context;
         use otel_arrow_dfe_pdata::OtlpProtoBytes;
         use prost::Message as _;
@@ -1587,6 +1640,64 @@ pub mod test_support {
 
             // Expected to fail (no live broker) but should not have compilation/borrow errors
             let _ = result;
+        }
+
+        /// Scenario: Two signals configure different context reads.
+        /// Guarantees: access IDs distinguish reads emitted in signal order.
+        #[test]
+        fn declarations_use_generic_bindings() {
+            let config = serde_json::json!({
+                "brokers": "localhost:9092",
+                "client_id": "test",
+                "traces": {
+                    "topic": "traces-static",
+                    "topic_from_transport_header": "x-traces-topic",
+                    "partition_by_transport_headers": false,
+                    "encoding": "otlp_proto"
+                },
+                "logs": {
+                    "topic": "logs-static",
+                    "partition_by_transport_headers": true,
+                    "encoding": "otlp_proto"
+                }
+            });
+
+            let decls = (KAFKA_EXPORTER_CONTEXT_DECLARATIONS.declarations)(&config).unwrap();
+            assert_eq!(decls.len(), 2);
+
+            assert_eq!(
+                decls[0],
+                ContextDeclaration::Consumes {
+                    access: TRACES_ACCESS.topic,
+                    selector: ContextReadSelector::Entries {
+                        entries: vec!["x-traces-topic".into()].into_boxed_slice(),
+                    },
+                },
+            );
+            assert_eq!(
+                decls[1],
+                ContextDeclaration::Consumes {
+                    access: LOGS_ACCESS.partition,
+                    selector: ContextReadSelector::All,
+                },
+            );
+        }
+
+        /// Scenario: Kafka config has no context reads.
+        /// Guarantees: the factory declares no consumers.
+        #[test]
+        fn declarations_empty_when_no_header_consumption() {
+            let config = serde_json::json!({
+                "brokers": "localhost:9092",
+                "client_id": "test",
+                "logs": {
+                    "topic": "logs-static",
+                    "encoding": "otlp_proto"
+                }
+            });
+
+            let decls = (KAFKA_EXPORTER_CONTEXT_DECLARATIONS.declarations)(&config).unwrap();
+            assert!(decls.is_empty());
         }
 
         // ---- KafkaExporter::new() validation ----

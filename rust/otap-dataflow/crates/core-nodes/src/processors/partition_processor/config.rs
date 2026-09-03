@@ -3,6 +3,7 @@
 
 use std::num::NonZeroUsize;
 
+use otel_arrow_dfe_config::ContextEntryRef;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -11,7 +12,7 @@ pub struct Config {
     pub partition_by: PartitionByConfig,
 
     /// name of the transport header to which the partition value will be written
-    pub partition_header_name: String,
+    pub partition_header_name: ContextEntryRef,
 
     /// strategy to use when serializing partition results.
     #[serde(default)]
@@ -109,7 +110,7 @@ mod test {
             config,
             Config {
                 partition_by: PartitionByConfig::OplExpression("name".to_string()),
-                partition_header_name: "part.name".to_string(),
+                partition_header_name: "part.name".into(),
                 header_serialization_strategy: PartitionValueSerializeStrategy::ToBytesLossy {
                     text_as_binary_header: false,
                 },

@@ -11,9 +11,11 @@ use otel_arrow_dfe_config::NodeId as NodeName;
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_config::transport_headers::TransportHeaders;
-use otel_arrow_dfe_engine::ExporterFactory;
 use otel_arrow_dfe_engine::config::ExporterConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::context_declaration::{
+    ContextDeclaration, ContextDeclarationConfig, ContextDeclarationProvider, ContextReadSelector,
+};
 use otel_arrow_dfe_engine::control::NodeControlMsg;
 use otel_arrow_dfe_engine::error::Error as EngineError;
 use otel_arrow_dfe_engine::exporter::ExporterWrapper;
@@ -21,6 +23,7 @@ use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
 use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
 use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_engine::{ExporterFactory, context_access};
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
 use otel_arrow_dfe_pdata::TryFromWithOptions;
@@ -120,6 +123,85 @@ pub static VALIDATION_EXPORTER_FACTORY: ExporterFactory<OtapPdata> = ExporterFac
         ValidationExporterConfig,
     >,
 };
+
+#[distributed_slice(otel_arrow_dfe_engine::context_declaration::CONTEXT_DECLARATION_PROVIDERS)]
+static VALIDATION_EXPORTER_CONTEXT_DECLARATIONS: ContextDeclarationProvider =
+    ContextDeclarationProvider::from_typed_config::<ValidationExporterConfig>(
+        VALIDATION_EXPORTER_URN,
+    );
+
+context_access! {
+    struct ValidationAccess {
+        keys,
+        key_values,
+        deny,
+    }
+
+    const VALIDATION_ACCESS;
+}
+
+impl ContextDeclarationConfig for ValidationExporterConfig {
+    fn context_declarations(
+        &self,
+    ) -> Result<Vec<ContextDeclaration>, otel_arrow_dfe_config::error::Error> {
+        let mut require_key_names = std::collections::BTreeSet::new();
+        let mut require_key_value_names = std::collections::BTreeSet::new();
+        let mut deny_names = std::collections::BTreeSet::new();
+
+        for instruction in &self.validations {
+            match instruction {
+                ValidationInstructions::TransportHeaderRequireKey { keys } => {
+                    for key in keys {
+                        let _ = require_key_names.insert(key.clone());
+                    }
+                }
+                ValidationInstructions::TransportHeaderRequireKeyValue { pairs } => {
+                    for pair in pairs {
+                        let _ = require_key_value_names.insert(pair.key.clone());
+                    }
+                }
+                ValidationInstructions::TransportHeaderDeny { keys } => {
+                    deny_names.extend(keys.iter().cloned());
+                }
+                ValidationInstructions::Equivalence
+                | ValidationInstructions::SignalDrop { .. }
+                | ValidationInstructions::BatchItems { .. }
+                | ValidationInstructions::BatchBytes { .. }
+                | ValidationInstructions::AttributeDeny { .. }
+                | ValidationInstructions::AttributeRequireKey { .. }
+                | ValidationInstructions::AttributeRequireKeyValue { .. }
+                | ValidationInstructions::AttributeNoDuplicate => {}
+            }
+        }
+
+        let mut declarations = Vec::new();
+        if !require_key_names.is_empty() {
+            declarations.push(ContextDeclaration::Consumes {
+                access: VALIDATION_ACCESS.keys,
+                selector: ContextReadSelector::Entries {
+                    entries: require_key_names.into_iter().collect(),
+                },
+            });
+        }
+        if !require_key_value_names.is_empty() {
+            declarations.push(ContextDeclaration::Consumes {
+                access: VALIDATION_ACCESS.key_values,
+                selector: ContextReadSelector::Entries {
+                    entries: require_key_value_names.into_iter().collect(),
+                },
+            });
+        }
+        if !deny_names.is_empty() {
+            declarations.push(ContextDeclaration::Consumes {
+                access: VALIDATION_ACCESS.deny,
+                selector: ContextReadSelector::Entries {
+                    entries: deny_names.into_iter().collect(),
+                },
+            });
+        }
+        Ok(declarations)
+    }
+}
 
 impl ValidationExporter {
     /// Run the configured validations and update metrics.
@@ -250,5 +332,104 @@ impl Exporter<OtapPdata> for ValidationExporter {
                 _ => {}
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use otel_arrow_dfe_engine::context_declaration::{ContextDeclaration, ContextReadSelector};
+
+    /// Scenario: Validation config requires context keys and key-values.
+    /// Guarantees: each context-reading validation has a sorted, deduplicated binding.
+    #[test]
+    fn validation_requires_produce_consumer_declarations() {
+        let config = serde_json::json!({
+            "suv_input": "suv",
+            "validations": [
+                {
+                    "type": "transport_header_require_key",
+                    "keys": ["x-tenant-id", "x-request-id"]
+                },
+                {
+                    "type": "transport_header_require_key_value",
+                    "pairs": [{"key": "x-tenant-id", "value": "acme"}]
+                },
+                {
+                    "type": "transport_header_deny",
+                    "keys": ["x-secret"]
+                }
+            ]
+        });
+
+        let decls = (VALIDATION_EXPORTER_CONTEXT_DECLARATIONS.declarations)(&config).unwrap();
+        assert_eq!(decls.len(), 3);
+        assert_eq!(
+            decls[0],
+            ContextDeclaration::Consumes {
+                access: VALIDATION_ACCESS.keys,
+                selector: ContextReadSelector::Entries {
+                    entries: vec!["x-request-id".into(), "x-tenant-id".into()].into_boxed_slice(),
+                },
+            }
+        );
+        assert_eq!(
+            decls[1],
+            ContextDeclaration::Consumes {
+                access: VALIDATION_ACCESS.key_values,
+                selector: ContextReadSelector::Entries {
+                    entries: vec!["x-tenant-id".into()].into_boxed_slice(),
+                },
+            }
+        );
+        assert_eq!(
+            decls[2],
+            ContextDeclaration::Consumes {
+                access: VALIDATION_ACCESS.deny,
+                selector: ContextReadSelector::Entries {
+                    entries: vec!["x-secret".into()].into_boxed_slice(),
+                },
+            }
+        );
+    }
+
+    /// Scenario: Validation config contains only a transport-header deny check.
+    /// Guarantees: absence assertions declare the entries they inspect.
+    #[test]
+    fn validation_deny_only_declares_context_entries() {
+        let config = serde_json::json!({
+            "suv_input": "suv",
+            "validations": [
+                {
+                    "type": "transport_header_deny",
+                    "keys": ["X-Secret"]
+                }
+            ]
+        });
+
+        assert_eq!(
+            (VALIDATION_EXPORTER_CONTEXT_DECLARATIONS.declarations)(&config).unwrap(),
+            vec![ContextDeclaration::Consumes {
+                access: VALIDATION_ACCESS.deny,
+                selector: ContextReadSelector::Entries {
+                    entries: vec!["x-secret".into()].into_boxed_slice(),
+                },
+            }]
+        );
+    }
+
+    /// Scenario: Validation config has no context checks.
+    /// Guarantees: the factory declares no context consumers.
+    #[test]
+    fn validation_no_header_instructions_empty() {
+        let config = serde_json::json!({
+            "suv_input": "suv",
+            "validations": [
+                {"type": "equivalence"}
+            ]
+        });
+
+        let decls = (VALIDATION_EXPORTER_CONTEXT_DECLARATIONS.declarations)(&config).unwrap();
+        assert!(decls.is_empty());
     }
 }

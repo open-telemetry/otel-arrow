@@ -62,13 +62,14 @@ pub mod admission;
 pub mod capability;
 #[doc(hidden)]
 pub mod clock;
+pub mod context_declaration;
 pub mod error;
 pub mod exporter;
 pub mod extension;
 mod extension_lifecycle;
 mod extension_monitor;
 pub mod inventory;
-pub use otel_arrow_dfe_engine_macros::component_inventory;
+pub use otel_arrow_dfe_engine_macros::{component_inventory, context_access};
 pub mod message;
 pub mod processor;
 pub mod receiver;

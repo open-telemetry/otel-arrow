@@ -46,7 +46,7 @@ use crate::thread_task::{ThreadLocalTaskHandle, spawn_thread_local_task};
 use core_affinity::CoreId;
 use otel_arrow_dfe_admin::ControlPlane;
 use otel_arrow_dfe_config::engine::{
-    OtelDataflowSpec, ResolvedPipelineConfig, ResolvedPipelineRole,
+    OtelDataflowSpec, ResolvedOtelDataflowSpec, ResolvedPipelineConfig, ResolvedPipelineRole,
     SYSTEM_OBSERVABILITY_PIPELINE_ID, SYSTEM_PIPELINE_GROUP_ID,
 };
 use otel_arrow_dfe_config::extension::{ExtensionUrn, ExtensionUserConfig};
@@ -71,6 +71,7 @@ use otel_arrow_dfe_engine::PipelineFactory;
 use otel_arrow_dfe_engine::ReceivedAtNode;
 use otel_arrow_dfe_engine::Unwindable;
 use otel_arrow_dfe_engine::context::{ControllerContext, PipelineContext};
+use otel_arrow_dfe_engine::context_declaration::CompiledContextPolicy;
 use otel_arrow_dfe_engine::control::{
     PipelineAdminSender, PipelineCompletionMsgReceiver, PipelineCompletionMsgSender,
     RuntimeCtrlMsgReceiver, RuntimeCtrlMsgSender, pipeline_completion_msg_channel,
@@ -1304,6 +1305,12 @@ impl<
 
         let num_pipeline_groups = engine_config.groups.len();
         let resolved_config = engine_config.resolve();
+        let context_policy = self
+            .pipeline_factory
+            .compile_context_policy(&resolved_config)
+            .map_err(|source| Error::PipelineRuntimeError {
+                source: Box::new(source),
+            })?;
         let (mut engine, pipelines, observability_pipeline) = resolved_config.into_parts();
         let observability_pipeline =
             observability_pipeline.ok_or_else(|| Error::PipelineRuntimeError {
@@ -1529,6 +1536,7 @@ impl<
             engine_evt_reporter.clone(),
             metrics_reporter.clone(),
             declared_topics,
+            Arc::clone(&context_policy),
             all_cores.clone(),
             topology,
             telemetry_system.engine_tracing_setup(),
@@ -1579,6 +1587,7 @@ impl<
             observability_core,
             observability_pipeline,
             &engine_config,
+            Arc::clone(&context_policy),
             &telemetry_system,
             self.pipeline_factory,
             &controller_ctx,
@@ -1720,6 +1729,7 @@ impl<
                     placement.core_id,
                     placement.numa_node_id,
                     Arc::clone(&listener_group_snapshot),
+                    Arc::clone(&context_policy),
                     num_cores,
                     pipeline_entry.pipeline.clone(),
                     pipeline_entry.policies.channel_capacity.clone(),
@@ -2550,6 +2560,7 @@ impl<
         core_id: CoreId,
         numa_node_id: usize,
         listener_group_snapshot: Arc<ListenerGroupSnapshot>,
+        context_policy: Arc<CompiledContextPolicy>,
         num_cores: usize,
         pipeline_config: PipelineConfig,
         channel_capacity_policy: ChannelCapacityPolicy,
@@ -2590,6 +2601,7 @@ impl<
         )?;
         pipeline_ctx.set_topic_set(topic_set);
         pipeline_ctx.set_listener_group_snapshot_arc(listener_group_snapshot);
+        pipeline_ctx.set_compiled_context_policy(Arc::clone(&context_policy));
         let (runtime_ctrl_msg_tx, runtime_ctrl_msg_rx) =
             runtime_ctrl_msg_channel(channel_capacity_policy.control.pipeline);
         let (pipeline_completion_msg_tx, pipeline_completion_msg_rx) =
@@ -2661,6 +2673,7 @@ impl<
         Ok(LaunchedPipelineThread {
             pipeline_key,
             control_sender,
+            context_policy,
             _marker: std::marker::PhantomData,
         })
     }
@@ -2673,6 +2686,7 @@ impl<
         observability_core: CoreId,
         observability_pipeline: ResolvedPipelineConfig,
         config: &OtelDataflowSpec,
+        context_policy: Arc<CompiledContextPolicy>,
         telemetry_system: &InternalTelemetrySystem,
         pipeline_factory: &'static PipelineFactory<PData>,
         controller_ctx: &ControllerContext,
@@ -2701,6 +2715,7 @@ impl<
             observability_core,
             observability_numa_node_id,
             Arc::new(ListenerGroupSnapshot::empty()),
+            context_policy,
             1,
             pipeline_config,
             channel_capacity_policy,
@@ -3271,12 +3286,20 @@ connections:
         ))
     }
 
-    static TEST_OBSERVABILITY_RECEIVERS: &[ReceiverFactory<()>] = &[ReceiverFactory {
-        name: "urn:otel:receiver:internal_telemetry",
-        create: create_test_observability_receiver,
-        wiring_contract: WiringContract::UNRESTRICTED,
-        validate_config: accept_any_test_config,
-    }];
+    static TEST_OBSERVABILITY_RECEIVERS: &[ReceiverFactory<()>] = &[
+        ReceiverFactory {
+            name: "urn:otel:receiver:internal_telemetry",
+            create: create_test_observability_receiver,
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: accept_any_test_config,
+        },
+        ReceiverFactory {
+            name: "urn:test:receiver:example",
+            create: create_test_observability_receiver,
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: accept_any_test_config,
+        },
+    ];
 
     static TEST_OBSERVABILITY_PROCESSORS: &[ProcessorFactory<()>] = &[ProcessorFactory {
         name: "urn:otel:processor:type_router",
@@ -3294,6 +3317,12 @@ connections:
         },
         ExporterFactory {
             name: "urn:otel:exporter:noop",
+            create: create_test_observability_exporter,
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: accept_any_test_config,
+        },
+        ExporterFactory {
+            name: "urn:test:exporter:example",
             create: create_test_observability_exporter,
             wiring_contract: WiringContract::UNRESTRICTED,
             validate_config: accept_any_test_config,
