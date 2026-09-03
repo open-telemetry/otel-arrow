@@ -3,9 +3,11 @@
 
 //! Bearer-header adapter for agent-fed credentials.
 
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use futures::future::LocalBoxFuture;
 use http::HeaderValue;
 use otel_arrow_dfe_engine::capability::CapabilityError;
 use otel_arrow_dfe_engine::capability::auth::agent_fed_credential_provider::AgentFedCredentialSnapshot;
@@ -16,9 +18,13 @@ use otel_arrow_dfe_telemetry_macros::AttributeEnum;
 pub(crate) const CREDENTIAL_LOOKUP_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const CREDENTIAL_RETRY_DELAY: Duration = Duration::from_secs(1);
 
+type CredentialLookup =
+    LocalBoxFuture<'static, Result<Arc<AgentFedCredentialSnapshot>, AgentFedAuthError>>;
+
 /// Resolves, validates, and reuses agent-fed credentials for outbound requests.
 pub(crate) struct AgentFedAuth {
-    provider: Box<dyn AgentFedCredentialProvider>,
+    provider: Rc<dyn AgentFedCredentialProvider>,
+    lookup: Option<CredentialLookup>,
     cached_credential: Option<CachedCredential>,
     generation: u64,
     rejected_generation: Option<u64>,
@@ -39,7 +45,8 @@ impl AgentFedAuth {
     /// Creates an adapter over a resolved local capability.
     pub(crate) fn new(provider: Box<dyn AgentFedCredentialProvider>) -> Self {
         Self {
-            provider,
+            provider: Rc::from(provider),
+            lookup: None,
             cached_credential: None,
             generation: 0,
             rejected_generation: None,
@@ -78,12 +85,37 @@ impl AgentFedAuth {
 
     /// Waits until the next allowed lookup and observes the current snapshot.
     ///
-    /// The caller drives this future from its main `select!`, so control traffic
-    /// can cancel a slow capability lookup. Unchanged snapshots reuse their
-    /// validated header; failures are delayed to avoid a busy loop.
+    /// The caller drives this future from its main `select!`. If another branch
+    /// wins, the stored lookup retains its retry delay, provider progress, and
+    /// original timeout for the next poll. Dropping the adapter during shutdown
+    /// still cancels the lookup. Unchanged snapshots reuse their validated
+    /// header; failures are delayed to avoid a busy loop.
     pub(crate) async fn poll_credential(&mut self) -> Result<(), AgentFedAuthFailure> {
-        tokio::time::sleep_until(tokio::time::Instant::from_std(self.retry_at)).await;
-        match self.lookup_with_timeout(CREDENTIAL_LOOKUP_TIMEOUT).await {
+        self.poll_credential_with_timeout(CREDENTIAL_LOOKUP_TIMEOUT)
+            .await
+    }
+
+    /// Cancels a pending retry or provider lookup.
+    pub(crate) fn cancel_lookup(&mut self) {
+        self.lookup = None;
+    }
+
+    async fn poll_credential_with_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<(), AgentFedAuthFailure> {
+        let provider = Rc::clone(&self.provider);
+        let retry_at = self.retry_at;
+        let lookup = self.lookup.get_or_insert_with(|| {
+            Box::pin(async move {
+                tokio::time::sleep_until(tokio::time::Instant::from_std(retry_at)).await;
+                lookup_with_timeout(provider.as_ref(), timeout).await
+            })
+        });
+        let result = lookup.await;
+        self.lookup = None;
+
+        match result {
             Ok(snapshot) => self.accept_snapshot(snapshot),
             Err(error) => Err(self.record_failure(error)),
         }
@@ -187,16 +219,6 @@ impl AgentFedAuth {
         })
     }
 
-    async fn lookup_with_timeout(
-        &self,
-        timeout: Duration,
-    ) -> Result<Arc<AgentFedCredentialSnapshot>, AgentFedAuthError> {
-        tokio::time::timeout(timeout, self.provider.get_credential())
-            .await
-            .map_err(|_| AgentFedAuthError::LookupTimeout)?
-            .map_err(AgentFedAuthError::CredentialUnavailable)
-    }
-
     fn record_failure(&mut self, error: AgentFedAuthError) -> AgentFedAuthFailure {
         self.lookup_required = true;
         self.retry_at = Instant::now() + CREDENTIAL_RETRY_DELAY;
@@ -205,6 +227,16 @@ impl AgentFedAuth {
             log_count: self.failure_limiter.record_failure(),
         }
     }
+}
+
+async fn lookup_with_timeout(
+    provider: &dyn AgentFedCredentialProvider,
+    timeout: Duration,
+) -> Result<Arc<AgentFedCredentialSnapshot>, AgentFedAuthError> {
+    tokio::time::timeout(timeout, provider.get_credential())
+        .await
+        .map_err(|_| AgentFedAuthError::LookupTimeout)?
+        .map_err(AgentFedAuthError::CredentialUnavailable)
 }
 
 #[derive(Debug, Default)]
@@ -301,6 +333,8 @@ mod tests {
     use serde_json::Map;
     use std::collections::VecDeque;
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::Notify;
 
     struct MockProvider {
         snapshots: Mutex<VecDeque<Arc<AgentFedCredentialSnapshot>>>,
@@ -344,6 +378,21 @@ mod tests {
                     Ok,
                 )
             }
+        }
+    }
+
+    struct InterruptibleProvider {
+        snapshot: Arc<AgentFedCredentialSnapshot>,
+        calls: Arc<AtomicUsize>,
+        release: Arc<Notify>,
+    }
+
+    #[async_trait(?Send)]
+    impl AgentFedCredentialProvider for InterruptibleProvider {
+        async fn get_credential(&self) -> Result<Arc<AgentFedCredentialSnapshot>, CapabilityError> {
+            _ = self.calls.fetch_add(1, Ordering::Relaxed);
+            self.release.notified().await;
+            Ok(Arc::clone(&self.snapshot))
         }
     }
 
@@ -508,12 +557,99 @@ mod tests {
             delay: Duration::from_millis(50),
         }));
 
-        let error = auth
-            .lookup_with_timeout(Duration::from_millis(1))
+        let error = lookup_with_timeout(auth.provider.as_ref(), Duration::from_millis(1))
             .await
             .unwrap_err();
         assert!(matches!(error, AgentFedAuthError::LookupTimeout));
         assert_eq!(error.error_type(), AgentFedAuthErrorType::LookupTimeout);
+    }
+
+    /// Scenario: The caller repeatedly stops polling while one provider lookup is pending.
+    /// Guarantees: Re-polling resumes the same lookup instead of calling the provider again.
+    #[tokio::test]
+    async fn preserves_lookup_across_poll_interruptions() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let release = Arc::new(Notify::new());
+        let mut auth = AgentFedAuth::new(Box::new(InterruptibleProvider {
+            snapshot: snapshot("eventual"),
+            calls: Arc::clone(&calls),
+            release: Arc::clone(&release),
+        }));
+
+        for _ in 0..3 {
+            assert!(
+                tokio::time::timeout(Duration::from_millis(1), auth.poll_credential())
+                    .await
+                    .is_err()
+            );
+        }
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+
+        release.notify_one();
+        tokio::time::timeout(Duration::from_secs(1), auth.poll_credential())
+            .await
+            .expect("stored lookup should resume")
+            .expect("released lookup should succeed");
+
+        assert!(auth.is_ready());
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+
+    /// Scenario: Shutdown begins while a credential lookup is pending.
+    /// Guarantees: Explicit cancellation drops the stored lookup immediately.
+    #[tokio::test]
+    async fn cancels_pending_lookup_when_requested() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let release = Arc::new(Notify::new());
+        let mut auth = AgentFedAuth::new(Box::new(InterruptibleProvider {
+            snapshot: snapshot("pending"),
+            calls: Arc::clone(&calls),
+            release,
+        }));
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(1), auth.poll_credential())
+                .await
+                .is_err()
+        );
+        assert!(auth.lookup.is_some());
+
+        auth.cancel_lookup();
+
+        assert!(auth.lookup.is_none());
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+
+    /// Scenario: Polling is interrupted before a credential lookup reaches its timeout.
+    /// Guarantees: Resuming preserves the original timeout instead of starting a new deadline.
+    #[tokio::test]
+    async fn preserves_lookup_timeout_across_poll_interruptions() {
+        let mut auth = AgentFedAuth::new(Box::new(MockProvider {
+            snapshots: Mutex::new(VecDeque::new()),
+            delay: Duration::from_secs(60),
+        }));
+        let started = Instant::now();
+
+        assert!(
+            tokio::time::timeout(
+                Duration::from_secs(1),
+                auth.poll_credential_with_timeout(Duration::from_secs(2)),
+            )
+            .await
+            .is_err()
+        );
+
+        let failure = auth
+            .poll_credential_with_timeout(Duration::from_secs(2))
+            .await
+            .expect_err("the original lookup deadline should expire");
+
+        assert!(
+            started.elapsed() < Duration::from_millis(2500),
+            "the first interruption must not reset the original lookup timeout"
+        );
+        assert_eq!(failure.error_type(), AgentFedAuthErrorType::LookupTimeout);
+        assert_eq!(failure.log_count(), Some(1));
     }
 
     /// Scenario: The agent-fed provider reports that no credential is available.

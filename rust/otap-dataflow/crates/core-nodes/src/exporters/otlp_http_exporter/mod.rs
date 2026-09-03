@@ -188,6 +188,12 @@ impl AuthState {
         }
     }
 
+    fn cancel_pending_update(&mut self) {
+        if let Self::AgentFed(auth) = self {
+            auth.cancel_lookup();
+        }
+    }
+
     fn not_ready_reason(&self) -> &'static str {
         match self {
             Self::None => "authentication is not configured",
@@ -518,10 +524,12 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                     continue;
                 }
 
-                // Drive either provider through one cancellation-safe branch.
+                // Drive either provider through one resumable branch.
                 // Agent-fed auth polls at startup, at the expiry margin, and
                 // after a matching 401. A usable cached snapshot stays off the
-                // per-batch admission path.
+                // per-batch admission path. Its in-progress lookup survives
+                // control messages and export completions, but shutdown still
+                // cancels it when the authentication state is dropped.
                 failure = auth.poll_update(), if auth.should_poll() => {
                     if let Some(failure) = failure {
                         self.metrics.record_auth_failure(failure.error_type());
@@ -569,6 +577,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
             match msg {
                 Message::Control(NodeControlMsg::Shutdown { deadline, reason }) => {
                     otel_info!("otlp.exporter.http.shutdown", reason = reason);
+                    auth.cancel_pending_update();
                     while !inflight_exports.is_empty() {
                         if let Some(completed) = inflight_exports.next_completion().await {
                             let rejected_auth = finalize_completed_export(
@@ -1279,7 +1288,7 @@ impl HttpClientPool {
 #[cfg(test)]
 mod test {
     use std::collections::{HashMap, VecDeque};
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
 
     use arrow::array::Int32Array;
@@ -1296,7 +1305,9 @@ mod test {
     use otel_arrow_dfe_engine::capability::auth::BearerToken;
     use otel_arrow_dfe_engine::capability::auth::agent_fed_credential_provider::AgentFedCredentialSnapshot;
     use otel_arrow_dfe_engine::context::ControllerContext;
-    use otel_arrow_dfe_engine::control::{PipelineCompletionMsg, runtime_ctrl_msg_channel};
+    use otel_arrow_dfe_engine::control::{
+        Controllable, PipelineCompletionMsg, runtime_ctrl_msg_channel,
+    };
     use otel_arrow_dfe_engine::shared::message::SharedSender;
     use otel_arrow_dfe_engine::testing::exporter::TestRuntime;
     use otel_arrow_dfe_engine::testing::node::test_node;
@@ -1321,6 +1332,7 @@ mod test {
     use parking_lot::lock_api::Mutex;
     use prost::Message;
     use tokio::runtime::Runtime;
+    use tokio::sync::Notify;
     use tokio_util::sync::CancellationToken;
     use tokio_util::task::TaskTracker;
 
@@ -1377,12 +1389,63 @@ mod test {
     struct CountingAgentFedProvider {
         snapshot: Arc<AgentFedCredentialSnapshot>,
         calls: Arc<AtomicUsize>,
+        delay: Duration,
+    }
+
+    struct BlockingAgentFedProvider {
+        snapshot: Arc<AgentFedCredentialSnapshot>,
+        calls: Arc<AtomicUsize>,
+        started: Arc<Notify>,
+        release: Arc<Notify>,
+    }
+
+    struct FlagOnDrop(Arc<AtomicBool>);
+
+    impl Drop for FlagOnDrop {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+
+    struct RefreshBlockingAgentFedProvider {
+        snapshot: Arc<AgentFedCredentialSnapshot>,
+        calls: AtomicUsize,
+        refresh_started: Arc<Notify>,
+        refresh_cancelled: Arc<AtomicBool>,
+        refresh_release: Arc<Notify>,
+    }
+
+    #[async_trait(?Send)]
+    impl AgentFedCredentialProvider for RefreshBlockingAgentFedProvider {
+        async fn get_credential(&self) -> Result<Arc<AgentFedCredentialSnapshot>, CapabilityError> {
+            if self.calls.fetch_add(1, Ordering::Relaxed) == 0 {
+                return Ok(Arc::clone(&self.snapshot));
+            }
+
+            self.refresh_started.notify_one();
+            let _flag_on_drop = FlagOnDrop(Arc::clone(&self.refresh_cancelled));
+            self.refresh_release.notified().await;
+            Ok(Arc::clone(&self.snapshot))
+        }
+    }
+
+    #[async_trait(?Send)]
+    impl AgentFedCredentialProvider for BlockingAgentFedProvider {
+        async fn get_credential(&self) -> Result<Arc<AgentFedCredentialSnapshot>, CapabilityError> {
+            _ = self.calls.fetch_add(1, Ordering::Relaxed);
+            self.started.notify_one();
+            self.release.notified().await;
+            Ok(Arc::clone(&self.snapshot))
+        }
     }
 
     #[async_trait(?Send)]
     impl AgentFedCredentialProvider for CountingAgentFedProvider {
         async fn get_credential(&self) -> Result<Arc<AgentFedCredentialSnapshot>, CapabilityError> {
             _ = self.calls.fetch_add(1, Ordering::Relaxed);
+            if !self.delay.is_zero() {
+                tokio::time::sleep(self.delay).await;
+            }
             Ok(Arc::clone(&self.snapshot))
         }
     }
@@ -1729,6 +1792,75 @@ mod test {
         });
 
         server_cancellation_token2
+    }
+
+    /// Waits for both requests, then returns 401 for the first and blocks the second response.
+    fn run_shutdown_order_server(
+        tokio_rt: &Runtime,
+        endpoint_addr: &str,
+        second_request_started: Arc<Notify>,
+        release_second_response: Arc<Notify>,
+    ) -> CancellationToken {
+        let cancellation = CancellationToken::new();
+        let returned_cancellation = cancellation.clone();
+        let endpoint_addr = endpoint_addr.to_string();
+        let requests = Arc::new(AtomicUsize::new(0));
+        _ = tokio_rt.spawn(async move {
+            let listener = tokio::net::TcpListener::bind(endpoint_addr).await.unwrap();
+            let tracker = TaskTracker::new();
+            loop {
+                tokio::select! {
+                    _ = cancellation.cancelled() => break,
+                    accept_result = listener.accept() => {
+                        let (stream, _) = accept_result.unwrap();
+                        let cancellation = cancellation.clone();
+                        let requests = Arc::clone(&requests);
+                        let second_request_started = Arc::clone(&second_request_started);
+                        let release_second_response = Arc::clone(&release_second_response);
+                        drop(tracker.spawn(async move {
+                            let io = TokioIo::new(stream);
+                            let service = service_fn(move |_req: hyper::Request<hyper::body::Incoming>| {
+                                let requests = Arc::clone(&requests);
+                                let second_request_started = Arc::clone(&second_request_started);
+                                let release_second_response = Arc::clone(&release_second_response);
+                                async move {
+                                    let request = requests.fetch_add(1, Ordering::SeqCst);
+                                    let status = if request == 0 {
+                                        while requests.load(Ordering::SeqCst) < 2 {
+                                            tokio::task::yield_now().await;
+                                        }
+                                        401
+                                    } else {
+                                        second_request_started.notify_one();
+                                        release_second_response.notified().await;
+                                        200
+                                    };
+                                    Ok::<_, hyper::Error>(
+                                        Response::builder()
+                                            .status(status)
+                                            .body(Full::new(Bytes::new()))
+                                            .unwrap(),
+                                    )
+                                }
+                            });
+                            let conn = http1::Builder::new().serve_connection(io, service);
+                            let mut conn = std::pin::pin!(conn);
+                            tokio::select! {
+                                _ = cancellation.cancelled() => {
+                                    conn.as_mut().graceful_shutdown();
+                                    let _ = conn.await;
+                                },
+                                result = &mut conn => {
+                                    let _ = result;
+                                }
+                            }
+                        }));
+                    }
+                }
+            }
+            _ = tracker.close();
+        });
+        returned_cancellation
     }
 
     /// Runs a server that delays responses and records peak request concurrency.
@@ -2427,6 +2559,7 @@ mod test {
         let provider = CountingAgentFedProvider {
             snapshot: StaticAgentFedProvider::new("shared-token").snapshot,
             calls: Arc::clone(&calls),
+            delay: Duration::ZERO,
         };
         let config = Config {
             client_pool_size: NonZeroUsize::new(MAX_IN_FLIGHT).unwrap(),
@@ -2477,6 +2610,107 @@ mod test {
             calls.load(Ordering::Relaxed),
             1,
             "the provider must only be called for the initial credential"
+        );
+    }
+
+    /// Scenario: Telemetry controls arrive repeatedly while an agent-fed lookup is pending.
+    /// Guarantees: The original lookup completes, queued pdata exports, and the provider runs once.
+    #[test]
+    fn test_agent_fed_lookup_survives_telemetry_collection() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let tokio_rt = Runtime::new().unwrap();
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
+        let endpoint_addr = format!("127.0.0.1:{port}");
+        let endpoint = format!("http://{endpoint_addr}");
+        let captured: Arc<parking_lot::Mutex<Option<HeaderMap>>> =
+            Arc::new(parking_lot::Mutex::new(None));
+        let cancel = run_header_capture_server(&tokio_rt, &endpoint_addr, Arc::clone(&captured));
+        wait_for_port_ready(&endpoint_addr);
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let provider = BlockingAgentFedProvider {
+            snapshot: StaticAgentFedProvider::new("eventual-token").snapshot,
+            calls: Arc::clone(&calls),
+            started: Arc::clone(&started),
+            release: Arc::clone(&release),
+        };
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let control_capacity = test_runtime.config().control_channel.capacity;
+        let exporter = exporter_with_agent_fed_provider(
+            &test_runtime,
+            default_test_config(endpoint),
+            provider,
+        );
+        let control_tx = exporter.control_sender();
+        let (logs_batch, _, _) = gen_batches_for_each_signal_type();
+        let mut bytes = Vec::new();
+        logs_batch.encode(&mut bytes).unwrap();
+        let pdata = subscribe_pdatas(
+            vec![OtapPdata::new_default(OtapPayload::from(
+                OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes)),
+            ))],
+            false,
+        )
+        .pop()
+        .expect("test pdata");
+        let captured_during_test = Arc::clone(&captured);
+        let calls_during_test = Arc::clone(&calls);
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(move |ctx| {
+                Box::pin(async move {
+                    ctx.send_pdata(pdata).await.unwrap();
+                    tokio::time::timeout(Duration::from_secs(1), started.notified())
+                        .await
+                        .expect("credential lookup should start");
+
+                    // Sending more than the channel capacity cannot complete
+                    // unless the exporter processes controls while the provider
+                    // remains blocked.
+                    for _ in 0..(control_capacity * 2) {
+                        let (_metrics_rx, metrics_reporter) =
+                            MetricsReporter::create_new_and_receiver(1);
+                        control_tx
+                            .send(NodeControlMsg::CollectTelemetry { metrics_reporter })
+                            .await
+                            .unwrap();
+                        assert_eq!(
+                            calls_during_test.load(Ordering::Relaxed),
+                            1,
+                            "processed controls must not restart the pending lookup"
+                        );
+                    }
+
+                    release.notify_one();
+                    tokio::time::timeout(Duration::from_secs(1), async {
+                        loop {
+                            if captured_during_test.lock().is_some() {
+                                break;
+                            }
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                        }
+                    })
+                    .await
+                    .expect("queued pdata should export after the lookup completes");
+                    ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "test complete")
+                        .await
+                        .unwrap();
+                })
+            })
+            .run_validation(|_ctx, result| Box::pin(async move { result.unwrap() }));
+
+        cancel.cancel();
+        assert!(
+            captured.lock().is_some(),
+            "queued pdata should export while telemetry collection continues"
+        );
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            1,
+            "telemetry controls must not restart the provider lookup"
         );
     }
 
@@ -2576,6 +2810,88 @@ mod test {
             started.elapsed() < Duration::from_secs(1),
             "shutdown must not wait for the credential lookup timeout"
         );
+    }
+
+    /// Scenario: Shutdown starts with a refresh pending and another HTTP export still in flight.
+    /// Guarantees: The credential lookup is cancelled before shutdown waits for the HTTP response.
+    #[test]
+    fn test_agent_fed_shutdown_cancels_lookup_before_draining_exports() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let tokio_rt = Runtime::new().unwrap();
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
+        let endpoint_addr = format!("127.0.0.1:{port}");
+        let endpoint = format!("http://{endpoint_addr}");
+        let second_request_started = Arc::new(Notify::new());
+        let release_second_response = Arc::new(Notify::new());
+        let cancel = run_shutdown_order_server(
+            &tokio_rt,
+            &endpoint_addr,
+            Arc::clone(&second_request_started),
+            Arc::clone(&release_second_response),
+        );
+        wait_for_port_ready(&endpoint_addr);
+
+        let refresh_started = Arc::new(Notify::new());
+        let refresh_cancelled = Arc::new(AtomicBool::new(false));
+        let provider = RefreshBlockingAgentFedProvider {
+            snapshot: StaticAgentFedProvider::new("initial-token").snapshot,
+            calls: AtomicUsize::new(0),
+            refresh_started: Arc::clone(&refresh_started),
+            refresh_cancelled: Arc::clone(&refresh_cancelled),
+            refresh_release: Arc::new(Notify::new()),
+        };
+        let config = Config {
+            client_pool_size: NonZeroUsize::new(2).unwrap(),
+            max_in_flight: 2,
+            ..default_test_config(endpoint)
+        };
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let exporter = exporter_with_agent_fed_provider(&test_runtime, config, provider);
+        let (logs_batch, _, _) = gen_batches_for_each_signal_type();
+        let mut bytes = Vec::new();
+        logs_batch.encode(&mut bytes).unwrap();
+        let pdatas = subscribe_pdatas(
+            (0..2)
+                .map(|_| {
+                    OtapPdata::new_default(OtapPayload::from(OtlpProtoBytes::ExportLogsRequest(
+                        Bytes::copy_from_slice(&bytes),
+                    )))
+                })
+                .collect(),
+            false,
+        );
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(move |ctx| {
+                Box::pin(async move {
+                    for pdata in pdatas {
+                        ctx.send_pdata(pdata).await.unwrap();
+                    }
+                    tokio::time::timeout(Duration::from_secs(1), second_request_started.notified())
+                        .await
+                        .expect("second HTTP request should remain in flight");
+                    tokio::time::timeout(Duration::from_secs(1), refresh_started.notified())
+                        .await
+                        .expect("401 should start a replacement credential lookup");
+
+                    ctx.send_shutdown(Instant::now() + Duration::from_millis(100), "test complete")
+                        .await
+                        .unwrap();
+                    let cancellation_result = tokio::time::timeout(Duration::from_secs(1), async {
+                        while !refresh_cancelled.load(Ordering::Acquire) {
+                            tokio::task::yield_now().await;
+                        }
+                    })
+                    .await;
+                    release_second_response.notify_one();
+                    cancellation_result
+                        .expect("shutdown should cancel lookup before draining exports");
+                })
+            })
+            .run_validation(|_ctx, result| Box::pin(async move { result.unwrap() }));
+
+        cancel.cancel();
     }
 
     #[test]

@@ -179,9 +179,11 @@ snapshot remains cached until it is rejected or the pipeline restarts.
 
 An unavailable, malformed, empty, expired, or near-expiry token backpressures
 new input rather than sending an unauthenticated request. Each lookup has a
-fixed five-second timeout. Failed lookups use a fixed one-second retry delay;
-both policies are intentionally internal rather than configurable. Repeated
-warnings are emitted only for consecutive failure counts 1, 2, 4, 8, and so on,
+fixed five-second timeout that remains in effect while the exporter processes
+telemetry controls or completed requests. Shutdown cancels a pending lookup.
+Failed lookups use a fixed one-second retry delay; both policies are
+intentionally internal rather than configurable. Repeated warnings are emitted
+only for consecutive failure counts 1, 2, 4, 8, and so on,
 and the count resets after recovery. A buffered batch that must be drained
 during shutdown is NACK'd as retryable.
 
