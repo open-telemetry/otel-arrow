@@ -17,6 +17,7 @@ use crate::arrays::NullableArrayAccessor;
 use crate::error::Error;
 use crate::otap::OtapArrowRecords;
 use crate::otlp::attributes::{Attribute16Arrays, AttributeValueType};
+use crate::otlp::common::{ResourceArrays, ScopeArrays};
 use crate::otlp::logs::{LogBodyArrays, LogsArrays};
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::{SpanId, TraceId};
@@ -37,6 +38,8 @@ pub struct OtapLogsView<'a> {
     // with 0 rows, so when this is `None` the view simply emits 0 rows (the
     // hierarchy maps below are empty).
     columns: Option<LogsArrays<'a>>, // ~220 bytes when present
+    resource_columns: Option<ResourceArrays<'a>>,
+    scope_columns: Option<ScopeArrays<'a>>,
 
     resource_attrs: Option<Attribute16Arrays<'a>>, // ~168 bytes when present
     scope_attrs: Option<Attribute16Arrays<'a>>,    // ~168 bytes when present
@@ -94,6 +97,9 @@ impl<'a> OtapLogsView<'a> {
     ) -> Result<Self, Error> {
         // 1. Cache root columns for O(1) access.
         let columns = logs_batch.map(LogsArrays::try_from).transpose()?;
+        // Skip these if the columns can't decode (e.g. a dictionary-encoded id) so the view still builds.
+        let resource_columns = logs_batch.and_then(|b| ResourceArrays::try_from(b).ok());
+        let scope_columns = logs_batch.and_then(|b| ScopeArrays::try_from(b).ok());
 
         // 2. Pre-compute resource/scope grouping. When the root batch is missing
         //    these stay empty, so iteration yields 0 rows.
@@ -128,6 +134,8 @@ impl<'a> OtapLogsView<'a> {
 
         Ok(Self {
             columns,
+            resource_columns,
+            scope_columns,
             resource_attrs: resource_attrs
                 .map(Attribute16Arrays::try_from)
                 .transpose()?,
@@ -210,7 +218,7 @@ impl<'a> Iterator for OtapResourceLogsIter<'a> {
 pub struct OtapResourceLogsView<'a> {
     view: &'a OtapLogsView<'a>,
     resource_id: u16,
-    #[allow(dead_code)]
+    // row index of the first log
     row_indices: &'a RowGroup,
 }
 
@@ -232,9 +240,11 @@ impl<'a> ResourceLogsView for OtapResourceLogsView<'a> {
 
     #[inline]
     fn resource(&self) -> Option<Self::Resource<'_>> {
+        let first_row_index = self.row_indices.iter().next()?;
         Some(OtapResourceView {
             view: self.view,
             resource_id: self.resource_id,
+            first_row_index,
         })
     }
 
@@ -245,8 +255,14 @@ impl<'a> ResourceLogsView for OtapResourceLogsView<'a> {
 
     #[inline]
     fn schema_url(&self) -> Option<Str<'_>> {
-        // TODO: Implement schema_url lookup from logs batch
-        None
+        let first_row = self.row_indices.iter().next()?;
+        self.view
+            .resource_columns
+            .as_ref()?
+            .schema_url
+            .as_ref()
+            .and_then(|c| c.str_at(first_row))
+            .map(|s| s.as_bytes())
     }
 }
 
@@ -315,9 +331,11 @@ impl<'a> ScopeLogsView for OtapScopeLogsView<'a> {
 
     #[inline]
     fn scope(&self) -> Option<Self::Scope<'_>> {
+        let first_row_index = self.row_indices.iter().next()?;
         Some(OtapInstrumentationScopeView {
             view: self.view,
             scope_id: self.scope_id,
+            first_row_index,
         })
     }
 
@@ -328,9 +346,13 @@ impl<'a> ScopeLogsView for OtapScopeLogsView<'a> {
 
     #[inline]
     fn schema_url(&self) -> Option<Str<'_>> {
-        // get_schema_url_for_scope(self.view.logs_batch, self.scope_id)
-        // TODO: Implement schema_url lookup for scope
-        None
+        let first_row = self.row_indices.iter().next()?;
+        self.view
+            .columns
+            .as_ref()?
+            .schema_url
+            .as_ref()
+            .and_then(|col| col.str_at(first_row).map(|s| s.as_bytes()))
     }
 }
 
@@ -517,6 +539,7 @@ impl<'a> OtapLogRecordView<'a> {
 pub struct OtapResourceView<'a> {
     view: &'a OtapLogsView<'a>,
     resource_id: u16,
+    first_row_index: usize,
 }
 
 impl<'a> ResourceView for OtapResourceView<'a> {
@@ -548,7 +571,18 @@ impl<'a> ResourceView for OtapResourceView<'a> {
 
     #[inline]
     fn dropped_attributes_count(&self) -> u32 {
-        0 // TODO: implement if stored in OTAP
+        self.view
+            .resource_columns
+            .as_ref()
+            .and_then(|cols| cols.dropped_attributes_count.as_ref())
+            .map(|col| {
+                if col.is_valid(self.first_row_index) {
+                    col.value(self.first_row_index)
+                } else {
+                    0
+                }
+            })
+            .unwrap_or(0)
     }
 }
 
@@ -556,6 +590,7 @@ impl<'a> ResourceView for OtapResourceView<'a> {
 pub struct OtapInstrumentationScopeView<'a> {
     view: &'a OtapLogsView<'a>,
     scope_id: u16,
+    first_row_index: usize,
 }
 
 impl<'a> InstrumentationScopeView for OtapInstrumentationScopeView<'a> {
@@ -571,12 +606,22 @@ impl<'a> InstrumentationScopeView for OtapInstrumentationScopeView<'a> {
 
     #[inline]
     fn name(&self) -> Option<Str<'_>> {
-        None // TODO: implement - get from scope table
+        self.view
+            .scope_columns
+            .as_ref()?
+            .name
+            .as_ref()
+            .and_then(|col| col.str_at(self.first_row_index).map(|s| s.as_bytes()))
     }
 
     #[inline]
     fn version(&self) -> Option<Str<'_>> {
-        None // TODO: implement - get from scope table
+        self.view
+            .scope_columns
+            .as_ref()?
+            .version
+            .as_ref()
+            .and_then(|col| col.str_at(self.first_row_index).map(|s| s.as_bytes()))
     }
 
     #[inline]
@@ -597,7 +642,18 @@ impl<'a> InstrumentationScopeView for OtapInstrumentationScopeView<'a> {
 
     #[inline]
     fn dropped_attributes_count(&self) -> u32 {
-        0 // TODO: implement if stored in OTAP
+        self.view
+            .scope_columns
+            .as_ref()
+            .and_then(|cols| cols.dropped_attributes_count.as_ref())
+            .map(|col| {
+                if col.is_valid(self.first_row_index) {
+                    col.value(self.first_row_index)
+                } else {
+                    0
+                }
+            })
+            .unwrap_or(0)
     }
 }
 
