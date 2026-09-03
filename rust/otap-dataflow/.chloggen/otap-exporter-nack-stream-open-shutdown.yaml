@@ -1,17 +1,17 @@
 # Use this changelog template to create an entry for release notes.
 
 # One of 'breaking', 'deprecation', 'new_component', 'enhancement', 'bug_fix'
-change_type: enhancement
+change_type: bug_fix
 
 # The name of the component, or a single word describing the area of concern, (e.g. engine, otap).
 # Must be one of the components listed in rust/otap-dataflow/.chloggen/config.yaml.
-component: engine
+component: pipeline
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Allow broadcast topics to require Ack consensus from `all` eligible subscribers
+note: OTAP exporter shutdown now NACKs the batch already sent to the server when a streaming request is still opening.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
-issues: [2252]
+issues: [2720, 3870]
 
 # (Optional) One or more lines of additional information to render under the primary note.
 # These lines will be padded with 2 spaces and then inserted directly into the document.
@@ -19,5 +19,7 @@ issues: [2252]
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
 subtext: |
-  Set `broadcast.ack_mode: all` with `on_lag: disconnect` and `ack_propagation.mode: auto` on a broadcast-only topic.
-  Upstream Ack waits for every eligible subscriber; zero subscribers, a required Nack, or disappearance Nacks upstream.
+  A known gap remains when many batches are queued while the stream is still
+  opening: a batch already pulled off the queue but not yet correlated can
+  still be dropped on shutdown without a NACK. Issue #3870 tracks closing
+  this remaining gap.
