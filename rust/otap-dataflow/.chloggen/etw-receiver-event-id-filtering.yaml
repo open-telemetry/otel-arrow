@@ -19,7 +19,7 @@ issues: [3895]
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
 subtext: |
-  Providers resolved from the registered ETW provider database accept an
+  Named providers that resolve to a registered ETW manifest accept an
   event_ids allow-list (up to 64 unique IDs) filtered server-side by ETW.
-  Rejected for providers resolved by name-hash (TraceLogging/EventSource),
-  whose events always report EventDescriptor.Id 0.
+  Rejected for name-hash (TraceLogging/EventSource), classic MOF/WMI, and
+  literal GUID providers, where ETW cannot guarantee the filter is applied.

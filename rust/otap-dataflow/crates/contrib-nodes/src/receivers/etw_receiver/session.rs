@@ -374,7 +374,7 @@ fn dedup_event_ids(ids: &[u16]) -> Vec<u16> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProviderGuidResolution {
     ExplicitGuid,
-    RegisteredDb,
+    Registered(ProviderSchemaSource),
     NameHash,
 }
 
@@ -458,7 +458,10 @@ fn resolve_provider_guid_with(
             match lookup(&name.to_ascii_lowercase()) {
                 Ok(Some(provider)) => {
                     log_name_resolved(name, &provider);
-                    Ok((provider.guid, ProviderGuidResolution::RegisteredDb))
+                    Ok((
+                        provider.guid,
+                        ProviderGuidResolution::Registered(provider.schema_source),
+                    ))
                 }
                 Ok(None) => {
                     log_name_hashed(name);
@@ -488,7 +491,10 @@ fn resolve_provider_guid_with(
             match lookup(&name.to_ascii_lowercase())? {
                 Some(provider) => {
                     log_name_resolved(name, &provider);
-                    Ok((provider.guid, ProviderGuidResolution::RegisteredDb))
+                    Ok((
+                        provider.guid,
+                        ProviderGuidResolution::Registered(provider.schema_source),
+                    ))
                 }
                 None => Err(manifest_not_registered_error(name)),
             }
@@ -654,6 +660,37 @@ fn tdh_enumerate_error(source: impl std::fmt::Display) -> Error {
             ),
         },
     ))
+}
+
+/// Reject `event_ids` unless the provider is positively identified as a
+/// registered manifest provider.
+///
+/// ETW silently ignores `EVENT_FILTER_TYPE_EVENT_ID` for TraceLogging providers
+/// (which do not have static event IDs) and cannot apply additional routing or
+/// filtering for classic MOF/WMI providers because they use legacy enablement.
+/// A literal GUID is also ambiguous: the GUID alone does not prove whether the
+/// provider is manifest, TraceLogging, or classic MOF. Keeping the accepted
+/// surface to registered manifest names guarantees that an accepted
+/// configuration receives the server-side filtering it requested.
+fn require_event_ids_registered_manifest(
+    provider_index: usize,
+    resolution: ProviderGuidResolution,
+) -> Result<(), Error> {
+    if matches!(
+        resolution,
+        ProviderGuidResolution::Registered(ProviderSchemaSource::Manifest)
+    ) {
+        return Ok(());
+    }
+
+    Err(Error::ConfigError(Box::new(
+        otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+            error: format!(
+                "provider[{provider_index}]: 'event_ids' requires a named provider \
+                 that resolves to a registered ETW manifest provider"
+            ),
+        },
+    )))
 }
 
 // -- TDH field extraction -----------------------------------------------------
@@ -1120,14 +1157,8 @@ fn spawn_etw_session(
                 Err(source) => Err(tdh_enumerate_error(source)),
             })?;
 
-            if p.event_ids.is_some() && resolution == ProviderGuidResolution::NameHash {
-                return Err(Error::ConfigError(Box::new(
-                    otel_arrow_dfe_config::error::Error::InvalidUserConfig {
-                        error: format!(
-                            "provider[{i}]: 'event_ids' is not supported for providers resolved by name-hash; EventDescriptor.Id filtering requires stable event IDs"
-                        ),
-                    },
-                )));
+            if p.event_ids.is_some() {
+                require_event_ids_registered_manifest(i, resolution)?;
             }
 
             let level = trace_level_to_etw(&p.level);
@@ -1815,9 +1846,41 @@ mod tests {
         let err = spawn_etw_session(&config, vec![tx], telemetry).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("'event_ids' is not supported for providers resolved by name-hash"),
+            msg.contains("'event_ids' requires a named provider"),
             "expected hash-resolution event_ids rejection, got: {msg}"
         );
+    }
+
+    /// Scenario: `event_ids` are configured for providers with each possible
+    /// resolution source.
+    /// Guarantees: The receiver only accepts event-ID filters for providers
+    /// positively identified as registered manifests, avoiding silent filter
+    /// drops for explicit GUIDs, TraceLogging name hashes, classic MOF/WMI, and
+    /// unknown registered-provider source types.
+    #[test]
+    fn event_ids_require_registered_manifest_resolution() {
+        assert!(
+            require_event_ids_registered_manifest(
+                0,
+                ProviderGuidResolution::Registered(ProviderSchemaSource::Manifest)
+            )
+            .is_ok()
+        );
+
+        for resolution in [
+            ProviderGuidResolution::ExplicitGuid,
+            ProviderGuidResolution::NameHash,
+            ProviderGuidResolution::Registered(ProviderSchemaSource::Wmi),
+            ProviderGuidResolution::Registered(ProviderSchemaSource::Unknown(99)),
+        ] {
+            let msg = require_event_ids_registered_manifest(7, resolution)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                msg.contains("provider[7]") && msg.contains("registered ETW manifest provider"),
+                "unexpected event_ids rejection for {resolution:?}: {msg}"
+            );
+        }
     }
 
     // -- GUID parsing ---------------------------------
@@ -1973,7 +2036,10 @@ mod tests {
         let cfg = name_provider("MyProvider", None);
         let guid = resolve_provider_guid_with(&cfg, lookup_in(&map)).expect("resolves");
         assert_eq!(guid.0.to_bytes(), expected.to_bytes());
-        assert_eq!(guid.1, ProviderGuidResolution::RegisteredDb);
+        assert_eq!(
+            guid.1,
+            ProviderGuidResolution::Registered(ProviderSchemaSource::Manifest)
+        );
     }
 
     /// Scenario: An automatic (omitted-kind) name provider is absent from the
@@ -2040,7 +2106,28 @@ mod tests {
         let cfg = name_provider("MyProvider", Some(ProviderKind::Manifest));
         let guid = resolve_provider_guid_with(&cfg, lookup_in(&map)).expect("resolves");
         assert_eq!(guid.0.to_bytes(), expected.to_bytes());
-        assert_eq!(guid.1, ProviderGuidResolution::RegisteredDb);
+        assert_eq!(
+            guid.1,
+            ProviderGuidResolution::Registered(ProviderSchemaSource::Manifest)
+        );
+    }
+
+    /// Scenario: A provider name resolves to a registered classic MOF/WMI
+    /// provider.
+    /// Guarantees: Resolution preserves the provider schema source instead of
+    /// collapsing it with manifests, so later validation can reject `event_ids`
+    /// for providers where ETW cannot apply additional filters.
+    #[test]
+    fn resolve_registered_provider_preserves_wmi_schema_source() {
+        let expected = Guid::from_u128(0x1111_2222_3333_4444_5555_6666_7777_8888);
+        let map = registered("ClassicProvider", expected, ProviderSchemaSource::Wmi);
+        let cfg = name_provider("ClassicProvider", None);
+        let guid = resolve_provider_guid_with(&cfg, lookup_in(&map)).expect("resolves");
+        assert_eq!(guid.0.to_bytes(), expected.to_bytes());
+        assert_eq!(
+            guid.1,
+            ProviderGuidResolution::Registered(ProviderSchemaSource::Wmi)
+        );
     }
 
     /// Scenario: An automatic (omitted-kind) name provider is resolved while the

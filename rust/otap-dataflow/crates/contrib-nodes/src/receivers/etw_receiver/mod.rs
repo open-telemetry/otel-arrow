@@ -41,12 +41,14 @@
 //! registered provider, or `kind: tracelogging` to derive the GUID from the
 //! name without any OS lookup.
 //!
-//! Providers resolved from the registered ETW provider database (manifest or
-//! classic MOF) additionally support `event_ids`, an allow-list of up to 64
-//! unique event IDs filtered server-side by the ETW runtime. This is rejected
-//! for providers that resolve by name-hash (`kind: tracelogging`, and
-//! automatic fallback when no registered provider is found), since those
-//! events cannot be selected by `EventDescriptor.Id`.
+//! Providers resolved by name from the registered ETW provider database as
+//! manifest providers additionally support `event_ids`, an allow-list of up to
+//! 64 unique event IDs filtered server-side by the ETW runtime. This is
+//! rejected for providers that resolve by name-hash (`kind: tracelogging`, and
+//! automatic fallback when no registered provider is found), classic MOF/WMI
+//! providers, unknown registered-provider sources, and literal GUIDs, since the
+//! receiver cannot guarantee that ETW will apply `EventDescriptor.Id` filtering
+//! for those cases.
 //!
 //! ```yaml
 //! etw:
@@ -200,12 +202,15 @@ struct ProviderConfig {
     /// captured. Filtering happens server-side in the ETW runtime, so
     /// non-matching events are never delivered to the receiver.
     ///
-    /// Only meaningful for manifest-based providers (`kind: manifest`, or
-    /// automatic resolution that finds a registered manifest provider):
-    /// manifest events carry a stable, unique ID. Providers resolved by
+    /// Only supported for name-based providers that resolve to a registered
+    /// manifest provider (`kind: manifest`, or automatic resolution that finds
+    /// a registered manifest provider): manifest events carry stable event IDs
+    /// and ETW can apply event-ID filtering for them. Providers resolved by
     /// name-hash (for example explicit `kind: tracelogging`, or automatic
-    /// fallback when no registered provider is found) cannot be selected by
-    /// event ID and are rejected during ETW session initialization.
+    /// fallback when no registered provider is found), classic MOF/WMI
+    /// providers, unknown registered-provider sources, and literal GUIDs are
+    /// rejected because the receiver cannot guarantee that ETW will apply the
+    /// filter.
     ///
     /// At most 64 unique IDs are supported (the underlying ETW scope filter
     /// silently stops filtering above that count) and the list must not be
@@ -331,6 +336,18 @@ impl Config {
             }
 
             if let Some(event_ids) = &provider.event_ids {
+                // A literal GUID does not tell us whether the provider is a
+                // registered manifest, TraceLogging, or classic MOF/WMI
+                // provider. Reject this for now so accepted configurations
+                // always receive real server-side event-ID filtering.
+                if provider.guid.is_some() {
+                    return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                        error: format!(
+                            "provider[{i}]: 'event_ids' requires a named provider that resolves to a registered ETW manifest provider"
+                        ),
+                    });
+                }
+
                 // event_ids is only meaningful for providers that resolve to a
                 // stable event ID. Tracelogging providers resolve by name-hash, so
                 // their events cannot be filtered by EventDescriptor.Id. Reject this
@@ -1186,6 +1203,30 @@ mod tests {
         assert!(
             msg.contains("'event_ids' is not supported for 'kind: tracelogging'"),
             "validate must reject event_ids for kind: tracelogging, got: {msg}"
+        );
+    }
+
+    /// Scenario: A provider configures a literal `guid` together with
+    /// `event_ids`.
+    /// Guarantees: `Config::validate` rejects the combination because a GUID
+    /// alone does not identify whether the provider is manifest, TraceLogging,
+    /// or classic MOF/WMI, so the receiver cannot guarantee that ETW will apply
+    /// event-ID filtering.
+    #[test]
+    fn validate_rejects_event_ids_with_guid() {
+        let cfg = make_config(vec![ProviderConfig {
+            name: None,
+            guid: Some("22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716".to_string()),
+            kind: None,
+            level: TraceLevel::default(),
+            keywords: None,
+            event_ids: Some(vec![1, 2, 15]),
+        }]);
+        let err = cfg.validate().unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("'event_ids' requires a named provider"),
+            "validate must reject event_ids with guid, got: {msg}"
         );
     }
 
