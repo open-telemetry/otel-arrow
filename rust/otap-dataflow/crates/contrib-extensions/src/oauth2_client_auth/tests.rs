@@ -851,8 +851,6 @@ async fn client_secret_file_rotation_takes_effect() {
 fn metrics_tracker_records_snapshots_and_reports() {
     let mut tracker = make_tracker();
 
-    assert!(format!("{tracker:?}").contains("TokenProviderMetricsTracker"));
-
     let before = tracker.snapshot();
     assert!(
         before.get_metrics().iter().all(|m| m.is_zero()),

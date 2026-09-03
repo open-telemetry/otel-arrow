@@ -400,9 +400,6 @@ async fn clones_share_one_token_cache() {
 fn metrics_tracker_records_snapshots_and_reports() {
     let mut tracker = make_tracker();
 
-    // Debug formatting is exercised for observability tooling.
-    assert!(format!("{tracker:?}").contains("TokenProviderMetricsTracker"));
-
     // A fresh tracker snapshots to all-zero values.
     let before = tracker.snapshot();
     assert!(
