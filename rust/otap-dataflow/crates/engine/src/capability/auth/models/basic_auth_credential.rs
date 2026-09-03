@@ -31,10 +31,7 @@ pub struct BasicAuthCredential {
 impl BasicAuthCredential {
     /// Creates a credential.
     #[must_use]
-    pub fn new(
-        username: impl Into<SecretString>,
-        password: impl Into<SecretString>,
-    ) -> Self {
+    pub fn new(username: impl Into<SecretString>, password: impl Into<SecretString>) -> Self {
         Self {
             username: Arc::new(username.into()),
             password: Arc::new(password.into()),
