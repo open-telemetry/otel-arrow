@@ -17,8 +17,8 @@ use super::provider::{
 /// woken by control messages in the meantime.
 const NON_EXPIRING_REFRESH_SECS: u64 = 365 * 24 * 60 * 60;
 
-// Scenario: Schedule the next refresh for a token expiring in ~1 hour with a 5m buffer.
-// Guarantees: The refresh is scheduled `expiry_buffer` before expiry (~3300s out), ahead of expiry.
+/// Scenario: Schedule the next refresh for a token expiring in ~1 hour with a 5m buffer.
+/// Guarantees: The refresh is scheduled `expiry_buffer` before expiry (~3300s out), ahead of expiry.
 #[tokio::test]
 async fn schedule_next_refreshes_before_expiry() {
     let token = BearerToken::with_expiry(
@@ -36,9 +36,9 @@ async fn schedule_next_refreshes_before_expiry() {
     assert!((secs - 3300.0).abs() < 5.0, "expected ~3300s, got {secs}");
 }
 
-// Scenario: Schedule the next refresh for a token expiring in 5s, where subtracting the buffer
-// would land in the past.
-// Guarantees: The schedule floors at MIN_TOKEN_REFRESH_INTERVAL_SECS (~10s) rather than the past.
+/// Scenario: Schedule the next refresh for a token expiring in 5s, where subtracting the buffer
+/// would land in the past.
+/// Guarantees: The schedule floors at MIN_TOKEN_REFRESH_INTERVAL_SECS (~10s) rather than the past.
 #[tokio::test]
 async fn schedule_next_floors_near_expiry() {
     let token = BearerToken::with_expiry(
@@ -56,8 +56,8 @@ async fn schedule_next_floors_near_expiry() {
     assert!((secs - 10.0).abs() < 2.0, "expected ~10s floor, got {secs}");
 }
 
-// Scenario: Schedule the next refresh for a token with no known expiry.
-// Guarantees: The refresh is pushed far into the future (~1 year), so it is not needlessly refreshed.
+/// Scenario: Schedule the next refresh for a token with no known expiry.
+/// Guarantees: The refresh is pushed far into the future (~1 year), so it is not needlessly refreshed.
 #[tokio::test]
 async fn schedule_next_pushes_non_expiring_far_out() {
     let token = BearerToken::without_expiry("t".to_owned());
@@ -77,8 +77,8 @@ async fn schedule_next_pushes_non_expiring_far_out() {
 
 // -- retry backoff tests ---------------------------------------
 
-// Scenario: Compute the retry backoff for increasing consecutive-failure counts.
-// Guarantees: It doubles from the base delay and is clamped at the max without overflowing the shift.
+/// Scenario: Compute the retry backoff for increasing consecutive-failure counts.
+/// Guarantees: It doubles from the base delay and is clamped at the max without overflowing the shift.
 #[test]
 fn retry_backoff_grows_exponentially_and_caps() {
     // Zero prior failures starts at the base retry interval (10s).
@@ -95,10 +95,10 @@ fn retry_backoff_grows_exponentially_and_caps() {
     assert_eq!(retry_backoff_secs(u32::MAX), 300);
 }
 
-// Scenario: Compute the slow-path negative-cache window for a growing failure streak, where the
-// count includes the failure that opened the current cooldown.
-// Guarantees: The window matches the backoff the refresh loop is waiting out for the same streak,
-// so cache-miss callers cannot keep probing a token endpoint the loop has already backed off from.
+/// Scenario: Compute the slow-path negative-cache window for a growing failure streak, where the
+/// count includes the failure that opened the current cooldown.
+/// Guarantees: The window matches the backoff the refresh loop is waiting out for the same streak,
+/// so cache-miss callers cannot keep probing a token endpoint the loop has already backed off from.
 #[test]
 fn negative_cache_window_tracks_retry_backoff() {
     // No failure recorded yet: the window degenerates to the base delay, and
@@ -118,8 +118,8 @@ fn negative_cache_window_tracks_retry_backoff() {
 
 // -- jitter_refresh tests --------------------------------------
 
-// Scenario: Jitter a refresh target that sits exactly at the minimum-refresh floor.
-// Guarantees: With no slack above the floor, the target is returned unchanged (no busy-loop pull to now).
+/// Scenario: Jitter a refresh target that sits exactly at the minimum-refresh floor.
+/// Guarantees: With no slack above the floor, the target is returned unchanged (no busy-loop pull to now).
 #[tokio::test]
 async fn jitter_refresh_preserves_min_interval_floor() {
     let target = tokio::time::Instant::now() + Duration::from_secs(10);
@@ -133,8 +133,8 @@ async fn jitter_refresh_preserves_min_interval_floor() {
 }
 
 // Scenario: Jitter a far-out refresh target repeatedly.
-// Guarantees: Jitter only moves the target earlier, never by more than REFRESH_JITTER_SECS, and
-// never before the min-interval floor.
+/// Guarantees: Jitter only moves the target earlier, never by more than REFRESH_JITTER_SECS, and
+/// never before the min-interval floor.
 #[tokio::test]
 async fn jitter_refresh_stays_within_bounds() {
     let now = tokio::time::Instant::now();
