@@ -16,7 +16,8 @@ mod models;
 
 pub mod agent_fed_credential_provider;
 pub mod api_key_provider;
+pub mod basic_auth_provider;
 pub mod bearer_token_authorizer;
 pub mod bearer_token_provider;
 
-pub use models::{ApiKey, AuthorizedIdentity, AuthzDecision, BearerToken, ClaimValue, DenyReason};
+pub use models::{ApiKey, AuthorizedIdentity, AuthzDecision, BasicAuthCredential, BearerToken, ClaimValue, DenyReason};
