@@ -30,13 +30,21 @@ pub struct BasicAuthCredential {
 
 impl BasicAuthCredential {
     /// Creates a credential.
-    #[must_use]
-    pub fn new(username: impl Into<SecretString>, password: impl Into<SecretString>) -> Self {
-        Self {
-            username: Arc::new(username.into()),
+    pub fn new(
+        username: impl Into<SecretString>,
+        password: impl Into<SecretString>,
+    ) -> Result<Self, &'static str> {
+        let username: SecretString = username.into();
+
+        if username.expose_secret().contains(':') {
+            return Err("Username cannot contain the ':' character");
+        }
+
+        Ok(Self {
+            username: Arc::new(username),
             password: Arc::new(password.into()),
             expires_on: None,
-        }
+        })
     }
 
     /// Adds expiry to a credential.

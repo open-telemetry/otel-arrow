@@ -101,7 +101,7 @@ pub trait BasicAuthProvider {
     /// example after the provider's readiness gate has fired) and obtain a
     /// usable credential without a separate
     /// [`get_credential`](Self::get_credential) call, avoiding a race between
-    /// reading the current token and subscribing to updates. A
+    /// reading the current credential and subscribing to updates. A
     /// `tokio::sync::watch`-backed implementation satisfies this naturally,
     /// since a fresh receiver observes the channel's current value on its first
     /// poll.
