@@ -39,7 +39,10 @@ The shared contracts are:
 ```text
 receiver.received.{messages,payload.size}{signal,outcome}
 receiver.processing.duration{signal}
-exporter.attempted.{messages,items,payload.size,duration}{signal,outcome}
+exporter.attempted.messages{signal,outcome}
+exporter.attempted.duration{signal,outcome} (optional)
+exporter.attempted.payload.size{signal,outcome} (optional)
+exporter.attempted.items{signal,outcome} (optional)
 ```
 
 ### Receiver received

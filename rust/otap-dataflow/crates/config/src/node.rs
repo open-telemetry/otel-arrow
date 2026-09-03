@@ -186,7 +186,7 @@ pub struct NodePolicies {
 #[serde(deny_unknown_fields)]
 pub struct NodeTelemetryPolicy {
     /// Opt this node into component-owned duration measurements, such as
-    /// `receiver.processing.duration`, `processor.compute.*.duration`, or
+    /// `receiver.processing.duration`, `processor.compute.duration`, or
     /// `exporter.attempted.duration`.
     ///
     /// Off by default because duration instrumentation requires clock reads on
