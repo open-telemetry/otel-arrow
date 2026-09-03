@@ -17,8 +17,8 @@ use otel_arrow_dfe_engine::extension::EffectHandler;
 use otel_arrow_dfe_engine::shared::extension::{ControlChannel, Extension as SharedExtension};
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use rand::RngExt;
+use tokio::sync::watch;
 use tokio::sync::watch::Receiver;
-use tokio::sync::{MutexGuard, watch};
 
 use super::metrics::{BackgroundProviderMetrics, BackgroundProviderMetricsTracker};
 
@@ -155,15 +155,42 @@ impl<S: BackgroundProviderSource<T>, M: BackgroundProviderMetrics, T: Clone, C: 
         }
     }
 
-    /// Acquire a fetch lock.
-    pub async fn acquire_fetch_lock(&self) -> MutexGuard<'_, ()> {
-        self.inner.fetch_lock.lock().await
+    /// Returns the current valid value for the provider's configured scope(s).
+    ///
+    /// The fast path reads a cached value; on a cache miss the provider
+    /// performs a credential call. A provider that shares its cache and refresh
+    /// state across cloned instances will coalesce concurrent misses into a
+    /// single call. Returns an [`CapabilityError`] if no value can be produced.
+    pub async fn get_value(&self) -> Result<T, CapabilityError> {
+        // Fast path: lock-free read of the watch cache.
+        if let Some(token) = self.current_fresh_value() {
+            return Ok(token);
+        }
+
+        // Slow path: coalesce concurrent cache-miss callers onto a single
+        // in-flight token call, with a double-check after acquiring the lock.
+        let _guard = self.inner.fetch_lock.lock().await;
+        if let Some(token) = self.current_fresh_value() {
+            return Ok(token);
+        }
+        // Negative cache: if the most recent acquisition failed within the
+        // cooldown window, surface the throttle instead of hitting the token
+        // endpoint again. The background loop keeps retrying on its own cadence.
+        if self.recently_failed() {
+            return Err(self
+                .inner
+                .cap_err
+                .error("value acquisition throttled after recent failure"));
+        }
+        self.refresh_once()
+            .await
+            .map_err(|err| self.inner.cap_err.error(err))
     }
 
     /// Returns the cached value if it is present and still comfortably before
     /// its expiry (outside the usability safety margin).
     #[must_use]
-    pub fn current_fresh_value(&self) -> Option<T> {
+    fn current_fresh_value(&self) -> Option<T> {
         // The value lives inside the watch channel behind a temporary read
         // guard; clone it out so we can return an owned value (and release the
         // guard, which would otherwise block the writer). Assumes `T` clones
@@ -185,7 +212,7 @@ impl<S: BackgroundProviderSource<T>, M: BackgroundProviderMetrics, T: Clone, C: 
     /// the current failure streak has not yet elapsed. Used as a negative cache
     /// to throttle slow-path retries.
     #[must_use]
-    pub fn recently_failed(&self) -> bool {
+    fn recently_failed(&self) -> bool {
         // Open the shared box holding the failure state. If the lock is somehow
         // poisoned, treat it as "no recent failure" and allow a retry rather
         // than failing here.
@@ -208,7 +235,7 @@ impl<S: BackgroundProviderSource<T>, M: BackgroundProviderMetrics, T: Clone, C: 
 
     /// Number of consecutive failed acquisitions recorded so far.
     #[must_use]
-    pub fn consecutive_failures(&self) -> u32 {
+    fn consecutive_failures(&self) -> u32 {
         // A poisoned lock degrades to "no failures", which only costs us a
         // shorter backoff; it must not take the refresh loop down.
         self.inner
@@ -225,7 +252,7 @@ impl<S: BackgroundProviderSource<T>, M: BackgroundProviderMetrics, T: Clone, C: 
     }
 
     /// Acquires a value and publishes it to consumers.
-    pub async fn refresh_once(&self) -> Result<T, S::Error> {
+    async fn refresh_once(&self) -> Result<T, S::Error> {
         let start = Instant::now();
         match self.inner.source.fetch().await {
             Ok(value) => {
@@ -259,14 +286,6 @@ impl<S: BackgroundProviderSource<T>, M: BackgroundProviderMetrics, T: Clone, C: 
                 Err(err)
             }
         }
-    }
-
-    /// Log a capability error.
-    pub fn capability_error<E: Into<Box<dyn std::error::Error + Send + Sync + 'static>>>(
-        &self,
-        error: E,
-    ) -> CapabilityError {
-        self.inner.cap_err.error(error)
     }
 }
 

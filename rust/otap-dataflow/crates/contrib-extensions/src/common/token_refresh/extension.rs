@@ -31,26 +31,7 @@ impl<S: BackgroundProviderSource<BearerToken>, M: BackgroundProviderMetrics>
     SharedBearerTokenProvider for TokenProviderExtension<S, M>
 {
     async fn get_token(&self) -> Result<BearerToken, CapabilityError> {
-        // Fast path: lock-free read of the watch cache.
-        if let Some(token) = self.current_fresh_value() {
-            return Ok(token);
-        }
-
-        // Slow path: coalesce concurrent cache-miss callers onto a single
-        // in-flight token call, with a double-check after acquiring the lock.
-        let _guard = self.acquire_fetch_lock().await;
-        if let Some(token) = self.current_fresh_value() {
-            return Ok(token);
-        }
-        // Negative cache: if the most recent acquisition failed within the
-        // cooldown window, surface the throttle instead of hitting the token
-        // endpoint again. The background loop keeps retrying on its own cadence.
-        if self.recently_failed() {
-            return Err(self.capability_error("token acquisition throttled after recent failure"));
-        }
-        self.refresh_once()
-            .await
-            .map_err(|err| self.capability_error(err))
+        self.get_value().await
     }
 
     fn token_stream(&self) -> TokenStream {
