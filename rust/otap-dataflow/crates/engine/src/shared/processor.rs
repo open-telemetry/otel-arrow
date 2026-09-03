@@ -934,7 +934,9 @@ impl<PData: crate::Unwindable> crate::_private::AckNackRouting<PData> for Effect
 mod tests {
     #![allow(missing_docs)]
     use super::*;
-    use crate::flow_metrics::{FlowAttributeSet, FlowDurationMetrics, FlowOutputItemsMetrics};
+    use crate::flow_metrics::{
+        FlowAttributeSet, FlowDurationNormalMetrics, FlowOutputItemsMetrics,
+    };
     use crate::shared::message::SharedSender;
     use crate::testing::{test_node, test_pipeline_ctx};
     use otel_arrow_dfe_channel::error::SendError;
@@ -1124,7 +1126,7 @@ mod tests {
             .register_entity(FlowAttributeSet::default());
         let registrar = ctx.metric_set_registrar_for_entity(entity_key);
         let start_metric_set = FlowInputItemsMetrics::register(&registrar);
-        let duration_metric_set = FlowDurationMetrics::register(&registrar);
+        let duration_metric_set = FlowDurationNormalMetrics::register(&registrar);
         let outgoing_metric_set = FlowOutputItemsMetrics::register(&registrar);
 
         let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(5);

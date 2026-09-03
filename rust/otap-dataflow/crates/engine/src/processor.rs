@@ -1004,8 +1004,8 @@ mod tests {
     };
     use crate::error::ProcessorErrorKind;
     use crate::flow_metrics::{
-        FlowAttributeSet, FlowDroppedItemsMetrics, FlowDurationMetrics, FlowInputItemsMetrics,
-        FlowOutputItemsMetrics,
+        FlowAttributeSet, FlowDroppedItemsMetrics, FlowDurationNormalMetrics,
+        FlowInputItemsMetrics, FlowOutputItemsMetrics,
     };
     use crate::local::message::{LocalReceiver, LocalSender};
     use crate::local::processor as local;
@@ -1368,7 +1368,7 @@ mod tests {
             .metrics_registry()
             .register_entity(FlowAttributeSet::default());
         let registrar = pipeline_ctx.metric_set_registrar_for_entity(entity_key);
-        let duration_metric = FlowDurationMetrics::register(&registrar);
+        let duration_metric = FlowDurationNormalMetrics::register(&registrar);
         let output_items_metric = FlowOutputItemsMetrics::register(&registrar);
         let (metrics_rx, metrics_reporter) =
             otel_arrow_dfe_telemetry::reporter::MetricsReporter::create_new_and_receiver(4);
@@ -1478,7 +1478,7 @@ mod tests {
         let entity_key = pipeline_ctx.metrics_registry().register_entity(attrs);
         let registrar = pipeline_ctx.metric_set_registrar_for_entity(entity_key);
         let start_metric_set = FlowInputItemsMetrics::register(&registrar);
-        let duration_metric_set = FlowDurationMetrics::register(&registrar);
+        let duration_metric_set = FlowDurationNormalMetrics::register(&registrar);
         let outgoing_metric_set = FlowOutputItemsMetrics::register(&registrar);
 
         let config = ProcessorConfig::new("auto_measure_processor");

@@ -20,8 +20,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use otel_arrow_dfe_telemetry::common_attributes::SignalAttributes;
-#[cfg(test)]
-use otel_arrow_dfe_telemetry::descriptor::Instrument;
 use otel_arrow_dfe_telemetry::instrument::{Counter, HistogramDetailed, HistogramNormal, Mmsc};
 #[cfg(test)]
 use otel_arrow_dfe_telemetry::metrics::MetricSetHandler;
@@ -74,7 +72,7 @@ pub struct FlowDurationBasicMetrics {
 /// Normal-tier duration metric set emitted by the end node of a flow range.
 #[metric_set(name = "flow.compute", measurement_attributes = SignalAttributes)]
 #[derive(Debug, Default, Clone)]
-pub struct FlowDurationMetrics {
+pub struct FlowDurationNormalMetrics {
     /// Sum of per-node compute durations, in seconds, for messages traversing the flow range.
     #[metric(unit = "s")]
     pub duration: HistogramNormal,
@@ -93,12 +91,12 @@ pub struct FlowDurationDetailedMetrics {
 #[derive(Clone)]
 pub(crate) enum FlowDurationMetricSet {
     Basic(MeasurementMetricSet<FlowDurationBasicMetrics>),
-    Normal(MeasurementMetricSet<FlowDurationMetrics>),
+    Normal(MeasurementMetricSet<FlowDurationNormalMetrics>),
     Detailed(MeasurementMetricSet<FlowDurationDetailedMetrics>),
 }
 
-impl From<MeasurementMetricSet<FlowDurationMetrics>> for FlowDurationMetricSet {
-    fn from(metrics: MeasurementMetricSet<FlowDurationMetrics>) -> Self {
+impl From<MeasurementMetricSet<FlowDurationNormalMetrics>> for FlowDurationMetricSet {
+    fn from(metrics: MeasurementMetricSet<FlowDurationNormalMetrics>) -> Self {
         Self::Normal(metrics)
     }
 }
@@ -120,24 +118,6 @@ impl FlowDurationMetricSet {
             },
         }
     }
-
-    #[cfg(test)]
-    fn record(&mut self, signal: SignalType, value: f64) {
-        match self {
-            Self::Basic(metrics) => metrics
-                .with(SignalAttributes { signal })
-                .duration
-                .record(value),
-            Self::Normal(metrics) => metrics
-                .with(SignalAttributes { signal })
-                .duration
-                .record(value),
-            Self::Detailed(metrics) => metrics
-                .with(SignalAttributes { signal })
-                .duration
-                .record(value),
-        }
-    }
 }
 
 /// Flow-duration metric set paired with its matching accumulator.
@@ -148,7 +128,7 @@ pub(crate) enum FlowDurationMeasurement {
         accumulator: Box<[Mmsc; FLOW_SIGNAL_COUNT]>,
     },
     Normal {
-        metrics: MeasurementMetricSet<FlowDurationMetrics>,
+        metrics: MeasurementMetricSet<FlowDurationNormalMetrics>,
         accumulator: Box<[HistogramNormal; FLOW_SIGNAL_COUNT]>,
     },
     Detailed {
@@ -235,78 +215,6 @@ impl FlowDurationMeasurement {
             Self::Basic { metrics, .. } => metrics.terminal_snapshots(),
             Self::Normal { metrics, .. } => metrics.terminal_snapshots(),
             Self::Detailed { metrics, .. } => metrics.terminal_snapshots(),
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn pending_summary(&self, signal: SignalType) -> (u64, f64, f64, f64) {
-        let index = flow_signal_index(signal);
-        match self {
-            Self::Basic { accumulator, .. } => {
-                let value = accumulator[index].get();
-                (value.count, value.sum, value.min, value.max)
-            }
-            Self::Normal { accumulator, .. } => accumulator[index].get().summary(),
-            Self::Detailed { accumulator, .. } => accumulator[index].get().summary(),
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn reported_summary(&self, signal: SignalType) -> (u64, f64, f64, f64) {
-        match self {
-            Self::Basic { metrics, .. } => {
-                let value = metrics.get(SignalAttributes { signal }).duration.get();
-                (value.count, value.sum, value.min, value.max)
-            }
-            Self::Normal { metrics, .. } => metrics
-                .get(SignalAttributes { signal })
-                .duration
-                .get()
-                .summary(),
-            Self::Detailed { metrics, .. } => metrics
-                .get(SignalAttributes { signal })
-                .duration
-                .get()
-                .summary(),
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn is_empty(&self, signal: SignalType) -> bool {
-        self.pending_summary(signal).0 == 0
-    }
-}
-
-impl FlowDurationMetricSet {
-    #[cfg(test)]
-    pub(crate) fn summary(&self, signal: SignalType) -> (u64, f64, f64, f64) {
-        match self {
-            Self::Basic(metrics) => {
-                let value = metrics.get(SignalAttributes { signal }).duration.get();
-                (value.count, value.sum, value.min, value.max)
-            }
-            Self::Normal(metrics) => metrics
-                .get(SignalAttributes { signal })
-                .duration
-                .get()
-                .summary(),
-            Self::Detailed(metrics) => metrics
-                .get(SignalAttributes { signal })
-                .duration
-                .get()
-                .summary(),
-        }
-    }
-
-    #[cfg(test)]
-    fn instrument(&self) -> Instrument {
-        let attrs = SignalAttributes {
-            signal: SignalType::Logs,
-        };
-        match self {
-            Self::Basic(metrics) => metrics.get(attrs).descriptor().metrics[0].instrument,
-            Self::Normal(metrics) => metrics.get(attrs).descriptor().metrics[0].instrument,
-            Self::Detailed(metrics) => metrics.get(attrs).descriptor().metrics[0].instrument,
         }
     }
 }
@@ -767,7 +675,7 @@ pub(crate) fn build_flow_metric_state(
                     FlowDurationMetricSet::Basic(FlowDurationBasicMetrics::register(&registrar))
                 }
                 DistributionTier::Normal => {
-                    FlowDurationMetricSet::Normal(FlowDurationMetrics::register(&registrar))
+                    FlowDurationMetricSet::Normal(FlowDurationNormalMetrics::register(&registrar))
                 }
                 DistributionTier::Detailed => FlowDurationMetricSet::Detailed(
                     FlowDurationDetailedMetrics::register(&registrar),
@@ -1009,11 +917,67 @@ impl PipelineFlowMetricState {
 }
 
 #[cfg(test)]
+impl FlowDurationMeasurement {
+    pub(crate) fn pending_summary(&self, signal: SignalType) -> (u64, f64, f64, f64) {
+        let index = flow_signal_index(signal);
+        match self {
+            Self::Basic { accumulator, .. } => {
+                let value = accumulator[index].get();
+                (value.count, value.sum, value.min, value.max)
+            }
+            Self::Normal { accumulator, .. } => accumulator[index].get().summary(),
+            Self::Detailed { accumulator, .. } => accumulator[index].get().summary(),
+        }
+    }
+
+    pub(crate) fn reported_summary(&self, signal: SignalType) -> (u64, f64, f64, f64) {
+        match self {
+            Self::Basic { metrics, .. } => {
+                let value = metrics.get(SignalAttributes { signal }).duration.get();
+                (value.count, value.sum, value.min, value.max)
+            }
+            Self::Normal { metrics, .. } => metrics
+                .get(SignalAttributes { signal })
+                .duration
+                .get()
+                .summary(),
+            Self::Detailed { metrics, .. } => metrics
+                .get(SignalAttributes { signal })
+                .duration
+                .get()
+                .summary(),
+        }
+    }
+
+    pub(crate) fn is_empty(&self, signal: SignalType) -> bool {
+        self.pending_summary(signal).0 == 0
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::testing::test_pipeline_ctx;
     use otel_arrow_dfe_telemetry::attributes::{AttributeSetHandler, AttributeValue};
+    use otel_arrow_dfe_telemetry::descriptor::Instrument;
     use otel_arrow_dfe_telemetry::metrics::MetricValue;
+
+    fn duration_instrument(metrics: &FlowDurationMetricSet) -> Instrument {
+        let attrs = SignalAttributes {
+            signal: SignalType::Logs,
+        };
+        match metrics {
+            FlowDurationMetricSet::Basic(metrics) => {
+                metrics.get(attrs).descriptor().metrics[0].instrument
+            }
+            FlowDurationMetricSet::Normal(metrics) => {
+                metrics.get(attrs).descriptor().metrics[0].instrument
+            }
+            FlowDurationMetricSet::Detailed(metrics) => {
+                metrics.get(attrs).descriptor().metrics[0].instrument
+            }
+        }
+    }
 
     fn one_flow_metric_state(tier: DistributionTier) -> PipelineFlowMetricState {
         let (ctx, _) = test_pipeline_ctx();
@@ -1027,7 +991,7 @@ mod tests {
                 FlowDurationMetricSet::Basic(FlowDurationBasicMetrics::register(&registrar))
             }
             DistributionTier::Normal => {
-                FlowDurationMetricSet::Normal(FlowDurationMetrics::register(&registrar))
+                FlowDurationMetricSet::Normal(FlowDurationNormalMetrics::register(&registrar))
             }
             DistributionTier::Detailed => {
                 FlowDurationMetricSet::Detailed(FlowDurationDetailedMetrics::register(&registrar))
@@ -1074,11 +1038,12 @@ mod tests {
             DistributionTier::Detailed,
         ] {
             let mut state = one_flow_metric_state(tier);
-            let duration = state.duration_metrics[0].as_mut().unwrap();
+            let metrics = state.duration_metrics[0].take().unwrap();
+            let mut duration = metrics.into_measurement();
             duration.record(SignalType::Logs, 100.0);
             duration.record(SignalType::Logs, 200.0);
 
-            let (count, sum, min, max) = duration.summary(SignalType::Logs);
+            let (count, sum, min, max) = duration.pending_summary(SignalType::Logs);
             assert_eq!(count, 2, "tier: {tier:?}");
             assert!((min - 100.0).abs() < f64::EPSILON, "tier: {tier:?}");
             assert!((max - 200.0).abs() < f64::EPSILON, "tier: {tier:?}");
@@ -1097,7 +1062,7 @@ mod tests {
         ] {
             let state = one_flow_metric_state(tier);
             let duration = state.duration_metrics[0].as_ref().unwrap();
-            assert_eq!(duration.instrument(), expected, "tier: {tier:?}");
+            assert_eq!(duration_instrument(duration), expected, "tier: {tier:?}");
         }
     }
 
@@ -1338,7 +1303,7 @@ mod tests {
                     .expect("supported duration tier should build");
 
             assert_eq!(
-                state.duration_metrics[0].as_ref().unwrap().instrument(),
+                duration_instrument(state.duration_metrics[0].as_ref().unwrap()),
                 expected,
                 "tier: {tier:?}"
             );

@@ -1314,7 +1314,8 @@ mod tests {
     fn flow_accumulate_then_report() {
         use crate::context::ControllerContext;
         use crate::flow_metrics::{
-            FlowAttributeSet, FlowDurationMetrics, FlowInputItemsMetrics, FlowOutputItemsMetrics,
+            FlowAttributeSet, FlowDurationNormalMetrics, FlowInputItemsMetrics,
+            FlowOutputItemsMetrics,
         };
         use otel_arrow_dfe_config::node::NodeKind;
         use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
@@ -1335,7 +1336,7 @@ mod tests {
             .register_entity(FlowAttributeSet::default());
         let registrar = pipeline_ctx.metric_set_registrar_for_entity(entity_key);
         let start_metric_set = FlowInputItemsMetrics::register(&registrar);
-        let duration_metric_set = FlowDurationMetrics::register(&registrar);
+        let duration_metric_set = FlowDurationNormalMetrics::register(&registrar);
         let outgoing_metric_set = FlowOutputItemsMetrics::register(&registrar);
 
         // Create an EffectHandler with both flow_metric roles.
