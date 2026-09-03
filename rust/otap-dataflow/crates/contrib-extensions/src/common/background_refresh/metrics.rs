@@ -27,7 +27,7 @@ pub struct BackgroundProviderMetricsTracker<M: BackgroundProviderMetrics> {
 
 impl<M: BackgroundProviderMetrics> std::fmt::Debug for BackgroundProviderMetricsTracker<M> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TokenProviderMetricsTracker").finish()
+        f.debug_struct("BackgroundProviderMetricsTracker").finish()
     }
 }
 
