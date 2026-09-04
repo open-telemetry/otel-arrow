@@ -2579,8 +2579,7 @@ mod test {
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         let url = format!("wss://localhost:{port}/v1/opamp");
-        let result =
-            connect_async_tls_with_config(&url, None, false, Some(connector)).await;
+        let result = connect_async_tls_with_config(&url, None, false, Some(connector)).await;
 
         assert!(result.is_err(), "connection should fail with wrong CA");
         let err_str = format!("{:?}", result.unwrap_err());
@@ -2643,8 +2642,7 @@ mod test {
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         let url = format!("wss://localhost:{port}/v1/opamp");
-        let result =
-            connect_async_tls_with_config(&url, None, false, Some(connector)).await;
+        let result = connect_async_tls_with_config(&url, None, false, Some(connector)).await;
 
         assert!(
             result.is_err(),

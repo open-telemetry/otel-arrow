@@ -378,7 +378,8 @@ mod test {
         .unwrap();
         let err = config.validate().unwrap_err();
         assert!(
-            err.to_string().contains("Use \"wss://\" when TLS is enabled"),
+            err.to_string()
+                .contains("Use \"wss://\" when TLS is enabled"),
             "expected scheme mismatch error, got: {err}"
         );
     }

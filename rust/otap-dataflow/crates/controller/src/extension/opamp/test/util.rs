@@ -260,11 +260,7 @@ impl MockWebSocketServer {
             .unwrap();
     }
 
-    async fn serve_tls(
-        &self,
-        tls_config: TlsServerConfig,
-        cancellation_token: CancellationToken,
-    ) {
+    async fn serve_tls(&self, tls_config: TlsServerConfig, cancellation_token: CancellationToken) {
         let server_config = build_test_server_tls_config(&tls_config).await;
         let tls_acceptor = TlsAcceptor::from(Arc::new(server_config));
 
@@ -320,17 +316,18 @@ async fn build_test_server_tls_config(tls_config: &TlsServerConfig) -> rustls::S
     let cert_chain: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(&cert_pem)
         .collect::<Result<Vec<_>, _>>()
         .expect("parse server cert chain");
-    let key =
-        PrivateKeyDer::from_pem_slice(&key_pem).expect("parse server private key");
+    let key = PrivateKeyDer::from_pem_slice(&key_pem).expect("parse server private key");
 
     let builder = rustls::ServerConfig::builder();
 
     let builder = if let Some(client_ca_pem) = &tls_config.client_ca_pem {
         let mut roots = RootCertStore::empty();
-        for cert in CertificateDer::pem_reader_iter(&mut io::BufReader::new(
-            client_ca_pem.as_bytes(),
-        )) {
-            roots.add(cert.expect("parse client CA cert")).expect("add client CA cert");
+        for cert in
+            CertificateDer::pem_reader_iter(&mut io::BufReader::new(client_ca_pem.as_bytes()))
+        {
+            roots
+                .add(cert.expect("parse client CA cert"))
+                .expect("add client CA cert");
         }
         let verifier = WebPkiClientVerifier::builder(roots.into())
             .build()
@@ -348,10 +345,7 @@ async fn build_test_server_tls_config(tls_config: &TlsServerConfig) -> rustls::S
 }
 
 /// Read PEM bytes from either a file path or an inline PEM string.
-async fn read_pem_bytes(
-    file: Option<&std::path::Path>,
-    pem: Option<&str>,
-) -> Option<Vec<u8>> {
+async fn read_pem_bytes(file: Option<&std::path::Path>, pem: Option<&str>) -> Option<Vec<u8>> {
     if let Some(path) = file {
         let mut bytes = Vec::new();
         let mut f = File::open(path).await.expect("open PEM file");

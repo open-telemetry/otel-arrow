@@ -95,7 +95,7 @@ pub async fn create_client_config(config: &TlsClientConfig) -> Result<Option<Cli
                     error = ?e, message = "Failed to read client cert file"
                 );
                 Error::ConfigHttpClientBuildFailed {
-                    details: format!("failed to read client mTLS cert file"),
+                    details: "failed to read client mTLS cert file".into()
                 }
             })?
         } else if let Some(cert_pem) = &config.config.cert_pem {
@@ -113,7 +113,7 @@ pub async fn create_client_config(config: &TlsClientConfig) -> Result<Option<Cli
                     message = "Failed to read client key file"
                 );
                 Error::ConfigHttpClientBuildFailed {
-                    details: format!("failed to read client mTLS Key file"),
+                    details: "failed to read client mTLS Key file".into()
                 }
             })?
         } else if let Some(key_pem) = &config.config.key_pem {
