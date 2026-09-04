@@ -96,7 +96,7 @@ jobs:
                   if has($pr.label) then . else .[$pr.label] = $pr.draft end)) as $draft
                 | [.[] | select($draft[.label] != true) | .id][:$limit][]')
 
-          echo "Found $(echo "$RUN_IDS" | wc -l) recent runs"
+          echo "Found $(echo "$RUN_IDS" | wc -w) recent runs"
 
           for RUN_ID in $RUN_IDS; do
             echo "Checking run $RUN_ID for JUnit artifacts..."

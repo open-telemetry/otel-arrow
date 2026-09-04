@@ -324,7 +324,8 @@ def format_issue_body(flaky_tests, lookback_runs, repo_url, previous_names):
     lines.append("")
     lines.append(
         f"Automatically generated from tests that nextest retried and saw"
-        f" pass, across recent Rust-CI runs from non-draft pull requests"
+        f" pass, across recent non-draft pull request and merge queue"
+        f" Rust-CI runs"
         f" (up to **{lookback_runs}** runs)."
     )
     lines.append("")
