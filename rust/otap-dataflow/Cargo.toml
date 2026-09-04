@@ -8,8 +8,6 @@ exclude = [
     # Reference WASM guest plugin, built on demand for the wasm-host
     # integration test and compiled for the wasm32-wasip2 target only.
     "crates/wasm-host/plugins/severity-filter",
-    # Temporary facade for a pinned Git dependency using the former package name.
-    "compat/otap-df-pdata-views",
 ]
 resolver = "2"
 
@@ -294,11 +292,11 @@ tracepoint_decode = "0.5.0"
 tracelogging = "1.2.4"
 tracelogging_dynamic = "1.2.4"
 urlencoding = "2"
-geneva-uploader = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "91057e4f9bda2dea819ead1648a83c7c7df0feda", default-features = false, features = ["tls-rustls"] }
+geneva-uploader = { version = "0.7.0", default-features = false, features = ["tls-rustls"] }
 opentelemetry-resource-detectors = "0.12.0"
 
-[patch."https://github.com/open-telemetry/otel-arrow"]
-otap-df-pdata-views = { path = "compat/otap-df-pdata-views" }
+[patch.crates-io]
+otel-arrow-dfe-pdata-views = { path = "crates/pdata-views" }
 
 [features]
 default = ["jemalloc", "crypto-ring", "dev-tools", "admin-live-logs-ws"]
