@@ -83,7 +83,7 @@ pub(super) struct ControllerRuntime<PData: 'static + Clone + Send + Sync + std::
     topology: NumaTopology,
     /// Tracing setup cloned into launched runtime threads.
     engine_tracing_setup: TracingSetup,
-    /// Applies reconciled log-level directives to every tracing setup.
+    /// Applies initial and reconciled log-level directives to every tracing setup.
     log_filter_handle: RuntimeLogFilterHandle,
     /// Runtime telemetry reporting cadence.
     telemetry_reporting_interval: Duration,
@@ -136,6 +136,7 @@ impl<
         memory_pressure_tx: tokio::sync::watch::Sender<MemoryPressureChanged>,
         live_config: OtelDataflowSpec,
     ) -> Self {
+        log_filter_handle.apply(live_config.engine.telemetry.logs.level.as_ref());
         Self {
             pipeline_factory,
             controller_context,

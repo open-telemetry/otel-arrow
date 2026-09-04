@@ -135,6 +135,12 @@ pub fn upsert_attributes<T: ArrowPrimitiveType>(
         });
     }
 
+    // Callers legitimately resolve to zero upserts, e.g. when every source attribute an
+    // assignment reads is absent from the batch. There is then nothing to merge.
+    if upserts.is_empty() {
+        return Ok(existing_attrs.clone());
+    }
+
     let num_existing = existing_attrs.num_rows();
 
     // Resolve each upsert: determine type, target column, extract values, compute counts, and
@@ -2818,6 +2824,24 @@ mod tests {
             .downcast_ref::<StringArray>()
             .unwrap()
             .clone()
+    }
+
+    /// Scenario: `upsert_attributes` is called with an empty upsert list, which happens when
+    /// every attribute an assignment reads is absent from the batch so no upsert resolves.
+    ///
+    /// Guarantees: the call returns the input batch unchanged instead of panicking while
+    /// indexing the empty resolved-upsert slice.
+    #[test]
+    fn test_upsert_attributes_no_upserts_returns_input_unchanged() {
+        let existing = build_attrs_batch(&[(0, "x", 1, "a"), (1, "y", 1, "b")]);
+
+        let result = upsert_attributes::<UInt16Type>(&existing, &[]).unwrap();
+
+        assert_eq!(result.num_rows(), existing.num_rows());
+        assert_eq!(result.schema(), existing.schema());
+        let keys = decode_to_utf8(result.column_by_name(consts::ATTRIBUTE_KEY).unwrap());
+        assert_eq!(keys.value(0), "x");
+        assert_eq!(keys.value(1), "y");
     }
 
     #[test]
