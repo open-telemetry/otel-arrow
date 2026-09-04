@@ -14,7 +14,7 @@ engine:
           agent_description:
             identifying_attributes:
               service.name: "otel-arrow-dfe-engine"
-          
+
           # Configuration for TLS
           #
           # This configuration can be used with the instructions to test locally the opamp controller
@@ -22,7 +22,7 @@ engine:
           tls:
             # Server CA (opamp-go server uses a self-signed cert derived from this CA)
             ca_file: "/path/to/opamp-go/internal/examples/certs/certs/ca.cert.pem"
-            
+
             # If you wish to use mTLS ...
             #
             # You'll have to have generated the client cert and key using the following commands:
