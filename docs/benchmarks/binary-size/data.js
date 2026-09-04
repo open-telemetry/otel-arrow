@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788544141462,
+  "lastUpdate": 1788557211595,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -31347,6 +31347,150 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/open-telemetry/otel-arrow/commit/87c518a3f04a5d7f5791a1f201b8050c3156e7cf"
         },
         "date": 1788544121344,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 83.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.53,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.7,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 70.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.48,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 115.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 102.6,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "drewrelmas@gmail.com",
+            "name": "Drew Relmas",
+            "username": "drewrelmas"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9c04f1781481640f1e4eadc076c28f8536573989",
+          "message": "chore(deps): Update geneva-uploader to 0.7.0, removing git dependency (#4005)\n\n# Chore Summary\n\nUpdate geneva-uploader to 0.7.0, removing git dependency\n\n## Related issue\n\n- Part of #1340\n- Closes #4004",
+          "timestamp": "2026-09-04T20:35:19Z",
+          "tree_id": "a9c9c361e8a8fd345106b80737ac2724ea928d1d",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/9c04f1781481640f1e4eadc076c28f8536573989"
+        },
+        "date": 1788557196196,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
