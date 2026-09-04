@@ -16,9 +16,7 @@ use otel_arrow_dfe_telemetry::otel_error;
 ///
 /// Returns `Ok(None)` when `insecure` is `true` (TLS disabled).
 /// Returns `Ok(Some(config))` with a configured TLS client otherwise.
-pub async fn create_client_config(
-    config: &TlsClientConfig,
-) -> Result<Option<ClientConfig>, Error> {
+pub async fn create_client_config(config: &TlsClientConfig) -> Result<Option<ClientConfig>, Error> {
     let insecure = config.insecure.unwrap_or(false);
     if insecure {
         return Ok(None);
@@ -101,7 +99,7 @@ pub async fn create_client_config(
                     error = ?e, message = "Failed to read client cert file"
                 );
                 Error::ConfigHttpClientBuildFailed {
-                    details: "failed to read client mTLS cert file".into()
+                    details: "failed to read client mTLS cert file".into(),
                 }
             })?
         } else if let Some(cert_pem) = &config.config.cert_pem {
@@ -119,7 +117,7 @@ pub async fn create_client_config(
                     message = "Failed to read client key file"
                 );
                 Error::ConfigHttpClientBuildFailed {
-                    details: "failed to read client mTLS key file".into()
+                    details: "failed to read client mTLS key file".into(),
                 }
             })?
         } else if let Some(key_pem) = &config.config.key_pem {

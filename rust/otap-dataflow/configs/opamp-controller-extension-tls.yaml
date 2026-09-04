@@ -34,7 +34,7 @@ engine:
             # openssl ca -config openssl.conf -days 1650 -notext -batch  -in client_certs/client.csr -out client_certs/client.cert.pem
             #
             # Then uncomment these lines:
-            #  
+            #
             # cert_file: "/path/to/opamp-go/internal/examples/certs/client_certs/client.cert.pem"
             # key_file: "/path/to/opamp-go/internal/examples/certs/client_certs/client.key.pem"
 
