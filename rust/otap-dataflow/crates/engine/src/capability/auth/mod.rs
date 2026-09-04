@@ -21,6 +21,6 @@ pub mod bearer_token_authorizer;
 pub mod bearer_token_provider;
 
 pub use models::{
-    ApiKey, AuthorizedIdentity, AuthzDecision, BasicAuthCredential, BearerToken, ClaimValue,
-    DenyReason,
+    ApiKey, AuthorizedIdentity, AuthzDecision, BasicAuthCredential, BasicAuthCredentialError,
+    BearerToken, ClaimValue, DenyReason,
 };

@@ -19,6 +19,6 @@ mod deny_reason;
 pub use api_key::ApiKey;
 pub use authorized_identity::{AuthorizedIdentity, ClaimValue};
 pub use authz_decision::AuthzDecision;
-pub use basic_auth_credential::BasicAuthCredential;
+pub use basic_auth_credential::{BasicAuthCredential, BasicAuthCredentialError};
 pub use bearer_token::BearerToken;
 pub use deny_reason::DenyReason;

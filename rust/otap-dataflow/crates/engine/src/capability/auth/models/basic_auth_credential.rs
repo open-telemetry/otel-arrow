@@ -7,6 +7,17 @@ use secrecy::{ExposeSecret, SecretString};
 use std::sync::Arc;
 use std::time::Instant;
 
+/// A Basic Auth Credential error.
+#[allow(missing_docs)]
+#[derive(thiserror::Error, Debug, Clone)]
+pub enum BasicAuthCredentialError {
+    #[error("Username is invalid: {reason}")]
+    InvalidUsername { reason: &'static str },
+
+    #[error("Password is invalid: {reason}")]
+    InvalidPassword { reason: &'static str },
+}
+
 /// A Basic Auth Credential.
 ///
 /// The credential is wrapped in [`SecretString`]s, which zeroizes on drop and
@@ -33,16 +44,35 @@ impl BasicAuthCredential {
     pub fn new(
         username: impl Into<SecretString>,
         password: impl Into<SecretString>,
-    ) -> Result<Self, &'static str> {
+    ) -> Result<Self, BasicAuthCredentialError> {
         let username: SecretString = username.into();
+        let password: SecretString = password.into();
 
-        if username.expose_secret().contains(':') {
-            return Err("Username cannot contain the ':' character");
+        for c in username.expose_secret().chars() {
+            match c {
+                ':' => {
+                    return Err(BasicAuthCredentialError::InvalidUsername {
+                        reason: "Username cannot contain the ':' character",
+                    });
+                }
+                c if c.is_control() => {
+                    return Err(BasicAuthCredentialError::InvalidUsername {
+                        reason: "Username cannot contain control characters",
+                    });
+                }
+                _ => {}
+            }
+        }
+
+        if password.expose_secret().chars().any(char::is_control) {
+            return Err(BasicAuthCredentialError::InvalidPassword {
+                reason: "Password cannot contain control characters",
+            });
         }
 
         Ok(Self {
             username: Arc::new(username),
-            password: Arc::new(password.into()),
+            password: Arc::new(password),
             expires_on: None,
         })
     }
