@@ -46,9 +46,9 @@ steps:
                 engine_hostname: go-collector
                 loadgen_exporter_type: otlp
                 exporter_extra_config:
-                  max_in_flight: 256
-                max_batch_size: 8192
-                signals_per_second: {{signals_per_second | default(100000)}}
+                  max_in_flight: {{loadgen_max_in_flight | default(256)}}
+                max_batch_size: {{max_batch_size | default(8192)}}
+                signals_per_second: {% if signals_per_second is none %}null{% else %}{{signals_per_second | default(100000)}}{% endif %}
                 metric_weight: 0
                 trace_weight: 0
                 log_weight: 100
@@ -70,12 +70,12 @@ steps:
   - name: Warm Up
     action:
       wait:
-        delay_seconds: 10
+        delay_seconds: {{wait_for_data_interval | default(10)}}
 
   - name: Observe Load
     action:
       wait:
-        delay_seconds: 60
+        delay_seconds: {{observation_interval | default(60)}}
     hooks:
       run:
         pre:
