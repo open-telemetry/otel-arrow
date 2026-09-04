@@ -1,0 +1,12 @@
+change_type: bug_fix
+
+component: pdata
+
+note: Return the input batch unchanged instead of panicking when `upsert_attributes` is called with no upserts
+
+issues: [3987]
+
+subtext: |
+  An assignment whose source attributes are all absent from the batch resolves to zero
+  upserts, and the transform then indexed an empty slice. This panicked the pipeline task
+  while the process stayed healthy.
