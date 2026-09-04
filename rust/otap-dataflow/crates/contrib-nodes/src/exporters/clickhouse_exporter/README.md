@@ -73,7 +73,7 @@ SELECT * FROM otel_traces LIMIT 10;
 
 At runtime the exporter does the following:
 
-1. Deserializes `ConfigPatch` and normalizes it into `Config`
+1. Deserializes `UserConfig` and normalizes it into `RuntimeConfig`
 2. Connects to ClickHouse and creates the target database and configured
    tables if enabled
 3. Receives `OtapPdata` messages from the engine
@@ -114,6 +114,7 @@ Top-level config fields:
 - `password` (supports `${env:VAR}` / `${env:VAR:-default}` substitution, e.g. `"${env:CLICKHOUSE_PASSWORD}"`)
 - `async_insert`
 - `max_in_flight` (positive integer, defaults to `10`)
+- `insert_batching` (optional; disabled by default)
 - `table_defaults`
 - `tables`
 
@@ -123,6 +124,45 @@ complete them out of order. When the limit is reached, the exporter applies
 backpressure until an insert completes. The default of `10` matches the insert
 concurrency used by the benchmark Collector configuration. Set it to `1` to
 retain serialized insert behavior.
+
+`insert_batching` coalesces compatible Arrow batches before assigning a
+completed group to a writer lane. After the group closes, the lane opens one
+ClickHouse insertion, writes every Arrow batch in that group, and waits for the
+final response. The group is dispatched when the first configured threshold is
+reached:
+
+```yaml
+insert_batching:
+  max_rows: 65536
+  max_bytes: 67108864
+  max_delay_ms: 100
+```
+
+All three thresholds are required and must be greater than zero.
+`max_delay_ms` cannot exceed 24 hours (86,400,000 ms). `max_bytes` uses the
+batches' estimated Arrow in-memory size, not their encoded HTTP wire size, and
+an insertion can exceed a row or byte threshold by its final batch. The delay
+starts when the first batch enters the coalescer. Batches with a different
+destination table or Arrow schema dispatch the current group before starting
+another one. Because coalescing happens before lane selection, increasing
+`max_in_flight` does not dilute the batch arrival rate across lanes.
+
+When `insert_batching` is enabled, `max_in_flight` is the number of independent
+writer lanes that can execute completed insertion groups concurrently. Each
+accepted message is reported successful only after the shared insertion
+receives a successful final response. A final response error reports failure
+for every message grouped into that insertion. Lane completions can arrive out
+of input order. Omitting `insert_batching` preserves the existing behavior:
+each transformed destination batch is written in its own insertion, and its
+original message completes after every mapped insertion succeeds.
+
+A message mapped to multiple ClickHouse tables bypasses coalescing. Those table
+insertions are sequential but not atomic: if a later insertion fails, an
+earlier table may already contain rows from the message. Retrying the failed
+message can therefore duplicate the rows that committed before the failure.
+An unexpected writer-lane termination stops the exporter with a transport
+error instead of treating unresolved writes as a clean drain. At shutdown,
+accepted insertions are drained only until the pipeline's shutdown deadline.
 
 Inline attributes are always stored as `Map(LowCardinality(String), String)`;
 there is no per-group representation configuration.
@@ -303,6 +343,7 @@ payloads remain internal to the transform process.
 - writes only signal payloads
 - maps `Logs -> logs table` and `Spans -> traces table`
 - runs at most `max_in_flight` insert requests concurrently
+- optionally coalesces compatible batches before assigning them to writer lanes
 - drains accepted insert requests until the shutdown deadline
 - preserves each input batch until its insert completes so pipeline delivery
   tracking reflects the ClickHouse result
