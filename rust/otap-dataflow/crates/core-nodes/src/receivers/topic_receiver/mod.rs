@@ -8,6 +8,7 @@ otel_arrow_dfe_telemetry::otel_component_scope!(
     target = "otel.receiver.topic",
 );
 
+pub mod metrics;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otel_arrow_dfe_channel::error::SendError;
@@ -34,9 +35,11 @@ use otel_arrow_dfe_engine::{
 };
 use otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
-use otel_arrow_dfe_telemetry::instrument::Counter;
-use otel_arrow_dfe_telemetry::metrics::MetricSet;
-use otel_arrow_dfe_telemetry_macros::metric_set;
+
+use metrics::{
+    BridgeControl, BridgeResult, LagEventAttributes, LagEventType, TopicReceiverMetrics,
+};
+use otel_arrow_dfe_telemetry::common_attributes::{Outcome, OutcomeAttributes};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use smallvec::smallvec;
@@ -48,58 +51,6 @@ use std::time::Instant;
 
 /// URN for the topic receiver.
 pub const TOPIC_RECEIVER_URN: &str = "urn:otel:receiver:topic";
-
-/// Telemetry metrics for the topic receiver.
-#[metric_set(name = "receiver.topic")]
-#[derive(Debug, Default, Clone)]
-pub struct TopicReceiverMetrics {
-    /// Number of messages forwarded to downstream.
-    #[metric(unit = "{item}")]
-    pub forwarded_messages: Counter<u64>,
-    /// Number of forward failures to downstream channel.
-    #[metric(unit = "{item}")]
-    pub forward_failures: Counter<u64>,
-    /// Number of lag notifications emitted by broadcast subscriptions.
-    #[metric(unit = "{event}")]
-    pub lagged_notifications: Counter<u64>,
-    /// Total messages missed across lag notifications.
-    #[metric(unit = "{item}")]
-    pub lagged_messages: Counter<u64>,
-    /// Number of broadcast subscriptions disconnected because of lag.
-    #[metric(unit = "{event}")]
-    pub lag_disconnects: Counter<u64>,
-    /// Number of downstream backpressure events (>= 500ms blocked).
-    #[metric(unit = "{event}")]
-    pub downstream_backpressure_events: Counter<u64>,
-    /// Total milliseconds blocked while forwarding to downstream.
-    #[metric(unit = "ms")]
-    pub downstream_blocked_ms: Counter<u64>,
-    /// Number of downstream ACK controls successfully bridged to topic ack.
-    #[metric(unit = "{item}")]
-    pub bridged_downstream_acks: Counter<u64>,
-    /// Number of downstream NACK controls successfully bridged to topic nack.
-    #[metric(unit = "{item}")]
-    pub bridged_downstream_nacks: Counter<u64>,
-    /// Number of downstream ACK/NACK controls ignored because topic Ack/Nack
-    /// propagation is disabled for this receiver.
-    #[metric(unit = "{event}")]
-    pub bridge_controls_ignored_propagation_disabled: Counter<u64>,
-    /// Number of downstream ACK/NACK controls missing the bridged topic
-    /// message id in calldata.
-    #[metric(unit = "{event}")]
-    pub bridge_missing_calldata: Counter<u64>,
-    /// Number of downstream ACK/NACK controls carrying an id that is not
-    /// currently tracked by the topic runtime.
-    ///
-    /// With the current raw `message_id` bridge this also includes invalid or
-    /// forged ids; those causes are not distinguishable yet.
-    #[metric(unit = "{event}")]
-    pub bridge_invalid_or_untracked_id: Counter<u64>,
-    /// Number of downstream ACK/NACK controls that failed to bridge for some
-    /// runtime reason other than an unknown message id.
-    #[metric(unit = "{event}")]
-    pub bridge_runtime_failures: Counter<u64>,
-}
 
 /// Topic receiver configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -137,7 +88,7 @@ pub struct TopicReceiver {
     subscription: Subscription<OtapPdata>,
     ack_propagation_mode: TopicAckPropagationMode,
     broadcast_on_lag: Option<TopicBroadcastOnLagPolicy>,
-    metrics: MetricSet<TopicReceiverMetrics>,
+    metrics: TopicReceiverMetrics,
 }
 
 /// Message received from the topic runtime but not yet admitted to the
@@ -197,8 +148,8 @@ pub static TOPIC_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
             let broadcast_on_lag =
                 matches!(&config.subscription, TopicSubscriptionConfig::Broadcast {})
                     .then(|| topic_binding.broadcast_on_lag_policy());
-            let metrics = pipeline
-                .register_metrics_with_topic::<TopicReceiverMetrics>(topic_binding.name().into());
+            let metrics =
+                TopicReceiverMetrics::register(&pipeline, topic_binding.name().to_string());
             Ok(ReceiverWrapper::local(
                 TopicReceiver {
                     config,
@@ -275,12 +226,12 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                         if let Some(reason) = draining_reason.as_deref() {
                             if let Some(message_id) = pending.tracked_message_id {
                                 match subscription.nack(message_id, reason) {
-                                    Ok(()) => metrics.bridged_downstream_nacks.add(1),
+                                    Ok(()) => metrics.record_bridge(BridgeControl::Nack, BridgeResult::Success),
                                     Err(Error::MessageNotTracked) => {
-                                        metrics.bridge_invalid_or_untracked_id.add(1);
+                                        metrics.record_bridge(BridgeControl::Nack, BridgeResult::InvalidOrUntrackedId);
                                     }
                                     Err(e) => {
-                                        metrics.bridge_runtime_failures.add(1);
+                                        metrics.record_bridge(BridgeControl::Nack, BridgeResult::RuntimeFailure);
                                         otel_warn!(
                                             "topic_receiver.drain_ingress_pending_forward_nack_failed",
                                             node = receiver_id.name.as_ref(),
@@ -304,7 +255,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
 
                     if pending_tracked_message_ids.is_empty() {
                         effect_handler.notify_receiver_drained().await?;
-                        return Ok(TerminalState::new(deadline, [metrics.snapshot()]));
+                        return Ok(TerminalState::new(deadline, metrics.terminal_snapshots()));
                     }
 
                     if Instant::now() >= deadline {
@@ -318,12 +269,12 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                             );
                             for message_id in pending_tracked_message_ids.drain() {
                                 match subscription.nack(message_id, reason) {
-                                    Ok(()) => metrics.bridged_downstream_nacks.add(1),
+                                    Ok(()) => metrics.record_bridge(BridgeControl::Nack, BridgeResult::Success),
                                     Err(Error::MessageNotTracked) => {
-                                        metrics.bridge_invalid_or_untracked_id.add(1);
+                                        metrics.record_bridge(BridgeControl::Nack, BridgeResult::InvalidOrUntrackedId);
                                     }
                                     Err(e) => {
-                                        metrics.bridge_runtime_failures.add(1);
+                                        metrics.record_bridge(BridgeControl::Nack, BridgeResult::RuntimeFailure);
                                         otel_warn!(
                                             "topic_receiver.drain_ingress_force_nack_failed",
                                             node = receiver_id.name.as_ref(),
@@ -336,7 +287,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                             }
                         }
                         effect_handler.notify_receiver_drained().await?;
-                        return Ok(TerminalState::new(deadline, [metrics.snapshot()]));
+                        return Ok(TerminalState::new(deadline, metrics.terminal_snapshots()));
                     }
                 }
 
@@ -359,21 +310,19 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                 Ok(NodeControlMsg::CollectTelemetry {
                                     mut metrics_reporter,
                                 }) => {
-                                    _ = metrics_reporter.report(&mut metrics);
+                                    _ = metrics.report(&mut metrics_reporter);
                                 }
                                 Ok(NodeControlMsg::Ack(ack)) => {
                                     if ack_propagation_mode != TopicAckPropagationMode::Auto {
-                                        metrics
-                                            .bridge_controls_ignored_propagation_disabled
-                                            .add(1);
+                                        metrics.record_bridge(BridgeControl::Ack, BridgeResult::IgnoredPropagationDisabled);
                                     } else if let Some(message_id) =
                                         Self::decode_topic_message_id(&ack.unwind.route.calldata)
                                     {
                                         let _ = pending_tracked_message_ids.remove(&message_id);
                                         match subscription.ack(message_id) {
-                                            Ok(()) => metrics.bridged_downstream_acks.add(1),
+                                            Ok(()) => metrics.record_bridge(BridgeControl::Ack, BridgeResult::Success),
                                             Err(Error::MessageNotTracked) => {
-                                                metrics.bridge_invalid_or_untracked_id.add(1);
+                                                metrics.record_bridge(BridgeControl::Ack, BridgeResult::InvalidOrUntrackedId);
                                                 otel_warn!(
                                                     "topic_receiver.bridge_ack_untracked_or_invalid_id",
                                                     node = receiver_id.name.as_ref(),
@@ -383,7 +332,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                                 );
                                             }
                                             Err(e) => {
-                                                metrics.bridge_runtime_failures.add(1);
+                                                metrics.record_bridge(BridgeControl::Ack, BridgeResult::RuntimeFailure);
                                                 otel_warn!(
                                                     "topic_receiver.bridge_ack_failed",
                                                     node = receiver_id.name.as_ref(),
@@ -394,7 +343,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                             }
                                         }
                                     } else {
-                                        metrics.bridge_missing_calldata.add(1);
+                                        metrics.record_bridge(BridgeControl::Ack, BridgeResult::MissingCalldata);
                                         otel_warn!(
                                             "topic_receiver.bridge_ack_missing_calldata",
                                             node = receiver_id.name.as_ref(),
@@ -416,17 +365,15 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                 }
                                 Ok(NodeControlMsg::Nack(nack)) => {
                                     if ack_propagation_mode != TopicAckPropagationMode::Auto {
-                                        metrics
-                                            .bridge_controls_ignored_propagation_disabled
-                                            .add(1);
+                                        metrics.record_bridge(BridgeControl::Nack, BridgeResult::IgnoredPropagationDisabled);
                                     } else if let Some(message_id) =
                                         Self::decode_topic_message_id(&nack.unwind.route.calldata)
                                     {
                                         let _ = pending_tracked_message_ids.remove(&message_id);
                                         match subscription.nack(message_id, nack.reason.as_str()) {
-                                            Ok(()) => metrics.bridged_downstream_nacks.add(1),
+                                            Ok(()) => metrics.record_bridge(BridgeControl::Nack, BridgeResult::Success),
                                             Err(Error::MessageNotTracked) => {
-                                                metrics.bridge_invalid_or_untracked_id.add(1);
+                                                metrics.record_bridge(BridgeControl::Nack, BridgeResult::InvalidOrUntrackedId);
                                                 otel_warn!(
                                                     "topic_receiver.bridge_nack_untracked_or_invalid_id",
                                                     node = receiver_id.name.as_ref(),
@@ -436,7 +383,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                                 );
                                             }
                                             Err(e) => {
-                                                metrics.bridge_runtime_failures.add(1);
+                                                metrics.record_bridge(BridgeControl::Nack, BridgeResult::RuntimeFailure);
                                                 otel_warn!(
                                                     "topic_receiver.bridge_nack_failed",
                                                     node = receiver_id.name.as_ref(),
@@ -447,7 +394,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                             }
                                         }
                                     } else {
-                                        metrics.bridge_missing_calldata.add(1);
+                                        metrics.record_bridge(BridgeControl::Nack, BridgeResult::MissingCalldata);
                                         otel_warn!(
                                             "topic_receiver.bridge_nack_missing_calldata",
                                             node = receiver_id.name.as_ref(),
@@ -457,7 +404,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                     }
                                 }
                                 Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
-                                    return Ok(TerminalState::new(deadline, [metrics.snapshot()]));
+                                    return Ok(TerminalState::new(deadline, metrics.terminal_snapshots()));
                                 }
                                 Ok(_) => {}
                                 Err(e) => return Err(Error::ChannelRecvError(e)),
@@ -474,11 +421,11 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                     if let Some(message_id) = pending.tracked_message_id {
                                         _ = pending_tracked_message_ids.insert(message_id);
                                     }
-                                    metrics.forwarded_messages.add(1);
+                                    metrics.forward.with(OutcomeAttributes { outcome: Outcome::Success }).messages.add(1);
                                     let blocked_for = pending.send_started_at.elapsed();
                                     if blocked_for.as_millis() >= 500 {
-                                        metrics.downstream_backpressure_events.add(1);
-                                        metrics
+                                        metrics.other.downstream_backpressure_events.add(1);
+                                        metrics.other
                                             .downstream_blocked_ms
                                             .add(blocked_for.as_millis() as u64);
                                         otel_warn!(
@@ -492,7 +439,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                     tokio::task::consume_budget().await;
                                 }
                                 Err(e) => {
-                                    metrics.forward_failures.add(1);
+                                    metrics.forward.with(OutcomeAttributes { outcome: Outcome::Failure }).messages.add(1);
                                     otel_warn!(
                                         "topic_receiver.forward_failed",
                                         node = receiver_id.name.as_ref(),
@@ -527,21 +474,19 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                             Ok(NodeControlMsg::CollectTelemetry {
                                 mut metrics_reporter,
                             }) => {
-                                _ = metrics_reporter.report(&mut metrics);
+                                _ = metrics.report(&mut metrics_reporter);
                             }
                             Ok(NodeControlMsg::Ack(ack)) => {
                                 if ack_propagation_mode != TopicAckPropagationMode::Auto {
-                                    metrics
-                                        .bridge_controls_ignored_propagation_disabled
-                                        .add(1);
+                                    metrics.record_bridge(BridgeControl::Ack, BridgeResult::IgnoredPropagationDisabled);
                                 } else if let Some(message_id) =
                                     Self::decode_topic_message_id(&ack.unwind.route.calldata)
                                 {
                                     let _ = pending_tracked_message_ids.remove(&message_id);
                                     match subscription.ack(message_id) {
-                                        Ok(()) => metrics.bridged_downstream_acks.add(1),
+                                        Ok(()) => metrics.record_bridge(BridgeControl::Ack, BridgeResult::Success),
                                         Err(Error::MessageNotTracked) => {
-                                            metrics.bridge_invalid_or_untracked_id.add(1);
+                                            metrics.record_bridge(BridgeControl::Ack, BridgeResult::InvalidOrUntrackedId);
                                             otel_warn!(
                                                 "topic_receiver.bridge_ack_untracked_or_invalid_id",
                                                 node = receiver_id.name.as_ref(),
@@ -551,7 +496,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                             );
                                         }
                                         Err(e) => {
-                                            metrics.bridge_runtime_failures.add(1);
+                                            metrics.record_bridge(BridgeControl::Ack, BridgeResult::RuntimeFailure);
                                             otel_warn!(
                                                 "topic_receiver.bridge_ack_failed",
                                                 node = receiver_id.name.as_ref(),
@@ -562,7 +507,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                         }
                                     }
                                 } else {
-                                    metrics.bridge_missing_calldata.add(1);
+                                    metrics.record_bridge(BridgeControl::Ack, BridgeResult::MissingCalldata);
                                     otel_warn!(
                                         "topic_receiver.bridge_ack_missing_calldata",
                                         node = receiver_id.name.as_ref(),
@@ -584,17 +529,15 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                             }
                             Ok(NodeControlMsg::Nack(nack)) => {
                                 if ack_propagation_mode != TopicAckPropagationMode::Auto {
-                                    metrics
-                                        .bridge_controls_ignored_propagation_disabled
-                                        .add(1);
+                                    metrics.record_bridge(BridgeControl::Nack, BridgeResult::IgnoredPropagationDisabled);
                                 } else if let Some(message_id) =
                                     Self::decode_topic_message_id(&nack.unwind.route.calldata)
                                 {
                                     let _ = pending_tracked_message_ids.remove(&message_id);
                                     match subscription.nack(message_id, nack.reason.as_str()) {
-                                        Ok(()) => metrics.bridged_downstream_nacks.add(1),
+                                        Ok(()) => metrics.record_bridge(BridgeControl::Nack, BridgeResult::Success),
                                         Err(Error::MessageNotTracked) => {
-                                            metrics.bridge_invalid_or_untracked_id.add(1);
+                                            metrics.record_bridge(BridgeControl::Nack, BridgeResult::InvalidOrUntrackedId);
                                             otel_warn!(
                                                 "topic_receiver.bridge_nack_untracked_or_invalid_id",
                                                 node = receiver_id.name.as_ref(),
@@ -604,7 +547,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                             );
                                         }
                                         Err(e) => {
-                                            metrics.bridge_runtime_failures.add(1);
+                                            metrics.record_bridge(BridgeControl::Nack, BridgeResult::RuntimeFailure);
                                             otel_warn!(
                                                 "topic_receiver.bridge_nack_failed",
                                                 node = receiver_id.name.as_ref(),
@@ -615,7 +558,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                         }
                                     }
                                 } else {
-                                    metrics.bridge_missing_calldata.add(1);
+                                    metrics.record_bridge(BridgeControl::Nack, BridgeResult::MissingCalldata);
                                     otel_warn!(
                                         "topic_receiver.bridge_nack_missing_calldata",
                                         node = receiver_id.name.as_ref(),
@@ -625,7 +568,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                 }
                             }
                             Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
-                                return Ok(TerminalState::new(deadline, [metrics.snapshot()]));
+                                return Ok(TerminalState::new(deadline, metrics.terminal_snapshots()));
                             }
                             Ok(_) => {}
                             Err(e) => return Err(Error::ChannelRecvError(e)),
@@ -667,7 +610,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                         if let Some(message_id) = tracked_message_id {
                                             _ = pending_tracked_message_ids.insert(message_id);
                                         }
-                                        metrics.forwarded_messages.add(1);
+                                        metrics.forward.with(OutcomeAttributes { outcome: Outcome::Success }).messages.add(1);
                                         tokio::task::consume_budget().await;
                                     }
                                     Err(otel_arrow_dfe_engine::error::TypedError::ChannelSendError(
@@ -684,7 +627,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                         });
                                     }
                                     Err(e) => {
-                                        metrics.forward_failures.add(1);
+                                        metrics.forward.with(OutcomeAttributes { outcome: Outcome::Failure }).messages.add(1);
                                         otel_warn!(
                                             "topic_receiver.forward_failed",
                                             node = receiver_id.name.as_ref(),
@@ -697,10 +640,10 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                 }
                             }
                             Ok(RecvDelivery::Lagged { missed }) => {
-                                metrics.lagged_notifications.add(1);
-                                metrics.lagged_messages.add(missed);
+                                metrics.lag_events.with(LagEventAttributes { event_type: LagEventType::Notification }).events.add(1);
+                                metrics.other.lagged_messages.add(missed);
                                 if broadcast_on_lag == Some(TopicBroadcastOnLagPolicy::Disconnect) {
-                                    metrics.lag_disconnects.add(1);
+                                    metrics.lag_events.with(LagEventAttributes { event_type: LagEventType::Disconnect }).events.add(1);
                                     otel_warn!(
                                         "topic_receiver.lag_disconnect",
                                         topic = config.topic.as_ref(),

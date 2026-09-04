@@ -561,15 +561,8 @@ impl PipelineContext {
         )
     }
 
-    /// Registers a metric set for the current node entity, scoped by an additional `topic` attribute.
-    ///
-    /// This is used by topic-aware nodes so their metric series can be filtered by `topic`.
-    #[must_use]
-    pub fn register_metrics_with_topic<T: MetricSetHandler + Default + Debug + Send + Sync>(
-        &self,
-        topic: Cow<'static, str>,
-    ) -> MetricSet<T> {
-        let entity_key = if self.node_telemetry_attrs.is_empty() {
+    fn register_topic_entity(&self, topic: Cow<'static, str>) -> EntityKey {
+        if self.node_telemetry_attrs.is_empty() {
             self.controller_context
                 .telemetry_registry_handle
                 .register_entity(NodeWithTopicAttributeSet {
@@ -583,12 +576,45 @@ impl PipelineContext {
                     node_custom_attrs: self.node_with_custom_attribute_set(),
                     topic,
                 })
-        };
+        }
+    }
+
+    /// Registers a metric set for the current node entity, scoped by an additional `topic` attribute.
+    ///
+    /// This is used by topic-aware nodes so their metric series can be filtered by `topic`.
+    #[must_use]
+    pub fn register_metrics_with_topic<T: MetricSetHandler + Default + Debug + Send + Sync>(
+        &self,
+        topic: Cow<'static, str>,
+    ) -> MetricSet<T> {
+        let entity_key = self.register_topic_entity(topic);
 
         let metrics = self
             .controller_context
             .telemetry_registry_handle
             .register_metric_set_for_entity::<T>(entity_key);
+
+        if let Some(telemetry) = current_node_telemetry_handle() {
+            telemetry.track_metric_set(metrics.metric_set_key());
+            telemetry.track_entity(entity_key);
+        }
+
+        metrics
+    }
+
+    /// Registers measurement metrics sets with a topic dimension for the given entity.
+    pub fn register_measurement_metrics_with_topic<
+        T: MeasurementMetricSetHandler + Debug + Send + Sync,
+    >(
+        &self,
+        topic: Cow<'static, str>,
+    ) -> MeasurementMetricSet<T> {
+        let entity_key = self.register_topic_entity(topic);
+
+        let metrics = self
+            .controller_context
+            .telemetry_registry_handle
+            .register_metric_set_with_measurement_attributes_for_entity::<T>(entity_key);
 
         if let Some(telemetry) = current_node_telemetry_handle() {
             telemetry.track_metric_set(metrics.metric_set_key());
@@ -1215,6 +1241,58 @@ mod tests {
             .expect("channel entity registered");
 
         assert_eq!(schema, "node.channel.attrs");
+        assert!(
+            !rendered.contains("custom="),
+            "nodes without custom attributes must not emit a custom attribute: {rendered}"
+        );
+    }
+
+    fn register_test_topic(ctx: &PipelineContext) -> EntityKey {
+        ctx.register_topic_entity(Cow::Borrowed("test-topic"))
+    }
+
+    /// Scenario: a node configured with `entity.extend.identity_attributes` registers a topic entity.
+    /// Guarantees: the topic entity carries the configured custom attributes along with the topic name.
+    #[test]
+    fn register_topic_entity_includes_custom_attributes() {
+        let registry = TelemetryRegistryHandle::new();
+        let mut custom = HashMap::new();
+        let _ = custom.insert(
+            "custom.identity.foo".to_string(),
+            TelemetryAttribute::new(AttributeValue::String("bar".to_string())),
+        );
+        let ctx = pipeline_ctx_with_custom_attrs(registry.clone(), custom);
+        let key = register_test_topic(&ctx);
+
+        let (schema, rendered) = registry
+            .visit_entity(key, |a| (a.schema_name(), a.attributes_to_string()))
+            .expect("topic entity registered");
+
+        assert_eq!(schema, "node.custom.topic.attrs");
+        assert!(
+            rendered.contains("custom={custom.identity.foo=bar}"),
+            "custom identity attributes missing from topic entity: {rendered}"
+        );
+        assert!(
+            rendered.contains("topic=test-topic") && rendered.contains("node.id=test-node"),
+            "base topic attributes must be preserved: {rendered}"
+        );
+    }
+
+    /// Scenario: a node with no `entity.extend.identity_attributes` registers a topic entity.
+    /// Guarantees: the entity stays on the plain topic schema and emits no empty
+    /// `custom={}` attribute.
+    #[test]
+    fn register_topic_entity_omits_empty_custom_attributes() {
+        let registry = TelemetryRegistryHandle::new();
+        let ctx = pipeline_ctx_with_custom_attrs(registry.clone(), HashMap::new());
+        let key = register_test_topic(&ctx);
+
+        let (schema, rendered) = registry
+            .visit_entity(key, |a| (a.schema_name(), a.attributes_to_string()))
+            .expect("topic entity registered");
+
+        assert_eq!(schema, "node.topic.attrs");
         assert!(
             !rendered.contains("custom="),
             "nodes without custom attributes must not emit a custom attribute: {rendered}"
