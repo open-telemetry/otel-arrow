@@ -11,6 +11,7 @@ Enhanced reporting includes:
 - OS/platform correlation from artifact names
 - New-vs-recurring detection by comparing with the previous issue body
 """
+import html
 import json
 import os
 import re
@@ -22,6 +23,9 @@ from pathlib import Path
 
 # Maximum number of job links to show per flaky test in the report table
 MAX_JOB_LINKS = 5
+
+# Maximum number of flaky tests to include in the issue body
+MAX_REPORT_TESTS = 50
 
 # OS labels we expect to find in artifact directory names
 # e.g. junit-xml-required-ubuntu-latest-1 -> "ubuntu-latest"
@@ -307,8 +311,13 @@ def get_previous_flaky_names(issue_number):
         body = result.stdout.strip()
         if not body:
             return None
-        # Extract test names from table rows: | `test_name` | ... |
-        return set(re.findall(r"\|\s*`([^`]+)`\s*\|", body))
+        # Accept both the current HTML form and the previous backtick form.
+        names = {
+            html.unescape(name)
+            for name in re.findall(r"\|\s*<code>(.*?)</code>\s*\|", body)
+        }
+        names.update(re.findall(r"\|\s*`([^`]+)`\s*\|", body))
+        return names
     except Exception as e:
         print(
             f"Warning: Could not fetch previous issue: {e}",
@@ -317,8 +326,17 @@ def get_previous_flaky_names(issue_number):
         return None
 
 
+def format_test_name(name):
+    """Format an artifact-supplied test name for safe inline HTML."""
+    name = name.replace("\r", " ").replace("\n", " ")
+    if len(name) > 120:
+        name = "..." + name[-117:]
+    return html.escape(name).replace("|", "&#124;")
+
+
 def format_issue_body(flaky_tests, lookback_runs, repo_url, previous_names):
     """Format the GitHub issue body as Markdown."""
+    reported_tests = flaky_tests[:MAX_REPORT_TESTS]
     lines = []
     lines.append("## Flaky Test Report")
     lines.append("")
@@ -361,6 +379,11 @@ def format_issue_body(flaky_tests, lookback_runs, repo_url, previous_names):
             f" :white_check_mark: **{len(resolved_names)} resolved**"
             " since last report."
         )
+    if len(flaky_tests) > len(reported_tests):
+        lines.append(
+            f" Showing the first **{len(reported_tests)}** tests;"
+            f" **{len(flaky_tests) - len(reported_tests)}** omitted."
+        )
     lines.append("")
 
     # Summary table
@@ -372,11 +395,9 @@ def format_issue_body(flaky_tests, lookback_runs, repo_url, previous_names):
         "|--------|------|----------|-----------|--------|----------|-------------|"
     )
 
-    for t in flaky_tests:
+    for t in reported_tests:
         name = t["name"]
-        display_name = name
-        if len(display_name) > 120:
-            display_name = "..." + display_name[-117:]
+        display_name = format_test_name(name)
 
         # New-vs-recurring badge
         status = ":new:" if name in new_names else ""
@@ -402,13 +423,13 @@ def format_issue_body(flaky_tests, lookback_runs, repo_url, previous_names):
             run_links = "n/a"
 
         lines.append(
-            f"| {status} | `{display_name}` | {platform}"
+            f"| {status} | <code>{display_name}</code> | {platform}"
             f" | {t['reason']} | {t['pass_count']}"
             f" | {t['fail_count']} | {run_links} |"
         )
 
     # Failure message details (collapsible section)
-    tests_with_msgs = [t for t in flaky_tests if t["fail_messages"]]
+    tests_with_msgs = [t for t in reported_tests if t["fail_messages"]]
     if tests_with_msgs:
         lines.append("")
         lines.append("<details>")
@@ -417,14 +438,10 @@ def format_issue_body(flaky_tests, lookback_runs, repo_url, previous_names):
         )
         lines.append("")
         for t in tests_with_msgs:
-            name = t["name"]
-            if len(name) > 120:
-                name = "..." + name[-117:]
-            lines.append(f"**`{name}`**")
+            name = format_test_name(t["name"])
+            lines.append(f"**<code>{name}</code>**")
             for msg in t["fail_messages"]:
-                lines.append("```")
-                lines.append(msg)
-                lines.append("```")
+                lines.append(f"<pre>{html.escape(msg)}</pre>")
             lines.append("")
         lines.append("</details>")
 
@@ -437,10 +454,7 @@ def format_issue_body(flaky_tests, lookback_runs, repo_url, previous_names):
         )
         lines.append("")
         for name in sorted(resolved_names):
-            display_name = name
-            if len(display_name) > 120:
-                display_name = "..." + display_name[-117:]
-            lines.append(f"- ~`{display_name}`~")
+            lines.append(f"- <s><code>{format_test_name(name)}</code></s>")
         lines.append("")
         lines.append("</details>")
 
