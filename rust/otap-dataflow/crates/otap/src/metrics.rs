@@ -87,7 +87,6 @@ impl ReceiverProcessingMetrics {
 #[derive(Debug)]
 pub struct ReceiverOperation {
     started_at: Option<Instant>,
-    payload_size: Option<u64>,
 }
 
 /// Shared receiver metrics with node-interest-gated processing duration.
@@ -113,16 +112,12 @@ impl ReceiverMetrics {
 
     /// Starts receiver-local processing for one classified external message.
     #[must_use]
-    pub fn start_operation(&self, payload_size: usize) -> ReceiverOperation {
+    pub fn start_operation(&self) -> ReceiverOperation {
         ReceiverOperation {
             started_at: self
                 .interests
                 .contains(Interests::COMPONENT_DURATION)
                 .then(Instant::now),
-            payload_size: self
-                .interests
-                .contains(Interests::PRODUCED_CONSUMED_SIZE)
-                .then(|| u64::try_from(payload_size).unwrap_or(u64::MAX)),
         }
     }
 
@@ -131,6 +126,7 @@ impl ReceiverMetrics {
         &mut self,
         signal: SignalType,
         result: &Result<T, E>,
+        payload_size: Option<usize>,
         operation: ReceiverOperation,
     ) {
         let outcome = if result.is_ok() {
@@ -145,8 +141,12 @@ impl ReceiverMetrics {
         }
         let attributes = SignalOutcomeAttributes { signal, outcome };
         self.received.with(attributes).record();
-        if let Some(payload_size) = operation.payload_size {
-            self.payload.with(attributes).record(payload_size);
+        if self.interests.contains(Interests::PRODUCED_CONSUMED_SIZE)
+            && let Some(payload_size) = payload_size
+        {
+            self.payload
+                .with(attributes)
+                .record(u64::try_from(payload_size).unwrap_or(u64::MAX));
         }
     }
 
@@ -766,8 +766,8 @@ mod tests {
         let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::empty());
         let mut metrics = ReceiverMetrics::register(&pipeline_ctx);
 
-        let operation = metrics.start_operation(128);
-        metrics.record_operation(SignalType::Logs, &Ok::<(), ()>(()), operation);
+        let operation = metrics.start_operation();
+        metrics.record_operation(SignalType::Logs, &Ok::<(), ()>(()), Some(128), operation);
 
         let snapshots = metrics.terminal_snapshots();
         assert_eq!(snapshots.len(), 1);
@@ -789,8 +789,8 @@ mod tests {
         let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(interests);
         let mut metrics = ReceiverMetrics::register(&pipeline_ctx);
 
-        let operation = metrics.start_operation(128);
-        metrics.record_operation(SignalType::Traces, &Err::<(), ()>(()), operation);
+        let operation = metrics.start_operation();
+        metrics.record_operation(SignalType::Traces, &Err::<(), ()>(()), Some(128), operation);
 
         let snapshots = metrics.terminal_snapshots();
         assert_eq!(snapshots.len(), 3);
@@ -811,6 +811,41 @@ mod tests {
                         .any(|metric| metric.name == metric_name)
             }));
         }
+    }
+
+    /// Scenario: Receiver payload-size measurement is enabled but the boundary size is unavailable.
+    /// Guarantees: The received message and processing duration are recorded without a synthetic zero-byte payload observation.
+    #[test]
+    fn receiver_helper_omits_unavailable_payload_size() {
+        let interests = Interests::COMPONENT_DURATION | Interests::PRODUCED_CONSUMED_SIZE;
+        let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(interests);
+        let mut metrics = ReceiverMetrics::register(&pipeline_ctx);
+
+        let operation = metrics.start_operation();
+        metrics.record_operation(SignalType::Logs, &Ok::<(), ()>(()), None, operation);
+
+        let snapshots = metrics.terminal_snapshots();
+        assert_eq!(snapshots.len(), 2);
+        assert!(
+            snapshots
+                .iter()
+                .any(|snapshot| { snapshot.descriptor().name == "receiver.processing" })
+        );
+        assert!(snapshots.iter().any(|snapshot| {
+            snapshot.descriptor().name == "receiver.received"
+                && snapshot
+                    .descriptor()
+                    .metrics
+                    .iter()
+                    .any(|metric| metric.name == "messages")
+        }));
+        assert!(snapshots.iter().all(|snapshot| {
+            snapshot
+                .descriptor()
+                .metrics
+                .iter()
+                .all(|metric| metric.name != "payload.size")
+        }));
     }
 
     /// Scenario: One logical export requires a failed attempt followed by a successful retry.

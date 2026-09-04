@@ -260,14 +260,15 @@ Every receiver implementation should follow this shape:
 ```rust
 let signal = request.signal_type();
 
-// Shared instrumentation: starts optional duration and payload-size capture.
-let operation = self.metrics.start_operation(request.encoded_len());
+// Shared instrumentation: starts optional duration capture.
+let operation = self.metrics.start_operation();
 
 // Component-specific: classify, decode, validate, or otherwise process the request.
 let result = self.decode(request);
 
 // Shared instrumentation: records the terminal local outcome before handoff.
-self.metrics.record_operation(signal, &result, operation);
+self.metrics
+    .record_operation(signal, &result, Some(request.encoded_len()), operation);
 
 // Component-specific: propagate the result and hand accepted data downstream.
 let decoded = result?;
@@ -279,6 +280,10 @@ downstream handoff. That call closes the processing duration and records the
 received outcome. A component-specific rejection metric may be more appropriate
 when a request is rejected before the receiver can classify its signal or admit
 it as a received message.
+
+The payload-size argument to `record_operation` is `Some(encoded_len)` when the
+receiver exposes the encoded application size by its terminal local outcome and
+`None` otherwise.
 
 ### Exporter implementation
 
