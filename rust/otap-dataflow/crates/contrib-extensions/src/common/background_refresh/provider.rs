@@ -1,76 +1,80 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! The generic bearer-token provider extension: `Arc<Inner>` state, the
-//! `BearerTokenProvider` capability implementation, and the background refresh
-//! loop driven by the active `Extension::start()` task.
+//! The generic background provider extension: `Arc<Inner>` state, and the
+//! background refresh loop driven by the active `Extension::start()` task.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use futures::StreamExt;
-use otel_arrow_dfe_engine::capability::auth::BearerToken;
-use otel_arrow_dfe_engine::capability::auth::bearer_token_provider::{
-    BearerTokenProvider as BearerTokenProviderCap, TOKEN_USABLE_MARGIN, TokenStream,
+use otel_arrow_dfe_engine::capability::{
+    CapabilityError, CapabilityErrorSource, ExtensionCapability,
 };
-use otel_arrow_dfe_engine::capability::{CapabilityError, CapabilityErrorSource};
 use otel_arrow_dfe_engine::control::ExtensionControlMsg;
 use otel_arrow_dfe_engine::error::Error as EngineError;
 use otel_arrow_dfe_engine::extension::EffectHandler;
-use otel_arrow_dfe_engine::shared::capability::auth::bearer_token_provider::BearerTokenProvider as SharedBearerTokenProvider;
 use otel_arrow_dfe_engine::shared::extension::{ControlChannel, Extension as SharedExtension};
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use rand::RngExt;
 use tokio::sync::watch;
-use tokio_stream::wrappers::WatchStream;
+use tokio::sync::watch::Receiver;
 
-use super::metrics::{TokenProviderMetrics, TokenProviderMetricsTracker};
+use super::metrics::{BackgroundProviderMetrics, BackgroundProviderMetricsTracker};
 
 /// Floor between successful refreshes; avoids busy-looping on near-expired
-/// tokens.
-const MIN_TOKEN_REFRESH_INTERVAL_SECS: u64 = 10;
+/// values.
+const MIN_REFRESH_INTERVAL_SECS: u64 = 10;
 /// Base reschedule delay after a failed acquisition. Consecutive failures grow
-/// this exponentially (with jitter) up to `MAX_TOKEN_REFRESH_RETRY_SECS`.
-const TOKEN_REFRESH_RETRY_SECS: u64 = 10;
+/// this exponentially (with jitter) up to `MAX_REFRESH_RETRY_SECS`.
+const REFRESH_RETRY_SECS: u64 = 10;
 /// Upper bound on the retry backoff after repeated failures.
-const MAX_TOKEN_REFRESH_RETRY_SECS: u64 = 300;
+const MAX_REFRESH_RETRY_SECS: u64 = 300;
 /// Maximum random jitter subtracted from a scheduled (successful) refresh
 /// instant. Spreads the otherwise-aligned refresh ticks of many per-core
-/// extensions so they do not hit the token endpoint on the same second. Only
+/// extensions so they do not hit the source on the same second. Only
 /// ever moves the refresh earlier, never past the expiry safety buffer.
 const REFRESH_JITTER_SECS: u64 = 60;
-/// Next-refresh delay used for non-expiring tokens (~1 year). The loop is still
-/// woken by control messages in the meantime.
-const NON_EXPIRING_REFRESH_SECS: u64 = 365 * 24 * 60 * 60;
 
-/// The provider-specific half of a bearer-token extension: how one token is
+/// The provider-specific half of a background extension: how one value is
 /// acquired, and how an acquisition failure is logged.
+///
+/// Note: `T` clones should be cheap (typically a refcount bump).
 #[async_trait]
-pub trait TokenSource: Send + Sync + 'static {
+pub trait BackgroundProviderSource<T>: Send + Sync + 'static {
     /// Error returned by a failed acquisition.
     type Error: std::error::Error + Send + Sync + 'static;
 
-    /// Acquires a single token (no retries). Retry and scheduling policy belong
+    /// The monotonic instant at which the value expires, if known.
+    fn expires_on(value: &T) -> Option<Instant>;
+
+    /// Acquires a single value (no retries). Retry and scheduling policy belong
     /// to the refresh loop, not to the source.
-    async fn fetch_token(&self) -> Result<BearerToken, Self::Error>;
+    async fn fetch(&self) -> Result<T, Self::Error>;
 
     /// Emits the source's "refresh failed" internal log event. Owned by the
     /// source because `otel_warn!` requires a literal event name.
     fn log_refresh_failure(&self, error: &Self::Error);
 }
 
-/// Shared, clonable bearer-token provider extension.
+/// Shared, clonable background provider extension.
 ///
 /// Every clone (consumers + the background refresh task) observes the same
-/// `Inner` state via `Arc`, so they share one token cache and refresh loop.
-pub struct TokenProviderExtension<S: TokenSource, M: TokenProviderMetrics> {
-    inner: Arc<Inner<S, M>>,
+/// `Inner` state via `Arc`, so they share one value cache and refresh loop.
+pub struct BackgroundProviderExtension<
+    S: BackgroundProviderSource<T>,
+    M: BackgroundProviderMetrics,
+    T,
+    C: ExtensionCapability,
+> {
+    inner: Arc<Inner<S, M, T, C>>,
 }
 
 // Manual `Clone`: deriving would add `S: Clone, M: Clone` bounds, but the state
 // is shared through the `Arc` and is never cloned itself.
-impl<S: TokenSource, M: TokenProviderMetrics> Clone for TokenProviderExtension<S, M> {
+impl<S: BackgroundProviderSource<T>, M: BackgroundProviderMetrics, T, C: ExtensionCapability> Clone
+    for BackgroundProviderExtension<S, M, T, C>
+{
     fn clone(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
@@ -79,12 +83,12 @@ impl<S: TokenSource, M: TokenProviderMetrics> Clone for TokenProviderExtension<S
 }
 
 /// Failure bookkeeping shared by the background refresh loop and the slow-path
-/// `get_token`.
+/// `get_value`.
 ///
 /// Keeping the streak counter here (rather than local to the refresh loop) is
 /// what lets the negative cache widen in step with the loop's retry backoff:
 /// otherwise a sustained outage would leave the loop retrying every 5 minutes
-/// while cache-miss callers kept probing the token endpoint every 10 seconds.
+/// while cache-miss callers kept probing the source every 10 seconds.
 #[derive(Default)]
 struct FailureState {
     /// Instant of the most recent failed acquisition.
@@ -93,40 +97,77 @@ struct FailureState {
     consecutive_failures: u32,
 }
 
-/// Shared state behind [`TokenProviderExtension`].
-struct Inner<S: TokenSource, M: TokenProviderMetrics> {
-    /// Provider-specific token source.
+/// Shared state behind [`BackgroundProviderExtension`].
+struct Inner<
+    S: BackgroundProviderSource<T>,
+    M: BackgroundProviderMetrics,
+    T,
+    C: ExtensionCapability,
+> {
+    /// Provider-specific value source.
     source: S,
-    /// Refresh this far ahead of a token's expiry.
-    expiry_buffer: Duration,
-    /// Token cache + pub/sub for `token_stream()`.
-    tx: watch::Sender<Option<BearerToken>>,
+    refresh_policy: BackgroundProviderRefreshPolicy,
+    /// Value cache + pub/sub for `value_stream()`.
+    tx: watch::Sender<Option<T>>,
     /// Pre-tagged capability error builder.
-    cap_err: CapabilityErrorSource<BearerTokenProviderCap>,
+    cap_err: CapabilityErrorSource<C>,
     /// Coalesces concurrent slow-path fetches onto one in-flight request.
     fetch_lock: tokio::sync::Mutex<()>,
     /// Negative cache + retry-backoff state. Used to throttle slow-path retries
-    /// so a failing token endpoint is not stampeded.
+    /// so a failing source is not stampeded.
     failures: Mutex<FailureState>,
     /// Metric tracker. Its critical sections are short and never span an
     /// `.await`, so a `std` `Mutex` is appropriate.
-    metrics: Mutex<TokenProviderMetricsTracker<M>>,
+    metrics: Mutex<BackgroundProviderMetricsTracker<M>>,
 }
 
-impl<S: TokenSource, M: TokenProviderMetrics> TokenProviderExtension<S, M> {
+/// Refresh policy for [`BackgroundProviderExtension`].
+pub struct BackgroundProviderRefreshPolicy {
+    // How close to expiration a value stops being usable.
+    usable_margin: Duration,
+    /// How often a non-expiring value should be refreshed.
+    non_expiring_refresh_interval: Duration,
+    /// Refresh this far ahead of a value's expiry.
+    expiry_buffer: Duration,
+}
+
+impl BackgroundProviderRefreshPolicy {
+    /// Builds a new instance.
+    #[must_use]
+    pub fn new(
+        usable_margin: Duration,
+        mut non_expiring_refresh_interval: Duration,
+        expiry_buffer: Duration,
+    ) -> BackgroundProviderRefreshPolicy {
+        // Note: We don't allow zero duration for non_expiring_refresh_interval
+        // because that would cause a busy loop in refresh.
+        non_expiring_refresh_interval =
+            non_expiring_refresh_interval.max(Duration::from_secs(MIN_REFRESH_INTERVAL_SECS));
+
+        Self {
+            usable_margin,
+            non_expiring_refresh_interval,
+            expiry_buffer,
+        }
+    }
+}
+
+impl<S: BackgroundProviderSource<T>, M: BackgroundProviderMetrics, T: Clone, C: ExtensionCapability>
+    BackgroundProviderExtension<S, M, T, C>
+{
     /// Builds a new extension instance.
     #[must_use]
     pub fn new(
         name: &str,
         source: S,
-        expiry_buffer: Duration,
-        tx: watch::Sender<Option<BearerToken>>,
-        metrics: TokenProviderMetricsTracker<M>,
+        refresh_policy: BackgroundProviderRefreshPolicy,
+        tx: watch::Sender<Option<T>>,
+        metrics: BackgroundProviderMetricsTracker<M>,
     ) -> Self {
         Self {
             inner: Arc::new(Inner {
                 source,
-                expiry_buffer,
+                refresh_policy,
                 tx,
                 cap_err: CapabilityErrorSource::new(name.to_owned().into()),
                 fetch_lock: tokio::sync::Mutex::new(()),
@@ -135,37 +176,69 @@ impl<S: TokenSource, M: TokenProviderMetrics> TokenProviderExtension<S, M> {
             }),
         }
     }
-}
 
-impl<S: TokenSource, M: TokenProviderMetrics> Inner<S, M> {
-    /// Returns the cached token if it is present and still comfortably before
+    /// Returns the current valid value for the provider's configured scope(s).
+    ///
+    /// The fast path reads a cached value; on a cache miss the provider
+    /// performs a credential call. A provider that shares its cache and refresh
+    /// state across cloned instances will coalesce concurrent misses into a
+    /// single call. Returns an [`CapabilityError`] if no value can be produced.
+    pub async fn get_value(&self) -> Result<T, CapabilityError> {
+        // Fast path: lock-free read of the watch cache.
+        if let Some(token) = self.current_fresh_value() {
+            return Ok(token);
+        }
+
+        // Slow path: coalesce concurrent cache-miss callers onto a single
+        // in-flight token call, with a double-check after acquiring the lock.
+        let _guard = self.inner.fetch_lock.lock().await;
+        if let Some(token) = self.current_fresh_value() {
+            return Ok(token);
+        }
+        // Negative cache: if the most recent acquisition failed within the
+        // cooldown window, surface the throttle instead of hitting the token
+        // endpoint again. The background loop keeps retrying on its own cadence.
+        if self.recently_failed() {
+            return Err(self
+                .inner
+                .cap_err
+                .error("value acquisition throttled after recent failure"));
+        }
+        self.refresh_once()
+            .await
+            .map_err(|err| self.inner.cap_err.error(err))
+    }
+
+    /// Returns the cached value if it is present and still comfortably before
     /// its expiry (outside the usability safety margin).
-    fn current_fresh_token(&self) -> Option<BearerToken> {
-        // The token lives inside the watch channel behind a temporary read
+    #[must_use]
+    fn current_fresh_value(&self) -> Option<T> {
+        // The value lives inside the watch channel behind a temporary read
         // guard; clone it out so we can return an owned value (and release the
-        // guard, which would otherwise block the writer). `BearerToken` clones
-        // are cheap: a refcount bump on the shared secret.
-        let token = self.tx.borrow().clone()?;
-        match token.expires_on() {
+        // guard, which would otherwise block the writer). Assumes `T` clones
+        // are a cheap refcount bump.
+        let value = self.inner.tx.borrow().clone()?;
+        match S::expires_on(&value) {
             Some(expires_on) => {
-                if Instant::now() + TOKEN_USABLE_MARGIN < expires_on {
-                    Some(token)
+                if Instant::now() + self.inner.refresh_policy.usable_margin < expires_on {
+                    Some(value)
                 } else {
                     None
                 }
             }
-            None => Some(token),
+            None => Some(value),
         }
     }
 
     /// Returns true if the most recent acquisition failed and the backoff for
     /// the current failure streak has not yet elapsed. Used as a negative cache
     /// to throttle slow-path retries.
+    #[must_use]
     fn recently_failed(&self) -> bool {
         // Open the shared box holding the failure state. If the lock is somehow
         // poisoned, treat it as "no recent failure" and allow a retry rather
         // than failing here.
-        let guard = match self.failures.lock() {
+        let guard = match self.inner.failures.lock() {
             Ok(guard) => guard,
             Err(_) => return false,
         };
@@ -183,44 +256,52 @@ impl<S: TokenSource, M: TokenProviderMetrics> Inner<S, M> {
     }
 
     /// Number of consecutive failed acquisitions recorded so far.
+    #[must_use]
     fn consecutive_failures(&self) -> u32 {
         // A poisoned lock degrades to "no failures", which only costs us a
         // shorter backoff; it must not take the refresh loop down.
-        self.failures
+        self.inner
+            .failures
             .lock()
             .map(|f| f.consecutive_failures)
             .unwrap_or(0)
     }
 
-    /// Acquires a token and publishes it to consumers.
-    async fn refresh_once(&self) -> Result<BearerToken, S::Error> {
+    /// Subscribe to value publishing.
+    #[must_use]
+    pub fn subscribe(&self) -> Receiver<Option<T>> {
+        self.inner.tx.subscribe()
+    }
+
+    /// Acquires a value and publishes it to consumers.
+    async fn refresh_once(&self) -> Result<T, S::Error> {
         let start = Instant::now();
-        match self.source.fetch_token().await {
-            Ok(token) => {
+        match self.inner.source.fetch().await {
+            Ok(value) => {
                 let latency_ms = start.elapsed().as_secs_f64() * 1_000.0;
-                // Publish the token to consumers and update the cache. Using
+                // Publish the value to consumers and update the cache. Using
                 // `send_replace` (rather than `send`) ensures the cache is
                 // updated even when no receivers are currently subscribed.
-                let _ = self.tx.send_replace(Some(token.clone()));
+                let _ = self.inner.tx.send_replace(Some(value.clone()));
                 // Record success + publish under a single metrics lock.
-                if let Ok(mut metrics) = self.metrics.lock() {
+                if let Ok(mut metrics) = self.inner.metrics.lock() {
                     metrics.record_success(latency_ms);
                     metrics.record_publish();
                 }
                 // Clear the negative cache: acquisitions are healthy again.
-                if let Ok(mut failures) = self.failures.lock() {
+                if let Ok(mut failures) = self.inner.failures.lock() {
                     *failures = FailureState::default();
                 }
-                Ok(token)
+                Ok(value)
             }
             Err(err) => {
-                if let Ok(mut metrics) = self.metrics.lock() {
+                if let Ok(mut metrics) = self.inner.metrics.lock() {
                     metrics.record_failure();
                 }
                 // Record the failure so the refresh loop and the slow path back
                 // off together: the instant starts the cooldown, the streak
                 // count widens it on each further failure.
-                if let Ok(mut failures) = self.failures.lock() {
+                if let Ok(mut failures) = self.inner.failures.lock() {
                     failures.last_failure = Some(Instant::now());
                     failures.consecutive_failures = failures.consecutive_failures.saturating_add(1);
                 }
@@ -230,39 +311,43 @@ impl<S: TokenSource, M: TokenProviderMetrics> Inner<S, M> {
     }
 }
 
-/// Computes the next refresh instant from a freshly acquired token.
+/// Computes the next refresh instant from a freshly acquired value.
 ///
 /// Refreshes `expiry_buffer` before expiry, but never sooner than
-/// `MIN_TOKEN_REFRESH_INTERVAL_SECS` from now; a non-expiring token pushes the
+/// `MIN_REFRESH_INTERVAL_SECS` from now; a non-expiring value pushes the
 /// next refresh far into the future (the loop is still woken by control
 /// messages in the meantime).
-pub(crate) fn schedule_next(token: &BearerToken, expiry_buffer: Duration) -> tokio::time::Instant {
+pub(crate) fn schedule_next(
+    value_expires_on: Option<Instant>,
+    expiry_buffer: Duration,
+    non_expiring_refresh_interval: Duration,
+) -> tokio::time::Instant {
     let now = tokio::time::Instant::now();
-    let min_next = now + Duration::from_secs(MIN_TOKEN_REFRESH_INTERVAL_SECS);
-    match token.expires_on() {
+    let min_next = now + Duration::from_secs(MIN_REFRESH_INTERVAL_SECS);
+    match value_expires_on {
         Some(expires_on) => {
             let target = tokio::time::Instant::from_std(expires_on)
                 .checked_sub(expiry_buffer)
                 .unwrap_or(now);
             target.max(min_next)
         }
-        None => now + Duration::from_secs(NON_EXPIRING_REFRESH_SECS),
+        None => now + non_expiring_refresh_interval,
     }
 }
 
 /// Base (un-jittered) backoff before retrying after a failed acquisition.
 ///
 /// Grows exponentially with the number of consecutive prior failures, from
-/// `TOKEN_REFRESH_RETRY_SECS` up to `MAX_TOKEN_REFRESH_RETRY_SECS`, so a
-/// sustained token-endpoint outage settles into infrequent retries instead of a
+/// `REFRESH_RETRY_SECS` up to `MAX_REFRESH_RETRY_SECS`, so a
+/// sustained source outage settles into infrequent retries instead of a
 /// tight loop.
 pub(crate) fn retry_backoff_secs(consecutive_failures: u32) -> u64 {
     // Cap the shift so `1 << shift` cannot overflow; the value is clamped to the
     // max below long before the shift approaches that bound.
     let shift = consecutive_failures.min(16);
-    TOKEN_REFRESH_RETRY_SECS
+    REFRESH_RETRY_SECS
         .saturating_mul(1u64 << shift)
-        .min(MAX_TOKEN_REFRESH_RETRY_SECS)
+        .min(MAX_REFRESH_RETRY_SECS)
 }
 
 /// Cooldown window during which the slow path refuses to retry, given the
@@ -270,7 +355,7 @@ pub(crate) fn retry_backoff_secs(consecutive_failures: u32) -> u64 {
 ///
 /// This is the same (un-jittered) delay the refresh loop is waiting out for the
 /// same streak, so a sustained outage throttles both paths identically instead
-/// of leaving cache-miss callers probing a token endpoint the loop has already
+/// of leaving cache-miss callers probing a source the loop has already
 /// backed off from. `consecutive_failures` counts the failure that *started*
 /// the current cooldown, so it is stepped back by one to line the first failure
 /// up with the base delay.
@@ -298,18 +383,18 @@ fn jittered_backoff(base_secs: u64) -> Duration {
 /// refresh instant so many per-core extensions do not refresh on the same tick.
 ///
 /// Jitter only ever moves the refresh earlier (never later, which would risk
-/// serving a token past its safety buffer) and never earlier than the
-/// `MIN_TOKEN_REFRESH_INTERVAL_SECS` floor that `schedule_next` enforces -
+/// serving a value past its safety buffer) and never earlier than the
+/// `MIN_REFRESH_INTERVAL_SECS` floor that `schedule_next` enforces -
 /// otherwise a near-floor target could be pulled all the way to `now` and
-/// busy-loop the refresh task while the token is still fresh.
+/// busy-loop the refresh task while the value is still fresh.
 pub(crate) fn jitter_refresh(target: tokio::time::Instant) -> tokio::time::Instant {
     let now = tokio::time::Instant::now();
     // Only jitter the slack *above* the minimum refresh interval, so the
-    // earliest possible result is `now + MIN_TOKEN_REFRESH_INTERVAL_SECS`.
+    // earliest possible result is `now + MIN_REFRESH_INTERVAL_SECS`.
     let slack = target
         .saturating_duration_since(now)
         .as_secs()
-        .saturating_sub(MIN_TOKEN_REFRESH_INTERVAL_SECS);
+        .saturating_sub(MIN_REFRESH_INTERVAL_SECS);
     let max_jitter = REFRESH_JITTER_SECS.min(slack);
     if max_jitter == 0 {
         return target;
@@ -319,49 +404,13 @@ pub(crate) fn jitter_refresh(target: tokio::time::Instant) -> tokio::time::Insta
 }
 
 #[async_trait]
-impl<S: TokenSource, M: TokenProviderMetrics> SharedBearerTokenProvider
-    for TokenProviderExtension<S, M>
+impl<
+    S: BackgroundProviderSource<T>,
+    M: BackgroundProviderMetrics,
+    T: Clone + Send + Sync,
+    C: ExtensionCapability,
+> SharedExtension for BackgroundProviderExtension<S, M, T, C>
 {
-    async fn get_token(&self) -> Result<BearerToken, CapabilityError> {
-        // Fast path: lock-free read of the watch cache.
-        if let Some(token) = self.inner.current_fresh_token() {
-            return Ok(token);
-        }
-
-        // Slow path: coalesce concurrent cache-miss callers onto a single
-        // in-flight token call, with a double-check after acquiring the lock.
-        let _guard = self.inner.fetch_lock.lock().await;
-        if let Some(token) = self.inner.current_fresh_token() {
-            return Ok(token);
-        }
-        // Negative cache: if the most recent acquisition failed within the
-        // cooldown window, surface the throttle instead of hitting the token
-        // endpoint again. The background loop keeps retrying on its own cadence.
-        if self.inner.recently_failed() {
-            return Err(self
-                .inner
-                .cap_err
-                .error("token acquisition throttled after recent failure"));
-        }
-        self.inner
-            .refresh_once()
-            .await
-            .map_err(|err| self.inner.cap_err.error(err))
-    }
-
-    fn token_stream(&self) -> TokenStream {
-        let rx = self.inner.tx.subscribe();
-        // Yield the current cached value immediately, then each refresh. The
-        // initial `None` (and any future `None`) is filtered out. The stream
-        // item is a plain `BearerToken`: a refresh failure does not terminate
-        // the subscription, it simply does not emit until the next success.
-        let stream = WatchStream::new(rx).filter_map(|opt| async move { opt });
-        Box::pin(stream)
-    }
-}
-
-#[async_trait]
-impl<S: TokenSource, M: TokenProviderMetrics> SharedExtension for TokenProviderExtension<S, M> {
     async fn start(
         self: Box<Self>,
         mut ctrl: ControlChannel,
@@ -371,7 +420,7 @@ impl<S: TokenSource, M: TokenProviderMetrics> SharedExtension for TokenProviderE
         // Refresh immediately on startup.
         let mut next_refresh = tokio::time::Instant::now();
         // The engine holds data-path node startup until we signal readiness
-        // (see `with_readiness_probe`). Fire once, after the first token is
+        // (see `with_readiness_probe`). Fire once, after the first value is
         // published, so consumers never observe an empty cache.
         let mut ready_signaled = false;
 
@@ -390,7 +439,7 @@ impl<S: TokenSource, M: TokenProviderMetrics> SharedExtension for TokenProviderE
                         }
                         // Control channel closed: exit without a snapshot.
                         Err(_) => break,
-                        // Refresh cadence is governed by token lifetime; live
+                        // Refresh cadence is governed by value lifetime; live
                         // reconfiguration is a no-op in v1.
                         Ok(ExtensionControlMsg::Config { .. }) => {}
                         Ok(ExtensionControlMsg::CollectTelemetry { mut metrics_reporter }) => {
@@ -402,34 +451,34 @@ impl<S: TokenSource, M: TokenProviderMetrics> SharedExtension for TokenProviderE
                 }
                 _ = tokio::time::sleep_until(next_refresh) => {
                     // The acquisition itself: take the same `fetch_lock` the
-                    // slow-path `get_token` uses so a scheduled refresh and a
+                    // slow-path `get_value` uses so a scheduled refresh and a
                     // concurrent cache-miss fetch coalesce onto one in-flight
-                    // token call instead of both hitting the token endpoint.
+                    // value call instead of both hitting the source.
                     let refresh = async {
                         // Note the current cache version before contending for
                         // the lock so we can tell whether another caller
-                        // publishes a new token while we wait.
+                        // publishes a new value while we wait.
                         let mut rx = inner.tx.subscribe();
                         let _ = rx.borrow_and_update();
                         let _guard = inner.fetch_lock.lock().await;
-                        // Only coalesce when a concurrent slow-path `get_token`
-                        // actually published a fresh token while we waited for
+                        // Only coalesce when a concurrent slow-path `get_value`
+                        // actually published a fresh value while we waited for
                         // the lock. We must NOT skip merely because the cached
-                        // token is still "usable": the loop refreshes ahead of
-                        // expiry, but a token stays usable until ~30 s before
+                        // value is still "usable": the loop refreshes ahead of
+                        // expiry, but a value stays usable until ~30 s before
                         // expiry, so reusing it here would defer the planned
                         // early refresh far too long.
                         if rx.has_changed().unwrap_or(false) {
-                            if let Some(token) = inner.current_fresh_token() {
-                                return Ok(token);
+                            if let Some(value) = self.current_fresh_value() {
+                                return Ok(value);
                             }
                         }
-                        inner.refresh_once().await
+                        self.refresh_once().await
                     };
                     tokio::pin!(refresh);
 
                     // Keep the refresh cancellable: race it against the control
-                    // channel so a slow token call cannot delay shutdown past its
+                    // channel so a slow value call cannot delay shutdown past its
                     // deadline. Config/telemetry messages are still serviced while
                     // the refresh is in flight; only shutdown or channel closure
                     // ends the loop (dropping the in-flight refresh future).
@@ -463,9 +512,12 @@ impl<S: TokenSource, M: TokenProviderMetrics> SharedExtension for TokenProviderE
                     };
 
                     match outcome {
-                        Ok(token) => {
+                        Ok(value) => {
                             next_refresh =
-                                jitter_refresh(schedule_next(&token, inner.expiry_buffer));
+                                jitter_refresh(schedule_next(
+                                    S::expires_on(&value),
+                                    inner.refresh_policy.expiry_buffer,
+                                    inner.refresh_policy.non_expiring_refresh_interval));
                             if !ready_signaled {
                                 effect_handler.signal_ready();
                                 ready_signaled = true;
@@ -474,13 +526,13 @@ impl<S: TokenSource, M: TokenProviderMetrics> SharedExtension for TokenProviderE
                         Err(error) => {
                             inner.source.log_refresh_failure(&error);
                             // Bounded exponential backoff with jitter so many
-                            // per-core extensions do not stampede the token
-                            // endpoint on the same cadence during an outage.
+                            // per-core extensions do not stampede the source
+                            // on the same cadence during an outage.
                             // The streak counter lives in `Inner` (already
                             // incremented by `refresh_once`) so the slow-path
                             // negative cache widens on the same schedule.
                             let backoff = jittered_backoff(negative_cache_window_secs(
-                                inner.consecutive_failures(),
+                                self.consecutive_failures(),
                             ));
                             next_refresh = tokio::time::Instant::now() + backoff;
                         }

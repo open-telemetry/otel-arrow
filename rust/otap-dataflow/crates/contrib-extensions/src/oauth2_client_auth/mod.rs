@@ -27,7 +27,9 @@ use linkme::distributed_slice;
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_config::extension::ExtensionUserConfig;
 use otel_arrow_dfe_engine::ExtensionFactory;
-use otel_arrow_dfe_engine::capability::auth::bearer_token_provider::BearerTokenProvider;
+use otel_arrow_dfe_engine::capability::auth::bearer_token_provider::{
+    BearerTokenProvider, TOKEN_USABLE_MARGIN,
+};
 use otel_arrow_dfe_engine::config::ExtensionConfig;
 use otel_arrow_dfe_engine::context::ExtensionContext;
 use otel_arrow_dfe_engine::extension::wrapper::ExtensionVariant;
@@ -39,7 +41,10 @@ use tokio::sync::watch;
 use self::auth::Auth;
 use self::config::Config;
 use self::metrics::OAuth2ClientAuthMetrics;
-use crate::common::token_refresh::{TokenProviderExtension, TokenProviderMetricsTracker};
+use crate::common::background_refresh::{
+    BackgroundProviderMetricsTracker, BackgroundProviderRefreshPolicy,
+};
+use crate::common::token_refresh::{NON_EXPIRING_TOKEN_REFRESH_INTERVAL, TokenProviderExtension};
 
 /// The OAuth 2.0 Client Auth extension: the shared bearer-token refresher
 /// driven by an OAuth 2.0 token endpoint.
@@ -82,12 +87,22 @@ fn create(
     // Register a dedicated entity + metric set for this extension instance.
     let entity_key = ext_ctx.register_extension_entity(name.clone(), ExtensionVariant::Shared);
     let metric_set = ext_ctx.register_metric_set_for_entity::<OAuth2ClientAuthMetrics>(entity_key);
-    let tracker = TokenProviderMetricsTracker::new(metric_set);
+    let tracker = BackgroundProviderMetricsTracker::new(metric_set);
 
     // Empty token cache; the background refresh loop publishes the first token.
     let (tx, _rx) = watch::channel(None);
 
-    let extension = OAuth2ClientAuthExtension::new(&name, auth, config.expiry_buffer, tx, tracker);
+    let extension = OAuth2ClientAuthExtension::new(
+        &name,
+        auth,
+        BackgroundProviderRefreshPolicy::new(
+            TOKEN_USABLE_MARGIN,
+            NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
+            config.expiry_buffer,
+        ),
+        tx,
+        tracker,
+    );
 
     ExtensionWrapper::builder(name, ext_config, extension_config)
         .active()
