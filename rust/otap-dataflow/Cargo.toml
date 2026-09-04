@@ -167,6 +167,7 @@ opentelemetry-proto = { version = "0.32", default-features = false, features = [
 # slimming in opentelemetry-rust #3593 (unreleased).
 opentelemetry = { version = "0.32.0", default-features = false }
 opentelemetry_sdk = { version = "0.32.1", default-features = false }
+oracle = "0.6.3"
 
 parking_lot = "0.12.5"
 paste = "1"
@@ -362,7 +363,9 @@ k8s-service-account-token-auth-extension = ["otel-arrow-dfe-contrib-extensions/k
 oauth2-client-auth-extension = ["otel-arrow-dfe-contrib-extensions/oauth2-client-auth-extension"]
 # Contrib receivers (opt-in) - now in contrib-nodes
 contrib-receivers = ["otel-arrow-dfe-contrib-nodes/contrib-receivers"]
+database-receiver = ["otel-arrow-dfe-contrib-nodes/database-receiver"]
 kafka-receiver = ["otel-arrow-dfe-contrib-nodes/kafka-receiver"]
+oracle-receiver = ["otel-arrow-dfe-contrib-nodes/oracle-receiver"]
 user_events-receiver = ["otel-arrow-dfe-contrib-nodes/user_events-receiver"]
 user_events-eventheader = ["otel-arrow-dfe-contrib-nodes/user_events-eventheader"]
 clickhouse-exporter = ["otel-arrow-dfe-contrib-nodes/clickhouse-exporter"]
