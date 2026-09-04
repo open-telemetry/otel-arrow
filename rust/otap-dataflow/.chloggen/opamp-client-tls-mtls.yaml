@@ -1,0 +1,8 @@
+change_type: enhancement
+component: engine
+note: Add TLS and mTLS support to the OpAMP controller extension WebSocket client.
+issues: [3884]
+subtext: |
+  The OpAMP extension now accepts a `tls` configuration block with support for
+  CA trust (inline PEM or file), client certificate authentication (mTLS), and
+  system CA trust pool. Endpoints must use the `wss://` scheme when TLS is enabled.
