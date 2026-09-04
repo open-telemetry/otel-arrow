@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """Parse JUnit XML files and detect flaky tests.
 
-Flaky tests are identified by:
-1. Tests with <flakyFailure> elements (nextest marks retried-then-passed tests)
-2. Tests that fail in some runs and pass in others across multiple CI runs
+A test is reported when nextest recorded a <flakyFailure> for it: the
+test failed an attempt and passed a retry within the same run, on the
+same commit and runner.  That is direct evidence of flakiness, so no
+cross-run inference is needed.
 
 Enhanced reporting includes:
 - Failure messages from JUnit XML
 - OS/platform correlation from artifact names
 - New-vs-recurring detection by comparing with the previous issue body
 """
+import html
 import json
 import os
 import re
@@ -21,6 +23,9 @@ from pathlib import Path
 
 # Maximum number of job links to show per flaky test in the report table
 MAX_JOB_LINKS = 5
+
+# Maximum number of flaky tests to include in the issue body
+MAX_REPORT_TESTS = 50
 
 # OS labels we expect to find in artifact directory names
 # e.g. junit-xml-required-ubuntu-latest-1 -> "ubuntu-latest"
@@ -54,8 +59,8 @@ def parse_junit_files(artifacts_dir):
         # Per-OS tracking: os_name -> set of run_ids
         "pass_by_os": defaultdict(set),
         "fail_by_os": defaultdict(set),
-        # Track (run_id, artifact_name) for flaky/failed tests so we can
-        # link to the specific CI job later.
+        # Track (run_id, artifact_name) for flaky tests so we can link to
+        # the specific CI job later.
         "fail_artifacts": [],  # list of (run_id, artifact_name)
     })
     # (run_id, artifact_name) -> metadata dict from metadata.json
@@ -144,33 +149,24 @@ def parse_junit_files(artifacts_dir):
                     )
                     continue
 
-                # Check for failure/error
-                failure = testcase.find("failure")
-                error = testcase.find("error")
-                if failure is not None or error is not None:
-                    result["fail_by_os"][os_name].add(run_id)
-                    result["fail_artifacts"].append(
-                        (run_id, artifact_name)
-                    )
-                    # Capture failure message
-                    elem = failure if failure is not None else error
-                    msg = elem.get("message", "") or (elem.text or "").strip()
-                    if msg:
-                        result["fail_messages"].append(msg)
-                else:
+                # Only record tests that actually passed. A test that failed
+                # every attempt blocks its own pull request, while a skipped
+                # test was not executed; neither belongs in the pass count.
+                if (
+                    testcase.find("failure") is None
+                    and testcase.find("error") is None
+                    and testcase.find("skipped") is None
+                ):
                     result["pass_by_os"][os_name].add(run_id)
 
     return test_results, artifact_metadata
 
 
 def identify_flaky_tests(test_results):
-    """Identify tests that are flaky based on collected results."""
+    """Identify tests that nextest retried and saw pass."""
     flaky_tests = []
 
     for test_name, results in test_results.items():
-        is_flaky = False
-        reason = ""
-
         pass_by_os = results["pass_by_os"]
         fail_by_os = results["fail_by_os"]
 
@@ -179,28 +175,8 @@ def identify_flaky_tests(test_results):
         all_fail_runs = set().union(*fail_by_os.values()) if fail_by_os else set()
 
         if results["flaky_direct"] > 0:
-            is_flaky = True
             reason = f"Marked flaky by nextest ({results['flaky_direct']}x)"
-        else:
-            # A test is flaky if at least one OS sees both passes and
-            # failures across different runs.  This avoids false positives
-            # when a test fails consistently on one platform but passes
-            # consistently on another.
-            flaky_os = [
-                os_name for os_name in fail_by_os
-                if pass_by_os.get(os_name)
-            ]
-            if flaky_os:
-                is_flaky = True
-                total = len(all_pass_runs | all_fail_runs)
-                fail_rate = len(all_fail_runs) / total * 100 if total else 0
-                reason = (
-                    f"Intermittent failure"
-                    f" ({fail_rate:.0f}% fail rate,"
-                    f" {len(all_fail_runs)}/{total} runs)"
-                )
 
-        if is_flaky:
             # Deduplicate and truncate failure messages
             unique_msgs = list(dict.fromkeys(results["fail_messages"]))
             truncated_msgs = []
@@ -335,8 +311,13 @@ def get_previous_flaky_names(issue_number):
         body = result.stdout.strip()
         if not body:
             return None
-        # Extract test names from table rows: | `test_name` | ... |
-        return set(re.findall(r"\|\s*`([^`]+)`\s*\|", body))
+        # Accept both the current HTML form and the previous backtick form.
+        names = {
+            html.unescape(name)
+            for name in re.findall(r"\|\s*<code>(.*?)</code>\s*\|", body)
+        }
+        names.update(re.findall(r"\|\s*`([^`]+)`\s*\|", body))
+        return names
     except Exception as e:
         print(
             f"Warning: Could not fetch previous issue: {e}",
@@ -345,14 +326,25 @@ def get_previous_flaky_names(issue_number):
         return None
 
 
+def format_test_name(name):
+    """Format an artifact-supplied test name for safe inline HTML."""
+    name = name.replace("\r", " ").replace("\n", " ")
+    if len(name) > 120:
+        name = "..." + name[-117:]
+    return html.escape(name).replace("|", "&#124;")
+
+
 def format_issue_body(flaky_tests, lookback_runs, repo_url, previous_names):
     """Format the GitHub issue body as Markdown."""
+    reported_tests = flaky_tests[:MAX_REPORT_TESTS]
     lines = []
     lines.append("## Flaky Test Report")
     lines.append("")
     lines.append(
-        f"Automatically generated by scanning JUnit XML results"
-        f" from the last **{lookback_runs}** Rust-CI runs on `main`."
+        f"Automatically generated from tests that nextest retried and saw"
+        f" pass, across recent non-draft pull request and merge queue"
+        f" Rust-CI runs"
+        f" (up to **{lookback_runs}** runs)."
     )
     lines.append("")
 
@@ -387,6 +379,11 @@ def format_issue_body(flaky_tests, lookback_runs, repo_url, previous_names):
             f" :white_check_mark: **{len(resolved_names)} resolved**"
             " since last report."
         )
+    if len(flaky_tests) > len(reported_tests):
+        lines.append(
+            f" Showing the first **{len(reported_tests)}** tests;"
+            f" **{len(flaky_tests) - len(reported_tests)}** omitted."
+        )
     lines.append("")
 
     # Summary table
@@ -398,11 +395,9 @@ def format_issue_body(flaky_tests, lookback_runs, repo_url, previous_names):
         "|--------|------|----------|-----------|--------|----------|-------------|"
     )
 
-    for t in flaky_tests:
+    for t in reported_tests:
         name = t["name"]
-        display_name = name
-        if len(display_name) > 120:
-            display_name = "..." + display_name[-117:]
+        display_name = format_test_name(name)
 
         # New-vs-recurring badge
         status = ":new:" if name in new_names else ""
@@ -428,13 +423,13 @@ def format_issue_body(flaky_tests, lookback_runs, repo_url, previous_names):
             run_links = "n/a"
 
         lines.append(
-            f"| {status} | `{display_name}` | {platform}"
+            f"| {status} | <code>{display_name}</code> | {platform}"
             f" | {t['reason']} | {t['pass_count']}"
             f" | {t['fail_count']} | {run_links} |"
         )
 
     # Failure message details (collapsible section)
-    tests_with_msgs = [t for t in flaky_tests if t["fail_messages"]]
+    tests_with_msgs = [t for t in reported_tests if t["fail_messages"]]
     if tests_with_msgs:
         lines.append("")
         lines.append("<details>")
@@ -443,14 +438,10 @@ def format_issue_body(flaky_tests, lookback_runs, repo_url, previous_names):
         )
         lines.append("")
         for t in tests_with_msgs:
-            name = t["name"]
-            if len(name) > 120:
-                name = "..." + name[-117:]
-            lines.append(f"**`{name}`**")
+            name = format_test_name(t["name"])
+            lines.append(f"**<code>{name}</code>**")
             for msg in t["fail_messages"]:
-                lines.append("```")
-                lines.append(msg)
-                lines.append("```")
+                lines.append(f"<pre>{html.escape(msg)}</pre>")
             lines.append("")
         lines.append("</details>")
 
@@ -463,10 +454,7 @@ def format_issue_body(flaky_tests, lookback_runs, repo_url, previous_names):
         )
         lines.append("")
         for name in sorted(resolved_names):
-            display_name = name
-            if len(display_name) > 120:
-                display_name = "..." + display_name[-117:]
-            lines.append(f"- ~`{display_name}`~")
+            lines.append(f"- <s><code>{format_test_name(name)}</code></s>")
         lines.append("")
         lines.append("</details>")
 
@@ -501,7 +489,7 @@ def format_issue_body(flaky_tests, lookback_runs, repo_url, previous_names):
 
 
 if __name__ == "__main__":
-    lookback = int(os.environ.get("LOOKBACK_RUNS", "20"))
+    lookback = int(os.environ.get("LOOKBACK_RUNS", "50"))
     repo_url = os.environ.get("GITHUB_REPO_URL", "")
     # e.g. "open-telemetry/otel-arrow"
     repo_slug = os.environ.get("GITHUB_REPOSITORY", "")
