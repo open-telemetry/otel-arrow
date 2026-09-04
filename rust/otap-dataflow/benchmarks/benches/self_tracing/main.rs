@@ -32,7 +32,7 @@
 //! `EnvFilter` report `Interest::sometimes()`, which evaluates `enabled()` per
 //! event and removes the cached-interest floor for every callsite.
 
-use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use otel_arrow_dfe_config::observed_state::SendPolicy;
 use otel_arrow_dfe_config::settings::telemetry::logs::LogLevel;
 use otel_arrow_dfe_pdata::otlp::ProtoBuffer;
@@ -234,10 +234,11 @@ where
                     let log_event = LogEvent { time: now, record };
                     encode_export_logs_request(
                         &mut buf,
-                        &log_event,
+                        &mut [log_event],
                         &ctx.resource_bytes,
                         &mut scope_cache,
-                    );
+                    )
+                    .expect("encoding is under max size");
                     let _ = std::hint::black_box(buf.len());
                 }
             }
@@ -368,6 +369,87 @@ fn bench_encode_proto(c: &mut Criterion) {
 
 fn bench_encode_proto_with_scope(c: &mut Criterion) {
     bench_op(c, "encode_proto_with_scope", BenchOp::EncodeProtoWithScope);
+}
+
+fn bench_encode_otlp_log_batches(c: &mut Criterion) {
+    let mut group = c.benchmark_group("encode_otlp_log_batches");
+    let resource_bytes = bytes::Bytes::new();
+
+    for batch_size in [1usize, 8, 64, 512] {
+        let mut scope_counts = vec![1, batch_size.min(8), batch_size];
+        scope_counts.dedup();
+
+        for scope_count in scope_counts {
+            let registry = TelemetryRegistryHandle::new();
+            let contexts = (0..scope_count)
+                .map(|index| {
+                    let key = registry
+                        .register_entity(BenchScopeAttributes::new("bench-pipeline", index as i64));
+                    LogContext::from_buf([key])
+                })
+                .collect::<Vec<_>>();
+            let events = (0..batch_size)
+                .map(|index| LogEvent {
+                    time: UNIX_EPOCH,
+                    record: otel_arrow_dfe_telemetry::__log_record_impl!(
+                        tracing::Level::INFO,
+                        "benchmark.batch",
+                        record_index = index as u64,
+                        message = "internal telemetry batching benchmark"
+                    )
+                    .into_record(contexts[index % scope_count].clone()),
+                })
+                .collect::<Vec<_>>();
+            let case = format!("{batch_size}_records_{scope_count}_scopes");
+
+            _ = group.throughput(Throughput::Elements(batch_size as u64));
+            let mut per_record_scope_cache = ScopeToBytesMap::new(registry.clone());
+            _ = group.bench_function(BenchmarkId::new("per_record", &case), |b| {
+                b.iter_batched(
+                    || events.clone(),
+                    |events| {
+                        let encoded_bytes = events
+                            .into_iter()
+                            .map(|event| {
+                                let mut buf = ProtoBuffer::default();
+                                encode_export_logs_request(
+                                    &mut buf,
+                                    &mut [event],
+                                    &resource_bytes,
+                                    &mut per_record_scope_cache,
+                                )
+                                .expect("encoding is under max size");
+                                std::hint::black_box(buf.into_bytes()).len()
+                            })
+                            .sum::<usize>();
+                        std::hint::black_box(encoded_bytes)
+                    },
+                    BatchSize::SmallInput,
+                );
+            });
+
+            let mut batch_scope_cache = ScopeToBytesMap::new(registry);
+            _ = group.bench_function(BenchmarkId::new("grouped_batch", &case), |b| {
+                b.iter_batched(
+                    || events.clone(),
+                    |mut events| {
+                        let mut buf = ProtoBuffer::default();
+                        encode_export_logs_request(
+                            &mut buf,
+                            &mut events,
+                            &resource_bytes,
+                            &mut batch_scope_cache,
+                        )
+                        .expect("encoding is under max size");
+                        std::hint::black_box(buf.into_bytes())
+                    },
+                    BatchSize::SmallInput,
+                );
+            });
+        }
+    }
+
+    group.finish();
 }
 
 fn bench_format_with_entity(c: &mut Criterion) {
@@ -528,8 +610,8 @@ mod bench_entry {
         name = benches;
         config = Criterion::default();
         targets = bench_new_record, bench_format, bench_format_new_record, bench_encode_proto,
-                  bench_encode_proto_with_scope, bench_format_with_entity, bench_realistic,
-                  bench_runtime_log_filter_emission
+                  bench_encode_proto_with_scope, bench_encode_otlp_log_batches,
+                  bench_format_with_entity, bench_realistic, bench_runtime_log_filter_emission
     );
 }
 

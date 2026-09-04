@@ -573,7 +573,13 @@ mod tests {
             let registry = crate::registry::TelemetryRegistryHandle::new();
             let mut scope_cache = ScopeToBytesMap::new(registry);
             let mut buf = ProtoBuffer::default();
-            encode_export_logs_request(&mut buf, &log_event, &resource_bytes, &mut scope_cache);
+            encode_export_logs_request(
+                &mut buf,
+                &mut [log_event],
+                &resource_bytes,
+                &mut scope_cache,
+            )
+            .unwrap();
             let bytes_vec = buf.into_bytes();
 
             let raw = RawLogsData::new(bytes_vec.as_ref());
