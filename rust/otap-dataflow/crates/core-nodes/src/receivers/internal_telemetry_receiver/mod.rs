@@ -566,7 +566,7 @@ mod tests {
                 serde_json::json!({
                     "otlp": {
                         "min_size": 1024,
-                        "max_size": LOG_BATCH_MAX_BYTES + 1,
+                        "max_size": LOG_BATCH_MAX_BYTES.get() + 1,
                         "sizer": "bytes"
                     }
                 }),
@@ -631,7 +631,7 @@ mod tests {
             let receiver = test_logs_receiver(
                 LogsConfig {
                     otlp: LogFormatConfig {
-                        min_size: NonZeroUsize::new(LOG_BATCH_MAX_BYTES),
+                        min_size: Some(LOG_BATCH_MAX_BYTES),
                         ..default_log_batch_otlp()
                     },
                     max_batch_duration: Some(Duration::from_millis(20)),
@@ -679,7 +679,7 @@ mod tests {
             let receiver = test_logs_receiver(
                 LogsConfig {
                     otlp: LogFormatConfig {
-                        min_size: NonZeroUsize::new(LOG_BATCH_MAX_BYTES),
+                        min_size: Some(LOG_BATCH_MAX_BYTES),
                         ..default_log_batch_otlp()
                     },
                     max_batch_duration: Some(Duration::from_secs(60)),
