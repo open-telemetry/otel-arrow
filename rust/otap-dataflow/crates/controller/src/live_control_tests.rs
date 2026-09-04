@@ -320,6 +320,28 @@ fn test_runtime_with_log_filter_and_topology(
     RuntimeLogFilterHandle,
     RuntimeLogFilter,
 ) {
+    let (log_filter, log_filter_handle) =
+        RuntimeLogFilter::new(config.engine.telemetry.logs.level.as_ref());
+    test_runtime_with_supplied_log_filter_and_topology(
+        config,
+        pipeline_factory,
+        topology,
+        log_filter,
+        log_filter_handle,
+    )
+}
+
+fn test_runtime_with_supplied_log_filter_and_topology(
+    config: &OtelDataflowSpec,
+    pipeline_factory: &'static PipelineFactory<()>,
+    topology: NumaTopology,
+    log_filter: RuntimeLogFilter,
+    log_filter_handle: RuntimeLogFilterHandle,
+) -> (
+    Arc<ControllerRuntime<()>>,
+    RuntimeLogFilterHandle,
+    RuntimeLogFilter,
+) {
     let registry = TelemetryRegistryHandle::new();
     let observed_state_store =
         ObservedStateStore::new(&ObservedStateSettings::default(), registry.clone());
@@ -330,9 +352,6 @@ fn test_runtime_with_log_filter_and_topology(
         Controller::<()>::declare_topics(config).expect("declared topics should be valid");
     let (memory_pressure_tx, _memory_pressure_rx) =
         tokio::sync::watch::channel(MemoryPressureChanged::initial());
-    let (log_filter, log_filter_handle) =
-        RuntimeLogFilter::new(&config.engine.telemetry.logs.level);
-
     (
         Arc::new(ControllerRuntime::new(
             pipeline_factory,
@@ -3948,7 +3967,7 @@ fn reconcile_engine_config_reports_noop_for_matching_live_config() {
 fn reconcile_engine_config_applies_runtime_log_level() {
     let mut config = empty_engine_config();
     config.engine.telemetry.logs.level =
-        serde_json::from_value(serde_json::json!("warn")).expect("warn level should parse");
+        Some(serde_json::from_value(serde_json::json!("warn")).expect("warn level should parse"));
     let (runtime, log_filter_handle, log_filter) =
         test_runtime_with_log_filter(&config, &TEST_PIPELINE_FACTORY);
     let event_count = Arc::new(AtomicUsize::new(0));
@@ -3964,13 +3983,13 @@ fn reconcile_engine_config_applies_runtime_log_level() {
 
     let mut desired = config.clone();
     desired.engine.telemetry.logs.level =
-        serde_json::from_value(serde_json::json!("info")).expect("info level should parse");
+        Some(serde_json::from_value(serde_json::json!("info")).expect("info level should parse"));
     let status = runtime
         .reconcile_engine_config(reconcile_request(desired, true))
         .expect("info level should reconcile");
 
     assert_eq!(status.state, EngineConfigReconcileState::Succeeded);
-    assert_eq!(log_filter_handle.configured_level().as_str(), "info");
+    assert_eq!(log_filter_handle.effective_level().as_str(), "info");
     tracing::dispatcher::with_default(&dispatch, emit_info);
     assert_eq!(event_count.swap(0, Ordering::SeqCst), 1);
 
@@ -3979,9 +3998,58 @@ fn reconcile_engine_config_applies_runtime_log_level() {
         .expect("warn level should reconcile");
 
     assert_eq!(status.state, EngineConfigReconcileState::Succeeded);
-    assert_eq!(log_filter_handle.configured_level().as_str(), "warn");
+    assert_eq!(log_filter_handle.effective_level().as_str(), "warn");
     tracing::dispatcher::with_default(&dispatch, emit_info);
     assert_eq!(event_count.load(Ordering::SeqCst), 0);
+}
+
+/// Scenario: an existing shared filter is stricter than an explicit initial engine log level.
+/// Guarantees: activation applies the explicit level before pipelines run, and an unchanged
+/// reconciliation preserves that effective level.
+#[test]
+fn initial_config_activation_applies_log_level_before_noop_reconciliation() {
+    let mut config = empty_engine_config();
+    config.engine.telemetry.logs.level =
+        Some(serde_json::from_value(serde_json::json!("info")).expect("info level should parse"));
+    let bootstrap_level =
+        serde_json::from_value(serde_json::json!("error")).expect("error level should parse");
+    let (log_filter, log_filter_handle) = RuntimeLogFilter::new_configured(&bootstrap_level);
+    let event_count = Arc::new(AtomicUsize::new(0));
+    let dispatch = tracing::Dispatch::new(
+        Registry::default()
+            .with(log_filter.layer())
+            .with(CountingLayer(Arc::clone(&event_count))),
+    );
+    tracing::dispatcher::with_default(&dispatch, || {
+        otel_info!("test.controller.bootstrap_runtime_filter");
+    });
+    assert_eq!(event_count.swap(0, Ordering::SeqCst), 0);
+
+    let (runtime, log_filter_handle, _log_filter) =
+        test_runtime_with_supplied_log_filter_and_topology(
+            &config,
+            &TEST_PIPELINE_FACTORY,
+            NumaTopology::unknown(),
+            log_filter,
+            log_filter_handle,
+        );
+
+    assert_eq!(log_filter_handle.effective_level().as_str(), "info");
+    tracing::dispatcher::with_default(&dispatch, || {
+        otel_info!("test.controller.activated_runtime_filter");
+    });
+    assert_eq!(event_count.swap(0, Ordering::SeqCst), 1);
+
+    let status = runtime
+        .reconcile_engine_config(reconcile_request(config, true))
+        .expect("unchanged config should reconcile");
+
+    assert_eq!(status.state, EngineConfigReconcileState::Succeeded);
+    assert_eq!(log_filter_handle.effective_level().as_str(), "info");
+    tracing::dispatcher::with_default(&dispatch, || {
+        otel_info!("test.controller.reconciled_runtime_filter");
+    });
+    assert_eq!(event_count.load(Ordering::SeqCst), 1);
 }
 
 /// Scenario: a full-config reconciliation request omits live stopped
@@ -4058,7 +4126,7 @@ fn reconcile_engine_config_preserves_missing_resources_when_requested() {
 fn reconcile_engine_config_does_not_publish_scaffold_on_conflict() {
     let mut config = engine_config_with_pipeline(simple_pipeline_yaml());
     config.engine.telemetry.logs.level =
-        serde_json::from_value(serde_json::json!("warn")).expect("warn level should parse");
+        Some(serde_json::from_value(serde_json::json!("warn")).expect("warn level should parse"));
     let (runtime, log_filter_handle, _log_filter) =
         test_runtime_with_log_filter(&config, &TEST_PIPELINE_FACTORY);
     let pipeline_key = PipelineKey::new("g1".into(), "p1".into());
@@ -4074,7 +4142,7 @@ fn reconcile_engine_config_does_not_publish_scaffold_on_conflict() {
 
     let mut desired = config.clone();
     desired.engine.telemetry.logs.level =
-        serde_json::from_value(serde_json::json!("info")).expect("info level should parse");
+        Some(serde_json::from_value(serde_json::json!("info")).expect("info level should parse"));
     _ = desired
         .engine
         .custom
@@ -4086,7 +4154,7 @@ fn reconcile_engine_config_does_not_publish_scaffold_on_conflict() {
 
     assert_eq!(err, ControlPlaneError::RolloutConflict);
     assert!(runtime.engine_config_snapshot().engine.custom.is_empty());
-    assert_eq!(log_filter_handle.configured_level().as_str(), "warn");
+    assert_eq!(log_filter_handle.effective_level().as_str(), "warn");
 }
 
 /// Scenario: full-config reconciliation would change an existing topic
