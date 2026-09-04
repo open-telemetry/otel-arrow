@@ -6,6 +6,7 @@
 use std::{
     borrow::Cow,
     collections::{HashMap, VecDeque},
+    io,
     sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -30,9 +31,14 @@ use otel_arrow_dfe_config::{
     engine::{EngineConfig, OtelDataflowSpec},
     pipeline_group::PipelineGroupConfig,
     policy::Policies,
+    tls::TlsServerConfig,
 };
 use prost::Message as _;
-use tokio::{net::TcpListener, sync::RwLock};
+use rustls::{RootCertStore, server::WebPkiClientVerifier};
+use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
+use tokio::{fs::File, io::AsyncReadExt, net::TcpListener, sync::RwLock};
+use tokio_rustls::TlsAcceptor;
+use tokio_tungstenite::tungstenite::Message as TungsteniteMessage;
 use tokio_util::sync::CancellationToken;
 
 use crate::extension::opamp::proto::opamp::v1::{
@@ -200,6 +206,9 @@ pub(crate) struct MockWebSocketServer {
 
     /// state of the server
     state: ServerState,
+
+    /// configuration of server TLS
+    tls_config: Option<TlsServerConfig>,
 }
 
 impl MockWebSocketServer {
@@ -207,6 +216,19 @@ impl MockWebSocketServer {
         Self {
             port,
             state: ServerState::new(Arc::new(RwLock::new(responses.into_iter().collect()))),
+            tls_config: None,
+        }
+    }
+
+    pub fn new_tls(
+        port: u16,
+        responses: Vec<Option<ServerToAgent>>,
+        tls_server_config: TlsServerConfig,
+    ) -> Self {
+        Self {
+            port,
+            state: ServerState::new(Arc::new(RwLock::new(responses.into_iter().collect()))),
+            tls_config: Some(tls_server_config),
         }
     }
 
@@ -216,6 +238,14 @@ impl MockWebSocketServer {
     }
 
     pub async fn serve(&mut self, cancellation_token: CancellationToken) {
+        if let Some(tls_config) = self.tls_config.as_ref() {
+            self.serve_tls(tls_config.clone(), cancellation_token).await;
+        } else {
+            self.serve_plain(cancellation_token).await;
+        }
+    }
+
+    async fn serve_plain(&self, cancellation_token: CancellationToken) {
         let state = self.state.clone();
         let app = Router::new()
             .route("/v1/opamp", any(request_handler))
@@ -229,9 +259,170 @@ impl MockWebSocketServer {
             .await
             .unwrap();
     }
+
+    async fn serve_tls(&self, tls_config: TlsServerConfig, cancellation_token: CancellationToken) {
+        let server_config = build_test_server_tls_config(&tls_config).await;
+        let tls_acceptor = TlsAcceptor::from(Arc::new(server_config));
+
+        let bind_addr = format!("127.0.0.1:{}", self.port);
+        let listener = TcpListener::bind(&bind_addr).await.unwrap();
+
+        loop {
+            tokio::select! {
+                _ = cancellation_token.cancelled() => break,
+                accept_result = listener.accept() => {
+                    let (tcp_stream, _) = accept_result.unwrap();
+                    self.state.record_connection_attempt();
+
+                    let acceptor = tls_acceptor.clone();
+                    let state = self.state.clone();
+                    let cancel = cancellation_token.clone();
+
+                    drop(tokio::spawn(async move {
+                        let tls_stream = match acceptor.accept(tcp_stream).await {
+                            Ok(s) => s,
+                            Err(_) => return, // TLS handshake failed
+                        };
+                        let ws_stream = match tokio_tungstenite::accept_async(tls_stream).await {
+                            Ok(s) => s,
+                            Err(_) => return, // WebSocket upgrade failed
+                        };
+                        handle_tls_ws_session(ws_stream, state, cancel).await;
+                    }));
+                }
+            }
+        }
+    }
 }
 
-/// handle a request make to the MockWebSocketServer
+/// Build a `rustls::ServerConfig` from the test `TlsServerConfig`.
+///
+/// If `client_ca_pem` is set, the server will require and verify client certificates (mTLS).
+async fn build_test_server_tls_config(tls_config: &TlsServerConfig) -> rustls::ServerConfig {
+    let cert_pem = read_pem_bytes(
+        tls_config.config.cert_file.as_deref(),
+        tls_config.config.cert_pem.as_deref(),
+    )
+    .await
+    .expect("server cert must be configured");
+
+    let key_pem = read_pem_bytes(
+        tls_config.config.key_file.as_deref(),
+        tls_config.config.key_pem.as_deref(),
+    )
+    .await
+    .expect("server key must be configured");
+
+    let cert_chain: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(&cert_pem)
+        .collect::<Result<Vec<_>, _>>()
+        .expect("parse server cert chain");
+    let key = PrivateKeyDer::from_pem_slice(&key_pem).expect("parse server private key");
+
+    let builder = rustls::ServerConfig::builder();
+
+    let builder = if let Some(client_ca_pem) = &tls_config.client_ca_pem {
+        let mut roots = RootCertStore::empty();
+        for cert in
+            CertificateDer::pem_reader_iter(&mut io::BufReader::new(client_ca_pem.as_bytes()))
+        {
+            roots
+                .add(cert.expect("parse client CA cert"))
+                .expect("add client CA cert");
+        }
+        let verifier = WebPkiClientVerifier::builder(roots.into())
+            .build()
+            .expect("build client cert verifier");
+        builder.with_client_cert_verifier(verifier)
+    } else {
+        builder.with_no_client_auth()
+    };
+
+    let mut config = builder
+        .with_single_cert(cert_chain, key)
+        .expect("build server TLS config");
+    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    config
+}
+
+/// Read PEM bytes from either a file path or an inline PEM string.
+async fn read_pem_bytes(file: Option<&std::path::Path>, pem: Option<&str>) -> Option<Vec<u8>> {
+    if let Some(path) = file {
+        let mut bytes = Vec::new();
+        let mut f = File::open(path).await.expect("open PEM file");
+        _ = f.read_to_end(&mut bytes).await.expect("read PEM file");
+        Some(bytes)
+    } else {
+        pem.map(|s| s.as_bytes().to_vec())
+    }
+}
+
+/// Handle a WebSocket session over a TLS stream using tokio-tungstenite types.
+///
+/// This mirrors the logic in `request_handler` (the axum-based plain text handler) but
+/// operates on `tokio_tungstenite` message types instead of axum's.
+async fn handle_tls_ws_session<S>(
+    ws_stream: tokio_tungstenite::WebSocketStream<S>,
+    state: ServerState,
+    _cancellation_token: CancellationToken,
+) where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let (mut ws_sender, mut ws_receiver) = ws_stream.split();
+
+    loop {
+        let Some(rx_result) = ws_receiver.next().await else {
+            return;
+        };
+
+        let msg = match rx_result {
+            Err(e) => {
+                let err_str = format!("{e:?}");
+                if err_str.contains("ResetWithoutClosingHandshake")
+                    || err_str.contains("ConnectionReset")
+                {
+                    return;
+                }
+                panic!("unexpected WS error: {e}");
+            }
+            Ok(m) => m,
+        };
+
+        let TungsteniteMessage::Binary(mut bytes) = msg else {
+            continue;
+        };
+
+        // Decode OpAMP varint header (must be zero)
+        let header = prost::encoding::decode_varint(&mut bytes).unwrap();
+        assert_eq!(header, 0, "expected zero websocket message header");
+
+        let agent_to_server = AgentToServer::decode(bytes).unwrap();
+        {
+            let mut requests = state.requests.write().await;
+            requests.push(agent_to_server);
+        }
+
+        let next_response = {
+            let mut responses = state.responses.write().await;
+            responses.pop_front()
+        };
+        _ = state.num_message_exchanges.fetch_add(1, Ordering::Relaxed);
+
+        match next_response {
+            Some(Some(response)) => {
+                let mut bytes = vec![0u8];
+                response.encode(&mut bytes).unwrap();
+                ws_sender
+                    .send(TungsteniteMessage::Binary(bytes.into()))
+                    .await
+                    .unwrap();
+            }
+            Some(None) => continue,
+            None => return,
+        }
+    }
+}
+
+/// handle a request made to the MockWebSocketServer (plain text / axum path)
 async fn request_handler(State(state): State<ServerState>, request: Request) -> impl IntoResponse {
     let upgrade = WebSocketUpgrade::from_request(request, &()).await.unwrap();
     upgrade
@@ -314,6 +505,7 @@ pub(crate) struct ServerState {
     requests: Arc<RwLock<Vec<AgentToServer>>>,
     responses: Arc<RwLock<VecDeque<Option<ServerToAgent>>>>,
     num_message_exchanges: Arc<AtomicUsize>,
+    num_connection_attempts: Arc<AtomicUsize>,
 }
 
 impl ServerState {
@@ -322,11 +514,20 @@ impl ServerState {
             responses,
             requests: Arc::new(RwLock::new(Vec::new())),
             num_message_exchanges: Arc::new(AtomicUsize::new(0)),
+            num_connection_attempts: Arc::new(AtomicUsize::new(0)),
         }
     }
 
     pub fn num_message_exchanges(&self) -> usize {
         self.num_message_exchanges.load(Ordering::Acquire)
+    }
+
+    pub fn num_connection_attempts(&self) -> usize {
+        self.num_connection_attempts.load(Ordering::Acquire)
+    }
+
+    fn record_connection_attempt(&self) {
+        _ = self.num_connection_attempts.fetch_add(1, Ordering::Relaxed);
     }
 
     pub async fn take_requests(&self) -> Vec<AgentToServer> {
@@ -345,6 +546,23 @@ impl ServerState {
                 start.elapsed() < timeout,
                 "timed out waiting for {n} message exchanges (got {})",
                 self.num_message_exchanges()
+            );
+
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    pub async fn wait_for_connection_attempts(&self, n: usize, timeout: Duration) {
+        let start = Instant::now();
+        loop {
+            if self.num_connection_attempts() >= n {
+                return;
+            }
+
+            assert!(
+                start.elapsed() < timeout,
+                "timed out waiting for {n} connection attempts (got {})",
+                self.num_connection_attempts()
             );
 
             tokio::time::sleep(Duration::from_millis(10)).await;

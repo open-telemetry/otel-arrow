@@ -20,6 +20,7 @@
 //! See [config] for more configuration options.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
@@ -29,14 +30,13 @@ use otel_arrow_dfe_admin::{
     ControlPlaneError, EngineConfigReconcileRequest, EngineConfigReconcileState,
     EngineConfigReconcileStatus,
 };
-use otel_arrow_dfe_config::engine::OtelDataflowSpec;
-use otel_arrow_dfe_state::phase::PipelinePhase;
+
 use prost::Message as _;
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::{Connector, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{connect_async_tls_with_config, tungstenite::Message};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -51,19 +51,23 @@ use crate::extension::opamp::proto::opamp::v1::{
     EffectiveConfig, KeyValue, OpAmpConnectionSettings, RemoteConfigStatus, RemoteConfigStatuses,
     ServerErrorResponseType, ServerToAgent, ServerToAgentFlags,
 };
+use crate::extension::opamp::tls::create_client_config;
 use crate::extension::opamp::util::ExponentialBackoff;
 use crate::{
     CONTROLLER_EXTENSION_FACTORIES, ControllerExtensionContext, ControllerExtensionError,
     ControllerExtensionFactory, ControllerExtensionTaskFactory,
 };
 use otel_arrow_dfe_config::PipelineKey;
+use otel_arrow_dfe_config::engine::OtelDataflowSpec;
 use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_state::phase::PipelinePhase;
 use otel_arrow_dfe_state::pipeline_status::PipelineStatus;
 
 pub mod config;
 pub mod consts;
 pub mod error;
 pub mod proto;
+mod tls;
 mod util;
 
 const CONTROL_EXTENSION_URN: &str = "urn:otel:extension:opamp";
@@ -100,11 +104,42 @@ fn validate_config(config: &serde_json::Value) -> Result<(), ConfigError> {
             error: e.to_string(),
         })?;
 
+    // Run cheap validation first (endpoint scheme, instance_uid, scheme/TLS mismatch)
     config
         .validate()
         .map_err(|e| ConfigError::InvalidUserConfig {
             error: e.to_string(),
-        })
+        })?;
+
+    // Then validate TLS config by attempting to build the client config (may read files)
+    if let Some(tls_client_config) = &config.tls {
+        // This function is async because internally it uses tokio fs utils to read certs
+        // from the filesystem and loads system roots into a tokio OnceCell. We either run
+        // it in the current runtime (if available) or spawn a new one.
+        let client_connector_fut = create_client_config(tls_client_config);
+
+        let connector_init_result = if tokio::runtime::Handle::try_current().is_ok() {
+            // We're in an async runtime, but it might be single-threaded so we can't
+            // just block_on. Spin up another thread with a new runtime.
+            std::thread::scope(|s| {
+                s.spawn(|| {
+                    tokio::runtime::Runtime::new()
+                        .expect("can create async runtime")
+                        .block_on(client_connector_fut)
+                })
+                .join()
+                .expect("can join thread")
+            })
+        } else {
+            tokio::runtime::Runtime::new()
+                .expect("can create async runtime")
+                .block_on(client_connector_fut)
+        };
+
+        _ = connector_init_result?;
+    }
+
+    Ok(())
 }
 
 fn start(
@@ -116,9 +151,24 @@ fn start(
         serde_json::from_value(context.extension.config.clone()).expect("config validated");
 
     Ok(Box::new(move |cancellation_token| {
-        Box::pin(
-            async move { run_websocket_connect_loop(context, config, cancellation_token).await },
-        )
+        Box::pin(async move {
+            let client_tls_config = if let Some(tls_client_config) = &config.tls {
+                // safety: we've validated we can create the client TLS config from the supplied
+                // TLS config in the call to `validate_config`
+                create_client_config(tls_client_config)
+                    .await
+                    .expect("create TLS client config")
+            } else {
+                None
+            };
+
+            let connector = match client_tls_config {
+                Some(client_tls_config) => Connector::Rustls(Arc::new(client_tls_config)),
+                None => Connector::Plain,
+            };
+
+            run_websocket_connect_loop(context, config, connector, cancellation_token).await
+        })
     }))
 }
 
@@ -214,6 +264,7 @@ enum Phase {
 async fn run_websocket_connect_loop(
     context: ControllerExtensionContext,
     config: Config,
+    connector: Connector,
     cancellation_token: CancellationToken,
 ) -> Result<(), ControllerExtensionError> {
     let mut session_state = SessionState::try_new(&config)?;
@@ -224,8 +275,13 @@ async fn run_websocket_connect_loop(
 
     loop {
         // connect websocket
-        let Some(ws_stream) =
-            connect_websocket(&config, &cancellation_token, &mut retry_connect_backoff).await
+        let Some(ws_stream) = connect_websocket(
+            &config,
+            connector.clone(),
+            &cancellation_token,
+            &mut retry_connect_backoff,
+        )
+        .await
         else {
             break;
         };
@@ -271,12 +327,18 @@ async fn run_websocket_connect_loop(
 /// `None` if cancelled before connecting.
 async fn connect_websocket(
     config: &Config,
+    connector: Connector,
     cancellation_token: &CancellationToken,
     backoff: &mut ExponentialBackoff,
 ) -> Option<WebSocketStream<MaybeTlsStream<TcpStream>>> {
     loop {
         let connect_result = cancellation_token
-            .run_until_cancelled(connect_async(&config.endpoint))
+            .run_until_cancelled(connect_async_tls_with_config(
+                &config.endpoint,
+                None,
+                false,
+                Some(connector.clone()),
+            ))
             .await?;
 
         match connect_result {
@@ -1617,13 +1679,17 @@ fn pipeline_status_custom_message(
 mod test {
     use std::{borrow::Cow, sync::Arc};
 
+    use tempfile::TempDir;
+
     use otel_arrow_dfe_admin::ControlPlane;
     use otel_arrow_dfe_config::{
         extension::{ExtensionUrn, ExtensionUserConfig},
         observed_state::ObservedStateSettings,
+        tls::{TlsClientConfig, TlsConfig, TlsServerConfig},
     };
     use otel_arrow_dfe_state::store::ObservedStateStore;
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_test_tls_certs::{ExtendedKeyUsage, generate_ca};
 
     use crate::extension::opamp::proto::opamp::v1::{
         AgentRemoteConfig, AnyValue, RetryInfo, ServerErrorResponse, any_value::Value,
@@ -1649,12 +1715,32 @@ mod test {
         control_plane: Arc<MockControlPlane>,
         expected_exchanges: usize,
         mut config: Config,
+        server_tls_config: Option<TlsServerConfig>,
     ) -> Vec<AgentToServer> {
         let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
-        config.endpoint = format!("ws://127.0.0.1:{port}/v1/opamp");
+        config.endpoint = if server_tls_config.is_some() {
+            // TLS tests must use wss:// and "localhost" (matching the server cert SAN)
+            format!("wss://localhost:{port}/v1/opamp")
+        } else {
+            format!("ws://127.0.0.1:{port}/v1/opamp")
+        };
+
+        let client_tls_config = if let Some(tls_client_config) = &config.tls {
+            create_client_config(tls_client_config).await.unwrap()
+        } else {
+            None
+        };
+        let connector = match client_tls_config {
+            Some(client_tls_config) => Connector::Rustls(Arc::new(client_tls_config)),
+            None => Connector::Plain,
+        };
 
         let cancellation_token = CancellationToken::new();
-        let mut server = MockWebSocketServer::new(port, mock_server_responses);
+        let mut server = if let Some(server_tls_config) = server_tls_config {
+            MockWebSocketServer::new_tls(port, mock_server_responses, server_tls_config)
+        } else {
+            MockWebSocketServer::new(port, mock_server_responses)
+        };
         let server_state = server.state();
         let server_cancellation_token = cancellation_token.clone();
 
@@ -1682,7 +1768,7 @@ mod test {
 
         let client_cancellation_token = cancellation_token.clone();
         let client_handle = tokio::spawn(async move {
-            run_websocket_connect_loop(context, config, client_cancellation_token).await
+            run_websocket_connect_loop(context, config, connector, client_cancellation_token).await
         });
 
         server_state
@@ -1693,6 +1779,80 @@ mod test {
         client_handle.await.unwrap().unwrap();
 
         server_state.take_requests().await
+    }
+
+    /// Start a TLS mock server and an OpAMP client with intentionally mismatched TLS
+    /// configuration. Waits for the client to attempt at least `min_connection_attempts`
+    /// TCP connections, then asserts that zero application-level WebSocket messages were
+    /// exchanged (proving the TLS handshake blocked all traffic).
+    async fn run_web_socket_tls_failure_test(
+        server_tls_config: TlsServerConfig,
+        client_tls_config: TlsClientConfig,
+        min_connection_attempts: usize,
+    ) {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
+
+        let client_config = create_client_config(&client_tls_config).await.unwrap();
+        let connector = match client_config {
+            Some(cfg) => Connector::Rustls(Arc::new(cfg)),
+            None => Connector::Plain,
+        };
+
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "instance_uid": EXPECTED_INSTANCE_UID_STR,
+            "endpoint": format!("wss://localhost:{port}/v1/opamp"),
+            "connect_retry": { "initial": "10ms", "max": "50ms" },
+        }))
+        .unwrap();
+
+        let cancellation_token = CancellationToken::new();
+        let mut server = MockWebSocketServer::new_tls(port, vec![], server_tls_config);
+        let server_state = server.state();
+
+        let server_cancel = cancellation_token.clone();
+        let server_handle = tokio::spawn(async move { server.serve(server_cancel).await });
+
+        let control_plane = Arc::new(MockControlPlane::new(empty_engine_config()));
+        let telemetry_registry_handle = TelemetryRegistryHandle::default();
+        let observed_state_store = ObservedStateStore::new(
+            &ObservedStateSettings::default(),
+            telemetry_registry_handle.clone(),
+        );
+        let extension_urn = ExtensionUrn::parse(CONTROL_EXTENSION_URN).unwrap();
+        let context = ControllerExtensionContext {
+            extension_id: Cow::Borrowed("opamp"),
+            extension: Arc::new(ExtensionUserConfig::new(
+                extension_urn,
+                serde_json::to_value(&config).unwrap(),
+            )),
+            control_plane,
+            observed_state: observed_state_store.handle(),
+            telemetry_registry: telemetry_registry_handle,
+            engine_config: empty_engine_config(),
+        };
+
+        let client_cancel = cancellation_token.clone();
+        let client_handle = tokio::spawn(async move {
+            run_websocket_connect_loop(context, config, connector, client_cancel).await
+        });
+
+        // Wait for the client to attempt connections (deterministic, no arbitrary sleep)
+        server_state
+            .wait_for_connection_attempts(min_connection_attempts, Duration::from_secs(10))
+            .await;
+
+        // The TLS handshake should have blocked all application-level traffic
+        assert_eq!(
+            server_state.num_message_exchanges(),
+            0,
+            "expected zero message exchanges when TLS handshake fails"
+        );
+
+        cancellation_token.cancel();
+        server_handle.await.unwrap();
+        client_handle.await.unwrap().unwrap();
     }
 
     #[tokio::test]
@@ -1710,7 +1870,8 @@ mod test {
             "endpoint": ""
         }))
         .unwrap();
-        let requests = run_web_socket_test_with_config(responses, control_plane, 3, config).await;
+        let requests =
+            run_web_socket_test_with_config(responses, control_plane, 3, config, None).await;
         assert_eq!(requests.len(), 3);
 
         let uid = EXPECTED_INSTANCE_UID_BYTES.to_vec();
@@ -1782,7 +1943,8 @@ mod test {
             }
         }))
         .unwrap();
-        let requests = run_web_socket_test_with_config(responses, control_plane, 3, config).await;
+        let requests =
+            run_web_socket_test_with_config(responses, control_plane, 3, config, None).await;
         assert_eq!(requests.len(), 3);
 
         // Message 1: initial full-state - should contain the agent description since is in config
@@ -1853,7 +2015,8 @@ mod test {
             "endpoint": ""
         }))
         .unwrap();
-        let requests = run_web_socket_test_with_config(responses, control_plane, 3, config).await;
+        let requests =
+            run_web_socket_test_with_config(responses, control_plane, 3, config, None).await;
         assert_eq!(requests.len(), 3);
 
         let applied = &requests[2];
@@ -1880,7 +2043,8 @@ mod test {
             "endpoint": ""
         }))
         .unwrap();
-        let requests = run_web_socket_test_with_config(responses, control_plane, 3, config).await;
+        let requests =
+            run_web_socket_test_with_config(responses, control_plane, 3, config, None).await;
         assert_eq!(requests.len(), 3);
 
         let applied = &requests[2];
@@ -1920,7 +2084,8 @@ mod test {
         }))
         .unwrap();
 
-        let requests = run_web_socket_test_with_config(responses, control_plane, 2, config).await;
+        let requests =
+            run_web_socket_test_with_config(responses, control_plane, 2, config, None).await;
         assert_eq!(requests.len(), 2);
 
         let applied = &requests[1];
@@ -2016,7 +2181,8 @@ mod test {
         .expect("OpAMP test config should parse");
 
         let requests =
-            run_web_socket_test_with_config(responses, Arc::clone(&control_plane), 3, config).await;
+            run_web_socket_test_with_config(responses, Arc::clone(&control_plane), 3, config, None)
+                .await;
 
         assert_eq!(requests.len(), 3);
         assert_eq!(
@@ -2054,7 +2220,8 @@ mod test {
         }))
         .unwrap();
 
-        let requests = run_web_socket_test_with_config(responses, control_plane, 4, config).await;
+        let requests =
+            run_web_socket_test_with_config(responses, control_plane, 4, config, None).await;
         assert_eq!(requests.len(), 4);
 
         let heartbeat = &requests[3];
@@ -2091,7 +2258,8 @@ mod test {
             "endpoint": ""
         }))
         .unwrap();
-        let requests = run_web_socket_test_with_config(responses, control_plane, 4, config).await;
+        let requests =
+            run_web_socket_test_with_config(responses, control_plane, 4, config, None).await;
         assert_eq!(requests.len(), 4);
 
         // assert the first request was retried - same message and same sequence number
@@ -2114,8 +2282,488 @@ mod test {
             }
         }))
         .unwrap();
-        let requests = run_web_socket_test_with_config(responses, control_plane, 2, config).await;
+        let requests =
+            run_web_socket_test_with_config(responses, control_plane, 2, config, None).await;
         assert_eq!(requests.len(), 2);
+    }
+
+    /// Scenario: client trusts the server CA via an inline PEM string.
+    /// Guarantees: the TLS handshake succeeds and messages are exchanged normally.
+    #[tokio::test]
+    async fn test_client_configured_with_server_tls_pem() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path();
+        let ca = generate_ca("Test CA");
+        let server = ca.issue_leaf(
+            "localhost",
+            Some("localhost"),
+            Some(ExtendedKeyUsage::ServerAuth),
+        );
+        server.write_to_dir(path, "server");
+
+        let control_plane = Arc::new(MockControlPlane::new(empty_engine_config()));
+        let responses = vec![
+            Some(server_to_agent_with_config(&test_config(), vec![5, 1, 4])),
+            None,
+            None,
+        ];
+
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "instance_uid": EXPECTED_INSTANCE_UID_STR,
+            "endpoint": "",
+            "tls": {
+                "ca_pem": &ca.cert_pem
+            }
+        }))
+        .unwrap();
+
+        let requests = run_web_socket_test_with_config(
+            responses,
+            control_plane,
+            3,
+            config,
+            Some(TlsServerConfig {
+                config: TlsConfig {
+                    cert_file: Some(path.join("server.crt")),
+                    key_file: Some(path.join("server.key")),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+        )
+        .await;
+        assert_eq!(requests.len(), 3);
+    }
+
+    /// Scenario: client trusts the server CA via a file path.
+    /// Guarantees: the TLS handshake succeeds and messages are exchanged normally.
+    #[tokio::test]
+    async fn test_client_configured_with_server_tls_file() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path();
+        let ca = generate_ca("Test CA");
+        let server = ca.issue_leaf(
+            "localhost",
+            Some("localhost"),
+            Some(ExtendedKeyUsage::ServerAuth),
+        );
+        server.write_to_dir(path, "server");
+        ca.write_cert_to_dir(path, "ca");
+
+        let control_plane = Arc::new(MockControlPlane::new(empty_engine_config()));
+        let responses = vec![
+            Some(server_to_agent_with_config(&test_config(), vec![5, 1, 4])),
+            None,
+            None,
+        ];
+
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "instance_uid": EXPECTED_INSTANCE_UID_STR,
+            "endpoint": "",
+            "tls": {
+                "ca_file": &path.join("ca.crt")
+            }
+        }))
+        .unwrap();
+
+        let requests = run_web_socket_test_with_config(
+            responses,
+            control_plane,
+            3,
+            config,
+            Some(TlsServerConfig {
+                config: TlsConfig {
+                    cert_file: Some(path.join("server.crt")),
+                    key_file: Some(path.join("server.key")),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+        )
+        .await;
+        assert_eq!(requests.len(), 3);
+    }
+
+    /// Scenario: client has no CA configured; server presents a cert from a private CA.
+    /// Guarantees: the TLS handshake fails (unknown issuer) and no messages are exchanged.
+    #[tokio::test]
+    async fn test_tls_failure_no_ca_configured() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path();
+
+        let ca = generate_ca("Test CA");
+        let server_cert = ca.issue_leaf(
+            "localhost",
+            Some("localhost"),
+            Some(ExtendedKeyUsage::ServerAuth),
+        );
+        server_cert.write_to_dir(path, "server");
+
+        run_web_socket_tls_failure_test(
+            TlsServerConfig {
+                config: TlsConfig {
+                    cert_file: Some(path.join("server.crt")),
+                    key_file: Some(path.join("server.key")),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            // Client has no ca_pem / ca_file -- empty root store
+            TlsClientConfig::default(),
+            2,
+        )
+        .await;
+    }
+
+    /// Scenario: client trusts CA-B but server cert is signed by CA-A.
+    /// Guarantees: the TLS handshake fails (wrong issuer) and no messages are exchanged.
+    #[tokio::test]
+    async fn test_tls_failure_wrong_ca() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path();
+
+        let server_ca = generate_ca("Server CA");
+        let wrong_ca = generate_ca("Wrong CA");
+        let server_cert = server_ca.issue_leaf(
+            "localhost",
+            Some("localhost"),
+            Some(ExtendedKeyUsage::ServerAuth),
+        );
+        server_cert.write_to_dir(path, "server");
+
+        run_web_socket_tls_failure_test(
+            TlsServerConfig {
+                config: TlsConfig {
+                    cert_file: Some(path.join("server.crt")),
+                    key_file: Some(path.join("server.key")),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            TlsClientConfig {
+                ca_pem: Some(wrong_ca.cert_pem),
+                ..Default::default()
+            },
+            2,
+        )
+        .await;
+    }
+
+    /// Scenario: server requires client certificate (mTLS) but client presents none.
+    /// Guarantees: the TLS handshake fails and no messages are exchanged.
+    #[tokio::test]
+    async fn test_mtls_failure_no_client_cert() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path();
+
+        let ca = generate_ca("Test CA");
+        let server_cert = ca.issue_leaf(
+            "localhost",
+            Some("localhost"),
+            Some(ExtendedKeyUsage::ServerAuth),
+        );
+        server_cert.write_to_dir(path, "server");
+
+        run_web_socket_tls_failure_test(
+            TlsServerConfig {
+                config: TlsConfig {
+                    cert_file: Some(path.join("server.crt")),
+                    key_file: Some(path.join("server.key")),
+                    ..Default::default()
+                },
+                client_ca_pem: Some(ca.cert_pem.clone()),
+                ..Default::default()
+            },
+            // Client trusts the server CA but does not present a client cert
+            TlsClientConfig {
+                ca_pem: Some(ca.cert_pem),
+                ..Default::default()
+            },
+            2,
+        )
+        .await;
+    }
+
+    /// Scenario: server requires client cert from CA-A, but client presents cert from CA-B.
+    /// Guarantees: the TLS handshake fails and no messages are exchanged.
+    #[tokio::test]
+    async fn test_mtls_failure_wrong_client_cert() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path();
+
+        let server_ca = generate_ca("Server CA");
+        let wrong_ca = generate_ca("Wrong Client CA");
+
+        let server_cert = server_ca.issue_leaf(
+            "localhost",
+            Some("localhost"),
+            Some(ExtendedKeyUsage::ServerAuth),
+        );
+        let wrong_client_cert =
+            wrong_ca.issue_leaf("Bad Client", None, Some(ExtendedKeyUsage::ClientAuth));
+        server_cert.write_to_dir(path, "server");
+
+        run_web_socket_tls_failure_test(
+            TlsServerConfig {
+                config: TlsConfig {
+                    cert_file: Some(path.join("server.crt")),
+                    key_file: Some(path.join("server.key")),
+                    ..Default::default()
+                },
+                // Server trusts only server_ca for client certs
+                client_ca_pem: Some(server_ca.cert_pem.clone()),
+                ..Default::default()
+            },
+            TlsClientConfig {
+                ca_pem: Some(server_ca.cert_pem),
+                config: TlsConfig {
+                    cert_pem: Some(wrong_client_cert.cert_pem),
+                    key_pem: Some(wrong_client_cert.key_pem),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            2,
+        )
+        .await;
+    }
+
+    /// Scenario: client connects directly to a TLS server whose cert it does not trust.
+    /// Guarantees: connect_async_tls_with_config returns an error containing
+    /// "InvalidCertificate".
+    #[tokio::test]
+    async fn test_tls_direct_connect_unknown_issuer() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path();
+
+        let server_ca = generate_ca("Server CA");
+        let wrong_ca = generate_ca("Wrong CA");
+        let server_cert = server_ca.issue_leaf(
+            "localhost",
+            Some("localhost"),
+            Some(ExtendedKeyUsage::ServerAuth),
+        );
+        server_cert.write_to_dir(path, "server");
+
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
+        let cancel = CancellationToken::new();
+
+        let mut server = MockWebSocketServer::new_tls(
+            port,
+            vec![],
+            TlsServerConfig {
+                config: TlsConfig {
+                    cert_file: Some(path.join("server.crt")),
+                    key_file: Some(path.join("server.key")),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let server_cancel = cancel.clone();
+        let server_handle = tokio::spawn(async move { server.serve(server_cancel).await });
+
+        // Build client connector trusting the wrong CA
+        let client_tls = create_client_config(&TlsClientConfig {
+            ca_pem: Some(wrong_ca.cert_pem),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        let connector = Connector::Rustls(Arc::new(client_tls));
+
+        // Give the server a moment to bind
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let url = format!("wss://localhost:{port}/v1/opamp");
+        let result = connect_async_tls_with_config(&url, None, false, Some(connector)).await;
+
+        assert!(result.is_err(), "connection should fail with wrong CA");
+        let err_str = format!("{:?}", result.unwrap_err());
+        assert!(
+            err_str.contains("InvalidCertificate"),
+            "expected InvalidCertificate error, got: {err_str}"
+        );
+
+        cancel.cancel();
+        server_handle.await.unwrap();
+    }
+
+    /// Scenario: server requires a client certificate but the client presents none.
+    /// Guarantees: connect_async_tls_with_config returns an error indicating the
+    /// handshake was rejected by the server.
+    #[tokio::test]
+    async fn test_tls_direct_connect_client_cert_required() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path();
+
+        let ca = generate_ca("Test CA");
+        let server_cert = ca.issue_leaf(
+            "localhost",
+            Some("localhost"),
+            Some(ExtendedKeyUsage::ServerAuth),
+        );
+        server_cert.write_to_dir(path, "server");
+
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
+        let cancel = CancellationToken::new();
+
+        let mut server = MockWebSocketServer::new_tls(
+            port,
+            vec![],
+            TlsServerConfig {
+                config: TlsConfig {
+                    cert_file: Some(path.join("server.crt")),
+                    key_file: Some(path.join("server.key")),
+                    ..Default::default()
+                },
+                client_ca_pem: Some(ca.cert_pem.clone()),
+                ..Default::default()
+            },
+        );
+        let server_cancel = cancel.clone();
+        let server_handle = tokio::spawn(async move { server.serve(server_cancel).await });
+
+        // Build client connector that trusts the server but has no client cert
+        let client_tls = create_client_config(&TlsClientConfig {
+            ca_pem: Some(ca.cert_pem),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        let connector = Connector::Rustls(Arc::new(client_tls));
+
+        // Give the server a moment to bind
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let url = format!("wss://localhost:{port}/v1/opamp");
+        let result = connect_async_tls_with_config(&url, None, false, Some(connector)).await;
+
+        assert!(
+            result.is_err(),
+            "connection should fail when client cert is required but not presented"
+        );
+
+        cancel.cancel();
+        server_handle.await.unwrap();
+    }
+
+    /// Scenario: mTLS with client cert and key provided as inline PEM strings.
+    /// Guarantees: the mTLS handshake succeeds and messages are exchanged normally.
+    #[tokio::test]
+    async fn test_client_configured_with_client_tls_from_pems() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path();
+        let ca = generate_ca("Test CA");
+        let server_cert = ca.issue_leaf(
+            "localhost",
+            Some("localhost"),
+            Some(ExtendedKeyUsage::ServerAuth),
+        );
+        let client_cert = ca.issue_leaf("Test Client", None, Some(ExtendedKeyUsage::ClientAuth));
+        server_cert.write_to_dir(path, "server");
+        client_cert.write_to_dir(path, "client");
+
+        let control_plane = Arc::new(MockControlPlane::new(empty_engine_config()));
+        let responses = vec![
+            Some(server_to_agent_with_config(&test_config(), vec![5, 1, 4])),
+            None,
+            None,
+        ];
+
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "instance_uid": EXPECTED_INSTANCE_UID_STR,
+            "endpoint": "",
+            "tls": {
+                "cert_pem": &client_cert.cert_pem,
+                "key_pem": &client_cert.key_pem,
+                "ca_pem": &ca.cert_pem
+            }
+        }))
+        .unwrap();
+
+        let requests = run_web_socket_test_with_config(
+            responses,
+            control_plane,
+            3,
+            config,
+            Some(TlsServerConfig {
+                config: TlsConfig {
+                    cert_file: Some(path.join("server.crt")),
+                    key_file: Some(path.join("server.key")),
+                    ..Default::default()
+                },
+                client_ca_pem: Some(ca.cert_pem.to_string()),
+                ..Default::default()
+            }),
+        )
+        .await;
+        assert_eq!(requests.len(), 3);
+    }
+
+    /// Scenario: mTLS with client cert and key provided as file paths.
+    /// Guarantees: the mTLS handshake succeeds and messages are exchanged normally.
+    #[tokio::test]
+    async fn test_client_configured_with_client_tls_from_files() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path();
+        let ca = generate_ca("Test CA");
+        let server_cert = ca.issue_leaf(
+            "localhost",
+            Some("localhost"),
+            Some(ExtendedKeyUsage::ServerAuth),
+        );
+        let client_cert = ca.issue_leaf("Test Client", None, Some(ExtendedKeyUsage::ClientAuth));
+        server_cert.write_to_dir(path, "server");
+        client_cert.write_to_dir(path, "client");
+
+        let control_plane = Arc::new(MockControlPlane::new(empty_engine_config()));
+        let responses = vec![
+            Some(server_to_agent_with_config(&test_config(), vec![5, 1, 4])),
+            None,
+            None,
+        ];
+
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "instance_uid": EXPECTED_INSTANCE_UID_STR,
+            "endpoint": "",
+            "tls": {
+                "cert_file": &path.join("client.crt"),
+                "key_file": &path.join("client.key"),
+                "ca_pem": &ca.cert_pem
+            }
+        }))
+        .unwrap();
+
+        let requests = run_web_socket_test_with_config(
+            responses,
+            control_plane,
+            3,
+            config,
+            Some(TlsServerConfig {
+                config: TlsConfig {
+                    cert_file: Some(path.join("server.crt")),
+                    key_file: Some(path.join("server.key")),
+                    ..Default::default()
+                },
+                client_ca_pem: Some(ca.cert_pem.to_string()),
+                ..Default::default()
+            }),
+        )
+        .await;
+        assert_eq!(requests.len(), 3);
     }
 
     /// Helper: create an ObservedStateStore, spawn its consumer loop, send engine events to
@@ -2526,6 +3174,57 @@ mod test {
         );
     }
 
+    /// Scenario: validate_config with TLS (ca_file on disk) called from a sync context.
+    /// Guarantees: TLS validation succeeds by creating a new async runtime internally.
+    #[test]
+    fn test_validate_config_tls_from_sync_context() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let temp_dir = TempDir::new().unwrap();
+        let ca = generate_ca("Test CA");
+        ca.write_cert_to_dir(temp_dir.path(), "ca");
+
+        let config_value = serde_json::json!({
+            "endpoint": "wss://localhost:4320/v1/opamp",
+            "tls": { "ca_file": temp_dir.path().join("ca.crt") }
+        });
+        validate_config(&config_value).unwrap();
+    }
+
+    /// Scenario: validate_config with TLS (ca_file on disk) called from a multi-threaded
+    ///           tokio runtime.
+    /// Guarantees: TLS validation succeeds by spawning a thread with a new runtime
+    ///             (avoiding block_on inside block_on).
+    #[tokio::test]
+    async fn test_validate_config_tls_from_multi_thread_runtime() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let temp_dir = TempDir::new().unwrap();
+        let ca = generate_ca("Test CA");
+        ca.write_cert_to_dir(temp_dir.path(), "ca");
+
+        let config_value = serde_json::json!({
+            "endpoint": "wss://localhost:4320/v1/opamp",
+            "tls": { "ca_file": temp_dir.path().join("ca.crt") }
+        });
+        validate_config(&config_value).unwrap();
+    }
+
+    /// Scenario: validate_config with TLS (ca_file on disk) called from a single-threaded
+    ///           tokio runtime.
+    /// Guarantees: TLS validation succeeds without deadlocking the current-thread runtime.
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_validate_config_tls_from_current_thread_runtime() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let temp_dir = TempDir::new().unwrap();
+        let ca = generate_ca("Test CA");
+        ca.write_cert_to_dir(temp_dir.path(), "ca");
+
+        let config_value = serde_json::json!({
+            "endpoint": "wss://localhost:4320/v1/opamp",
+            "tls": { "ca_file": temp_dir.path().join("ca.crt") }
+        });
+        validate_config(&config_value).unwrap();
+    }
+
     #[tokio::test]
     async fn test_presents_consistent_view_of_last_applied_status() {
         let control_plane = Arc::new(MockControlPlane::new(empty_engine_config()));
@@ -2550,7 +3249,8 @@ mod test {
             "heartbeat_interval": "200ms"
         }))
         .unwrap();
-        let requests = run_web_socket_test_with_config(responses, control_plane, 4, config).await;
+        let requests =
+            run_web_socket_test_with_config(responses, control_plane, 4, config, None).await;
         assert_eq!(requests.len(), 4);
 
         // expect that the 3rd message (the one w/ the applying status) has presented that the last

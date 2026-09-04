@@ -1,0 +1,74 @@
+version: otel_dataflow/v1
+
+engine:
+  controller:
+    extensions:
+      opamp:
+        type: "urn:otel:extension:opamp"
+        config:
+          endpoint: "wss://localhost:4320/v1/opamp"
+          # Fixed UUID so the agent is easy to find in the UI. Omit to
+          # generate a fresh UUIDv7 on each start.
+          instance_uid: "8be4df61-93ca-11d2-aa0d-00e098032b8c"
+          heartbeat_interval: "5s"
+          agent_description:
+            identifying_attributes:
+              service.name: "otel-arrow-dfe-engine"
+
+          # Configuration for TLS
+          #
+          # This configuration can be used with the instructions to test locally the opamp controller
+          # extension against opamp-go using the instructions in README.md. Simply omit the -no-tls flag
+          tls:
+            # Server CA (opamp-go server uses a self-signed cert derived from this CA)
+            ca_file: "/path/to/opamp-go/internal/examples/certs/certs/ca.cert.pem"
+
+            # If you wish to use mTLS ...
+            #
+            # You'll have to have generated the client cert and key using the following commands:
+            #
+            # cd /path/to/opamp-go/internal/examples/certs
+            # mkdir client_certs
+            # openssl genrsa -out client_certs/client.key.pem 4096
+            # openssl req -new -key client_certs/client.key.pem -out client_certs/client.csr -config client.conf
+            # openssl ca -config openssl.conf -days 1650 -notext -batch  -in client_certs/client.csr -out client_certs/client.cert.pem
+            #
+            # Then uncomment these lines:
+            #
+            # cert_file: "/path/to/opamp-go/internal/examples/certs/client_certs/client.cert.pem"
+            # key_file: "/path/to/opamp-go/internal/examples/certs/client_certs/client.key.pem"
+
+groups:
+  default:
+    pipelines:
+      light_traffic:
+        nodes:
+          generator:
+            type: receiver:traffic_generator
+            config:
+              data_source: synthetic
+              traffic_config:
+                max_batch_size: 10
+                signals_per_second: 10
+                log_weight: 100
+          sink:
+            type: exporter:otlp_grpc
+            config:
+              grpc_endpoint: "http://127.0.0.1:4317"
+        connections:
+          - from: generator
+            to: sink
+      local_backend:
+        nodes:
+          receiver:
+            type: receiver:otlp
+            config:
+              protocols:
+                grpc:
+                  listening_addr: "127.0.0.1:4317"
+          sink:
+            type: exporter:noop
+            config: {}
+        connections:
+          - from: receiver
+            to: sink
