@@ -227,6 +227,7 @@ repository](https://github.com/open-telemetry/community/blob/main/guides/contrib
 
 ### Approvers
 
+- [Aaron Marten](https://github.com/AaronRM), Microsoft
 - [Cijo Thomas](https://github.com/cijothomas), Microsoft
 
 For more information about the approver role, see the [community
@@ -234,7 +235,6 @@ repository](https://github.com/open-telemetry/community/blob/main/guides/contrib
 
 ### Triagers
 
-- [Aaron Marten](https://github.com/AaronRM), Microsoft
 - [Tom Tan](https://github.com/ThomsonTan), Microsoft
 
 For more information about the approver role, see the [community
