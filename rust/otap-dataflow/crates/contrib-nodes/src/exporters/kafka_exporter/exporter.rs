@@ -189,6 +189,17 @@ struct SendMeta {
     payload_bytes: usize,
 }
 
+/// The ack/nack a finalized delivery still needs to report upstream, produced by
+/// [`KafkaExporter::record_completion_metrics`] once the success/failure metric
+/// has been recorded.
+enum ReportIntent {
+    /// The delivery succeeded; ack the original pdata upstream.
+    Ack,
+    /// The delivery failed; nack the original pdata upstream with `reason`.
+    /// `permanent` selects a permanent (non-retryable) vs transient nack.
+    Nack { reason: String, permanent: bool },
+}
+
 /// Bounded, self-managing set of in-flight Kafka deliveries.
 ///
 /// Wraps a [`FuturesUnordered`] of boxed futures that each await a delivery and
@@ -771,6 +782,18 @@ impl KafkaExporter {
         reporter: &dyn AckNackReporter,
         effect_handler: Option<&EffectHandler<OtapPdata>>,
     ) {
+        let (intent, pdata) = self.record_completion_metrics(meta, result);
+        Self::report_completion(intent, pdata, reporter, effect_handler).await;
+    }
+
+    /// Records the success/failure metric for a resolved delivery and returns
+    /// the ack/nack that still needs to be reported, paired with the pdata to
+    /// return upstream.
+    fn record_completion_metrics(
+        &mut self,
+        meta: SendMeta,
+        result: Result<OwnedDeliveryResult, Canceled>,
+    ) -> (ReportIntent, OtapPdata) {
         let SendMeta {
             signal_type,
             topic,
@@ -796,16 +819,7 @@ impl KafkaExporter {
                 );
                 self.metrics
                     .record_success(signal_type, export_start.elapsed(), payload_bytes);
-                if let Err(e) = reporter.ack(pdata).await {
-                    if let Some(eh) = effect_handler {
-                        eh.info(&format!(
-                            "Failed to report ack for Kafka export (export succeeded): {}",
-                            e
-                        ))
-                        .await;
-                    }
-                }
-                return;
+                return (ReportIntent::Ack, pdata);
             }
             Ok(Err((kafka_err, _owned_message))) => kafka_err,
             Err(_canceled) => rdkafka::error::KafkaError::Canceled,
@@ -833,19 +847,40 @@ impl KafkaExporter {
             permanent = permanent,
             error = %kafka_err,
         );
-        let reason = kafka_err.to_string();
-        let nack_result = if permanent {
-            reporter.nack_permanent(reason, pdata).await
-        } else {
-            reporter.nack(reason, pdata).await
+        (
+            ReportIntent::Nack {
+                reason: kafka_err.to_string(),
+                permanent,
+            },
+            pdata,
+        )
+    }
+
+    /// Reports the ack/nack for a finalized delivery to the upstream via the
+    /// reporter.
+    async fn report_completion(
+        intent: ReportIntent,
+        pdata: OtapPdata,
+        reporter: &dyn AckNackReporter,
+        effect_handler: Option<&EffectHandler<OtapPdata>>,
+    ) {
+        let (report_result, context) = match intent {
+            ReportIntent::Ack => (
+                reporter.ack(pdata).await,
+                "ack for Kafka export (export succeeded)",
+            ),
+            ReportIntent::Nack { reason, permanent } => {
+                let result = if permanent {
+                    reporter.nack_permanent(reason, pdata).await
+                } else {
+                    reporter.nack(reason, pdata).await
+                };
+                (result, "nack for Kafka export failure")
+            }
         };
-        if let Err(e) = nack_result {
+        if let Err(e) = report_result {
             if let Some(eh) = effect_handler {
-                eh.info(&format!(
-                    "Failed to report nack for Kafka export failure: {}",
-                    e
-                ))
-                .await;
+                eh.info(&format!("Failed to report {context}: {e}")).await;
             }
         }
     }
@@ -853,8 +888,8 @@ impl KafkaExporter {
     /// Drain in-flight deliveries on shutdown, bounded by `deadline`.
     ///
     /// Flushes the producer so queued messages get one final chance to be
-    /// delivered, then purges anything still queued so we never block past the
-    /// deadline.
+    /// delivered within the deadline, then unconditionally purges anything still
+    /// queued or in flight.
     async fn drain_and_flush(
         &mut self,
         deadline: Instant,
@@ -874,12 +909,15 @@ impl KafkaExporter {
                 "kafka.exporter.shutdown.flush_failed",
                 error = %e,
             );
-            // Flush timed out or failed; purge anything still queued (in-flight
-            // and not-yet-queued) so the producer drop does not block. Purged
-            // messages trigger their delivery callbacks with a purge error.
-            self.producer
-                .purge(rdkafka::producer::PurgeConfig::default().queue().inflight());
         }
+
+        // Purge anything still queued or in flight after the bounded flush so
+        // every tracked delivery future resolves promptly (delivered, or a
+        // purge/`Canceled` error). A record that already delivered is a no-op
+        // here; anything else has its delivery callback fired so the drain loop
+        // can finalize it without waiting on the broker's delivery timeout.
+        self.producer
+            .purge(rdkafka::producer::PurgeConfig::default().queue().inflight());
     }
 
     /// Applies a live configuration change pushed via
@@ -1190,19 +1228,43 @@ impl Exporter<OtapPdata> for KafkaExporter {
                     // Graceful shutdown: ingress is already closed by the
                     // engine's receiver-first drain. Flush the producer (bounded
                     // by `deadline`) so pipelined deliveries get a final chance,
-                    // then finalize every tracked in-flight delivery so its
-                    // ack/nack is reported before we return, then purge anything
-                    // still queued so we never block past the deadline.
+                    // then purge anything still queued or in flight so every
+                    // tracked delivery future resolves promptly.
                     self.drain_and_flush(deadline, &effect_handler).await;
+
+                    // Drain and finalize every tracked in-flight delivery.
+                    let shutdown_deadline = tokio::time::Instant::from_std(deadline);
+                    let mut abandoned_reports = 0usize;
                     while !in_flight.is_empty() {
                         let (meta, result) = in_flight.next_completion().await;
-                        self.finalize_send_completion(
-                            meta,
-                            result,
-                            &ack_nack_reporter,
-                            Some(&effect_handler),
+                        // Always record the metric so accounting is complete even
+                        // past the deadline.
+                        let (intent, pdata) = self.record_completion_metrics(meta, result);
+                        // Report the ack/nack only while there is deadline budget
+                        // left; a report that cannot start or complete before the
+                        // deadline is abandoned rather than allowed to block.
+                        let reported = tokio::time::timeout_at(
+                            shutdown_deadline,
+                            Self::report_completion(
+                                intent,
+                                pdata,
+                                &ack_nack_reporter,
+                                Some(&effect_handler),
+                            ),
                         )
-                        .await;
+                        .await
+                        .is_ok();
+                        if !reported {
+                            abandoned_reports += 1;
+                        }
+                    }
+                    if abandoned_reports > 0 {
+                        otel_warn!(
+                            "kafka.exporter.shutdown.deadline_exceeded",
+                            message = "Kafka in-flight ack/nack reports abandoned at the \
+                                       shutdown deadline",
+                            abandoned = abandoned_reports,
+                        );
                     }
 
                     effect_handler.info("Kafka exporter stopped").await;
@@ -2892,6 +2954,657 @@ pub mod test_support {
             .await;
         }
 
+        /// Scenario (shutdown and live reconfiguration): a buffered record is
+        /// held against an in-cluster broker whose round-trip is stalled far past
+        /// a short shutdown deadline, with a bounded librdkafka delivery timeout.
+        /// Guarantees: the deadline-bounded flush-then-purge returns and the
+        /// exporter reaches its terminal state well within a bound far shorter
+        /// than the broker stall, so a stalled in-cluster broker cannot block the
+        /// shutdown past its deadline (complements the unreachable-address case
+        /// by stalling a reachable broker and clearing the fault on teardown).
+        #[tokio::test]
+        async fn shutdown_deadline_bounded_flush_with_stalled_broker() {
+            let topic = "it-shutdown-stalled-broker";
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic),
+                |cluster| async move {
+                    let cfg = KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it")
+                        .with_logs(SignalConfig::new(topic.into(), MessageFormat::OtlpProto))
+                        // Bound librdkafka delivery so a stalled record fails fast.
+                        .with_timeout_ms(500)
+                        .try_into()
+                        .expect("config should be valid");
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    // Stall the broker far past the shutdown deadline. A large
+                    // round-trip delay (not a full broker_down) lets the purge's
+                    // off-path work eventually settle so teardown stays clean.
+                    cluster.faults().round_trip_time(1, Duration::from_secs(30));
+
+                    exporter
+                        .send_pdata(logs_pdata(logs_request_bytes(), None))
+                        .await
+                        .expect("send pdata");
+
+                    let start = Instant::now();
+                    exporter.shutdown(Duration::from_millis(500)).await;
+                    tokio::time::timeout(Duration::from_secs(10), exporter.await_stopped())
+                        .await
+                        .expect("shutdown must not hang past the deadline");
+                    assert!(
+                        start.elapsed() < Duration::from_secs(9),
+                        "shutdown took too long against a stalled broker: {:?}",
+                        start.elapsed()
+                    );
+
+                    // Restore normal latency so any deadline-exceeded off-path
+                    // work can settle before the cluster is torn down.
+                    cluster
+                        .faults()
+                        .round_trip_time(1, Duration::from_millis(1));
+                },
+            )
+            .await;
+        }
+
+        /// Scenario (shutdown and live reconfiguration): a batch is exported and
+        /// confirmed delivered, the exporter is gracefully shut down, and only
+        /// after it has fully stopped is the topic re-inspected.
+        /// Guarantees: the exporter produces exactly the records accepted before
+        /// shutdown and nothing after -- the topic holds only the pre-shutdown
+        /// batch (`recv_n` count matches, then `assert_no_more_messages`),
+        /// codifying that the exporter stops sending once shutdown completes.
+        #[tokio::test]
+        async fn shutdown_stops_accepting_sends_no_new_records_after_shutdown() {
+            let topic = "it-shutdown-no-new-records";
+            const N: usize = 3;
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic),
+                |cluster| async move {
+                    let consumer = cluster.consumer().subscribe(&[topic]);
+                    let cfg = logs_config(
+                        cluster.bootstrap_servers(),
+                        SignalConfig::new(topic.into(), MessageFormat::OtlpProto),
+                    );
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    let payload = logs_request_bytes();
+                    for _ in 0..N {
+                        exporter
+                            .send_pdata(logs_pdata(payload.clone(), None))
+                            .await
+                            .expect("send pre-shutdown pdata");
+                    }
+
+                    exporter.shutdown(Duration::from_secs(5)).await;
+                    exporter.await_stopped().await;
+
+                    // Exactly the pre-shutdown batch reached the topic, and no
+                    // further records were produced after shutdown completed.
+                    let msgs = consumer.recv_n(N).await;
+                    assert_eq!(
+                        msgs.len(),
+                        N,
+                        "exactly the pre-shutdown batch must be produced"
+                    );
+                    for msg in &msgs {
+                        let _ = msg.assert_topic(topic).assert_payload(&payload);
+                    }
+                    consumer
+                        .assert_no_more_messages(Duration::from_millis(500))
+                        .await;
+                },
+            )
+            .await;
+        }
+
+        /// Scenario (shutdown and live reconfiguration): N byte-distinct records
+        /// are accepted and buffered, then the exporter is gracefully shut down
+        /// against a healthy single-partition broker, modeling the engine draining
+        /// an old pipeline instance during a cutover.
+        /// Guarantees: the shutdown drain delivers every accepted record with no
+        /// loss and no duplication -- the single partition ends with exactly the
+        /// contiguous offsets `0..N` (no gaps == no loss, no repeats == no
+        /// duplicates) and the delivered payload set is exactly the accepted set
+        /// (the broker receives nothing that was not accepted), documenting the
+        /// at-least-once exporter's actual once-delivered behavior on a clean
+        /// shutdown.
+        #[tokio::test]
+        async fn shutdown_delivers_all_records_without_duplication() {
+            let topic = "it-shutdown-no-dup";
+            const N: usize = 12;
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic),
+                |cluster| async move {
+                    let consumer = cluster.consumer().subscribe(&[topic]);
+                    let cfg = logs_config(
+                        cluster.bootstrap_servers(),
+                        SignalConfig::new(topic.into(), MessageFormat::OtlpProto),
+                    );
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    // Each record carries a distinct sequence in its payload so
+                    // duplicates and losses are both detectable by payload set.
+                    let mut accepted: std::collections::HashSet<Vec<u8>> =
+                        std::collections::HashSet::new();
+                    for seq in 0..N {
+                        let payload = logs_request_bytes_seq(seq);
+                        let _ = accepted.insert(payload.clone());
+                        exporter
+                            .send_pdata(logs_pdata(payload, None))
+                            .await
+                            .expect("send pre-shutdown pdata");
+                    }
+                    assert_eq!(accepted.len(), N, "sequenced payloads must be distinct");
+
+                    exporter.shutdown(Duration::from_secs(10)).await;
+                    exporter.await_stopped().await;
+
+                    // Exactly N records are delivered on the single partition.
+                    let msgs = consumer.recv_n(N).await;
+                    assert_eq!(
+                        msgs.len(),
+                        N,
+                        "the shutdown drain must deliver every accepted record"
+                    );
+
+                    // No gaps and no duplicates: the partition holds exactly the
+                    // contiguous offsets 0..N.
+                    let mut offsets: Vec<i64> = msgs.iter().map(|m| m.offset).collect();
+                    offsets.sort_unstable();
+                    let expected: Vec<i64> = (0..N as i64).collect();
+                    assert_eq!(
+                        offsets, expected,
+                        "delivered offsets must be the contiguous range 0..N with \
+                         no gaps (no loss) and no repeats (no duplication)",
+                    );
+
+                    // The delivered payload set is exactly the accepted set: no
+                    // record is lost and the broker receives nothing that was not
+                    // accepted.
+                    let delivered: std::collections::HashSet<Vec<u8>> = msgs
+                        .iter()
+                        .map(|m| m.payload.clone().expect("record carries a payload"))
+                        .collect();
+                    assert_eq!(
+                        delivered, accepted,
+                        "the delivered payloads must exactly match the accepted \
+                         payloads (no loss, no unaccepted records)",
+                    );
+
+                    // Nothing beyond the accepted batch reaches the broker.
+                    consumer
+                        .assert_no_more_messages(Duration::from_millis(500))
+                        .await;
+                },
+            )
+            .await;
+        }
+
+        /// Scenario (shutdown and live reconfiguration): live-reconfiguration
+        /// cutover on the SAME broker and SAME topic -- the OLD exporter (A)
+        /// delivers a batch, then the NEW exporter (B) is started against the same
+        /// topic and delivers its own batch (NEW Ready), and only THEN is A shut
+        /// down.
+        /// Guarantees: following the engine order (start new, confirm working,
+        /// then shut down old), both instances' records are delivered with no
+        /// loss, and the NEW exporter keeps delivering after the OLD instance has
+        /// fully stopped -- a same-topic cutover does not disturb the new
+        /// instance.
+        #[tokio::test]
+        async fn cutover_new_exporter_same_broker_starts_before_old_shuts_down() {
+            let topic = "it-cutover-same-topic";
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic),
+                |cluster| async move {
+                    let consumer = cluster.consumer().subscribe(&[topic]);
+
+                    // OLD exporter (A): deliver a distinct batch.
+                    let cfg_a = logs_config(
+                        cluster.bootstrap_servers(),
+                        SignalConfig::new(topic.into(), MessageFormat::OtlpProto),
+                    );
+                    let exporter_a = KafkaExporterHarness::start(&cluster, cfg_a);
+                    let p_a = logs_request_bytes_seq(1);
+                    exporter_a
+                        .send_pdata(logs_pdata(p_a.clone(), None))
+                        .await
+                        .expect("A send");
+                    let _ = consumer.recv().await.assert_payload(&p_a);
+
+                    // Engine order step 1+2: start the NEW exporter (B) on the
+                    // same topic and confirm it delivers (NEW Ready).
+                    let cfg_b = logs_config(
+                        cluster.bootstrap_servers(),
+                        SignalConfig::new(topic.into(), MessageFormat::OtlpProto),
+                    );
+                    let exporter_b = KafkaExporterHarness::start(&cluster, cfg_b);
+                    let p_b = logs_request_bytes_seq(2);
+                    exporter_b
+                        .send_pdata(logs_pdata(p_b.clone(), None))
+                        .await
+                        .expect("B send");
+                    let _ = consumer.recv().await.assert_payload(&p_b);
+
+                    // Engine order step 3: only now shut down the OLD instance.
+                    exporter_a.shutdown(Duration::from_secs(5)).await;
+                    exporter_a.await_stopped().await;
+
+                    // The NEW exporter keeps delivering after the OLD is gone.
+                    let p_b2 = logs_request_bytes_seq(3);
+                    exporter_b
+                        .send_pdata(logs_pdata(p_b2.clone(), None))
+                        .await
+                        .expect("B send post-cutover");
+                    let _ = consumer.recv().await.assert_payload(&p_b2);
+
+                    exporter_b.shutdown(Duration::from_secs(5)).await;
+                    exporter_b.await_stopped().await;
+                },
+            )
+            .await;
+        }
+
+        /// Scenario (shutdown and live reconfiguration): live-reconfiguration
+        /// cutover on the SAME broker but DISTINCT topics -- the OLD exporter (A)
+        /// produces to topic X while the NEW exporter (B) is started against topic
+        /// Y and confirmed delivering (NEW Ready), and only THEN is A shut down.
+        /// Guarantees: the NEW exporter's post-cutover records land on topic Y and
+        /// topic X receives nothing after the OLD instance stops -- a topic-change
+        /// cutover on one broker routes new data to the new topic without
+        /// disturbing or cross-contaminating the old topic.
+        #[tokio::test]
+        async fn cutover_new_exporter_same_broker_distinct_topics_starts_before_old_shuts_down() {
+            let topic_x = "it-cutover-topic-x";
+            let topic_y = "it-cutover-topic-y";
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic_x).topic(topic_y),
+                |cluster| async move {
+                    let consumer_x = cluster.consumer().subscribe(&[topic_x]);
+                    let consumer_y = cluster.consumer().subscribe(&[topic_y]);
+
+                    // OLD exporter (A) -> topic X.
+                    let cfg_a = logs_config(
+                        cluster.bootstrap_servers(),
+                        SignalConfig::new(topic_x.into(), MessageFormat::OtlpProto),
+                    );
+                    let exporter_a = KafkaExporterHarness::start(&cluster, cfg_a);
+                    let p_x = logs_request_bytes_seq(1);
+                    exporter_a
+                        .send_pdata(logs_pdata(p_x.clone(), None))
+                        .await
+                        .expect("A send to X");
+                    let _ = consumer_x
+                        .recv()
+                        .await
+                        .assert_topic(topic_x)
+                        .assert_payload(&p_x);
+
+                    // NEW exporter (B) -> topic Y, confirmed delivering (Ready).
+                    let cfg_b = logs_config(
+                        cluster.bootstrap_servers(),
+                        SignalConfig::new(topic_y.into(), MessageFormat::OtlpProto),
+                    );
+                    let exporter_b = KafkaExporterHarness::start(&cluster, cfg_b);
+                    let p_y = logs_request_bytes_seq(2);
+                    exporter_b
+                        .send_pdata(logs_pdata(p_y.clone(), None))
+                        .await
+                        .expect("B send to Y");
+                    let _ = consumer_y
+                        .recv()
+                        .await
+                        .assert_topic(topic_y)
+                        .assert_payload(&p_y);
+
+                    // Engine order step 3: shut down the OLD instance.
+                    exporter_a.shutdown(Duration::from_secs(5)).await;
+                    exporter_a.await_stopped().await;
+
+                    // NEW exporter keeps routing to topic Y after the cutover.
+                    let p_y2 = logs_request_bytes_seq(3);
+                    exporter_b
+                        .send_pdata(logs_pdata(p_y2.clone(), None))
+                        .await
+                        .expect("B send to Y post-cutover");
+                    let _ = consumer_y
+                        .recv()
+                        .await
+                        .assert_topic(topic_y)
+                        .assert_payload(&p_y2);
+
+                    // Topic X receives nothing after the OLD instance stops.
+                    consumer_x
+                        .assert_no_more_messages(Duration::from_millis(500))
+                        .await;
+
+                    exporter_b.shutdown(Duration::from_secs(5)).await;
+                    exporter_b.await_stopped().await;
+                },
+            )
+            .await;
+        }
+
+        /// Scenario (shutdown and live reconfiguration): live-reconfiguration
+        /// cutover where the NEW exporter (B) points at a DIFFERENT broker than
+        /// the OLD exporter (A). B is started against broker B and confirmed
+        /// delivering (NEW Ready), and only THEN is A shut down on broker A.
+        /// Guarantees: the NEW exporter's records land on broker B before and
+        /// after the cutover, fully isolated from the OLD instance on broker A --
+        /// shutting down the old instance cannot affect the new broker's
+        /// deliveries.
+        #[tokio::test]
+        async fn cutover_new_exporter_different_broker_starts_before_old_shuts_down() {
+            let topic_a = "it-cutover-exp-broker-a";
+            let topic_b = "it-cutover-exp-broker-b";
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic_a),
+                |cluster_a| async move {
+                    // Build the SECOND broker on the same LocalSet thread.
+                    let cluster_b = KafkaTestCluster::builder().topic(topic_b).build();
+                    let consumer_b = cluster_b.consumer().subscribe(&[topic_b]);
+
+                    // OLD exporter (A) on broker A.
+                    let cfg_a = logs_config(
+                        cluster_a.bootstrap_servers(),
+                        SignalConfig::new(topic_a.into(), MessageFormat::OtlpProto),
+                    );
+                    let exporter_a = KafkaExporterHarness::start(&cluster_a, cfg_a);
+                    let consumer_a = cluster_a.consumer().subscribe(&[topic_a]);
+                    let p_a = logs_request_bytes_seq(1);
+                    exporter_a
+                        .send_pdata(logs_pdata(p_a.clone(), None))
+                        .await
+                        .expect("A send to broker A");
+                    let _ = consumer_a.recv().await.assert_payload(&p_a);
+
+                    // NEW exporter (B) on broker B, confirmed delivering (Ready).
+                    let cfg_b = logs_config(
+                        cluster_b.bootstrap_servers(),
+                        SignalConfig::new(topic_b.into(), MessageFormat::OtlpProto),
+                    );
+                    let exporter_b = KafkaExporterHarness::start(&cluster_b, cfg_b);
+                    let p_b = logs_request_bytes_seq(2);
+                    exporter_b
+                        .send_pdata(logs_pdata(p_b.clone(), None))
+                        .await
+                        .expect("B send to broker B");
+                    let _ = consumer_b.recv().await.assert_payload(&p_b);
+
+                    // Engine order step 3: shut down the OLD instance on broker A.
+                    exporter_a.shutdown(Duration::from_secs(5)).await;
+                    exporter_a.await_stopped().await;
+
+                    // NEW exporter on broker B keeps delivering after the cutover.
+                    let p_b2 = logs_request_bytes_seq(3);
+                    exporter_b
+                        .send_pdata(logs_pdata(p_b2.clone(), None))
+                        .await
+                        .expect("B send to broker B post-cutover");
+                    let _ = consumer_b.recv().await.assert_payload(&p_b2);
+
+                    exporter_b.shutdown(Duration::from_secs(5)).await;
+                    exporter_b.await_stopped().await;
+                },
+            )
+            .await;
+        }
+
+        /// Scenario (shutdown and live reconfiguration): live-reconfiguration
+        /// cutover where the OLD exporter (A) handles logs only and the NEW
+        /// exporter (B) is a multi-signal instance (traces + metrics + logs) to
+        /// distinct topics. B is started and confirmed delivering every signal
+        /// (NEW Ready), and only THEN is A shut down.
+        /// Guarantees: the NEW multi-signal exporter delivers all three signals to
+        /// their topics before and after the cutover, so a cutover to a
+        /// broader-signal instance keeps every signal flowing while the OLD
+        /// logs-only instance shuts down.
+        #[tokio::test]
+        async fn cutover_new_exporter_multi_signal_starts_before_old_shuts_down() {
+            let old_logs = "it-cutover-old-logs";
+            let new_traces = "it-cutover-new-traces";
+            let new_metrics = "it-cutover-new-metrics";
+            let new_logs = "it-cutover-new-logs";
+            with_cluster(
+                KafkaTestCluster::builder()
+                    .topic(old_logs)
+                    .topic(new_traces)
+                    .topic(new_metrics)
+                    .topic(new_logs),
+                |cluster| async move {
+                    let logs_consumer_old = cluster.consumer().subscribe(&[old_logs]);
+                    let traces_consumer = cluster.consumer().subscribe(&[new_traces]);
+                    let metrics_consumer = cluster.consumer().subscribe(&[new_metrics]);
+                    let logs_consumer_new = cluster.consumer().subscribe(&[new_logs]);
+
+                    // OLD exporter (A): logs only.
+                    let cfg_a = logs_config(
+                        cluster.bootstrap_servers(),
+                        SignalConfig::new(old_logs.into(), MessageFormat::OtlpProto),
+                    );
+                    let exporter_a = KafkaExporterHarness::start(&cluster, cfg_a);
+                    let old_payload = logs_request_bytes_seq(1);
+                    exporter_a
+                        .send_pdata(logs_pdata(old_payload.clone(), None))
+                        .await
+                        .expect("A send logs");
+                    let _ = logs_consumer_old.recv().await.assert_payload(&old_payload);
+
+                    // NEW exporter (B): traces + metrics + logs to distinct topics.
+                    let cfg_b = KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it")
+                        .with_traces(SignalConfig::new(
+                            new_traces.into(),
+                            MessageFormat::OtlpProto,
+                        ))
+                        .with_metrics(SignalConfig::new(
+                            new_metrics.into(),
+                            MessageFormat::OtlpProto,
+                        ))
+                        .with_logs(SignalConfig::new(new_logs.into(), MessageFormat::OtlpProto))
+                        .try_into()
+                        .expect("config should be valid");
+                    let exporter_b = KafkaExporterHarness::start(&cluster, cfg_b);
+
+                    // Confirm all three NEW signals deliver (NEW Ready).
+                    let (traces, traces_payload) = traces_pdata();
+                    let (metrics, metrics_payload) = metrics_pdata();
+                    let new_logs_payload = logs_request_bytes_seq(2);
+                    exporter_b.send_pdata(traces).await.expect("B send traces");
+                    exporter_b
+                        .send_pdata(metrics)
+                        .await
+                        .expect("B send metrics");
+                    exporter_b
+                        .send_pdata(logs_pdata(new_logs_payload.clone(), None))
+                        .await
+                        .expect("B send logs");
+                    let _ = traces_consumer
+                        .recv()
+                        .await
+                        .assert_topic(new_traces)
+                        .assert_payload(&traces_payload);
+                    let _ = metrics_consumer
+                        .recv()
+                        .await
+                        .assert_topic(new_metrics)
+                        .assert_payload(&metrics_payload);
+                    let _ = logs_consumer_new
+                        .recv()
+                        .await
+                        .assert_topic(new_logs)
+                        .assert_payload(&new_logs_payload);
+
+                    // Engine order step 3: shut down the OLD logs-only instance.
+                    exporter_a.shutdown(Duration::from_secs(5)).await;
+                    exporter_a.await_stopped().await;
+
+                    // The NEW multi-signal exporter keeps delivering every signal
+                    // after the cutover.
+                    let (traces2, traces_payload2) = traces_pdata();
+                    exporter_b
+                        .send_pdata(traces2)
+                        .await
+                        .expect("B send traces post");
+                    let _ = traces_consumer
+                        .recv()
+                        .await
+                        .assert_topic(new_traces)
+                        .assert_payload(&traces_payload2);
+
+                    exporter_b.shutdown(Duration::from_secs(5)).await;
+                    exporter_b.await_stopped().await;
+                },
+            )
+            .await;
+        }
+
+        /// Scenario (shutdown and live reconfiguration): a batch carrying a NACKS
+        /// subscriber unwind frame is in flight when the broker's produce path is
+        /// failing, and the exporter is then shut down.
+        /// Guarantees: the in-flight delivery finalized during the shutdown drain
+        /// routes a nack that returns the original pdata to the retry processor
+        /// (`recv_nack` yields a message whose refused pdata is preserved), so a
+        /// failing produce at shutdown never silently drops accepted data. The
+        /// test asserts the no-loss unwind invariant, not an exact
+        /// permanent-vs-transient split, because the mock broker coalesces
+        /// pipelined records so the injected-error-to-send mapping is
+        /// nondeterministic (the classification itself is unit-tested in
+        /// `error.rs`).
+        #[tokio::test]
+        async fn shutdown_nacks_in_flight_delivery_under_produce_outage() {
+            const OUTAGE_SENDS: usize = 8;
+            with_cluster(
+                KafkaTestCluster::builder().topic("it-shutdown-outage-nack"),
+                |cluster| async move {
+                    let _consumer = cluster.consumer().subscribe(&["it-shutdown-outage-nack"]);
+                    cluster.faults().fail_produce(
+                        &[RDKafkaRespErr::RD_KAFKA_RESP_ERR_POLICY_VIOLATION; OUTAGE_SENDS],
+                    );
+
+                    let cfg = KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it")
+                        .with_logs(SignalConfig::new(
+                            "it-shutdown-outage-nack".into(),
+                            MessageFormat::OtlpProto,
+                        ))
+                        .with_max_in_flight(4)
+                        // Long enough that the record is still in flight when the
+                        // shutdown drain finalizes it, rather than timing out
+                        // first.
+                        .with_timeout_ms(30_000)
+                        .try_into()
+                        .expect("config should be valid");
+                    let mut exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    exporter
+                        .send_pdata(logs_pdata_subscribed(logs_request_bytes(), None))
+                        .await
+                        .expect("send subscribed pdata");
+
+                    // Shutdown with a short deadline so the failing in-flight
+                    // delivery is finalized (nacked) during the drain.
+                    exporter.shutdown(Duration::from_millis(500)).await;
+
+                    let mut nack = exporter
+                        .recv_nack(Duration::from_secs(10))
+                        .await
+                        .expect("a failed in-flight delivery must unwind a nack at shutdown");
+                    assert!(
+                        nack.refused.num_items() >= 1,
+                        "the refused pdata is returned to the retry processor \
+                         (no silent loss on shutdown)",
+                    );
+
+                    exporter.await_stopped().await;
+                    cluster.faults().clear_produce_failures();
+                },
+            )
+            .await;
+        }
+
+        /// Scenario (shutdown and live reconfiguration): one batch per signal
+        /// (traces, metrics, logs) is enqueued to distinct topics and is still in
+        /// flight (broker round-trip briefly stalled) when a graceful shutdown is
+        /// requested.
+        /// Guarantees: the shutdown drain flushes the single shared producer for
+        /// all three signals, so every signal's in-flight batch is delivered and
+        /// the terminal snapshot reports one success per signal -- a mixed-signal
+        /// in-flight set is fully drained on shutdown with no signal left behind.
+        #[tokio::test]
+        async fn shutdown_drains_mixed_signal_in_flight_batches() {
+            let traces_topic = "it-shutdown-mixed-traces";
+            let metrics_topic = "it-shutdown-mixed-metrics";
+            let logs_topic = "it-shutdown-mixed-logs";
+            with_cluster(
+                KafkaTestCluster::builder()
+                    .topic(traces_topic)
+                    .topic(metrics_topic)
+                    .topic(logs_topic),
+                |cluster| async move {
+                    let cfg = KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it")
+                        .with_traces(SignalConfig::new(
+                            traces_topic.into(),
+                            MessageFormat::OtlpProto,
+                        ))
+                        .with_metrics(SignalConfig::new(
+                            metrics_topic.into(),
+                            MessageFormat::OtlpProto,
+                        ))
+                        .with_logs(SignalConfig::new(
+                            logs_topic.into(),
+                            MessageFormat::OtlpProto,
+                        ))
+                        // Room for all three signals to be in flight at once.
+                        .with_max_in_flight(8)
+                        .with_timeout_ms(10_000)
+                        .try_into()
+                        .expect("config should be valid");
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    // Briefly stall the broker so the three sends are still in
+                    // flight when shutdown begins, forcing the drain to flush a
+                    // mixed-signal in-flight set.
+                    cluster
+                        .faults()
+                        .round_trip_time(1, Duration::from_millis(300));
+
+                    let (traces, _traces_payload) = traces_pdata();
+                    let (metrics, _metrics_payload) = metrics_pdata();
+                    let logs_payload = logs_request_bytes();
+                    exporter.send_pdata(traces).await.expect("send traces");
+                    exporter.send_pdata(metrics).await.expect("send metrics");
+                    exporter
+                        .send_pdata(logs_pdata(logs_payload, None))
+                        .await
+                        .expect("send logs");
+
+                    // Restore latency so the shutdown flush can deliver promptly.
+                    cluster
+                        .faults()
+                        .round_trip_time(1, Duration::from_millis(1));
+
+                    exporter.shutdown(Duration::from_secs(5)).await;
+                    let ts = exporter.await_terminal_state().await;
+                    let snaps = ts.metrics();
+                    assert_eq!(
+                        kafka_exports(snaps, "traces", "success"),
+                        1,
+                        "traces in-flight batch must drain to success on shutdown",
+                    );
+                    assert_eq!(
+                        kafka_exports(snaps, "metrics", "success"),
+                        1,
+                        "metrics in-flight batch must drain to success on shutdown",
+                    );
+                    assert_eq!(
+                        kafka_exports(snaps, "logs", "success"),
+                        1,
+                        "logs in-flight batch must drain to success on shutdown",
+                    );
+                },
+            )
+            .await;
+        }
+
         // ---- InFlightSends bound enforcement (unit) ----
 
         /// Builds a delivery future that resolves immediately to a successful
@@ -3265,6 +3978,498 @@ pub mod test_support {
                 assert!(
                     outcome.is_ok(),
                     "shutdown must stay bounded with a parked pdata + stalled broker"
+                );
+            })
+            .await;
+        }
+
+        /// Scenario (shutdown and live reconfiguration): a large in-flight set
+        /// (`max_in_flight = 64`, filled with 64 stalled deliveries) is pointed at
+        /// an unroutable broker when a graceful shutdown arrives with a short
+        /// deadline.
+        /// Guarantees: the shutdown stays deadline-bounded even with many
+        /// concurrent in-flight deliveries -- the flush-then-purge resolves every
+        /// stalled future so the (otherwise unbounded) drain loop terminates well
+        /// within a generous outer timeout, every send is accounted exactly once
+        /// (`success + failure == N`), and the deadline-forced drain finalizes the
+        /// stalled deliveries as failures (at least one purge-nack) rather than
+        /// leaking them, so a large in-flight set neither stalls the deadline nor
+        /// silently drops a delivery.
+        #[tokio::test]
+        async fn shutdown_with_many_in_flight_and_stalled_broker_is_deadline_bounded() {
+            const N: usize = 64;
+            let cfg: KafkaExporterConfig =
+                KafkaExporterConfigBuilder::new("127.0.0.1:1", "it-client")
+                    .with_logs(SignalConfig::new(
+                        "it-mif-many-stalled".into(),
+                        MessageFormat::OtlpProto,
+                    ))
+                    .with_max_in_flight(N)
+                    .with_timeout_ms(500)
+                    .try_into()
+                    .expect("config should be valid");
+
+            run_on_local_set(|cluster| async move {
+                let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                // Fill the in-flight set: all N deliveries stall at the
+                // unreachable broker, so none can resolve on its own before the
+                // shutdown drain.
+                for _ in 0..N {
+                    exporter
+                        .send_pdata(logs_pdata(logs_request_bytes(), None))
+                        .await
+                        .expect("send pdata");
+                }
+
+                // The whole stop must finish within a generous outer bound far
+                // shorter than an unbounded drain of 64 stalled deliveries would
+                // take.
+                let start = Instant::now();
+                let outcome = tokio::time::timeout(Duration::from_secs(15), async {
+                    exporter.shutdown(Duration::from_millis(500)).await;
+                    exporter.await_terminal_state().await
+                })
+                .await;
+                let ts = outcome.expect(
+                    "shutdown must stay bounded with a large in-flight set + stalled broker",
+                );
+                assert!(
+                    start.elapsed() < Duration::from_secs(14),
+                    "shutdown took too long with a large in-flight set: {:?}",
+                    start.elapsed(),
+                );
+
+                // Every in-flight send is accounted exactly once; none leaks past
+                // the deadline-forced drain.
+                let snaps = ts.metrics();
+                let success = kafka_exports(snaps, "logs", "success");
+                let failure = kafka_exports(snaps, "logs", "failure");
+                assert_eq!(
+                    success + failure,
+                    N as u64,
+                    "every in-flight send is accounted exactly once on a \
+                     deadline-bounded shutdown",
+                );
+                // The deadline-forced drain must FINALIZE the stalled deliveries
+                // as failures (purge-nacked), not leak them. Against an unroutable
+                // broker with a 500ms deadline none can deliver, so at least one
+                // failure is guaranteed.
+                assert!(
+                    failure >= 1,
+                    "the deadline-forced drain must finalize the stalled in-flight \
+                     deliveries as failures (purge-nacked), not leak them; \
+                     got success={success}, failure={failure}",
+                );
+            })
+            .await;
+        }
+
+        /// Scenario (shutdown and live reconfiguration): a large in-flight set
+        /// (`max_in_flight = 64`, filled with 64 stalled deliveries) is pointed at
+        /// a reachable but very slow broker (round-trip stalled far past the
+        /// deadline) when a graceful shutdown arrives with a short deadline.
+        /// Guarantees: as with the unroutable-broker case, the shutdown stays
+        /// deadline-bounded with many concurrent in-flight deliveries against a
+        /// slow-reachable broker -- the drain returns well within a generous outer
+        /// timeout, every send is accounted exactly once (`success + failure ==
+        /// N`), and the deadline-forced drain finalizes the stalled deliveries as
+        /// failures (at least one purge-nack) rather than leaking them, covering
+        /// the slow-broker failure mode distinct from an unroutable address.
+        #[tokio::test]
+        async fn shutdown_with_many_in_flight_and_slow_broker_is_deadline_bounded() {
+            let topic = "it-mif-many-slow";
+            const N: usize = 64;
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic),
+                |cluster| async move {
+                    let cfg = KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it")
+                        .with_logs(SignalConfig::new(topic.into(), MessageFormat::OtlpProto))
+                        .with_max_in_flight(N)
+                        .with_timeout_ms(500)
+                        .try_into()
+                        .expect("config should be valid");
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    // Stall the reachable broker far past the shutdown deadline so
+                    // the in-flight deliveries cannot settle on their own.
+                    cluster.faults().round_trip_time(1, Duration::from_secs(30));
+
+                    // Fill the in-flight set with N stalled deliveries.
+                    for _ in 0..N {
+                        exporter
+                            .send_pdata(logs_pdata(logs_request_bytes(), None))
+                            .await
+                            .expect("send pdata");
+                    }
+
+                    let start = Instant::now();
+                    let outcome = tokio::time::timeout(Duration::from_secs(15), async {
+                        exporter.shutdown(Duration::from_millis(500)).await;
+                        exporter.await_terminal_state().await
+                    })
+                    .await;
+                    let ts = outcome.expect(
+                        "shutdown must stay bounded with a large in-flight set + slow broker",
+                    );
+                    assert!(
+                        start.elapsed() < Duration::from_secs(14),
+                        "shutdown took too long with a large in-flight set: {:?}",
+                        start.elapsed(),
+                    );
+
+                    let snaps = ts.metrics();
+                    let success = kafka_exports(snaps, "logs", "success");
+                    let failure = kafka_exports(snaps, "logs", "failure");
+                    assert_eq!(
+                        success + failure,
+                        N as u64,
+                        "every in-flight send is accounted exactly once on a \
+                         deadline-bounded shutdown against a slow broker",
+                    );
+                    // The deadline-forced drain must FINALIZE the stalled
+                    // deliveries as failures (purge-nacked), not leak them. A 30s
+                    // round-trip stall against a 500ms deadline guarantees none can
+                    // deliver, so at least one failure is guaranteed.
+                    assert!(
+                        failure >= 1,
+                        "the deadline-forced drain must finalize the stalled \
+                         in-flight deliveries as failures (purge-nacked), not leak \
+                         them; got success={success}, failure={failure}",
+                    );
+
+                    // Restore normal latency so any deadline-exceeded off-path
+                    // work can settle before the cluster is torn down.
+                    cluster
+                        .faults()
+                        .round_trip_time(1, Duration::from_millis(1));
+                },
+            )
+            .await;
+        }
+
+        /// Scenario (shutdown stall): a large subscribed in-flight set
+        /// (`max_in_flight = 40`, exceeding the harness's 16-slot completion
+        /// channel) is pointed at an unroutable broker when a graceful shutdown
+        /// arrives with a short deadline, and the routed nacks are never
+        /// consumed (no `recv_nack`), modelling a control manager that stopped
+        /// draining completions at the deadline.
+        /// Guarantees: the shutdown finalize loop stays bounded by the deadline
+        /// even when its ack/nack completions cannot be delivered to a consumer,
+        /// so the node returns its terminal state within the deadline plus a
+        /// bounded flush/purge slack rather than blocking forever on the full
+        /// completion channel, and every in-flight send is accounted exactly
+        /// once (`success + failure == N`).
+        #[tokio::test]
+        async fn shutdown_finalize_loop_deadline_bounded_with_undrained_completions() {
+            // N exceeds the harness completion-channel capacity (16), so the
+            // finalize loop must send more completions than the channel can
+            // buffer without a consumer.
+            const N: usize = 40;
+            let cfg: KafkaExporterConfig =
+                KafkaExporterConfigBuilder::new("127.0.0.1:1", "it-client")
+                    .with_logs(SignalConfig::new(
+                        "it-finalize-stall-unroutable".into(),
+                        MessageFormat::OtlpProto,
+                    ))
+                    .with_max_in_flight(N)
+                    .with_timeout_ms(500)
+                    .try_into()
+                    .expect("config should be valid");
+
+            run_on_local_set(|cluster| async move {
+                let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                // Fill the in-flight set with N subscribed batches so each one's
+                // purge-nack routes a PipelineCompletionMsg onto the bounded,
+                // never-drained completion channel.
+                for _ in 0..N {
+                    exporter
+                        .send_pdata(logs_pdata_subscribed(logs_request_bytes(), None))
+                        .await
+                        .expect("send subscribed pdata");
+                }
+
+                // Deliberately do NOT read the completion channel: no
+                // `recv_nack`/`try_recv_completion`. The finalize loop must
+                // still return bounded by the deadline.
+                let shutdown_deadline = Duration::from_millis(500);
+                // Deadline plus a generous slack for the flush/purge and task
+                // scheduling; far shorter than an unbounded block on a full
+                // completion channel.
+                let bound = Duration::from_secs(4);
+                let start = Instant::now();
+                let ts = tokio::time::timeout(bound, async {
+                    exporter.shutdown(shutdown_deadline).await;
+                    exporter.await_terminal_state().await
+                })
+                .await
+                .expect(
+                    "shutdown finalize loop must stay deadline-bounded even when \
+                     ack/nack completions are never consumed",
+                );
+                assert!(
+                    start.elapsed() < bound,
+                    "shutdown exceeded its bounded window with undrained \
+                     completions: {:?}",
+                    start.elapsed(),
+                );
+
+                let snaps = ts.metrics();
+                let success = kafka_exports(snaps, "logs", "success");
+                let failure = kafka_exports(snaps, "logs", "failure");
+                assert_eq!(
+                    success + failure,
+                    N as u64,
+                    "every in-flight send is accounted exactly once on a \
+                     deadline-bounded shutdown with undrained completions",
+                );
+            })
+            .await;
+        }
+
+        /// Scenario (shutdown stall): a large subscribed in-flight set
+        /// (`max_in_flight = 40`, exceeding the harness's 16-slot completion
+        /// channel) is pointed at a reachable but very slow broker (round-trip
+        /// stalled far past the deadline) when a graceful shutdown arrives with
+        /// a short deadline, and the routed nacks are never consumed.
+        /// Guarantees: as with the unroutable-broker case, the finalize loop
+        /// stays bounded by the deadline against a slow-reachable broker even
+        /// when its completions cannot be delivered to a consumer -- the node
+        /// returns its terminal state within the deadline plus a bounded slack
+        /// and every in-flight send is accounted exactly once
+        /// (`success + failure == N`), covering the slow-broker failure mode
+        /// distinct from an unroutable address.
+        #[tokio::test]
+        async fn shutdown_finalize_bounded_with_slow_broker_and_undrained_completions() {
+            let topic = "it-finalize-stall-slow";
+            const N: usize = 40;
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic),
+                |cluster| async move {
+                    let cfg = KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it")
+                        .with_logs(SignalConfig::new(topic.into(), MessageFormat::OtlpProto))
+                        .with_max_in_flight(N)
+                        .with_timeout_ms(500)
+                        .try_into()
+                        .expect("config should be valid");
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    // Stall the reachable broker far past the shutdown deadline so
+                    // the in-flight deliveries cannot settle on their own and are
+                    // purge-nacked by the shutdown drain.
+                    cluster.faults().round_trip_time(1, Duration::from_secs(30));
+
+                    // Fill the in-flight set with N subscribed batches so each
+                    // purge-nack routes a PipelineCompletionMsg onto the bounded,
+                    // never-drained completion channel.
+                    for _ in 0..N {
+                        exporter
+                            .send_pdata(logs_pdata_subscribed(logs_request_bytes(), None))
+                            .await
+                            .expect("send subscribed pdata");
+                    }
+
+                    // Deliberately do NOT drain the completion channel.
+                    let shutdown_deadline = Duration::from_millis(500);
+                    let bound = Duration::from_secs(4);
+                    let start = Instant::now();
+                    let ts = tokio::time::timeout(bound, async {
+                        exporter.shutdown(shutdown_deadline).await;
+                        exporter.await_terminal_state().await
+                    })
+                    .await
+                    .expect(
+                        "shutdown finalize loop must stay deadline-bounded against \
+                         a slow broker even when completions are never consumed",
+                    );
+                    assert!(
+                        start.elapsed() < bound,
+                        "shutdown exceeded its bounded window with a slow broker \
+                         and undrained completions: {:?}",
+                        start.elapsed(),
+                    );
+
+                    let snaps = ts.metrics();
+                    let success = kafka_exports(snaps, "logs", "success");
+                    let failure = kafka_exports(snaps, "logs", "failure");
+                    assert_eq!(
+                        success + failure,
+                        N as u64,
+                        "every in-flight send is accounted exactly once on a \
+                         deadline-bounded shutdown against a slow broker with \
+                         undrained completions",
+                    );
+
+                    // Restore normal latency so any deadline-exceeded off-path
+                    // work can settle before the cluster is torn down.
+                    cluster
+                        .faults()
+                        .round_trip_time(1, Duration::from_millis(1));
+                },
+            )
+            .await;
+        }
+
+        /// Scenario (shutdown drain, completion channel overflows): the in-flight
+        /// set is filled to one MORE than the harness's 16-slot completion channel
+        /// capacity (`max_in_flight = 17`) against a reachable broker whose
+        /// round-trip is stalled far past the deadline, so every send is still in
+        /// flight (no steady-state completion) when a graceful shutdown arrives,
+        /// and the routed nacks are never consumed.
+        /// Guarantees: the shutdown drain buffers exactly capacity-many (16)
+        /// subscriber nacks onto the never-drained completion channel and then,
+        /// because each ack/nack report is bounded by the deadline, ABANDONS the
+        /// remaining report(s) rather than blocking on the full channel -- so the
+        /// node returns its terminal state within the deadline plus a bounded
+        /// flush/purge slack while still accounting every in-flight send exactly
+        /// once (`success + failure == N`, since metrics are recorded before the
+        /// report attempt). This exercises the deadline-abandonment branch that a
+        /// backlog sized exactly to capacity would leave untouched.
+        #[tokio::test]
+        async fn shutdown_drain_bounded_when_completion_channel_fills() {
+            let topic = "it-finalize-channel-full";
+            // The harness completion channel holds 16. Send one MORE so the drain
+            // fills the channel with 16 buffered nacks and must abandon at least
+            // one report (N - CHANNEL_CAP) at the deadline instead of blocking.
+            const CHANNEL_CAP: usize = 16;
+            const N: usize = CHANNEL_CAP + 1;
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic),
+                |cluster| async move {
+                    let cfg = KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it")
+                        .with_logs(SignalConfig::new(topic.into(), MessageFormat::OtlpProto))
+                        .with_max_in_flight(N)
+                        .with_timeout_ms(500)
+                        .try_into()
+                        .expect("config should be valid");
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    // Stall the reachable broker far past the shutdown deadline so
+                    // the sends stay in flight through shutdown (no steady-state
+                    // completion), and the shutdown drain purges + finalizes them.
+                    cluster.faults().round_trip_time(1, Duration::from_secs(30));
+
+                    for _ in 0..N {
+                        exporter
+                            .send_pdata(logs_pdata_subscribed(logs_request_bytes(), None))
+                            .await
+                            .expect("send subscribed pdata");
+                    }
+
+                    // Never drain the completion channel DURING shutdown: once the
+                    // drain fills it, any further report must be abandoned at the
+                    // deadline rather than block. Awaiting the terminal state
+                    // first (node exits, drops its sender), then draining the
+                    // buffered nacks, is wrapped in an outer bound so a blocked
+                    // drain fails loudly instead of hanging.
+                    let shutdown_deadline = Duration::from_millis(500);
+                    let bound = Duration::from_secs(4);
+                    let start = Instant::now();
+                    let (ts, buffered) = tokio::time::timeout(bound, async {
+                        exporter.shutdown(shutdown_deadline).await;
+                        exporter.await_terminal_state_draining_completions().await
+                    })
+                    .await
+                    .expect(
+                        "the shutdown drain must not block once the completion \
+                         channel fills with unconsumed nacks; it must be \
+                         deadline-bounded",
+                    );
+                    assert!(
+                        start.elapsed() < bound,
+                        "shutdown drain blocked on a full completion channel: {:?}",
+                        start.elapsed(),
+                    );
+
+                    // The drain buffers exactly channel capacity, then abandons the
+                    // overflow: N (17) sends produce CHANNEL_CAP (16) buffered nacks,
+                    // proving at least one report was abandoned at the deadline.
+                    assert_eq!(
+                        buffered,
+                        CHANNEL_CAP,
+                        "drain should buffer exactly channel capacity nacks and \
+                         abandon the overflow ({} report(s)) at the deadline",
+                        N - CHANNEL_CAP,
+                    );
+
+                    let snaps = ts.metrics();
+                    let success = kafka_exports(snaps, "logs", "success");
+                    let failure = kafka_exports(snaps, "logs", "failure");
+                    assert_eq!(
+                        success + failure,
+                        N as u64,
+                        "every in-flight send is accounted exactly once even when \
+                         the completion channel fills and reports are abandoned \
+                         during the shutdown drain",
+                    );
+
+                    // Restore normal latency so any deadline-exceeded off-path
+                    // work can settle before the cluster is torn down.
+                    cluster
+                        .faults()
+                        .round_trip_time(1, Duration::from_millis(1));
+                },
+            )
+            .await;
+        }
+
+        /// Scenario (shutdown stall, no external deadline enforcement): the
+        /// exporter node's `start()` future is driven directly by the harness
+        /// (no engine-level `timeout_at`/abort wrapping the task), with a large
+        /// subscribed in-flight set against an unroutable broker and a short
+        /// shutdown deadline whose completions are never consumed.
+        /// Guarantees: because nothing external aborts the node at the deadline,
+        /// the node must self-bound its shutdown -- `await_terminal_state`
+        /// resolves within the deadline plus a bounded flush/purge slack, driven
+        /// by the deadline itself rather than by a generous outer safety
+        /// timeout. This documents that the burden of honoring the deadline is
+        /// entirely on the node's own shutdown loop.
+        #[tokio::test]
+        async fn shutdown_start_future_returns_by_deadline_under_stall() {
+            const N: usize = 40;
+            let cfg: KafkaExporterConfig =
+                KafkaExporterConfigBuilder::new("127.0.0.1:1", "it-client")
+                    .with_logs(SignalConfig::new(
+                        "it-finalize-no-external-bound".into(),
+                        MessageFormat::OtlpProto,
+                    ))
+                    .with_max_in_flight(N)
+                    .with_timeout_ms(500)
+                    .try_into()
+                    .expect("config should be valid");
+
+            run_on_local_set(|cluster| async move {
+                let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                for _ in 0..N {
+                    exporter
+                        .send_pdata(logs_pdata_subscribed(logs_request_bytes(), None))
+                        .await
+                        .expect("send subscribed pdata");
+                }
+
+                // A tight self-bound tied to the deadline: the node is trusted
+                // to return by its own deadline (there is no external abort), so
+                // the terminal state must arrive within the deadline plus a
+                // bounded flush/purge slack -- NOT merely within a generous
+                // multi-second safety net.
+                let shutdown_deadline = Duration::from_millis(500);
+                let self_bound = Duration::from_secs(3);
+                let start = Instant::now();
+                exporter.shutdown(shutdown_deadline).await;
+                let outcome =
+                    tokio::time::timeout(self_bound, exporter.await_terminal_state()).await;
+                assert!(
+                    outcome.is_ok(),
+                    "the node must self-bound its shutdown to the deadline (no \
+                     external enforcement aborts it); elapsed={:?}",
+                    start.elapsed(),
+                );
+                assert!(
+                    start.elapsed() < self_bound,
+                    "shutdown was not self-bounded by the deadline: {:?}",
+                    start.elapsed(),
                 );
             })
             .await;

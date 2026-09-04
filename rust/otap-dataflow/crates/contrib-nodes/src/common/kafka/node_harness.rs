@@ -24,9 +24,23 @@ use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 /// Builds a deterministic single-core pipeline context for the wrappers.
 #[cfg(any(feature = "kafka-exporter", feature = "kafka-receiver"))]
 fn test_pipeline_context() -> PipelineContext {
+    test_pipeline_context_with_generation(0)
+}
+
+/// Builds a deterministic single-core pipeline context at an explicit deployment
+/// generation, so a cutover test can model an old vs new pipeline instance.
+#[cfg(any(feature = "kafka-exporter", feature = "kafka-receiver"))]
+fn test_pipeline_context_with_generation(deployment_generation: u64) -> PipelineContext {
     let registry = TelemetryRegistryHandle::new();
     let controller_ctx = ControllerContext::new(registry);
-    controller_ctx.pipeline_context_with("test-group".into(), "test-pipeline".into(), 0, 1, 0)
+    controller_ctx.pipeline_context_with_generation(
+        "test-group".into(),
+        "test-pipeline".into(),
+        0,
+        1,
+        0,
+        deployment_generation,
+    )
 }
 
 /// Metric-observation helpers shared by the exporter and receiver harnesses.
@@ -451,6 +465,38 @@ mod exporter_harness {
                 Err(e) => panic!("kafka-test: exporter task panicked: {e}"),
             }
         }
+
+        /// Awaits the spawned exporter task, then drains and counts every
+        /// Ack/Nack unwind message that was buffered on the (never-consumed)
+        /// completion channel, returning both the [`TerminalState`] and the
+        /// buffered count.
+        ///
+        /// Awaiting the task first guarantees the node has dropped its completion
+        /// sender, so the drain sees exactly the messages the node managed to
+        /// report (bounded by channel capacity) and then observes the closed
+        /// channel -- letting a test distinguish "buffered at capacity" from
+        /// "reports abandoned at the shutdown deadline".
+        ///
+        /// # Panics
+        ///
+        /// Panics if the task panicked or the exporter node returned an error
+        /// instead of a terminal state.
+        pub(crate) async fn await_terminal_state_draining_completions(
+            mut self,
+        ) -> (TerminalState, usize) {
+            let terminal_state = match self.join.await {
+                Ok(Ok(terminal_state)) => terminal_state,
+                Ok(Err(e)) => panic!("kafka-test: exporter node returned an error: {e:?}"),
+                Err(e) => panic!("kafka-test: exporter task panicked: {e}"),
+            };
+            let mut buffered = 0usize;
+            // The node has exited and dropped its sender, so `recv` yields every
+            // buffered message and then `Err` (closed) -- a bounded drain.
+            while self.completion_rx.recv().await.is_ok() {
+                buffered += 1;
+            }
+            (terminal_state, buffered)
+        }
     }
 }
 
@@ -463,7 +509,7 @@ pub(crate) use exporter_harness::KafkaExporterHarness;
 
 #[cfg(feature = "kafka-receiver")]
 mod receiver_harness {
-    use super::test_pipeline_context;
+    use super::test_pipeline_context_with_generation;
     use crate::common::kafka::test::cluster::KafkaTestCluster;
     use crate::receivers::kafka_receiver::config::{KafkaReceiverConfig, SignalConfig};
     use crate::receivers::kafka_receiver::rebalance::RebalanceState;
@@ -520,11 +566,24 @@ mod receiver_harness {
         /// installed on the effect handler before start. Spawns onto the
         /// current `LocalSet`.
         pub(crate) fn start_with_capture(
-            _cluster: &KafkaTestCluster,
+            cluster: &KafkaTestCluster,
             cfg: KafkaReceiverConfig,
             capture_policy: Option<HeaderCapturePolicy>,
         ) -> Self {
-            let pipeline_ctx = test_pipeline_context();
+            Self::start_with_capture_and_generation(cluster, cfg, capture_policy, 0)
+        }
+
+        /// Like [`start_with_capture`] but builds the receiver at an explicit
+        /// deployment `generation`, so a cutover test can model an old vs new
+        /// pipeline instance (the generation is folded into a static
+        /// `group.instance.id` by `KafkaReceiver::new`).
+        pub(crate) fn start_with_capture_and_generation(
+            _cluster: &KafkaTestCluster,
+            cfg: KafkaReceiverConfig,
+            capture_policy: Option<HeaderCapturePolicy>,
+            generation: u64,
+        ) -> Self {
+            let pipeline_ctx = test_pipeline_context_with_generation(generation);
             let node_config = Arc::new(NodeUserConfig::new_receiver_config(KAFKA_RECEIVER_URN));
             let receiver =
                 KafkaReceiver::new(pipeline_ctx, cfg).expect("kafka receiver config is valid");
@@ -572,6 +631,17 @@ mod receiver_harness {
         /// Starts the receiver with an explicit `cfg` and no capture policy.
         pub(crate) fn start(cluster: &KafkaTestCluster, cfg: KafkaReceiverConfig) -> Self {
             Self::start_with_capture(cluster, cfg, None)
+        }
+
+        /// Starts the receiver with an explicit `cfg` at deployment `generation`
+        /// (no capture policy). Used by cutover tests to model the old and new
+        /// pipeline instances as distinct deployment generations.
+        pub(crate) fn start_with_generation(
+            cluster: &KafkaTestCluster,
+            cfg: KafkaReceiverConfig,
+            generation: u64,
+        ) -> Self {
+            Self::start_with_capture_and_generation(cluster, cfg, None, generation)
         }
 
         /// Starts the receiver with a default OTLP-proto config for `topics`.
@@ -654,6 +724,16 @@ mod receiver_harness {
                 revoked,
                 "kafka-test: receiver still owns {topic}/{partition} after waiting for revocation"
             );
+        }
+
+        /// Returns whether the receiver currently owns `(topic, partition)`.
+        ///
+        /// Non-panicking point-in-time check (unlike
+        /// [`wait_for_partition_assignment`]); used by cutover tests that must
+        /// observe which of several partitions a newly started receiver has
+        /// acquired without knowing in advance which one the rebalance grants.
+        pub(crate) fn is_partition_assigned(&self, topic: &str, partition: i32) -> bool {
+            self.rebalance_state.is_assigned(topic, partition)
         }
 
         /// Waits until the receiver's rebalance callback has assigned a partition.
