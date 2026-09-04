@@ -1671,7 +1671,7 @@ mod tests {
     }
 
     /// Scenario: equivalent logs are viewed from OTLP bytes and OTAP Arrow records.
-    /// Guarantees: record JSON matches for record and attribute data preserved by both backends.
+    /// Guarantees: record JSON matches for record, attribute, resource, and scope data.
     #[test]
     fn record_json_matches_otlp_and_otap_views() {
         let logs_data = logs_with_full_resource_and_scope();
@@ -1679,14 +1679,7 @@ mod tests {
             resource: true,
             ..RecordJsonConfig::default()
         });
-        let mut otlp_values = format_record_json(&logs_data, &formatter);
-
-        // OTAP scope views do not currently expose scope name or version.
-        for value in &mut otlp_values {
-            let scope = value["scope"].as_object_mut().expect("scope object");
-            _ = scope.remove("name");
-            _ = scope.remove("version");
-        }
+        let otlp_values = format_record_json(&logs_data, &formatter);
 
         let otap_records = encode_logs_otap_batch(&logs_data).expect("encode OTAP logs");
         let otap_view = OtapLogsView::try_from(&otap_records).expect("OTAP logs view");
