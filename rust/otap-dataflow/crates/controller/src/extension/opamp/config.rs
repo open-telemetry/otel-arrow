@@ -363,6 +363,8 @@ mod test {
         );
     }
 
+    /// Scenario: endpoint uses wss:// and a TLS block is present.
+    /// Guarantees: scheme validation accepts wss:// when TLS is configured.
     #[test]
     fn test_validate_accepts_wss_scheme_with_tls() {
         let config: Config = serde_json::from_value(serde_json::json!({
