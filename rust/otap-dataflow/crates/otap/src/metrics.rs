@@ -6,10 +6,18 @@
 //! Note: We try as much as possible to follow the following
 //! [RFC Pipeline Component Telemetry](https://github.com/open-telemetry/opentelemetry-collector/blob/main/docs/rfcs/component-universal-telemetry.md).
 
-use otel_arrow_dfe_telemetry::common_attributes::{SignalAttributes, SignalOutcomeAttributes};
+use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_engine::Interests;
+use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_telemetry::common_attributes::{
+    Outcome, SignalAttributes, SignalOutcomeAttributes,
+};
+use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
 use otel_arrow_dfe_telemetry::instrument::{Counter, HistogramNormal};
+use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
+use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use otel_arrow_dfe_telemetry_macros::metric_set;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Receiver-local handling of classified messages received at the external boundary.
 #[metric_set(
@@ -21,16 +29,32 @@ pub struct ReceiverReceivedMetrics {
     /// Number of classified external messages whose receiver-local handling terminated.
     #[metric(unit = "{message}")]
     pub messages: Counter<u64>,
-    /// Encoded application payload size observed before receiver decoding.
-    #[metric(name = "payload.size", unit = "By")]
-    pub payload_size: Counter<u64>,
 }
 
 impl ReceiverReceivedMetrics {
     /// Records one classified external message when receiver-local handling terminates.
     #[inline]
-    pub fn record(&mut self, payload_size: u64) {
+    pub fn record(&mut self) {
         self.messages.inc();
+    }
+}
+
+/// Optional payload-size accounting for classified receiver messages.
+#[metric_set(
+    name = "receiver.received",
+    measurement_attributes = SignalOutcomeAttributes
+)]
+#[derive(Debug, Default, Clone)]
+pub struct ReceiverReceivedPayloadMetrics {
+    /// Encoded application payload size observed before receiver decoding.
+    #[metric(name = "payload.size", unit = "By")]
+    pub payload_size: Counter<u64>,
+}
+
+impl ReceiverReceivedPayloadMetrics {
+    /// Records the encoded application payload size for one received message.
+    #[inline]
+    pub fn record(&mut self, payload_size: u64) {
         self.payload_size.add(payload_size);
     }
 }
@@ -59,6 +83,96 @@ impl ReceiverProcessingMetrics {
     }
 }
 
+/// Per-message state captured for shared receiver metrics.
+#[derive(Debug)]
+pub struct ReceiverOperation {
+    started_at: Option<Instant>,
+    payload_size: Option<u64>,
+}
+
+/// Shared receiver metrics with node-interest-gated processing duration.
+#[derive(Debug)]
+pub struct ReceiverMetrics {
+    received: MeasurementMetricSet<ReceiverReceivedMetrics>,
+    payload: MeasurementMetricSet<ReceiverReceivedPayloadMetrics>,
+    processing: MeasurementMetricSet<ReceiverProcessingMetrics>,
+    interests: Interests,
+}
+
+impl ReceiverMetrics {
+    /// Registers the shared receiver metric sets.
+    #[must_use]
+    pub fn register(pipeline_ctx: &PipelineContext) -> Self {
+        Self {
+            received: ReceiverReceivedMetrics::register(pipeline_ctx),
+            payload: ReceiverReceivedPayloadMetrics::register(pipeline_ctx),
+            processing: ReceiverProcessingMetrics::register(pipeline_ctx),
+            interests: pipeline_ctx.node_interests(),
+        }
+    }
+
+    /// Starts receiver-local processing for one classified external message.
+    #[must_use]
+    pub fn start_operation(&self, payload_size: usize) -> ReceiverOperation {
+        ReceiverOperation {
+            started_at: self
+                .interests
+                .contains(Interests::COMPONENT_DURATION)
+                .then(Instant::now),
+            payload_size: self
+                .interests
+                .contains(Interests::PRODUCED_CONSUMED_SIZE)
+                .then(|| u64::try_from(payload_size).unwrap_or(u64::MAX)),
+        }
+    }
+
+    /// Records terminal receiver handling and ends local processing before handoff.
+    pub fn record_operation<T, E>(
+        &mut self,
+        signal: SignalType,
+        result: &Result<T, E>,
+        operation: ReceiverOperation,
+    ) {
+        let outcome = if result.is_ok() {
+            Outcome::Success
+        } else {
+            Outcome::Failure
+        };
+        if let Some(started_at) = operation.started_at {
+            self.processing
+                .with(SignalAttributes { signal })
+                .record(started_at.elapsed());
+        }
+        let attributes = SignalOutcomeAttributes { signal, outcome };
+        self.received.with(attributes).record();
+        if let Some(payload_size) = operation.payload_size {
+            self.payload.with(attributes).record(payload_size);
+        }
+    }
+
+    /// Reports every touched shared receiver metric bucket.
+    pub fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), TelemetryError> {
+        reporter.report_measurement(&mut self.received)?;
+        reporter.report_measurement(&mut self.payload)?;
+        reporter.report_measurement(&mut self.processing)
+    }
+
+    /// Takes every touched shared receiver metric bucket for terminal handoff.
+    #[must_use]
+    pub fn terminal_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
+        let mut snapshots = self.received.terminal_snapshots();
+        snapshots.extend(self.payload.terminal_snapshots());
+        snapshots.extend(self.processing.terminal_snapshots());
+        snapshots
+    }
+
+    /// Returns a received bucket for component tests.
+    #[must_use]
+    pub fn received_for(&self, attributes: SignalOutcomeAttributes) -> &ReceiverReceivedMetrics {
+        self.received.get(attributes)
+    }
+}
+
 /// Individual attempts to submit encoded application payloads from an exporter.
 #[metric_set(
     name = "exporter.attempted",
@@ -66,7 +180,10 @@ impl ReceiverProcessingMetrics {
 )]
 #[derive(Debug, Default, Clone)]
 pub struct ExporterAttemptedMetrics {
-    /// Number of PData messages submitted across export attempts.
+    /// Number of backend submission attempts.
+    ///
+    /// Retries count again. This differs from `node.input.messages`, which
+    /// counts PData messages entering the exporter.
     #[metric(unit = "{message}")]
     pub messages: Counter<u64>,
 }
@@ -139,6 +256,105 @@ impl ExporterAttemptedItemsMetrics {
     }
 }
 
+/// Per-message state captured only for enabled shared exporter metrics.
+#[derive(Debug)]
+pub struct ExporterAttempt {
+    started_at: Option<Instant>,
+    items: Option<u64>,
+}
+
+/// Shared exporter attempt metrics with node-interest-gated optional measurements.
+#[derive(Debug)]
+pub struct ExporterMetrics {
+    attempted: MeasurementMetricSet<ExporterAttemptedMetrics>,
+    duration: MeasurementMetricSet<ExporterAttemptedDurationMetrics>,
+    payload: MeasurementMetricSet<ExporterAttemptedPayloadMetrics>,
+    items: MeasurementMetricSet<ExporterAttemptedItemsMetrics>,
+    interests: Interests,
+}
+
+impl ExporterMetrics {
+    /// Registers the shared exporter metric sets.
+    #[must_use]
+    pub fn register(pipeline_ctx: &PipelineContext) -> Self {
+        Self {
+            attempted: ExporterAttemptedMetrics::register(pipeline_ctx),
+            duration: ExporterAttemptedDurationMetrics::register(pipeline_ctx),
+            payload: ExporterAttemptedPayloadMetrics::register(pipeline_ctx),
+            items: ExporterAttemptedItemsMetrics::register(pipeline_ctx),
+            interests: pipeline_ctx.node_interests(),
+        }
+    }
+
+    /// Starts one attempt without paying optional measurement costs when disabled.
+    pub fn start_attempt(&self, item_count: impl FnOnce() -> u64) -> ExporterAttempt {
+        ExporterAttempt {
+            started_at: self
+                .interests
+                .contains(Interests::COMPONENT_DURATION)
+                .then(Instant::now),
+            items: self
+                .interests
+                .contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS)
+                .then(item_count),
+        }
+    }
+
+    /// Records the terminal outcome of one exporter attempt.
+    pub fn record_attempt<T, E>(
+        &mut self,
+        signal: SignalType,
+        result: &Result<T, E>,
+        payload_size: Option<usize>,
+        attempt: ExporterAttempt,
+    ) {
+        let outcome = if result.is_ok() {
+            Outcome::Success
+        } else {
+            Outcome::Failure
+        };
+        let attributes = SignalOutcomeAttributes { signal, outcome };
+        self.attempted.with(attributes).record();
+        if let Some(started_at) = attempt.started_at {
+            self.duration.with(attributes).record(started_at.elapsed());
+        }
+        if self.interests.contains(Interests::PRODUCED_CONSUMED_SIZE)
+            && let Some(payload_size) = payload_size
+        {
+            self.payload
+                .with(attributes)
+                .record(u64::try_from(payload_size).unwrap_or(u64::MAX));
+        }
+        if let Some(items) = attempt.items {
+            self.items.with(attributes).record(items);
+        }
+    }
+
+    /// Reports every touched shared exporter metric bucket.
+    pub fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), TelemetryError> {
+        reporter.report_measurement(&mut self.attempted)?;
+        reporter.report_measurement(&mut self.duration)?;
+        reporter.report_measurement(&mut self.payload)?;
+        reporter.report_measurement(&mut self.items)
+    }
+
+    /// Takes every touched shared exporter metric bucket for terminal handoff.
+    #[must_use]
+    pub fn terminal_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
+        let mut snapshots = self.attempted.terminal_snapshots();
+        snapshots.extend(self.duration.terminal_snapshots());
+        snapshots.extend(self.payload.terminal_snapshots());
+        snapshots.extend(self.items.terminal_snapshots());
+        snapshots
+    }
+
+    /// Returns an attempt bucket for component tests.
+    #[must_use]
+    pub fn attempted_for(&self, attributes: SignalOutcomeAttributes) -> &ExporterAttemptedMetrics {
+        self.attempted.get(attributes)
+    }
+}
+
 /// Completed export operations.
 ///
 /// This set will be deprecated after exporters migrate to
@@ -190,11 +406,10 @@ pub struct ReceiverMessageMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otel_arrow_dfe_config::SignalType;
     use otel_arrow_dfe_engine::context::ControllerContext;
-    use otel_arrow_dfe_telemetry::common_attributes::Outcome;
-    use otel_arrow_dfe_telemetry::metrics::MeasurementMetricSet;
+    use otel_arrow_dfe_engine::testing::test_pipeline_ctx_with_interests;
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+    use std::cell::Cell;
 
     fn new_attempted_metrics() -> MeasurementMetricSet<ExporterAttemptedMetrics> {
         let registry = TelemetryRegistryHandle::new();
@@ -236,6 +451,14 @@ mod tests {
         ReceiverReceivedMetrics::register(&pipeline_ctx)
     }
 
+    fn new_received_payload_metrics() -> MeasurementMetricSet<ReceiverReceivedPayloadMetrics> {
+        let registry = TelemetryRegistryHandle::new();
+        let controller = ControllerContext::new(registry);
+        let pipeline_ctx =
+            controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        ReceiverReceivedPayloadMetrics::register(&pipeline_ctx)
+    }
+
     fn new_processing_metrics() -> MeasurementMetricSet<ReceiverProcessingMetrics> {
         let registry = TelemetryRegistryHandle::new();
         let controller = ControllerContext::new(registry);
@@ -270,7 +493,7 @@ mod tests {
                 signal: SignalType::Metrics,
                 outcome: Outcome::Success,
             })
-            .record(64);
+            .record();
         let received_snapshot = received
             .terminal_snapshots()
             .into_iter()
@@ -297,7 +520,7 @@ mod tests {
                 .descriptor()
                 .metrics
                 .iter()
-                .any(|metric| metric.name == "payload.size" && metric.unit == "By")
+                .all(|metric| metric.name != "payload.size")
         );
         assert!(
             received_snapshot
@@ -305,6 +528,30 @@ mod tests {
                 .metrics
                 .iter()
                 .all(|metric| metric.name != "duration")
+        );
+
+        let mut received_payload = new_received_payload_metrics();
+        received_payload
+            .with(SignalOutcomeAttributes {
+                signal: SignalType::Metrics,
+                outcome: Outcome::Success,
+            })
+            .record(64);
+        let received_payload_snapshot = received_payload
+            .terminal_snapshots()
+            .into_iter()
+            .next()
+            .expect("received payload snapshot");
+        assert_eq!(
+            received_payload_snapshot.descriptor().name,
+            "receiver.received"
+        );
+        assert!(
+            received_payload_snapshot
+                .descriptor()
+                .metrics
+                .iter()
+                .any(|metric| metric.name == "payload.size" && metric.unit == "By")
         );
 
         let mut processing = new_processing_metrics();
@@ -449,6 +696,121 @@ mod tests {
                 .iter()
                 .any(|metric| metric.name == "items" && metric.unit == "{item}")
         );
+    }
+
+    /// Scenario: Optional exporter measurements are disabled for one node.
+    /// Guarantees: Item inspection, clock timing, and payload-size snapshots are skipped while the attempt message is recorded.
+    #[test]
+    fn exporter_helper_skips_disabled_optional_measurements() {
+        let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::empty());
+        let mut metrics = ExporterMetrics::register(&pipeline_ctx);
+        let item_count_called = Cell::new(false);
+
+        let attempt = metrics.start_attempt(|| {
+            item_count_called.set(true);
+            5
+        });
+        metrics.record_attempt(SignalType::Logs, &Ok::<(), ()>(()), Some(128), attempt);
+
+        assert!(!item_count_called.get());
+        let snapshots = metrics.terminal_snapshots();
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].descriptor().name, "exporter.attempted");
+        assert!(
+            snapshots[0]
+                .descriptor()
+                .metrics
+                .iter()
+                .any(|metric| metric.name == "messages")
+        );
+    }
+
+    /// Scenario: All optional exporter measurements are enabled for one node.
+    /// Guarantees: One attempt records duration, encoded payload size, and lazily counted items under the same signal and outcome.
+    #[test]
+    fn exporter_helper_records_enabled_optional_measurements() {
+        let interests = Interests::COMPONENT_DURATION
+            | Interests::PRODUCED_CONSUMED_ITEM_COUNTS
+            | Interests::PRODUCED_CONSUMED_SIZE;
+        let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(interests);
+        let mut metrics = ExporterMetrics::register(&pipeline_ctx);
+        let item_count_called = Cell::new(false);
+
+        let attempt = metrics.start_attempt(|| {
+            item_count_called.set(true);
+            5
+        });
+        metrics.record_attempt(SignalType::Metrics, &Err::<(), ()>(()), Some(128), attempt);
+
+        assert!(item_count_called.get());
+        let snapshots = metrics.terminal_snapshots();
+        assert_eq!(snapshots.len(), 4);
+        for metric_name in ["messages", "duration", "payload.size", "items"] {
+            assert!(snapshots.iter().any(|snapshot| {
+                snapshot.descriptor().name == "exporter.attempted"
+                    && snapshot.measurement_attribute_value("signal") == Some("metrics")
+                    && snapshot.measurement_attribute_value("outcome") == Some("failure")
+                    && snapshot
+                        .descriptor()
+                        .metrics
+                        .iter()
+                        .any(|metric| metric.name == metric_name)
+            }));
+        }
+    }
+
+    /// Scenario: Optional receiver measurements are disabled for one node.
+    /// Guarantees: Terminal message accounting emits without a duration or zero-valued payload-size snapshot.
+    #[test]
+    fn receiver_helper_skips_disabled_optional_measurements() {
+        let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::empty());
+        let mut metrics = ReceiverMetrics::register(&pipeline_ctx);
+
+        let operation = metrics.start_operation(128);
+        metrics.record_operation(SignalType::Logs, &Ok::<(), ()>(()), operation);
+
+        let snapshots = metrics.terminal_snapshots();
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].descriptor().name, "receiver.received");
+        assert!(
+            snapshots[0]
+                .descriptor()
+                .metrics
+                .iter()
+                .any(|metric| metric.name == "messages")
+        );
+    }
+
+    /// Scenario: Receiver duration and payload-size measurements are enabled for one node.
+    /// Guarantees: Processing and terminal received metrics remain separate and preserve their intended attributes.
+    #[test]
+    fn receiver_helper_records_enabled_optional_measurements() {
+        let interests = Interests::COMPONENT_DURATION | Interests::PRODUCED_CONSUMED_SIZE;
+        let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(interests);
+        let mut metrics = ReceiverMetrics::register(&pipeline_ctx);
+
+        let operation = metrics.start_operation(128);
+        metrics.record_operation(SignalType::Traces, &Err::<(), ()>(()), operation);
+
+        let snapshots = metrics.terminal_snapshots();
+        assert_eq!(snapshots.len(), 3);
+        assert!(snapshots.iter().any(|snapshot| {
+            snapshot.descriptor().name == "receiver.processing"
+                && snapshot.measurement_attribute_value("signal") == Some("traces")
+                && snapshot.measurement_attribute_value("outcome").is_none()
+        }));
+        for metric_name in ["messages", "payload.size"] {
+            assert!(snapshots.iter().any(|snapshot| {
+                snapshot.descriptor().name == "receiver.received"
+                    && snapshot.measurement_attribute_value("signal") == Some("traces")
+                    && snapshot.measurement_attribute_value("outcome") == Some("failure")
+                    && snapshot
+                        .descriptor()
+                        .metrics
+                        .iter()
+                        .any(|metric| metric.name == metric_name)
+            }));
+        }
     }
 
     /// Scenario: One logical export requires a failed attempt followed by a successful retry.

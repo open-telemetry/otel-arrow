@@ -204,25 +204,6 @@ fn make_node_metric_handles(
     }
 }
 
-fn apply_node_telemetry_optins(
-    mut interests: Interests,
-    node_name: &str,
-    item_count_optin: &HashSet<&str>,
-    size_optin: &HashSet<&str>,
-    duration_optin: &HashSet<&str>,
-) -> Interests {
-    if item_count_optin.contains(node_name) {
-        interests |= Interests::PRODUCED_CONSUMED_ITEM_COUNTS;
-    }
-    if size_optin.contains(node_name) {
-        interests |= Interests::PRODUCED_CONSUMED_SIZE;
-    }
-    if duration_optin.contains(node_name) {
-        interests |= Interests::COMPONENT_DURATION;
-    }
-    interests
-}
-
 /// Represents a runtime pipeline configuration that includes nodes with their respective configurations and instances.
 ///
 /// Note: Having a Debug bound on `PData` allows us to use it in logging and debugging contexts,
@@ -459,40 +440,6 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         } = self;
 
         let metric_level = telemetry_policy.runtime_metrics;
-        let base_node_interests = Interests::from_metric_level(metric_level);
-        // Per-node measurement opt-ins enable the corresponding detailed-level
-        // measurement without enabling every detailed runtime metric.
-        let item_count_optin: HashSet<&str> = pipeline_config
-            .node_iter()
-            .filter(|(_, cfg)| {
-                cfg.policies
-                    .as_ref()
-                    .and_then(|policies| policies.telemetry.as_ref())
-                    .is_some_and(|telemetry| telemetry.item_counts)
-            })
-            .map(|(node_id, _)| node_id.as_ref())
-            .collect();
-        let size_optin: HashSet<&str> = pipeline_config
-            .node_iter()
-            .filter(|(_, cfg)| {
-                cfg.policies
-                    .as_ref()
-                    .and_then(|policies| policies.telemetry.as_ref())
-                    .is_some_and(|telemetry| telemetry.size)
-            })
-            .map(|(node_id, _)| node_id.as_ref())
-            .collect();
-        let duration_optin: HashSet<&str> = pipeline_config
-            .node_iter()
-            .filter(|(_, cfg)| {
-                cfg.policies
-                    .as_ref()
-                    .and_then(|policies| policies.telemetry.as_ref())
-                    .is_some_and(|telemetry| telemetry.duration)
-            })
-            .map(|(node_id, _)| node_id.as_ref())
-            .collect();
-
         // Single-threaded runtime so we can drive !Send node tasks on the core thread.
         let rt = Builder::new_current_thread()
             .enable_all()
@@ -607,13 +554,11 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         for exporter in exporters {
             let mut exporter = exporter;
             let node_id = exporter.node_id();
-            let node_interests = apply_node_telemetry_optins(
-                base_node_interests,
-                node_id.name.as_ref(),
-                &item_count_optin,
-                &size_optin,
-                &duration_optin,
-            );
+            let node_config = pipeline_config
+                .nodes()
+                .get(node_id.name.as_ref())
+                .expect("runtime exporter has pipeline configuration");
+            let node_interests = Interests::for_node(metric_level, node_config);
             control_senders.register(
                 node_id.clone(),
                 NodeType::Exporter,
@@ -689,13 +634,11 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         for processor in processors {
             let mut processor = processor;
             let node_id = processor.node_id();
-            let node_interests = apply_node_telemetry_optins(
-                base_node_interests,
-                node_id.name.as_ref(),
-                &item_count_optin,
-                &size_optin,
-                &duration_optin,
-            );
+            let node_config = pipeline_config
+                .nodes()
+                .get(node_id.name.as_ref())
+                .expect("runtime processor has pipeline configuration");
+            let node_interests = Interests::for_node(metric_level, node_config);
             control_senders.register(
                 node_id.clone(),
                 NodeType::Processor,
@@ -829,13 +772,11 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         for receiver in receivers {
             let mut receiver = receiver;
             let node_id = receiver.node_id();
-            let node_interests = apply_node_telemetry_optins(
-                base_node_interests,
-                node_id.name.as_ref(),
-                &item_count_optin,
-                &size_optin,
-                &duration_optin,
-            );
+            let node_config = pipeline_config
+                .nodes()
+                .get(node_id.name.as_ref())
+                .expect("runtime receiver has pipeline configuration");
+            let node_interests = Interests::for_node(metric_level, node_config);
             control_senders.register(
                 node_id.clone(),
                 NodeType::Receiver,
@@ -1208,27 +1149,6 @@ mod tests {
     use otel_arrow_dfe_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use otel_arrow_dfe_telemetry::{InternalTelemetrySystem, LogContext};
-
-    /// Scenario: one node opts into each optional telemetry measurement at the normal metric level.
-    /// Guarantees: only the named node receives component duration, item-count, and size interests.
-    #[test]
-    fn node_telemetry_optins_extend_only_the_selected_node() {
-        let item_counts = HashSet::from(["selected"]);
-        let sizes = HashSet::from(["selected"]);
-        let durations = HashSet::from(["selected"]);
-        let base = Interests::from_metric_level(otel_arrow_dfe_config::MetricLevel::Normal);
-
-        let selected =
-            apply_node_telemetry_optins(base, "selected", &item_counts, &sizes, &durations);
-        assert!(selected.contains(Interests::COMPONENT_DURATION));
-        assert!(selected.contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS));
-        assert!(selected.contains(Interests::PRODUCED_CONSUMED_SIZE));
-
-        let other = apply_node_telemetry_optins(base, "other", &item_counts, &sizes, &durations);
-        assert!(!other.contains(Interests::COMPONENT_DURATION));
-        assert!(!other.contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS));
-        assert!(!other.contains(Interests::PRODUCED_CONSUMED_SIZE));
-    }
 
     /// Scenario: optional node measurement interests are present without the normal-level message interests.
     /// Guarantees: no consumed or produced message, item, or size metric sets are registered below normal.

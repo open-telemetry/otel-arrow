@@ -1,6 +1,0 @@
-change_type: breaking
-component: pipeline
-note: "Make component duration opt-in and replace processor compute duration instruments with an outcome-dimensioned seconds histogram."
-issues: [3822]
-subtext: |
-  Migration: Query `processor.compute.duration` by `outcome` and interpret values as seconds. Enable duration with `runtime_metrics: detailed` or per-node `duration: true`.

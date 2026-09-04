@@ -403,6 +403,29 @@ impl Interests {
             }
         }
     }
+
+    /// Derives effective interests for one node from the pipeline metric level
+    /// and the node's optional telemetry policy.
+    #[must_use]
+    pub fn for_node(level: MetricLevel, node_config: &NodeUserConfig) -> Self {
+        let mut interests = Self::from_metric_level(level);
+        if let Some(telemetry) = node_config
+            .policies
+            .as_ref()
+            .and_then(|policies| policies.telemetry.as_ref())
+        {
+            if telemetry.item_counts {
+                interests |= Self::PRODUCED_CONSUMED_ITEM_COUNTS;
+            }
+            if telemetry.size {
+                interests |= Self::PRODUCED_CONSUMED_SIZE;
+            }
+            if telemetry.duration {
+                interests |= Self::COMPONENT_DURATION;
+            }
+        }
+        interests
+    }
 }
 
 /// Trait for context-stack unwinding during ack/nack delivery.
@@ -961,6 +984,10 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 node_kind,
                 node_config.identity_attributes(),
             );
+            base_ctx.set_node_interests(Interests::for_node(
+                telemetry_policy.runtime_metrics,
+                node_config,
+            ));
             let invalid_binding = |error: String| {
                 Error::ConfigError(Box::new(
                     otel_arrow_dfe_config::error::Error::InvalidUserConfig {
@@ -2684,6 +2711,26 @@ mod test {
         assert!(detailed.contains(Interests::COMPONENT_DURATION));
         assert!(detailed.contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS));
         assert!(detailed.contains(Interests::PRODUCED_CONSUMED_SIZE));
+    }
+
+    /// Scenario: One node opts into optional measurements below the detailed metric level.
+    /// Guarantees: Effective node interests combine the pipeline level with only that node's telemetry policy.
+    #[test]
+    fn node_telemetry_policy_extends_effective_interests() {
+        let mut node_config = NodeUserConfig::new_exporter_config("console");
+        node_config.policies = Some(otel_arrow_dfe_config::node::NodePolicies {
+            telemetry: Some(otel_arrow_dfe_config::node::NodeTelemetryPolicy {
+                duration: true,
+                item_counts: true,
+                size: true,
+            }),
+        });
+
+        let interests = Interests::for_node(MetricLevel::Normal, &node_config);
+        assert!(interests.contains(Interests::PIPELINE_METRICS));
+        assert!(interests.contains(Interests::COMPONENT_DURATION));
+        assert!(interests.contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS));
+        assert!(interests.contains(Interests::PRODUCED_CONSUMED_SIZE));
     }
 
     fn admission_policy(unit: RateLimitUnit) -> RateLimiterPolicy {
