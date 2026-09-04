@@ -8,17 +8,20 @@ by the component and log events emitted via `otel_*` log macros.
 
 ## Metrics
 
-Metrics are registered under the metric set name `receiver.syslog_cef`.
+The shared metrics describe the complete receiver-local lifecycle of each
+classified external message. Component metrics retain protocol-specific
+diagnostics.
 
 | Metric name | Type | Unit | Description | Produced in file |
 | --- | --- | --- | --- | --- |
-| `receiver.syslog_cef.received_logs_total` | Counter | `{item}` | Total number of log records observed at the socket before parsing. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
-| `receiver.syslog_cef.received_logs_forwarded` | Counter | `{item}` | Number of log records successfully forwarded downstream. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
-| `receiver.syslog_cef.received_logs_invalid` | Counter | `{item}` | Number of log records rejected because their payload is zero-length. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
-| `receiver.syslog_cef.received_logs_truncated` | Counter | `{item}` | Number of log records whose raw message exceeded the maximum message size and were truncated before parsing. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
-| `receiver.syslog_cef.received_logs_forward_failed` | Counter | `{item}` | Number of log records refused by downstream (backpressure/unavailable). | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
-| `receiver.syslog_cef.tcp_connections_active` | UpDownCounter | `{conn}` | Number of currently active TCP connections. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
-| `receiver.syslog_cef.tls_handshake_failures` | Counter | `{error}` | Number of TLS handshake failures. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
+| `receiver.received.messages` | Counter | `{message}` | Classified external messages grouped by `signal=logs` and terminal `outcome`. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
+| `receiver.received.payload.size` | Counter | `By` | Encoded payload bytes visible before parsing, excluding the TCP newline delimiter. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
+| `receiver.received.duration` | Histogram | `s` | Time from classified payload observation through handoff, refusal, or failure, including batch buffering. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
+| `receiver.syslog_cef.rejections.items` | Counter | `{item}` | Rejected messages grouped by bounded `protocol` and `error.type`. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
+| `receiver.syslog_cef.truncations.items` | Counter | `{item}` | Payloads that reached the fixed `MAX_MESSAGE_SIZE` receive limit. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
+| `receiver.syslog_cef.transport.errors` | Counter | `{error}` | Transport-level errors grouped by `protocol`. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
+| `receiver.syslog_cef.connections.active` | UpDownCounter | `{connection}` | Currently active TCP connections. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
+| `receiver.syslog_cef.connections.rejected` | Counter | `{connection}` | TCP connections rejected or closed under admission pressure. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 
 ## Logs
 
@@ -29,6 +32,7 @@ Metrics are registered under the metric set name `receiver.syslog_cef`.
 | `syslog_cef_receiver.tls.handshake.success` | `debug` | TLS handshake completed successfully for an incoming connection. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 | `syslog_cef_receiver.tls.handshake.failed` | `warn` | TLS handshake failed; the connection is closed. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 | `syslog_cef_receiver.drain_ingress.timeout` | `warn` | Ingress drain timeout expired with connection tasks still active during shutdown. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
+| `syslog_cef_receiver.shutdown.timeout` | `warn` | Shutdown deadline expired with connection tasks still active. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 | `syslog_cef_receiver.arrow_records.build_failed` | `warn` | Failed to build Arrow records from a parsed batch; the batch is dropped. | `crates/core-nodes/src/receivers/syslog_cef_receiver/mod.rs` |
 
 ## Maintenance
@@ -36,12 +40,9 @@ Metrics are registered under the metric set name `receiver.syslog_cef`.
 When adding or changing telemetry in this component:
 
 1. **Metrics**
-   - If you add a field under
-     `#[metric_set(name = "receiver.syslog_cef")]`, add or
-     update its row in the **Metrics** table.
-   - Use metric names in the form
-     `receiver.syslog_cef.<field_name>` unless the field has
-     an explicit metric-name override.
+   - Add or update the corresponding row in the **Metrics** table.
+   - Use shared receiver metric sets for external-boundary behavior and
+     `receiver.syslog_cef.*` only for richer component diagnostics.
 
 2. **Logs**
    - If you add `otel_trace!`, `otel_debug!`, `otel_info!`, `otel_warn!`,
