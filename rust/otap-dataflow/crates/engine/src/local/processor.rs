@@ -631,8 +631,7 @@ impl<PData> EffectHandler<PData> {
     /// precomputed interests. FlowMetric participation is automatic via
     /// the engine's `Instant`-marker timing in `process()` and does not
     /// require `timed()`. This method exists solely to provide the
-    /// success/failed outcome split for the
-    /// `processor.compute.{success,failed}.duration` metric.
+    /// outcome split for the `processor.compute.duration` metric.
     ///
     /// The closure-based API structurally prevents timing from
     /// spanning `.await` points.

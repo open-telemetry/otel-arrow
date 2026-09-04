@@ -272,15 +272,13 @@ impl Exporter<OtapPdata> for ConsoleExporter {
                 Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
                     return Ok(self.terminal_state(deadline));
                 }
-                Message::PData(data) => {
-                    let export_start = Instant::now();
+                Message::PData(mut data) => {
+                    let attempt = self.metrics.start_attempt(|| data.num_items() as u64);
                     let signal = data.signal_type();
-                    match self.export(data.payload_ref()).await {
-                        Ok(()) => self.metrics.record_success(signal, export_start.elapsed()),
-                        Err(error_type) => {
-                            self.metrics
-                                .record_failure(signal, error_type, export_start.elapsed())
-                        }
+                    let result = self.export(data.payload_ref()).await;
+                    self.metrics.record_attempt(signal, &result, None, attempt);
+                    if let Err(error_type) = result {
+                        self.metrics.record_error(signal, error_type);
                     }
                     effect_handler.notify_ack(AckMsg::new(data)).await?;
                 }

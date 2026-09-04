@@ -362,9 +362,6 @@ pub struct Interests: u16 {
     /// Source-tagging requested. A frame with no other interests may be inserted.
     const SOURCE_TAGGING = 1 << 6;
 
-    /// Process-duration timing requested for processors.
-    const PROCESS_DURATION = 1 << 7;
-
     /// Per-signal produced/consumed item counts requested. Opt-in (counting
     /// items is expensive for OTLP payloads): enabled at the `Detailed` metric
     /// level, or per node via `policies.telemetry.item_counts`.
@@ -373,6 +370,10 @@ pub struct Interests: u16 {
     /// Per-signal produced/consumed logical payload size requested. Enabled at
     /// the `Detailed` metric level, or per node via `policies.telemetry.size`.
     const PRODUCED_CONSUMED_SIZE = 1 << 9;
+
+    /// Component-owned duration timing requested. Enabled at the `Detailed`
+    /// metric level, or per node via `policies.telemetry.duration`.
+    const COMPONENT_DURATION = 1 << 7;
 
     /// Pipeline-metrics is either CONSUMER_METRICS or PRODUCER_METRICS.
     const PIPELINE_METRICS = Self::CONSUMER_METRICS.bits() | Self::PRODUCER_METRICS.bits();
@@ -384,23 +385,46 @@ impl Interests {
     ///
     /// None:     empty()
     /// Basic:    empty() with only channel metrics, no use of Context
-    /// Normal:   CONSUMER_METRICS | PRODUCER_METRICS | PROCESS_DURATION
-    /// Detailed: CONSUMER_METRICS | PRODUCER_METRICS | PROCESS_DURATION
-    ///           | ENTRY_TIMESTAMP | PRODUCED_CONSUMED_ITEM_COUNTS
-    ///           | PRODUCED_CONSUMED_SIZE
+    /// Normal:   CONSUMER_METRICS | PRODUCER_METRICS
+    /// Detailed: CONSUMER_METRICS | PRODUCER_METRICS | ENTRY_TIMESTAMP
+    ///           | PRODUCED_CONSUMED_ITEM_COUNTS
+    ///           | PRODUCED_CONSUMED_SIZE | COMPONENT_DURATION
     #[must_use]
     pub fn from_metric_level(level: MetricLevel) -> Self {
         match level {
             MetricLevel::None | MetricLevel::Basic => Self::empty(),
-            MetricLevel::Normal => Self::PIPELINE_METRICS | Self::PROCESS_DURATION,
+            MetricLevel::Normal => Self::PIPELINE_METRICS,
             MetricLevel::Detailed => {
                 Self::PIPELINE_METRICS
-                    | Self::PROCESS_DURATION
                     | Self::ENTRY_TIMESTAMP
                     | Self::PRODUCED_CONSUMED_ITEM_COUNTS
                     | Self::PRODUCED_CONSUMED_SIZE
+                    | Self::COMPONENT_DURATION
             }
         }
+    }
+
+    /// Derives effective interests for one node from the pipeline metric level
+    /// and the node's optional telemetry policy.
+    #[must_use]
+    pub fn for_node(level: MetricLevel, node_config: &NodeUserConfig) -> Self {
+        let mut interests = Self::from_metric_level(level);
+        if let Some(telemetry) = node_config
+            .policies
+            .as_ref()
+            .and_then(|policies| policies.telemetry.as_ref())
+        {
+            if telemetry.item_counts {
+                interests |= Self::PRODUCED_CONSUMED_ITEM_COUNTS;
+            }
+            if telemetry.size {
+                interests |= Self::PRODUCED_CONSUMED_SIZE;
+            }
+            if telemetry.duration {
+                interests |= Self::COMPONENT_DURATION;
+            }
+        }
+        interests
     }
 }
 
@@ -960,6 +984,10 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 node_kind,
                 node_config.identity_attributes(),
             );
+            base_ctx.set_node_interests(Interests::for_node(
+                telemetry_policy.runtime_metrics,
+                node_config,
+            ));
             let invalid_binding = |error: String| {
                 Error::ConfigError(Box::new(
                     otel_arrow_dfe_config::error::Error::InvalidUserConfig {
@@ -2670,17 +2698,39 @@ mod test {
     };
     use std::time::Duration;
 
-    /// Scenario: runtime metric levels resolve the optional payload measurements.
-    /// Guarantees: detailed metrics enable both item counts and size while normal metrics enable neither by default.
+    /// Scenario: runtime metric levels resolve optional data-path measurements.
+    /// Guarantees: detailed metrics enable component duration, item counts, and size while normal metrics enable none by default.
     #[test]
-    fn detailed_runtime_metrics_enable_payload_measurements() {
+    fn detailed_runtime_metrics_enable_optional_data_path_measurements() {
         let normal = Interests::from_metric_level(MetricLevel::Normal);
+        assert!(!normal.contains(Interests::COMPONENT_DURATION));
         assert!(!normal.contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS));
         assert!(!normal.contains(Interests::PRODUCED_CONSUMED_SIZE));
 
         let detailed = Interests::from_metric_level(MetricLevel::Detailed);
+        assert!(detailed.contains(Interests::COMPONENT_DURATION));
         assert!(detailed.contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS));
         assert!(detailed.contains(Interests::PRODUCED_CONSUMED_SIZE));
+    }
+
+    /// Scenario: One node opts into optional measurements below the detailed metric level.
+    /// Guarantees: Effective node interests combine the pipeline level with only that node's telemetry policy.
+    #[test]
+    fn node_telemetry_policy_extends_effective_interests() {
+        let mut node_config = NodeUserConfig::new_exporter_config("console");
+        node_config.policies = Some(otel_arrow_dfe_config::node::NodePolicies {
+            telemetry: Some(otel_arrow_dfe_config::node::NodeTelemetryPolicy {
+                duration: true,
+                item_counts: true,
+                size: true,
+            }),
+        });
+
+        let interests = Interests::for_node(MetricLevel::Normal, &node_config);
+        assert!(interests.contains(Interests::PIPELINE_METRICS));
+        assert!(interests.contains(Interests::COMPONENT_DURATION));
+        assert!(interests.contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS));
+        assert!(interests.contains(Interests::PRODUCED_CONSUMED_SIZE));
     }
 
     fn admission_policy(unit: RateLimitUnit) -> RateLimiterPolicy {

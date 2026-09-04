@@ -14,6 +14,7 @@
 //! The specialized testing utilities for receivers, processors, and exporters are in their respective
 //! submodules.
 
+use crate::Interests;
 use crate::attributes::{ExtensionScopeAttributeSet, PipelineAttributeSet};
 use crate::context::{ControllerContext, ExtensionContext, PipelineContext};
 use crate::control::NodeControlMsg;
@@ -44,9 +45,17 @@ pub use node::{test_node, test_nodes};
 /// callers can inspect registered metrics.
 #[must_use]
 pub fn test_pipeline_ctx() -> (PipelineContext, TelemetryRegistryHandle) {
+    test_pipeline_ctx_with_interests(Interests::empty())
+}
+
+/// Create a minimal [`PipelineContext`] with explicit node interests for tests.
+#[must_use]
+pub fn test_pipeline_ctx_with_interests(
+    interests: Interests,
+) -> (PipelineContext, TelemetryRegistryHandle) {
     let registry = TelemetryRegistryHandle::new();
     let controller = ControllerContext::new(registry.clone());
-    let ctx = controller
+    let mut ctx = controller
         .pipeline_context_with("test_grp".into(), "test_pipeline".into(), 0, 1, 0)
         .with_node_context(
             "test_node".into(),
@@ -54,6 +63,7 @@ pub fn test_pipeline_ctx() -> (PipelineContext, TelemetryRegistryHandle) {
             NodeKind::Processor,
             HashMap::new(),
         );
+    ctx.set_node_interests(interests);
     (ctx, registry)
 }
 
@@ -76,7 +86,7 @@ pub fn test_extension_ctx() -> (ExtensionContext, TelemetryRegistryHandle) {
 pub struct TestMsg(pub String);
 
 impl crate::ReceivedAtNode for TestMsg {
-    fn received_at_node(&mut self, _node_id: usize, _node_interests: crate::Interests) {}
+    fn received_at_node(&mut self, _node_id: usize, _node_interests: Interests) {}
 }
 
 impl crate::processor::FlowMetricHook for TestMsg {}

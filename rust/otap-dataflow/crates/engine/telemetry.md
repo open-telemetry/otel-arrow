@@ -34,12 +34,14 @@ control-plane metrics. Its default value is `basic`.
 | `none` | No channel or node input/output metrics. |
 | `basic` | `channel.*` metrics. |
 | `normal` | `basic`, plus `node.input.messages` and `node.output.messages`. A node can also opt into item and size metrics. |
-| `detailed` | `normal`, plus node duration, item, and size metrics for every node. |
+| `detailed` | `normal`, plus node duration, component duration, item, and size metrics for every node. |
 
 At `normal`, enable the optional measurements on an individual node with
-`policies.telemetry.item_counts: true` and/or
-`policies.telemetry.size: true`. These node options do not enable node metrics
-when the pipeline level is `none` or `basic`.
+`policies.telemetry.duration: true`,
+`policies.telemetry.item_counts: true`, and/or
+`policies.telemetry.size: true`. The duration option controls component-owned
+metrics such as `receiver.processing.duration` and
+`exporter.attempted.duration`, as well as `processor.compute.duration`.
 
 Node kind determines which side exists:
 
@@ -81,6 +83,13 @@ counts, see [Node and Flow Metrics](../../docs/node-and-flow-metrics.md#flow-met
 | `node.output.messages` | Messages emitted by the node, grouped by the `signal` and `outcome` datapoint attributes. | `runtime_metrics` is `normal` or `detailed`, a receiver or processor sends PData, and its terminal ack or nack unwinds. A processor that drops a whole message produces no output datapoint for it. |
 | `node.output.items` | Signal items emitted by an item-count-enabled node, grouped by the `signal` and `outcome` datapoint attributes. | Output message conditions are met and either the level is `detailed` or that receiver/processor sets `policies.telemetry.item_counts: true`. |
 | `node.output.size` | Logical payload bytes emitted by a size-enabled node, grouped by the `signal` and `outcome` datapoint attributes. | Output message conditions are met and either the level is `detailed` or that receiver/processor sets `policies.telemetry.size: true`. |
+| `receiver.received.messages` | Classified external messages whose receiver-local handling reached a terminal local outcome, grouped by `signal` and `outcome`. | A receiver implements the shared receiver contract and finishes handling a message. |
+| `receiver.received.payload.size` | Encoded application payload bytes observed at the receiver boundary, grouped by `signal` and `outcome`. | A receiver implements the shared receiver contract and finishes handling a message. |
+| `receiver.processing.duration` | Receiver-local processing duration in seconds, grouped by `signal`. | The receiver implements the shared contract and component duration is enabled. The documented boundary ends before downstream handoff or wait. |
+| `exporter.attempted.messages` | Component-local delivery attempts, including preparation failures and each backend retry, grouped by `signal` and `outcome`. This is distinct from PData messages counted by `node.input.messages`. | An exporter implements the shared exporter contract and an attempt reaches a terminal local or backend result. |
+| `exporter.attempted.duration` | Export attempt duration in seconds, grouped by `signal` and `outcome`. | The exporter implements the shared contract and component duration is enabled. Encoding and backend latency are included; Ack/Nack notification delivery is excluded. |
+| `exporter.attempted.payload.size` | Encoded application payload bytes produced or submitted by exporter attempts, grouped by `signal` and `outcome`. | The exporter implements the shared contract, size measurement is enabled, and encoded size is available. |
+| `exporter.attempted.items` | Signal items handled by exporter attempts, grouped by `signal` and `outcome`. | The exporter implements the shared contract and item counting is enabled. |
 | `flow.input.messages` | PData messages entering an opted-in processor flow, grouped by the `signal` datapoint attribute. | A configured flow enables `input_messages` and a message enters its start processor. |
 | `flow.input.items` | Signal items entering an opted-in processor flow, grouped by the `signal` datapoint attribute. | A configured flow enables `input_items` and a message enters its start processor. |
 | `flow.input.size` | Logical payload bytes entering an opted-in processor flow, grouped by the `signal` datapoint attribute. | A configured flow enables `input_size` and a message enters its start processor. |
