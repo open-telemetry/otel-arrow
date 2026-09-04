@@ -1693,7 +1693,7 @@ mod test {
     use otel_arrow_dfe_config::{
         extension::{ExtensionUrn, ExtensionUserConfig},
         observed_state::ObservedStateSettings,
-        tls::{TlsConfig, TlsServerConfig},
+        tls::{TlsClientConfig, TlsConfig, TlsServerConfig},
     };
     use otel_arrow_dfe_state::store::ObservedStateStore;
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
@@ -1787,6 +1787,80 @@ mod test {
         client_handle.await.unwrap().unwrap();
 
         server_state.take_requests().await
+    }
+
+    /// Start a TLS mock server and an OpAMP client with intentionally mismatched TLS
+    /// configuration. Waits for the client to attempt at least `min_connection_attempts`
+    /// TCP connections, then asserts that zero application-level WebSocket messages were
+    /// exchanged (proving the TLS handshake blocked all traffic).
+    async fn run_web_socket_tls_failure_test(
+        server_tls_config: TlsServerConfig,
+        client_tls_config: TlsClientConfig,
+        min_connection_attempts: usize,
+    ) {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
+
+        let client_config = create_client_config(&client_tls_config).await.unwrap();
+        let connector = match client_config {
+            Some(cfg) => Connector::Rustls(Arc::new(cfg)),
+            None => Connector::Plain,
+        };
+
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "instance_uid": EXPECTED_INSTANCE_UID_STR,
+            "endpoint": format!("ws://localhost:{port}/v1/opamp"),
+            "connect_retry": { "initial": "10ms", "max": "50ms" },
+        }))
+        .unwrap();
+
+        let cancellation_token = CancellationToken::new();
+        let mut server = MockWebSocketServer::new_tls(port, vec![], server_tls_config);
+        let server_state = server.state();
+
+        let server_cancel = cancellation_token.clone();
+        let server_handle = tokio::spawn(async move { server.serve(server_cancel).await });
+
+        let control_plane = Arc::new(MockControlPlane::new(empty_engine_config()));
+        let telemetry_registry_handle = TelemetryRegistryHandle::default();
+        let observed_state_store = ObservedStateStore::new(
+            &ObservedStateSettings::default(),
+            telemetry_registry_handle.clone(),
+        );
+        let extension_urn = ExtensionUrn::parse(CONTROL_EXTENSION_URN).unwrap();
+        let context = ControllerExtensionContext {
+            extension_id: Cow::Borrowed("opamp"),
+            extension: Arc::new(ExtensionUserConfig::new(
+                extension_urn,
+                serde_json::to_value(&config).unwrap(),
+            )),
+            control_plane,
+            observed_state: observed_state_store.handle(),
+            telemetry_registry: telemetry_registry_handle,
+            engine_config: empty_engine_config(),
+        };
+
+        let client_cancel = cancellation_token.clone();
+        let client_handle = tokio::spawn(async move {
+            run_websocket_connect_loop(context, config, connector, client_cancel).await
+        });
+
+        // Wait for the client to attempt connections (deterministic, no arbitrary sleep)
+        server_state
+            .wait_for_connection_attempts(min_connection_attempts, Duration::from_secs(10))
+            .await;
+
+        // The TLS handshake should have blocked all application-level traffic
+        assert_eq!(
+            server_state.num_message_exchanges(),
+            0,
+            "expected zero message exchanges when TLS handshake fails"
+        );
+
+        cancellation_token.cancel();
+        server_handle.await.unwrap();
+        client_handle.await.unwrap().unwrap();
     }
 
     #[tokio::test]
@@ -2316,34 +2390,278 @@ mod test {
         assert_eq!(requests.len(), 3);
     }
 
+    /// Scenario: client has no CA configured; server presents a cert from a private CA.
+    /// Guarantees: the TLS handshake fails (unknown issuer) and no messages are exchanged.
     #[tokio::test]
-    async fn test_client_configured_with_server_tls_bad_cert() {
+    async fn test_tls_failure_no_ca_configured() {
         otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let temp_dir = TempDir::new().unwrap();
         let path = temp_dir.path();
+
         let ca = generate_ca("Test CA");
-        let server = ca.issue_leaf(
+        let server_cert = ca.issue_leaf(
             "localhost",
             Some("localhost"),
             Some(ExtendedKeyUsage::ServerAuth),
         );
-        server.write_to_dir(path, "server");
+        server_cert.write_to_dir(path, "server");
 
-        let control_plane = Arc::new(MockControlPlane::new(empty_engine_config()));
-        let responses = vec![
-            Some(server_to_agent_with_config(&test_config(), vec![5, 1, 4])),
-            None,
-            None,
-        ];
+        run_web_socket_tls_failure_test(
+            TlsServerConfig {
+                config: TlsConfig {
+                    cert_file: Some(path.join("server.crt")),
+                    key_file: Some(path.join("server.key")),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            // Client has no ca_pem / ca_file -- empty root store
+            TlsClientConfig::default(),
+            2,
+        )
+        .await;
+    }
 
-        let config: Config = serde_json::from_value(serde_json::json!({
-            "instance_uid": EXPECTED_INSTANCE_UID_STR,
-            "endpoint": "",
-            "tls": {
-                "ca_file": &path.join("ca.crt")
-            }
-        }))
+    /// Scenario: client trusts CA-B but server cert is signed by CA-A.
+    /// Guarantees: the TLS handshake fails (wrong issuer) and no messages are exchanged.
+    #[tokio::test]
+    async fn test_tls_failure_wrong_ca() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path();
+
+        let server_ca = generate_ca("Server CA");
+        let wrong_ca = generate_ca("Wrong CA");
+        let server_cert = server_ca.issue_leaf(
+            "localhost",
+            Some("localhost"),
+            Some(ExtendedKeyUsage::ServerAuth),
+        );
+        server_cert.write_to_dir(path, "server");
+
+        run_web_socket_tls_failure_test(
+            TlsServerConfig {
+                config: TlsConfig {
+                    cert_file: Some(path.join("server.crt")),
+                    key_file: Some(path.join("server.key")),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            TlsClientConfig {
+                ca_pem: Some(wrong_ca.cert_pem),
+                ..Default::default()
+            },
+            2,
+        )
+        .await;
+    }
+
+    /// Scenario: server requires client certificate (mTLS) but client presents none.
+    /// Guarantees: the TLS handshake fails and no messages are exchanged.
+    #[tokio::test]
+    async fn test_mtls_failure_no_client_cert() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path();
+
+        let ca = generate_ca("Test CA");
+        let server_cert = ca.issue_leaf(
+            "localhost",
+            Some("localhost"),
+            Some(ExtendedKeyUsage::ServerAuth),
+        );
+        server_cert.write_to_dir(path, "server");
+
+        run_web_socket_tls_failure_test(
+            TlsServerConfig {
+                config: TlsConfig {
+                    cert_file: Some(path.join("server.crt")),
+                    key_file: Some(path.join("server.key")),
+                    ..Default::default()
+                },
+                client_ca_pem: Some(ca.cert_pem.clone()),
+                ..Default::default()
+            },
+            // Client trusts the server CA but does not present a client cert
+            TlsClientConfig {
+                ca_pem: Some(ca.cert_pem),
+                ..Default::default()
+            },
+            2,
+        )
+        .await;
+    }
+
+    /// Scenario: server requires client cert from CA-A, but client presents cert from CA-B.
+    /// Guarantees: the TLS handshake fails and no messages are exchanged.
+    #[tokio::test]
+    async fn test_mtls_failure_wrong_client_cert() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path();
+
+        let server_ca = generate_ca("Server CA");
+        let wrong_ca = generate_ca("Wrong Client CA");
+
+        let server_cert = server_ca.issue_leaf(
+            "localhost",
+            Some("localhost"),
+            Some(ExtendedKeyUsage::ServerAuth),
+        );
+        let wrong_client_cert =
+            wrong_ca.issue_leaf("Bad Client", None, Some(ExtendedKeyUsage::ClientAuth));
+        server_cert.write_to_dir(path, "server");
+
+        run_web_socket_tls_failure_test(
+            TlsServerConfig {
+                config: TlsConfig {
+                    cert_file: Some(path.join("server.crt")),
+                    key_file: Some(path.join("server.key")),
+                    ..Default::default()
+                },
+                // Server trusts only server_ca for client certs
+                client_ca_pem: Some(server_ca.cert_pem.clone()),
+                ..Default::default()
+            },
+            TlsClientConfig {
+                ca_pem: Some(server_ca.cert_pem),
+                config: TlsConfig {
+                    cert_pem: Some(wrong_client_cert.cert_pem),
+                    key_pem: Some(wrong_client_cert.key_pem),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            2,
+        )
+        .await;
+    }
+
+    /// Scenario: client connects directly to a TLS server whose cert it does not trust.
+    /// Guarantees: connect_async_tls_with_config returns an error containing
+    /// "InvalidCertificate".
+    #[tokio::test]
+    async fn test_tls_direct_connect_unknown_issuer() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path();
+
+        let server_ca = generate_ca("Server CA");
+        let wrong_ca = generate_ca("Wrong CA");
+        let server_cert = server_ca.issue_leaf(
+            "localhost",
+            Some("localhost"),
+            Some(ExtendedKeyUsage::ServerAuth),
+        );
+        server_cert.write_to_dir(path, "server");
+
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
+        let cancel = CancellationToken::new();
+
+        let mut server = MockWebSocketServer::new_tls(
+            port,
+            vec![],
+            TlsServerConfig {
+                config: TlsConfig {
+                    cert_file: Some(path.join("server.crt")),
+                    key_file: Some(path.join("server.key")),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let server_cancel = cancel.clone();
+        let server_handle = tokio::spawn(async move { server.serve(server_cancel).await });
+
+        // Build client connector trusting the wrong CA
+        let client_tls = create_client_config(&TlsClientConfig {
+            ca_pem: Some(wrong_ca.cert_pem),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
         .unwrap();
+        let connector = Connector::Rustls(Arc::new(client_tls));
+
+        // Give the server a moment to bind
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let url = format!("wss://localhost:{port}/v1/opamp");
+        let result =
+            connect_async_tls_with_config(&url, None, false, Some(connector)).await;
+
+        assert!(result.is_err(), "connection should fail with wrong CA");
+        let err_str = format!("{:?}", result.unwrap_err());
+        assert!(
+            err_str.contains("InvalidCertificate"),
+            "expected InvalidCertificate error, got: {err_str}"
+        );
+
+        cancel.cancel();
+        server_handle.await.unwrap();
+    }
+
+    /// Scenario: server requires a client certificate but the client presents none.
+    /// Guarantees: connect_async_tls_with_config returns an error indicating the
+    /// handshake was rejected by the server.
+    #[tokio::test]
+    async fn test_tls_direct_connect_client_cert_required() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path();
+
+        let ca = generate_ca("Test CA");
+        let server_cert = ca.issue_leaf(
+            "localhost",
+            Some("localhost"),
+            Some(ExtendedKeyUsage::ServerAuth),
+        );
+        server_cert.write_to_dir(path, "server");
+
+        let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
+        let cancel = CancellationToken::new();
+
+        let mut server = MockWebSocketServer::new_tls(
+            port,
+            vec![],
+            TlsServerConfig {
+                config: TlsConfig {
+                    cert_file: Some(path.join("server.crt")),
+                    key_file: Some(path.join("server.key")),
+                    ..Default::default()
+                },
+                client_ca_pem: Some(ca.cert_pem.clone()),
+                ..Default::default()
+            },
+        );
+        let server_cancel = cancel.clone();
+        let server_handle = tokio::spawn(async move { server.serve(server_cancel).await });
+
+        // Build client connector that trusts the server but has no client cert
+        let client_tls = create_client_config(&TlsClientConfig {
+            ca_pem: Some(ca.cert_pem),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        let connector = Connector::Rustls(Arc::new(client_tls));
+
+        // Give the server a moment to bind
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let url = format!("wss://localhost:{port}/v1/opamp");
+        let result =
+            connect_async_tls_with_config(&url, None, false, Some(connector)).await;
+
+        assert!(
+            result.is_err(),
+            "connection should fail when client cert is required but not presented"
+        );
+
+        cancel.cancel();
+        server_handle.await.unwrap();
     }
 
     #[tokio::test]
@@ -2449,10 +2767,6 @@ mod test {
         .await;
         assert_eq!(requests.len(), 3);
     }
-
-    // TODO other tLS test cases:
-    // - server TLS invalid server cert
-    // - non existent server ca
 
     /// Helper: create an ObservedStateStore, spawn its consumer loop, send engine events to
     /// transition pipelines into the desired phases, wait for propagation, then return a snapshot
