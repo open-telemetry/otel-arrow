@@ -1250,7 +1250,7 @@ dependencies = [
  "otel-arrow-dfe-engine",
  "otel-arrow-dfe-otap",
  "otel-arrow-dfe-pdata",
- "otel-arrow-dfe-pdata-views",
+ "otel-arrow-dfe-pdata-views 0.54.1",
  "otel-arrow-dfe-telemetry",
  "otel-arrow-dfe-telemetry-macros",
  "otel-arrow-dfe-test-net",
@@ -3974,19 +3974,20 @@ dependencies = [
 
 [[package]]
 name = "geneva-uploader"
-version = "0.5.0"
-source = "git+https://github.com/open-telemetry/opentelemetry-rust-contrib.git?rev=91057e4f9bda2dea819ead1648a83c7c7df0feda#91057e4f9bda2dea819ead1648a83c7c7df0feda"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a3a307a6d8a1aadc32faab67e1f8f8f6ab7842f8e3d679cd28cf4d2cec53401"
 dependencies = [
  "azure_core 0.29.1",
  "azure_identity 0.29.0",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "chrono",
  "hex",
  "lz4_flex 0.11.6",
  "md-5 0.11.0",
  "opentelemetry-proto",
- "otap-df-pdata-views",
+ "otel-arrow-dfe-pdata-views 0.54.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "p12-keystore",
  "reqwest 0.12.28",
  "rustls",
@@ -7094,13 +7095,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "otap-df-pdata-views"
-version = "0.51.0"
-dependencies = [
- "otel-arrow-dfe-pdata-views",
-]
-
-[[package]]
 name = "otel-arrow-contrib-data-engine-expressions"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7366,7 +7360,7 @@ dependencies = [
  "otel-arrow-dfe-engine",
  "otel-arrow-dfe-otap",
  "otel-arrow-dfe-pdata",
- "otel-arrow-dfe-pdata-views",
+ "otel-arrow-dfe-pdata-views 0.54.1",
  "otel-arrow-dfe-state",
  "otel-arrow-dfe-telemetry",
  "otel-arrow-dfe-telemetry-macros",
@@ -7485,7 +7479,7 @@ dependencies = [
  "otel-arrow-dfe-engine",
  "otel-arrow-dfe-otap",
  "otel-arrow-dfe-pdata",
- "otel-arrow-dfe-pdata-views",
+ "otel-arrow-dfe-pdata-views 0.54.1",
  "otel-arrow-dfe-query-engine",
  "otel-arrow-dfe-query-engine-languages",
  "otel-arrow-dfe-quiver",
@@ -7724,7 +7718,7 @@ dependencies = [
  "otel-arrow-dfe-config",
  "otel-arrow-dfe-pdata-otlp-macros",
  "otel-arrow-dfe-pdata-otlp-model",
- "otel-arrow-dfe-pdata-views",
+ "otel-arrow-dfe-pdata-views 0.54.1",
  "otel-arrow-dfe-test-net",
  "paste",
  "pretty_assertions",
@@ -7765,6 +7759,12 @@ dependencies = [
 [[package]]
 name = "otel-arrow-dfe-pdata-views"
 version = "0.54.1"
+
+[[package]]
+name = "otel-arrow-dfe-pdata-views"
+version = "0.54.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f72ca099fdfa6a55842e3f7d6bb053806ba1ec1280324cfebe1166dbadffea16"
 
 [[package]]
 name = "otel-arrow-dfe-query-engine"
@@ -7901,7 +7901,7 @@ dependencies = [
  "otel-arrow-dfe-config",
  "otel-arrow-dfe-expohisto",
  "otel-arrow-dfe-pdata",
- "otel-arrow-dfe-pdata-views",
+ "otel-arrow-dfe-pdata-views 0.54.1",
  "otel-arrow-dfe-telemetry-macros",
  "parking_lot",
  "prost 0.14.4",
