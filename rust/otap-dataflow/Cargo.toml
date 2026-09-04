@@ -67,6 +67,7 @@ otel-arrow-dfe-control-channel = { path = "crates/control-channel" }
 otel-arrow-dfe-controller = { version = "0.54.1", path = "crates/controller" }
 otel-arrow-dfe-core-nodes = { path = "crates/core-nodes" }
 otel-arrow-dfe-dev-nodes = { path = "crates/dev-nodes" }
+otel-arrow-dfe-filelog-checkpoint = { path = "crates/filelog-checkpoint" }
 otel-arrow-dfe-engine = { version = "0.54.1", path = "crates/engine" }
 otel-arrow-dfe-expohisto = { version = "0.54.1", path = "crates/expohisto" }
 otel-arrow-dfe-otap = { path = "crates/otap" }
@@ -201,6 +202,7 @@ serde_cbor = "0.11.2"
 serde_json = { version = "1.0.149" }
 serde-transcode = "1.1.1"
 serde_yaml = "0.9.34-deprecated"        # Deprecated, but no good alternative yet
+crc = "3.3.0"
 crc32fast = "1.4.2"
 hex = "0.4.3"
 replace_with = "0.1.8"

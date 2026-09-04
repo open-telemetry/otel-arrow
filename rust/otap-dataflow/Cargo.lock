@@ -7633,6 +7633,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "otel-arrow-dfe-filelog-checkpoint"
+version = "0.54.1"
+dependencies = [
+ "crc",
+ "hex",
+ "sha2 0.11.0",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "otel-arrow-dfe-otap"
 version = "0.54.1"
 dependencies = [
