@@ -2658,6 +2658,8 @@ mod test {
         server_handle.await.unwrap();
     }
 
+    /// Scenario: mTLS with client cert and key provided as inline PEM strings.
+    /// Guarantees: the mTLS handshake succeeds and messages are exchanged normally.
     #[tokio::test]
     async fn test_client_configured_with_client_tls_from_pems() {
         otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
@@ -2710,6 +2712,8 @@ mod test {
         assert_eq!(requests.len(), 3);
     }
 
+    /// Scenario: mTLS with client cert and key provided as file paths.
+    /// Guarantees: the mTLS handshake succeeds and messages are exchanged normally.
     #[tokio::test]
     async fn test_client_configured_with_client_tls_from_files() {
         otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
@@ -3168,6 +3172,57 @@ mod test {
             err.to_string().contains("invalid"),
             "expected error about invalid UUID, got: {err}"
         );
+    }
+
+    /// Scenario: validate_config with TLS (ca_file on disk) called from a sync context.
+    /// Guarantees: TLS validation succeeds by creating a new async runtime internally.
+    #[test]
+    fn test_validate_config_tls_from_sync_context() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let temp_dir = TempDir::new().unwrap();
+        let ca = generate_ca("Test CA");
+        ca.write_cert_to_dir(temp_dir.path(), "ca");
+
+        let config_value = serde_json::json!({
+            "endpoint": "wss://localhost:4320/v1/opamp",
+            "tls": { "ca_file": temp_dir.path().join("ca.crt") }
+        });
+        validate_config(&config_value).unwrap();
+    }
+
+    /// Scenario: validate_config with TLS (ca_file on disk) called from a multi-threaded
+    ///           tokio runtime.
+    /// Guarantees: TLS validation succeeds by spawning a thread with a new runtime
+    ///             (avoiding block_on inside block_on).
+    #[tokio::test]
+    async fn test_validate_config_tls_from_multi_thread_runtime() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let temp_dir = TempDir::new().unwrap();
+        let ca = generate_ca("Test CA");
+        ca.write_cert_to_dir(temp_dir.path(), "ca");
+
+        let config_value = serde_json::json!({
+            "endpoint": "wss://localhost:4320/v1/opamp",
+            "tls": { "ca_file": temp_dir.path().join("ca.crt") }
+        });
+        validate_config(&config_value).unwrap();
+    }
+
+    /// Scenario: validate_config with TLS (ca_file on disk) called from a single-threaded
+    ///           tokio runtime.
+    /// Guarantees: TLS validation succeeds without deadlocking the current-thread runtime.
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_validate_config_tls_from_current_thread_runtime() {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let temp_dir = TempDir::new().unwrap();
+        let ca = generate_ca("Test CA");
+        ca.write_cert_to_dir(temp_dir.path(), "ca");
+
+        let config_value = serde_json::json!({
+            "endpoint": "wss://localhost:4320/v1/opamp",
+            "tls": { "ca_file": temp_dir.path().join("ca.crt") }
+        });
+        validate_config(&config_value).unwrap();
     }
 
     #[tokio::test]

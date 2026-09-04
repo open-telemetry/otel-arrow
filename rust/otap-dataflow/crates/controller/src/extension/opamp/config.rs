@@ -400,7 +400,7 @@ mod test {
         .unwrap();
         let err = config.validate().unwrap_err();
         assert!(
-            err.to_string().contains("no TLS configuration is provided"),
+            err.to_string().contains("TLS is not enabled"),
             "expected missing TLS error, got: {err}"
         );
     }
