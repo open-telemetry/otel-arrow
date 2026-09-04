@@ -570,6 +570,19 @@ impl TryFrom<KafkaReceiverConfigBuilder> for KafkaReceiverConfig {
             return Err(KafkaReceiverError::ConfigNoSignalTopics);
         }
 
+        if builder.traces.encoding() == MessageFormat::Syslog {
+            return Err(KafkaReceiverError::ConfigUnsupportedEncoding {
+                signal: "traces".to_string(),
+                encoding: "syslog".to_string(),
+            });
+        }
+        if builder.metrics.encoding() == MessageFormat::Syslog {
+            return Err(KafkaReceiverError::ConfigUnsupportedEncoding {
+                signal: "metrics".to_string(),
+                encoding: "syslog".to_string(),
+            });
+        }
+
         // Topics must be disjoint across signals
         {
             let traces: HashSet<&str> =
@@ -2578,6 +2591,41 @@ mod tests {
                 ..Default::default()
             });
         assert!(KafkaReceiverConfig::try_from(cfg).is_ok());
+    }
+
+    /// Scenario (routing and payload correctness): a logs signal selects Syslog encoding.
+    /// Guarantees: validation accepts Syslog for logs so Kafka records can use the shared
+    /// Syslog decoder.
+    #[test]
+    fn validate_syslog_encoding_for_logs_is_valid() {
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_logs(
+            SignalConfig::new(vec!["logs-topic".to_string()]).with_encoding(MessageFormat::Syslog),
+        );
+        assert!(KafkaReceiverConfig::try_from(cfg).is_ok());
+    }
+
+    /// Scenario (routing and payload correctness): a traces signal selects Syslog encoding.
+    /// Guarantees: validation rejects the logs-only encoding before the receiver starts.
+    #[test]
+    fn validate_syslog_encoding_for_traces_is_invalid() {
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_traces(
+            SignalConfig::new(vec!["traces-topic".to_string()])
+                .with_encoding(MessageFormat::Syslog),
+        );
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
+        assert!(err.contains("syslog encoding is not supported for traces"));
+    }
+
+    /// Scenario (routing and payload correctness): a metrics signal selects Syslog encoding.
+    /// Guarantees: validation rejects the logs-only encoding before the receiver starts.
+    #[test]
+    fn validate_syslog_encoding_for_metrics_is_invalid() {
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_metrics(
+            SignalConfig::new(vec!["metrics-topic".to_string()])
+                .with_encoding(MessageFormat::Syslog),
+        );
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
+        assert!(err.contains("syslog encoding is not supported for metrics"));
     }
 
     /// Scenario (routing and payload correctness): no signal has any topic configured.

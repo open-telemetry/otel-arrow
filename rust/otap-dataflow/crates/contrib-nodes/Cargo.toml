@@ -17,6 +17,7 @@ workspace = true
 otel-arrow-dfe-channel = { workspace = true }
 otel-arrow-dfe-config = { workspace = true }
 otel-arrow-dfe-engine = { workspace = true }
+otel-arrow-dfe-core-nodes = { workspace = true, optional = true }
 otel-arrow-dfe-otap = { workspace = true }
 otel-arrow-dfe-pdata = { workspace = true }
 otel-arrow-dfe-pdata-views = { workspace = true }
@@ -92,6 +93,7 @@ tracepoint_decode = { workspace = true, optional = true }
 [features]
 etw-receiver = ["dep:one_collect", "dep:humantime-serde"]
 kafka-receiver = [
+    "dep:otel-arrow-dfe-core-nodes",
     "dep:rdkafka",
     "dep:smallvec",
     "dep:regex",

@@ -43,7 +43,7 @@ pub enum ParseError {
 }
 
 /// Parse a syslog message from bytes, automatically detecting the format
-pub(crate) fn parse(input: &[u8]) -> Result<ParsedSyslogMessage<'_>, ParseError> {
+pub fn parse(input: &[u8]) -> Result<ParsedSyslogMessage<'_>, ParseError> {
     if input.is_empty() {
         return Err(ParseError::EmptyInput);
     }
