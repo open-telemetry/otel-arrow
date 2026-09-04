@@ -116,13 +116,10 @@ channel and is not duplicated by the exporter.
 
 #### `otap.exporter.parquet`
 
-| Metric | Unit | Description |
-| --- | --- | --- |
-| `otap.exporter.parquet.files_created` | `{file}` | Number of Parquet files created (across all payload types and partitions). |
-| `otap.exporter.parquet.files_closed` | `{file}` | Number of Parquet files successfully closed (flushed and visible to readers). |
-| `otap.exporter.parquet.rows_written` | `{row}` | Total number of rows written into Parquet writers (appended, not necessarily flushed yet). |
-| `otap.exporter.parquet.flush_scheduled_max_rows` | `{file}` | Files scheduled for flush due to reaching target rows per file. |
-| `otap.exporter.parquet.flush_scheduled_max_age` | `{file}` | Files scheduled for flush due to exceeding max age threshold. |
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `otap.exporter.parquet.files` | `{file}` | `operation` | Number of Parquet files processed (across all payload types and partitions). `operation` indicates the lifecycle event (e.g. `Created`, `Closed`, `FlushScheduledMaxRows`). |
+| `otap.exporter.parquet.rows` | `{row}` | | Total number of rows written into Parquet writers (appended, not necessarily flushed yet). |
 
 ### Events
 
