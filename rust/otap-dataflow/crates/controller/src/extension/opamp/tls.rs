@@ -39,7 +39,7 @@ pub async fn create_client_config(config: &TlsClientConfig) -> Result<Option<Cli
     }
 
     let mut cert_store = RootCertStore::empty();
-    if config.include_system_ca_certs_pool.unwrap_or(false) {
+    if config.include_system_ca_certs_pool.unwrap_or(true) {
         add_system_trust_anchors_to_root_cert_store(&mut cert_store)
             .await
             .map_err(|e| Error::ConfigHttpClientBuildFailed {
@@ -48,21 +48,26 @@ pub async fn create_client_config(config: &TlsClientConfig) -> Result<Option<Cli
     }
 
     if let Some(ca_pem) = &config.ca_pem {
-        let cert = CertificateDer::from_pem_slice(ca_pem.as_bytes()).map_err(|e| {
-            Error::ConfigHttpClientBuildFailed {
+        for cert in CertificateDer::pem_slice_iter(ca_pem.as_bytes()) {
+            let cert = cert.map_err(|e| Error::ConfigHttpClientBuildFailed {
                 details: format!("failed to parse tls.ca_pem: {e}"),
-            }
-        })?;
-        add_cert(&mut cert_store, cert)?
+            })?;
+            add_cert(&mut cert_store, cert)?;
+        }
     }
 
     if let Some(ca_file) = &config.ca_file {
-        let cert = CertificateDer::from_pem_file(ca_file).map_err(|e| {
+        let ca_bytes = read_file_with_limit_async(ca_file).await.map_err(|e| {
             Error::ConfigHttpClientBuildFailed {
                 details: format!("failed to read tls.ca_file: {e}"),
             }
         })?;
-        add_cert(&mut cert_store, cert)?;
+        for cert in CertificateDer::pem_slice_iter(&ca_bytes) {
+            let cert = cert.map_err(|e| Error::ConfigHttpClientBuildFailed {
+                details: format!("failed to parse tls.ca_file: {e}"),
+            })?;
+            add_cert(&mut cert_store, cert)?;
+        }
     }
 
     // mTLS client certificate configuration
