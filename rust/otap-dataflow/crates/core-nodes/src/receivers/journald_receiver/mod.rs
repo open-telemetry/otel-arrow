@@ -44,11 +44,10 @@ use otel_arrow_dfe_otap::pdata::Context;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
 #[cfg(target_os = "linux")]
 use otel_arrow_dfe_pdata::OtapPayload;
-use otel_arrow_dfe_telemetry::instrument::Counter;
-use otel_arrow_dfe_telemetry::metrics::MetricSet;
+mod metrics;
+use metrics::*;
 #[cfg(target_os = "linux")]
 use otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot;
-use otel_arrow_dfe_telemetry_macros::metric_set;
 use serde_json::Value;
 #[cfg(any(target_os = "linux", test))]
 use std::collections::BTreeMap;
@@ -87,47 +86,7 @@ pub const JOURNALD_RECEIVER_URN: &str = "urn:otel:receiver:journald";
 ///
 /// Tracks lifecycle transitions, downstream delivery, Ack/Nack handling, and
 /// durable cursor checkpoint progress.
-#[metric_set(name = "receiver.journald")]
-#[derive(Debug, Default, Clone)]
-pub struct JournaldReceiverMetrics {
-    /// Number of times the receiver was started.
-    #[metric(unit = "{start}")]
-    pub starts: Counter<u64>,
-    /// Number of clean drain transitions.
-    #[metric(unit = "{drain}")]
-    pub drains: Counter<u64>,
-    /// Number of clean shutdown transitions.
-    #[metric(unit = "{shutdown}")]
-    pub shutdowns: Counter<u64>,
-    /// Number of log batches emitted downstream.
-    #[metric(unit = "{batch}")]
-    pub batches_sent: Counter<u64>,
-    /// Number of log records emitted downstream.
-    #[metric(unit = "{record}")]
-    pub records_sent: Counter<u64>,
-    /// Number of downstream Acks observed.
-    #[metric(unit = "{ack}")]
-    pub acks: Counter<u64>,
-    /// Number of downstream Nacks observed.
-    #[metric(unit = "{nack}")]
-    pub nacks: Counter<u64>,
-    /// Number of durable cursor commits completed.
-    #[metric(unit = "{commit}")]
-    pub cursor_commits: Counter<u64>,
-    /// Number of durable cursor commit failures.
-    #[metric(unit = "{failure}")]
-    pub checkpoint_failures: Counter<u64>,
-    /// Number of source read failures reported by the worker.
-    #[metric(unit = "{failure}")]
-    pub source_failures: Counter<u64>,
-    /// Number of journald fields dropped by extraction safety limits.
-    #[metric(unit = "{field}")]
-    pub source_dropped_fields: Counter<u64>,
-    /// Number of times the worker was asked to rewind after a Nack.
-    #[metric(unit = "{rewind}")]
-    pub rewinds: Counter<u64>,
-}
-
+///
 /// Journald receiver instance.
 pub struct JournaldReceiver {
     #[allow(dead_code)]
@@ -135,7 +94,7 @@ pub struct JournaldReceiver {
     #[cfg(target_os = "linux")]
     checkpoint_path: PathBuf,
     _lease: SourceLease,
-    metrics: Option<MetricSet<JournaldReceiverMetrics>>,
+    metrics: Option<JournaldReceiverMetrics>,
 }
 
 #[allow(unsafe_code)]
@@ -178,7 +137,7 @@ fn create_journald_receiver(
         receiver_config.name.as_ref(),
         &receiver.config.source_id,
     );
-    receiver.metrics = Some(pipeline.register_metrics::<JournaldReceiverMetrics>());
+    receiver.metrics = Some(JournaldReceiverMetrics::register(&pipeline));
     Ok(ReceiverWrapper::local(
         receiver,
         node,
@@ -247,10 +206,10 @@ impl JournaldReceiver {
 #[cfg(target_os = "linux")]
 fn terminal_state(
     deadline: std::time::Instant,
-    metrics: &Option<MetricSet<JournaldReceiverMetrics>>,
+    metrics: &mut Option<JournaldReceiverMetrics>,
 ) -> TerminalState {
-    if let Some(metrics) = metrics {
-        TerminalState::new(deadline, [metrics.snapshot()])
+    if let Some(metrics) = metrics.as_mut() {
+        TerminalState::new(deadline, metrics.snapshot())
     } else {
         TerminalState::new::<[MetricSetSnapshot; 0]>(deadline, [])
     }
@@ -732,7 +691,13 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
         } = *self;
 
         if let Some(metrics) = metrics.as_mut() {
-            metrics.starts.add(1);
+            metrics
+                .lifecycle
+                .with(TransitionAttributes {
+                    transition_type: TransitionType::Start,
+                })
+                .transitions
+                .add(1);
         }
 
         otel_info!(
@@ -784,14 +749,14 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                     drop(event_rx);
                     join_worker(worker, &effect_handler).await?;
                     effect_handler.notify_receiver_drained().await?;
-                    return Ok(terminal_state(deadline, &metrics));
+                    return Ok(terminal_state(deadline, &mut metrics));
                 }
 
                 msg = ctrl_msg_recv.recv() => {
                     match msg {
                         Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
                             if let Some(metrics) = metrics.as_mut() {
-                                let _ = metrics_reporter.report(metrics);
+                                let _ = metrics.report(&mut metrics_reporter);
                             }
                         }
                         Ok(NodeControlMsg::Ack(ack)) => {
@@ -801,7 +766,7 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                             if let Some(effect) = apply_pending_ack(&mut pending, batch_id) {
                                 if let Some(metrics) = metrics.as_mut() {
                                     if effect.record_ack {
-                                        metrics.acks.add(1);
+                                        metrics.acknowledgements.with(otel_arrow_dfe_telemetry::common_attributes::OutcomeAttributes { outcome: otel_arrow_dfe_telemetry::common_attributes::Outcome::Success }).responses.add(1);
                                     }
                                 }
                                 if let Some(command) = effect.command {
@@ -818,10 +783,10 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                             {
                                 if let Some(metrics) = metrics.as_mut() {
                                     if effect.record_nack {
-                                        metrics.nacks.add(1);
+                                        metrics.acknowledgements.with(otel_arrow_dfe_telemetry::common_attributes::OutcomeAttributes { outcome: otel_arrow_dfe_telemetry::common_attributes::Outcome::Refused }).responses.add(1);
                                     }
                                     if effect.record_rewind {
-                                        metrics.rewinds.add(1);
+                                        metrics.acknowledgements.with(otel_arrow_dfe_telemetry::common_attributes::OutcomeAttributes { outcome: otel_arrow_dfe_telemetry::common_attributes::Outcome::Refused }).rewinds.add(1);
                                     }
                                 }
                                 if let Some(command) = effect.command {
@@ -838,7 +803,7 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                         }
                         Ok(NodeControlMsg::DrainIngress { deadline, .. }) => {
                             if let Some(metrics) = metrics.as_mut() {
-                                metrics.drains.add(1);
+                                metrics.lifecycle.with(TransitionAttributes { transition_type: TransitionType::Drain }).transitions.add(1);
                             }
                             otel_info!(
                                 "journald_receiver.drain_ingress",
@@ -853,7 +818,7 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                         }
                         Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
                             if let Some(metrics) = metrics.as_mut() {
-                                metrics.shutdowns.add(1);
+                                metrics.lifecycle.with(TransitionAttributes { transition_type: TransitionType::Shutdown }).transitions.add(1);
                             }
                             otel_info!(
                                 "journald_receiver.shutdown",
@@ -863,7 +828,7 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                                 send_worker_command(&worker.cmd_tx, WorkerCommand::Shutdown, &effect_handler).await;
                             drop(event_rx);
                             join_worker(worker, &effect_handler).await?;
-                            return Ok(terminal_state(deadline, &metrics));
+                            return Ok(terminal_state(deadline, &mut metrics));
                         }
                         Ok(_) => {}
                         Err(e) => {
@@ -943,20 +908,20 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                                                 drop(event_rx);
                                                 join_worker(worker, &effect_handler).await?;
                                                 effect_handler.notify_receiver_drained().await?;
-                                                return Ok(terminal_state(deadline, &metrics));
+                                                return Ok(terminal_state(deadline, &mut metrics));
                                             }
 
                                             msg = ctrl_msg_recv.recv() => {
                                                 match msg {
                                                     Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
                                                         if let Some(metrics) = metrics.as_mut() {
-                                                            let _ = metrics_reporter.report(metrics);
+                                                            let _ = metrics.report(&mut metrics_reporter);
                                                         }
                                                         continue;
                                                     }
                                                     Ok(NodeControlMsg::DrainIngress { deadline, .. }) => {
                                                         if let Some(metrics) = metrics.as_mut() {
-                                                            metrics.drains.add(1);
+                                                            metrics.lifecycle.with(TransitionAttributes { transition_type: TransitionType::Drain }).transitions.add(1);
                                                         }
                                                         let local_deadline = StdInstant::now()
                                                             .checked_add(config.drain_timeout)
@@ -967,13 +932,13 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                                                     }
                                                     Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
                                                         if let Some(metrics) = metrics.as_mut() {
-                                                            metrics.shutdowns.add(1);
+                                                            metrics.lifecycle.with(TransitionAttributes { transition_type: TransitionType::Shutdown }).transitions.add(1);
                                                         }
                                                         let _ =
                                                             send_worker_command(&worker.cmd_tx, WorkerCommand::Shutdown, &effect_handler).await;
                                                         drop(event_rx);
                                                         join_worker(worker, &effect_handler).await?;
-                                                        return Ok(terminal_state(deadline, &metrics));
+                                                        return Ok(terminal_state(deadline, &mut metrics));
                                                     }
                                                     Ok(_) => {
                                                         continue;
@@ -1005,9 +970,9 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                                         },
                                     );
                                     if let Some(metrics) = metrics.as_mut() {
-                                        metrics.batches_sent.add(1);
-                                        metrics.records_sent.add(record_count as u64);
-                                        metrics.source_dropped_fields.add(dropped_fields);
+                                        metrics.output.batches.add(1);
+                                        metrics.output.records.add(record_count as u64);
+                                        metrics.output.dropped_fields.add(dropped_fields);
                                     }
                                     if drain_deadline.is_some() {
                                         send_worker_command(
@@ -1046,7 +1011,7 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                                     let _ = pending.remove(&batch_id);
                                     checkpoint_failures = 0;
                                     if let Some(metrics) = metrics.as_mut() {
-                                        metrics.cursor_commits.add(1);
+                                        metrics.checkpoints.with(otel_arrow_dfe_telemetry::common_attributes::OutcomeAttributes { outcome: otel_arrow_dfe_telemetry::common_attributes::Outcome::Success }).commits.add(1);
                                     }
                                     otel_debug!(
                                         "journald_receiver.cursor_committed",
@@ -1058,7 +1023,7 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                                 Err(err) => {
                                     checkpoint_failures = checkpoint_failures.saturating_add(1);
                                     if let Some(metrics) = metrics.as_mut() {
-                                        metrics.checkpoint_failures.add(1);
+                                        metrics.checkpoints.with(otel_arrow_dfe_telemetry::common_attributes::OutcomeAttributes { outcome: otel_arrow_dfe_telemetry::common_attributes::Outcome::Failure }).commits.add(1);
                                     }
                                     otel_warn!(
                                         "journald_receiver.checkpoint_failed",
@@ -1090,7 +1055,7 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                         }
                         Some(WorkerEvent::Failed(err)) => {
                             if let Some(metrics) = metrics.as_mut() {
-                                metrics.source_failures.add(1);
+                                metrics.source_errors.with(SourceErrorAttributes { error_type: SourceErrorType::Other }).events.add(1);
                             }
                             let error = err.to_string();
                             otel_warn!(
@@ -1108,7 +1073,7 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                             if let Some(deadline) = drain_deadline {
                                 if pending.is_empty() {
                                     effect_handler.notify_receiver_drained().await?;
-                                    return Ok(terminal_state(deadline, &metrics));
+                                    return Ok(terminal_state(deadline, &mut metrics));
                                 }
                             }
                             return Err(terminal_error(&effect_handler, "journald worker stopped unexpectedly"));
