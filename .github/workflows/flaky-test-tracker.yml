@@ -93,7 +93,7 @@ jobs:
             --jq '[.workflow_runs[] | {id, label: ((.head_repository.owner.login // "") + ":" + (.head_branch // ""))}]' \
             | jq -r --slurpfile pulls pull-requests.json --argjson limit "$LOOKBACK_RUNS" '
                 (reduce $pulls[0][] as $pr ({};
-                   if has($pr.label) then . else .[$pr.label] = $pr.draft end)) as $draft
+                  if has($pr.label) then . else .[$pr.label] = $pr.draft end)) as $draft
                 | [.[] | select($draft[.label] != true) | .id][:$limit][]')
 
           echo "Found $(echo "$RUN_IDS" | wc -l) recent runs"
