@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788504898033,
+  "lastUpdate": 1788539943087,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -30771,6 +30771,150 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/open-telemetry/otel-arrow/commit/a32bb6b464207578358895c47f128be64ee3f3cf"
         },
         "date": 1788504880371,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 83.31,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.71,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.89,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.53,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.7,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 70.65,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.82,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.38,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 115.21,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 102.54,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "43687093+athomas9195@users.noreply.github.com",
+            "name": "Tina Tan",
+            "username": "athomas9195"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "f78263c369caec71a4890868ccee1b53b108b0f2",
+          "message": "chore(deps): migrate HawkEye license-header CI to v7 CLI (#3990)\n\n# Change summary\n\nMigrate license-header CI from the removed HawkEye GitHub Action to the\nHawkEye v7 CLI so required checks keep running and\nopen-telemetry/otel-arrow#3962 can be unblocked.\n\nHawkEye v7 deleted  action.yml . Renovate’s bump of  uses:\nkorandoru/hawkeye  from v6 to v7 therefore never scanned files:\n license-header-check  printed CLI usage and failed. v7 also rejects the\nold flat  licenserc.toml  keys ( inlineHeader , top-level\n includes / excludes ).\n\nThis PR:\n\n- Rewrites  licenserc.toml  to the v7 schema ( [header].text ,\n [files].includes / excludes ) without changing header text or file\nglobs.\n- Replaces  uses: korandoru/hawkeye@v6  with the repo-pinned\n taiki-e/install-action  installing  hawkeye@7.0.1 , then  hawkeye\ncheck .\n- Moves the license block in  mtls_tests.rs  above the  //!  module docs\nso the header is at the top of the file, which v7 requires.\n\n# Related issue\nUnblocks the HawkEye major bump in open-telemetry/otel-arrow#3962.\n\n# Validation\nRan  hawkeye 7.0.1 check  locally: 1221 files, 0 changes, 0 conflicts, 0\nunsupported.\n\n# User-facing changes\nNone. This is a CI and license-header tooling change.",
+          "timestamp": "2026-09-04T15:50:32Z",
+          "tree_id": "e5faf4331ab27282b6adb10b483aab0de5fb8e69",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/f78263c369caec71a4890868ccee1b53b108b0f2"
+        },
+        "date": 1788539924846,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
