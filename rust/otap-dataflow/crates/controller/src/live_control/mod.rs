@@ -136,7 +136,7 @@ impl<
         memory_pressure_tx: tokio::sync::watch::Sender<MemoryPressureChanged>,
         live_config: OtelDataflowSpec,
     ) -> Self {
-        log_filter_handle.apply(&live_config.engine.telemetry.logs.level);
+        log_filter_handle.apply(live_config.engine.telemetry.logs.level.as_ref());
         Self {
             pipeline_factory,
             controller_context,
