@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788486625669,
+  "lastUpdate": 1788543145270,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -2494,6 +2494,64 @@ window.BENCHMARK_DATA = {
             "value": 100085.15628643963,
             "unit": "rows/sec",
             "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - ClickHouse rows written"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Joshua MacDonald",
+            "username": "jmacd",
+            "email": "jmacd@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "87c518a3f04a5d7f5791a1f201b8050c3156e7cf",
+          "message": "feat(core-nodes): batch internal telemetry logs (#3886)\n\n## Summary\n\nBatch internal telemetry log records in the Internal Telemetry Receiver\ninstead\nof emitting one OTLP request per record.\n\n- Flush partial batches at a estimated-size threshold or latency\ndeadline.\n- Prevent a partial batch from exceeding a configurable estimated size.\n- Group by scope; preserve event order within scope.\n- Flush on channel close, ingress drain, and shutdown.\n- Preserve the existing independent internal-metrics export path.\n\nThe `logs` configuration mirrors the batch processor's format-specific\nstructure. Current output consumes `otlp`; `otap` reserves the same\nsurface for\nplanned OTAP log output.\n\n```yaml\nlogs:\n  otap: {}\n  otlp:\n    min_size: 65536\n    max_size: 2097152\n    sizer: bytes\n  max_batch_duration: 200ms\n```\n\nBoth format blocks use optional `min_size` and `max_size` plus `sizer`.\nCurrent\nOTLP output validates `bytes` sizing with the batch processor's\nconfiguration\nmodel. The reserved OTAP settings are parsed but remain inactive and\nunvalidated until OTAP output is implemented.\n\n## Benchmark\n\nA new `self_tracing` benchmark compares the previous one-request-per-log\nencoding path with one scope-grouped request per batch.\n\n| Records | Scopes | Per record | Grouped batch | Speedup |\n|--------:|-------:|-----------:|--------------:|--------:|\n| 1 | 1 | 579.86 ns | 617.13 ns | 0.94x |\n| 8 | 1 | 4.281 us | 1.189 us | 3.60x |\n| 8 | 8 | 4.291 us | 1.818 us | 2.36x |\n| 64 | 1 | 34.475 us | 5.179 us | 6.66x |\n| 64 | 8 | 34.207 us | 10.127 us | 3.38x |\n| 64 | 64 | 34.659 us | 10.444 us | 3.32x |\n| 512 | 1 | 285.26 us | 35.835 us | 7.96x |\n| 512 | 8 | 282.93 us | 90.356 us | 3.13x |\n| 512 | 512 | 289.01 us | 80.835 us | 3.58x |\n\n## Credit\n\nThis is a fresh implementation on current `main` of the problem\naddressed by\n#3374. The receiver-side batching design and original test strategy were\ncontributed by @AvinashDevX. Commit `0e1488f00` retains Avinash Sharma\nas a\nco-author.\n\nCloses #1902.\n\n---------\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>",
+          "timestamp": "2026-09-04T16:44:48Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/87c518a3f04a5d7f5791a1f201b8050c3156e7cf"
+        },
+        "date": 1788543144005,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "log_rows_written_rate",
+            "value": 99294.50673016504,
+            "unit": "rows/sec",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - ClickHouse rows written"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 100604.99238462836,
+            "unit": "rows/sec",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - logs produced"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 100306.9426447282,
+            "unit": "rows/sec",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - logs_produced"
+          },
+          {
+            "name": "log_rows_written_rate",
+            "value": 100073.65372091203,
+            "unit": "rows/sec",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - ClickHouse rows written"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 100696.66146092897,
+            "unit": "rows/sec",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - logs_produced"
+          },
+          {
+            "name": "log_rows_written_rate",
+            "value": 100073.65372091203,
+            "unit": "rows/sec",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - ClickHouse rows written"
           }
         ]
       }
