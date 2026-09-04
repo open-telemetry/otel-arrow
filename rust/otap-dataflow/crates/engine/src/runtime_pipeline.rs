@@ -23,7 +23,7 @@ use crate::entity_context::{
 };
 use crate::error::{Error, TypedError};
 use crate::flow_metrics::{
-    FlowDroppedItemsMetrics, FlowDurationMetrics, FlowInputItemsMetrics, FlowInputMessageMetrics,
+    FlowDroppedItemsMetrics, FlowDurationMetricSet, FlowInputItemsMetrics, FlowInputMessageMetrics,
     FlowInputSizeMetrics, FlowOutputItemsMetrics, FlowOutputMessageMetrics, FlowOutputSizeMetrics,
     build_flow_metric_state,
 };
@@ -716,11 +716,10 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                     .start_nodes
                     .get(&node_id.index)
                     .and_then(|&id| flow_metric_state.input_size_metrics[id].take());
-            let flow_duration_metric: Option<MeasurementMetricSet<FlowDurationMetrics>> =
-                flow_metric_state
-                    .end_nodes
-                    .get(&node_id.index)
-                    .and_then(|&id| flow_metric_state.duration_metrics[id].take());
+            let flow_duration_metric: Option<FlowDurationMetricSet> = flow_metric_state
+                .end_nodes
+                .get(&node_id.index)
+                .and_then(|&id| flow_metric_state.duration_metrics[id].take());
             let flow_output_items_metric: Option<MeasurementMetricSet<FlowOutputItemsMetrics>> =
                 flow_metric_state
                     .end_nodes

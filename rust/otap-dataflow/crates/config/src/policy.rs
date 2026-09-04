@@ -719,6 +719,19 @@ pub enum MetricLevel {
     Detailed,
 }
 
+/// Aggregation fidelity for distribution instruments.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DistributionTier {
+    /// Preserve summary statistics without buckets.
+    Basic,
+    /// Preserve normal-resolution histogram buckets.
+    #[default]
+    Normal,
+    /// Preserve detailed-resolution histogram buckets.
+    Detailed,
+}
+
 /// Runtime telemetry policy declarations.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -750,6 +763,13 @@ pub struct FlowMetricConfig {
     /// Metrics to enable. Omitted means all metrics are enabled.
     #[serde(default)]
     pub metrics: Option<Vec<FlowMetric>>,
+    /// Aggregation fidelity used by `compute_duration`.
+    ///
+    /// Basic preserves count, sum, min, and max without buckets. Normal and
+    /// detailed use exponential histograms with increasing resolution. The
+    /// default is normal.
+    #[serde(default)]
+    pub duration_distribution: DistributionTier,
     /// Optional per-flow purpose differentiator, emitted as the `flow.purpose`
     /// scope attribute on every metric this flow produces. Lets OTel View
     /// selectors target distinct flavors of processor work (e.g. `filter`
@@ -1838,6 +1858,82 @@ hard_limit: 2 GiB
         assert!(!flow.has(super::FlowMetric::ComputeDuration));
     }
 
+    /// Scenario: A flow omits its duration distribution.
+    /// Guarantees: Compute duration retains the normal histogram tier by default.
+    #[test]
+    fn flow_metrics_duration_distribution_defaults_to_normal() {
+        let yaml = r#"
+            flow_metrics:
+              - id: flow1
+                bounds: { start_node: a, end_node: b }
+        "#;
+        let policy: super::TelemetryPolicy = serde_yaml::from_str(yaml).expect("parse");
+        assert_eq!(
+            policy.flow_metrics[0].duration_distribution,
+            super::DistributionTier::Normal
+        );
+    }
+
+    /// Scenario: A flow selects each supported duration distribution tier.
+    /// Guarantees: Basic, normal, and detailed values deserialize without aliases or fallback.
+    #[test]
+    fn flow_metrics_duration_distribution_tiers_are_parsed() {
+        for (name, expected) in [
+            ("basic", super::DistributionTier::Basic),
+            ("normal", super::DistributionTier::Normal),
+            ("detailed", super::DistributionTier::Detailed),
+        ] {
+            let yaml = format!(
+                r#"
+                    flow_metrics:
+                      - id: flow1
+                        bounds: {{ start_node: a, end_node: b }}
+                        duration_distribution: {name}
+                "#
+            );
+            let policy: super::TelemetryPolicy = serde_yaml::from_str(&yaml).expect("parse");
+            assert_eq!(policy.flow_metrics[0].duration_distribution, expected);
+        }
+    }
+
+    /// Scenario: A flow selects `none` as its duration distribution tier.
+    /// Guarantees: Deserialization rejects values outside basic, normal, and detailed.
+    #[test]
+    fn flow_metrics_duration_distribution_rejects_none() {
+        let result = serde_yaml::from_str::<super::TelemetryPolicy>(
+            r#"
+                flow_metrics:
+                  - id: flow1
+                    bounds: { start_node: a, end_node: b }
+                    duration_distribution: none
+            "#,
+        );
+
+        assert!(result.is_err());
+    }
+
+    /// Scenario: JSON schema is generated for flow duration distribution configuration.
+    /// Guarantees: The field exposes only the three distribution tiers to configuration tooling.
+    #[test]
+    fn flow_metrics_duration_distribution_is_in_schema() {
+        let schema = schemars::schema_for!(super::FlowMetricConfig);
+        let json = serde_json::to_value(schema).expect("schema should serialize");
+        let property = &json["properties"]["duration_distribution"];
+        assert_eq!(property["default"], "normal");
+        assert_eq!(
+            property["$ref"],
+            serde_json::json!("#/$defs/DistributionTier")
+        );
+        let variants = json["$defs"]["DistributionTier"]["oneOf"]
+            .as_array()
+            .expect("distribution tier variants");
+        let values = variants
+            .iter()
+            .map(|variant| variant["const"].as_str().expect("string enum value"))
+            .collect::<Vec<_>>();
+        assert_eq!(values, ["basic", "normal", "detailed"]);
+    }
+
     #[test]
     fn flow_metrics_purpose_defaults_to_none() {
         let yaml = r#"
@@ -1872,6 +1968,7 @@ hard_limit: 2 GiB
                         end_node: "b".to_string(),
                     },
                     metrics: Some(vec![]),
+                    duration_distribution: super::DistributionTier::Normal,
                     purpose: None,
                 }],
                 ..super::TelemetryPolicy::default()
@@ -1900,6 +1997,7 @@ hard_limit: 2 GiB
                         super::FlowMetric::ComputeDuration,
                         super::FlowMetric::ComputeDuration,
                     ]),
+                    duration_distribution: super::DistributionTier::Normal,
                     purpose: None,
                 }],
                 ..super::TelemetryPolicy::default()
