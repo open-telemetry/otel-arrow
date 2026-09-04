@@ -12,8 +12,8 @@ nodes:
         include:
           match_type: strict
           record_attributes:
-            - key: ios.app.state
-              value: active
+            - key: thread.name
+              value: main
   exporter:
     type: "urn:otel:exporter:otap"
     config:

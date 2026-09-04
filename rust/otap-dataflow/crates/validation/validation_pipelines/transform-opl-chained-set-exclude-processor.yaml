@@ -8,7 +8,7 @@ nodes:
   transform:
     type: "urn:otel:processor:transform"
     config:
-      opl_query: 'logs | set attributes["processed"] = "yes" | exclude attributes["thread.id"]'
+      opl_query: 'logs | set attributes["processed"] = "yes" | remove attributes["thread.id"]'
   exporter:
     type: "urn:otel:exporter:otap"
     config:
