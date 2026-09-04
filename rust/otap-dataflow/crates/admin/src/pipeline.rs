@@ -512,6 +512,10 @@ mod tests {
             Ok(())
         }
 
+        fn has_active_instances(&self) -> bool {
+            false
+        }
+
         fn shutdown_pipeline(
             &self,
             _pipeline_group_id: &str,
@@ -654,6 +658,10 @@ mod tests {
     impl ControlPlane for PipelineDetailsStub {
         fn shutdown_all(&self, _timeout_secs: u64) -> Result<(), ControlPlaneError> {
             Ok(())
+        }
+
+        fn has_active_instances(&self) -> bool {
+            false
         }
         fn shutdown_pipeline(
             &self,

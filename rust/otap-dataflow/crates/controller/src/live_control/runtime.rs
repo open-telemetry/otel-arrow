@@ -138,15 +138,23 @@ impl<
         self: &Arc<Self>,
         launched: LaunchedPipelineThread<PData>,
     ) {
-        let (should_compact, pending_exit) = {
+        let (should_compact, pending_exit, shutdown_sender) = {
             let mut state = self
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+            let should_shutdown = state.global_shutdown_requested;
+            let control_sender = if should_shutdown {
+                None
+            } else {
+                Some(launched.control_sender.clone())
+            };
+
             _ = state.runtime_instances.insert(
                 launched.pipeline_key.clone(),
                 RuntimeInstanceRecord {
-                    control_sender: Some(launched.control_sender.clone()),
+                    control_sender,
                     lifecycle: RuntimeInstanceLifecycle::Active,
                 },
             );
@@ -158,8 +166,23 @@ impl<
                 false
             };
             self.state_changed.notify_all();
-            (should_compact, pending_exit)
+
+            let shutdown_sender = if should_shutdown {
+                Some(launched.control_sender)
+            } else {
+                None
+            };
+
+            (should_compact, pending_exit, shutdown_sender)
         };
+
+        if let Some(sender) = shutdown_sender {
+            // Lalit: "the shutdown message should be sent after releasing the state lock."
+            let _ = sender.try_send_shutdown(
+                Instant::now() + Duration::from_secs(60),
+                "global shutdown (late registration)".to_owned(),
+            );
+        }
 
         if should_compact {
             let logical_pipeline_key = PipelineKey::new(
