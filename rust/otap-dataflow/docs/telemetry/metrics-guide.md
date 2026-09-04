@@ -231,16 +231,17 @@ metrics.
 | `receiver.received.messages` | Record one classified external message when receiver-local handling reaches its terminal local outcome. |
 | `receiver.received.payload.size` | Record the encoded application payload bytes observed at the receiver boundary. |
 | `receiver.processing.duration` | Measure the receiver's documented local processing boundary, ending before downstream handoff or channel wait. |
-| `exporter.attempted.messages` | Record every physical backend submission attempt, including retries, grouped by terminal attempt outcome. |
+| `exporter.attempted.messages` | Record every component-local delivery attempt, including attempts that fail during preparation and each backend retry, grouped by terminal attempt outcome. |
 | `exporter.attempted.duration` | Measure from attempt start through the terminal local or backend result, excluding Ack/Nack notification delivery. |
-| `exporter.attempted.payload.size` | Record the encoded application payload bytes submitted by the attempt. |
-| `exporter.attempted.items` | Record the signal items submitted by the attempt. |
+| `exporter.attempted.payload.size` | Record the encoded application payload bytes produced or submitted by the attempt when available. |
+| `exporter.attempted.items` | Record the signal items handled by the attempt. |
 
 Each component must document a stable processing or attempt boundary. Receiver
 processing excludes downstream processing, batching wait, channel handoff
-wait, and Ack/Nack completion. Exporter attempt duration includes encoding and
-backend latency but excludes the time needed to notify upstream after the
-result is known.
+wait, and Ack/Nack completion. An exporter attempt starts when the component
+begins preparing one delivery and ends at its terminal local or backend result.
+It includes encoding and backend latency when those stages are reached, but
+excludes the time needed to notify upstream after the result is known.
 
 Component metrics use bounded `signal` and `outcome` attributes. Components may
 retain additional bounded diagnostic metrics, such as protocol-specific
@@ -311,10 +312,11 @@ submits an encoded application payload and `None` when payload size is not
 meaningful or unavailable. Encoding structure, retries, component-specific
 failure metrics, and Ack/Nack behavior remain owned by the component.
 
-`exporter.attempted.messages` counts physical backend submissions. A retry
-starts a new attempt and records the items and payload bytes submitted again.
-Use `node.input.messages` to count PData messages entering the exporter; do not
-use the attempt metric as a duplicate input-message count.
+`exporter.attempted.messages` counts component-local delivery attempts,
+including attempts that fail before a backend call. Each physical retry starts
+a new attempt and records the items and any available encoded payload bytes
+again. Use `node.input.messages` to count PData messages entering the exporter;
+do not use the attempt metric as a duplicate input-message count.
 
 ## Performance considerations
 

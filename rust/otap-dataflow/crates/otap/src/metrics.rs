@@ -173,14 +173,14 @@ impl ReceiverMetrics {
     }
 }
 
-/// Individual attempts to submit encoded application payloads from an exporter.
+/// Individual component-local delivery attempts from an exporter.
 #[metric_set(
     name = "exporter.attempted",
     measurement_attributes = SignalOutcomeAttributes
 )]
 #[derive(Debug, Default, Clone)]
 pub struct ExporterAttemptedMetrics {
-    /// Number of backend submission attempts.
+    /// Number of component-local delivery attempts.
     ///
     /// Retries count again. This differs from `node.input.messages`, which
     /// counts PData messages entering the exporter.
@@ -223,7 +223,7 @@ impl ExporterAttemptedDurationMetrics {
 )]
 #[derive(Debug, Default, Clone)]
 pub struct ExporterAttemptedPayloadMetrics {
-    /// Encoded application payload size submitted across export attempts.
+    /// Encoded application payload size produced or submitted across export attempts.
     #[metric(name = "payload.size", unit = "By")]
     pub payload_size: Counter<u64>,
 }
@@ -243,7 +243,7 @@ impl ExporterAttemptedPayloadMetrics {
 )]
 #[derive(Debug, Default, Clone)]
 pub struct ExporterAttemptedItemsMetrics {
-    /// Number of signal items submitted across export attempts.
+    /// Number of signal items handled across export attempts.
     #[metric(unit = "{item}")]
     pub items: Counter<u64>,
 }

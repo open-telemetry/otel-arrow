@@ -1,0 +1,163 @@
+# Compares shared exporter boundary metrics under global and per-node policies.
+#
+# Three otherwise-identical traffic-generator-to-console pipelines use the
+# default resource policy. Distinguish their measurements by the `pipeline.id`
+# attribute:
+#
+#   - `normal` emits mandatory `exporter.attempted.messages` only.
+#   - `detailed` enables `exporter.attempted.duration` and
+#     `exporter.attempted.items` globally.
+#   - `per_node` enables only `exporter.attempted.duration` through a node-level
+#     override on its console exporter.
+#
+# The console exporter has no encoded transport payload, so it passes no
+# payload size. `exporter.attempted.payload.size` therefore has no observations,
+# even when size measurement is enabled.
+#
+# The observability pipeline selects and renames only the four shared exporter
+# instruments, filters out all other metrics, and prints the results through
+# the debug processor.
+#
+# Run with:
+#   cargo run -- --config configs/trafficgen-component-boundary-metrics.yaml
+
+version: otel_dataflow/v1
+engine:
+  telemetry:
+    reporting_interval: 1s
+  observability:
+    pipeline:
+      policies:
+        telemetry:
+          pipeline_metrics: false
+          tokio_metrics: false
+          runtime_metrics: none
+      nodes:
+        telemetry:
+          type: receiver:internal_telemetry
+          config:
+            signals: [metrics]
+            metrics:
+              interval: 1s
+              views:
+                - selector:
+                    scope_name: exporter.attempted
+                    instrument_name: messages
+                  stream:
+                    name: exporter_attempted_messages
+                - selector:
+                    scope_name: exporter.attempted
+                    instrument_name: duration
+                  stream:
+                    name: exporter_attempted_duration
+                - selector:
+                    scope_name: exporter.attempted
+                    instrument_name: payload.size
+                  stream:
+                    name: exporter_attempted_payload_size
+                - selector:
+                    scope_name: exporter.attempted
+                    instrument_name: items
+                  stream:
+                    name: exporter_attempted_items
+        boundary_metrics:
+          type: processor:filter
+          config:
+            metrics:
+              include:
+                match_type: strict
+                metric_names:
+                  - exporter_attempted_messages
+                  - exporter_attempted_duration
+                  - exporter_attempted_payload_size
+                  - exporter_attempted_items
+        metrics_debug:
+          type: processor:debug
+          config:
+            verbosity: normal
+            mode: batch
+            signals: [metrics]
+        noop:
+          type: exporter:noop
+          config: {}
+      connections:
+        - from: telemetry
+          to: boundary_metrics
+        - from: boundary_metrics
+          to: metrics_debug
+        - from: metrics_debug
+          to: noop
+groups:
+  default:
+    pipelines:
+      normal:
+        policies:
+          telemetry:
+            runtime_metrics: normal
+        nodes:
+          generator:
+            type: receiver:traffic_generator
+            config:
+              traffic_config:
+                max_batch_size: 10
+                signals_per_second: 10
+                log_weight: 100
+                metric_weight: 0
+                trace_weight: 0
+              data_source: synthetic
+          console:
+            type: exporter:console
+            config:
+              format: pretty
+        connections:
+          - from: generator
+            to: console
+
+      detailed:
+        policies:
+          telemetry:
+            runtime_metrics: detailed
+        nodes:
+          generator:
+            type: receiver:traffic_generator
+            config:
+              traffic_config:
+                max_batch_size: 10
+                signals_per_second: 10
+                log_weight: 100
+                metric_weight: 0
+                trace_weight: 0
+              data_source: synthetic
+          console:
+            type: exporter:console
+            config:
+              format: pretty
+        connections:
+          - from: generator
+            to: console
+
+      per_node:
+        policies:
+          telemetry:
+            runtime_metrics: normal
+        nodes:
+          generator:
+            type: receiver:traffic_generator
+            config:
+              traffic_config:
+                max_batch_size: 10
+                signals_per_second: 10
+                log_weight: 100
+                metric_weight: 0
+                trace_weight: 0
+              data_source: synthetic
+          console:
+            type: exporter:console
+            policies:
+              telemetry:
+                duration: true
+            config:
+              format: pretty
+        connections:
+          - from: generator
+            to: console

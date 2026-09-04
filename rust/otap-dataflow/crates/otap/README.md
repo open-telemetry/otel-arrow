@@ -70,14 +70,15 @@ Receiver received omits `items` because decoded items are measured by
 
 ### Exporter attempted
 
-One observation represents one attempt to submit an encoded application
-payload to an external backend or storage boundary. Component-internal retries
-produce additional observations, as does redelivery by a retry processor.
-`success` means the attempt was accepted and completed by the external boundary,
-`refused` means validation, policy, admission, or capacity at that boundary
-explicitly rejected it, and `failure` means an encoding, transport, timeout,
-backend, or other processing error prevented completion. Retryability is
-independent of the outcome.
+One observation represents one component-local attempt to deliver data to an
+external sink. The attempt includes preparation such as encoding and the
+backend or storage submission when reached, so a preparation failure is still
+a failed attempt. Component-internal retries produce additional observations,
+as does redelivery by a retry processor. `success` means the attempt completed,
+`refused` means validation, policy, admission, or capacity explicitly rejected
+it, and `failure` means an encoding, transport, timeout, backend, or other
+processing error prevented completion. Retryability is independent of the
+outcome.
 
 Messages are recorded for every attempt. Duration, payload size, and items use
 separately registered optional metric sets under the same
@@ -96,10 +97,10 @@ while `node.input` owns the logical message's terminal pipeline outcome.
 ### Payload size and internal size
 
 `payload.size` means encoded application payload bytes visible immediately
-before receiver decoding or submitted by an exporter attempt. It excludes
-protocol headers, framing, TLS overhead, and storage amplification. Exporters
-without an encoded application payload, or whose encoder does not expose its
-size, omit the optional metric set rather than reporting zero.
+before receiver decoding or produced or submitted by an exporter attempt. It
+excludes protocol headers, framing, TLS overhead, and storage amplification.
+Exporters without an encoded application payload, or whose encoder does not
+expose its size, omit the optional metric set rather than reporting zero.
 
 The internal `size` measurement remains separate: it describes the PData
 representation at `node.output` and `node.input`.
