@@ -14,20 +14,25 @@ use otel_arrow_dfe_telemetry::otel_error;
 
 pub async fn create_client_config(config: &TlsClientConfig) -> Result<Option<ClientConfig>, Error> {
     let insecure = config.insecure.unwrap_or(false);
-    // TODO - there might be some other stuff that conflicts with insecure flag?
-    // see the gRPC implementation where we check if there's also a custom CA configured
-    // and if not, we don't return this
     if insecure {
         return Ok(None);
     }
 
-    if let Some(domain) = &config.server_name {
-        // TODO
+    if config.server_name.is_some() {
+        return Err(Error::ConfigHttpClientBuildFailed {
+            details: "TLS configuration error: server_name_override is not supported \
+                by the OpAMP WebSocket client implementation. Remove server_name_override."
+                .into(),
+        });
     }
 
-    // TODO
-    // - server_name
-    // - insecure_skip_verify
+    if config.insecure_skip_verify.unwrap_or(false) {
+        return Err(Error::ConfigHttpClientBuildFailed {
+            details: "TLS configuration error: insecure_skip_verify=true is not supported \
+                by the OpAMP WebSocket client implementation. Remove insecure_skip_verify."
+                .into(),
+        });
+    }
 
     let mut cert_store = RootCertStore::empty();
     if config.include_system_ca_certs_pool.unwrap_or(false) {
@@ -119,14 +124,33 @@ pub async fn create_client_config(config: &TlsClientConfig) -> Result<Option<Cli
 
         let cert_chain = CertificateDer::pem_slice_iter(&cert_pem)
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| todo!())?;
+            .map_err(|e| {
+                otel_error!(
+                    "tls.cert_pem.parse_error",
+                    error = ?e,
+                    message = "Failed to parse client certificate PEM"
+                );
+                Error::ConfigHttpClientBuildFailed {
+                    details: format!("failed to parse client mTLS certificate PEM: {e}"),
+                }
+            })?;
 
-        let key_der = PrivateKeyDer::from_pem_slice(&key_pem).map_err(|e| todo!())?;
+        let key_der = PrivateKeyDer::from_pem_slice(&key_pem).map_err(|e| {
+            otel_error!(
+                "tls.key_pem.parse_error",
+                error = ?e,
+                message = "Failed to parse client private key PEM"
+            );
+            Error::ConfigHttpClientBuildFailed {
+                details: format!("failed to parse client mTLS private key PEM: {e}"),
+            }
+        })?;
 
-        // TODO - deal with reload duration
-
-        //
-        let client_config = builder.with_client_auth_cert(cert_chain, key_der).unwrap();
+        let client_config = builder
+            .with_client_auth_cert(cert_chain, key_der)
+            .map_err(|e| Error::ConfigHttpClientBuildFailed {
+                details: format!("failed to build mTLS client config: {e}"),
+            })?;
         Ok(Some(client_config))
     } else {
         Ok(Some(builder.with_no_client_auth()))

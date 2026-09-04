@@ -91,12 +91,14 @@ impl Config {
             reason: format!("could not parse \"{}\": {e}", self.endpoint),
         })?;
 
-        match parsed_endpoint.scheme() {
-            "ws" => {
-                // this is an acceptable scheme.
+        let scheme = parsed_endpoint.scheme();
+
+        match scheme {
+            "ws" | "wss" => {
+                // acceptable WebSocket schemes (wss:// for TLS)
             }
 
-            "http" => {
+            "http" | "https" => {
                 // return this error temporarily until we actually support OpAMP over HTTP.
                 // Currently only websocket is supported
                 return Err(Error::InvalidEndpoint {
@@ -106,10 +108,28 @@ impl Config {
             other => {
                 return Err(Error::InvalidEndpoint {
                     reason: format!(
-                        "invalid URL scheme {other}. Acceptable schemes \"ws\" or \"http\""
+                        "invalid URL scheme {other}. \
+                        Acceptable schemes: \"ws\" (plain) or \"wss\" (TLS)"
                     ),
                 });
             }
+        }
+
+        // Validate that the endpoint scheme matches the TLS configuration
+        if self.tls.is_some() && scheme != "wss" {
+            return Err(Error::InvalidEndpoint {
+                reason: format!(
+                    "TLS is configured but endpoint uses \"{scheme}://\" scheme. \
+                    Use \"wss://\" when TLS is enabled."
+                ),
+            });
+        }
+        if self.tls.is_none() && scheme == "wss" {
+            return Err(Error::InvalidEndpoint {
+                reason: "endpoint uses \"wss://\" scheme but no TLS configuration is provided. \
+                    Either configure tls or use \"ws://\"."
+                    .into(),
+            });
         }
 
         Ok(())
@@ -330,8 +350,51 @@ mod test {
         assert_eq!(
             error,
             Error::InvalidEndpoint {
-                reason: "invalid URL scheme ftp. Acceptable schemes \"ws\" or \"http\"".into(),
+                reason:
+                    "invalid URL scheme ftp. Acceptable schemes: \"ws\" (plain) or \"wss\" (TLS)"
+                        .into(),
             }
+        );
+    }
+
+    #[test]
+    fn test_validate_accepts_wss_scheme_with_tls() {
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "endpoint": "wss://127.0.0.1:4320/v1/opamp",
+            "tls": { "ca_pem": "some-ca-pem" }
+        }))
+        .unwrap();
+        config.validate().unwrap();
+    }
+
+    /// Scenario: TLS is configured but endpoint uses ws:// instead of wss://.
+    /// Guarantees: validation rejects the mismatch with a clear error.
+    #[test]
+    fn test_validate_rejects_tls_with_ws_scheme() {
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "endpoint": "ws://127.0.0.1:4320/v1/opamp",
+            "tls": { "ca_pem": "some-ca-pem" }
+        }))
+        .unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(
+            err.to_string().contains("Use \"wss://\" when TLS is enabled"),
+            "expected scheme mismatch error, got: {err}"
+        );
+    }
+
+    /// Scenario: endpoint uses wss:// but no TLS configuration is provided.
+    /// Guarantees: validation rejects the mismatch with a clear error.
+    #[test]
+    fn test_validate_rejects_wss_without_tls() {
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "endpoint": "wss://127.0.0.1:4320/v1/opamp"
+        }))
+        .unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(
+            err.to_string().contains("no TLS configuration is provided"),
+            "expected missing TLS error, got: {err}"
         );
     }
 }

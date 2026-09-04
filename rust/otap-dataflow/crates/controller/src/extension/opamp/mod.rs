@@ -19,7 +19,6 @@
 //!
 //! See [config] for more configuration options.
 
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -331,18 +330,10 @@ async fn connect_websocket(
     cancellation_token: &CancellationToken,
     backoff: &mut ExponentialBackoff,
 ) -> Option<WebSocketStream<MaybeTlsStream<TcpStream>>> {
-    // TODO - need better logic also or at least commentary about why we're doing this
-    let endpoint = if matches!(connector, Connector::Rustls(_)) {
-        Cow::Owned(config.endpoint.replace("ws://", "wss://"))
-    } else {
-        Cow::Borrowed(&config.endpoint)
-    };
-
     loop {
         let connect_result = cancellation_token
-            // .run_until_cancelled(connect_async(&config.endpoint))
             .run_until_cancelled(connect_async_tls_with_config(
-                endpoint.as_ref(),
+                &config.endpoint,
                 None,
                 false,
                 Some(connector.clone()),
@@ -1726,11 +1717,11 @@ mod test {
         server_tls_config: Option<TlsServerConfig>,
     ) -> Vec<AgentToServer> {
         let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
-        // TODO - not sure the if/else is actually necesasry here
-        config.endpoint = if server_tls_config.is_none() {
-            format!("ws://127.0.0.1:{port}/v1/opamp")
+        config.endpoint = if server_tls_config.is_some() {
+            // TLS tests must use wss:// and "localhost" (matching the server cert SAN)
+            format!("wss://localhost:{port}/v1/opamp")
         } else {
-            format!("ws://localhost:{port}/v1/opamp")
+            format!("ws://127.0.0.1:{port}/v1/opamp")
         };
 
         let client_tls_config = if let Some(tls_client_config) = &config.tls {
@@ -1810,7 +1801,7 @@ mod test {
 
         let config: Config = serde_json::from_value(serde_json::json!({
             "instance_uid": EXPECTED_INSTANCE_UID_STR,
-            "endpoint": format!("ws://localhost:{port}/v1/opamp"),
+            "endpoint": format!("wss://localhost:{port}/v1/opamp"),
             "connect_retry": { "initial": "10ms", "max": "50ms" },
         }))
         .unwrap();
