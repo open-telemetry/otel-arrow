@@ -1,0 +1,290 @@
+file_format: definition/2
+entities:
+- type: otap.engine
+  brief: An OTAP Dataflow engine telemetry entity.
+  stability: development
+  requirement_level: recommended
+  identity:
+  - ref: service.instance.id
+  annotations:
+    otap_dataflow:
+      scope_descriptor: engine
+      rust:
+        package: otap-df-engine
+        type: EngineEntityAttributeSet
+        source: crates/engine/src/attributes.rs
+- type: otap.controller
+  brief: An OTAP Dataflow controller telemetry entity.
+  stability: development
+  requirement_level: recommended
+  identity:
+  - ref: core.id
+  - ref: numa.node.id
+  - ref: service.instance.id
+  annotations:
+    otap_dataflow:
+      scope_descriptor: controller.attrs
+      rust:
+        package: otap-df-engine
+        type: EngineAttributeSet
+        source: crates/engine/src/attributes.rs
+      parent_entities:
+      - otap.engine
+- type: otap.pipeline
+  brief: An OTAP Dataflow pipeline telemetry entity.
+  stability: development
+  requirement_level: recommended
+  identity:
+  - ref: core.id
+  - ref: deployment.generation
+  - ref: numa.node.id
+  - ref: pipeline.group.id
+  - ref: pipeline.id
+  - ref: service.instance.id
+  annotations:
+    otap_dataflow:
+      scope_descriptor: pipeline.attrs
+      rust:
+        package: otap-df-engine
+        type: PipelineAttributeSet
+        source: crates/engine/src/attributes.rs
+      parent_entities:
+      - otap.controller
+- type: otap.extension.scope
+  brief: An OTAP Dataflow extension scope telemetry entity.
+  stability: development
+  requirement_level: recommended
+  identity:
+  - ref: core.id
+  - ref: deployment.generation
+  - ref: numa.node.id
+  - ref: pipeline.group.id
+  - ref: pipeline.id
+  - ref: scope.kind
+  - ref: service.instance.id
+  annotations:
+    otap_dataflow:
+      scope_descriptor: extension.scope.attrs
+      rust:
+        package: otap-df-engine
+        type: ExtensionScopeAttributeSet
+        source: crates/engine/src/attributes.rs
+      parent_entities:
+      - otap.pipeline
+- type: otap.extension
+  brief: An OTAP Dataflow extension telemetry entity.
+  stability: development
+  requirement_level: recommended
+  identity:
+  - ref: core.id
+  - ref: deployment.generation
+  - ref: extension.id
+  - ref: extension.variant
+  - ref: numa.node.id
+  - ref: pipeline.group.id
+  - ref: pipeline.id
+  - ref: scope.kind
+  - ref: service.instance.id
+  annotations:
+    otap_dataflow:
+      scope_descriptor: extension.attrs
+      rust:
+        package: otap-df-engine
+        type: ExtensionAttributeSet
+        source: crates/engine/src/attributes.rs
+      parent_entities:
+      - otap.extension.scope
+- type: otap.node
+  brief: An OTAP Dataflow node telemetry entity.
+  stability: development
+  requirement_level: recommended
+  identity:
+  - ref: core.id
+  - ref: deployment.generation
+  - ref: node.id
+  - ref: node.type
+  - ref: node.urn
+  - ref: numa.node.id
+  - ref: pipeline.group.id
+  - ref: pipeline.id
+  - ref: service.instance.id
+  annotations:
+    otap_dataflow:
+      scope_descriptor: node.attrs
+      rust:
+        package: otap-df-engine
+        type: NodeAttributeSet
+        source: crates/engine/src/attributes.rs
+      parent_entities:
+      - otap.pipeline
+- type: otap.node.custom
+  brief: An OTAP Dataflow node custom telemetry entity.
+  stability: development
+  requirement_level: recommended
+  identity:
+  - ref: core.id
+  - ref: custom
+  - ref: deployment.generation
+  - ref: node.id
+  - ref: node.type
+  - ref: node.urn
+  - ref: numa.node.id
+  - ref: pipeline.group.id
+  - ref: pipeline.id
+  - ref: service.instance.id
+  annotations:
+    otap_dataflow:
+      scope_descriptor: node.custom.attrs
+      rust:
+        package: otap-df-engine
+        type: NodeWithCustomAttributeSet
+        source: crates/engine/src/attributes.rs
+      parent_entities:
+      - otap.node
+      dynamic_identity: true
+- type: otap.node.topic
+  brief: An OTAP Dataflow node topic telemetry entity.
+  stability: development
+  requirement_level: recommended
+  identity:
+  - ref: core.id
+  - ref: deployment.generation
+  - ref: node.id
+  - ref: node.type
+  - ref: node.urn
+  - ref: numa.node.id
+  - ref: pipeline.group.id
+  - ref: pipeline.id
+  - ref: service.instance.id
+  - ref: topic
+  annotations:
+    otap_dataflow:
+      scope_descriptor: node.topic.attrs
+      rust:
+        package: otap-df-engine
+        type: NodeWithTopicAttributeSet
+        source: crates/engine/src/attributes.rs
+      parent_entities:
+      - otap.node
+- type: otap.node.custom.topic
+  brief: An OTAP Dataflow node custom topic telemetry entity.
+  stability: development
+  requirement_level: recommended
+  identity:
+  - ref: core.id
+  - ref: custom
+  - ref: deployment.generation
+  - ref: node.id
+  - ref: node.type
+  - ref: node.urn
+  - ref: numa.node.id
+  - ref: pipeline.group.id
+  - ref: pipeline.id
+  - ref: service.instance.id
+  - ref: topic
+  annotations:
+    otap_dataflow:
+      scope_descriptor: node.custom.topic.attrs
+      rust:
+        package: otap-df-engine
+        type: NodeWithCustomTopicAttributeSet
+        source: crates/engine/src/attributes.rs
+      parent_entities:
+      - otap.node.custom
+      dynamic_identity: true
+- type: otap.node.channel
+  brief: An OTAP Dataflow node channel telemetry entity.
+  stability: development
+  requirement_level: recommended
+  identity:
+  - ref: channel.id
+  - ref: channel.impl
+  - ref: channel.kind
+  - ref: channel.mode
+  - ref: channel.type
+  - ref: core.id
+  - ref: deployment.generation
+  - ref: node.id
+  - ref: node.port
+  - ref: node.type
+  - ref: node.urn
+  - ref: numa.node.id
+  - ref: pipeline.group.id
+  - ref: pipeline.id
+  - ref: service.instance.id
+  annotations:
+    otap_dataflow:
+      scope_descriptor: node.channel.attrs
+      rust:
+        package: otap-df-engine
+        type: NodeChannelAttributeSet
+        source: crates/engine/src/attributes.rs
+      parent_entities:
+      - otap.node
+- type: otap.extension.channel
+  brief: An OTAP Dataflow extension channel telemetry entity.
+  stability: development
+  requirement_level: recommended
+  identity:
+  - ref: channel.id
+  - ref: channel.impl
+  - ref: channel.mode
+  - ref: core.id
+  - ref: deployment.generation
+  - ref: extension.id
+  - ref: extension.variant
+  - ref: numa.node.id
+  - ref: pipeline.group.id
+  - ref: pipeline.id
+  - ref: scope.kind
+  - ref: service.instance.id
+  annotations:
+    otap_dataflow:
+      scope_descriptor: extension.channel.attrs
+      rust:
+        package: otap-df-engine
+        type: ExtensionChannelAttributeSet
+        source: crates/engine/src/attributes.rs
+      parent_entities:
+      - otap.extension
+- type: otap.flow
+  brief: An OTAP Dataflow flow telemetry entity.
+  stability: development
+  requirement_level: recommended
+  identity:
+  - ref: core.id
+  - ref: deployment.generation
+  - ref: flow.id
+  - ref: flow.node.decision
+  - ref: flow.node.end
+  - ref: flow.node.start
+  - ref: flow.purpose
+  - ref: numa.node.id
+  - ref: pipeline.group.id
+  - ref: pipeline.id
+  - ref: service.instance.id
+  annotations:
+    otap_dataflow:
+      scope_descriptor: flow.attrs
+      rust:
+        package: otap-df-engine
+        type: FlowAttributeSet
+        source: crates/engine/src/flow_metrics.rs
+      parent_entities:
+      - otap.pipeline
+- type: otap.controller.monitor
+  brief: An OTAP Dataflow controller monitor telemetry entity.
+  stability: development
+  requirement_level: recommended
+  identity:
+  - ref: extension.id
+  - ref: service.instance.id
+  annotations:
+    otap_dataflow:
+      scope_descriptor: controller.monitor.attrs
+      rust:
+        package: otap-df-controller
+        type: ControllerMonitorAttributes
+        source: crates/controller/src/controller_monitor.rs
+      parent_entities:
+      - otap.engine

@@ -1,0 +1,163 @@
+file_format: definition/2
+metrics:
+- name: receiver.etw.kernel.buffers.written
+  brief: Total ETW buffers written by the session, from `TraceStats::buffers_written`. A throughput/health
+    denominator rather than a loss signal.
+  instrument: counter
+  unit: '{buffer}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.etw
+- name: receiver.etw.kernel.log.buffers.lost
+  brief: Log buffers that could not be flushed, from `TraceStats::log_buffers_lost`.
+  instrument: counter
+  unit: '{buffer}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.etw
+- name: receiver.etw.kernel.real.time.buffers.lost
+  brief: Real-time delivery buffers lost because the consumer could not drain the ETW real-time buffers
+    fast enough, from `TraceStats::real_time_buffers_lost`.
+  instrument: counter
+  unit: '{buffer}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.etw
+- name: receiver.etw.received.events.dropped.slow.worker
+  brief: Events dropped because the consuming worker (this core's async receiver loop) couldn't drain
+    the internal channel fast enough (the ETW consumer thread filled it). Contrast `received_events_forward_failed`,
+    which is downstream backpressure.
+  instrument: counter
+  unit: '{event}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.etw
+- name: receiver.etw.received.events.forward.failed
+  brief: Number of ETW events that could not be forwarded downstream and were therefore dropped. Counts
+    both batch `build()` failures (an encoding bug) and send failures (the downstream channel was full
+    or closed).
+  instrument: counter
+  unit: '{event}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.etw
+- name: receiver.etw.received.events.forwarded
+  brief: Number of ETW events successfully forwarded downstream.
+  instrument: counter
+  unit: '{event}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.etw
+- name: receiver.etw.received.events.invalid
+  brief: Number of ETW events that failed to parse.
+  instrument: counter
+  unit: '{event}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.etw
+- name: receiver.etw.received.events.lost.kernel
+  brief: Events lost inside the kernel ETW buffers before `one_collect` ever saw them (buffer overrun),
+    from `TraceStats::events_lost`. Distinct from `received_events_dropped_slow_worker`, which is our
+    own downstream backpressure after the event was already received.
+  instrument: counter
+  unit: '{event}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.etw
+- name: receiver.etw.received.events.rejected.memory.pressure
+  brief: Number of ETW events dropped due to process-wide memory pressure.
+  instrument: counter
+  unit: '{event}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.etw
+- name: receiver.etw.received.events.total
+  brief: Total number of ETW events the session **produced** - counted on the producer (`ProcessTrace`)
+    side before any channel send, including events about to be dropped due to a full per-core channel.
+    This is the ingress denominator and the authoritative total. The slow-worker drop rate is `received_events_dropped_slow_worker
+    / received_events_total`. See the "Counter algebra" section on [`EtwReceiverMetrics`].
+  instrument: counter
+  unit: '{event}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.etw

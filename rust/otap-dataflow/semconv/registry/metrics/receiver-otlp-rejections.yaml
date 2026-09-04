@@ -1,0 +1,22 @@
+file_format: definition/2
+metrics:
+- name: receiver.otlp.rejections.requests
+  brief: Number of rejected requests.
+  instrument: counter
+  unit: '{request}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error.type
+    requirement_level: recommended
+  - ref: protocol
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.otlp.rejections

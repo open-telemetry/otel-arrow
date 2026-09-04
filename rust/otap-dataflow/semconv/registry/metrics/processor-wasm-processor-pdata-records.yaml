@@ -1,0 +1,38 @@
+file_format: definition/2
+metrics:
+- name: processor.wasm_processor.pdata.records.records.in
+  brief: Records entering the guest (root batch row count).
+  instrument: counter
+  unit: '{item}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: processor.wasm_processor.pdata.records
+- name: processor.wasm_processor.pdata.records.records.out
+  brief: Records leaving the guest after filtering.
+  instrument: counter
+  unit: '{item}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: processor.wasm_processor.pdata.records

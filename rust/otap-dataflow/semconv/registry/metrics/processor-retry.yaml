@@ -1,0 +1,38 @@
+file_format: definition/2
+metrics:
+- name: processor.retry.messages.recovered
+  brief: Number of PData messages accepted downstream after at least one retry.
+  instrument: counter
+  unit: '{message}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: processor.retry
+- name: processor.retry.retries.scheduled
+  brief: Number of retries successfully scheduled after a downstream refusal.
+  instrument: counter
+  unit: '{retry}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: processor.retry

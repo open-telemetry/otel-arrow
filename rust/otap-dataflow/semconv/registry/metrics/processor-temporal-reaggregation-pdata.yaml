@@ -1,0 +1,48 @@
+file_format: definition/2
+metrics:
+- name: processor.temporal_reaggregation.pdata.batches.rejected
+  brief: Number of incoming batches rejected because they individually exceed some specified limit or
+    fail to be processed into a view.
+  instrument: counter
+  unit: '{batch}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: processor.temporal_reaggregation.pdata
+- name: processor.temporal_reaggregation.pdata.flushes.overflow
+  brief: Number of flushes triggered by exceeding the maximum stream count.
+  instrument: counter
+  unit: '{flush}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: processor.temporal_reaggregation.pdata
+- name: processor.temporal_reaggregation.pdata.flushes.timer
+  brief: Number of flushes triggered by the regular timer.
+  instrument: counter
+  unit: '{flush}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: processor.temporal_reaggregation.pdata

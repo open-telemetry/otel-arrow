@@ -1,0 +1,38 @@
+file_format: definition/2
+metrics:
+- name: processor.debug.consumed.events
+  brief: Named log events for logs, or span events for traces
+  instrument: counter
+  unit: '{event}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: processor.debug
+- name: processor.debug.consumed.links
+  brief: Span links
+  instrument: counter
+  unit: '{link}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: processor.debug

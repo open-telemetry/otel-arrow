@@ -1,0 +1,20 @@
+file_format: definition/2
+metrics:
+- name: processor.durable_buffer.ingest.failures
+  brief: Number of failed ingest attempts.
+  instrument: counter
+  unit: '{failure}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: failure
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: processor.durable_buffer.ingest

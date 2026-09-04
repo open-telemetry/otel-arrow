@@ -1,0 +1,22 @@
+file_format: definition/2
+metrics:
+- name: exporter.kafka.routing.messages
+  brief: Number of messages routed using the selected bounded source.
+  instrument: counter
+  unit: '{message}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: signal
+    requirement_level: recommended
+  - ref: topic.source
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: exporter.kafka.routing

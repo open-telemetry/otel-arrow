@@ -1,0 +1,94 @@
+file_format: definition/2
+metrics:
+- name: exporter.file.bytes
+  brief: Successfully written frame bytes, including newline delimiters.
+  instrument: counter
+  unit: By
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: exporter.file
+- name: exporter.file.failures
+  brief: Open, write, sync, or rollback failures.
+  instrument: counter
+  unit: '{failure}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: operation
+    requirement_level: recommended
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: exporter.file
+- name: exporter.file.items
+  brief: Signal items in frames successfully written before ACK routing.
+  instrument: counter
+  unit: '{item}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: exporter.file
+- name: exporter.file.tail.recovered.bytes
+  brief: Bytes removed by successful append-tail recovery.
+  instrument: counter
+  unit: By
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: exporter.file
+- name: exporter.file.tail.recoveries
+  brief: Append-mode partial tails successfully repaired.
+  instrument: counter
+  unit: '{recovery}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: exporter.file

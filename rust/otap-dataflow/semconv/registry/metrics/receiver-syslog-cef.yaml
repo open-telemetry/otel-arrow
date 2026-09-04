@@ -1,0 +1,141 @@
+file_format: definition/2
+metrics:
+- name: receiver.syslog_cef.received.logs.forward.failed
+  brief: Number of log records refused by downstream (backpressure/unavailable)
+  instrument: counter
+  unit: '{item}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.syslog_cef
+- name: receiver.syslog_cef.received.logs.forwarded
+  brief: Number of log records successfully forwarded downstream
+  instrument: counter
+  unit: '{item}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.syslog_cef
+- name: receiver.syslog_cef.received.logs.invalid
+  brief: Number of log records rejected because their payload is zero-length
+  instrument: counter
+  unit: '{item}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.syslog_cef
+- name: receiver.syslog_cef.received.logs.rejected.memory.pressure
+  brief: Number of log records dropped due to process-wide memory pressure.
+  instrument: counter
+  unit: '{item}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.syslog_cef
+- name: receiver.syslog_cef.received.logs.total
+  brief: Total number of log records observed at the socket before parsing
+  instrument: counter
+  unit: '{item}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.syslog_cef
+- name: receiver.syslog_cef.received.logs.truncated
+  brief: Number of log records whose raw message exceeded [`MAX_MESSAGE_SIZE`] and were truncated before
+    parsing. For TCP, truncation is detected precisely when a newline-delimited message exceeds the size
+    limit. For UDP, it is a heuristic -- a datagram that fills the entire receive buffer is assumed truncated,
+    though a message exactly [`MAX_MESSAGE_SIZE`] bytes would also trigger this.
+  instrument: counter
+  unit: '{item}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.syslog_cef
+- name: receiver.syslog_cef.tcp.connections.active
+  brief: Number of active TCP connections
+  instrument: updowncounter
+  unit: '{conn}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.syslog_cef
+      recording: additive
+- name: receiver.syslog_cef.tcp.connections.rejected.memory.pressure
+  brief: Number of TCP connections rejected or closed due to process-wide memory pressure.
+  instrument: counter
+  unit: '{conn}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.syslog_cef
+- name: receiver.syslog_cef.tls.handshake.failures
+  brief: Number of TLS handshake failures
+  instrument: counter
+  unit: '{error}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.syslog_cef

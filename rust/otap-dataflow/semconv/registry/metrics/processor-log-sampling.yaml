@@ -1,0 +1,56 @@
+file_format: definition/2
+metrics:
+- name: processor.log_sampling.dropped.items
+  brief: Log records dropped by sampling.
+  instrument: counter
+  unit: '{item}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: processor.log_sampling
+- name: processor.log_sampling.filter.buffer.reclamation.failures
+  brief: How many times we fail to reclaim the underlying filter buffer.
+  instrument: counter
+  unit: '{error}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: processor.log_sampling
+- name: processor.log_sampling.filtering.errors
+  brief: Errors encountered while filtering OTAP batches.
+  instrument: counter
+  unit: '{error}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: processor.log_sampling

@@ -1,0 +1,92 @@
+file_format: definition/2
+metrics:
+- name: otap.exporter.clickhouse.log.fast.path.batches
+  brief: Total number of OTAP log batches transformed by the specialized path.
+  instrument: counter
+  unit: '{batch}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: otap.exporter.clickhouse
+- name: otap.exporter.clickhouse.log.otlp.direct.path.batches
+  brief: Total number of raw OTLP log batches transformed directly to ClickHouse columns.
+  instrument: counter
+  unit: '{batch}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: otap.exporter.clickhouse
+- name: otap.exporter.clickhouse.log.otlp.transform.fallback.batches
+  brief: Total number of raw OTLP log batches sent through the legacy transform fallback.
+  instrument: counter
+  unit: '{batch}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: otap.exporter.clickhouse
+- name: otap.exporter.clickhouse.log.rows.written
+  brief: Total number of log rows written successfully into clickhouse
+  instrument: counter
+  unit: '{row}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: otap.exporter.clickhouse
+- name: otap.exporter.clickhouse.log.transform.fallback.batches
+  brief: Total number of log batches sent through the generic transform fallback.
+  instrument: counter
+  unit: '{batch}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: otap.exporter.clickhouse
+- name: otap.exporter.clickhouse.trace.rows.written
+  brief: Total number of trace rows written successfully into clickhouse
+  instrument: counter
+  unit: '{row}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: otap.exporter.clickhouse

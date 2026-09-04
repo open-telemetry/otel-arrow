@@ -1,0 +1,317 @@
+file_format: definition/2
+events:
+- name: azure_identity_auth.token_refresh_failed
+  brief: Emitted by OTAP Dataflow as `azure_identity_auth.token_refresh_failed`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - microsoft.extension.azure_identity_auth
+        severity_levels:
+        - warn
+        sources:
+        - crates/contrib-extensions/src/azure_identity_auth/auth.rs
+        availability:
+        - feature = "azure-identity-auth-extension"
+- name: k8s_service_account_token_auth.access_review_failed
+  brief: Emitted by OTAP Dataflow as `k8s_service_account_token_auth.access_review_failed`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-contrib-extensions
+        severity_levels:
+        - warn
+        sources:
+        - crates/contrib-extensions/src/k8s_service_account_token_auth/reviewer.rs
+        availability:
+        - feature = "k8s-service-account-token-auth-extension"
+- name: k8s_service_account_token_auth.access_review_no_status
+  brief: Emitted by OTAP Dataflow as `k8s_service_account_token_auth.access_review_no_status`.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-contrib-extensions
+        severity_levels:
+        - warn
+        sources:
+        - crates/contrib-extensions/src/k8s_service_account_token_auth/reviewer.rs
+        availability:
+        - feature = "k8s-service-account-token-auth-extension"
+- name: k8s_service_account_token_auth.access_review_timeout
+  brief: Emitted by OTAP Dataflow as `k8s_service_account_token_auth.access_review_timeout`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: timeout
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-contrib-extensions
+        severity_levels:
+        - warn
+        sources:
+        - crates/contrib-extensions/src/k8s_service_account_token_auth/reviewer.rs
+        availability:
+        - feature = "k8s-service-account-token-auth-extension"
+- name: k8s_service_account_token_auth.admission_denied
+  brief: Emitted by OTAP Dataflow as `k8s_service_account_token_auth.admission_denied`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: audience
+    requirement_level: required
+  - ref: subject
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-contrib-extensions
+        severity_levels:
+        - debug
+        sources:
+        - crates/contrib-extensions/src/k8s_service_account_token_auth/core.rs
+        availability:
+        - feature = "k8s-service-account-token-auth-extension"
+- name: k8s_service_account_token_auth.audience_unbound
+  brief: Emitted by OTAP Dataflow as `k8s_service_account_token_auth.audience_unbound`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: confirmed
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-contrib-extensions
+        severity_levels:
+        - debug
+        sources:
+        - crates/contrib-extensions/src/k8s_service_account_token_auth/core.rs
+        availability:
+        - feature = "k8s-service-account-token-auth-extension"
+- name: k8s_service_account_token_auth.authorized
+  brief: Emitted by OTAP Dataflow as `k8s_service_account_token_auth.authorized`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: audiences
+    requirement_level: required
+  - ref: subject
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-contrib-extensions
+        severity_levels:
+        - debug
+        sources:
+        - crates/contrib-extensions/src/k8s_service_account_token_auth/core.rs
+        availability:
+        - feature = "k8s-service-account-token-auth-extension"
+- name: k8s_service_account_token_auth.client_init_failed
+  brief: Emitted by OTAP Dataflow as `k8s_service_account_token_auth.client_init_failed`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-contrib-extensions
+        severity_levels:
+        - warn
+        sources:
+        - crates/contrib-extensions/src/k8s_service_account_token_auth/reviewer.rs
+        availability:
+        - feature = "k8s-service-account-token-auth-extension"
+- name: k8s_service_account_token_auth.credential_missing
+  brief: Emitted by OTAP Dataflow as `k8s_service_account_token_auth.credential_missing`.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-contrib-extensions
+        severity_levels:
+        - debug
+        sources:
+        - crates/contrib-extensions/src/k8s_service_account_token_auth/authorizer.rs
+        availability:
+        - feature = "k8s-service-account-token-auth-extension"
+- name: k8s_service_account_token_auth.not_service_account
+  brief: Emitted by OTAP Dataflow as `k8s_service_account_token_auth.not_service_account`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: subject
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-contrib-extensions
+        severity_levels:
+        - debug
+        sources:
+        - crates/contrib-extensions/src/k8s_service_account_token_auth/core.rs
+        availability:
+        - feature = "k8s-service-account-token-auth-extension"
+- name: k8s_service_account_token_auth.token_review_failed
+  brief: Emitted by OTAP Dataflow as `k8s_service_account_token_auth.token_review_failed`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-contrib-extensions
+        severity_levels:
+        - warn
+        sources:
+        - crates/contrib-extensions/src/k8s_service_account_token_auth/reviewer.rs
+        availability:
+        - feature = "k8s-service-account-token-auth-extension"
+- name: k8s_service_account_token_auth.token_review_no_status
+  brief: Emitted by OTAP Dataflow as `k8s_service_account_token_auth.token_review_no_status`.
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-contrib-extensions
+        severity_levels:
+        - warn
+        sources:
+        - crates/contrib-extensions/src/k8s_service_account_token_auth/reviewer.rs
+        availability:
+        - feature = "k8s-service-account-token-auth-extension"
+- name: k8s_service_account_token_auth.token_review_timeout
+  brief: Emitted by OTAP Dataflow as `k8s_service_account_token_auth.token_review_timeout`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: timeout
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-contrib-extensions
+        severity_levels:
+        - warn
+        sources:
+        - crates/contrib-extensions/src/k8s_service_account_token_auth/reviewer.rs
+        availability:
+        - feature = "k8s-service-account-token-auth-extension"
+- name: k8s_service_account_token_auth.token_unauthenticated
+  brief: Emitted by OTAP Dataflow as `k8s_service_account_token_auth.token_unauthenticated`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: detail
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-contrib-extensions
+        severity_levels:
+        - debug
+        sources:
+        - crates/contrib-extensions/src/k8s_service_account_token_auth/core.rs
+        availability:
+        - feature = "k8s-service-account-token-auth-extension"
+- name: oauth2_client_auth.insecure_token_url
+  brief: Emitted by OTAP Dataflow as `oauth2_client_auth.insecure_token_url`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: token_url
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.extension.oauth2_client_auth
+        severity_levels:
+        - warn
+        sources:
+        - crates/contrib-extensions/src/oauth2_client_auth/auth.rs
+        availability:
+        - feature = "oauth2-client-auth-extension"
+- name: oauth2_client_auth.token_refresh_failed
+  brief: Emitted by OTAP Dataflow as `oauth2_client_auth.token_refresh_failed`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  entity_associations:
+  - otap.extension
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otel.extension.oauth2_client_auth
+        severity_levels:
+        - warn
+        sources:
+        - crates/contrib-extensions/src/oauth2_client_auth/auth.rs
+        availability:
+        - feature = "oauth2-client-auth-extension"

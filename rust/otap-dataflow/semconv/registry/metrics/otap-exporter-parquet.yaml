@@ -1,0 +1,122 @@
+file_format: definition/2
+metrics:
+- name: otap.exporter.parquet.files.closed
+  brief: Number of Parquet files successfully closed (flushed and visible to readers).
+  instrument: counter
+  unit: '{file}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: otap.exporter.parquet
+- name: otap.exporter.parquet.files.created
+  brief: Number of Parquet files created (across all payload types and partitions).
+  instrument: counter
+  unit: '{file}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: otap.exporter.parquet
+- name: otap.exporter.parquet.flush.attempts
+  brief: File close/flush attempts initiated by the exporter.
+  instrument: counter
+  unit: '{file}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: otap.exporter.parquet
+- name: otap.exporter.parquet.flush.failures
+  brief: File close/flush attempts that failed after the lower-level retry policy was exhausted.
+  instrument: counter
+  unit: '{file}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: otap.exporter.parquet
+- name: otap.exporter.parquet.flush.scheduled.max.age
+  brief: Files scheduled for flush due to exceeding max age threshold.
+  instrument: counter
+  unit: '{file}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: otap.exporter.parquet
+- name: otap.exporter.parquet.flush.scheduled.max.rows
+  brief: Files scheduled for flush due to reaching target rows per file.
+  instrument: counter
+  unit: '{file}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: otap.exporter.parquet
+- name: otap.exporter.parquet.flush.successes
+  brief: File close/flush attempts that succeeded and made the file visible to readers.
+  instrument: counter
+  unit: '{file}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: otap.exporter.parquet
+- name: otap.exporter.parquet.rows.written
+  brief: Total number of rows written into Parquet writers (appended, not necessarily flushed yet).
+  instrument: counter
+  unit: '{row}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: otap.exporter.parquet

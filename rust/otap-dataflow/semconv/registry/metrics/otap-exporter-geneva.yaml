@@ -1,0 +1,317 @@
+file_format: definition/2
+metrics:
+- name: otap.exporter.geneva.conversion.errors
+  brief: Number of OTAP-to-OTLP conversion errors.
+  instrument: counter
+  unit: '{error}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: otap.exporter.geneva
+- name: otap.exporter.geneva.empty.payloads.skipped
+  brief: Number of empty payloads skipped (no-op ack).
+  instrument: counter
+  unit: '{msg}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: otap.exporter.geneva
+- name: otap.exporter.geneva.log.batches.encoded
+  brief: Compressed log batches produced by the encoder.
+  instrument: counter
+  unit: '{batch}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: otap.exporter.geneva
+- name: otap.exporter.geneva.log.batches.failed
+  brief: Log batches that failed to upload.
+  instrument: counter
+  unit: '{batch}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: otap.exporter.geneva
+- name: otap.exporter.geneva.log.batches.uploaded
+  brief: Log batches successfully uploaded to Geneva.
+  instrument: counter
+  unit: '{batch}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: otap.exporter.geneva
+- name: otap.exporter.geneva.log.bytes.uploaded
+  brief: Log bytes uploaded to Geneva (compressed payload size).
+  instrument: counter
+  unit: By
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: otap.exporter.geneva
+- name: otap.exporter.geneva.log.encode.duration
+  brief: Encode + compress latency for logs in milliseconds (min/max/sum/count).
+  instrument: histogram
+  unit: ms
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: otap.exporter.geneva
+- name: otap.exporter.geneva.log.records.failed
+  brief: Individual log records that failed to upload.
+  instrument: counter
+  unit: '{record}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: otap.exporter.geneva
+- name: otap.exporter.geneva.log.records.uploaded
+  brief: Individual log records successfully uploaded.
+  instrument: counter
+  unit: '{record}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: otap.exporter.geneva
+- name: otap.exporter.geneva.log.upload.failed.duration
+  brief: Per-upload latency for failed log batches in milliseconds (min/max/sum/count).
+  instrument: histogram
+  unit: ms
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: otap.exporter.geneva
+- name: otap.exporter.geneva.log.upload.success.duration
+  brief: Per-upload latency for successful log batches in milliseconds (min/max/sum/count).
+  instrument: histogram
+  unit: ms
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: otap.exporter.geneva
+- name: otap.exporter.geneva.metrics.payloads.dropped
+  brief: Number of metrics payloads dropped (unsupported signal).
+  instrument: counter
+  unit: '{msg}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: otap.exporter.geneva
+- name: otap.exporter.geneva.trace.batches.encoded
+  brief: Compressed trace batches produced by the encoder.
+  instrument: counter
+  unit: '{batch}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: otap.exporter.geneva
+- name: otap.exporter.geneva.trace.batches.failed
+  brief: Trace batches that failed to upload.
+  instrument: counter
+  unit: '{batch}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: otap.exporter.geneva
+- name: otap.exporter.geneva.trace.batches.uploaded
+  brief: Trace batches successfully uploaded to Geneva.
+  instrument: counter
+  unit: '{batch}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: otap.exporter.geneva
+- name: otap.exporter.geneva.trace.bytes.uploaded
+  brief: Trace bytes uploaded to Geneva (compressed payload size).
+  instrument: counter
+  unit: By
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: otap.exporter.geneva
+- name: otap.exporter.geneva.trace.encode.duration
+  brief: Encode + compress latency for traces in milliseconds (min/max/sum/count).
+  instrument: histogram
+  unit: ms
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: otap.exporter.geneva
+- name: otap.exporter.geneva.trace.records.failed
+  brief: Individual trace records (spans) that failed to upload.
+  instrument: counter
+  unit: '{record}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: otap.exporter.geneva
+- name: otap.exporter.geneva.trace.records.uploaded
+  brief: Individual trace records (spans) successfully uploaded.
+  instrument: counter
+  unit: '{record}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: otap.exporter.geneva
+- name: otap.exporter.geneva.trace.upload.failed.duration
+  brief: Per-upload latency for failed trace batches in milliseconds (min/max/sum/count).
+  instrument: histogram
+  unit: ms
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: otap.exporter.geneva
+- name: otap.exporter.geneva.trace.upload.success.duration
+  brief: Per-upload latency for successful trace batches in milliseconds (min/max/sum/count).
+  instrument: histogram
+  unit: ms
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: otap.exporter.geneva

@@ -1,0 +1,20 @@
+file_format: definition/2
+metrics:
+- name: processor.attributes.transforms
+  brief: Number of attribute transformations attempted by the processor.
+  instrument: counter
+  unit: '{transform}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: outcome
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: processor.attributes

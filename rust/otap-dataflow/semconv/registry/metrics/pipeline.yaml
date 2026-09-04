@@ -1,0 +1,171 @@
+file_format: definition/2
+metrics:
+- name: pipeline.context.switches.involuntary
+  brief: Number of times the pipeline thread was preempted by the scheduler since start. A rising rate
+    often indicates CPU contention or time-slice expirations. When paired with `cpu_utilization`, it helps
+    diagnose CPU time lost to preemption.
+  instrument: counter
+  unit: '{1}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: pipeline
+      recording: observed
+- name: pipeline.context.switches.voluntary
+  brief: Number of times the pipeline thread voluntarily yielded the CPU since start. A rising rate can
+    indicate scheduling pressure due to blocking work (I/O, locks, backpressure) and helps distinguish
+    "waiting" from "CPU-bound".
+  instrument: counter
+  unit: '{1}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: pipeline
+      recording: observed
+- name: pipeline.cpu.time
+  brief: Total CPU seconds used by the pipeline since start.
+  instrument: counter
+  unit: '{s}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: pipeline
+- name: pipeline.cpu.utilization
+  brief: Difference in pipeline cpu time since the last measurement, divided by the elapsed time. Reported
+    as a ratio in the range [0, 1].
+  instrument: gauge
+  unit: '{1}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: pipeline
+- name: pipeline.memory.allocated
+  brief: Memory allocated to the heap by the pipeline instance since start.
+  instrument: counter
+  unit: '{By}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: pipeline
+      recording: observed
+- name: pipeline.memory.allocated.delta
+  brief: Bytes allocated to the heap by this pipeline during the last measurement window.
+  instrument: counter
+  unit: '{By}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: pipeline
+- name: pipeline.memory.freed
+  brief: Memory freed to the heap by the pipeline instance since start.
+  instrument: counter
+  unit: '{By}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: pipeline
+      recording: observed
+- name: pipeline.memory.freed.delta
+  brief: Bytes returned to the heap by this pipeline during the last measurement window.
+  instrument: counter
+  unit: '{By}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: pipeline
+- name: pipeline.memory.usage
+  brief: The amount of heap memory in use by the pipeline instance running on a specific core.
+  instrument: updowncounter
+  unit: '{By}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: pipeline
+- name: pipeline.page.faults.major
+  brief: Number of major page faults (requiring disk I/O) since start. Any non-trivial rate typically
+    indicates severe memory pressure or swapping, and correlates strongly with pipeline latency spikes.
+  instrument: counter
+  unit: '{1}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: pipeline
+      recording: observed
+- name: pipeline.page.faults.minor
+  brief: Number of minor page faults (served without disk I/O) since start. A rising rate indicates memory
+    access pain (poor locality, working-set churn), even if heap bytes are stable.
+  instrument: counter
+  unit: '{1}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: pipeline
+      recording: observed
+- name: pipeline.uptime
+  brief: The time the pipeline instance has been running.
+  instrument: gauge
+  unit: '{s}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: pipeline

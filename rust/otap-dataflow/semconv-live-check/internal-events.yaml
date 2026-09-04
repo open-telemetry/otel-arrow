@@ -1,0 +1,5 @@
+# Events that configs/internal-events-otlp.yaml must exercise in CI.
+events:
+  - name: otlp.exporter.grpc.export_error
+  - name: otlp.exporter.grpc.receive
+  - name: tls.handshake.failed
