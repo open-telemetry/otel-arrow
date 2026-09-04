@@ -145,12 +145,13 @@ def parse_junit_files(artifacts_dir):
                     )
                     continue
 
-                # A test that failed every attempt is a real failure, not a
-                # flake: it blocks its own pull request and needs no
-                # tracking issue.
+                # Only record tests that actually passed. A test that failed
+                # every attempt blocks its own pull request, while a skipped
+                # test was not executed; neither belongs in the pass count.
                 if (
                     testcase.find("failure") is None
                     and testcase.find("error") is None
+                    and testcase.find("skipped") is None
                 ):
                     result["pass_by_os"][os_name].add(run_id)
 
