@@ -99,8 +99,6 @@ async-stream = "0.3.6"
 async-trait = "0.1.88"
 async-unsync = "0.3.0"
 axum = { version = "0.8.4", features = ["ws"] }
-axum-server = { version = "0.8.0" }
-axum-server-mtls = { version = "0.1.2" }
 base64 = "0.23.0"
 bitflags = "2.10"
 bytes = "1.11.1"

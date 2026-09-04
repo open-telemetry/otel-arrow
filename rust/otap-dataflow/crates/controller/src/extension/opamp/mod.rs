@@ -357,7 +357,6 @@ async fn connect_websocket(
 
             // backoff and retry connection
             Err(e) => {
-                println!("ERROR CONNECTING {e:?}");
                 let retry_in = backoff.next_delay();
                 otel_warn!(
                     "opamp.controller_extension.ws_connect.error",
@@ -1777,11 +1776,7 @@ mod test {
 
         let client_cancellation_token = cancellation_token.clone();
         let client_handle = tokio::spawn(async move {
-            let result =
-                run_websocket_connect_loop(context, config, connector, client_cancellation_token)
-                    .await;
-            println!("OOPS - WS connect loop exited with error {result:?}");
-            return result;
+            run_websocket_connect_loop(context, config, connector, client_cancellation_token).await
         });
 
         server_state
