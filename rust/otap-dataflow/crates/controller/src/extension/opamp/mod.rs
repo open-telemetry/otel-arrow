@@ -104,17 +104,23 @@ fn validate_config(config: &serde_json::Value) -> Result<(), ConfigError> {
             error: e.to_string(),
         })?;
 
-    // check that we can create a client config from this config
+    // Run cheap validation first (endpoint scheme, instance_uid, scheme/TLS mismatch)
+    config
+        .validate()
+        .map_err(|e| ConfigError::InvalidUserConfig {
+            error: e.to_string(),
+        })?;
+
+    // Then validate TLS config by attempting to build the client config (may read files)
     if let Some(tls_client_config) = &config.tls {
-        // this function is async because internally it uses various tokio fs utils to read certs
-        // from the filesystem, and loads system roots into a tokio OnceCell. Because it's async
-        // we either do this validation in current runtime (if we're in an async context), or
-        // otherwise spawn a new async runtime for this
+        // This function is async because internally it uses tokio fs utils to read certs
+        // from the filesystem and loads system roots into a tokio OnceCell. We either run
+        // it in the current runtime (if available) or spawn a new one.
         let client_connector_fut = create_client_config(tls_client_config);
 
         let connector_init_result = if tokio::runtime::Handle::try_current().is_ok() {
-            // we're in an async runtime, but it might be a single threaded runtime so we can't
-            // just block_on. Spin up another thread w/ a new runtime to call the future.
+            // We're in an async runtime, but it might be single-threaded so we can't
+            // just block_on. Spin up another thread with a new runtime.
             std::thread::scope(|s| {
                 s.spawn(|| {
                     tokio::runtime::Runtime::new()
@@ -130,15 +136,10 @@ fn validate_config(config: &serde_json::Value) -> Result<(), ConfigError> {
                 .block_on(client_connector_fut)
         };
 
-        // return the config error related to TLS config if one was encountered
         _ = connector_init_result?;
     }
 
-    config
-        .validate()
-        .map_err(|e| ConfigError::InvalidUserConfig {
-            error: e.to_string(),
-        })
+    Ok(())
 }
 
 fn start(
@@ -2286,6 +2287,8 @@ mod test {
         assert_eq!(requests.len(), 2);
     }
 
+    /// Scenario: client trusts the server CA via an inline PEM string.
+    /// Guarantees: the TLS handshake succeeds and messages are exchanged normally.
     #[tokio::test]
     async fn test_client_configured_with_server_tls_pem() {
         otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
@@ -2333,6 +2336,8 @@ mod test {
         assert_eq!(requests.len(), 3);
     }
 
+    /// Scenario: client trusts the server CA via a file path.
+    /// Guarantees: the TLS handshake succeeds and messages are exchanged normally.
     #[tokio::test]
     async fn test_client_configured_with_server_tls_file() {
         otel_arrow_dfe_otap::crypto::ensure_crypto_provider();

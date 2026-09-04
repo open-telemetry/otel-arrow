@@ -12,7 +12,13 @@ use otel_arrow_dfe_otap::tls_utils::{
 };
 use otel_arrow_dfe_telemetry::otel_error;
 
-pub async fn create_client_config(config: &TlsClientConfig) -> Result<Option<ClientConfig>, Error> {
+/// Builds a [`rustls::ClientConfig`] from the provided [`TlsClientConfig`].
+///
+/// Returns `Ok(None)` when `insecure` is `true` (TLS disabled).
+/// Returns `Ok(Some(config))` with a configured TLS client otherwise.
+pub async fn create_client_config(
+    config: &TlsClientConfig,
+) -> Result<Option<ClientConfig>, Error> {
     let insecure = config.insecure.unwrap_or(false);
     if insecure {
         return Ok(None);
@@ -39,14 +45,14 @@ pub async fn create_client_config(config: &TlsClientConfig) -> Result<Option<Cli
         add_system_trust_anchors_to_root_cert_store(&mut cert_store)
             .await
             .map_err(|e| Error::ConfigHttpClientBuildFailed {
-                details: format!("Failed to add system rust anchors to cert store: {e}"),
+                details: format!("failed to add system trust anchors to cert store: {e}"),
             })?;
     }
 
     if let Some(ca_pem) = &config.ca_pem {
         let cert = CertificateDer::from_pem_slice(ca_pem.as_bytes()).map_err(|e| {
             Error::ConfigHttpClientBuildFailed {
-                details: format!("Failed to create cert from tls.ca_pem config: {e}"),
+                details: format!("failed to parse tls.ca_pem: {e}"),
             }
         })?;
         add_cert(&mut cert_store, cert)?
@@ -55,7 +61,7 @@ pub async fn create_client_config(config: &TlsClientConfig) -> Result<Option<Cli
     if let Some(ca_file) = &config.ca_file {
         let cert = CertificateDer::from_pem_file(ca_file).map_err(|e| {
             Error::ConfigHttpClientBuildFailed {
-                details: format!("Failed to create cert from tls.ca_pem config: {e}"),
+                details: format!("failed to read tls.ca_file: {e}"),
             }
         })?;
         add_cert(&mut cert_store, cert)?;
@@ -113,7 +119,7 @@ pub async fn create_client_config(config: &TlsClientConfig) -> Result<Option<Cli
                     message = "Failed to read client key file"
                 );
                 Error::ConfigHttpClientBuildFailed {
-                    details: "failed to read client mTLS Key file".into()
+                    details: "failed to read client mTLS key file".into()
                 }
             })?
         } else if let Some(key_pem) = &config.config.key_pem {

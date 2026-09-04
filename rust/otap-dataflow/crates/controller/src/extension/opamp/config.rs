@@ -115,8 +115,14 @@ impl Config {
             }
         }
 
-        // Validate that the endpoint scheme matches the TLS configuration
-        if self.tls.is_some() && scheme != "wss" {
+        // Validate that the endpoint scheme matches the TLS configuration.
+        // When tls.insecure is true, TLS is effectively disabled so ws:// is fine.
+        let tls_effectively_enabled = self
+            .tls
+            .as_ref()
+            .is_some_and(|tls| !tls.insecure.unwrap_or(false));
+
+        if tls_effectively_enabled && scheme != "wss" {
             return Err(Error::InvalidEndpoint {
                 reason: format!(
                     "TLS is configured but endpoint uses \"{scheme}://\" scheme. \
@@ -124,9 +130,9 @@ impl Config {
                 ),
             });
         }
-        if self.tls.is_none() && scheme == "wss" {
+        if !tls_effectively_enabled && scheme == "wss" {
             return Err(Error::InvalidEndpoint {
-                reason: "endpoint uses \"wss://\" scheme but no TLS configuration is provided. \
+                reason: "endpoint uses \"wss://\" scheme but TLS is not enabled. \
                     Either configure tls or use \"ws://\"."
                     .into(),
             });

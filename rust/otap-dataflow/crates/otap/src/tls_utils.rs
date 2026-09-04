@@ -331,8 +331,14 @@ async fn add_system_trust_anchors_if_enabled(
     Ok(tls.trust_anchors(store.roots))
 }
 
-/// TODO albert docs
-pub async fn add_system_trust_anchors_to_root_cert_store(store: &mut RootCertStore) -> Result<(), io::Error> {
+/// Loads the platform's native CA certificates into the provided [`RootCertStore`].
+///
+/// Certificates are cached process-wide on first load; subsequent calls reuse
+/// the cached set. Unparseable system certificates are silently skipped
+/// (best-effort).
+pub async fn add_system_trust_anchors_to_root_cert_store(
+    store: &mut RootCertStore,
+) -> Result<(), io::Error> {
     // Use cached system roots if available, otherwise load them.
     // Cloning the Vec<CertificateDer> is cheap (ref-counted inner data).
     // OnceCell ensures only one task loads the certificates, preventing race conditions.
