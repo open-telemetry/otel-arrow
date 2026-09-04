@@ -295,6 +295,9 @@ urlencoding = "2"
 geneva-uploader = { version = "0.7.0", default-features = false, features = ["tls-rustls"] }
 opentelemetry-resource-detectors = "0.12.0"
 
+[patch.crates-io]
+otel-arrow-dfe-pdata-views = { path = "crates/pdata-views" }
+
 [features]
 default = ["jemalloc", "crypto-ring", "dev-tools", "admin-live-logs-ws"]
 jemalloc = [
