@@ -13,7 +13,10 @@ otel_arrow_dfe_telemetry::otel_component_scope!(
 use crate::receivers::traffic_generator::config::Config;
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use metrics::TrafficGeneratorReceiverMetrics;
+use metrics::{
+    AttemptKind, RunTerminationOutcome, SmoothRunTerminationAttributes, SmoothSendAttributes,
+    TrafficGeneratorMetrics,
+};
 use otel_arrow_dfe_channel::error::{RecvError, SendError};
 use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_config::transport_headers::{TransportHeader, TransportHeaders};
@@ -34,7 +37,6 @@ use otel_arrow_dfe_otap::pdata::OtapPdata;
 use otel_arrow_dfe_pdata::OtapPayload;
 #[cfg(test)]
 use otel_arrow_dfe_pdata::TryIntoWithOptions;
-use otel_arrow_dfe_telemetry::metrics::MetricSet;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -71,7 +73,7 @@ pub struct TrafficGeneratorReceiver {
     config: Config,
 
     /// Metrics for the traffic generator
-    metrics: MetricSet<TrafficGeneratorReceiverMetrics>,
+    metrics: TrafficGeneratorMetrics,
 
     /// Successfully admitted batches still waiting for Ack/Nack completion.
     pending_completions: u64,
@@ -125,7 +127,7 @@ impl TrafficGeneratorReceiver {
     /// creates a new TrafficGeneratorReceiver
     #[must_use]
     pub fn new(pipeline_ctx: PipelineContext, config: Config) -> Self {
-        let metrics = pipeline_ctx.register_metrics::<TrafficGeneratorReceiverMetrics>();
+        let metrics = TrafficGeneratorMetrics::register(&pipeline_ctx);
         Self {
             config,
             metrics,
@@ -175,7 +177,10 @@ impl TrafficGeneratorReceiver {
                 .await;
             };
 
-            self.metrics.smooth_runs_started.inc();
+            self.metrics
+                .other
+                .smooth_runs_started
+                .add(1);
             let mut run_completed = false;
 
             loop {
@@ -200,12 +205,24 @@ impl TrafficGeneratorReceiver {
                         let remaining_items = current_run.remaining_signal_count()
                             + next_pdata.as_mut().map_or(0, |pdata| pdata.num_items() as u64);
                         if remaining_batches > 0 {
-                            self.metrics.smooth_runs_behind.inc();
                             self.metrics
-                                .smooth_behind_remaining_batches
+                                .other
+                                .smooth_schedule_deadline_misses
+                                .add(1);
+                            self.metrics
+                                .smooth_run_terminations
+                                .with(SmoothRunTerminationAttributes {
+                                    outcome: RunTerminationOutcome::Late,
+                                })
+                                .runs
+                                .add(1);
+                            self.metrics
+                                .other
+                                .smooth_late_remaining_batches
                                 .record(remaining_batches as f64);
                             self.metrics
-                                .smooth_behind_remaining_items
+                                .other
+                                .smooth_late_remaining_items
                                 .record(remaining_items as f64);
                             otel_warn!(
                                 "traffic_generator.smooth_run_behind",
@@ -214,7 +231,13 @@ impl TrafficGeneratorReceiver {
                                 remaining_items,
                             );
                         } else if !run_completed {
-                            self.metrics.smooth_runs_completed.inc();
+                            self.metrics
+                                .smooth_run_terminations
+                                .with(SmoothRunTerminationAttributes {
+                                    outcome: RunTerminationOutcome::OnTime,
+                                })
+                                .runs
+                                .add(1);
                             run_completed = true;
                         }
 
@@ -229,18 +252,19 @@ impl TrafficGeneratorReceiver {
                         let tick_lateness = tokio::time::Instant::now()
                             .saturating_duration_since(scheduled);
                         self.metrics
+                            .other
                             .smooth_batch_tick_lateness_duration_ns
                             .record(duration_nanos(tick_lateness));
 
-                        let channel_result = match next_pdata.take() {
+                        let (channel_result, attempt_kind) = match next_pdata.take() {
                             Some(pdata) => {
-                                self.metrics.smooth_payload_send_retry.inc();
                                 let send_start = StdInstant::now();
                                 let result = self.export_pdata(handler, pdata)?;
                                 self.metrics
+                                    .other
                                     .smooth_payload_send_duration_ns
                                     .record(elapsed_nanos(send_start));
-                                result
+                                (result, AttemptKind::Retry)
                             }
                             None => {
                                 let generate_start = StdInstant::now();
@@ -248,30 +272,53 @@ impl TrafficGeneratorReceiver {
 
                                 let Some(payload) = payload else {
                                     if !run_completed {
-                                        self.metrics.smooth_runs_completed.inc();
+                                        self.metrics
+                                            .smooth_run_terminations
+                                            .with(SmoothRunTerminationAttributes {
+                                                outcome: RunTerminationOutcome::OnTime,
+                                            })
+                                            .runs
+                                            .add(1);
                                         run_completed = true;
                                     }
                                     continue;
                                 };
                                 self.metrics
+                                    .other
                                     .smooth_payload_generate_duration_ns
                                     .record(elapsed_nanos(generate_start));
 
                                 let send_start = StdInstant::now();
                                 let result = self.handle_payload(handler, payload, &transport_headers)?;
                                 self.metrics
+                                    .other
                                     .smooth_payload_send_duration_ns
                                     .record(elapsed_nanos(send_start));
-                                result
+                                (result, AttemptKind::Initial)
                             }
                         };
 
                         match channel_result {
                             Ok(count) => {
+                                self.metrics
+                                    .smooth_send
+                                    .with(SmoothSendAttributes {
+                                        attempt: attempt_kind,
+                                        outcome: otel_arrow_dfe_telemetry::common_attributes::Outcome::Success,
+                                    })
+                                    .attempts
+                                    .add(1);
                                 run_produced += count;
                             }
                             Err(pdata) => {
-                                self.metrics.smooth_payload_send_full.inc();
+                                self.metrics
+                                    .smooth_send
+                                    .with(SmoothSendAttributes {
+                                        attempt: attempt_kind,
+                                        outcome: otel_arrow_dfe_telemetry::common_attributes::Outcome::Refused,
+                                    })
+                                    .attempts
+                                    .add(1);
                                 next_pdata = Some(pdata);
                             }
                         }
@@ -440,23 +487,15 @@ impl TrafficGeneratorReceiver {
                 if self.config.enable_ack_nack() {
                     self.pending_completions = self.pending_completions.saturating_add(1);
                     self.metrics
+                        .other
                         .completion_pending
                         .set(self.pending_completions);
                 }
-                match signal {
-                    otel_arrow_dfe_config::SignalType::Traces => {
-                        self.metrics.spans_produced.add(count)
+                if matches!(signal, otel_arrow_dfe_config::SignalType::Logs) {
+                    if let Some(bytes) = payload_bytes {
+                        self.metrics.other.logs_bytes_produced.add(bytes as u64);
                     }
-                    otel_arrow_dfe_config::SignalType::Metrics => {
-                        self.metrics.metrics_produced.add(count)
-                    }
-                    otel_arrow_dfe_config::SignalType::Logs => {
-                        self.metrics.logs_produced.add(count);
-                        if let Some(bytes) = payload_bytes {
-                            self.metrics.logs_bytes_produced.add(bytes as u64);
-                        }
-                    }
-                };
+                }
                 Ok(Ok(count))
             }
             Err(e) => {
@@ -538,7 +577,7 @@ async fn wait_for_terminal(
     handler: &local::EffectHandler<OtapPdata>,
     enable_ack_nack: bool,
     pending_completions: &mut u64,
-    metrics: &mut MetricSet<TrafficGeneratorReceiverMetrics>,
+    metrics: &mut TrafficGeneratorMetrics,
 ) -> Result<TerminalState, Error> {
     loop {
         let msg = ctrl_msg_recv.recv().await;
@@ -558,17 +597,15 @@ async fn wait_for_terminal(
 }
 
 fn record_completion(
-    is_ack: bool,
+    _is_ack: bool,
     pending_completions: &mut u64,
-    metrics: &mut MetricSet<TrafficGeneratorReceiverMetrics>,
+    metrics: &mut TrafficGeneratorMetrics,
 ) {
-    if is_ack {
-        metrics.completion_acks.inc();
-    } else {
-        metrics.completion_nacks.inc();
-    }
+    // Note: per-message ack/nack outcome tracking is handled by the engine's
+    // `node.output.messages` channel metric set, so we only track the pending
+    // gauge here.
     *pending_completions = pending_completions.saturating_sub(1);
-    metrics.completion_pending.set(*pending_completions);
+    metrics.other.completion_pending.set(*pending_completions);
 }
 
 async fn drain_pending_completions(
@@ -576,7 +613,7 @@ async fn drain_pending_completions(
     effect_handler: &local::EffectHandler<OtapPdata>,
     deadline: StdInstant,
     pending_completions: &mut u64,
-    metrics: &mut MetricSet<TrafficGeneratorReceiverMetrics>,
+    metrics: &mut TrafficGeneratorMetrics,
 ) -> Result<TerminalState, Error> {
     while *pending_completions > 0 {
         tokio::select! {
@@ -590,18 +627,18 @@ async fn drain_pending_completions(
                     record_completion(false, pending_completions, metrics);
                 }
                 Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
-                    _ = metrics_reporter.report(metrics);
+                    _ = metrics.report(&mut metrics_reporter);
                 }
                 Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
                     otel_info!("traffic_generator.shutdown");
-                    return Ok(TerminalState::new(deadline, [metrics.snapshot()]));
+                    return Ok(TerminalState::new(deadline, metrics.terminal_snapshots()));
                 }
                 Err(e) => return Err(Error::ChannelRecvError(e)),
                 _ => {}
             },
 
             _ = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {
-                metrics.completion_drain_deadline_forced.inc();
+                metrics.other.completion_drain_deadline_forced.add(1);
                 otel_warn!(
                     "traffic_generator.completion_drain.deadline_reached",
                     pending_batches = *pending_completions,
@@ -613,7 +650,7 @@ async fn drain_pending_completions(
     }
 
     effect_handler.notify_receiver_drained().await?;
-    Ok(TerminalState::new(deadline, [metrics.snapshot()]))
+    Ok(TerminalState::new(deadline, metrics.terminal_snapshots()))
 }
 
 /// Handle a control message received on the control channel.
@@ -627,13 +664,13 @@ async fn handle_control_msg(
     effect_handler: &local::EffectHandler<OtapPdata>,
     enable_ack_nack: bool,
     pending_completions: &mut u64,
-    metrics: &mut MetricSet<TrafficGeneratorReceiverMetrics>,
+    metrics: &mut TrafficGeneratorMetrics,
 ) -> Result<Option<TerminalState>, Error> {
     match ctrl_msg {
         Ok(NodeControlMsg::CollectTelemetry {
             mut metrics_reporter,
         }) => {
-            _ = metrics_reporter.report(metrics);
+            _ = metrics.report(&mut metrics_reporter);
             Ok(None)
         }
         Ok(NodeControlMsg::DrainIngress { deadline, .. }) => {
@@ -650,7 +687,7 @@ async fn handle_control_msg(
                 .map(Some);
             }
             effect_handler.notify_receiver_drained().await?;
-            Ok(Some(TerminalState::new(deadline, [metrics.snapshot()])))
+            Ok(Some(TerminalState::new(deadline, metrics.terminal_snapshots())))
         }
         Ok(NodeControlMsg::Ack(_)) if enable_ack_nack => {
             record_completion(true, pending_completions, metrics);
@@ -662,7 +699,7 @@ async fn handle_control_msg(
         }
         Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
             otel_info!("traffic_generator.shutdown");
-            Ok(Some(TerminalState::new(deadline, [metrics.snapshot()])))
+            Ok(Some(TerminalState::new(deadline, metrics.terminal_snapshots())))
         }
         Err(e) => Err(Error::ChannelRecvError(e)),
         _ => Ok(None),
@@ -712,10 +749,13 @@ impl local::Receiver<OtapPdata> for TrafficGeneratorReceiver {
         match effective_mode {
             config::ProductionMode::Smooth => {
                 if let Some(batch_duration) = smooth_batch_interval(run_len) {
-                    self.metrics.smooth_run_batches.set(run_len as u64);
-                    self.metrics
-                        .smooth_batch_interval_ns
-                        .set(batch_duration.as_nanos() as u64);
+                    self.metrics.other.smooth_run_batches.set(run_len as u64);
+                    if let Some(interval) = smooth_batch_interval(run_len) {
+                        self.metrics
+                            .other
+                            .smooth_batch_interval_ns
+                            .set(interval.as_nanos() as u64);
+                    }
                     let mut batch_ticker = interval(batch_duration);
                     batch_ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
                     self.run_smooth(
