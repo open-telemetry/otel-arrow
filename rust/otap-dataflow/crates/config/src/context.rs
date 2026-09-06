@@ -6,7 +6,6 @@
 use crate::error::Error;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::borrow::Cow;
 
 /// A context entry reference is a string that is resolved to a
 /// context register name. Always normalized.
@@ -14,16 +13,9 @@ use std::borrow::Cow;
     Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord, Hash,
 )]
 #[serde(try_from = "String", into = "String")]
-pub struct ContextEntryName(Cow<'static, str>);
+pub struct ContextEntryName(Box<str>);
 
 impl ContextEntryName {
-    /// Returns the name of the context entry, e.g., the value
-    /// in the `store_as` field of a transport header capture.
-    #[must_use]
-    pub fn into_inner(self) -> Cow<'static, str> {
-        self.0
-    }
-
     /// Returns the name of the context entry, e.g., the value
     /// in the `store_as` field of a transport header capture.
     #[must_use]
@@ -77,7 +69,7 @@ impl TryFrom<String> for ContextEntryName {
 
 impl From<ContextEntryName> for String {
     fn from(value: ContextEntryName) -> Self {
-        value.0.into_owned()
+        value.0.into()
     }
 }
 

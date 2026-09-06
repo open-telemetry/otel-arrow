@@ -10,6 +10,7 @@
 //! - wait (optional): block until an ACK/NACK arrives through the routed slot
 //! - respond: return success or convert NACK/channel errors into gRPC status
 
+use std::borrow::Cow;
 use std::convert::Infallible;
 use std::fmt::Display;
 use std::sync::Arc;
@@ -459,26 +460,19 @@ impl UnaryService<OtapPdata> for OtapBatchService {
         if let Some(policy) = effect_handler.capture_policy() {
             let mut transport_headers = TransportHeaders::new();
 
-            // Collect all metadata pairs, decoding binary values so we store
-            // raw bytes rather than the base64 wire encoding (which would be
-            // double-encoded on downstream gRPC propagation).
-            let pairs: Vec<(&str, Vec<u8>)> = metadata
-                .iter()
-                .filter_map(|kv| match kv {
-                    tonic::metadata::KeyAndValueRef::Ascii(key, value) => {
-                        Some((key.as_str(), value.as_bytes().to_vec()))
-                    }
-                    tonic::metadata::KeyAndValueRef::Binary(key, value) => value
-                        .to_bytes()
-                        .ok()
-                        .map(|decoded| (key.as_str(), decoded.to_vec())),
-                })
-                .collect();
+            // Decode binary metadata to raw bytes so downstream gRPC
+            // propagation does not encode an already encoded value.
+            let pairs = metadata.iter().filter_map(|kv| match kv {
+                tonic::metadata::KeyAndValueRef::Ascii(key, value) => {
+                    Some((key.as_str(), Cow::Borrowed(value.as_bytes())))
+                }
+                tonic::metadata::KeyAndValueRef::Binary(key, value) => value
+                    .to_bytes()
+                    .ok()
+                    .map(|decoded| (key.as_str(), Cow::Owned(decoded.to_vec()))),
+            });
 
-            let _stats = policy.capture_from_pairs(
-                pairs.iter().map(|(k, v)| (*k, v.as_slice())),
-                &mut transport_headers,
-            );
+            let _stats = policy.capture_from_pairs(pairs, &mut transport_headers);
             if !transport_headers.is_empty() {
                 otap_batch.set_transport_headers(transport_headers);
             }

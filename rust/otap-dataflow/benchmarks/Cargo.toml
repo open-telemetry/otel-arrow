@@ -20,6 +20,7 @@ otel-arrow-dfe-otap = { workspace = true }
 criterion = { workspace = true, features = ["html_reports", "async_tokio"] }
 tonic = { workspace = true }
 prost = { workspace = true }
+rdkafka.workspace = true
 
 otel-arrow-dfe-control-channel = { workspace = true }
 otel-arrow-dfe-config = { workspace = true }

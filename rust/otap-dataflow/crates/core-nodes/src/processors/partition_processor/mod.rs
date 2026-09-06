@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otel_arrow_dfe_config::transport_headers::{HeaderName, TransportHeader, ValueKind};
+use otel_arrow_dfe_config::transport_headers::{TransportHeader, ValueKind};
 use otel_arrow_dfe_config::{SignalType, context::ContextEntryName, node::NodeUserConfig};
 use otel_arrow_dfe_engine::config::ProcessorConfig;
 use otel_arrow_dfe_engine::context_declaration::{
@@ -133,14 +133,6 @@ impl PartitionProcessor {
                 error: format!("Failed to parse PartitionProcessor config: {e}"),
             }
         })?;
-
-        pipeline_ctx
-            .compiled_context_policy()
-            .validate_node_declarations(
-                pipeline_ctx.pipeline_key(),
-                pipeline_ctx.node_id(),
-                config.context_declarations(),
-            )?;
 
         let partitioner = match config.partition_by {
             PartitionByConfig::OplExpression(opl_expression) => {
@@ -494,7 +486,7 @@ fn partition_value_to_transport_header(
             (ValueKind::Text, header_bytes)
         }
     };
-    TransportHeader::new(HeaderName::from_config(name), value_kind, value_bytes)
+    TransportHeader::new(name.clone(), value_kind, value_bytes)
 }
 
 impl ConfigNodeContextDeclaration for Config {
@@ -534,11 +526,7 @@ mod test {
         value_kind: ValueKind,
         value: impl Into<Box<[u8]>>,
     ) -> TransportHeader {
-        TransportHeader::new(
-            HeaderName::from_config(&context_name(name.as_ref())),
-            value_kind,
-            value,
-        )
+        TransportHeader::new(context_name(name.as_ref()), value_kind, value)
     }
     use otel_arrow_dfe_otap::{
         pdata::Context,
@@ -1059,9 +1047,12 @@ mod test {
 
                 let mut context = Context::default();
                 let mut headers = context.take_transport_headers().unwrap_or_default();
-                headers.push(TransportHeader::text(
-                    HeaderName::from_pair(context_name("h1"), "header1"),
-                    "hello world",
+                headers.push(TransportHeader::captured(
+                    context_name("h1"),
+                    "header1",
+                    true,
+                    ValueKind::Text,
+                    "hello world".as_bytes(),
                 ));
                 context.set_transport_headers(headers);
                 context.set_peer_addr("10.0.0.1:5005".parse().unwrap());
@@ -1082,13 +1073,13 @@ mod test {
                     // assert the flow counter is distributed outbound batches in proportion
                     // to their size relative to the input
                     let partition_header = headers.find_by_name(header_name).next().unwrap();
-                    if partition_header.value.as_ref() == b"0" {
+                    if partition_header.value.value.as_ref() == b"0" {
                         assert_eq!(flow_counter, Some(4));
                     }
-                    if partition_header.value.as_ref() == b"1" {
+                    if partition_header.value.value.as_ref() == b"1" {
                         assert_eq!(flow_counter, Some(2));
                     }
-                    if partition_header.value.as_ref() == b"2" {
+                    if partition_header.value.value.as_ref() == b"2" {
                         assert_eq!(flow_counter, Some(2));
                     }
                 }
@@ -1115,9 +1106,12 @@ mod test {
                 }));
                 let mut context = Context::default();
                 let mut headers = context.take_transport_headers().unwrap_or_default();
-                headers.push(TransportHeader::text(
-                    HeaderName::from_pair(context_name("h1"), "header1"),
-                    "hello world",
+                headers.push(TransportHeader::captured(
+                    context_name("h1"),
+                    "header1",
+                    true,
+                    ValueKind::Text,
+                    "hello world".as_bytes(),
                 ));
                 context.set_transport_headers(headers);
                 let pdata = OtapPdata::new(context, OtapPayload::from(otap_batch));
@@ -1264,10 +1258,7 @@ mod test {
         );
         assert_eq!(
             header,
-            TransportHeader::binary(
-                HeaderName::from_config(&header_name),
-                "test".as_bytes().to_vec()
-            )
+            TransportHeader::binary(header_name.clone(), "test".as_bytes().to_vec())
         );
 
         // check other header types ...

@@ -101,7 +101,7 @@ impl TopicRouter {
             // static topic, which would misdeliver the data.
             let topic = header.value_as_str().ok_or_else(|| {
                 KafkaExporterError::invalid_header_topic(
-                    String::from_utf8_lossy(&header.value),
+                    String::from_utf8_lossy(&header.value.value),
                     "value is not valid UTF-8",
                 )
             })?;
@@ -159,13 +159,13 @@ impl TopicRouter {
         signal_config: &SignalConfig,
         context: &'a Context,
     ) -> Option<&'a TransportHeader> {
-        // `ContextEntryRef` normalizes the configured name during deserialization,
+        // `ContextEntryName` normalizes the configured name during deserialization,
         // matching how transport headers store their logical names.
         let header_key = signal_config.topic_from_transport_header()?.as_str();
         context
             .transport_headers()?
             .iter()
-            .find(|h| h.name == *header_key)
+            .find(|h| h.name.as_str() == header_key)
     }
 }
 
@@ -179,13 +179,10 @@ mod tests {
     // ---- Test helpers ----
 
     fn make_transport_header(wire_name: &str, value: &str) -> TransportHeader {
-        TransportHeader {
-            // Mirror capture-time normalization: lowercase, dashes preserved.
-            name: wire_name.to_ascii_lowercase(),
-            wire_name: wire_name.to_string(),
-            value_kind: ValueKind::Text,
-            value: value.as_bytes().to_vec(),
-        }
+        TransportHeader::text(
+            wire_name.try_into().expect("valid test context entry name"),
+            value.as_bytes(),
+        )
     }
 
     fn context_with_headers(headers: Vec<TransportHeader>) -> Context {
@@ -201,7 +198,9 @@ mod tests {
     fn make_signal_config(topic: &str, header_key: Option<&str>) -> SignalConfig {
         let config = SignalConfig::new(topic.to_string(), MessageFormat::OtlpProto);
         match header_key {
-            Some(key) => config.with_topic_from_transport_header(key),
+            Some(key) => config.with_topic_from_transport_header(
+                key.try_into().expect("valid test context entry name"),
+            ),
             None => config,
         }
     }
@@ -580,12 +579,11 @@ mod tests {
         // A matching routing header whose value is not valid UTF-8. This must be
         // treated as a routing error (permanent nack), not as a missing header
         // that falls back to the static topic.
-        let header = TransportHeader {
-            name: "x-topic".to_string(),
-            wire_name: "X-Topic".to_string(),
-            value_kind: ValueKind::Binary,
-            value: vec![0xff, 0xfe, 0xfd],
-        };
+        let header = TransportHeader::new(
+            "X-Topic".try_into().expect("valid test context entry name"),
+            ValueKind::Binary,
+            [0xff, 0xfe, 0xfd],
+        );
         let ctx = context_with_headers(vec![header]);
         let mut metrics = KafkaExporterMetrics::register(
             &crate::exporters::kafka_exporter::exporter::test_support::pipeline_context(),

@@ -550,7 +550,8 @@ mod receiver_harness {
                 pipeline_ctrl_msg_tx,
                 metrics_reporter,
             );
-            effect_handler.set_capture_policy(capture_policy);
+            effect_handler
+                .set_capture_policy(capture_policy.map(|policy| policy.compile(|_| true)));
 
             let keep_alive =
                 KeepAlive(vec![Box::new(control_sender.clone()), Box::new(metrics_rx)]);

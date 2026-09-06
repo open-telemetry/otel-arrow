@@ -1928,8 +1928,23 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             pdata_channel_capacity,
         );
         let create = factory.create;
+        validate_node_context_declarations(
+            pipeline_ctx,
+            &node_id,
+            &node_config,
+            normalized.as_str(),
+        )?;
 
-        let capture_policy = resolve_capture_policy(&node_config, transport_headers_policy);
+        let capture_policy =
+            resolve_capture_policy(&node_config, transport_headers_policy).map(|policy| {
+                pipeline_ctx
+                    .compiled_context_policy()
+                    .compile_header_capture_policy(
+                        &pipeline_ctx.pipeline_key(),
+                        &node_id.name,
+                        policy,
+                    )
+            });
 
         let receiver = create(
             (*pipeline_ctx).clone(),
@@ -2004,6 +2019,12 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             pdata_channel_capacity,
         );
         let create = factory.create;
+        validate_node_context_declarations(
+            pipeline_ctx,
+            &node_id,
+            &node_config,
+            normalized.as_str(),
+        )?;
 
         let processor = create(
             (*pipeline_ctx).clone(),
@@ -2080,6 +2101,12 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             pdata_channel_capacity,
         );
         let create = factory.create;
+        validate_node_context_declarations(
+            pipeline_ctx,
+            &node_id,
+            &node_config,
+            normalized.as_str(),
+        )?;
 
         let propagation_policy = resolve_propagation_policy(&node_config, transport_headers_policy);
 
@@ -2113,6 +2140,23 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
         Ok(exporter)
     }
+}
+
+fn validate_node_context_declarations(
+    pipeline_ctx: &PipelineContext,
+    node_id: &NodeId,
+    node_config: &NodeUserConfig,
+    normalized_urn: &str,
+) -> Result<(), Error> {
+    pipeline_ctx
+        .compiled_context_policy()
+        .validate_node_config_declarations(
+            pipeline_ctx.pipeline_key(),
+            node_id.name.clone(),
+            normalized_urn,
+            &node_config.config,
+        )
+        .map_err(|error| Error::ConfigError(Box::new(error)))
 }
 
 /// Resolves the effective capture policy for a receiver node.
@@ -2666,7 +2710,7 @@ mod test {
         RateLimitAggregation, RateLimitEnforcement, RateLimitPressure, RateLimitUnit,
         TokenBucketPolicy,
     };
-    use otel_arrow_dfe_config::transport_headers::{HeaderName, TransportHeader, TransportHeaders};
+    use otel_arrow_dfe_config::transport_headers::{TransportHeader, TransportHeaders};
     use otel_arrow_dfe_config::transport_headers_policy::{
         CaptureDefaults, CaptureRule, HeaderCapturePolicy, HeaderPropagationPolicy,
         PropagationAction, PropagationDefault, PropagationSelector, PropagationSelectorType,
@@ -2675,10 +2719,6 @@ mod test {
 
     fn context_name(raw: &str) -> ContextEntryName {
         ContextEntryName::try_from(raw).expect("valid test context entry name")
-    }
-
-    fn header_name(normal: &str, wire_name: &str) -> HeaderName {
-        HeaderName::from_pair(context_name(normal), wire_name)
     }
 
     /// Scenario: runtime metric levels resolve the optional payload measurements.
@@ -2824,7 +2864,7 @@ mod test {
 
         // Verify the node-level policy was used by checking that a
         // "x-node-header" is captured while "x-pipeline-header" is not.
-        let policy = policy.unwrap();
+        let policy = policy.unwrap().compile(|_| true);
         let mut captured = TransportHeaders::new();
         let _ = policy.capture_from_pairs(
             [("x-node-header", b"val" as &[u8])].into_iter(),
@@ -2853,7 +2893,7 @@ mod test {
         let policy = resolve_capture_policy(&node_config, &transport_headers_policy);
         assert!(policy.is_some(), "should fall back to pipeline policy");
 
-        let policy = policy.unwrap();
+        let policy = policy.unwrap().compile(|_| true);
         let mut captured = TransportHeaders::new();
         let _ = policy.capture_from_pairs(
             [("x-pipeline-header", b"val" as &[u8])].into_iter(),
@@ -2906,10 +2946,7 @@ mod test {
         // Verify node-level policy (Propagate) was used, not pipeline (Drop).
         let policy = policy.unwrap();
         let mut headers = TransportHeaders::new();
-        headers.push(TransportHeader::text(
-            header_name("x-test", "x-test"),
-            b"val",
-        ));
+        headers.push(TransportHeader::text(context_name("x-test"), b"val"));
         let propagated: Vec<_> = policy.propagate(&headers).collect();
         assert_eq!(propagated.len(), 1, "node policy should propagate");
     }
@@ -2931,10 +2968,7 @@ mod test {
 
         let policy = policy.unwrap();
         let mut headers = TransportHeaders::new();
-        headers.push(TransportHeader::text(
-            HeaderName::from_wire("x-test").unwrap(),
-            b"val",
-        ));
+        headers.push(TransportHeader::text(context_name("x-test"), b"val"));
         let propagated: Vec<_> = policy.propagate(&headers).collect();
         assert_eq!(propagated.len(), 1, "pipeline policy should propagate");
     }

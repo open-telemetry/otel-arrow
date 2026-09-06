@@ -12,7 +12,7 @@
 //! TODO: Implement the sensitive capability for headers
 
 use crate::context::ContextEntryName;
-use crate::transport_headers::{HeaderName, TransportHeader, TransportHeaders, ValueKind};
+use crate::transport_headers::{TransportHeader, TransportHeaders, ValueKind};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -20,7 +20,7 @@ use std::fmt;
 
 // -- Stats types --------------------------------------------------------------
 
-/// Statistics returned by [`HeaderCapturePolicy::capture_from_pairs`] when
+/// Statistics returned by [`CompiledHeaderCapturePolicy::capture_from_pairs`] when
 /// one or more matching headers could not be captured due to policy limits.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CaptureStats {
@@ -48,7 +48,7 @@ impl std::error::Error for CaptureStats {}
 #[derive(Debug)]
 pub struct PropagatedHeader<'a> {
     /// The name to use on the outbound request.
-    pub header_name: Cow<'a, str>,
+    pub header_name: &'a str,
     /// Whether the value is text or binary.
     pub value_kind: &'a ValueKind,
     /// Raw value bytes.
@@ -84,6 +84,13 @@ pub struct HeaderCapturePolicy {
     pub(crate) headers: Vec<CaptureRule>,
 }
 
+/// Header capture policy with compiler-derived original-name requirements.
+#[derive(Debug, Clone)]
+pub struct CompiledHeaderCapturePolicy {
+    policy: HeaderCapturePolicy,
+    preserve_original_name_by_match: Box<[Box<[bool]>]>,
+}
+
 impl HeaderCapturePolicy {
     /// Create a new capture policy from the given defaults and rules.
     #[must_use]
@@ -98,6 +105,45 @@ impl HeaderCapturePolicy {
         self.headers.is_empty()
     }
 
+    /// Compiles per-match original-name requirements into this capture policy.
+    #[must_use]
+    pub fn compile(
+        self,
+        mut consumes_original_name: impl FnMut(&ContextEntryName) -> bool,
+    ) -> CompiledHeaderCapturePolicy {
+        let preserve_original_name_by_match = self
+            .headers
+            .iter()
+            .map(|rule| {
+                rule.match_names
+                    .iter()
+                    .map(|match_name| {
+                        consumes_original_name(rule.store_as.as_ref().unwrap_or(match_name))
+                    })
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice()
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        CompiledHeaderCapturePolicy {
+            policy: self,
+            preserve_original_name_by_match,
+        }
+    }
+
+    /// Returns the normalized context entry names produced by this policy.
+    pub fn capture_entry_names(&self) -> impl Iterator<Item = ContextEntryName> {
+        self.headers
+            .iter()
+            .flat_map(|rule| match rule.store_as.as_ref() {
+                Some(store_as) => std::slice::from_ref(store_as),
+                None => rule.match_names.as_slice(),
+            })
+            .cloned()
+    }
+}
+
+impl CompiledHeaderCapturePolicy {
     /// Capture headers from an iterator of `(wire_name, value)` pairs.
     ///
     /// Each pair is matched against the capture rules. Only headers
@@ -107,24 +153,33 @@ impl HeaderCapturePolicy {
     /// Returns `None` when all matching headers were captured successfully,
     /// or `Some(CaptureStats)` when one or more matching headers had to be
     /// skipped due to policy limits.
-    pub fn capture_from_pairs<'a>(
+    pub fn capture_from_pairs<'a, V>(
         &self,
-        pairs: impl Iterator<Item = (&'a str, &'a [u8])>,
+        pairs: impl Iterator<Item = (&'a str, V)>,
         result: &mut TransportHeaders,
-    ) -> Option<CaptureStats> {
-        result.clear();
-
+    ) -> Option<CaptureStats>
+    where
+        V: Into<Cow<'a, [u8]>>,
+    {
         if self.is_empty() {
+            result.clear();
             return None;
         }
 
-        let defaults = &self.defaults;
+        let defaults = &self.policy.defaults;
+        let pairs = pairs;
+        let (lower, upper) = pairs.size_hint();
+        let capacity = upper.unwrap_or(lower).min(defaults.max_entries);
+        let result = result.clear_and_reserve(capacity);
         let mut skipped_max_entries: usize = 0;
         let mut skipped_name_too_long: usize = 0;
         let mut skipped_value_too_long: usize = 0;
 
         for (wire_name, value) in pairs {
-            if let Some(matched_rule) = self.find_matching_rule(wire_name) {
+            let value: Cow<'a, [u8]> = value.into();
+            if let Some((matched_rule, matched_name, preserve_original_name)) =
+                self.find_matching_rule(wire_name)
+            {
                 // Enforce entry count limit.
                 if result.len() >= defaults.max_entries {
                     skipped_max_entries += 1;
@@ -143,19 +198,11 @@ impl HeaderCapturePolicy {
                     continue;
                 }
 
-                let name = if let Some(store_as) = matched_rule.store_as.as_ref() {
-                    HeaderName::from_pair(store_as.clone(), wire_name)
+                let normal = if let Some(store_as) = matched_rule.store_as.as_ref() {
+                    store_as.clone()
                 } else {
-                    match HeaderName::from_wire(wire_name) {
-                        Some(name) => name,
-                        None => {
-                            // e.g., empty wire-name TODO new metric?
-                            skipped_name_too_long += 1;
-                            continue;
-                        }
-                    }
+                    matched_name.clone()
                 };
-
                 let value_kind = match matched_rule.value_kind {
                     Some(ValueKindConfig::Text) => ValueKind::Text,
                     Some(ValueKindConfig::Binary) => ValueKind::Binary,
@@ -168,7 +215,13 @@ impl HeaderCapturePolicy {
                     }
                 };
 
-                result.push(TransportHeader::new(name, value_kind, value.to_vec()));
+                result.push(TransportHeader::captured(
+                    normal,
+                    wire_name,
+                    preserve_original_name,
+                    value_kind,
+                    value,
+                ));
             }
         }
 
@@ -185,23 +238,31 @@ impl HeaderCapturePolicy {
 
     /// Find the first capture rule whose `match_names` contains the given
     /// wire name (case-insensitive comparison).
-    fn find_matching_rule(&self, wire_name: &str) -> Option<&CaptureRule> {
-        self.headers.iter().find(|rule| {
-            rule.match_names
-                .iter()
-                .any(|m| wire_name.eq_ignore_ascii_case(m.as_str()))
-        })
+    fn find_matching_rule(
+        &self,
+        wire_name: &str,
+    ) -> Option<(&CaptureRule, &ContextEntryName, bool)> {
+        self.policy
+            .headers
+            .iter()
+            .zip(&self.preserve_original_name_by_match)
+            .find_map(|(rule, preserve_original_name_by_match)| {
+                debug_assert_eq!(
+                    rule.match_names.len(),
+                    preserve_original_name_by_match.len()
+                );
+                rule.match_names
+                    .iter()
+                    .zip(preserve_original_name_by_match)
+                    .find(|(name, _)| wire_name.eq_ignore_ascii_case(name))
+                    .map(|(name, preserve)| (rule, name, *preserve))
+            })
     }
 
-    /// Returns register names and name metadata requirements declared by this policy.
-    pub fn capture_entry_names(&self) -> impl Iterator<Item = ContextEntryName> {
-        self.headers
-            .iter()
-            .flat_map(|rule| match rule.store_as.as_ref() {
-                Some(store_as) => std::slice::from_ref(store_as),
-                None => rule.match_names.as_slice(),
-            })
-            .cloned()
+    /// Returns whether this compiled policy has no capture rules.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.policy.is_empty()
     }
 }
 
@@ -315,12 +376,19 @@ impl HeaderPropagationPolicy {
         self.default.selector.validate()
     }
 
+    /// Returns whether this policy propagates one entry using its original wire name.
+    #[must_use]
+    pub fn propagates_original_name(&self, name: &ContextEntryName) -> bool {
+        let (action, name_strategy) = self.resolve_action_for_name(name);
+        action == PropagationAction::Propagate && name_strategy == NameStrategy::Preserve
+    }
+
     /// Returns an iterator over headers that should be propagated on
     /// egress. Each [`PropagatedHeader`] borrows from the captured
     /// headers
     ///
     /// Headers whose policy action is [`PropagationAction::Drop`] are
-    /// silently skipped. The [`PropagatedHeader::egress_name`] field
+    /// silently skipped. The [`PropagatedHeader::header_name`] field
     /// points to either the original wire name or the stored name,
     /// depending on the resolved [`NameStrategy`].
     pub fn propagate<'a>(
@@ -333,13 +401,13 @@ impl HeaderPropagationPolicy {
                 return None;
             }
             let header_name = match name_strategy {
-                NameStrategy::StoredName => header.name.normalized().clone().into_inner(),
-                NameStrategy::Preserve => header.name.original(),
+                NameStrategy::StoredName => header.name.as_str(),
+                NameStrategy::Preserve => header.wire_name(),
             };
             Some(PropagatedHeader {
                 header_name,
-                value_kind: &header.value_kind,
-                value: &header.value,
+                value_kind: &header.value.value_kind,
+                value: &header.value.value,
             })
         })
     }
@@ -350,14 +418,17 @@ impl HeaderPropagationPolicy {
         self.resolve_action_for_name(&header.name)
     }
 
-    fn resolve_action_for_name(&self, name: &HeaderName) -> (PropagationAction, NameStrategy) {
+    fn resolve_action_for_name(
+        &self,
+        name: &ContextEntryName,
+    ) -> (PropagationAction, NameStrategy) {
         // Check overrides first.
         for ov in &self.overrides {
             if ov
                 .match_rule
                 .stored_names
                 .iter()
-                .any(|stored| name.normalized() == stored)
+                .any(|stored| name == stored)
             {
                 let name_strategy = ov.name.unwrap_or(self.default.name);
                 return (ov.action, name_strategy);
@@ -365,7 +436,7 @@ impl HeaderPropagationPolicy {
         }
 
         // Check whether the header passes the default selector.
-        let selected = self.default.selector.selects(name.normalized());
+        let selected = self.default.selector.selects(name);
 
         if selected {
             (self.default.action, self.default.name)
@@ -541,6 +612,67 @@ mod tests {
         assert_eq!(policy.default.name, NameStrategy::Preserve);
         assert_eq!(policy.default.on_error, ErrorAction::Drop);
         assert!(policy.overrides.is_empty());
+    }
+
+    /// Scenario: propagation overrides change name handling for selected entries.
+    /// Guarantees: original-name consumption is resolved exactly for each normalized entry.
+    #[test]
+    fn propagation_policy_resolves_original_name_per_entry() {
+        let policy = HeaderPropagationPolicy::new(
+            PropagationDefault {
+                selector: PropagationSelector {
+                    selector_type: PropagationSelectorType::AllCaptured,
+                    named: None,
+                },
+                name: NameStrategy::Preserve,
+                ..PropagationDefault::default()
+            },
+            vec![
+                PropagationOverride {
+                    match_rule: PropagationMatch {
+                        stored_names: vec![context_name("stored")],
+                    },
+                    action: PropagationAction::Propagate,
+                    name: Some(NameStrategy::StoredName),
+                    on_error: None,
+                },
+                PropagationOverride {
+                    match_rule: PropagationMatch {
+                        stored_names: vec![context_name("dropped")],
+                    },
+                    action: PropagationAction::Drop,
+                    name: None,
+                    on_error: None,
+                },
+            ],
+        );
+
+        assert!(policy.propagates_original_name(&context_name("preserved")));
+        assert!(!policy.propagates_original_name(&context_name("stored")));
+        assert!(!policy.propagates_original_name(&context_name("dropped")));
+    }
+
+    /// Scenario: a compiled capture policy has no downstream original-name consumer.
+    /// Guarantees: renamed headers retain only their normalized stored name.
+    #[test]
+    fn capture_policy_can_discard_original_names() {
+        let policy = HeaderCapturePolicy::new(
+            CaptureDefaults::default(),
+            vec![CaptureRule {
+                match_names: vec![context_name("x-tenant")],
+                store_as: Some(context_name("tenant")),
+                sensitive: false,
+                value_kind: None,
+            }],
+        )
+        .compile(|_| false);
+        let mut headers = TransportHeaders::new();
+
+        let _ =
+            policy.capture_from_pairs([("X-Tenant", b"acme".as_slice())].into_iter(), &mut headers);
+
+        assert_eq!(headers.as_slice()[0].name, "tenant");
+        assert_eq!(headers.as_slice()[0].wire_name(), "tenant");
     }
 
     #[test]

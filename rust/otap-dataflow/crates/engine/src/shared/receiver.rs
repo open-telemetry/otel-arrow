@@ -45,7 +45,7 @@ use crate::terminal_state::TerminalState;
 use async_trait::async_trait;
 use otel_arrow_dfe_channel::error::RecvError;
 use otel_arrow_dfe_config::PortName;
-use otel_arrow_dfe_config::transport_headers_policy::HeaderCapturePolicy;
+use otel_arrow_dfe_config::transport_headers_policy::CompiledHeaderCapturePolicy;
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
 use otel_arrow_dfe_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
@@ -105,7 +105,7 @@ pub struct EffectHandler<PData> {
     pub router: OutputRouter<SharedSender<PData>>,
     /// Capture policy for extracting transport headers from inbound metadata.
     /// `None` when no capture policy is configured (zero overhead).
-    capture_policy: Option<HeaderCapturePolicy>,
+    capture_policy: Option<CompiledHeaderCapturePolicy>,
 }
 
 /// Implementation for the `Send` effect handler.
@@ -166,12 +166,12 @@ impl<PData> EffectHandler<PData> {
     ///
     /// Returns `None` when no capture policy is active (zero overhead).
     #[must_use]
-    pub fn capture_policy(&self) -> Option<&HeaderCapturePolicy> {
+    pub fn capture_policy(&self) -> Option<&CompiledHeaderCapturePolicy> {
         self.capture_policy.as_ref()
     }
 
     /// Sets the capture policy for transport header extraction.
-    pub fn set_capture_policy(&mut self, policy: Option<HeaderCapturePolicy>) {
+    pub fn set_capture_policy(&mut self, policy: Option<CompiledHeaderCapturePolicy>) {
         self.capture_policy = policy;
     }
 

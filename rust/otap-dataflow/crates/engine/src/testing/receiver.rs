@@ -238,7 +238,9 @@ impl<PData: Debug + 'static> TestPhase<PData> {
     /// Sets a capture policy on the receiver wrapper for transport header testing.
     #[must_use]
     pub fn with_capture_policy(mut self, policy: Option<HeaderCapturePolicy>) -> Self {
-        self.receiver = self.receiver.with_capture_policy(policy);
+        self.receiver = self
+            .receiver
+            .with_capture_policy(policy.map(|policy| policy.compile(|_| true)));
         self
     }
 

@@ -11,7 +11,7 @@ use crate::common::kafka::{
     DebugContext, LogLevel, MessageFormat, debug_list_to_string, default_message_format_header,
     validate_kafka_topic,
 };
-use otel_arrow_dfe_config::ContextEntryRef;
+use otel_arrow_dfe_config::ContextEntryName;
 use rdkafka::ClientConfig;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -69,7 +69,7 @@ pub struct SignalConfig {
     /// policy stores the header under a custom `store_as` name, this value must
     /// equal that stored name.
     #[serde(default)]
-    topic_from_transport_header: Option<ContextEntryRef>,
+    topic_from_transport_header: Option<ContextEntryName>,
 
     /// Enable partitioning by transport headers (default: false).
     ///
@@ -143,16 +143,23 @@ impl SignalConfig {
 
     /// The transport header name for dynamic topic routing, if set.
     #[must_use]
-    pub fn topic_from_transport_header(&self) -> Option<&ContextEntryRef> {
+    pub fn topic_from_transport_header(&self) -> Option<&ContextEntryName> {
         self.topic_from_transport_header.as_ref()
     }
 
     /// Set the transport header name for dynamic topic routing.
     #[must_use]
-    pub fn with_topic_from_transport_header(mut self, key: impl AsRef<str>) -> Self {
-        self.topic_from_transport_header =
-            Some(ContextEntryRef::parse(key.as_ref()).expect("invalid context entry reference"));
+    pub fn with_topic_from_transport_header(mut self, key: ContextEntryName) -> Self {
+        self.topic_from_transport_header = Some(key);
         self
+    }
+
+    /// Try to set the transport header name for dynamic topic routing.
+    pub fn try_with_topic_from_transport_header<K>(self, key: K) -> Result<Self, K::Error>
+    where
+        K: TryInto<ContextEntryName>,
+    {
+        Ok(self.with_topic_from_transport_header(key.try_into()?))
     }
 
     /// Whether partitioning by transport headers is enabled for this signal.
@@ -1032,6 +1039,10 @@ impl PartitionerStrategy {
 mod tests {
     use super::*;
     use rdkafka::config::RDKafkaLogLevel;
+
+    fn context_name(raw: &str) -> ContextEntryName {
+        raw.try_into().expect("valid test context entry name")
+    }
 
     // ---- SignalConfig ----
 
@@ -2115,7 +2126,7 @@ mod tests {
         let logs = config.logs().expect("logs should be configured");
         assert_eq!(
             logs.topic_from_transport_header()
-                .map(ContextEntryRef::as_str),
+                .map(ContextEntryName::as_str),
             Some("x_target_topic")
         );
     }
@@ -2133,18 +2144,32 @@ mod tests {
         assert!(logs.topic_from_transport_header().is_none());
     }
 
+    /// Scenario: a programmatic caller supplies an unvalidated topic header name.
+    /// Guarantees: the fallible builder validates and stores the normalized name.
     #[test]
     fn test_signal_config_builder_with_topic_from_transport_header() {
         let signal = SignalConfig::new("otlp_logs".into(), MessageFormat::OtlpProto)
-            .with_topic_from_transport_header("x_target_topic");
+            .try_with_topic_from_transport_header("X_Target_Topic")
+            .expect("valid test context entry name");
 
         assert_eq!(
             signal
                 .topic_from_transport_header()
-                .map(ContextEntryRef::as_str),
+                .map(ContextEntryName::as_str),
             Some("x_target_topic")
         );
         assert_eq!(signal.topic(), "otlp_logs");
+    }
+
+    /// Scenario: a programmatic caller supplies an invalid topic header name.
+    /// Guarantees: the fallible builder returns an error instead of panicking.
+    #[test]
+    fn test_signal_config_builder_rejects_invalid_topic_header() {
+        assert!(
+            SignalConfig::new("otlp_logs".into(), MessageFormat::OtlpProto)
+                .try_with_topic_from_transport_header("not valid")
+                .is_err()
+        );
     }
 
     // ---- Security: dynamic-routing allowlist config ----
@@ -2156,7 +2181,7 @@ mod tests {
     #[test]
     fn allowlist_config_is_accepted() {
         let signal = SignalConfig::new("static".into(), MessageFormat::OtlpProto)
-            .with_topic_from_transport_header("x-target-topic")
+            .with_topic_from_transport_header(context_name("x-target-topic"))
             .with_allowed_topics(["approved"])
             .with_allowed_topics_regex(["tenant_.*"]);
 
@@ -2256,13 +2281,13 @@ mod tests {
         assert_eq!(
             traces
                 .topic_from_transport_header()
-                .map(ContextEntryRef::as_str),
+                .map(ContextEntryName::as_str),
             Some("x_traces_topic")
         );
         assert!(metrics.topic_from_transport_header().is_none());
         assert_eq!(
             logs.topic_from_transport_header()
-                .map(ContextEntryRef::as_str),
+                .map(ContextEntryName::as_str),
             Some("x_logs_topic")
         );
     }
@@ -2291,7 +2316,7 @@ mod tests {
                 .traces()
                 .unwrap()
                 .topic_from_transport_header()
-                .map(ContextEntryRef::as_str),
+                .map(ContextEntryName::as_str),
             Some("x-traces-topic")
         );
         assert_eq!(
@@ -2299,7 +2324,7 @@ mod tests {
                 .logs()
                 .unwrap()
                 .topic_from_transport_header()
-                .map(ContextEntryRef::as_str),
+                .map(ContextEntryName::as_str),
             Some("x-target-topic")
         );
     }

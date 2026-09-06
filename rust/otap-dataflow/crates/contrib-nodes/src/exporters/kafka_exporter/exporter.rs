@@ -38,11 +38,14 @@ use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_config::validation::validate_typed_config;
+use otel_arrow_dfe_engine::ConsumerEffectHandlerExtension;
 use otel_arrow_dfe_engine::ExporterFactory;
 use otel_arrow_dfe_engine::config::ExporterConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_engine::context_declaration::{
-    ContextDeclaration, ContextDeclarationConfig, ContextDeclarationProvider, ContextReadSelector,
+    ConfigNodeContextDeclaration, ContextConsumerSelector, ContextDeclaration,
+    ContextDeclarationProvider, ContextEntrySelector, ContextEntrySelectorForm,
+    HeaderPropagationPolicyConsumer, NodeContextDeclarations,
 };
 use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otel_arrow_dfe_engine::error::Error as EngineError;
@@ -51,7 +54,6 @@ use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
 use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
 use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
-use otel_arrow_dfe_engine::{ConsumerEffectHandlerExtension, context_access};
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
 use otel_arrow_dfe_pdata::Producer as PdataProducer;
@@ -344,48 +346,39 @@ pub static KAFKA_EXPORTER_FACTORY: ExporterFactory<OtapPdata> = ExporterFactory 
 static KAFKA_EXPORTER_CONTEXT_DECLARATIONS: ContextDeclarationProvider =
     ContextDeclarationProvider::from_typed_config::<KafkaExporterConfig>(KAFKA_EXPORTER_URN);
 
-context_access! {
-    struct KafkaAccess {
-        topic,
-        partition,
-    }
+#[allow(unsafe_code)]
+#[distributed_slice(
+    otel_arrow_dfe_engine::context_declaration::HEADER_PROPAGATION_POLICY_CONSUMERS
+)]
+static KAFKA_EXPORTER_HEADER_PROPAGATION: HeaderPropagationPolicyConsumer =
+    HeaderPropagationPolicyConsumer::new(KAFKA_EXPORTER_URN);
 
-    const TRACES_ACCESS;
-    const METRICS_ACCESS;
-    const LOGS_ACCESS;
-}
-
-impl ContextDeclarationConfig for KafkaExporterConfig {
-    fn context_declarations(
-        &self,
-    ) -> Result<Vec<ContextDeclaration>, otel_arrow_dfe_config::error::Error> {
-        let mut decls = Vec::new();
-        let signals = [
-            (TRACES_ACCESS, self.traces()),
-            (METRICS_ACCESS, self.metrics()),
-            (LOGS_ACCESS, self.logs()),
-        ];
-
-        for (access, signal_cfg) in signals {
-            if let Some(cfg) = signal_cfg {
-                if let Some(header) = cfg.topic_from_transport_header() {
-                    decls.push(ContextDeclaration::Consumes {
-                        access: access.topic,
-                        selector: ContextReadSelector::Entries {
-                            entries: vec![header.clone()].into_boxed_slice(),
-                        },
-                    });
-                }
-                if cfg.partition_by_transport_headers() {
-                    decls.push(ContextDeclaration::Consumes {
-                        access: access.partition,
-                        selector: ContextReadSelector::All,
-                    });
-                }
-            }
-        }
-
-        Ok(decls)
+impl ConfigNodeContextDeclaration for KafkaExporterConfig {
+    fn context_declarations(&self) -> NodeContextDeclarations {
+        [self.traces(), self.metrics(), self.logs()]
+            .into_iter()
+            .flatten()
+            .flat_map(|signal| {
+                let topic =
+                    signal
+                        .topic_from_transport_header()
+                        .map(|name| ContextDeclaration::Consumes {
+                            selector: ContextConsumerSelector::Entries {
+                                entries: vec![ContextEntrySelector {
+                                    name: name.clone(),
+                                    read: ContextEntrySelectorForm::Value,
+                                }]
+                                .into_boxed_slice(),
+                            },
+                        });
+                let partition = signal.partition_by_transport_headers().then_some(
+                    ContextDeclaration::Consumes {
+                        selector: ContextConsumerSelector::All,
+                    },
+                );
+                topic.into_iter().chain(partition)
+            })
+            .collect()
     }
 }
 
@@ -1364,9 +1357,7 @@ pub mod test_support {
         header_wire_name: &str,
         header_value: &str,
     ) -> OtapPdata {
-        use otel_arrow_dfe_config::transport_headers::{
-            TransportHeader, TransportHeaders, ValueKind,
-        };
+        use otel_arrow_dfe_config::transport_headers::{TransportHeader, TransportHeaders};
 
         let bytes = Bytes::from_static(b"payload");
         let proto = match signal_type {
@@ -1380,12 +1371,12 @@ pub mod test_support {
         };
 
         let mut headers = TransportHeaders::new();
-        headers.push(TransportHeader {
-            name: header_wire_name.to_ascii_lowercase(),
-            wire_name: header_wire_name.to_string(),
-            value_kind: ValueKind::Text,
-            value: header_value.as_bytes().to_vec(),
-        });
+        headers.push(TransportHeader::text(
+            header_wire_name
+                .try_into()
+                .expect("valid test context entry name"),
+            header_value.as_bytes(),
+        ));
         let mut context = Context::default();
         context.set_transport_headers(headers);
 
@@ -1540,6 +1531,7 @@ pub mod test_support {
         use crate::exporters::kafka_exporter::config::{CompressionType, RequiredAcks};
         use crate::exporters::kafka_exporter::partitioner::partition_key_from_transport_headers;
         use bytes::Bytes;
+        use otel_arrow_dfe_config::ContextEntryName;
         use otel_arrow_dfe_config::transport_headers::{
             TransportHeader, TransportHeaders, ValueKind,
         };
@@ -1547,7 +1539,6 @@ pub mod test_support {
             HeaderPropagationPolicy, PropagationDefault, PropagationSelector,
             PropagationSelectorType,
         };
-        use otel_arrow_dfe_engine::context_declaration::{ContextDeclaration, ContextReadSelector};
         use otel_arrow_dfe_otap::pdata::Context;
         use otel_arrow_dfe_pdata::OtlpProtoBytes;
         use prost::Message as _;
@@ -1588,6 +1579,24 @@ pub mod test_support {
         use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::{
             ResourceSpans, ScopeSpans, Span,
         };
+
+        fn context_name(raw: &str) -> ContextEntryName {
+            raw.try_into().expect("valid test context entry name")
+        }
+
+        fn transport_header(
+            normalized_name: &str,
+            wire_name: &str,
+            value: impl Into<Vec<u8>>,
+        ) -> TransportHeader {
+            TransportHeader::captured(
+                context_name(normalized_name),
+                wire_name,
+                true,
+                ValueKind::Text,
+                value.into(),
+            )
+        }
 
         /// Tests that payload is properly cloned for both OTLP and OTAP serialization formats.
         /// This ensures no borrow-after-move errors occur when the encoder consumes the payload.
@@ -1643,7 +1652,7 @@ pub mod test_support {
         }
 
         /// Scenario: Two signals configure different context reads.
-        /// Guarantees: access IDs distinguish reads emitted in signal order.
+        /// Guarantees: declarations include the named topic and all-header partition reads.
         #[test]
         fn declarations_use_generic_bindings() {
             let config = serde_json::json!({
@@ -1663,24 +1672,23 @@ pub mod test_support {
             });
 
             let decls = (KAFKA_EXPORTER_CONTEXT_DECLARATIONS.declarations)(&config).unwrap();
-            assert_eq!(decls.len(), 2);
-
-            assert_eq!(
-                decls[0],
+            let expected: NodeContextDeclarations = [
                 ContextDeclaration::Consumes {
-                    access: TRACES_ACCESS.topic,
-                    selector: ContextReadSelector::Entries {
-                        entries: vec!["x-traces-topic".into()].into_boxed_slice(),
+                    selector: ContextConsumerSelector::Entries {
+                        entries: vec![ContextEntrySelector {
+                            name: context_name("x-traces-topic"),
+                            read: ContextEntrySelectorForm::Value,
+                        }]
+                        .into_boxed_slice(),
                     },
                 },
-            );
-            assert_eq!(
-                decls[1],
                 ContextDeclaration::Consumes {
-                    access: LOGS_ACCESS.partition,
-                    selector: ContextReadSelector::All,
+                    selector: ContextConsumerSelector::All,
                 },
-            );
+            ]
+            .into_iter()
+            .collect();
+            assert_eq!(decls, expected);
         }
 
         /// Scenario: Kafka config has no context reads.
@@ -2019,7 +2027,7 @@ pub mod test_support {
                 KafkaExporterConfigBuilder::new("localhost:9092", "test-client")
                     .with_logs(
                         SignalConfig::new("test-logs".into(), MessageFormat::OtlpProto)
-                            .with_topic_from_transport_header("x-target-topic"),
+                            .with_topic_from_transport_header(context_name("x-target-topic")),
                     )
                     .try_into()
                     .expect("test config should be valid");
@@ -2191,12 +2199,11 @@ pub mod test_support {
             let mut context = Context::default();
             if let Some((wire_name, value)) = header {
                 let mut headers = TransportHeaders::new();
-                headers.push(TransportHeader {
-                    name: wire_name.to_ascii_lowercase(),
-                    wire_name: wire_name.to_string(),
-                    value_kind: ValueKind::Text,
-                    value: value.as_bytes().to_vec(),
-                });
+                headers.push(transport_header(
+                    &wire_name.to_ascii_lowercase(),
+                    wire_name,
+                    value.as_bytes(),
+                ));
                 context.set_transport_headers(headers);
             }
             OtapPdata::new(context, proto.into())
@@ -2471,7 +2478,7 @@ pub mod test_support {
                 KafkaExporterConfigBuilder::new("localhost:9092", "test-client")
                     .with_logs(
                         SignalConfig::new("static-logs".into(), MessageFormat::OtlpProto)
-                            .with_topic_from_transport_header("x-target-topic")
+                            .with_topic_from_transport_header(context_name("x-target-topic"))
                             .with_allowed_topics_regex(["tenant_.*"]),
                     )
                     .try_into()
@@ -2523,7 +2530,7 @@ pub mod test_support {
                     let cfg = logs_config(
                         cluster.bootstrap_servers(),
                         SignalConfig::new(static_topic.into(), MessageFormat::OtlpProto)
-                            .with_topic_from_transport_header("x-target-topic")
+                            .with_topic_from_transport_header(context_name("x-target-topic"))
                             .with_allowed_topics_regex(["tenant_.*"]),
                     );
                     let exporter = KafkaExporterHarness::start(&cluster, cfg);
@@ -2571,7 +2578,7 @@ pub mod test_support {
                     let cfg = logs_config(
                         cluster.bootstrap_servers(),
                         SignalConfig::new(static_topic.into(), MessageFormat::OtlpProto)
-                            .with_topic_from_transport_header("x-target-topic")
+                            .with_topic_from_transport_header(context_name("x-target-topic"))
                             .with_allowed_topics([allowed_topic]),
                     );
                     let mut exporter = KafkaExporterHarness::start(&cluster, cfg);
@@ -4054,7 +4061,7 @@ pub mod test_support {
                     let cfg = logs_config(
                         cluster.bootstrap_servers(),
                         SignalConfig::new(static_topic.into(), MessageFormat::OtlpProto)
-                            .with_topic_from_transport_header("x-target-topic")
+                            .with_topic_from_transport_header(context_name("x-target-topic"))
                             .with_allowed_topics_regex(["tenant_.*"]),
                     );
                     let mut exporter = KafkaExporterHarness::start(&cluster, cfg);
@@ -4165,7 +4172,7 @@ pub mod test_support {
                     let cfg = logs_config(
                         cluster.bootstrap_servers(),
                         SignalConfig::new(static_topic.into(), MessageFormat::OtlpProto)
-                            .with_topic_from_transport_header("x-target-topic")
+                            .with_topic_from_transport_header(context_name("x-target-topic"))
                             .with_allowed_topics_regex(["tenant_.*"]),
                     );
                     let mut exporter = KafkaExporterHarness::start(&cluster, cfg);
@@ -5616,7 +5623,7 @@ pub mod test_support {
                     let cfg = logs_config(
                         cluster.bootstrap_servers(),
                         SignalConfig::new(static_topic.into(), MessageFormat::OtlpProto)
-                            .with_topic_from_transport_header("x-target-topic"),
+                            .with_topic_from_transport_header(context_name("x-target-topic")),
                     );
                     let exporter = KafkaExporterHarness::start(&cluster, cfg);
 
@@ -5696,18 +5703,12 @@ pub mod test_support {
             // Context with two transport headers, one of which collides with the
             // format-header key and must be skipped.
             let mut transport = TransportHeaders::new();
-            transport.push(TransportHeader {
-                name: "x-tenant-id".to_string(),
-                wire_name: "X-Tenant-Id".to_string(),
-                value_kind: ValueKind::Text,
-                value: b"acme".to_vec(),
-            });
-            transport.push(TransportHeader {
-                name: MSG_FORMAT_HEADER.to_string(),
-                wire_name: MSG_FORMAT_HEADER.to_string(),
-                value_kind: ValueKind::Text,
-                value: b"attacker-override".to_vec(),
-            });
+            transport.push(transport_header("x-tenant-id", "X-Tenant-Id", b"acme"));
+            transport.push(transport_header(
+                MSG_FORMAT_HEADER,
+                MSG_FORMAT_HEADER,
+                b"attacker-override",
+            ));
             let mut context = Context::default();
             context.set_transport_headers(transport);
 
@@ -5775,12 +5776,7 @@ pub mod test_support {
         #[test]
         fn build_kafka_headers_writes_only_format_header_without_policy() {
             let mut transport = TransportHeaders::new();
-            transport.push(TransportHeader {
-                name: "x-tenant-id".to_string(),
-                wire_name: "X-Tenant-Id".to_string(),
-                value_kind: ValueKind::Text,
-                value: b"acme".to_vec(),
-            });
+            transport.push(transport_header("x-tenant-id", "X-Tenant-Id", b"acme"));
             let mut context = Context::default();
             context.set_transport_headers(transport);
 
@@ -6317,7 +6313,7 @@ pub mod test_support {
                     let cfg = logs_config(
                         cluster.bootstrap_servers(),
                         SignalConfig::new(static_topic.into(), MessageFormat::OtlpProto)
-                            .with_topic_from_transport_header("x-target-topic"),
+                            .with_topic_from_transport_header(context_name("x-target-topic")),
                     );
                     let exporter = KafkaExporterHarness::start(&cluster, cfg);
 

@@ -1152,7 +1152,7 @@ mod test {
     };
     use otel_arrow_dfe_channel::mpsc::Channel as LocalChannel;
     use otel_arrow_dfe_config::ContextEntryName;
-    use otel_arrow_dfe_config::transport_headers::{HeaderName, TransportHeader};
+    use otel_arrow_dfe_config::transport_headers::{TransportHeader, ValueKind};
     use otel_arrow_dfe_engine::ConsumerEffectHandlerExtension;
     use otel_arrow_dfe_engine::control::{
         PipelineCompletionMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
@@ -2405,9 +2405,12 @@ mod test {
         let addr: SocketAddr = "10.0.0.1:5005".parse().unwrap();
         let mut headers = TransportHeaders::new();
         let name = ContextEntryName::try_from("tenant").expect("valid test context entry name");
-        headers.push(TransportHeader::text(
-            HeaderName::from_pair(name, "x-tenant"),
-            "acme",
+        headers.push(TransportHeader::captured(
+            name,
+            "x-tenant",
+            true,
+            ValueKind::Text,
+            "acme".as_bytes(),
         ));
 
         let (test_data, pdata) = create_test();

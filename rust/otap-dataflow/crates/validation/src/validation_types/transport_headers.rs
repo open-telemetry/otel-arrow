@@ -29,11 +29,19 @@ pub struct TransportHeaderKeyValue {
 impl TransportHeaderKeyValue {
     /// Create a new transport header key/value pair.
     #[must_use]
-    pub fn new(key: impl AsRef<str>, value: impl Into<String>) -> Self {
+    pub fn new(key: ContextEntryName, value: impl Into<String>) -> Self {
         Self {
-            key: ContextEntryName::try_from(key.as_ref()).expect("invalid context entry reference"),
+            key,
             value: value.into(),
         }
+    }
+
+    /// Try to create a transport header key/value pair from an unvalidated key.
+    pub fn try_new<K>(key: K, value: impl Into<String>) -> Result<Self, K::Error>
+    where
+        K: TryInto<ContextEntryName>,
+    {
+        Ok(Self::new(key.try_into()?, value))
     }
 }
 
@@ -145,7 +153,7 @@ pub fn validate_transport_header_deny_keys(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otel_arrow_dfe_config::transport_headers::{HeaderName, TransportHeader, TransportHeaders};
+    use otel_arrow_dfe_config::transport_headers::{TransportHeader, TransportHeaders};
 
     fn context_name(raw: &str) -> ContextEntryName {
         ContextEntryName::try_from(raw).expect("valid test context entry name")
@@ -155,14 +163,14 @@ mod tests {
         raw.iter().map(|name| context_name(name)).collect()
     }
 
-    fn header_name(raw: &str) -> HeaderName {
-        HeaderName::from_config(&context_name(raw))
+    fn key_value(key: &str, value: &str) -> TransportHeaderKeyValue {
+        TransportHeaderKeyValue::try_new(key, value).expect("valid test context entry name")
     }
 
     fn make_headers(entries: &[(&str, &str)]) -> TransportHeaders {
         let mut headers = TransportHeaders::default();
         for (name, value) in entries {
-            headers.push(TransportHeader::text(header_name(name), value.as_bytes()));
+            headers.push(TransportHeader::text(context_name(name), value.as_bytes()));
         }
         headers
     }
@@ -202,7 +210,7 @@ mod tests {
         let suv = vec![Some(headers)];
         assert!(validate_transport_header_require_key_values(
             &suv,
-            &[TransportHeaderKeyValue::new("x-tenant-id", "acme")],
+            &[key_value("x-tenant-id", "acme")],
         ));
     }
 
@@ -212,7 +220,7 @@ mod tests {
         let suv = vec![Some(headers)];
         assert!(!validate_transport_header_require_key_values(
             &suv,
-            &[TransportHeaderKeyValue::new("x-tenant-id", "other")],
+            &[key_value("x-tenant-id", "other")],
         ));
     }
 
@@ -222,7 +230,7 @@ mod tests {
         let suv = vec![Some(headers)];
         assert!(!validate_transport_header_require_key_values(
             &suv,
-            &[TransportHeaderKeyValue::new("x-missing", "value")],
+            &[key_value("x-missing", "value")],
         ));
     }
 
@@ -290,7 +298,7 @@ mod tests {
         let suv = vec![Some(headers), None];
         assert!(!validate_transport_header_require_key_values(
             &suv,
-            &[TransportHeaderKeyValue::new("x-tenant-id", "acme")],
+            &[key_value("x-tenant-id", "acme")],
         ));
     }
 
@@ -308,7 +316,7 @@ mod tests {
         let suv: Vec<Option<TransportHeaders>> = vec![];
         assert!(!validate_transport_header_require_key_values(
             &suv,
-            &[TransportHeaderKeyValue::new("x-tenant-id", "acme")],
+            &[key_value("x-tenant-id", "acme")],
         ));
     }
 
@@ -330,7 +338,7 @@ mod tests {
         let suv = vec![Some(headers)];
         assert!(validate_transport_header_require_key_values(
             &suv,
-            &[TransportHeaderKeyValue::new("x-env", "production")],
+            &[key_value("x-env", "production")],
         ));
     }
 
@@ -340,7 +348,7 @@ mod tests {
         let suv = vec![Some(headers)];
         assert!(validate_transport_header_require_key_values(
             &suv,
-            &[TransportHeaderKeyValue::new("x-env", "staging")],
+            &[key_value("x-env", "staging")],
         ));
     }
 
@@ -350,7 +358,14 @@ mod tests {
         let suv = vec![Some(headers)];
         assert!(!validate_transport_header_require_key_values(
             &suv,
-            &[TransportHeaderKeyValue::new("x-env", "development")],
+            &[key_value("x-env", "development")],
         ));
+    }
+
+    /// Scenario: a caller constructs a key/value assertion from an invalid raw key.
+    /// Guarantees: construction returns the context-name validation error without panicking.
+    #[test]
+    fn key_value_construction_is_fallible() {
+        assert!(TransportHeaderKeyValue::try_new("not valid", "value").is_err());
     }
 }

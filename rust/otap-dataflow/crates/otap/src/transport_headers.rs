@@ -6,15 +6,15 @@ mod tests {
     use otel_arrow_dfe_config::ContextEntryName;
     use otel_arrow_dfe_config::transport_headers::{TransportHeaders, ValueKind};
     use otel_arrow_dfe_config::transport_headers_policy::{
-        CaptureDefaults, CaptureRule, HeaderCapturePolicy, HeaderPropagationPolicy,
-        PropagationAction, PropagationDefault, PropagationMatch, PropagationOverride,
-        PropagationSelector, PropagationSelectorType,
+        CaptureDefaults, CaptureRule, CompiledHeaderCapturePolicy, HeaderCapturePolicy,
+        HeaderPropagationPolicy, PropagationAction, PropagationDefault, PropagationMatch,
+        PropagationOverride, PropagationSelector, PropagationSelectorType,
     };
 
     // -- Helper functions for tests ------------------------------------------
 
-    fn make_capture_policy(rules: Vec<CaptureRule>) -> HeaderCapturePolicy {
-        HeaderCapturePolicy::new(CaptureDefaults::default(), rules)
+    fn make_capture_policy(rules: Vec<CaptureRule>) -> CompiledHeaderCapturePolicy {
+        HeaderCapturePolicy::new(CaptureDefaults::default(), rules).compile(|_| true)
     }
 
     fn context_name(raw: &str) -> ContextEntryName {
@@ -71,20 +71,14 @@ mod tests {
             3,
             "should capture exactly 3 matching headers"
         );
+        assert_eq!(captured.as_slice()[0].name.as_str(), "tenant_id");
+        assert_eq!(captured.as_slice()[0].wire_name(), "X-Tenant-Id");
         assert_eq!(
-            captured.as_slice()[0].name.normalized().as_str(),
-            "tenant_id"
+            captured.as_slice()[0].value.value.as_ref(),
+            b"tenant-abc-123"
         );
-        assert_eq!(captured.as_slice()[0].name.original(), "X-Tenant-Id");
-        assert_eq!(captured.as_slice()[0].value.as_ref(), b"tenant-abc-123");
-        assert_eq!(
-            captured.as_slice()[1].name.normalized().as_str(),
-            "x-request-id"
-        );
-        assert_eq!(
-            captured.as_slice()[2].name.normalized().as_str(),
-            "authorization"
-        );
+        assert_eq!(captured.as_slice()[1].name.as_str(), "x-request-id");
+        assert_eq!(captured.as_slice()[2].name.as_str(), "authorization");
 
         // ========== Step 2: Attach to OtapPdata context ==========
 
@@ -103,18 +97,9 @@ mod tests {
         );
         let headers_after = pdata_after_processor.transport_headers().unwrap();
         assert_eq!(headers_after.len(), 3);
-        assert_eq!(
-            headers_after.as_slice()[0].name.normalized().as_str(),
-            "tenant_id"
-        );
-        assert_eq!(
-            headers_after.as_slice()[1].name.normalized().as_str(),
-            "x-request-id"
-        );
-        assert_eq!(
-            headers_after.as_slice()[2].name.normalized().as_str(),
-            "authorization"
-        );
+        assert_eq!(headers_after.as_slice()[0].name.as_str(), "tenant_id");
+        assert_eq!(headers_after.as_slice()[1].name.as_str(), "x-request-id");
+        assert_eq!(headers_after.as_slice()[2].name.as_str(), "authorization");
 
         // ========== Step 4: Simulate exporter propagation ==========
 
@@ -215,8 +200,8 @@ mod tests {
         let stats = capture_policy.capture_from_pairs(inbound.into_iter(), &mut captured);
         assert!(stats.is_none());
         assert_eq!(captured.len(), 1);
-        assert_eq!(captured.as_slice()[0].value_kind, ValueKind::Binary);
-        assert_eq!(captured.as_slice()[0].value.as_ref(), binary_value);
+        assert_eq!(captured.as_slice()[0].value.value_kind, ValueKind::Binary);
+        assert_eq!(captured.as_slice()[0].value.value.as_ref(), binary_value);
 
         let pdata = crate::testing::create_test_pdata().with_transport_headers(captured);
         let pdata_after = pdata.clone_without_context();

@@ -16,7 +16,7 @@ use linkme::distributed_slice;
 use metrics::TrafficGeneratorReceiverMetrics;
 use otel_arrow_dfe_channel::error::{RecvError, SendError};
 use otel_arrow_dfe_config::node::NodeUserConfig;
-use otel_arrow_dfe_config::transport_headers::{HeaderName, TransportHeader, TransportHeaders};
+use otel_arrow_dfe_config::transport_headers::{TransportHeader, TransportHeaders};
 use otel_arrow_dfe_config::{ContextEntryName, error::Error as ConfigError};
 use otel_arrow_dfe_engine::MessageSourceLocalEffectHandlerExtension;
 use otel_arrow_dfe_engine::config::ReceiverConfig;
@@ -133,14 +133,6 @@ static TRAFFIC_GENERATOR_CONTEXT_DECLARATIONS: ContextDeclarationProvider =
 impl TrafficGeneratorReceiver {
     /// creates a new TrafficGeneratorReceiver
     pub fn new(pipeline_ctx: PipelineContext, config: Config) -> Result<Self, ConfigError> {
-        pipeline_ctx
-            .compiled_context_policy()
-            .validate_node_declarations(
-                pipeline_ctx.pipeline_key(),
-                pipeline_ctx.node_id(),
-                config.context_declarations(),
-            )?;
-
         let metrics = pipeline_ctx.register_metrics::<TrafficGeneratorReceiverMetrics>();
         Ok(Self {
             config,
@@ -510,7 +502,6 @@ fn build_transport_headers(
         // Infer the value kind from the key name, matching the convention
         // used by the header capture policy: keys ending in `-bin` are
         // treated as binary (the gRPC binary metadata convention).
-        let hname = HeaderName::from_config(name);
         if name.as_str().ends_with("-bin") {
             let resolved_value = match value {
                 Some(v) => v.as_bytes().to_vec(),
@@ -520,7 +511,7 @@ fn build_transport_headers(
                     buf.to_vec()
                 }
             };
-            headers.push(TransportHeader::binary(hname, resolved_value));
+            headers.push(TransportHeader::binary(name.clone(), resolved_value));
         } else {
             let resolved_value = match value {
                 Some(v) => v.as_bytes().to_vec(),
@@ -532,7 +523,7 @@ fn build_transport_headers(
                         .collect()
                 }
             };
-            headers.push(TransportHeader::text(hname, resolved_value));
+            headers.push(TransportHeader::text(name.clone(), resolved_value));
         }
     }
     Some(headers)
@@ -1722,12 +1713,12 @@ mod tests {
                     "should have exactly one x-request-id header"
                 );
                 assert_eq!(
-                    request_id[0].value.len(),
+                    request_id[0].value.value.len(),
                     16,
                     "random value should be 16 bytes"
                 );
                 assert_eq!(
-                    request_id[0].value_kind,
+                    request_id[0].value.value_kind,
                     ValueKind::Text,
                     "non-bin key should produce a Text header"
                 );
@@ -1808,12 +1799,12 @@ mod tests {
                     "should have exactly one x-trace-bin header"
                 );
                 assert_eq!(
-                    trace_bin[0].value.len(),
+                    trace_bin[0].value.value.len(),
                     16,
                     "random binary value should be 16 bytes"
                 );
                 assert_eq!(
-                    trace_bin[0].value_kind,
+                    trace_bin[0].value.value_kind,
                     ValueKind::Binary,
                     "-bin key should produce a Binary header"
                 );
@@ -1928,7 +1919,7 @@ mod tests {
             .expect("configured headers produce transport headers");
         let mut runtime_names = headers
             .iter()
-            .map(|header| header.name.normalized().as_str())
+            .map(|header| header.name.as_str())
             .collect::<Vec<_>>();
         runtime_names.sort_unstable();
         assert_eq!(runtime_names, names);
@@ -1945,17 +1936,17 @@ mod tests {
         .expect("configured headers produce transport headers");
         let request_header = headers
             .iter()
-            .find(|header| header.name.normalized().as_str() == "x-request-id")
+            .find(|header| header.name.as_str() == "x-request-id")
             .expect("request header is present");
         let trace_header = headers
             .iter()
-            .find(|header| header.name.normalized().as_str() == "x-trace-bin")
+            .find(|header| header.name.as_str() == "x-trace-bin")
             .expect("trace header is present");
 
-        assert_eq!(request_header.name.normalized().as_str(), "x-request-id");
-        assert_eq!(request_header.value_kind, ValueKind::Text);
-        assert_eq!(trace_header.name.normalized().as_str(), "x-trace-bin");
-        assert_eq!(trace_header.value_kind, ValueKind::Binary);
+        assert_eq!(request_header.name.as_str(), "x-request-id");
+        assert_eq!(request_header.value.value_kind, ValueKind::Text);
+        assert_eq!(trace_header.name.as_str(), "x-trace-bin");
+        assert_eq!(trace_header.value.value_kind, ValueKind::Binary);
     }
 
     /// Scenario: Traffic generation config contains no context.

@@ -24,6 +24,8 @@ use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_config::transport_headers::TransportHeaders;
+use otel_arrow_dfe_config::transport_headers_policy::CompiledHeaderCapturePolicy;
+#[cfg(test)]
 use otel_arrow_dfe_config::transport_headers_policy::HeaderCapturePolicy;
 use otel_arrow_dfe_config::validation::validate_typed_config;
 use otel_arrow_dfe_engine::config::ReceiverConfig;
@@ -385,14 +387,14 @@ impl KafkaReceiver {
     /// allows the caller to track the offset even when decoding fails (poison
     /// pill handling).
     ///
-    /// When a [`HeaderCapturePolicy`] is provided, matching Kafka message
+    /// When a [`CompiledHeaderCapturePolicy`] is provided, matching Kafka message
     /// headers are captured into [`TransportHeaders`] and attached to the
     /// returned [`OtapPdata`] context. This is independent of the
     /// `resource_attrs_from_headers` config which injects headers into resource attributes.
     fn process_kafka(
         &mut self,
         kafka_message: BorrowedMessage<'_>,
-        capture_policy: Option<&HeaderCapturePolicy>,
+        capture_policy: Option<&CompiledHeaderCapturePolicy>,
     ) -> Result<OtapPdata, KafkaReceiverError> {
         let topic = kafka_message.topic();
 
@@ -1748,7 +1750,7 @@ fn decode_with_extractions(
 /// headers into resource attributes.
 fn capture_transport_headers(
     kafka_message: &BorrowedMessage<'_>,
-    capture_policy: Option<&HeaderCapturePolicy>,
+    capture_policy: Option<&CompiledHeaderCapturePolicy>,
     pdata: &mut OtapPdata,
 ) {
     if let Some(policy) = capture_policy {
@@ -6831,13 +6833,25 @@ mod tests {
                     CaptureDefaults::default(),
                     vec![
                         CaptureRule {
-                            match_names: vec!["X-Tenant-Id".to_string()],
-                            store_as: Some("tenant_id".to_string()),
+                            match_names: vec![
+                                "X-Tenant-Id"
+                                    .try_into()
+                                    .expect("valid test context entry name"),
+                            ],
+                            store_as: Some(
+                                "tenant_id"
+                                    .try_into()
+                                    .expect("valid test context entry name"),
+                            ),
                             sensitive: false,
                             value_kind: None,
                         },
                         CaptureRule {
-                            match_names: vec!["X-Request-Id".to_string()],
+                            match_names: vec![
+                                "X-Request-Id"
+                                    .try_into()
+                                    .expect("valid test context entry name"),
+                            ],
                             store_as: None, // defaults to lowercased wire name
                             sensitive: false,
                             value_kind: None,
@@ -6880,7 +6894,8 @@ mod tests {
                     "tenant_id value mismatch"
                 );
                 assert_eq!(
-                    tenant_headers[0].wire_name, "X-Tenant-Id",
+                    tenant_headers[0].wire_name(),
+                    "X-Tenant-Id",
                     "wire_name should be preserved"
                 );
 
@@ -6999,8 +7014,16 @@ mod tests {
                 let capture_policy = HeaderCapturePolicy::new(
                     CaptureDefaults::default(),
                     vec![CaptureRule {
-                        match_names: vec!["X-Tenant-Id".to_string()],
-                        store_as: Some("tenant_id".to_string()),
+                        match_names: vec![
+                            "X-Tenant-Id"
+                                .try_into()
+                                .expect("valid test context entry name"),
+                        ],
+                        store_as: Some(
+                            "tenant_id"
+                                .try_into()
+                                .expect("valid test context entry name"),
+                        ),
                         sensitive: false,
                         value_kind: None,
                     }],
@@ -7092,8 +7115,16 @@ mod tests {
                 let capture_policy = HeaderCapturePolicy::new(
                     CaptureDefaults::default(),
                     vec![CaptureRule {
-                        match_names: vec!["X-Tenant-Id".to_string()],
-                        store_as: Some("tenant_id".to_string()),
+                        match_names: vec![
+                            "X-Tenant-Id"
+                                .try_into()
+                                .expect("valid test context entry name"),
+                        ],
+                        store_as: Some(
+                            "tenant_id"
+                                .try_into()
+                                .expect("valid test context entry name"),
+                        ),
                         sensitive: false,
                         value_kind: None,
                     }],

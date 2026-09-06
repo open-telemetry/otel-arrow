@@ -1266,6 +1266,7 @@ dependencies = [
  "otel-arrow-dfe-telemetry-macros",
  "otel-arrow-dfe-test-net",
  "prost 0.14.4",
+ "rdkafka",
  "roaring",
  "serde_json",
  "tikv-jemallocator",

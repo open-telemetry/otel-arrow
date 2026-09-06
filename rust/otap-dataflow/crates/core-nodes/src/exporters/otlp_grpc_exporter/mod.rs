@@ -27,6 +27,7 @@ use otel_arrow_dfe_engine::ConsumerEffectHandlerExtension;
 use otel_arrow_dfe_engine::ExporterFactory;
 use otel_arrow_dfe_engine::config::ExporterConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::context_declaration::HeaderPropagationPolicyConsumer;
 use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otel_arrow_dfe_engine::error::{Error, ExporterErrorKind, format_error_sources};
 use otel_arrow_dfe_engine::exporter::ExporterWrapper;
@@ -146,6 +147,13 @@ pub static OTLP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config,
 };
+
+#[allow(unsafe_code)]
+#[distributed_slice(
+    otel_arrow_dfe_engine::context_declaration::HEADER_PROPAGATION_POLICY_CONSUMERS
+)]
+static OTLP_EXPORTER_HEADER_PROPAGATION: HeaderPropagationPolicyConsumer =
+    HeaderPropagationPolicyConsumer::new(OTLP_EXPORTER_URN);
 
 /// Validates the OTLP gRPC exporter configuration at config load time.
 ///
@@ -1428,7 +1436,7 @@ mod tests {
     use std::collections::HashMap;
 
     use otel_arrow_dfe_config::transport_headers::{
-        HeaderName, TransportHeader, TransportHeaders,
+        TransportHeader, TransportHeaders, ValueKind,
     };
     use otel_arrow_dfe_config::transport_headers_policy::PropagationSelectorType;
     use otel_arrow_dfe_config::transport_headers_policy::{
@@ -1479,16 +1487,24 @@ mod tests {
         ContextEntryName::try_from(raw).expect("valid test context entry name")
     }
 
-    fn header_name(normal: &str, wire_name: &str) -> HeaderName {
-        HeaderName::from_pair(context_name(normal), wire_name)
-    }
-
     fn text_header(normal: &str, wire_name: &str, value: impl Into<Vec<u8>>) -> TransportHeader {
-        TransportHeader::text(header_name(normal, wire_name), value)
+        TransportHeader::captured(
+            context_name(normal),
+            wire_name,
+            true,
+            ValueKind::Text,
+            value.into(),
+        )
     }
 
     fn binary_header(normal: &str, wire_name: &str, value: impl Into<Vec<u8>>) -> TransportHeader {
-        TransportHeader::binary(header_name(normal, wire_name), value)
+        TransportHeader::captured(
+            context_name(normal),
+            wire_name,
+            true,
+            ValueKind::Binary,
+            value.into(),
+        )
     }
 
     /// Helper function to wait for and validate an Ack or Nack message with the expected node_id

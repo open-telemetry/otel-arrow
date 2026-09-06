@@ -1436,7 +1436,10 @@ header_propagation:
                             keys: vec![header_key.into()],
                         },
                         ValidationInstructions::TransportHeaderRequireKeyValue {
-                            pairs: vec![TransportHeaderKeyValue::new(header_key, header_value)],
+                            pairs: vec![
+                                TransportHeaderKeyValue::try_new(header_key, header_value)
+                                    .expect("valid test context entry name"),
+                            ],
                         },
                         ValidationInstructions::TransportHeaderDeny {
                             keys: vec!["x-should-not-exist".into()],

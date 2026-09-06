@@ -822,7 +822,7 @@ mod test {
     };
 
     use otel_arrow_dfe_config::ContextEntryName;
-    use otel_arrow_dfe_config::transport_headers::{HeaderName, TransportHeader, TransportHeaders};
+    use otel_arrow_dfe_config::transport_headers::{TransportHeader, TransportHeaders, ValueKind};
     use otel_arrow_dfe_otap::{
         pdata::{Context, OtapPdata},
         testing::{TestCallData, next_ack, next_nack},
@@ -2638,9 +2638,12 @@ mod test {
             .run_test(|mut ctx| async move {
                 let peer_addr: SocketAddr = "10.0.0.1:5005".parse().unwrap();
                 let mut headers = TransportHeaders::new();
-                headers.push(TransportHeader::text(
-                    HeaderName::from_pair(context_name("tenant"), "x-tenant"),
-                    "acme",
+                headers.push(TransportHeader::captured(
+                    context_name("tenant"),
+                    "x-tenant",
+                    true,
+                    ValueKind::Text,
+                    "acme".as_bytes(),
                 ));
 
                 let upstream_node_id = 999;
