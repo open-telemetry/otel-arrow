@@ -133,6 +133,7 @@ impl PartitionProcessor {
                 error: format!("Failed to parse PartitionProcessor config: {e}"),
             }
         })?;
+        config.validate_context_declarations(pipeline_ctx)?;
 
         let partitioner = match config.partition_by {
             PartitionByConfig::OplExpression(opl_expression) => {

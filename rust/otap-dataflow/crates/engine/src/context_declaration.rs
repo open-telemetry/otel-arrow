@@ -16,7 +16,7 @@ use otel_arrow_dfe_config::transport_headers_policy::{
 use otel_arrow_dfe_config::{
     ContextEntryName, NodeId as ConfigNodeId, PipelineGroupId, PipelineKey, TopicName,
 };
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, OnceLock};
 
 const TOPIC_EXPORTER_URN: &str = "urn:otel:exporter:topic";
@@ -32,25 +32,40 @@ enum TopicEndpoint {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct OriginalNameConsumers {
+    all_original_names: bool,
     entries: BTreeSet<ContextEntryName>,
     propagation_policies: Vec<HeaderPropagationPolicy>,
 }
 
 impl OriginalNameConsumers {
-    fn add_declarations(&mut self, declarations: &NodeContextDeclarations) {
+    fn add_declarations(
+        &mut self,
+        declarations: &NodeContextDeclarations,
+        propagation_policy: Option<&HeaderPropagationPolicy>,
+    ) {
         for declaration in declarations.iter() {
-            let ContextDeclaration::Consumes {
-                selector: ContextConsumerSelector::Entries { entries },
-            } = declaration
-            else {
+            let ContextDeclaration::Consumes { selector } = declaration else {
                 continue;
             };
-            self.entries.extend(
-                entries
-                    .iter()
-                    .filter(|entry| entry.read == ContextEntrySelectorForm::OriginalKeyValue)
-                    .map(|entry| entry.name.clone()),
-            );
+            match selector {
+                ContextConsumerSelector::Entries { entries } => {
+                    self.entries.extend(
+                        entries
+                            .iter()
+                            .filter(|entry| {
+                                entry.read == ContextEntrySelectorForm::OriginalKeyValue
+                            })
+                            .map(|entry| entry.name.clone()),
+                    );
+                }
+                ContextConsumerSelector::AllNormalized => {}
+                ContextConsumerSelector::AllOriginal => self.all_original_names = true,
+                ContextConsumerSelector::HeaderPropagationPolicy => {
+                    if let Some(policy) = propagation_policy {
+                        self.add_propagation_policy(policy);
+                    }
+                }
+            }
         }
     }
 
@@ -61,7 +76,8 @@ impl OriginalNameConsumers {
     }
 
     fn consumes(&self, name: &ContextEntryName) -> bool {
-        self.entries.contains(name)
+        self.all_original_names
+            || self.entries.contains(name)
             || self
                 .propagation_policies
                 .iter()
@@ -69,9 +85,14 @@ impl OriginalNameConsumers {
     }
 
     fn extend(&mut self, other: &Self) -> bool {
+        let mut changed = false;
+        if other.all_original_names && !self.all_original_names {
+            self.all_original_names = true;
+            changed = true;
+        }
         let previous_entries = self.entries.len();
         self.entries.extend(other.entries.iter().cloned());
-        let mut changed = self.entries.len() != previous_entries;
+        changed |= self.entries.len() != previous_entries;
         for policy in &other.propagation_policies {
             if !self.propagation_policies.contains(policy) {
                 self.propagation_policies.push(policy.clone());
@@ -82,7 +103,7 @@ impl OriginalNameConsumers {
     }
 
     fn is_empty(&self) -> bool {
-        self.entries.is_empty() && self.propagation_policies.is_empty()
+        !self.all_original_names && self.entries.is_empty() && self.propagation_policies.is_empty()
     }
 }
 
@@ -116,8 +137,12 @@ pub enum ContextConsumerSelector {
         /// Logical context entry references.
         entries: Box<[ContextEntrySelector]>,
     },
-    /// Selects every context register reachable at this node.
-    All,
+    /// Selects every context entry using normalized names.
+    AllNormalized,
+    /// Selects every context entry using original names.
+    AllOriginal,
+    /// Selects entries according to the effective header propagation policy.
+    HeaderPropagationPolicy,
 }
 
 /// One component context declaration.
@@ -144,21 +169,6 @@ pub struct ContextDeclarationProvider {
     pub declarations: ContextDeclarationFn,
 }
 
-/// Registration for an exporter that consumes transport-header propagation policy.
-#[derive(Clone, Copy)]
-pub struct HeaderPropagationPolicyConsumer {
-    /// The registered exporter's URN.
-    pub urn: &'static str,
-}
-
-impl HeaderPropagationPolicyConsumer {
-    /// Creates a transport-header propagation consumer registration.
-    #[must_use]
-    pub const fn new(urn: &'static str) -> Self {
-        Self { urn }
-    }
-}
-
 /// Deterministically describes a node factory's context access.
 pub type ContextDeclarationFn = fn(&serde_json::Value) -> Result<NodeContextDeclarations, Error>;
 
@@ -166,6 +176,20 @@ pub type ContextDeclarationFn = fn(&serde_json::Value) -> Result<NodeContextDecl
 pub trait ConfigNodeContextDeclaration: serde::de::DeserializeOwned {
     /// Returns the context accesses required by this configuration.
     fn context_declarations(&self) -> NodeContextDeclarations;
+
+    /// Verifies this parsed configuration against the engine-compiled declarations.
+    fn validate_context_declarations(
+        &self,
+        pipeline_ctx: &crate::context::PipelineContext,
+    ) -> Result<(), Error> {
+        pipeline_ctx
+            .compiled_context_policy()
+            .validate_node_declarations(
+                &pipeline_ctx.pipeline_key(),
+                &pipeline_ctx.node_id(),
+                &self.context_declarations(),
+            )
+    }
 }
 
 // `#[allow(unsafe_code)]` is required because `linkme::distributed_slice`
@@ -175,11 +199,6 @@ pub trait ConfigNodeContextDeclaration: serde::de::DeserializeOwned {
 #[allow(unsafe_code)]
 #[distributed_slice]
 pub static CONTEXT_DECLARATION_PROVIDERS: [ContextDeclarationProvider];
-
-/// Exporters that consume transport-header propagation policy.
-#[allow(unsafe_code)]
-#[distributed_slice]
-pub static HEADER_PROPAGATION_POLICY_CONSUMERS: [HeaderPropagationPolicyConsumer];
 
 /// A fixed set of context bindings, equals a bi-directional mapping
 /// from ContextAccessId to/from ContextDeclaration. Created by
@@ -317,36 +336,21 @@ impl CompiledContextPolicy {
             .is_some_and(|consumers| consumers.consumes(name))
     }
 
-    /// Validates that a node's declarations match the compiled policy.
-    fn validate_node_declarations(
+    /// Validates that a node's declarations appear verbatim in the compiled policy.
+    pub fn validate_node_declarations(
         &self,
-        pipeline: PipelineKey,
-        node: ConfigNodeId,
-        declarations: NodeContextDeclarations,
+        pipeline: &PipelineKey,
+        node: &ConfigNodeId,
+        declarations: &NodeContextDeclarations,
     ) -> Result<(), Error> {
         match self
             .declarations
-            .get(&pipeline)
-            .and_then(|nodes| nodes.get(&node))
+            .get(pipeline)
+            .and_then(|nodes| nodes.get(node))
         {
-            Some(expected) if expected == &declarations => Ok(()),
+            Some(expected) if expected == declarations => Ok(()),
             _ => Err(Error::UnrecognizedContextDeclaration {}),
         }
-    }
-
-    /// Validates declarations derived from one node's configured component.
-    pub(crate) fn validate_node_config_declarations(
-        &self,
-        pipeline: PipelineKey,
-        node: ConfigNodeId,
-        urn: &str,
-        config: &serde_json::Value,
-    ) -> Result<(), Error> {
-        let declarations = context_declaration_provider(urn)
-            .map(|provider| (provider.declarations)(config))
-            .transpose()?
-            .unwrap_or_default();
-        self.validate_node_declarations(pipeline, node, declarations)
     }
 }
 
@@ -370,23 +374,19 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
             let mut declarations_by_node = HashMap::new();
             for (node_id, node_config) in pipeline.pipeline.node_iter() {
                 let node_key = (pipeline_key.clone(), node_id.clone());
-                let mut node_consumers = OriginalNameConsumers::default();
-                if node_config.kind() == NodeKind::Exporter
-                    && consumes_header_propagation_policy(node_config.r#type.as_ref())
-                {
-                    if let Some(policy) = Self::effective_propagation_policy(
-                        node_config,
-                        &pipeline.policies.transport_headers,
-                    ) {
-                        node_consumers.add_propagation_policy(policy);
-                    }
-                }
                 let declarations = self.node_context_declarations(
                     node_config.kind(),
                     node_config.r#type.as_ref(),
                     &node_config.config,
                 )?;
-                node_consumers.add_declarations(&declarations);
+                let mut node_consumers = OriginalNameConsumers::default();
+                node_consumers.add_declarations(
+                    &declarations,
+                    Self::effective_propagation_policy(
+                        node_config,
+                        &pipeline.policies.transport_headers,
+                    ),
+                );
                 if let Some(endpoint) = Self::topic_endpoint(node_config)? {
                     let (endpoints, topic) = match endpoint {
                         TopicEndpoint::Producer(topic) => (&mut topic_producers, topic),
@@ -557,18 +557,6 @@ fn context_declaration_provider(urn: &str) -> Option<ContextDeclarationProvider>
         .copied()
 }
 
-fn consumes_header_propagation_policy(urn: &str) -> bool {
-    static CONSUMERS: OnceLock<HashSet<&'static str>> = OnceLock::new();
-    CONSUMERS
-        .get_or_init(|| {
-            HEADER_PROPAGATION_POLICY_CONSUMERS
-                .iter()
-                .map(|consumer| consumer.urn)
-                .collect()
-        })
-        .contains(urn)
-}
-
 #[cfg(test)]
 mod preserve_original_name_tests {
     use super::*;
@@ -584,15 +572,21 @@ mod preserve_original_name_tests {
 
     impl ConfigNodeContextDeclaration for TestDeclarationConfig {
         fn context_declarations(&self) -> NodeContextDeclarations {
-            std::iter::once(ContextDeclaration::Consumes {
-                selector: ContextConsumerSelector::Entries {
-                    entries: vec![ContextEntrySelector {
-                        name: self.entry.clone(),
-                        read: ContextEntrySelectorForm::Value,
-                    }]
-                    .into_boxed_slice(),
+            [
+                ContextDeclaration::Consumes {
+                    selector: ContextConsumerSelector::Entries {
+                        entries: vec![ContextEntrySelector {
+                            name: self.entry.clone(),
+                            read: ContextEntrySelectorForm::Value,
+                        }]
+                        .into_boxed_slice(),
+                    },
                 },
-            })
+                ContextDeclaration::Consumes {
+                    selector: ContextConsumerSelector::HeaderPropagationPolicy,
+                },
+            ]
+            .into_iter()
             .collect()
         }
     }
@@ -603,11 +597,6 @@ mod preserve_original_name_tests {
         ContextDeclarationProvider::from_typed_config::<TestDeclarationConfig>(
             TEST_DECLARATION_URN,
         );
-
-    #[allow(unsafe_code)]
-    #[distributed_slice(HEADER_PROPAGATION_POLICY_CONSUMERS)]
-    static TEST_HEADER_PROPAGATION_CONSUMER: HeaderPropagationPolicyConsumer =
-        HeaderPropagationPolicyConsumer::new(TEST_DECLARATION_URN);
 
     fn pipeline(group: &str, name: &str) -> PipelineKey {
         PipelineKey::new(group.to_owned().into(), name.to_owned().into())
@@ -626,6 +615,7 @@ mod preserve_original_name_tests {
 
     fn original_consumers(names: &[&str]) -> OriginalNameConsumers {
         OriginalNameConsumers {
+            all_original_names: false,
             entries: names.iter().map(|name| context_name(name)).collect(),
             propagation_policies: Vec::new(),
         }
@@ -726,10 +716,56 @@ mod preserve_original_name_tests {
         .collect();
         let mut consumers = OriginalNameConsumers::default();
 
-        consumers.add_declarations(&declarations);
+        consumers.add_declarations(&declarations, None);
 
         assert!(consumers.consumes(&context_name("original")));
         assert!(!consumers.consumes(&context_name("value")));
+    }
+
+    /// Scenario: consumers select all context entries using normalized or original names.
+    /// Guarantees: only the original-name selector retains every original wire name.
+    #[test]
+    fn all_entry_declarations_distinguish_name_forms() {
+        let normalized: NodeContextDeclarations = [ContextDeclaration::Consumes {
+            selector: ContextConsumerSelector::AllNormalized,
+        }]
+        .into_iter()
+        .collect();
+        let original: NodeContextDeclarations = [ContextDeclaration::Consumes {
+            selector: ContextConsumerSelector::AllOriginal,
+        }]
+        .into_iter()
+        .collect();
+        let mut normalized_consumers = OriginalNameConsumers::default();
+        normalized_consumers.add_declarations(&normalized, None);
+        let mut original_consumers = OriginalNameConsumers::default();
+        original_consumers.add_declarations(&original, None);
+
+        assert!(!normalized_consumers.consumes(&context_name("tenant")));
+        assert!(original_consumers.consumes(&context_name("tenant")));
+    }
+
+    /// Scenario: an all-original consumer is downstream of a receiver.
+    /// Guarantees: the all-entry retention requirement propagates to the receiver.
+    #[test]
+    fn all_original_requirement_propagates_upstream() {
+        let receiver = context_node("group", "pipeline", "receiver");
+        let exporter = context_node("group", "pipeline", "exporter");
+        let mut requirements = HashMap::from([
+            (receiver.clone(), OriginalNameConsumers::default()),
+            (
+                exporter.clone(),
+                OriginalNameConsumers {
+                    all_original_names: true,
+                    ..Default::default()
+                },
+            ),
+        ]);
+        let upstream = HashMap::from([(exporter, vec![receiver.clone()])]);
+
+        propagate_original_name_consumers(&mut requirements, &upstream);
+
+        assert!(requirements[&receiver].consumes(&context_name("tenant")));
     }
 
     /// Scenario: a preserve-name exporter is downstream of two topic hops.
@@ -842,58 +878,59 @@ mod preserve_original_name_tests {
         }
     }
 
-    /// Scenario: exporters explicitly register transport-header propagation consumption.
-    /// Guarantees: registered callers are recognized without treating every exporter as a caller.
+    /// Scenario: a node declares that it reads according to header propagation policy.
+    /// Guarantees: the effective policy is interpreted through the context declaration.
     #[test]
-    fn header_propagation_consumers_are_explicitly_registered() {
-        assert!(consumes_header_propagation_policy(TEST_DECLARATION_URN));
-        assert!(!consumes_header_propagation_policy(TOPIC_EXPORTER_URN));
+    fn header_propagation_policy_is_a_context_declaration() {
+        let config = TestDeclarationConfig {
+            entry: context_name("value"),
+        };
+        let policy: HeaderPropagationPolicy = serde_json::from_value(serde_json::json!({
+            "default": {
+                "selector": {
+                    "type": "named",
+                    "named": ["preserved"]
+                },
+                "name": "preserve"
+            }
+        }))
+        .expect("valid propagation policy");
+        let mut consumers = OriginalNameConsumers::default();
+
+        consumers.add_declarations(&config.context_declarations(), Some(&policy));
+
+        assert!(consumers.consumes(&context_name("preserved")));
+        assert!(!consumers.consumes(&context_name("value")));
     }
 
-    /// Scenario: runtime node config is checked against its compiled declaration snapshot.
-    /// Guarantees: matching declarations pass and changed declarations are rejected centrally.
+    /// Scenario: a node checks its parsed config against its compiled declaration snapshot.
+    /// Guarantees: matching declarations pass and changed declarations are rejected verbatim.
     #[test]
-    fn configured_declarations_are_validated_centrally() {
+    fn parsed_config_declarations_are_validated_against_compiled_policy() {
         let pipeline = pipeline("group", "pipeline");
         let node: ConfigNodeId = "node".into();
-        let expected: NodeContextDeclarations = std::iter::once(ContextDeclaration::Consumes {
-            selector: ContextConsumerSelector::Entries {
-                entries: vec![ContextEntrySelector {
-                    name: "expected"
-                        .try_into()
-                        .expect("valid test context entry name"),
-                    read: ContextEntrySelectorForm::Value,
-                }]
-                .into_boxed_slice(),
-            },
-        })
-        .collect();
+        let matching: TestDeclarationConfig =
+            serde_json::from_value(serde_json::json!({"entry": "expected"}))
+                .expect("valid matching config");
+        let changed: TestDeclarationConfig =
+            serde_json::from_value(serde_json::json!({"entry": "changed"}))
+                .expect("valid changed config");
         let policy = CompiledContextPolicy {
             declarations: HashMap::from([(
                 pipeline.clone(),
-                HashMap::from([(node.clone(), expected)]),
+                HashMap::from([(node.clone(), matching.context_declarations())]),
             )]),
             original_name_consumers: HashMap::new(),
         };
 
         assert!(
             policy
-                .validate_node_config_declarations(
-                    pipeline.clone(),
-                    node.clone(),
-                    TEST_DECLARATION_URN,
-                    &serde_json::json!({"entry": "expected"}),
-                )
+                .validate_node_declarations(&pipeline, &node, &matching.context_declarations(),)
                 .is_ok()
         );
         assert!(
             policy
-                .validate_node_config_declarations(
-                    pipeline,
-                    node,
-                    TEST_DECLARATION_URN,
-                    &serde_json::json!({"entry": "changed"}),
-                )
+                .validate_node_declarations(&pipeline, &node, &changed.context_declarations())
                 .is_err()
         );
     }

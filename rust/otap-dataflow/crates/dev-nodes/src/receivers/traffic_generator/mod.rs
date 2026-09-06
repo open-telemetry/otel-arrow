@@ -151,6 +151,7 @@ impl TrafficGeneratorReceiver {
                 error: e.to_string(),
             }
         })?;
+        config.validate_context_declarations(&pipeline_ctx)?;
         config.get_traffic_config().validate()?;
         TrafficGeneratorReceiver::new(pipeline_ctx, config)
     }

@@ -45,7 +45,7 @@ use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_engine::context_declaration::{
     ConfigNodeContextDeclaration, ContextConsumerSelector, ContextDeclaration,
     ContextDeclarationProvider, ContextEntrySelector, ContextEntrySelectorForm,
-    HeaderPropagationPolicyConsumer, NodeContextDeclarations,
+    NodeContextDeclarations,
 };
 use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otel_arrow_dfe_engine::error::Error as EngineError;
@@ -346,23 +346,18 @@ pub static KAFKA_EXPORTER_FACTORY: ExporterFactory<OtapPdata> = ExporterFactory 
 static KAFKA_EXPORTER_CONTEXT_DECLARATIONS: ContextDeclarationProvider =
     ContextDeclarationProvider::from_typed_config::<KafkaExporterConfig>(KAFKA_EXPORTER_URN);
 
-#[allow(unsafe_code)]
-#[distributed_slice(
-    otel_arrow_dfe_engine::context_declaration::HEADER_PROPAGATION_POLICY_CONSUMERS
-)]
-static KAFKA_EXPORTER_HEADER_PROPAGATION: HeaderPropagationPolicyConsumer =
-    HeaderPropagationPolicyConsumer::new(KAFKA_EXPORTER_URN);
-
 impl ConfigNodeContextDeclaration for KafkaExporterConfig {
     fn context_declarations(&self) -> NodeContextDeclarations {
-        [self.traces(), self.metrics(), self.logs()]
-            .into_iter()
-            .flatten()
-            .flat_map(|signal| {
-                let topic =
-                    signal
-                        .topic_from_transport_header()
-                        .map(|name| ContextDeclaration::Consumes {
+        std::iter::once(ContextDeclaration::Consumes {
+            selector: ContextConsumerSelector::HeaderPropagationPolicy,
+        })
+        .chain(
+            [self.traces(), self.metrics(), self.logs()]
+                .into_iter()
+                .flatten()
+                .flat_map(|signal| {
+                    let topic = signal.topic_from_transport_header().map(|name| {
+                        ContextDeclaration::Consumes {
                             selector: ContextConsumerSelector::Entries {
                                 entries: vec![ContextEntrySelector {
                                     name: name.clone(),
@@ -370,15 +365,17 @@ impl ConfigNodeContextDeclaration for KafkaExporterConfig {
                                 }]
                                 .into_boxed_slice(),
                             },
-                        });
-                let partition = signal.partition_by_transport_headers().then_some(
-                    ContextDeclaration::Consumes {
-                        selector: ContextConsumerSelector::All,
-                    },
-                );
-                topic.into_iter().chain(partition)
-            })
-            .collect()
+                        }
+                    });
+                    let partition = signal.partition_by_transport_headers().then_some(
+                        ContextDeclaration::Consumes {
+                            selector: ContextConsumerSelector::AllNormalized,
+                        },
+                    );
+                    topic.into_iter().chain(partition)
+                }),
+        )
+        .collect()
     }
 }
 
@@ -498,6 +495,7 @@ impl KafkaExporter {
             serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
                 error: e.to_string(),
             })?;
+        config.validate_context_declarations(&pipeline_ctx)?;
         KafkaExporter::new(pipeline_ctx, config).map_err(|e| ConfigError::InvalidUserConfig {
             error: e.to_string(),
         })
@@ -1683,7 +1681,10 @@ pub mod test_support {
                     },
                 },
                 ContextDeclaration::Consumes {
-                    selector: ContextConsumerSelector::All,
+                    selector: ContextConsumerSelector::AllNormalized,
+                },
+                ContextDeclaration::Consumes {
+                    selector: ContextConsumerSelector::HeaderPropagationPolicy,
                 },
             ]
             .into_iter()
@@ -1691,10 +1692,10 @@ pub mod test_support {
             assert_eq!(decls, expected);
         }
 
-        /// Scenario: Kafka config has no context reads.
-        /// Guarantees: the factory declares no consumers.
+        /// Scenario: Kafka config has no topic or partition context reads.
+        /// Guarantees: the factory still declares its propagation-policy context input.
         #[test]
-        fn declarations_empty_when_no_header_consumption() {
+        fn declarations_include_propagation_policy_input() {
             let config = serde_json::json!({
                 "brokers": "localhost:9092",
                 "client_id": "test",
@@ -1705,7 +1706,14 @@ pub mod test_support {
             });
 
             let decls = (KAFKA_EXPORTER_CONTEXT_DECLARATIONS.declarations)(&config).unwrap();
-            assert!(decls.is_empty());
+            assert_eq!(
+                decls,
+                [ContextDeclaration::Consumes {
+                    selector: ContextConsumerSelector::HeaderPropagationPolicy,
+                }]
+                .into_iter()
+                .collect()
+            );
         }
 
         // ---- KafkaExporter::new() validation ----

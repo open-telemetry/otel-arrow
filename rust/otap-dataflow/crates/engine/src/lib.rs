@@ -1928,12 +1928,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             pdata_channel_capacity,
         );
         let create = factory.create;
-        validate_node_context_declarations(
-            pipeline_ctx,
-            &node_id,
-            &node_config,
-            normalized.as_str(),
-        )?;
 
         let capture_policy =
             resolve_capture_policy(&node_config, transport_headers_policy).map(|policy| {
@@ -2019,12 +2013,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             pdata_channel_capacity,
         );
         let create = factory.create;
-        validate_node_context_declarations(
-            pipeline_ctx,
-            &node_id,
-            &node_config,
-            normalized.as_str(),
-        )?;
 
         let processor = create(
             (*pipeline_ctx).clone(),
@@ -2101,12 +2089,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             pdata_channel_capacity,
         );
         let create = factory.create;
-        validate_node_context_declarations(
-            pipeline_ctx,
-            &node_id,
-            &node_config,
-            normalized.as_str(),
-        )?;
 
         let propagation_policy = resolve_propagation_policy(&node_config, transport_headers_policy);
 
@@ -2140,23 +2122,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
         Ok(exporter)
     }
-}
-
-fn validate_node_context_declarations(
-    pipeline_ctx: &PipelineContext,
-    node_id: &NodeId,
-    node_config: &NodeUserConfig,
-    normalized_urn: &str,
-) -> Result<(), Error> {
-    pipeline_ctx
-        .compiled_context_policy()
-        .validate_node_config_declarations(
-            pipeline_ctx.pipeline_key(),
-            node_id.name.clone(),
-            normalized_urn,
-            &node_config.config,
-        )
-        .map_err(|error| Error::ConfigError(Box::new(error)))
 }
 
 /// Resolves the effective capture policy for a receiver node.

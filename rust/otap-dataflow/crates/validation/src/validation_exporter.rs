@@ -217,6 +217,7 @@ impl ValidationExporter {
                     error: e.to_string(),
                 }
             })?;
+        config.validate_context_declarations(&pipeline_ctx)?;
         let suv_node = pipeline_ctx
             .node_by_name(&config.suv_input)
             .ok_or_else(|| ConfigError::InvalidUserConfig {

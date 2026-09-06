@@ -100,6 +100,13 @@ fn context_policy_test_receiver_create(
     receiver_config: &ReceiverConfig,
     _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
 ) -> Result<ReceiverWrapper<()>, otel_arrow_dfe_config::error::Error> {
+    let config: ContextPolicyTestConfig = serde_json::from_value(node_config.config.clone())
+        .map_err(
+            |error| otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                error: error.to_string(),
+            },
+        )?;
+    config.validate_context_declarations(&pipeline_ctx)?;
     let policy = pipeline_ctx.compiled_context_policy();
     *CONTEXT_POLICY_TEST_CAPTURE
         .lock()

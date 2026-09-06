@@ -27,7 +27,10 @@ use otel_arrow_dfe_engine::ConsumerEffectHandlerExtension;
 use otel_arrow_dfe_engine::ExporterFactory;
 use otel_arrow_dfe_engine::config::ExporterConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
-use otel_arrow_dfe_engine::context_declaration::HeaderPropagationPolicyConsumer;
+use otel_arrow_dfe_engine::context_declaration::{
+    ConfigNodeContextDeclaration, ContextConsumerSelector, ContextDeclaration,
+    ContextDeclarationProvider, NodeContextDeclarations,
+};
 use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otel_arrow_dfe_engine::error::{Error, ExporterErrorKind, format_error_sources};
 use otel_arrow_dfe_engine::exporter::ExporterWrapper;
@@ -148,12 +151,18 @@ pub static OTLP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     validate_config,
 };
 
-#[allow(unsafe_code)]
-#[distributed_slice(
-    otel_arrow_dfe_engine::context_declaration::HEADER_PROPAGATION_POLICY_CONSUMERS
-)]
-static OTLP_EXPORTER_HEADER_PROPAGATION: HeaderPropagationPolicyConsumer =
-    HeaderPropagationPolicyConsumer::new(OTLP_EXPORTER_URN);
+#[distributed_slice(otel_arrow_dfe_engine::context_declaration::CONTEXT_DECLARATION_PROVIDERS)]
+static OTLP_EXPORTER_CONTEXT_DECLARATIONS: ContextDeclarationProvider =
+    ContextDeclarationProvider::from_typed_config::<Config>(OTLP_EXPORTER_URN);
+
+impl ConfigNodeContextDeclaration for Config {
+    fn context_declarations(&self) -> NodeContextDeclarations {
+        std::iter::once(ContextDeclaration::Consumes {
+            selector: ContextConsumerSelector::HeaderPropagationPolicy,
+        })
+        .collect()
+    }
+}
 
 /// Validates the OTLP gRPC exporter configuration at config load time.
 ///
@@ -188,6 +197,7 @@ impl OTLPExporter {
                 error: e.to_string(),
             }
         })?;
+        config.validate_context_declarations(&pipeline_ctx)?;
 
         Ok(Self {
             config,
@@ -1505,6 +1515,26 @@ mod tests {
             ValueKind::Binary,
             value.into(),
         )
+    }
+
+    /// Scenario: the OTLP gRPC exporter declares its propagation-policy context input.
+    /// Guarantees: original-name retention does not depend on a separate component registry.
+    #[test]
+    fn declarations_include_propagation_policy_input() {
+        let config = Config {
+            grpc: GrpcClientSettings::default(),
+            max_in_flight: default_max_in_flight(),
+            num_connections: default_num_connections(),
+        };
+
+        assert_eq!(
+            config.context_declarations(),
+            [ContextDeclaration::Consumes {
+                selector: ContextConsumerSelector::HeaderPropagationPolicy,
+            }]
+            .into_iter()
+            .collect()
+        );
     }
 
     /// Helper function to wait for and validate an Ack or Nack message with the expected node_id
