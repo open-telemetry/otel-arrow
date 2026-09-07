@@ -7320,6 +7320,7 @@ name = "otel-arrow-dfe-config"
 version = "0.54.0"
 dependencies = [
  "byte-unit",
+ "hashbrown 0.17.1",
  "humantime-serde",
  "k8s-openapi",
  "kube",

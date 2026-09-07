@@ -13,10 +13,12 @@
 
 use crate::context::ContextEntryName;
 use crate::transport_headers::{TransportHeader, TransportHeaders, ValueKind};
+use hashbrown::{Equivalent, HashMap};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 
 // -- Stats types --------------------------------------------------------------
 
@@ -84,11 +86,48 @@ pub struct HeaderCapturePolicy {
     pub(crate) headers: Vec<CaptureRule>,
 }
 
-/// Header capture policy with compiler-derived original-name requirements.
+/// Runtime header capture policy indexed by normalized wire name.
 #[derive(Debug, Clone)]
 pub struct CompiledHeaderCapturePolicy {
-    policy: HeaderCapturePolicy,
-    preserve_original_name_by_match: Box<[Box<[bool]>]>,
+    defaults: CaptureDefaults,
+    captures: HashMap<CaptureKey, CompiledCapture>,
+}
+
+#[derive(Debug, Clone)]
+struct CompiledCapture {
+    stored_name: ContextEntryName,
+    value_kind: Option<ValueKindConfig>,
+    preserve_original_name: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CaptureKey(ContextEntryName);
+
+impl Hash for CaptureKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        hash_header_name(self.0.as_str(), state);
+    }
+}
+
+struct WireName<'a>(&'a str);
+
+impl Hash for WireName<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        hash_header_name(self.0, state);
+    }
+}
+
+impl Equivalent<CaptureKey> for WireName<'_> {
+    fn equivalent(&self, key: &CaptureKey) -> bool {
+        self.0.eq_ignore_ascii_case(key.0.as_str())
+    }
+}
+
+fn hash_header_name<H: Hasher>(name: &str, state: &mut H) {
+    name.len().hash(state);
+    for byte in name.bytes() {
+        byte.to_ascii_lowercase().hash(state);
+    }
 }
 
 impl HeaderCapturePolicy {
@@ -111,24 +150,25 @@ impl HeaderCapturePolicy {
         self,
         mut consumes_original_name: impl FnMut(&ContextEntryName) -> bool,
     ) -> CompiledHeaderCapturePolicy {
-        let preserve_original_name_by_match = self
-            .headers
-            .iter()
-            .map(|rule| {
-                rule.match_names
-                    .iter()
-                    .map(|match_name| {
-                        consumes_original_name(rule.store_as.as_ref().unwrap_or(match_name))
-                    })
-                    .collect::<Vec<_>>()
-                    .into_boxed_slice()
-            })
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
-        CompiledHeaderCapturePolicy {
-            policy: self,
-            preserve_original_name_by_match,
+        let HeaderCapturePolicy { defaults, headers } = self;
+        let match_count = headers.iter().map(|rule| rule.match_names.len()).sum();
+        let mut captures = HashMap::with_capacity(match_count);
+
+        for rule in headers {
+            for match_name in rule.match_names {
+                let stored_name = rule.store_as.clone().unwrap_or_else(|| match_name.clone());
+                // Match the previous linear search when rules overlap.
+                _ = captures
+                    .entry(CaptureKey(match_name))
+                    .or_insert_with(|| CompiledCapture {
+                        preserve_original_name: consumes_original_name(&stored_name),
+                        stored_name,
+                        value_kind: rule.value_kind,
+                    });
+            }
         }
+
+        CompiledHeaderCapturePolicy { defaults, captures }
     }
 
     /// Returns the normalized context entry names produced by this policy.
@@ -166,7 +206,7 @@ impl CompiledHeaderCapturePolicy {
             return None;
         }
 
-        let defaults = &self.policy.defaults;
+        let defaults = &self.defaults;
         let pairs = pairs;
         let (lower, upper) = pairs.size_hint();
         let capacity = upper.unwrap_or(lower).min(defaults.max_entries);
@@ -177,9 +217,7 @@ impl CompiledHeaderCapturePolicy {
 
         for (wire_name, value) in pairs {
             let value: Cow<'a, [u8]> = value.into();
-            if let Some((matched_rule, matched_name, preserve_original_name)) =
-                self.find_matching_rule(wire_name)
-            {
+            if let Some(capture) = self.find_capture(wire_name) {
                 // Enforce entry count limit.
                 if result.len() >= defaults.max_entries {
                     skipped_max_entries += 1;
@@ -198,12 +236,7 @@ impl CompiledHeaderCapturePolicy {
                     continue;
                 }
 
-                let normal = if let Some(store_as) = matched_rule.store_as.as_ref() {
-                    store_as.clone()
-                } else {
-                    matched_name.clone()
-                };
-                let value_kind = match matched_rule.value_kind {
+                let value_kind = match capture.value_kind {
                     Some(ValueKindConfig::Text) => ValueKind::Text,
                     Some(ValueKindConfig::Binary) => ValueKind::Binary,
                     None => {
@@ -216,9 +249,9 @@ impl CompiledHeaderCapturePolicy {
                 };
 
                 result.push(TransportHeader::captured(
-                    normal,
+                    capture.stored_name.clone(),
                     wire_name,
-                    preserve_original_name,
+                    capture.preserve_original_name,
                     value_kind,
                     value,
                 ));
@@ -236,33 +269,14 @@ impl CompiledHeaderCapturePolicy {
         }
     }
 
-    /// Find the first capture rule whose `match_names` contains the given
-    /// wire name (case-insensitive comparison).
-    fn find_matching_rule(
-        &self,
-        wire_name: &str,
-    ) -> Option<(&CaptureRule, &ContextEntryName, bool)> {
-        self.policy
-            .headers
-            .iter()
-            .zip(&self.preserve_original_name_by_match)
-            .find_map(|(rule, preserve_original_name_by_match)| {
-                debug_assert_eq!(
-                    rule.match_names.len(),
-                    preserve_original_name_by_match.len()
-                );
-                rule.match_names
-                    .iter()
-                    .zip(preserve_original_name_by_match)
-                    .find(|(name, _)| wire_name.eq_ignore_ascii_case(name))
-                    .map(|(name, preserve)| (rule, name, *preserve))
-            })
+    fn find_capture(&self, wire_name: &str) -> Option<&CompiledCapture> {
+        self.captures.get(&WireName(wire_name))
     }
 
     /// Returns whether this compiled policy has no capture rules.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.policy.is_empty()
+        self.captures.is_empty()
     }
 }
 

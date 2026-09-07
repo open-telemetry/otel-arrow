@@ -321,6 +321,49 @@ mod tests {
         assert_eq!(result.as_slice()[0].wire_name(), "X-TENANT-ID");
     }
 
+    /// Scenario: multiple capture rules select the same normalized wire name.
+    /// Guarantees: hash lookup matches the prior linear lookup's first-rule behavior.
+    #[test]
+    fn capture_overlapping_rules_use_first_match() {
+        let policy = make_capture_policy(vec![
+            rule(&["x-tenant-id"], Some("first")),
+            rule(&["x-tenant-id"], Some("second")),
+        ])
+        .compile(|name| name == "first");
+
+        let mut result = TransportHeaders::new();
+        let stats = policy.capture_from_pairs(
+            [("X-Tenant-Id", b"val".as_slice())].into_iter(),
+            &mut result,
+        );
+
+        assert!(stats.is_none());
+        assert_eq!(result.as_slice()[0].name, "first");
+        assert_eq!(result.as_slice()[0].wire_name(), "X-Tenant-Id");
+    }
+
+    /// Scenario: one capture rule selects more than one wire name.
+    /// Guarantees: every configured match name maps to the rule's compiled capture.
+    #[test]
+    fn capture_rule_supports_multiple_match_names() {
+        let policy = make_capture_policy(vec![rule(&["x-first", "x-second"], Some("combined"))])
+            .compile(|_| false);
+
+        let mut result = TransportHeaders::new();
+        let stats = policy.capture_from_pairs(
+            [
+                ("X-First", b"first".as_slice()),
+                ("X-Second", b"second".as_slice()),
+            ]
+            .into_iter(),
+            &mut result,
+        );
+
+        assert!(stats.is_none());
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().all(|header| header.name == "combined"));
+    }
+
     #[test]
     fn capture_respects_max_entries() {
         let mut policy = make_capture_policy(vec![rule(&["x-key"], None)]);
