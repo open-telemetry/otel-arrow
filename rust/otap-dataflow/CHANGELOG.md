@@ -12,6 +12,54 @@ changes. See [`RELEASING.md`](../../RELEASING.md) for the versioning policy.
 
 <!-- next version -->
 
+## v0.54.1
+
+### :rocket: New components :rocket:
+
+- `engine`: Add the `ApiKeyProvider` capability.
+ ([#3901](https://github.com/open-telemetry/otel-arrow/issues/3901))
+  A capability for feeding API Keys into components (typically used for
+  authorization) retrieved via extensions. API Key values are treated as secrets
+  and may be accompanied by optional attributes and/or expiration.
+
+### :bulb: Enhancements :bulb:
+
+- `dependencies`: Upgrade various Rust dependencies. ([#3947](https://github.com/open-telemetry/otel-arrow/issues/3947), [#3960](https://github.com/open-telemetry/otel-arrow/issues/3960))
+- `engine`: Allow broadcast topics to require Ack consensus from `all` eligible subscribers ([#2252](https://github.com/open-telemetry/otel-arrow/issues/2252))
+  Set `broadcast.ack_mode: all` with `on_lag: disconnect` and `ack_propagation.mode: auto` on a broadcast-only topic.
+  Upstream Ack waits for every eligible subscriber; zero subscribers, a required Nack, or disappearance Nacks upstream.
+
+- `pipeline`: The OTLP receiver can now require a bearer token on OTLP/gRPC and OTLP/HTTP requests by binding the `bearer_token_authorizer` capability. ([#3878](https://github.com/open-telemetry/otel-arrow/issues/3878))
+  Tokens are checked before the request payload is read. Authentication failures return
+  UNAUTHENTICATED/HTTP 401, denials return PERMISSION_DENIED/HTTP 403, and an authorizer that
+  cannot reach a decision fails closed with UNAVAILABLE/HTTP 503. Receivers without the binding
+  are unchanged.
+
+- `query-engine`: Add capability to cast expression evaluation results to specific primitive type in OPL and OTAP query engine ([#3972](https://github.com/open-telemetry/otel-arrow/issues/3972))
+- `query-engine`: Add `now` scalar UDF to OTAP query engine. ([#3967](https://github.com/open-telemetry/otel-arrow/issues/3967))
+
+<!-- previous-version -->
+
+## v0.54.0
+
+### :stop_sign: Breaking changes :stop_sign:
+
+- `pipeline`: Migrated temporal reaggregation processor telemetry from three flat counters to three dimensioned metric populations: `operations`, `failures{error.type}`, and `flushes{outcome,reason}`. ([#3530](https://github.com/open-telemetry/otel-arrow/issues/3530))
+  Migration:
+    - flushes_timer -> flushes{reason="timer"}
+    - flushes_overflow -> flushes{reason=~"id_overflow|stream_cardinality_exceeded"}
+    - batches_rejected -> failures{error.type=~"view_creation|id_overflow|stream_cardinality_exceeded"}
+    Note: `flushes` counts non-empty attempts.
+
+### :bulb: Enhancements :bulb:
+
+- `dependencies`: Upgrade various Rust dependencies. ([#3947](https://github.com/open-telemetry/otel-arrow/issues/3947))
+- `engine`: Publish the telemetry, state, engine, admin, and controller crates as versioned crates.io packages. ([#1340](https://github.com/open-telemetry/otel-arrow/issues/1340))
+- `otap`: Avoid quadratic resource and scope scans in the OTAP trace view by resolving each resource's and scope's representative row from the pre-computed row group ([#3936](https://github.com/open-telemetry/otel-arrow/issues/3936))
+- `otap`: Avoid quadratic resource and scope scans in the OTAP metrics view by resolving each resource's and scope's representative row from the pre-computed row group ([#3964](https://github.com/open-telemetry/otel-arrow/issues/3964))
+
+<!-- previous-version -->
+
 ## v0.53.0
 
 ### :stop_sign: Breaking changes :stop_sign:

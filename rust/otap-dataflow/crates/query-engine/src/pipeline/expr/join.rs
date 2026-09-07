@@ -357,6 +357,9 @@ pub fn multi_join(
     // are incompatible scopes across 2+ args), but we handle it defensively.
     if results.len() == 1 {
         let result = &results[0];
+        let mut columns = Vec::new();
+        let mut fields = Vec::new();
+
         let values = result.values.to_array(
             result
                 .parent_ids
@@ -365,12 +368,24 @@ pub fn multi_join(
                 .or_else(|| result.ids.as_ref().map(|a| a.len()))
                 .unwrap_or(1),
         )?;
-        let schema = Schema::new(vec![Field::new(
+        fields.push(Field::new(
             arg_column_name(0),
             values.data_type().clone(),
             true,
-        )]);
-        let rb = RecordBatch::try_new(Arc::new(schema), vec![values])?;
+        ));
+        columns.push(values);
+
+        insert_id_columns(
+            result.ids.as_ref(),
+            result.parent_ids.as_ref(),
+            result.scope_ids.as_ref(),
+            result.resource_ids.as_ref(),
+            &mut fields,
+            &mut columns,
+        );
+
+        let schema = Schema::new(fields);
+        let rb = RecordBatch::try_new(Arc::new(schema), columns)?;
         return Ok((rb, result.data_scope.clone()));
     }
 
@@ -485,12 +500,33 @@ pub fn multi_join(
         columns.push(values);
     }
 
-    if let Some(ids) = &accum_ids {
+    insert_id_columns(
+        accum_ids.as_ref(),
+        accum_parent_ids.as_ref(),
+        accum_scope_ids.as_ref(),
+        accum_resource_ids.as_ref(),
+        &mut fields,
+        &mut columns,
+    );
+
+    let record_batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)?;
+    Ok((record_batch, accum_scope))
+}
+
+fn insert_id_columns(
+    ids: Option<&ArrayRef>,
+    parent_ids: Option<&ArrayRef>,
+    scope_ids: Option<&ArrayRef>,
+    resource_ids: Option<&ArrayRef>,
+    fields: &mut Vec<Field>,
+    columns: &mut Vec<ArrayRef>,
+) {
+    if let Some(ids) = ids {
         fields.push(Field::new(consts::ID, ids.data_type().clone(), true));
         columns.push(ids.clone());
     }
 
-    if let Some(parent_ids) = &accum_parent_ids {
+    if let Some(parent_ids) = parent_ids {
         fields.push(Field::new(
             consts::PARENT_ID,
             parent_ids.data_type().clone(),
@@ -499,7 +535,7 @@ pub fn multi_join(
         columns.push(parent_ids.clone());
     }
 
-    if let Some(col) = &accum_resource_ids {
+    if let Some(col) = resource_ids {
         let struct_arr = StructArray::new(
             Fields::from(vec![Field::new(consts::ID, col.data_type().clone(), true)]),
             vec![col.clone()],
@@ -513,7 +549,7 @@ pub fn multi_join(
         columns.push(Arc::new(struct_arr));
     }
 
-    if let Some(col) = &accum_scope_ids {
+    if let Some(col) = scope_ids {
         let struct_arr = StructArray::new(
             Fields::from(vec![Field::new(consts::ID, col.data_type().clone(), true)]),
             vec![col.clone()],
@@ -526,9 +562,6 @@ pub fn multi_join(
         ));
         columns.push(Arc::new(struct_arr));
     }
-
-    let record_batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)?;
-    Ok((record_batch, accum_scope))
 }
 
 // helper functions for producing errors from results. Normally, we wouldn't produce these errors

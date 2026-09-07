@@ -45,6 +45,40 @@ config:
       timeout: 30s
 ```
 
+Authorization is optional. Binding the `bearer_token_authorizer` capability
+makes the receiver require a bearer token for OTLP export requests accepted on
+the configured gRPC and HTTP export endpoints. The receiver bounds each
+authorization call with that protocol's existing `timeout`. When the gRPC
+timeout is unset, authorization still has a `10s` limit; HTTP already defaults
+to a `30s` request timeout. Provider operation timeouts, such as a Kubernetes
+review timeout, remain independently configurable:
+
+```yaml
+extensions:
+  k8s_authz:
+    type: extension:k8s_service_account_token_auth
+    config:
+      audiences:
+        - audience: "otlp-collector"
+
+nodes:
+  otlp_in:
+    type: receiver:otlp
+    capabilities:
+      bearer_token_authorizer: k8s_authz
+    config:
+      protocols:
+        grpc:
+          listening_addr: "127.0.0.1:4317"
+```
+
+The authorizer validates the token before the receiver reads or forwards the
+request payload. Authentication failures return `UNAUTHENTICATED`/HTTP 401 and
+policy denials return `PERMISSION_DENIED`/HTTP 403. An authorizer that cannot
+reach a decision fails closed with `UNAVAILABLE`/HTTP 503.
+
+Receivers with no `bearer_token_authorizer` binding accept traffic unchanged.
+
 Common gRPC protocol fields include:
 
 - `listening_addr`
@@ -145,7 +179,9 @@ never measurement attributes. Protocol-specific enforced rejections remain in
 Attribute values are bounded: `signal` is `traces`, `metrics`, or `logs`;
 `protocol` is `grpc` or `http`; `outcome` is `success`, `failure`, or
 `refused`; and `error.type` is `memory_pressure`, `concurrency_limit`,
-`rate_limit`, `payload_too_large`, `invalid_request`, or `internal`.
+`rate_limit`, `authentication`, `permission_denied`,
+`authorization_unavailable`, `payload_too_large`, `invalid_request`, or
+`internal`.
 
 ### Events
 
