@@ -20,7 +20,6 @@ engine:
           # This configuration can be used with the instructions to test locally the opamp controller
           # extension against opamp-go using the instructions in README.md. Simply omit the -no-tls flag
           tls: {}
-            
             # Server CA (opamp-go server uses a self-signed cert derived from this CA)
             # Uncomment the following line, and change "/path/to" to the directory in which the
             # opamp-go repository has been cloned:
