@@ -348,16 +348,14 @@ static KAFKA_EXPORTER_CONTEXT_DECLARATIONS: ContextDeclarationProvider =
 
 impl ConfigNodeContextDeclaration for KafkaExporterConfig {
     fn context_declarations(&self) -> NodeContextDeclarations {
-        std::iter::once(ContextDeclaration::Consumes {
-            selector: ContextConsumerSelector::HeaderPropagationPolicy,
-        })
-        .chain(
-            [self.traces(), self.metrics(), self.logs()]
-                .into_iter()
-                .flatten()
-                .flat_map(|signal| {
-                    let topic = signal.topic_from_transport_header().map(|name| {
-                        ContextDeclaration::Consumes {
+        [self.traces(), self.metrics(), self.logs()]
+            .into_iter()
+            .flatten()
+            .flat_map(|signal| {
+                let topic =
+                    signal
+                        .topic_from_transport_header()
+                        .map(|name| ContextDeclaration::Consumes {
                             selector: ContextConsumerSelector::Entries {
                                 entries: vec![ContextEntrySelector {
                                     name: name.clone(),
@@ -365,17 +363,15 @@ impl ConfigNodeContextDeclaration for KafkaExporterConfig {
                                 }]
                                 .into_boxed_slice(),
                             },
-                        }
-                    });
-                    let partition = signal.partition_by_transport_headers().then_some(
-                        ContextDeclaration::Consumes {
-                            selector: ContextConsumerSelector::AllNormalized,
-                        },
-                    );
-                    topic.into_iter().chain(partition)
-                }),
-        )
-        .collect()
+                        });
+                let partition = signal.partition_by_transport_headers().then_some(
+                    ContextDeclaration::Consumes {
+                        selector: ContextConsumerSelector::AllNormalized,
+                    },
+                );
+                topic.into_iter().chain(partition)
+            })
+            .collect()
     }
 }
 
@@ -1683,19 +1679,16 @@ pub mod test_support {
                 ContextDeclaration::Consumes {
                     selector: ContextConsumerSelector::AllNormalized,
                 },
-                ContextDeclaration::Consumes {
-                    selector: ContextConsumerSelector::HeaderPropagationPolicy,
-                },
             ]
             .into_iter()
             .collect();
             assert_eq!(decls, expected);
         }
 
-        /// Scenario: Kafka config has no topic or partition context reads.
-        /// Guarantees: the factory still declares its propagation-policy context input.
+        /// Scenario: Kafka config has no component-owned context reads.
+        /// Guarantees: engine-owned propagation policy is not reported by component config.
         #[test]
-        fn declarations_include_propagation_policy_input() {
+        fn declarations_are_empty_without_kafka_context_reads() {
             let config = serde_json::json!({
                 "brokers": "localhost:9092",
                 "client_id": "test",
@@ -1706,14 +1699,7 @@ pub mod test_support {
             });
 
             let decls = (KAFKA_EXPORTER_CONTEXT_DECLARATIONS.declarations)(&config).unwrap();
-            assert_eq!(
-                decls,
-                [ContextDeclaration::Consumes {
-                    selector: ContextConsumerSelector::HeaderPropagationPolicy,
-                }]
-                .into_iter()
-                .collect()
-            );
+            assert!(decls.is_empty());
         }
 
         // ---- KafkaExporter::new() validation ----

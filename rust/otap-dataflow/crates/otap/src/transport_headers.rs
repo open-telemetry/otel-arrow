@@ -74,7 +74,7 @@ mod tests {
         assert_eq!(captured.as_slice()[0].name.as_str(), "tenant_id");
         assert_eq!(captured.as_slice()[0].wire_name(), "X-Tenant-Id");
         assert_eq!(
-            captured.as_slice()[0].value.value.as_ref(),
+            captured.as_slice()[0].value.bytes.as_ref(),
             b"tenant-abc-123"
         );
         assert_eq!(captured.as_slice()[1].name.as_str(), "x-request-id");
@@ -201,7 +201,7 @@ mod tests {
         assert!(stats.is_none());
         assert_eq!(captured.len(), 1);
         assert_eq!(captured.as_slice()[0].value.value_kind, ValueKind::Binary);
-        assert_eq!(captured.as_slice()[0].value.value.as_ref(), binary_value);
+        assert_eq!(captured.as_slice()[0].value.bytes.as_ref(), binary_value);
 
         let pdata = crate::testing::create_test_pdata().with_transport_headers(captured);
         let pdata_after = pdata.clone_without_context();

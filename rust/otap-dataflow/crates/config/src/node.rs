@@ -325,11 +325,11 @@ impl NodeUserConfig {
             .unwrap_or_default()
     }
 
-    /// Validates transport header policy fields on this node and pushes any
-    /// errors into the provided vector. Receivers may only declare
-    /// `header_capture`; exporters may only declare `header_propagation`;
-    /// processors may declare neither.
-    pub fn validate_transport_header_fields(&self, node_name: &str, errors: &mut Vec<Error>) {
+    /// Validates transport header policy placement and contents on this node.
+    ///
+    /// Receivers may only declare `header_capture`; exporters may only declare
+    /// `header_propagation`; processors may declare neither.
+    pub fn validate_transport_header_policies(&self, node_name: &str, errors: &mut Vec<Error>) {
         let kind = self.kind();
 
         if self.header_capture.is_some() && kind != NodeKind::Receiver {
@@ -711,7 +711,7 @@ config:
 
         // No validation errors for receiver + header_capture
         let mut errors = Vec::new();
-        cfg.validate_transport_header_fields("test_node", &mut errors);
+        cfg.validate_transport_header_policies("test_node", &mut errors);
         assert!(errors.is_empty());
 
         let capture = cfg.header_capture.as_ref().unwrap();
@@ -721,7 +721,7 @@ config:
     }
 
     /// Scenario: a receiver override repeats a normalized capture match name.
-    /// Guarantees: node validation rejects the override with both conflicting paths.
+    /// Guarantees: node validation delegates capture-policy errors with the node path.
     #[test]
     fn receiver_rejects_duplicate_capture_match_names() {
         let yaml = r#"
@@ -736,10 +736,13 @@ header_capture:
         let cfg: NodeUserConfig = serde_yaml::from_str(yaml).expect("parse");
         let mut errors = Vec::new();
 
-        cfg.validate_transport_header_fields("otap_ingest", &mut errors);
+        cfg.validate_transport_header_policies("otap_ingest", &mut errors);
 
         assert_eq!(errors.len(), 1);
-        let error = errors[0].to_string();
+        let error = errors
+            .pop()
+            .expect("duplicate capture match should fail node validation")
+            .to_string();
         assert!(error.contains("node `otap_ingest`: header_capture.headers[1].match_names[0]"));
         assert!(error.contains("duplicates headers[0].match_names[0]"));
     }
@@ -766,7 +769,7 @@ config:
 
         // No validation errors for exporter + header_propagation
         let mut errors = Vec::new();
-        cfg.validate_transport_header_fields("test_node", &mut errors);
+        cfg.validate_transport_header_policies("test_node", &mut errors);
         assert!(errors.is_empty());
 
         let propagation = cfg.header_propagation.as_ref().unwrap();
@@ -799,7 +802,7 @@ capabilities:
         let mut cfg = NodeUserConfig::new_processor_config("processor:batch");
         cfg.header_capture = Some(HeaderCapturePolicy::default());
         let mut errors = Vec::new();
-        cfg.validate_transport_header_fields("batch", &mut errors);
+        cfg.validate_transport_header_policies("batch", &mut errors);
         assert_eq!(errors.len(), 1);
         assert!(errors[0].to_string().contains("header_capture"));
         assert!(errors[0].to_string().contains("processor"));
@@ -810,7 +813,7 @@ capabilities:
         let mut cfg = NodeUserConfig::new_exporter_config("exporter:otap");
         cfg.header_capture = Some(HeaderCapturePolicy::default());
         let mut errors = Vec::new();
-        cfg.validate_transport_header_fields("otap_export", &mut errors);
+        cfg.validate_transport_header_policies("otap_export", &mut errors);
         assert_eq!(errors.len(), 1);
         assert!(errors[0].to_string().contains("header_capture"));
         assert!(errors[0].to_string().contains("exporter"));
@@ -821,7 +824,7 @@ capabilities:
         let mut cfg = NodeUserConfig::new_receiver_config("receiver:otap");
         cfg.header_propagation = Some(HeaderPropagationPolicy::default());
         let mut errors = Vec::new();
-        cfg.validate_transport_header_fields("otap_ingest", &mut errors);
+        cfg.validate_transport_header_policies("otap_ingest", &mut errors);
         assert_eq!(errors.len(), 1);
         assert!(errors[0].to_string().contains("header_propagation"));
         assert!(errors[0].to_string().contains("receiver"));
@@ -833,7 +836,7 @@ capabilities:
         assert!(cfg.header_capture.is_none());
         assert!(cfg.header_propagation.is_none());
         let mut errors = Vec::new();
-        cfg.validate_transport_header_fields("test", &mut errors);
+        cfg.validate_transport_header_policies("test", &mut errors);
         assert!(errors.is_empty());
     }
 
@@ -855,7 +858,7 @@ capabilities:
             vec![],
         ));
         let mut errors = Vec::new();
-        cfg.validate_transport_header_fields("otap_export", &mut errors);
+        cfg.validate_transport_header_policies("otap_export", &mut errors);
         assert_eq!(errors.len(), 1);
         assert!(errors[0].to_string().contains("header_propagation"));
         assert!(errors[0].to_string().contains("'named' list is required"));
@@ -879,7 +882,7 @@ capabilities:
             vec![],
         ));
         let mut errors = Vec::new();
-        cfg.validate_transport_header_fields("otap_export", &mut errors);
+        cfg.validate_transport_header_policies("otap_export", &mut errors);
         assert!(errors.is_empty());
     }
 

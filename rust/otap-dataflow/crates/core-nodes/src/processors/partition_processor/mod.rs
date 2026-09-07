@@ -1074,13 +1074,13 @@ mod test {
                     // assert the flow counter is distributed outbound batches in proportion
                     // to their size relative to the input
                     let partition_header = headers.find_by_name(header_name).next().unwrap();
-                    if partition_header.value.value.as_ref() == b"0" {
+                    if partition_header.value.bytes.as_ref() == b"0" {
                         assert_eq!(flow_counter, Some(4));
                     }
-                    if partition_header.value.value.as_ref() == b"1" {
+                    if partition_header.value.bytes.as_ref() == b"1" {
                         assert_eq!(flow_counter, Some(2));
                     }
-                    if partition_header.value.value.as_ref() == b"2" {
+                    if partition_header.value.bytes.as_ref() == b"2" {
                         assert_eq!(flow_counter, Some(2));
                     }
                 }

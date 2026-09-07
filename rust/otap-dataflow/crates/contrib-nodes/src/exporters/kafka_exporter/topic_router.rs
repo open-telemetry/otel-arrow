@@ -101,7 +101,7 @@ impl TopicRouter {
             // static topic, which would misdeliver the data.
             let topic = header.value_as_str().ok_or_else(|| {
                 KafkaExporterError::invalid_header_topic(
-                    String::from_utf8_lossy(&header.value.value),
+                    String::from_utf8_lossy(&header.value.bytes),
                     "value is not valid UTF-8",
                 )
             })?;

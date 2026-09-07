@@ -1714,7 +1714,7 @@ mod tests {
                     "should have exactly one x-request-id header"
                 );
                 assert_eq!(
-                    request_id[0].value.value.len(),
+                    request_id[0].value.bytes.len(),
                     16,
                     "random value should be 16 bytes"
                 );
@@ -1800,7 +1800,7 @@ mod tests {
                     "should have exactly one x-trace-bin header"
                 );
                 assert_eq!(
-                    trace_bin[0].value.value.len(),
+                    trace_bin[0].value.bytes.len(),
                     16,
                     "random binary value should be 16 bytes"
                 );

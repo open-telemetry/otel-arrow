@@ -44,7 +44,7 @@ pub struct TransportHeaderValue {
     /// Whether the value is text or binary.
     pub value_kind: ValueKind,
     /// Raw value bytes.
-    pub value: Box<[u8]>,
+    pub bytes: Box<[u8]>,
 }
 
 /// A single captured transport header.
@@ -69,7 +69,7 @@ impl TransportHeader {
             value: TransportHeaderValue {
                 original_name: None,
                 value_kind,
-                value: value.into(),
+                bytes: value.into(),
             },
         }
     }
@@ -90,7 +90,7 @@ impl TransportHeader {
             value: TransportHeaderValue {
                 original_name,
                 value_kind,
-                value: value.into(),
+                bytes: value.into(),
             },
         }
     }
@@ -116,7 +116,7 @@ impl TransportHeader {
     /// Returns the value as a UTF-8 string, if it is valid text.
     #[must_use]
     pub fn value_as_str(&self) -> Option<&str> {
-        std::str::from_utf8(&self.value.value).ok()
+        std::str::from_utf8(&self.value.bytes).ok()
     }
 }
 
@@ -155,11 +155,6 @@ impl TransportHeaders {
     /// Add a header to the collection.
     pub fn push(&mut self, header: TransportHeader) {
         Arc::make_mut(&mut self.headers).push(header);
-    }
-
-    /// Remove all headers from the collection.
-    pub fn clear(&mut self) {
-        Arc::make_mut(&mut self.headers).clear();
     }
 
     /// Clears the collection and reserves capacity while returning mutable storage.
@@ -236,8 +231,8 @@ mod tests {
 
         let tenants: Vec<_> = headers.find_by_name("tenant").collect();
         assert_eq!(tenants.len(), 2);
-        assert_eq!(&*tenants[0].value.value, b"a");
-        assert_eq!(&*tenants[1].value.value, b"c");
+        assert_eq!(&*tenants[0].value.bytes, b"a");
+        assert_eq!(&*tenants[1].value.bytes, b"c");
     }
 
     #[test]
@@ -304,7 +299,7 @@ mod tests {
         assert_eq!(result.len(), 2);
         assert_eq!(result.as_slice()[0].name, "tenant_id");
         assert_eq!(result.as_slice()[0].wire_name(), "X-Tenant-Id");
-        assert_eq!(&*result.as_slice()[0].value.value, b"t-123");
+        assert_eq!(&*result.as_slice()[0].value.bytes, b"t-123");
         assert_eq!(result.as_slice()[1].name, "x-request-id");
     }
 
@@ -369,7 +364,7 @@ mod tests {
         let mut result = TransportHeaders::new();
         let stats = policy.capture_from_pairs(pairs.into_iter(), &mut result);
         assert_eq!(result.len(), 1);
-        assert_eq!(&*result.as_slice()[0].value.value, b"ok");
+        assert_eq!(&*result.as_slice()[0].value.bytes, b"ok");
         let stats = stats.expect("should report skipped headers");
         assert_eq!(stats.skipped_value_too_long, 1);
         assert_eq!(stats.skipped_max_entries, 0);

@@ -74,7 +74,9 @@ pub struct TransportHeadersPolicy {
 
 /// Policy controlling which inbound transport headers are captured by
 /// receivers and stored in the pipeline context.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash, PartialOrd, Ord,
+)]
 #[serde(deny_unknown_fields)]
 pub struct HeaderCapturePolicy {
     /// Default limits applied to all captured headers.
@@ -87,13 +89,13 @@ pub struct HeaderCapturePolicy {
 }
 
 /// Runtime header capture policy indexed by normalized wire name.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompiledHeaderCapturePolicy {
     defaults: CaptureDefaults,
     captures: HashMap<CaptureKey, CompiledCapture>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct CompiledCapture {
     stored_name: ContextEntryName,
     value_kind: Option<ValueKindConfig>,
@@ -191,17 +193,6 @@ impl HeaderCapturePolicy {
 
         CompiledHeaderCapturePolicy { defaults, captures }
     }
-
-    /// Returns the normalized context entry names produced by this policy.
-    pub fn capture_entry_names(&self) -> impl Iterator<Item = ContextEntryName> {
-        self.headers
-            .iter()
-            .flat_map(|rule| match rule.store_as.as_ref() {
-                Some(store_as) => std::slice::from_ref(store_as),
-                None => rule.match_names.as_slice(),
-            })
-            .cloned()
-    }
 }
 
 impl CompiledHeaderCapturePolicy {
@@ -222,8 +213,8 @@ impl CompiledHeaderCapturePolicy {
     where
         V: Into<Cow<'a, [u8]>>,
     {
-        if self.is_empty() {
-            result.clear();
+        if self.captures.is_empty() {
+            let _ = result.clear_and_reserve(0);
             return None;
         }
 
@@ -293,16 +284,12 @@ impl CompiledHeaderCapturePolicy {
     fn find_capture(&self, wire_name: &str) -> Option<&CompiledCapture> {
         self.captures.get(&WireName(wire_name))
     }
-
-    /// Returns whether this compiled policy has no capture rules.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.captures.is_empty()
-    }
 }
 
 /// Default limits for header capture.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash, PartialOrd, Ord,
+)]
 #[serde(deny_unknown_fields)]
 pub struct CaptureDefaults {
     /// Maximum number of headers captured per message.
@@ -346,7 +333,9 @@ const fn default_max_value_bytes() -> usize {
 ///
 /// Headers whose wire name matches any entry in `match_names`
 /// (case-insensitive) are captured.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash, PartialOrd, Ord,
+)]
 #[serde(deny_unknown_fields)]
 pub struct CaptureRule {
     /// Wire header names to match, normalized.
@@ -370,7 +359,9 @@ pub struct CaptureRule {
 }
 
 /// Configured value kind for a capture rule.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash, PartialOrd, Ord,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ValueKindConfig {
     /// UTF-8 text.
@@ -383,7 +374,9 @@ pub enum ValueKindConfig {
 
 /// Policy controlling which captured transport headers are propagated by
 /// exporters onto outbound requests.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash, PartialOrd, Ord,
+)]
 #[serde(deny_unknown_fields)]
 pub struct HeaderPropagationPolicy {
     /// Default propagation behavior applied to all captured headers.
@@ -442,7 +435,7 @@ impl HeaderPropagationPolicy {
             Some(PropagatedHeader {
                 header_name,
                 value_kind: &header.value.value_kind,
-                value: &header.value.value,
+                value: &header.value.bytes,
             })
         })
     }
@@ -482,7 +475,9 @@ impl HeaderPropagationPolicy {
 }
 
 /// Default propagation behavior.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash, PartialOrd, Ord,
+)]
 #[serde(deny_unknown_fields)]
 pub struct PropagationDefault {
     /// Which captured headers to select for propagation.
@@ -500,7 +495,9 @@ pub struct PropagationDefault {
 }
 
 /// Selects which captured headers are candidates for propagation.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash, PartialOrd, Ord,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum PropagationSelectorType {
     /// Propagate all captured headers (subject to overrides).
@@ -517,7 +514,9 @@ pub enum PropagationSelectorType {
 ///
 /// The `type` field selects the strategy. When `type` is `named`,
 /// the `named` field must contain the list of header names to propagate.
-#[derive(Debug, Default, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(
+    Debug, Default, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash, PartialOrd, Ord,
+)]
 #[serde(deny_unknown_fields)]
 pub struct PropagationSelector {
     /// The propagation selection strategy to use.
@@ -562,7 +561,20 @@ impl PropagationSelector {
 }
 
 /// Action to take for a header during propagation.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    Serialize,
+    Deserialize,
+    JsonSchema,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum PropagationAction {
     /// Include the header on the outbound request.
@@ -573,7 +585,20 @@ pub enum PropagationAction {
 }
 
 /// Strategy for mapping the stored header name to the outbound wire name.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    Serialize,
+    Deserialize,
+    JsonSchema,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum NameStrategy {
     /// Use the original wire name observed on ingress.
@@ -584,7 +609,20 @@ pub enum NameStrategy {
 }
 
 /// Action taken when a header violates a policy constraint.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    Serialize,
+    Deserialize,
+    JsonSchema,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorAction {
     /// Silently drop the offending header.
@@ -593,7 +631,9 @@ pub enum ErrorAction {
 }
 
 /// A per-header propagation override.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash, PartialOrd, Ord,
+)]
 #[serde(deny_unknown_fields)]
 pub struct PropagationOverride {
     /// Matching criteria for this override.
@@ -611,7 +651,9 @@ pub struct PropagationOverride {
 }
 
 /// Matching criteria for propagation overrides.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash, PartialOrd, Ord,
+)]
 #[serde(deny_unknown_fields)]
 pub struct PropagationMatch {
     /// Match headers whose stored normalized name appears in this list.

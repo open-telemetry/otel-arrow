@@ -48,7 +48,7 @@ pub fn partition_key_from_transport_headers(headers: &TransportHeaders) -> Optio
     sorted.sort_unstable_by(|a, b| {
         a.name
             .cmp(&b.name)
-            .then_with(|| a.value.value.cmp(&b.value.value))
+            .then_with(|| a.value.bytes.cmp(&b.value.bytes))
     });
 
     // Initialize a single hasher and fold each sorted header into it. For each
@@ -56,7 +56,7 @@ pub fn partition_key_from_transport_headers(headers: &TransportHeaders) -> Optio
     let mut hasher = Xxh64::new(0);
     for header in sorted {
         header.name.hash(&mut hasher);
-        header.value.value.hash(&mut hasher);
+        header.value.bytes.hash(&mut hasher);
     }
     let hash = hasher.finish();
 
