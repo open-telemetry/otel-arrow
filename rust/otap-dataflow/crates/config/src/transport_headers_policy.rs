@@ -144,12 +144,34 @@ impl HeaderCapturePolicy {
         self.headers.is_empty()
     }
 
+    /// Validates that each normalized wire name is matched only once.
+    pub fn validate(&self) -> Result<(), String> {
+        let mut seen = HashMap::new();
+        for (rule_index, rule) in self.headers.iter().enumerate() {
+            for (match_index, match_name) in rule.match_names.iter().enumerate() {
+                if let Some((first_rule_index, first_match_index)) =
+                    seen.insert(match_name, (rule_index, match_index))
+                {
+                    return Err(format!(
+                        "headers[{rule_index}].match_names[{match_index}] `{match_name}` duplicates \
+                         headers[{first_rule_index}].match_names[{first_match_index}]"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Compiles per-match original-name requirements into this capture policy.
     #[must_use]
     pub fn compile(
         self,
         mut consumes_original_name: impl FnMut(&ContextEntryName) -> bool,
     ) -> CompiledHeaderCapturePolicy {
+        debug_assert!(
+            self.validate().is_ok(),
+            "header capture policy must be validated before compilation"
+        );
         let HeaderCapturePolicy { defaults, headers } = self;
         let match_count = headers.iter().map(|rule| rule.match_names.len()).sum();
         let mut captures = HashMap::with_capacity(match_count);
@@ -157,7 +179,6 @@ impl HeaderCapturePolicy {
         for rule in headers {
             for match_name in rule.match_names {
                 let stored_name = rule.store_as.clone().unwrap_or_else(|| match_name.clone());
-                // Match the previous linear search when rules overlap.
                 _ = captures
                     .entry(CaptureKey(match_name))
                     .or_insert_with(|| CompiledCapture {
@@ -609,10 +630,41 @@ mod tests {
     fn default_capture_policy_captures_nothing() {
         let policy = HeaderCapturePolicy::default();
         assert!(policy.is_empty());
+        assert!(policy.validate().is_ok());
         assert_eq!(policy.defaults.max_entries, 32);
         assert_eq!(policy.defaults.max_name_bytes, 128);
         assert_eq!(policy.defaults.max_value_bytes, 4096);
         assert_eq!(policy.defaults.on_error, ErrorAction::Drop);
+    }
+
+    /// Scenario: capture rules repeat a normalized wire name.
+    /// Guarantees: validation reports both conflicting match locations.
+    #[test]
+    fn capture_policy_rejects_duplicate_match_names() {
+        let policy = HeaderCapturePolicy::new(
+            CaptureDefaults::default(),
+            vec![
+                CaptureRule {
+                    match_names: vec![context_name("x-tenant")],
+                    store_as: Some(context_name("first")),
+                    sensitive: false,
+                    value_kind: None,
+                },
+                CaptureRule {
+                    match_names: vec![context_name("x-tenant")],
+                    store_as: Some(context_name("second")),
+                    sensitive: false,
+                    value_kind: None,
+                },
+            ],
+        );
+
+        let error = policy.validate().expect_err("duplicate should be rejected");
+
+        assert_eq!(
+            error,
+            "headers[1].match_names[0] `x-tenant` duplicates headers[0].match_names[0]"
+        );
     }
 
     #[test]
