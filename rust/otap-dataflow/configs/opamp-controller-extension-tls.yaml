@@ -19,9 +19,12 @@ engine:
           #
           # This configuration can be used with the instructions to test locally the opamp controller
           # extension against opamp-go using the instructions in README.md. Simply omit the -no-tls flag
-          tls:
+          tls: {}
+            
             # Server CA (opamp-go server uses a self-signed cert derived from this CA)
-            ca_file: "/path/to/opamp-go/internal/examples/certs/certs/ca.cert.pem"
+            # Uncomment the following line, and change "/path/to" to the directory in which the
+            # opamp-go repository has been cloned:
+            # ca_file: "/path/to/opamp-go/internal/examples/certs/certs/ca.cert.pem"
 
             # If you wish to use mTLS ...
             #
