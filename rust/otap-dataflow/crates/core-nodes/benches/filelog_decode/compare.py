@@ -53,11 +53,12 @@ def summarize(criterion_root, output_file, runs):
         )
         for estimates_file in files:
             case_dir = estimates_file.parent.parent
-            metadata = json.loads(
-                (estimates_file.parent / "benchmark.json").read_text(encoding="utf-8")
-            )
-            source_bytes = metadata["throughput"]["Bytes"]
             for implementation in ["prototype", "candidate"]:
+                metadata = json.loads(
+                    (case_dir / f"{implementation}-1" / "benchmark.json")
+                    .read_text(encoding="utf-8")
+                )
+                source_bytes = metadata["throughput"]["Bytes"]
                 means = [
                     json.loads(
                         (case_dir / f"{implementation}-{run}" / "estimates.json")

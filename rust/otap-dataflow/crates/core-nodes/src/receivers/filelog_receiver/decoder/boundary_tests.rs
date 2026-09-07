@@ -178,6 +178,86 @@ fn eligible_encoding_tails_cover_their_exact_source_range() {
     }
 }
 
+/// Scenario: An odd UTF-16 byte or high-surrogate-plus-odd tail is resolved before new input arrives.
+/// Guarantees: Both byte orders and nonfailing policies start the next clean unit at the resolved frontier without reusing tail bytes.
+#[test]
+fn resolved_utf16_tails_allow_clean_continuation() {
+    let assert_state =
+        |decoder: &StreamDecoder, next: u64, delivered: u64, pending: Option<u64>| {
+            assert_eq!(decoder.next_expected_input_offset(), next);
+            assert_eq!(decoder.highest_delivered_source_boundary(), delivered);
+            assert_eq!(decoder.pending_source_start(), pending);
+            assert_eq!(decoder.terminal_error(), None);
+        };
+
+    for (encoding, high_tail) in [
+        (Encoding::Utf16Le, [0x00, 0xd8, 0xff]),
+        (Encoding::Utf16Be, [0xd8, 0x00, 0xff]),
+    ] {
+        for (tail, tail_end, a_end) in [(&[0xff][..], 18, 20), (high_tail.as_slice(), 20, 22)] {
+            for policy in [OnDecodeError::PreserveRaw, OnDecodeError::Replace] {
+                let mut decoder = StreamDecoder::new(encoding, policy, 17, false);
+                assert_state(&decoder, 17, 17, None);
+
+                let step = decoder.next(17, tail).expect("incomplete tail");
+                assert_eq!(step.consumed, tail.len());
+                assert_eq!(step.event, None);
+                assert_state(&decoder, tail_end, 17, Some(17));
+
+                let step = decoder.next(tail_end, &[]).expect("temporary EOF");
+                assert_eq!(step.consumed, 0);
+                assert_eq!(step.event, None);
+                assert_state(&decoder, tail_end, 17, Some(17));
+
+                let event = decoder
+                    .finish_incomplete_unit()
+                    .expect("caller-authorized completion")
+                    .expect("one malformed tail event");
+                assert_eq!(
+                    event,
+                    unit(17, tail, DecodedValue::Scalar('\u{fffd}'), true)
+                );
+                assert_eq!(
+                    event.range(),
+                    SourceRange {
+                        start: 17,
+                        end: tail_end
+                    }
+                );
+                assert_state(&decoder, tail_end, tail_end, None);
+
+                assert_eq!(decoder.finish_incomplete_unit(), Ok(None));
+                assert_state(&decoder, tail_end, tail_end, None);
+
+                let step = decoder
+                    .next(tail_end, encoded_a(encoding))
+                    .expect("fresh unit after the resolved tail");
+                assert_eq!(step.consumed, 2);
+                assert_eq!(
+                    step.event,
+                    Some(unit(
+                        tail_end,
+                        encoded_a(encoding),
+                        DecodedValue::Scalar('A'),
+                        false
+                    ))
+                );
+                assert_eq!(
+                    step.event.expect("clean A event").range(),
+                    SourceRange {
+                        start: tail_end,
+                        end: a_end
+                    }
+                );
+                assert_state(&decoder, a_end, a_end, None);
+
+                assert_eq!(decoder.finish_incomplete_unit(), Ok(None));
+                assert_state(&decoder, a_end, a_end, None);
+            }
+        }
+    }
+}
+
 /// Scenario: A high surrogate has already consumed a complete nonsurrogate or another high surrogate.
 /// Guarantees: Premature completion is rejected without losing the queued unit, which can be drained normally.
 #[test]
