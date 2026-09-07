@@ -21,3 +21,6 @@ pub mod host_metrics_receiver;
 
 /// Journald receiver.
 pub mod journald_receiver;
+
+/// Source-decoding primitives for the future Filelog receiver.
+pub mod filelog_receiver;
