@@ -105,7 +105,7 @@ use serde_json::Value;
 use tokio::time::{self, MissedTickBehavior};
 
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 use std::num::NonZeroU16;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -120,6 +120,7 @@ pub const ETW_RECEIVER_URN: &str = "urn:otel:receiver:etw";
 // 512 is non-zero, so `unwrap()` never panics (evaluated at compile time).
 const DEFAULT_BATCH_MAX_SIZE: NonZeroU16 = NonZeroU16::new(512).unwrap();
 const DEFAULT_BATCH_MAX_DURATION: Duration = Duration::from_millis(100);
+const MAX_EVENT_FILTER_EVENT_IDS: usize = 64;
 
 /// Upper bound on the time spent draining queued events during `DrainIngress`.
 ///
@@ -212,11 +213,11 @@ struct ProviderConfig {
     /// rejected because the receiver cannot guarantee that ETW will apply the
     /// filter.
     ///
-    /// At most 64 unique IDs are supported (the underlying ETW scope filter
-    /// silently stops filtering above that count) and the list must not be
-    /// explicitly empty. Duplicate IDs are deduped before being applied.
+    /// At most 64 IDs are supported (the underlying ETW scope filter silently
+    /// stops filtering above that count) and the list must not be explicitly
+    /// empty. Duplicate IDs are removed during deserialization.
     #[serde(default)]
-    pub event_ids: Option<Vec<u16>>,
+    pub event_ids: Option<BTreeSet<u16>>,
 }
 
 /// In-memory OTAP log batching policy.
@@ -371,15 +372,13 @@ impl Config {
                     });
                 }
 
-                // Above 64 unique IDs the underlying ETW scope filter is
-                // silently dropped and all events flow, so count unique IDs
-                // (duplicates are deduped before being applied and must not
-                // consume slots against the cap).
-                let unique_count = event_ids.iter().collect::<HashSet<_>>().len();
-                if unique_count > 64 {
+                // Above 64 IDs the underlying ETW scope filter is silently
+                // dropped and all events flow.
+                if event_ids.len() > MAX_EVENT_FILTER_EVENT_IDS {
                     return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                         error: format!(
-                            "provider[{i}]: 'event_ids' supports at most 64 unique event IDs, got {unique_count} - the ETW event-ID filter is silently dropped above that limit"
+                            "provider[{i}]: 'event_ids' supports at most 64 event IDs, got {} - the ETW event-ID filter is silently dropped above that limit",
+                            event_ids.len()
                         ),
                     });
                 }
@@ -1172,7 +1171,7 @@ mod tests {
     /// for explicit tracelogging (kind: Tracelogging) since hash-resolved
     /// providers cannot be filtered by EventDescriptor.Id.
     #[test]
-    fn validate_accepts_event_ids_regardless_of_kind() {
+    fn validate_accepts_event_ids_for_name_based_manifest_resolution() {
         // Automatic (kind: None) and manifest should be accepted
         for kind in [None, Some(ProviderKind::Manifest)] {
             let cfg = make_config(vec![ProviderConfig {
@@ -1181,7 +1180,7 @@ mod tests {
                 kind,
                 level: TraceLevel::default(),
                 keywords: None,
-                event_ids: Some(vec![1, 2, 15]),
+                event_ids: Some([1, 2, 15].into_iter().collect()),
             }]);
             assert!(
                 cfg.validate().is_ok(),
@@ -1196,7 +1195,7 @@ mod tests {
             kind: Some(ProviderKind::Tracelogging),
             level: TraceLevel::default(),
             keywords: None,
-            event_ids: Some(vec![1, 2, 15]),
+            event_ids: Some([1, 2, 15].into_iter().collect()),
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1220,7 +1219,7 @@ mod tests {
             kind: None,
             level: TraceLevel::default(),
             keywords: None,
-            event_ids: Some(vec![1, 2, 15]),
+            event_ids: Some([1, 2, 15].into_iter().collect()),
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1242,7 +1241,7 @@ mod tests {
             kind: Some(ProviderKind::Manifest),
             level: TraceLevel::default(),
             keywords: None,
-            event_ids: Some(vec![]),
+            event_ids: Some(BTreeSet::new()),
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1252,7 +1251,7 @@ mod tests {
         );
     }
 
-    /// Scenario: A provider configures more than 64 unique `event_ids`.
+    /// Scenario: A provider configures more than 64 `event_ids`.
     /// Guarantees: `Config::validate` rejects the config, since the
     /// underlying ETW scope filter is silently dropped above 64 IDs
     /// (capturing everything) rather than truncated.
@@ -1264,12 +1263,12 @@ mod tests {
             kind: Some(ProviderKind::Manifest),
             level: TraceLevel::default(),
             keywords: None,
-            event_ids: Some((1..=65).collect()),
+            event_ids: Some((1..=MAX_EVENT_FILTER_EVENT_IDS as u16 + 1).collect()),
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("supports at most 64 unique event IDs"),
+            msg.contains("supports at most 64 event IDs"),
             "unexpected error: {msg}"
         );
     }
@@ -1285,26 +1284,7 @@ mod tests {
             kind: Some(ProviderKind::Manifest),
             level: TraceLevel::default(),
             keywords: None,
-            event_ids: Some((1..=64).collect()),
-        }]);
-        assert!(cfg.validate().is_ok());
-    }
-
-    /// Scenario: A provider configures `event_ids` with duplicate values that
-    /// exceed 64 raw entries but fewer than 64 unique values.
-    /// Guarantees: `Config::validate` accepts the config, since the 64-ID cap
-    /// is checked against unique IDs (duplicates never consume extra slots).
-    #[test]
-    fn validate_counts_unique_event_ids_not_raw_length() {
-        let mut ids: Vec<u16> = (1..=64).collect();
-        ids.extend((1..=10).collect::<Vec<u16>>()); // 10 duplicates, 74 raw entries
-        let cfg = make_config(vec![ProviderConfig {
-            name: Some("Microsoft-Windows-Kernel-Process".to_string()),
-            guid: None,
-            kind: Some(ProviderKind::Manifest),
-            level: TraceLevel::default(),
-            keywords: None,
-            event_ids: Some(ids),
+            event_ids: Some((1..=MAX_EVENT_FILTER_EVENT_IDS as u16).collect()),
         }]);
         assert!(cfg.validate().is_ok());
     }

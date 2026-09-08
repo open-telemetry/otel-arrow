@@ -359,18 +359,6 @@ const fn trace_level_to_etw(level: &TraceLevel) -> u8 {
     }
 }
 
-/// Deduplicate `ids` while preserving first-occurrence order.
-///
-/// `Config::validate` already rejects configs with more than 64 *unique*
-/// event IDs, but a repeated ID in an accepted config must still not consume
-/// a second slot against `one_collect`'s hardcoded 64-ID filter limit
-/// (`TraceEnable::add_event` pushes every call unconditionally, with no
-/// dedup of its own).
-fn dedup_event_ids(ids: &[u16]) -> Vec<u16> {
-    let mut seen: HashSet<u16> = HashSet::with_capacity(ids.len());
-    ids.iter().copied().filter(|id| seen.insert(*id)).collect()
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProviderGuidResolution {
     ExplicitGuid,
@@ -1162,7 +1150,7 @@ fn spawn_etw_session(
             }
 
             let level = trace_level_to_etw(&p.level);
-            let event_ids = p.event_ids.clone().unwrap_or_default();
+            let event_ids = p.event_ids.iter().flatten().copied().collect::<Vec<_>>();
             Ok((guid, level, p.keywords, event_ids))
         })
         .collect::<Result<Vec<_>, Error>>()?;
@@ -1206,10 +1194,7 @@ fn spawn_etw_session(
                 if let Some(kw) = keywords {
                     enabler.ensure_keyword(*kw);
                 }
-                // Config::validate already caps the unique ID count at 64;
-                // dedupe here too so a repeated ID never consumes a second
-                // slot against one_collect's hardcoded 64-ID filter limit.
-                for id in dedup_event_ids(event_ids) {
+                for id in event_ids {
                     enabler.add_event(id, false);
                 }
             }
@@ -1837,7 +1822,7 @@ mod tests {
                 kind: Some(ProviderKind::Tracelogging),
                 level: TraceLevel::default(),
                 keywords: None,
-                event_ids: Some(vec![1, 2]),
+                event_ids: Some([1, 2].into_iter().collect()),
             }],
             batching: None,
         };
@@ -2479,33 +2464,6 @@ mod tests {
             etw::LEVEL_INFORMATION
         );
         assert_eq!(trace_level_to_etw(&TraceLevel::Verbose), etw::LEVEL_VERBOSE);
-    }
-
-    // -- Event ID dedup ---------------------------------
-
-    /// Scenario: `dedup_event_ids` receives a list with no repeats.
-    /// Guarantees: Every ID is kept, in its original order, so a clean
-    /// config passes through unchanged.
-    #[test]
-    fn dedup_event_ids_keeps_all_unique_ids_in_order() {
-        assert_eq!(dedup_event_ids(&[5, 1, 15, 2]), vec![5, 1, 15, 2]);
-    }
-
-    /// Scenario: `dedup_event_ids` receives a list with repeated IDs.
-    /// Guarantees: Only the first occurrence of each ID survives, so a
-    /// repeated ID never consumes a second slot against `one_collect`'s
-    /// hardcoded 64-ID filter limit.
-    #[test]
-    fn dedup_event_ids_drops_repeats_keeping_first_occurrence() {
-        assert_eq!(dedup_event_ids(&[1, 2, 1, 3, 2, 2]), vec![1, 2, 3]);
-    }
-
-    /// Scenario: `dedup_event_ids` receives an empty slice.
-    /// Guarantees: It returns an empty vec rather than panicking, matching
-    /// the "no filter applied" behavior when a provider has no `event_ids`.
-    #[test]
-    fn dedup_event_ids_empty_input_is_empty_output() {
-        assert_eq!(dedup_event_ids(&[]), Vec::<u16>::new());
     }
 
     // -- Single-pass field extraction -----------------
