@@ -222,15 +222,15 @@ mod test {
         let mut protobuf = ProtoBuffer::default();
 
         for i in 0..rb.num_rows() {
-            if let Some(value_type) = any_val_arrays.attr_type.value_at(i) {
-                if let Ok(value_type) = AttributeValueType::try_from(value_type) {
-                    protobuf
-                        .encode_len_delimited(
-                            1, // the values field in ArrayValue message
-                            |protobuf| encode_any_value(&any_val_arrays, i, value_type, protobuf),
-                        )
-                        .unwrap();
-                }
+            if let Some(value_type) = any_val_arrays.attr_type.value_at(i)
+                && let Ok(value_type) = AttributeValueType::try_from(value_type)
+            {
+                protobuf
+                    .encode_len_delimited(
+                        1, // the values field in ArrayValue message
+                        |protobuf| encode_any_value(&any_val_arrays, i, value_type, protobuf),
+                    )
+                    .unwrap();
             }
         }
 

@@ -3941,20 +3941,20 @@ mod tests {
                 let mut match_reason = true;
                 let mut match_error = true;
 
-                if let Some(o) = outcome {
-                    if s.measurement_attribute_value("outcome") != Some(o) {
-                        match_outcome = false;
-                    }
+                if let Some(o) = outcome
+                    && s.measurement_attribute_value("outcome") != Some(o)
+                {
+                    match_outcome = false;
                 }
-                if let Some(r) = reason {
-                    if s.measurement_attribute_value("reason") != Some(r) {
-                        match_reason = false;
-                    }
+                if let Some(r) = reason
+                    && s.measurement_attribute_value("reason") != Some(r)
+                {
+                    match_reason = false;
                 }
-                if let Some(e) = error_type {
-                    if s.measurement_attribute_value("error.type") != Some(e) {
-                        match_error = false;
-                    }
+                if let Some(e) = error_type
+                    && s.measurement_attribute_value("error.type") != Some(e)
+                {
+                    match_error = false;
                 }
 
                 if match_outcome && match_reason && match_error {

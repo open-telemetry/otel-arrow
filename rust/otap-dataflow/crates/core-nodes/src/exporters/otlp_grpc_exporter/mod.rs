@@ -1742,10 +1742,10 @@ mod tests {
 
             let interceptor =
                 move |req: tonic::Request<()>| -> Result<tonic::Request<()>, tonic::Status> {
-                    if let Some(value) = req.metadata().get("authorization") {
-                        if let Ok(value) = value.to_str() {
-                            *captured_auth_srv.lock().unwrap() = Some(value.to_string());
-                        }
+                    if let Some(value) = req.metadata().get("authorization")
+                        && let Ok(value) = value.to_str()
+                    {
+                        *captured_auth_srv.lock().unwrap() = Some(value.to_string());
                     }
                     Ok(req)
                 };

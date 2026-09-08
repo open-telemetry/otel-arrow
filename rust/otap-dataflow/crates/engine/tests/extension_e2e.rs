@@ -1685,13 +1685,11 @@ impl local_proc::Processor<()> for ProbeProcessor {
                 *slot = Some(Instant::now());
             }
         }
-        if let Message::Control(otel_arrow_dfe_engine::control::NodeControlMsg::Shutdown {
-            ..
-        }) = msg
+        if let Message::Control(otel_arrow_dfe_engine::control::NodeControlMsg::Shutdown { .. }) =
+            msg
+            && let Some(lc) = &self.lifecycle
         {
-            if let Some(lc) = &self.lifecycle {
-                *lc.processor_end_at.lock() = Some(Instant::now());
-            }
+            *lc.processor_end_at.lock() = Some(Instant::now());
         }
         Ok(())
     }

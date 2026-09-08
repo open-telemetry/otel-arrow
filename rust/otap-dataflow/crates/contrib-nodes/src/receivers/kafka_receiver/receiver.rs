@@ -3940,11 +3940,11 @@ mod tests {
                 // Poll B until it is assigned a partition (drives the rebalance).
                 let mut b_partition = None;
                 for _ in 0..40 {
-                    if let Ok(a) = consumer_b.assignment() {
-                        if let Some(elem) = a.elements().first() {
-                            b_partition = Some(elem.partition());
-                            break;
-                        }
+                    if let Ok(a) = consumer_b.assignment()
+                        && let Some(elem) = a.elements().first()
+                    {
+                        b_partition = Some(elem.partition());
+                        break;
                     }
                     let _ =
                         tokio::time::timeout(Duration::from_millis(500), consumer_b.recv()).await;
@@ -7724,16 +7724,15 @@ mod tests {
                 let mut found_tenant = false;
                 for rs in &result.resource_spans {
                     let resource = rs.resource.as_ref().expect("resource present");
-                    if let Some(kv) = resource.attributes.iter().find(|kv| kv.key == "tenant.id") {
-                        if let Some(any_value::Value::StringValue(s)) =
+                    if let Some(kv) = resource.attributes.iter().find(|kv| kv.key == "tenant.id")
+                        && let Some(any_value::Value::StringValue(s)) =
                             kv.value.as_ref().and_then(|v| v.value.as_ref())
-                        {
-                            assert_eq!(
-                                s, &adversarial_value,
-                                "adversarial header value is extracted verbatim",
-                            );
-                            found_tenant = true;
-                        }
+                    {
+                        assert_eq!(
+                            s, &adversarial_value,
+                            "adversarial header value is extracted verbatim",
+                        );
+                        found_tenant = true;
                     }
                 }
                 assert!(found_tenant, "the tenant.id attribute should be extracted");

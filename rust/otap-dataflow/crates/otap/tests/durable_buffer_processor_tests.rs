@@ -229,18 +229,18 @@ impl TestConfigBuilder {
             "max_segment_open_duration": "50ms"
         });
 
-        if let Some(retry) = self.retry_config {
-            if let (Some(base), Some(extra)) = (buffer_config.as_object_mut(), retry.as_object()) {
-                for (k, v) in extra {
-                    let _ = base.insert(k.clone(), v.clone());
-                }
+        if let Some(retry) = self.retry_config
+            && let (Some(base), Some(extra)) = (buffer_config.as_object_mut(), retry.as_object())
+        {
+            for (k, v) in extra {
+                let _ = base.insert(k.clone(), v.clone());
             }
         }
 
-        if let Some(handling) = self.otlp_handling {
-            if let Some(obj) = buffer_config.as_object_mut() {
-                let _ = obj.insert("otlp_handling".to_owned(), json!(handling));
-            }
+        if let Some(handling) = self.otlp_handling
+            && let Some(obj) = buffer_config.as_object_mut()
+        {
+            let _ = obj.insert("otlp_handling".to_owned(), json!(handling));
         }
 
         let (exporter_name, exporter_urn, exporter_config) = match self.exporter_type {
@@ -505,11 +505,11 @@ where
             if start.elapsed() >= max_duration {
                 break;
             }
-            if let Some(ref condition) = shutdown_condition {
-                if condition() {
-                    condition_triggered = true;
-                    break;
-                }
+            if let Some(ref condition) = shutdown_condition
+                && condition()
+            {
+                condition_triggered = true;
+                break;
             }
             std::thread::sleep(poll_interval);
         }
@@ -1693,19 +1693,19 @@ fn test_durable_buffer_otlp_item_count_metrics() {
     for entry in std::fs::read_dir(&segments_dir).expect("read segments dir") {
         let entry = entry.expect("dir entry");
         let path = entry.path();
-        if path.extension().is_some_and(|ext| ext == "qseg") {
-            if let Ok(reader) = SegmentReader::open(&path) {
-                for manifest_entry in reader.manifest() {
-                    total_bundles += 1;
-                    let ic = manifest_entry.item_count();
-                    // Classify by OTLP slot ID present in the bundle.
-                    for slot in manifest_entry.slot_ids() {
-                        match slot.raw() {
-                            OTLP_LOGS_SLOT => log_items += ic,
-                            OTLP_TRACES_SLOT => trace_items += ic,
-                            OTLP_METRICS_SLOT => metric_items += ic,
-                            _ => {} // shared or unknown slots
-                        }
+        if path.extension().is_some_and(|ext| ext == "qseg")
+            && let Ok(reader) = SegmentReader::open(&path)
+        {
+            for manifest_entry in reader.manifest() {
+                total_bundles += 1;
+                let ic = manifest_entry.item_count();
+                // Classify by OTLP slot ID present in the bundle.
+                for slot in manifest_entry.slot_ids() {
+                    match slot.raw() {
+                        OTLP_LOGS_SLOT => log_items += ic,
+                        OTLP_TRACES_SLOT => trace_items += ic,
+                        OTLP_METRICS_SLOT => metric_items += ic,
+                        _ => {} // shared or unknown slots
                     }
                 }
             }
