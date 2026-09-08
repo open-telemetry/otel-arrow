@@ -18,7 +18,7 @@ pub use decoder::PdataDecoder;
 pub use encoder::{EncodeOutput, PdataEncoder};
 pub use error::{CodecError, CodecOperation, RegistryError};
 pub use identity::{EncodedPdata, PdataEncoding};
-pub use plan::{EncodePolicy, EncodingPlan, ViewPlan};
+pub use plan::{EncodePolicy, EncodingPlan, InspectionPlan};
 pub use registry::{
     CodecMetadata, CodecRegistration, CodecRegistry, ItemCounter, PDATA_CODEC_FACTORIES,
     ResolvedCodec,

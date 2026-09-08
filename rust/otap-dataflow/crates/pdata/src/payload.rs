@@ -459,7 +459,7 @@ impl OtapPayloadHelpers for OtlpProtoBytes {
     }
 }
 
-/// Stateless OTLP item scan shared by the codec and compatibility storage.
+/// Stateless OTLP item scan used by compatibility storage.
 pub(crate) fn count_otlp_items(signal: SignalType, bytes: &[u8]) -> usize {
     // Counting traverses the encoded protobuf record hierarchy without
     // constructing an owned request or a mutable codec instance.

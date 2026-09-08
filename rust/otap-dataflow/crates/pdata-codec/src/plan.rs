@@ -4,8 +4,6 @@
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
-use otel_arrow_dfe_config::SignalType;
-
 use crate::{CodecError, CodecRegistry, PdataEncoding, ResolvedCodec};
 
 /// Representation-neutral policy applied to independently encoded output.
@@ -24,12 +22,13 @@ pub struct EncodingPlan {
 
 impl EncodingPlan {
     /// Builds a plan from an already validated codec.
-    pub fn new(
-        codec: ResolvedCodec,
-        signal: SignalType,
-        policy: EncodePolicy,
-    ) -> Result<Self, CodecError> {
-        codec.require_encoder(signal)?;
+    pub fn new(codec: ResolvedCodec, policy: EncodePolicy) -> Result<Self, CodecError> {
+        if !codec.can_encode() {
+            return Err(CodecError::UnsupportedCodecOperation {
+                encoding: codec.encoding().clone(),
+                operation: crate::CodecOperation::Encode,
+            });
+        }
         Ok(Self { codec, policy })
     }
 
@@ -37,10 +36,9 @@ impl EncodingPlan {
     pub fn resolve(
         registry: &CodecRegistry,
         encoding: &PdataEncoding,
-        signal: SignalType,
         policy: EncodePolicy,
     ) -> Result<Self, CodecError> {
-        Self::new(registry.resolve_encoder(encoding, signal)?, signal, policy)
+        Self::new(registry.resolve(encoding)?, policy)
     }
 
     /// Resolved output codec.
@@ -56,13 +54,16 @@ impl EncodingPlan {
     }
 }
 
-/// Encoded representations a read-only consumer can inspect directly.
+/// Startup-resolved representations a read-only consumer can inspect directly.
+///
+/// This is an input policy, not the inspected value itself. [`crate::PdataView`]
+/// is the value returned after applying the plan.
 #[derive(Clone, Debug, Default)]
-pub struct ViewPlan {
+pub struct InspectionPlan {
     accepted: Arc<[ResolvedCodec]>,
 }
 
-impl ViewPlan {
+impl InspectionPlan {
     /// Requires native OTAP, decoding encoded input on demand.
     #[must_use]
     pub fn native() -> Self {

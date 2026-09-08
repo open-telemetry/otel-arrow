@@ -1,5 +1,8 @@
 # PData codecs
 
+This crate is currently pre-1.0. Its public API may evolve between minor
+releases.
+
 This crate defines the extension boundary between independently decodable byte
 formats and native OTAP Arrow records in the OTel Arrow Dataflow Engine.
 
@@ -16,12 +19,16 @@ it never owns a codec instance.
 - `CodecMetadata` declares the signals supported by an encoding and optional
   descriptive metadata.
 - `CodecRegistration` supplies decoder, encoder, item-counter, and later
-  batching capabilities. A codec may be decode-only or encode-only.
+  batching capabilities. A codec may be decode-only or encode-only. A decoder
+  must provide an item counter so requested flow metrics remain available.
 - `CodecRegistry` validates the complete link-time registry once. Duplicate or
   invalid identities fail pipeline runtime construction deterministically.
 - `CodecService` creates mutable implementations lazily and reuses them within
   one pipeline runtime. Payload admission and matching-format forwarding do not
   instantiate a codec.
+- `InspectionPlan` resolves the encoded representations a read-only node can
+  inspect directly. Applying it returns a `PdataView`; other representations
+  are decoded to native OTAP.
 - Native OTAP remains the mutable processing representation and the fallback
   intermediate for conversion between different encodings.
 
@@ -136,9 +143,11 @@ Registration and duplicate-name policy belong to the registry, not the macro.
 Registration order is not a precedence mechanism, and the default registry
 rejects duplicate identities independently of link order.
 
-An item counter is optional and must be stateless. Return `None` when the count
-cannot be determined; zero means the payload was inspected and contains no
-primary-signal items.
+An item counter is required for every decoder registration and must be
+stateless. Return `None` when malformed bytes cannot be counted; zero means the
+payload was inspected and contains no primary-signal items. The payload
+integration introduced in the next series step caches successful counts,
+keeping an unavailable count distinct from zero.
 
 ## Test a codec
 

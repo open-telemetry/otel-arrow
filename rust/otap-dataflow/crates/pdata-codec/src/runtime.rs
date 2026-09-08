@@ -11,21 +11,25 @@
 //!
 //! Codec trait calls are currently synchronous. The service holds its runtime
 //! lock for the duration of each codec operation and, for prepared output, for
-//! the synchronous consumer callback. No codec borrow crosses an async
-//! suspension. [`EncodeOutput::into_bytes`] detaches owned bytes before an
-//! asynchronous transport send, but it does not make encoding asynchronous.
+//! the synchronous consumer callback. Nested access from that callback returns
+//! an error instead of blocking on the same lock. A panic while state is
+//! borrowed poisons the service; later operations report that state as
+//! unavailable instead of continuing with possibly corrupted codec state. No
+//! codec borrow crosses an async suspension. [`EncodeOutput::into_bytes`]
+//! detaches owned bytes before an asynchronous transport send, but it does not
+//! make encoding asynchronous.
 //! A codec that performs slow or blocking work would still block its caller;
 //! bounded offloading is intentionally left to a future execution layer at the
 //! engine service boundary.
 
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 
 use bytes::Bytes;
 use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayloadHelpers};
 
 use crate::{
-    CodecError, CodecRegistry, EncodeOutput, EncodedPdata, EncodingPlan, PdataDecoder,
-    PdataEncoder, PdataView, RegistryError, ResolvedCodec, ViewPlan,
+    CodecError, CodecOperation, CodecRegistry, EncodeOutput, EncodedPdata, EncodingPlan,
+    InspectionPlan, PdataDecoder, PdataEncoder, PdataView, RegistryError, ResolvedCodec,
 };
 
 struct DecoderInstance {
@@ -96,18 +100,23 @@ impl CodecService {
         &self.registry
     }
 
-    fn lock(&self) -> MutexGuard<'_, CodecRuntime> {
-        self.runtime
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    fn lock(&self) -> Result<MutexGuard<'_, CodecRuntime>, CodecError> {
+        match self.runtime.try_lock() {
+            Ok(runtime) => Ok(runtime),
+            Err(TryLockError::WouldBlock) => Err(CodecError::ServiceBusy),
+            Err(TryLockError::Poisoned(_)) => Err(CodecError::ServicePoisoned),
+        }
     }
 
     /// Decodes admitted bytes through a lazily reused decoder instance.
     pub fn decode(&self, encoded: &EncodedPdata) -> Result<OtapArrowRecords, CodecError> {
-        let mut runtime = self.lock();
+        let mut runtime = self.lock()?;
         let records = runtime
             .decoder(encoded.codec())?
-            .decode(encoded.signal_type(), encoded.bytes())?;
+            .decode(encoded.signal_type(), encoded.bytes())
+            .map_err(|error| {
+                error.with_operation_context(encoded.encoding(), CodecOperation::Decode)
+            })?;
         if records.signal_type() != encoded.signal_type() {
             return Err(CodecError::SignalChanged {
                 encoding: encoded.encoding().clone(),
@@ -122,7 +131,7 @@ impl CodecService {
     pub fn view<'a>(
         &self,
         encoded: &'a EncodedPdata,
-        plan: &ViewPlan,
+        plan: &InspectionPlan,
     ) -> Result<PdataView<'a>, CodecError> {
         if plan.accepts(encoded.codec()) {
             return Ok(PdataView::Encoded(crate::EncodedView::new(
@@ -142,8 +151,15 @@ impl CodecService {
         plan: &EncodingPlan,
         consume: impl FnOnce(EncodeOutput<'_>) -> R,
     ) -> Result<R, CodecError> {
-        let mut runtime = self.lock();
-        let output = runtime.encoder(*plan)?.prepare_encode(records)?;
+        let codec = plan.codec();
+        codec.require_encoder(records.signal_type())?;
+        let mut runtime = self.lock()?;
+        let encoder = runtime.encoder(*plan).map_err(|error| {
+            error.with_operation_context(codec.encoding(), CodecOperation::Encode)
+        })?;
+        let output = encoder.prepare_encode(records).map_err(|error| {
+            error.with_operation_context(codec.encoding(), CodecOperation::Encode)
+        })?;
         Ok(consume(output))
     }
 
@@ -164,10 +180,9 @@ impl CodecService {
 
     /// Number of lazily created mutable instances.
     #[cfg(any(test, feature = "testing"))]
-    #[must_use]
-    pub fn test_instance_count(&self) -> usize {
-        let runtime = self.lock();
-        runtime.decoders.len() + runtime.encoders.len()
+    pub fn test_instance_count(&self) -> Result<usize, CodecError> {
+        let runtime = self.lock()?;
+        Ok(runtime.decoders.len() + runtime.encoders.len())
     }
 }
 
@@ -208,5 +223,164 @@ impl CodecRuntime {
             }
         };
         Ok(self.encoders[index].encoder.as_mut())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::sync::Arc;
+
+    use prost::Message;
+
+    use super::*;
+    use crate::{CodecMetadata, CodecRegistration, EncodePolicy, PdataEncoding};
+    use otel_arrow_dfe_config::SignalType;
+    use otel_arrow_dfe_pdata::testing::fixtures::{
+        logs_with_full_resource_and_scope, metrics_sum_with_full_resource_and_scope,
+    };
+
+    const LOGS_ONLY_ENCODING: PdataEncoding = PdataEncoding::new("logs-only-test-v1");
+    static LOGS_ONLY_METADATA: CodecMetadata =
+        CodecMetadata::new(LOGS_ONLY_ENCODING, &[SignalType::Logs]);
+    static LOGS_ONLY_REGISTRATIONS: [CodecRegistration; 1] =
+        [CodecRegistration::new(&LOGS_ONLY_METADATA)
+            .with_decoder(|| Box::new(FailingDecoder))
+            .with_encoder(|_| Ok(Box::new(PanicEncoder)))
+            .with_item_counter(|_, _| Some(0))];
+
+    struct FailingDecoder;
+
+    impl PdataDecoder for FailingDecoder {
+        fn decode(
+            &mut self,
+            _signal: SignalType,
+            _bytes: &Bytes,
+        ) -> Result<OtapArrowRecords, CodecError> {
+            Err(CodecError::ServiceBusy)
+        }
+    }
+
+    struct PanicEncoder;
+
+    impl PdataEncoder for PanicEncoder {
+        fn encode(&mut self, _records: OtapArrowRecords) -> Result<Bytes, CodecError> {
+            panic!("signal validation must run before this test encoder")
+        }
+    }
+
+    fn service_for(registrations: &'static [CodecRegistration]) -> CodecService {
+        let registry = CodecRegistry::validate(registrations).expect("valid test registry");
+        CodecServiceBuilder::from_registry(Arc::new(registry)).build()
+    }
+
+    fn records(signal: SignalType) -> OtapArrowRecords {
+        let bytes: Bytes = match signal {
+            SignalType::Logs => logs_with_full_resource_and_scope().encode_to_vec().into(),
+            SignalType::Metrics => metrics_sum_with_full_resource_and_scope()
+                .encode_to_vec()
+                .into(),
+            SignalType::Traces => unreachable!("runtime service tests do not request traces"),
+        };
+        let service = CodecService::new().expect("valid built-in registry");
+        let codec = service
+            .registry()
+            .resolve_decoder(&PdataEncoding::OTLP, signal)
+            .expect("built-in OTLP decoder");
+        let encoded = codec.admit(signal, bytes).expect("supported OTLP signal");
+        service.decode(&encoded).expect("valid OTLP fixture")
+    }
+
+    fn otlp_plan(service: &CodecService) -> EncodingPlan {
+        EncodingPlan::resolve(
+            service.registry(),
+            &PdataEncoding::OTLP,
+            EncodePolicy::default(),
+        )
+        .expect("built-in OTLP encoder")
+    }
+
+    /// Scenario: A logs-only output plan receives native metrics records.
+    /// Guarantees: Runtime signal validation rejects the payload before creating or invoking the encoder.
+    #[test]
+    fn encoding_plan_validates_the_actual_records_signal() {
+        let service = service_for(&LOGS_ONLY_REGISTRATIONS);
+        let plan = EncodingPlan::resolve(
+            service.registry(),
+            &LOGS_ONLY_ENCODING,
+            EncodePolicy::default(),
+        )
+        .unwrap();
+        let mut metrics = records(SignalType::Metrics);
+
+        assert!(matches!(
+            service.encode_bytes(&mut metrics, &plan),
+            Err(CodecError::Unsupported {
+                operation: CodecOperation::Encode,
+                signal: SignalType::Metrics,
+                ..
+            })
+        ));
+        assert_eq!(service.test_instance_count().unwrap(), 0);
+    }
+
+    /// Scenario: A decoder returns an error without the resolved codec identity.
+    /// Guarantees: The codec service adds the actual identity and operation exactly once.
+    #[test]
+    fn decoder_failures_receive_service_owned_context() {
+        let service = service_for(&LOGS_ONLY_REGISTRATIONS);
+        let codec = service
+            .registry()
+            .resolve_decoder(&LOGS_ONLY_ENCODING, SignalType::Logs)
+            .unwrap();
+        let encoded = codec.admit(SignalType::Logs, Bytes::new()).unwrap();
+
+        assert!(matches!(
+            service.decode(&encoded),
+            Err(CodecError::Operation {
+                encoding,
+                operation: CodecOperation::Decode,
+                ..
+            }) if encoding == LOGS_ONLY_ENCODING
+        ));
+    }
+
+    /// Scenario: A prepared-output callback attempts another operation on the same service.
+    /// Guarantees: Nested codec access returns an error instead of deadlocking the pipeline runtime.
+    #[test]
+    fn prepared_output_callback_cannot_reenter_the_service() {
+        let service = CodecService::new().unwrap();
+        let plan = otlp_plan(&service);
+        let mut outer = records(SignalType::Logs);
+        let mut nested = records(SignalType::Logs);
+
+        let nested_result = service
+            .with_encoded_output(&mut outer, &plan, |_| {
+                service.encode_bytes(&mut nested, &plan)
+            })
+            .unwrap();
+
+        assert!(matches!(nested_result, Err(CodecError::ServiceBusy)));
+    }
+
+    /// Scenario: A prepared-output consumer panics while holding codec runtime state.
+    /// Guarantees: Later operations report poisoned state instead of reusing potentially corrupted buffers.
+    #[test]
+    fn poisoned_codec_state_is_not_reused() {
+        let service = CodecService::new().unwrap();
+        let plan = otlp_plan(&service);
+        let mut records = records(SignalType::Logs);
+
+        let panic = catch_unwind(AssertUnwindSafe(|| {
+            let _ = service.with_encoded_output(&mut records, &plan, |_| -> () {
+                panic!("poison codec service for the test")
+            });
+        }));
+        assert!(panic.is_err());
+
+        assert!(matches!(
+            service.encode_bytes(&mut records, &plan),
+            Err(CodecError::ServicePoisoned)
+        ));
     }
 }

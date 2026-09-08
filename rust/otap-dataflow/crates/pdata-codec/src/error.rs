@@ -52,6 +52,12 @@ pub enum RegistryError {
         /// Invalid registration identity.
         encoding: PdataEncoding,
     },
+    /// A decoder registration cannot report primary-signal item counts.
+    #[error("pdata encoding `{encoding}` has a decoder but no item counter")]
+    MissingItemCounter {
+        /// Invalid registration identity.
+        encoding: PdataEncoding,
+    },
     /// The requested identity is not linked into this binary.
     #[error("no pdata codec registered for `{encoding}`")]
     NotFound {
@@ -66,6 +72,14 @@ pub enum CodecError {
     /// Registry validation or lookup failed.
     #[error(transparent)]
     Registry(#[from] RegistryError),
+    /// A registered codec does not implement the requested operation.
+    #[error("pdata codec `{encoding}` cannot {operation}")]
+    UnsupportedCodecOperation {
+        /// Codec identity.
+        encoding: PdataEncoding,
+        /// Requested operation.
+        operation: CodecOperation,
+    },
     /// A registered codec does not support an operation for this signal.
     #[error("pdata codec `{encoding}` cannot {operation} {signal:?}")]
     Unsupported {
@@ -97,6 +111,14 @@ pub enum CodecError {
         /// Signal produced by the decoder.
         actual: otel_arrow_dfe_config::SignalType,
     },
+    /// Codec state is already borrowed by another synchronous operation.
+    #[error(
+        "pdata codec service is already in use; nested or concurrent codec access is unsupported"
+    )]
+    ServiceBusy,
+    /// A panic occurred while codec state was borrowed.
+    #[error("pdata codec service is unavailable after a panic while its state was borrowed")]
+    ServicePoisoned,
 }
 
 impl CodecError {
@@ -110,6 +132,26 @@ impl CodecError {
             encoding: encoding.clone(),
             operation,
             source: Box::new(source),
+        }
+    }
+
+    /// Ensures an implementation failure carries service-owned diagnostics.
+    pub(crate) fn with_operation_context(
+        self,
+        encoding: &PdataEncoding,
+        operation: CodecOperation,
+    ) -> Self {
+        if matches!(
+            &self,
+            Self::Operation {
+                encoding: error_encoding,
+                operation: error_operation,
+                ..
+            } if error_encoding == encoding && *error_operation == operation
+        ) {
+            self
+        } else {
+            Self::operation(encoding, operation, self)
         }
     }
 }

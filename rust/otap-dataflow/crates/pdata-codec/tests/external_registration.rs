@@ -32,7 +32,9 @@ impl PdataDecoder for ExternalDecoder {
 
 register_pdata_codec!(
     EXTERNAL_CODEC,
-    CodecRegistration::new(&EXTERNAL_METADATA).with_decoder(|| Box::new(ExternalDecoder)),
+    CodecRegistration::new(&EXTERNAL_METADATA)
+        .with_decoder(|| Box::new(ExternalDecoder))
+        .with_item_counter(|_, _| Some(0)),
 );
 
 /// Scenario: A downstream crate registers a decode-only codec without importing linkme.
@@ -46,6 +48,7 @@ fn downstream_registration_needs_no_linkme_import() {
 
     assert!(codec.can_decode());
     assert!(!codec.can_encode());
+    assert_eq!(codec.count_items(SignalType::Logs, &[]), Some(0));
     assert_eq!(codec.metadata().encoding(), &EXTERNAL_ENCODING);
     assert_eq!(codec.metadata().signals(), &[SignalType::Logs]);
     assert_eq!(codec.metadata().format_version(), Some("1"));

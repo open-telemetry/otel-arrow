@@ -22,6 +22,10 @@ use crate::CodecError;
 /// independently decodable; stream-relative dictionaries or state are outside
 /// the pdata codec contract.
 ///
+/// The runtime validates the records' signal against codec metadata before it
+/// invokes an encoder and ensures implementation failures carry the resolved
+/// codec identity and encode operation.
+///
 /// Implementations that only produce owned bytes need to implement [`Self::encode`].
 /// Implementations with reusable storage should also override
 /// [`Self::prepare_encode`] to avoid an intermediate allocation on synchronous

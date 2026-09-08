@@ -18,8 +18,10 @@ use crate::CodecError;
 ///
 /// Each input must be independently decodable; codecs must not rely on state
 /// from an earlier batch. The returned records must carry the same signal as
-/// the `signal` argument. The runtime checks this invariant and wraps failures
-/// with the codec identity and operation for diagnostics.
+/// the `signal` argument. The runtime checks this invariant and ensures every
+/// implementation failure is reported with the resolved codec identity and
+/// operation. Implementations may add the same context themselves; the runtime
+/// avoids wrapping it twice.
 ///
 /// Implementations may keep reusable scratch storage in `self`. Instances are
 /// created lazily and reused only within one pipeline runtime. They must be

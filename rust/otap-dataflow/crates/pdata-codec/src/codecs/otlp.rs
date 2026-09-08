@@ -10,16 +10,23 @@
 
 use bytes::Bytes;
 use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_pdata::OtapPayloadHelpers;
+use otel_arrow_dfe_pdata::encode::{
+    encode_logs_otap_batch, encode_metrics_otap_batch, encode_spans_otap_batch,
+};
 use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
 use otel_arrow_dfe_pdata::otlp::common::MAX_OTLP_SIZE_LIMIT;
 use otel_arrow_dfe_pdata::otlp::logs::LogsProtoBytesEncoder;
 use otel_arrow_dfe_pdata::otlp::metrics::MetricsProtoBytesEncoder;
 use otel_arrow_dfe_pdata::otlp::traces::TracesProtoBytesEncoder;
 use otel_arrow_dfe_pdata::otlp::{BoundedBuf, ProtoBuffer, ProtoBytesEncoder};
+use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogsData;
+use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::MetricsData;
+use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::TracesData;
 use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
 use otel_arrow_dfe_pdata::views::otlp::bytes::metrics::RawMetricsData;
 use otel_arrow_dfe_pdata::views::otlp::bytes::traces::RawTraceData;
-use otel_arrow_dfe_pdata::{OtapPayloadHelpers, OtlpProtoBytes, TryIntoWithOptions};
+use prost::Message;
 
 use crate::{
     CodecError, CodecMetadata, CodecOperation, CodecRegistration, EncodeOutput, EncodePolicy,
@@ -42,18 +49,25 @@ impl PdataDecoder for OtlpDecoder {
         signal: SignalType,
         bytes: &Bytes,
     ) -> Result<OtapArrowRecords, CodecError> {
-        let strict_result = match signal {
-            SignalType::Logs => RawLogsData::try_new(bytes).map(|_| ()),
-            SignalType::Metrics => RawMetricsData::try_new(bytes).map(|_| ()),
-            SignalType::Traces => RawTraceData::try_new(bytes).map(|_| ()),
-        };
-        strict_result.map_err(|error| {
-            CodecError::operation(&OTLP_ENCODING, CodecOperation::Decode, error)
-        })?;
-        OtlpProtoBytes::new_from_bytes(signal, bytes.clone())
-            .try_into_with_default()
-            .map_err(|error| CodecError::operation(&OTLP_ENCODING, CodecOperation::Decode, error))
+        match signal {
+            SignalType::Logs => {
+                let data = LogsData::decode(bytes.clone()).map_err(decode_error)?;
+                encode_logs_otap_batch(&data).map_err(decode_error)
+            }
+            SignalType::Metrics => {
+                let data = MetricsData::decode(bytes.clone()).map_err(decode_error)?;
+                encode_metrics_otap_batch(&data).map_err(decode_error)
+            }
+            SignalType::Traces => {
+                let data = TracesData::decode(bytes.clone()).map_err(decode_error)?;
+                encode_spans_otap_batch(&data).map_err(decode_error)
+            }
+        }
     }
+}
+
+fn decode_error(error: impl std::error::Error + Send + Sync + 'static) -> CodecError {
+    CodecError::operation(&OTLP_ENCODING, CodecOperation::Decode, error)
 }
 
 struct SignalEncoder<E> {
@@ -283,7 +297,7 @@ mod tests {
     use prost::Message;
 
     use super::*;
-    use crate::{CodecRegistry, CodecService, EncodingPlan, PdataView, ViewPlan};
+    use crate::{CodecRegistry, CodecService, EncodingPlan, InspectionPlan, PdataView};
     use otel_arrow_dfe_pdata::testing::fixtures::{
         logs_with_full_resource_and_scope, metrics_sum_with_full_resource_and_scope,
         traces_with_full_resource_and_scope,
@@ -310,7 +324,7 @@ mod tests {
             codec.count_items(SignalType::Logs, encoded.bytes()),
             Some(4)
         );
-        assert_eq!(service.test_instance_count(), 0);
+        assert_eq!(service.test_instance_count().unwrap(), 0);
     }
 
     /// Scenario: A read-only consumer accepts OTLP and another requires native OTAP.
@@ -325,17 +339,17 @@ mod tests {
         let encoded = codec.admit(SignalType::Logs, logs_bytes()).unwrap();
         let pointer = encoded.bytes().as_ptr();
         match service
-            .view(&encoded, &ViewPlan::accept_encoded([codec]))
+            .view(&encoded, &InspectionPlan::accept_encoded([codec]))
             .unwrap()
         {
             PdataView::Encoded(view) => assert_eq!(view.bytes().as_ptr(), pointer),
             PdataView::Native(_) => panic!("the accepted representation must remain encoded"),
         }
-        match service.view(&encoded, &ViewPlan::native()).unwrap() {
+        match service.view(&encoded, &InspectionPlan::native()).unwrap() {
             PdataView::Native(records) => assert_eq!(records.num_items(), 4),
             PdataView::Encoded(_) => panic!("native fallback must decode"),
         }
-        assert_eq!(service.test_instance_count(), 1);
+        assert_eq!(service.test_instance_count().unwrap(), 1);
     }
 
     /// Scenario: One codec service encodes logs with a startup-resolved size policy.
@@ -352,7 +366,6 @@ mod tests {
         let limited = EncodingPlan::resolve(
             &registry,
             &OTLP_ENCODING,
-            SignalType::Logs,
             EncodePolicy {
                 max_encoded_size: NonZeroUsize::new(1),
             },
@@ -363,13 +376,8 @@ mod tests {
                 .encode_bytes(&mut records.clone(), &limited)
                 .is_err()
         );
-        let normal = EncodingPlan::resolve(
-            &registry,
-            &OTLP_ENCODING,
-            SignalType::Logs,
-            EncodePolicy::default(),
-        )
-        .unwrap();
+        let normal =
+            EncodingPlan::resolve(&registry, &OTLP_ENCODING, EncodePolicy::default()).unwrap();
         assert!(
             !service
                 .encode_bytes(&mut records.clone(), &normal)
@@ -408,5 +416,28 @@ mod tests {
             let encoded = codec.admit(signal, bytes).unwrap();
             assert_eq!(service.decode(&encoded).unwrap().num_items(), expected);
         }
+    }
+
+    /// Scenario: Valid OTLP logs are followed by a resource with malformed nested framing.
+    /// Guarantees: Codec decoding rejects the complete batch instead of returning partial records.
+    #[test]
+    fn rejects_malformed_nested_fields_after_valid_records() {
+        let service = CodecService::new().unwrap();
+        let codec = service
+            .registry()
+            .resolve_decoder(&OTLP_ENCODING, SignalType::Logs)
+            .unwrap();
+        let mut bytes = logs_bytes().to_vec();
+        // resource_logs { scope_logs: <declared length 5, one byte present> }
+        bytes.extend_from_slice(&[0x0a, 0x03, 0x1a, 0x05, 0x00]);
+        let encoded = codec.admit(SignalType::Logs, bytes.into()).unwrap();
+
+        assert!(matches!(
+            service.decode(&encoded),
+            Err(CodecError::Operation {
+                operation: CodecOperation::Decode,
+                ..
+            })
+        ));
     }
 }

@@ -3,7 +3,7 @@
 
 //! Representation-neutral, read-only access to pdata.
 //!
-//! A consumer resolves a [`crate::ViewPlan`] once and then receives either an
+//! A consumer resolves an [`crate::InspectionPlan`] once and then receives either an
 //! [`EncodedView`] when it explicitly accepts the current encoding, or a
 //! [`PdataView::Native`] value after native OTAP fallback. Encoded views borrow
 //! the original bytes without allocation or codec construction. Native views
@@ -58,7 +58,7 @@ impl<'a> EncodedView<'a> {
 
 /// Representation-neutral read-only pdata view.
 pub enum PdataView<'a> {
-    /// Encoded bytes explicitly accepted by the consumer's view plan.
+    /// Encoded bytes explicitly accepted by the consumer's inspection plan.
     Encoded(EncodedView<'a>),
     /// Native records, borrowed when already native or owned after fallback decode.
     Native(Cow<'a, OtapArrowRecords>),

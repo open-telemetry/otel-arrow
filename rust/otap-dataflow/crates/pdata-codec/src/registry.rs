@@ -8,7 +8,8 @@
 //! and factories only; mutable decoder and encoder instances belong to the
 //! pipeline-local runtime described by [`crate::CodecService`]. Registrations
 //! may be one-sided, so a format can support decoding without encoding or the
-//! reverse.
+//! reverse. Decoder registrations must also provide stateless item counting so
+//! an operator request for item-count telemetry cannot be silently ignored.
 //!
 //! [`CodecRegistry`] validates the complete linked set before a pipeline uses
 //! it. Encoding names identify byte-compatible representations, and duplicate
@@ -27,7 +28,11 @@ use crate::{
     PdataEncoding, RegistryError,
 };
 
-/// Optional allocation-free item scan that needs no mutable codec instance.
+/// Stateless item scan that needs no mutable codec instance.
+///
+/// Decoder registrations must provide this capability. `None` means the bytes
+/// are malformed or otherwise cannot be counted; it is distinct from a valid
+/// empty batch.
 pub type ItemCounter = fn(SignalType, &[u8]) -> Option<usize>;
 
 /// Creates independent decoder state for one pipeline runtime.
@@ -114,7 +119,7 @@ pub struct CodecRegistration {
     decoder: Option<DecoderFactory>,
     /// Encoder factory, absent for decode-only formats.
     encoder: Option<EncoderFactory>,
-    /// Optional stateless item scan used by flow metrics.
+    /// Stateless item scan required when a decoder is registered.
     count_items: Option<ItemCounter>,
 }
 
@@ -147,7 +152,10 @@ impl CodecRegistration {
         self
     }
 
-    /// Adds an allocation-free item counter that needs no codec instance.
+    /// Adds a stateless item counter that needs no codec instance.
+    ///
+    /// Every decoder registration must provide this capability. Registry
+    /// validation rejects a decoder without it.
     #[must_use]
     pub const fn with_item_counter(mut self, count_items: ItemCounter) -> Self {
         self.count_items = Some(count_items);
@@ -373,6 +381,11 @@ fn validate_registration(registration: &CodecRegistration) -> Result<(), Registr
             encoding: encoding.clone(),
         });
     }
+    if registration.decoder.is_some() && registration.count_items.is_none() {
+        return Err(RegistryError::MissingItemCounter {
+            encoding: encoding.clone(),
+        });
+    }
     Ok(())
 }
 
@@ -385,6 +398,21 @@ mod tests {
             .with_format_version("1");
     static EMPTY_REGISTRATIONS: [CodecRegistration; 1] = [CodecRegistration::new(&EMPTY_METADATA)];
 
+    static DECODER_WITHOUT_COUNTER_REGISTRATIONS: [CodecRegistration; 1] =
+        [CodecRegistration::new(&EMPTY_METADATA).with_decoder(|| Box::new(TestDecoder))];
+
+    struct TestDecoder;
+
+    impl PdataDecoder for TestDecoder {
+        fn decode(
+            &mut self,
+            _signal: SignalType,
+            _bytes: &Bytes,
+        ) -> Result<otel_arrow_dfe_pdata::OtapArrowRecords, CodecError> {
+            unreachable!("registry validation test never invokes the decoder")
+        }
+    }
+
     /// Scenario: A linked extension declares no decoder or encoder factory.
     /// Guarantees: Production registry construction rejects empty capabilities.
     #[test]
@@ -392,6 +420,16 @@ mod tests {
         assert!(matches!(
             CodecRegistry::validate(&EMPTY_REGISTRATIONS),
             Err(RegistryError::EmptyCapabilities { .. })
+        ));
+    }
+
+    /// Scenario: A linked extension registers a decoder without an item counter.
+    /// Guarantees: Registry validation rejects a codec that could silently omit requested metrics.
+    #[test]
+    fn rejects_decoder_without_item_counter() {
+        assert!(matches!(
+            CodecRegistry::validate(&DECODER_WITHOUT_COUNTER_REGISTRATIONS),
+            Err(RegistryError::MissingItemCounter { .. })
         ));
     }
 }
