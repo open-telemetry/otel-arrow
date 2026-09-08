@@ -1096,11 +1096,12 @@ dependencies = [
 [[package]]
 name = "azure_core"
 version = "1.2.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=aacb2060111920f9fca2f72bff7e401e8a7198ce#aacb2060111920f9fca2f72bff7e401e8a7198ce"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c7dd9cc7f36a158fb897d029d97a9d2d52719a76ae2be2c729f63a380f5c4255"
 dependencies = [
  "async-lock",
  "async-trait",
- "azure_core_macros 1.1.0-beta.1",
+ "azure_core_macros 1.0.0",
  "bytes",
  "futures",
  "pin-project",
@@ -1127,8 +1128,9 @@ dependencies = [
 
 [[package]]
 name = "azure_core_macros"
-version = "1.1.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=aacb2060111920f9fca2f72bff7e401e8a7198ce#aacb2060111920f9fca2f72bff7e401e8a7198ce"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b9b52dba6a345f3ad2d42ff8d0d63df9d0994cfa29657bf18ffdbf149f78a4f5"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1156,7 +1158,8 @@ dependencies = [
 [[package]]
 name = "azure_identity"
 version = "1.1.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=aacb2060111920f9fca2f72bff7e401e8a7198ce#aacb2060111920f9fca2f72bff7e401e8a7198ce"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b90a143acdae0f21a90bbd056f1472ccf79850c834f79380d5ac303506efc9c"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -7652,14 +7655,10 @@ dependencies = [
  "object_store",
  "otel-arrow-dfe-channel",
  "otel-arrow-dfe-config",
- "otel-arrow-dfe-contrib-nodes",
- "otel-arrow-dfe-core-nodes",
- "otel-arrow-dfe-dev-nodes",
  "otel-arrow-dfe-engine",
  "otel-arrow-dfe-engine-macros",
  "otel-arrow-dfe-pdata",
  "otel-arrow-dfe-quiver",
- "otel-arrow-dfe-state",
  "otel-arrow-dfe-telemetry",
  "otel-arrow-dfe-telemetry-macros",
  "otel-arrow-dfe-test-net",
@@ -7693,7 +7692,6 @@ dependencies = [
  "tower-service",
  "tracing-subscriber",
  "url",
- "weaver_common",
  "wiremock",
  "zstd",
 ]
@@ -7937,21 +7935,26 @@ name = "otel-arrow-dfe-validation"
 version = "0.54.1"
 dependencies = [
  "async-trait",
+ "bytes",
  "humantime-serde",
  "linkme",
  "minijinja",
  "otel-arrow-dfe-admin-api",
  "otel-arrow-dfe-config",
+ "otel-arrow-dfe-contrib-nodes",
  "otel-arrow-dfe-controller",
  "otel-arrow-dfe-core-nodes",
  "otel-arrow-dfe-dev-nodes",
  "otel-arrow-dfe-engine",
  "otel-arrow-dfe-otap",
  "otel-arrow-dfe-pdata",
+ "otel-arrow-dfe-quiver",
+ "otel-arrow-dfe-state",
  "otel-arrow-dfe-telemetry",
  "otel-arrow-dfe-telemetry-macros",
  "otel-arrow-dfe-test-net",
  "otel-arrow-dfe-test-tls-certs",
+ "parking_lot",
  "prost 0.14.4",
  "serde",
  "serde_json",
@@ -7959,6 +7962,8 @@ dependencies = [
  "tempfile",
  "testcontainers",
  "tokio",
+ "tokio-util",
+ "tracing-subscriber",
  "weaver_common",
  "weaver_forge",
  "weaver_resolver",
@@ -11211,7 +11216,8 @@ dependencies = [
 [[package]]
 name = "typespec"
 version = "1.2.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=aacb2060111920f9fca2f72bff7e401e8a7198ce#aacb2060111920f9fca2f72bff7e401e8a7198ce"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1bfbf9f6c7d77a4bb34e5fd05493c752827adff113a86928072a2030a056ce8"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -11249,7 +11255,8 @@ dependencies = [
 [[package]]
 name = "typespec_client_core"
 version = "1.2.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=aacb2060111920f9fca2f72bff7e401e8a7198ce#aacb2060111920f9fca2f72bff7e401e8a7198ce"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ae3020b828414079402a68d56d134b24b8ec58f8287e87149dee6765bc38a525"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -11264,7 +11271,7 @@ dependencies = [
  "time",
  "tracing",
  "typespec 1.2.0-beta.1",
- "typespec_macros 1.1.0-beta.1",
+ "typespec_macros 1.0.0",
  "url",
  "uuid",
 ]
@@ -11283,8 +11290,9 @@ dependencies = [
 
 [[package]]
 name = "typespec_macros"
-version = "1.1.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=aacb2060111920f9fca2f72bff7e401e8a7198ce#aacb2060111920f9fca2f72bff7e401e8a7198ce"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2c608f4427943f8adb211abc95c87672b1b98847152783507d54e3246e502f60"
 dependencies = [
  "proc-macro2",
  "quote",

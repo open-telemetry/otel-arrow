@@ -282,14 +282,18 @@ mod tests {
         let manifest = package(
             r#"
             [package]
-            name = "otel-arrow-dfe-otap"
+            name = "otel-arrow-dfe-validation"
             publish = true
             "#,
         );
 
         assert!(
-            check_publish_policy(Path::new("Cargo.toml"), "otel-arrow-dfe-otap", &manifest)
-                .is_err()
+            check_publish_policy(
+                Path::new("Cargo.toml"),
+                "otel-arrow-dfe-validation",
+                &manifest
+            )
+            .is_err()
         );
     }
 }
