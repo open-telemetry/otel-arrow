@@ -261,29 +261,30 @@ Every receiver implementation should follow this shape:
 let signal = request.signal_type();
 
 // Shared instrumentation: starts optional duration capture.
-let operation = self.metrics.start_operation();
+let processing = self.metrics.start_processing(signal);
 
 // Component-specific: classify, decode, validate, or otherwise process the request.
 let result = self.decode(request);
 
 // Shared instrumentation: records the terminal local outcome before handoff.
-self.metrics
-    .record_operation(signal, &result, Some(request.encoded_len()), operation);
+self.metrics.record(
+    processing.finish(&result, Some(request.encoded_len())),
+);
 
 // Component-specific: propagate the result and hand accepted data downstream.
 let decoded = result?;
 effect_handler.send_message(decoded).await?;
 ```
 
-The receiver makes exactly one terminal `record_operation` call before awaiting
-downstream handoff. That call closes the processing duration and records the
-received outcome. A component-specific rejection metric may be more appropriate
-when a request is rejected before the receiver can classify its signal or admit
-it as a received message.
+The receiver finishes exactly one processing token and records its completed
+observation before awaiting downstream handoff. Finishing the token closes the
+processing duration and captures the received outcome. A component-specific
+rejection metric may be more appropriate when a request is rejected before the
+receiver can classify its signal or admit it as a received message.
 
-The payload-size argument to `record_operation` is `Some(encoded_len)` when the
-receiver exposes the encoded application size by its terminal local outcome and
-`None` otherwise.
+The payload-size argument to `finish` is `Some(encoded_len)` when the receiver
+exposes the encoded application size by its terminal local outcome and `None`
+otherwise.
 
 ### Exporter implementation
 
@@ -295,15 +296,14 @@ let signal = data.signal_type();
 // Shared instrumentation: starts optional duration and lazy item counting.
 let attempt = self
     .metrics
-    .start_attempt(|| data.num_items() as u64);
+    .start_attempt(signal, || data.num_items() as u64);
 
 // Component-specific: encode, submit, retry, or otherwise implement the export.
 let result = self.export(data.payload_ref()).await;
 
 // Shared instrumentation: records one terminal attempt. Pass Some(encoded.len())
 // when the component submits an encoded application payload, otherwise None.
-self.metrics
-    .record_attempt(signal, &result, None, attempt);
+self.metrics.record(attempt.finish(&result, None));
 
 // Component-specific: record bounded diagnostics and apply Ack/Nack semantics.
 if let Err(error_type) = result {

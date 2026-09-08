@@ -6,7 +6,7 @@
 use super::ConsoleOutputFormat;
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_engine::context::PipelineContext;
-use otel_arrow_dfe_otap::metrics::{ExporterAttempt, ExporterMetrics};
+use otel_arrow_dfe_otap::metrics::{CompletedExporterAttempt, ExporterAttempt, ExporterMetrics};
 #[cfg(test)]
 use otel_arrow_dfe_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
@@ -78,8 +78,17 @@ impl ConsoleExporterMetrics {
     }
 
     /// Starts one console export attempt.
-    pub(super) fn start_attempt(&self, item_count: impl FnOnce() -> u64) -> ExporterAttempt {
-        self.shared.start_attempt(item_count)
+    pub(super) fn start_attempt(
+        &self,
+        signal: SignalType,
+        item_count: impl FnOnce() -> u64,
+    ) -> ExporterAttempt {
+        self.shared.start_attempt(signal, item_count)
+    }
+
+    /// Records one completed console export attempt.
+    pub(super) fn record(&mut self, completed: CompletedExporterAttempt) {
+        self.shared.record(completed);
     }
 
     /// Reports all console exporter metric sets.
@@ -95,19 +104,6 @@ impl ConsoleExporterMetrics {
         let mut snapshots = self.shared.terminal_snapshots();
         snapshots.extend(self.failure_metrics.terminal_snapshots());
         snapshots
-    }
-
-    /// Records one terminal console export and its optional failure category.
-    #[inline]
-    pub(super) fn record_attempt(
-        &mut self,
-        signal: SignalType,
-        result: &Result<(), ConsoleExportErrorType>,
-        payload_size: Option<usize>,
-        attempt: ExporterAttempt,
-    ) {
-        self.shared
-            .record_attempt(signal, result, payload_size, attempt);
     }
 
     /// Records one bounded console-specific export error category.
@@ -156,17 +152,17 @@ mod tests {
     #[test]
     fn export_outcomes_and_failures_are_bucketed_consistently() {
         let mut metrics = new_test_metrics(ConsoleOutputFormat::RecordJson);
-        let attempt = metrics.start_attempt(|| 0);
-        metrics.record_attempt(SignalType::Logs, &Ok(()), None, attempt);
-        let attempt = metrics.start_attempt(|| 0);
-        metrics.record_attempt(SignalType::Logs, &Ok(()), None, attempt);
-        let attempt = metrics.start_attempt(|| 0);
-        let result = Err(ConsoleExportErrorType::OtlpViewCreation);
-        metrics.record_attempt(SignalType::Logs, &result, None, attempt);
+        let attempt = metrics.start_attempt(SignalType::Logs, || 0);
+        metrics.record(attempt.finish(&Ok::<(), ConsoleExportErrorType>(()), None));
+        let attempt = metrics.start_attempt(SignalType::Logs, || 0);
+        metrics.record(attempt.finish(&Ok::<(), ConsoleExportErrorType>(()), None));
+        let attempt = metrics.start_attempt(SignalType::Logs, || 0);
+        let result: Result<(), _> = Err(ConsoleExportErrorType::OtlpViewCreation);
+        metrics.record(attempt.finish(&result, None));
         metrics.record_error(SignalType::Logs, ConsoleExportErrorType::OtlpViewCreation);
-        let attempt = metrics.start_attempt(|| 0);
-        let result = Err(ConsoleExportErrorType::UnsupportedSignal);
-        metrics.record_attempt(SignalType::Metrics, &result, None, attempt);
+        let attempt = metrics.start_attempt(SignalType::Metrics, || 0);
+        let result: Result<(), _> = Err(ConsoleExportErrorType::UnsupportedSignal);
+        metrics.record(attempt.finish(&result, None));
         metrics.record_error(
             SignalType::Metrics,
             ConsoleExportErrorType::UnsupportedSignal,
@@ -232,9 +228,9 @@ mod tests {
     #[test]
     fn terminal_snapshots_emit_touched_buckets_once() {
         let (registry, mut metrics) = new_test_metrics_with_registry(ConsoleOutputFormat::Pretty);
-        let attempt = metrics.start_attempt(|| 0);
-        let result = Err(ConsoleExportErrorType::UnsupportedSignal);
-        metrics.record_attempt(SignalType::Traces, &result, None, attempt);
+        let attempt = metrics.start_attempt(SignalType::Traces, || 0);
+        let result: Result<(), _> = Err(ConsoleExportErrorType::UnsupportedSignal);
+        metrics.record(attempt.finish(&result, None));
         metrics.record_error(
             SignalType::Traces,
             ConsoleExportErrorType::UnsupportedSignal,

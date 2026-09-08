@@ -273,10 +273,12 @@ impl Exporter<OtapPdata> for ConsoleExporter {
                     return Ok(self.terminal_state(deadline));
                 }
                 Message::PData(mut data) => {
-                    let attempt = self.metrics.start_attempt(|| data.num_items() as u64);
                     let signal = data.signal_type();
+                    let attempt = self
+                        .metrics
+                        .start_attempt(signal, || data.num_items() as u64);
                     let result = self.export(data.payload_ref()).await;
-                    self.metrics.record_attempt(signal, &result, None, attempt);
+                    self.metrics.record(attempt.finish(&result, None));
                     if let Err(error_type) = result {
                         self.metrics.record_error(signal, error_type);
                     }

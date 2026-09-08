@@ -83,10 +83,22 @@ impl ReceiverProcessingMetrics {
     }
 }
 
-/// Per-message state captured for shared receiver metrics.
+/// Receiver-local processing state captured for enabled shared metrics.
 #[derive(Debug)]
-pub struct ReceiverOperation {
+pub struct ReceiverProcessing {
+    signal: SignalType,
     started_at: Option<Instant>,
+    record_payload_size: bool,
+}
+
+/// Completed receiver processing ready to be recorded.
+#[derive(Debug)]
+#[must_use = "completed receiver processing must be recorded"]
+pub struct CompletedReceiverProcessing {
+    signal: SignalType,
+    outcome: Outcome,
+    duration: Option<Duration>,
+    payload_size: Option<u64>,
 }
 
 /// Shared receiver metrics with node-interest-gated processing duration.
@@ -112,41 +124,33 @@ impl ReceiverMetrics {
 
     /// Starts receiver-local processing for one classified external message.
     #[must_use]
-    pub fn start_operation(&self) -> ReceiverOperation {
-        ReceiverOperation {
+    pub fn start_processing(&self, signal: SignalType) -> ReceiverProcessing {
+        ReceiverProcessing {
+            signal,
             started_at: self
                 .interests
                 .contains(Interests::COMPONENT_DURATION)
                 .then(Instant::now),
+            record_payload_size: self.interests.contains(Interests::PRODUCED_CONSUMED_SIZE),
         }
     }
 
-    /// Records terminal receiver handling and ends local processing before handoff.
-    pub fn record_operation<T, E>(
-        &mut self,
-        signal: SignalType,
-        result: &Result<T, E>,
-        payload_size: Option<usize>,
-        operation: ReceiverOperation,
-    ) {
-        let outcome = if result.is_ok() {
-            Outcome::Success
-        } else {
-            Outcome::Failure
-        };
-        if let Some(started_at) = operation.started_at {
+    /// Records one completed receiver processing observation.
+    pub fn record(&mut self, completed: CompletedReceiverProcessing) {
+        if let Some(duration) = completed.duration {
             self.processing
-                .with(SignalAttributes { signal })
-                .record(started_at.elapsed());
+                .with(SignalAttributes {
+                    signal: completed.signal,
+                })
+                .record(duration);
         }
-        let attributes = SignalOutcomeAttributes { signal, outcome };
+        let attributes = SignalOutcomeAttributes {
+            signal: completed.signal,
+            outcome: completed.outcome,
+        };
         self.received.with(attributes).record();
-        if self.interests.contains(Interests::PRODUCED_CONSUMED_SIZE)
-            && let Some(payload_size) = payload_size
-        {
-            self.payload
-                .with(attributes)
-                .record(u64::try_from(payload_size).unwrap_or(u64::MAX));
+        if let Some(payload_size) = completed.payload_size {
+            self.payload.with(attributes).record(payload_size);
         }
     }
 
@@ -170,6 +174,30 @@ impl ReceiverMetrics {
     #[must_use]
     pub fn received_for(&self, attributes: SignalOutcomeAttributes) -> &ReceiverReceivedMetrics {
         self.received.get(attributes)
+    }
+}
+
+impl ReceiverProcessing {
+    /// Finishes receiver-local processing before handoff.
+    #[must_use = "the completed receiver processing observation must be recorded"]
+    pub fn finish<T, E>(
+        self,
+        result: &Result<T, E>,
+        payload_size: Option<usize>,
+    ) -> CompletedReceiverProcessing {
+        let outcome = if result.is_ok() {
+            Outcome::Success
+        } else {
+            Outcome::Failure
+        };
+        CompletedReceiverProcessing {
+            signal: self.signal,
+            outcome,
+            duration: self.started_at.map(|started_at| started_at.elapsed()),
+            payload_size: payload_size
+                .filter(|_| self.record_payload_size)
+                .map(|size| u64::try_from(size).unwrap_or(u64::MAX)),
+        }
     }
 }
 
@@ -259,7 +287,20 @@ impl ExporterAttemptedItemsMetrics {
 /// Per-message state captured only for enabled shared exporter metrics.
 #[derive(Debug)]
 pub struct ExporterAttempt {
+    signal: SignalType,
     started_at: Option<Instant>,
+    items: Option<u64>,
+    record_payload_size: bool,
+}
+
+/// Completed exporter attempt ready to be recorded.
+#[derive(Debug)]
+#[must_use = "completed exporter attempts must be recorded"]
+pub struct CompletedExporterAttempt {
+    signal: SignalType,
+    outcome: Outcome,
+    duration: Option<Duration>,
+    payload_size: Option<u64>,
     items: Option<u64>,
 }
 
@@ -287,8 +328,14 @@ impl ExporterMetrics {
     }
 
     /// Starts one attempt without paying optional measurement costs when disabled.
-    pub fn start_attempt(&self, item_count: impl FnOnce() -> u64) -> ExporterAttempt {
+    #[must_use]
+    pub fn start_attempt(
+        &self,
+        signal: SignalType,
+        item_count: impl FnOnce() -> u64,
+    ) -> ExporterAttempt {
         ExporterAttempt {
+            signal,
             started_at: self
                 .interests
                 .contains(Interests::COMPONENT_DURATION)
@@ -297,35 +344,24 @@ impl ExporterMetrics {
                 .interests
                 .contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS)
                 .then(item_count),
+            record_payload_size: self.interests.contains(Interests::PRODUCED_CONSUMED_SIZE),
         }
     }
 
-    /// Records the terminal outcome of one exporter attempt.
-    pub fn record_attempt<T, E>(
-        &mut self,
-        signal: SignalType,
-        result: &Result<T, E>,
-        payload_size: Option<usize>,
-        attempt: ExporterAttempt,
-    ) {
-        let outcome = if result.is_ok() {
-            Outcome::Success
-        } else {
-            Outcome::Failure
+    /// Records one completed exporter attempt.
+    pub fn record(&mut self, completed: CompletedExporterAttempt) {
+        let attributes = SignalOutcomeAttributes {
+            signal: completed.signal,
+            outcome: completed.outcome,
         };
-        let attributes = SignalOutcomeAttributes { signal, outcome };
         self.attempted.with(attributes).record();
-        if let Some(started_at) = attempt.started_at {
-            self.duration.with(attributes).record(started_at.elapsed());
+        if let Some(duration) = completed.duration {
+            self.duration.with(attributes).record(duration);
         }
-        if self.interests.contains(Interests::PRODUCED_CONSUMED_SIZE)
-            && let Some(payload_size) = payload_size
-        {
-            self.payload
-                .with(attributes)
-                .record(u64::try_from(payload_size).unwrap_or(u64::MAX));
+        if let Some(payload_size) = completed.payload_size {
+            self.payload.with(attributes).record(payload_size);
         }
-        if let Some(items) = attempt.items {
+        if let Some(items) = completed.items {
             self.items.with(attributes).record(items);
         }
     }
@@ -352,6 +388,31 @@ impl ExporterMetrics {
     #[must_use]
     pub fn attempted_for(&self, attributes: SignalOutcomeAttributes) -> &ExporterAttemptedMetrics {
         self.attempted.get(attributes)
+    }
+}
+
+impl ExporterAttempt {
+    /// Finishes one exporter attempt.
+    #[must_use = "the completed exporter attempt must be recorded"]
+    pub fn finish<T, E>(
+        self,
+        result: &Result<T, E>,
+        payload_size: Option<usize>,
+    ) -> CompletedExporterAttempt {
+        let outcome = if result.is_ok() {
+            Outcome::Success
+        } else {
+            Outcome::Failure
+        };
+        CompletedExporterAttempt {
+            signal: self.signal,
+            outcome,
+            duration: self.started_at.map(|started_at| started_at.elapsed()),
+            payload_size: payload_size
+                .filter(|_| self.record_payload_size)
+                .map(|size| u64::try_from(size).unwrap_or(u64::MAX)),
+            items: self.items,
+        }
     }
 }
 
@@ -706,11 +767,11 @@ mod tests {
         let mut metrics = ExporterMetrics::register(&pipeline_ctx);
         let item_count_called = Cell::new(false);
 
-        let attempt = metrics.start_attempt(|| {
+        let attempt = metrics.start_attempt(SignalType::Logs, || {
             item_count_called.set(true);
             5
         });
-        metrics.record_attempt(SignalType::Logs, &Ok::<(), ()>(()), Some(128), attempt);
+        metrics.record(attempt.finish(&Ok::<(), ()>(()), Some(128)));
 
         assert!(!item_count_called.get());
         let snapshots = metrics.terminal_snapshots();
@@ -736,11 +797,11 @@ mod tests {
         let mut metrics = ExporterMetrics::register(&pipeline_ctx);
         let item_count_called = Cell::new(false);
 
-        let attempt = metrics.start_attempt(|| {
+        let attempt = metrics.start_attempt(SignalType::Metrics, || {
             item_count_called.set(true);
             5
         });
-        metrics.record_attempt(SignalType::Metrics, &Err::<(), ()>(()), Some(128), attempt);
+        metrics.record(attempt.finish(&Err::<(), ()>(()), Some(128)));
 
         assert!(item_count_called.get());
         let snapshots = metrics.terminal_snapshots();
@@ -766,8 +827,8 @@ mod tests {
         let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::empty());
         let mut metrics = ReceiverMetrics::register(&pipeline_ctx);
 
-        let operation = metrics.start_operation();
-        metrics.record_operation(SignalType::Logs, &Ok::<(), ()>(()), Some(128), operation);
+        let processing = metrics.start_processing(SignalType::Logs);
+        metrics.record(processing.finish(&Ok::<(), ()>(()), Some(128)));
 
         let snapshots = metrics.terminal_snapshots();
         assert_eq!(snapshots.len(), 1);
@@ -789,8 +850,8 @@ mod tests {
         let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(interests);
         let mut metrics = ReceiverMetrics::register(&pipeline_ctx);
 
-        let operation = metrics.start_operation();
-        metrics.record_operation(SignalType::Traces, &Err::<(), ()>(()), Some(128), operation);
+        let processing = metrics.start_processing(SignalType::Traces);
+        metrics.record(processing.finish(&Err::<(), ()>(()), Some(128)));
 
         let snapshots = metrics.terminal_snapshots();
         assert_eq!(snapshots.len(), 3);
@@ -821,8 +882,8 @@ mod tests {
         let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(interests);
         let mut metrics = ReceiverMetrics::register(&pipeline_ctx);
 
-        let operation = metrics.start_operation();
-        metrics.record_operation(SignalType::Logs, &Ok::<(), ()>(()), None, operation);
+        let processing = metrics.start_processing(SignalType::Logs);
+        metrics.record(processing.finish(&Ok::<(), ()>(()), None));
 
         let snapshots = metrics.terminal_snapshots();
         assert_eq!(snapshots.len(), 2);
