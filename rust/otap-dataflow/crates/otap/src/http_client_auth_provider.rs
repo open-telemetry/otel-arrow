@@ -80,8 +80,10 @@ bitflags! {
     pub struct HttpClientAuthProviders: u8 {
         /// Bearer Token authentication.
         const BEARER_TOKEN = 0b00000001;
-        /// API Key authentication;
+        /// API Key authentication.
         const API_KEY      = 0b00000010;
+        /// Basic authentication.
+        const BASIC        = 0b00000100;
     }
 }
 
@@ -130,7 +132,18 @@ pub fn new_http_client_auth_provider(
         false => None
     };
 
-    let count_of_providers = vec![bearer_auth.is_some(), api_key_auth.is_some()]
+    // Optionally resolve a bound basic auth provider. A bound provider supplies refreshed credentials.
+    let basic_auth = match supported_providers.contains(HttpClientAuthProviders::BASIC) {
+        true => capabilities
+            .optional_local::<otel_arrow_dfe_engine::capability::auth::basic_auth_provider::BasicAuthProvider>()
+            .map_err(|e| otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                error: e.to_string(),
+            })?
+            .map(BasicAuth::new),
+        false => None
+    };
+
+    let count_of_providers = vec![bearer_auth.is_some(), api_key_auth.is_some(), basic_auth.is_some()]
         .into_iter()
         .filter(|v| *v)
         .count();
@@ -144,6 +157,8 @@ pub fn new_http_client_auth_provider(
         Some(Box::new(bearer_auth))
     } else if let Some(api_key_auth) = api_key_auth {
         Some(Box::new(api_key_auth))
+    } else if let Some(basic_auth) = basic_auth {
+        Some(Box::new(basic_auth))
     } else {
         // Absent bindings keeps the default (no-auth) behavior
         None
