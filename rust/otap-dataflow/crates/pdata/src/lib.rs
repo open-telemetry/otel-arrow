@@ -39,6 +39,7 @@ pub use decode::decoder::Consumer;
 pub use encode::producer::Producer;
 
 use otel_arrow_dfe_config::ConversionOptions;
+use serde::{Deserialize, Serialize};
 
 /// Try to convert with options, including limits.
 pub trait TryFromWithOptions<T>: Sized {
@@ -143,5 +144,31 @@ impl TryFrom<&[u8]> for SpanID {
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
         let id_bytes: [u8; 8] = value.try_into()?;
         Ok(SpanID::from(id_bytes))
+    }
+}
+
+/// How to size a batch.
+#[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum Sizer {
+    /// Count requests. This metric counts one per OtapPdata message.
+    Requests,
+    /// Count items.  The number of log records, trace spans, or
+    /// metric data points.
+    Items,
+    /// Count bytes.
+    Bytes,
+}
+
+impl Sizer {
+    /// Returns Sizer-specific size logic.
+    pub fn batch_size<T: OtapPayloadHelpers>(&self, payload: &T) -> Result<usize, error::Error> {
+        match self {
+            Self::Requests => Ok(1),
+            Self::Items => Ok(payload.num_items()),
+            Self::Bytes => payload.num_bytes().ok_or_else(|| error::Error::Format {
+                error: "bytes encoding not known".into(),
+            }),
+        }
     }
 }
