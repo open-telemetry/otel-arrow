@@ -469,7 +469,7 @@ impl<
                         // expiry, so reusing it here would defer the planned
                         // early refresh far too long.
                         if rx.has_changed().unwrap_or(false) {
-                            if let Some(value) = self.current_fresh_value() {
+                            && let Some(value) = self.current_fresh_value() {
                                 return Ok(value);
                             }
                         }

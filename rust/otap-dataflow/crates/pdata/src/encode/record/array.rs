@@ -267,10 +267,10 @@ where
     where
         T: PartialEq<T2>,
     {
-        if let Some(default_val) = default_value {
-            if default_val == value {
-                return true;
-            }
+        if let Some(default_val) = default_value
+            && default_val == value
+        {
+            return true;
         }
 
         false

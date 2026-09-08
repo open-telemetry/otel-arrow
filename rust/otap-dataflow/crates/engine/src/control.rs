@@ -714,10 +714,10 @@ impl<PData> ControlSenders<PData> {
 
         for typed_sender in self.senders.values() {
             // Apply filter if specified
-            if let Some(filter_type) = node_type_filter {
-                if typed_sender.node_type != filter_type {
-                    continue;
-                }
+            if let Some(filter_type) = node_type_filter
+                && typed_sender.node_type != filter_type
+            {
+                continue;
             }
 
             let shutdown_msg = NodeControlMsg::Shutdown {

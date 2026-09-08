@@ -9,6 +9,11 @@
 
 use super::config::{AttributeValueType, HeaderExtraction};
 use bytes::Bytes;
+use otel_arrow_dfe_core_nodes::receivers::syslog_cef_receiver::{
+    MAX_MESSAGE_SIZE as MAX_SYSLOG_MESSAGE_SIZE,
+    arrow_records_encoder::ArrowRecordsBuilder as SyslogArrowRecordsBuilder,
+    parser::parse as parse_syslog,
+};
 use otel_arrow_dfe_engine::error::Error as EngineError;
 use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
 use otel_arrow_dfe_pdata::Consumer as PdataConsumer;
@@ -272,6 +277,15 @@ impl HeaderExtractions {
         self.apply_otap_resource_attrs(arrow_records)
     }
 
+    /// Apply header extractions to a Syslog logs payload.
+    ///
+    /// Parses one complete Syslog message, converts it to OTAP Arrow logs, and
+    /// injects attributes into `ResourceAttrs`.
+    pub(crate) fn apply_syslog_logs(&self, data: &[u8]) -> Result<OtapPdata, EngineError> {
+        let arrow_records = decode_syslog_logs(data)?;
+        self.apply_otap_resource_attrs(arrow_records)
+    }
+
     /// Shared OTAP logic: apply attribute transform to `ResourceAttrs`.
     fn apply_otap_resource_attrs(
         &self,
@@ -350,6 +364,30 @@ fn decode_otap_logs(data: &[u8]) -> Result<OtapArrowRecords, EngineError> {
             error: e.to_string(),
         })?,
     ))
+}
+
+/// Parse one complete Syslog message and encode it as OTAP Arrow logs.
+pub(crate) fn decode_syslog_logs(data: &[u8]) -> Result<OtapArrowRecords, EngineError> {
+    if data.len() > MAX_SYSLOG_MESSAGE_SIZE {
+        return Err(EngineError::PdataConversionError {
+            error: format!(
+                "Syslog/CEF payload size {} exceeds the maximum of {} bytes",
+                data.len(),
+                MAX_SYSLOG_MESSAGE_SIZE,
+            ),
+        });
+    }
+
+    let parsed = parse_syslog(data).map_err(|e| EngineError::PdataConversionError {
+        error: format!("Failed to parse Syslog payload: {e:?}"),
+    })?;
+    let mut builder = SyslogArrowRecordsBuilder::new();
+    builder.append_syslog(parsed);
+    builder
+        .build()
+        .map_err(|e| EngineError::PdataConversionError {
+            error: format!("Failed to encode Syslog payload as Arrow records: {e}"),
+        })
 }
 
 /// Parse raw header bytes into an [`any_value::Value`] for the OTLP protobuf path.
@@ -589,6 +627,15 @@ mod tests {
         }
     }
 
+    fn syslog_payload_with_size(size: usize) -> Vec<u8> {
+        let header = b"<34>1 2024-01-15T10:30:45.123Z host app - ID47 - ";
+        assert!(size >= header.len());
+        let mut payload = Vec::with_capacity(size);
+        payload.extend_from_slice(header);
+        payload.resize(size, b'X');
+        payload
+    }
+
     /// Create OTAP Arrow wire bytes from the `create_traces_with_spans()` helper.
     fn create_traces_otap_bytes() -> Vec<u8> {
         let request = create_traces_with_spans();
@@ -622,6 +669,33 @@ mod tests {
             .try_into_with_default()
             .expect("OTAP -> OTLP conversion");
         ExportTraceServiceRequest::decode(otlp.as_bytes()).expect("decode OTLP traces")
+    }
+
+    // ---- Routing and payload correctness: Syslog bounds ----
+
+    /// Scenario: a Kafka record contains a valid Syslog message exactly at the shared
+    /// Syslog receiver size limit.
+    /// Guarantees: the boundary-sized payload is accepted and encoded as Arrow logs.
+    #[test]
+    fn decode_syslog_logs_accepts_payload_at_size_limit() {
+        let payload = syslog_payload_with_size(MAX_SYSLOG_MESSAGE_SIZE);
+        let _ = decode_syslog_logs(&payload).expect("payload at the size limit should decode");
+    }
+
+    /// Scenario: a Kafka record contains a Syslog message one byte larger than the
+    /// shared Syslog receiver size limit.
+    /// Guarantees: the payload is rejected before parsing to bound parser and Arrow
+    /// encoder resource use.
+    #[test]
+    fn decode_syslog_logs_rejects_payload_over_size_limit() {
+        let payload = syslog_payload_with_size(MAX_SYSLOG_MESSAGE_SIZE + 1);
+        let error = decode_syslog_logs(&payload).expect_err("oversized payload should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("exceeds the maximum of 16384 bytes")
+        );
     }
 
     // ---- Routing and payload correctness: header extraction ----

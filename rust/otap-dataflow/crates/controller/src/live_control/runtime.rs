@@ -1201,27 +1201,26 @@ impl<
             deployed_key.pipeline_id.clone(),
         );
         loop {
-            if let Some(status) = self.observed_state_handle.pipeline_status(&pipeline_key) {
-                if let Some(instance) =
+            if let Some(status) = self.observed_state_handle.pipeline_status(&pipeline_key)
+                && let Some(instance) =
                     status.instance_status(deployed_key.core_id, deployed_key.deployment_generation)
-                {
-                    let accepted = instance.accepted_condition().status == ConditionStatus::True;
-                    let ready = instance.ready_condition().status == ConditionStatus::True;
-                    if accepted && ready {
-                        return Ok(());
+            {
+                let accepted = instance.accepted_condition().status == ConditionStatus::True;
+                let ready = instance.ready_condition().status == ConditionStatus::True;
+                if accepted && ready {
+                    return Ok(());
+                }
+                match instance.phase() {
+                    PipelinePhase::Failed(_)
+                    | PipelinePhase::Rejected(_)
+                    | PipelinePhase::Deleted
+                    | PipelinePhase::Stopped => {
+                        return Err(format!(
+                            "pipeline failed to become ready on core {} (generation {})",
+                            deployed_key.core_id, deployed_key.deployment_generation
+                        ));
                     }
-                    match instance.phase() {
-                        PipelinePhase::Failed(_)
-                        | PipelinePhase::Rejected(_)
-                        | PipelinePhase::Deleted
-                        | PipelinePhase::Stopped => {
-                            return Err(format!(
-                                "pipeline failed to become ready on core {} (generation {})",
-                                deployed_key.core_id, deployed_key.deployment_generation
-                            ));
-                        }
-                        _ => {}
-                    }
+                    _ => {}
                 }
             }
 
