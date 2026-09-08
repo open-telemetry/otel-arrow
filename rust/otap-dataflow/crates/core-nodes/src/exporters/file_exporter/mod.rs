@@ -43,7 +43,7 @@ use otel_arrow_dfe_pdata::views::otlp::bytes::metrics::RawMetricsData;
 use otel_arrow_dfe_pdata::views::otlp::bytes::traces::RawTraceData;
 #[cfg(test)]
 use otel_arrow_dfe_pdata_codec::OtapPayload;
-use otel_arrow_dfe_pdata_codec::{PdataEncoding, PdataView, InspectionPlan};
+use otel_arrow_dfe_pdata_codec::{InspectionPlan, PdataEncoding, PdataView};
 use otel_arrow_dfe_telemetry::attributes::AttributeEnum as _;
 use otel_arrow_dfe_telemetry::common_attributes::{
     Outcome, SignalAttributes, SignalOutcomeAttributes,
@@ -166,7 +166,10 @@ impl FileExporter {
             self.record_export_outcome(signal, Outcome::Success);
             return Ok(());
         }
-        let view = match effect_handler.view(pdata.payload_ref(), inspection_plan).await {
+        let view = match effect_handler
+            .view(pdata.payload_ref(), inspection_plan)
+            .await
+        {
             Ok(view) => view,
             Err(error) => {
                 self.record_export_outcome(signal, Outcome::Failure);

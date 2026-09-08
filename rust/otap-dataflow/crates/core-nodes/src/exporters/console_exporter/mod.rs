@@ -33,7 +33,7 @@ use otel_arrow_dfe_otap::pdata::{OtapPdata, PdataEffectHandlerExtension};
 use otel_arrow_dfe_pdata::views::otap::{OtapLogsView, OtapMetricsView};
 use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
 use otel_arrow_dfe_pdata::views::otlp::bytes::metrics::RawMetricsData;
-use otel_arrow_dfe_pdata_codec::{OtapPayload, PdataEncoding, PdataView, InspectionPlan};
+use otel_arrow_dfe_pdata_codec::{InspectionPlan, OtapPayload, PdataEncoding, PdataView};
 use otel_arrow_dfe_pdata_views::views::common::InstrumentationScopeView;
 use otel_arrow_dfe_pdata_views::views::logs::{
     LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView,
@@ -308,7 +308,10 @@ impl ConsoleExporter {
         inspection_plan: &InspectionPlan,
     ) -> Result<(), ConsoleExportErrorType> {
         match payload.signal_type() {
-            SignalType::Logs => self.export_logs(payload, effect_handler, inspection_plan).await,
+            SignalType::Logs => {
+                self.export_logs(payload, effect_handler, inspection_plan)
+                    .await
+            }
             SignalType::Traces => self.unsupported_signal("traces"),
             SignalType::Metrics => {
                 self.export_metrics(payload, effect_handler, inspection_plan)

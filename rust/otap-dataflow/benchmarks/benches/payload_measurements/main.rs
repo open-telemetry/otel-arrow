@@ -322,7 +322,13 @@ fn direct_codec_paths(c: &mut Criterion) {
         });
 
         _ = group.bench_function(BenchmarkId::new("OTLP/view", record_count), |b| {
-            b.iter(|| black_box(service.view(&encoded, &inspection_plan).expect("OTLP codec view")))
+            b.iter(|| {
+                black_box(
+                    service
+                        .view(&encoded, &inspection_plan)
+                        .expect("OTLP codec view"),
+                )
+            })
         });
 
         _ = group.bench_function(

@@ -13,7 +13,7 @@ use prost::Message;
 
 use crate::{
     CodecError, CodecRegistry, CodecService, EncodeOutput, EncodedPdata, EncodingPlan,
-    PdataEncoding, PdataView, ResolvedCodec, InspectionPlan,
+    InspectionPlan, PdataEncoding, PdataView, ResolvedCodec,
 };
 
 /// Concrete inline storage used during the transition from specialized OTLP bytes.
@@ -294,17 +294,26 @@ impl PdataPayload {
         }
     }
 
-    /// Returns the primary-signal item count, or zero when a codec cannot count lazily.
+    /// Returns the primary-signal item count.
+    ///
+    /// A codec counter may return `None` for bytes it cannot count. This method
+    /// preserves the historical zero fallback, but does not cache that fallback
+    /// as a known empty batch.
     pub fn num_items(&mut self) -> usize {
         if let Some(count) = self.known_item_count() {
             return count;
         }
         let count = match &self.storage {
             PayloadStorage::OtlpBytes(bytes) => bytes.num_items(),
-            PayloadStorage::Encoded(encoded) => encoded
-                .codec()
-                .count_items(encoded.signal_type(), encoded.bytes())
-                .unwrap_or(0),
+            PayloadStorage::Encoded(encoded) => {
+                let Some(count) = encoded
+                    .codec()
+                    .count_items(encoded.signal_type(), encoded.bytes())
+                else {
+                    return 0;
+                };
+                count
+            }
             PayloadStorage::OtapArrowRecords(records) => records.num_items(),
         };
         self.item_count.set(count);
@@ -606,9 +615,31 @@ impl TryFrom<OtlpProtoMessage> for PdataPayload {
 #[cfg(test)]
 mod tests {
     use std::mem::size_of;
+    use std::sync::Arc;
 
     use super::*;
+    use crate::{CodecMetadata, CodecRegistration};
     use otel_arrow_dfe_pdata::otap::Logs;
+
+    const UNCOUNTABLE_ENCODING: PdataEncoding = PdataEncoding::new("uncountable-test-v1");
+    static UNCOUNTABLE_METADATA: CodecMetadata =
+        CodecMetadata::new(UNCOUNTABLE_ENCODING, &[SignalType::Logs]);
+    static UNCOUNTABLE_REGISTRATIONS: [CodecRegistration; 1] =
+        [CodecRegistration::new(&UNCOUNTABLE_METADATA)
+            .with_decoder(|_| Box::new(UnusedDecoder))
+            .with_item_counter(|_, _| None)];
+
+    struct UnusedDecoder;
+
+    impl crate::PdataDecoder for UnusedDecoder {
+        fn decode(
+            &mut self,
+            _signal: SignalType,
+            _bytes: &Bytes,
+        ) -> Result<OtapArrowRecords, CodecError> {
+            unreachable!("item counting must not instantiate the decoder")
+        }
+    }
 
     /// Scenario: Transitional OTLP, generalized encoded, and native storage is built on 64 bit.
     /// Guarantees: Inline encoded storage keeps the runtime payload at 64 bytes.
@@ -628,6 +659,26 @@ mod tests {
         let payload = PdataPayload::from(OtapArrowRecords::Logs(Logs::default()));
         let records = payload.try_into_otap(&codecs).unwrap();
         assert!(matches!(records, OtapArrowRecords::Logs(_)));
-        assert_eq!(codecs.test_instance_count(), 0);
+        assert_eq!(codecs.test_instance_count().unwrap(), 0);
+    }
+
+    /// Scenario: A decoder's stateless counter cannot determine an encoded batch's item count.
+    /// Guarantees: The zero compatibility fallback is not cached as a known empty batch.
+    #[test]
+    fn unavailable_encoded_count_remains_unknown() {
+        let registry = Arc::new(
+            CodecRegistry::validate(&UNCOUNTABLE_REGISTRATIONS).expect("valid test registry"),
+        );
+        let codec = registry
+            .resolve_decoder(&UNCOUNTABLE_ENCODING, SignalType::Logs)
+            .expect("test decoder");
+        let mut payload = PdataPayload::from_encoded(
+            codec
+                .admit(SignalType::Logs, Bytes::from_static(b"opaque"))
+                .expect("supported signal"),
+        );
+
+        assert_eq!(payload.num_items(), 0);
+        assert_eq!(payload.known_item_count(), None);
     }
 }

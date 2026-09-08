@@ -97,7 +97,7 @@ use otel_arrow_dfe_pdata::views::otap::OtapLogsView;
 use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
 use otel_arrow_dfe_pdata::views::otlp::bytes::metrics::RawMetricsData;
 use otel_arrow_dfe_pdata::views::otlp::bytes::traces::RawTraceData;
-use otel_arrow_dfe_pdata_codec::{PdataEncoding, PdataView, InspectionPlan};
+use otel_arrow_dfe_pdata_codec::{InspectionPlan, PdataEncoding, PdataView};
 use otel_arrow_dfe_pdata_views::views::common::{AnyValueView, AttributeView, ValueType};
 use otel_arrow_dfe_pdata_views::views::logs::{LogsDataView, ResourceLogsView};
 use otel_arrow_dfe_pdata_views::views::metrics::{MetricsView, ResourceMetricsView};
@@ -574,7 +574,10 @@ impl ContentRouter {
     ) -> RouteResolution {
         let signal_type = pdata.signal_type();
 
-        let view = match effect_handler.view(pdata.payload_ref(), inspection_plan).await {
+        let view = match effect_handler
+            .view(pdata.payload_ref(), inspection_plan)
+            .await
+        {
             Ok(view) => view,
             Err(_) => return RouteResolution::ConversionError,
         };
@@ -881,10 +884,15 @@ impl local::Processor<OtapPdata> for ContentRouter {
                     self.inspection_plan =
                         Some(effect_handler.resolve_inspection_plan(&[PdataEncoding::OTLP])?);
                 }
-                let inspection_plan = self.inspection_plan.as_ref().expect("view plan initialized");
+                let inspection_plan = self
+                    .inspection_plan
+                    .as_ref()
+                    .expect("view plan initialized");
                 // Resolve routing once up front, then handle route-selection
                 // failures separately from downstream admission failures.
-                let resolution = self.resolve_route(effect_handler, &data, inspection_plan).await;
+                let resolution = self
+                    .resolve_route(effect_handler, &data, inspection_plan)
+                    .await;
 
                 match resolution {
                     RouteResolution::Matched(port) => {

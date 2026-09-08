@@ -36,8 +36,8 @@ use otel_arrow_dfe_engine::{
 };
 use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayloadHelpers};
 use otel_arrow_dfe_pdata_codec::{
-    CodecError, CodecService, EncodePolicy, EncodingPlan, OtapPayload, PdataEncoding,
-    InspectionPlan, PdataPayloadDecodeError, PdataView,
+    CodecError, CodecService, EncodePolicy, EncodingPlan, InspectionPlan, OtapPayload,
+    PdataEncoding, PdataPayloadDecodeError, PdataView,
 };
 
 use crate::transport_headers::TransportHeaders;
@@ -1079,7 +1079,10 @@ pub trait PdataEffectHandlerExtension: CodecEffectHandler {
     }
 
     /// Resolves accepted encoded identities once while starting a read-only node.
-    fn resolve_inspection_plan(&self, encodings: &[PdataEncoding]) -> Result<InspectionPlan, CodecError> {
+    fn resolve_inspection_plan(
+        &self,
+        encodings: &[PdataEncoding],
+    ) -> Result<InspectionPlan, CodecError> {
         let codecs = encodings
             .iter()
             .map(|encoding| self.codec_service().registry().resolve(encoding))

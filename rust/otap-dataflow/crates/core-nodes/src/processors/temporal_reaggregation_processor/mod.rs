@@ -44,7 +44,7 @@ use otel_arrow_dfe_pdata::views::otap::OtapMetricsView;
 use otel_arrow_dfe_pdata::views::otlp::bytes::metrics::RawMetricsData;
 #[cfg(test)]
 use otel_arrow_dfe_pdata_codec::PayloadData;
-use otel_arrow_dfe_pdata_codec::{OtapPayload, PdataEncoding, PdataView, InspectionPlan};
+use otel_arrow_dfe_pdata_codec::{InspectionPlan, OtapPayload, PdataEncoding, PdataView};
 use otel_arrow_dfe_pdata_views::views::common::InstrumentationScopeView;
 use otel_arrow_dfe_pdata_views::views::metrics::{
     AggregationTemporality, DataType, DataView, ExponentialHistogramDataPointView,
@@ -290,8 +290,9 @@ impl local::Processor<OtapPdata> for TemporalReaggregationProcessor {
                 match pdata.signal_type() {
                     SignalType::Metrics => {
                         if self.inspection_plan.is_none() {
-                            self.inspection_plan =
-                                Some(effect_handler.resolve_inspection_plan(&[PdataEncoding::OTLP])?);
+                            self.inspection_plan = Some(
+                                effect_handler.resolve_inspection_plan(&[PdataEncoding::OTLP])?,
+                            );
                         }
                         let inspection_plan = self
                             .inspection_plan
@@ -643,7 +644,10 @@ impl TemporalReaggregationProcessor {
         pdata: OtapPdata,
         inspection_plan: &InspectionPlan,
     ) -> Result<(), Error> {
-        let view = match effect_handler.view(pdata.payload_ref(), inspection_plan).await {
+        let view = match effect_handler
+            .view(pdata.payload_ref(), inspection_plan)
+            .await
+        {
             Ok(view) => view,
             Err(error) => {
                 self.metrics.record_failure(ErrorType::ViewCreation);

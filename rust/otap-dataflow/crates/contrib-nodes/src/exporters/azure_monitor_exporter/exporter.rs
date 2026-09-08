@@ -17,7 +17,7 @@ use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_pdata::otlp::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::views::otap::OtapLogsView;
 use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
-use otel_arrow_dfe_pdata_codec::{OtapPayload, PdataEncoding, PdataView, ViewPlan};
+use otel_arrow_dfe_pdata_codec::{InspectionPlan, OtapPayload, PdataEncoding, PdataView};
 
 use super::client::LogsIngestionClientPool;
 use super::config::Config;
@@ -68,7 +68,7 @@ pub struct AzureMonitorExporter {
     last_batch_queued_at: tokio::time::Instant,
     heartbeat: Option<Heartbeat>,
     token_provider: Option<Box<dyn BearerTokenProvider>>,
-    view_plan: Option<ViewPlan>,
+    inspection_plan: Option<InspectionPlan>,
 }
 
 impl AzureMonitorExporter {
@@ -117,7 +117,7 @@ impl AzureMonitorExporter {
             last_batch_queued_at: tokio::time::Instant::now(),
             heartbeat,
             token_provider: Some(token_provider),
-            view_plan: None,
+            inspection_plan: None,
         })
     }
 
@@ -460,13 +460,16 @@ impl AzureMonitorExporter {
                 *msg_id += 1;
                 let (context, payload) = pdata.into_parts();
 
-                if self.view_plan.is_none() {
-                    self.view_plan =
-                        Some(effect_handler.resolve_view_plan(&[PdataEncoding::OTLP])?);
+                if self.inspection_plan.is_none() {
+                    self.inspection_plan =
+                        Some(effect_handler.resolve_inspection_plan(&[PdataEncoding::OTLP])?);
                 }
-                let view_plan = self.view_plan.as_ref().expect("view plan initialized");
+                let inspection_plan = self
+                    .inspection_plan
+                    .as_ref()
+                    .expect("view plan initialized");
 
-                let view = match effect_handler.view(&payload, view_plan).await {
+                let view = match effect_handler.view(&payload, inspection_plan).await {
                     Ok(view) => view,
                     Err(error) => {
                         effect_handler

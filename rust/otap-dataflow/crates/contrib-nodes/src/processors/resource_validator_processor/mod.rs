@@ -73,7 +73,7 @@ use otel_arrow_dfe_pdata::views::otap::OtapLogsView;
 use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
 use otel_arrow_dfe_pdata::views::otlp::bytes::metrics::RawMetricsData;
 use otel_arrow_dfe_pdata::views::otlp::bytes::traces::RawTraceData;
-use otel_arrow_dfe_pdata_codec::{PdataEncoding, PdataView, ViewPlan};
+use otel_arrow_dfe_pdata_codec::{InspectionPlan, PdataEncoding, PdataView};
 use otel_arrow_dfe_pdata_views::views::common::{AnyValueView, AttributeView, ValueType};
 use otel_arrow_dfe_pdata_views::views::logs::{LogsDataView, ResourceLogsView};
 use otel_arrow_dfe_pdata_views::views::metrics::{MetricsView, ResourceMetricsView};
@@ -157,7 +157,7 @@ pub struct ResourceValidatorProcessor {
     /// Telemetry metrics
     metrics: MetricSet<ResourceValidatorMetrics>,
     /// Read-only representations resolved from the injected runtime service.
-    view_plan: Option<ViewPlan>,
+    inspection_plan: Option<InspectionPlan>,
 }
 
 /// Factory function to create a Resource Validator processor
@@ -211,7 +211,7 @@ impl ResourceValidatorProcessor {
             source_mode: AllowedValuesSource::Static,
             case_sensitive: config.case_sensitive,
             metrics,
-            view_plan: None,
+            inspection_plan: None,
         })
     }
 
@@ -231,7 +231,7 @@ impl ResourceValidatorProcessor {
             source_mode: AllowedValuesSource::Static,
             case_sensitive,
             metrics,
-            view_plan: None,
+            inspection_plan: None,
         }
     }
 
@@ -492,13 +492,19 @@ impl local::Processor<OtapPdata> for ResourceValidatorProcessor {
             Message::PData(mut pdata) => {
                 let signal_type = pdata.signal_type();
 
-                if self.view_plan.is_none() {
-                    self.view_plan =
-                        Some(effect_handler.resolve_view_plan(&[PdataEncoding::OTLP])?);
+                if self.inspection_plan.is_none() {
+                    self.inspection_plan =
+                        Some(effect_handler.resolve_inspection_plan(&[PdataEncoding::OTLP])?);
                 }
-                let view_plan = self.view_plan.as_ref().expect("view plan initialized");
+                let inspection_plan = self
+                    .inspection_plan
+                    .as_ref()
+                    .expect("view plan initialized");
 
-                let view = match effect_handler.view(pdata.payload_ref(), view_plan).await {
+                let view = match effect_handler
+                    .view(pdata.payload_ref(), inspection_plan)
+                    .await
+                {
                     Ok(view) => view,
                     Err(error) => {
                         let failure = ValidationFailure::ConversionError;
