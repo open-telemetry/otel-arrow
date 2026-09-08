@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788883029635,
+  "lastUpdate": 1788891155725,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -32779,6 +32779,150 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/open-telemetry/otel-arrow/commit/38334228ed539b228ed1d21d2e53b63ef90df238"
         },
         "date": 1788883014131,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 83.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.69,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.53,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.7,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 70.71,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.78,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 115.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 102.6,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "brian.sapozhnikov@gmail.com",
+            "name": "Brian Sapozhnikov",
+            "username": "bsapozhnikov"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f9167cf84bfc05c7d42d1bf006da177237d57869",
+          "message": "feat(kafka): add Syslog decoding to receiver (#4002)\n\n# Change summary\n\nAdd `syslog` decoding support to the Kafka receiver's logs path.\n\nThe receiver reuses the existing Syslog/CEF parser to decode one\ncomplete Syslog message from each Kafka record and convert it into OTAP\nArrow logs. It supports RFC 3164, RFC 5424, CEF, and CEF embedded in\nSyslog messages.\n\nThe format can be selected through the receiver configuration or the\nKafka message-format header. Existing Kafka-header-to-resource-attribute\nextraction is also applied to decoded Syslog logs.\n\nSyslog remains logs-only: configuration and runtime format overrides\nreject it for traces and metrics. The Kafka exporter also rejects\n`syslog`, because it does not encode telemetry back into raw Syslog\nmessages.\n\n## Related issue\n\n* Closes #3837\n\n## Validation\n\n- Compiled the Kafka receiver and the combined Kafka receiver/exporter\nfeature set in Linux Docker.\n- Passed focused tests covering RFC 5424, embedded CEF, malformed input,\nlogs-only validation, format-header selection, and resource attributes\nextracted from Kafka headers.\n- Passed the Kafka exporter test confirming that `syslog` output\nencoding is rejected.\n- Validated the end-to-end flow against a Kafka broker:\n  - Published RFC 5424 message to Kafka.\n  - The Kafka receiver consumed it using `encoding: syslog`.\n- The console output contained the expected `syslog.*` attributes and\n`input.format=rfc5424`.\n- Passed Markdown lint for the updated Kafka receiver documentation.\n\n## User-facing changes\n\nKafka log receivers can now configure:\n\n```yaml\nlogs:\n  topics: [\"syslog\"]\n  encoding: syslog\n```\n\nEach Kafka record is interpreted as one complete Syslog or CEF message\nand emitted as an OpenTelemetry log record. The `syslog` encoding is not\nsupported for traces, metrics, or the Kafka exporter.\n\nAdded `.chloggen/kafka-receiver-syslog-decoding.yaml`.\n\n```\n\n---------\n\nCo-authored-by: Brian Sapozhnikov <5421484+bsapozhnikov@users.noreply.github.com>\nCopilot-Session: 98294806-bd61-45f4-8c0d-839d50aaf5c8",
+          "timestamp": "2026-09-08T17:05:43Z",
+          "tree_id": "4a998ac6533b96569a8bbb9dd8acf1df925a7e95",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/f9167cf84bfc05c7d42d1bf006da177237d57869"
+        },
+        "date": 1788891136582,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
