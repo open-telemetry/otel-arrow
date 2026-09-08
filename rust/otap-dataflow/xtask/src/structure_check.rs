@@ -293,7 +293,7 @@ mod tests {
                 "otel-arrow-dfe-validation",
                 &manifest
             )
-                .is_err()
+            .is_err()
         );
     }
 }
