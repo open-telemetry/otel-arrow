@@ -65,7 +65,7 @@ const DEFAULT_MAX_BATCH_SIZE: u16 = 100;
 /// metric is incremented. 16 KiB covers virtually all real-world syslog and
 /// CEF messages (RFC 5424 Section 6.1 recommends supporting messages of at least
 /// 2048 bytes).
-const MAX_MESSAGE_SIZE: usize = 16 * 1024;
+pub const MAX_MESSAGE_SIZE: usize = 16 * 1024;
 
 /// Initial capacity for the per-connection TCP message buffer.
 ///

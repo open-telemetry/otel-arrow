@@ -286,11 +286,12 @@ impl<
         now: Instant,
     ) {
         let mut enqueue = false;
-        if let Some(rollout) = state.rollouts.get_mut(rollout_id) {
-            if rollout.state.is_terminal() && rollout.completed_at.is_none() {
-                rollout.completed_at = Some(now);
-                enqueue = true;
-            }
+        if let Some(rollout) = state.rollouts.get_mut(rollout_id)
+            && rollout.state.is_terminal()
+            && rollout.completed_at.is_none()
+        {
+            rollout.completed_at = Some(now);
+            enqueue = true;
         }
         if enqueue {
             state
@@ -351,11 +352,12 @@ impl<
         now: Instant,
     ) {
         let mut enqueue = false;
-        if let Some(shutdown) = state.shutdowns.get_mut(shutdown_id) {
-            if shutdown.state.is_terminal() && shutdown.completed_at.is_none() {
-                shutdown.completed_at = Some(now);
-                enqueue = true;
-            }
+        if let Some(shutdown) = state.shutdowns.get_mut(shutdown_id)
+            && shutdown.state.is_terminal()
+            && shutdown.completed_at.is_none()
+        {
+            shutdown.completed_at = Some(now);
+            enqueue = true;
         }
         if enqueue {
             state

@@ -697,46 +697,46 @@ impl SegmentStore {
             })?;
 
             let path = entry.path();
-            if path.extension().is_some_and(|ext| ext == "qseg") {
-                if let Some(seq) = Self::parse_segment_filename(&path) {
-                    highest_seen =
-                        Some(highest_seen.map_or(seq, |highest: SegmentSeq| highest.max(seq)));
-                    let is_expired =
-                        cutoff.is_some_and(|cutoff| Self::is_file_before_cutoff(&path, cutoff));
+            if path.extension().is_some_and(|ext| ext == "qseg")
+                && let Some(seq) = Self::parse_segment_filename(&path)
+            {
+                highest_seen =
+                    Some(highest_seen.map_or(seq, |highest: SegmentSeq| highest.max(seq)));
+                let is_expired =
+                    cutoff.is_some_and(|cutoff| Self::is_file_before_cutoff(&path, cutoff));
 
-                    match self.register_existing_segment(seq) {
-                        Ok(bundle_count) => found.push((seq, bundle_count)),
-                        Err(e) if is_expired => {
-                            let file_size = std::fs::metadata(&path)
-                                .map(|metadata| metadata.len())
-                                .unwrap_or(0);
+                match self.register_existing_segment(seq) {
+                    Ok(bundle_count) => found.push((seq, bundle_count)),
+                    Err(e) if is_expired => {
+                        let file_size = std::fs::metadata(&path)
+                            .map(|metadata| metadata.len())
+                            .unwrap_or(0);
+                        otel_warn!(
+                            "quiver.segment.scan",
+                            path = %path.display(),
+                            error = %e,
+                            error_type = "invalid_metadata",
+                            message = "deleting corrupt expired segment without logical loss accounting",
+                        );
+                        if let Err(e) = Self::remove_readonly_file(&path) {
                             otel_warn!(
                                 "quiver.segment.scan",
                                 path = %path.display(),
                                 error = %e,
-                                error_type = "invalid_metadata",
-                                message = "deleting corrupt expired segment without logical loss accounting",
-                            );
-                            if let Err(e) = Self::remove_readonly_file(&path) {
-                                otel_warn!(
-                                    "quiver.segment.scan",
-                                    path = %path.display(),
-                                    error = %e,
-                                    error_type = "io",
-                                );
-                            } else {
-                                deleted.push((seq, file_size));
-                            }
-                        }
-                        Err(e) => {
-                            otel_error!(
-                                "quiver.segment.scan",
-                                path = %path.display(),
-                                error = %e,
                                 error_type = "io",
-                                message = "segment data is inaccessible and may indicate corruption",
                             );
+                        } else {
+                            deleted.push((seq, file_size));
                         }
+                    }
+                    Err(e) => {
+                        otel_error!(
+                            "quiver.segment.scan",
+                            path = %path.display(),
+                            error = %e,
+                            error_type = "io",
+                            message = "segment data is inaccessible and may indicate corruption",
+                        );
                     }
                 }
             }
