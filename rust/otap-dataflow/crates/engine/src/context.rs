@@ -602,7 +602,10 @@ impl PipelineContext {
         metrics
     }
 
-    /// Registers measurement metrics sets with a topic dimension for the given entity.
+    /// Registers a measurement metric set for the current node entity, scoped by an additional `topic` attribute.
+    ///
+    /// This is used by topic-aware nodes so their measurement metric series can be filtered by `topic`.
+    #[must_use]
     pub fn register_measurement_metrics_with_topic<
         T: MeasurementMetricSetHandler + Debug + Send + Sync,
     >(

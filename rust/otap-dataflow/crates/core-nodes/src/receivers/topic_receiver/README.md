@@ -77,12 +77,12 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
-| `receiver.topic.forward` | `{message}` | `outcome` | Number of messages forwarded dimensionalized by `outcome` (`Success`, `Failed`). |
-| `receiver.topic.lag` | `{event}` | `event_type` | Number of lag events emitted by broadcast subscriptions, dimensionalized by `event_type` (`Notification`, `Disconnect`). |
-| `receiver.topic.bridge` | `{control}` | `outcome` | Number of downstream ACK/NACK bridge controls, dimensionalized by `outcome` (`Ack`, `Nack`, `IgnoredPropagationDisabled`, `MissingCalldata`, `InvalidOrUntrackedId`, `RuntimeFailure`). |
-| `receiver.topic.other.lagged_messages` | `{message}` | | Total messages missed across lag notifications. |
-| `receiver.topic.other.downstream_backpressure_events` | `{event}` | | Number of downstream backpressure events (>= 500ms blocked). |
-| `receiver.topic.other.downstream_blocked_ms` | `ms` | | Total milliseconds blocked while forwarding to downstream. |
+| `receiver.topic.forward.messages` | `{message}` | `outcome` | Number of messages forwarded dimensionalized by `outcome` (`success`, `failure`). |
+| `receiver.topic.lag.events` | `{event}` | `event.type` | Number of lag events emitted by broadcast subscriptions, dimensionalized by `event.type` (`notification`, `disconnect`). |
+| `receiver.topic.bridge.controls` | `{control}` | `control`, `result` | Number of downstream ACK/NACK bridge controls, dimensionalized by `control` (`ack`, `nack`) and `result` (`success`, `ignored_propagation_disabled`, `missing_calldata`, `invalid_or_untracked_id`, `runtime_failure`). |
+| `receiver.topic.lagged_messages` | `{message}` | | Total messages missed across lag notifications. |
+| `receiver.topic.downstream_backpressure_events` | `{event}` | | Number of downstream backpressure events (>= 500ms blocked). |
+| `receiver.topic.downstream_blocked_ms` | `ms` | | Total milliseconds blocked while forwarding to downstream. |
 
 ### Events
 

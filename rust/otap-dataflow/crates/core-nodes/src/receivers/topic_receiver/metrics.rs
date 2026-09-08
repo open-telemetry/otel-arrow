@@ -97,10 +97,10 @@ pub struct TopicBridgeMetrics {
     pub controls: Counter<u64>,
 }
 
-/// Other un-dimensioned metrics for the topic receiver.
-#[metric_set(name = "receiver.topic.other")]
+/// General un-dimensioned metrics for the topic receiver.
+#[metric_set(name = "receiver.topic")]
 #[derive(Debug, Default, Clone)]
-pub struct TopicOtherMetrics {
+pub struct TopicGeneralMetrics {
     /// Total messages missed across lag notifications.
     #[metric(unit = "{message}")]
     pub lagged_messages: Counter<u64>,
@@ -120,8 +120,8 @@ pub struct TopicReceiverMetrics {
     pub lag_events: MeasurementMetricSet<TopicLagEventMetrics>,
     /// Bridge control metrics.
     pub bridge: MeasurementMetricSet<TopicBridgeMetrics>,
-    /// Other un-dimensioned metrics.
-    pub other: MetricSet<TopicOtherMetrics>,
+    /// General un-dimensioned metrics.
+    pub general: MetricSet<TopicGeneralMetrics>,
 }
 
 impl TopicReceiverMetrics {
@@ -139,7 +139,7 @@ impl TopicReceiverMetrics {
             bridge: pipeline_ctx.register_measurement_metrics_with_topic::<TopicBridgeMetrics>(
                 topic_name.clone().into(),
             ),
-            other: pipeline_ctx.register_metrics_with_topic::<TopicOtherMetrics>(topic_name.into()),
+            general: pipeline_ctx.register_metrics_with_topic::<TopicGeneralMetrics>(topic_name.into()),
         }
     }
 
@@ -148,7 +148,7 @@ impl TopicReceiverMetrics {
         let mut snapshots = self.forward.terminal_snapshots();
         snapshots.extend(self.lag_events.terminal_snapshots());
         snapshots.extend(self.bridge.terminal_snapshots());
-        snapshots.extend(self.other.terminal_snapshots());
+        snapshots.extend(self.general.terminal_snapshots());
         snapshots
     }
 
@@ -160,7 +160,7 @@ impl TopicReceiverMetrics {
         reporter.report_measurement(&mut self.forward)?;
         reporter.report_measurement(&mut self.lag_events)?;
         reporter.report_measurement(&mut self.bridge)?;
-        reporter.report(&mut self.other)?;
+        reporter.report(&mut self.general)?;
         Ok(())
     }
 
@@ -189,6 +189,8 @@ mod tests {
         TopicReceiverMetrics::register(&pipeline_ctx, "test-topic".into())
     }
 
+    /// Scenario: A topic receiver is instantiated and produces metrics for various events.
+    /// Guarantees: Metrics are properly grouped by their enum attributes into the right dimensions.
     #[test]
     fn receiver_metrics_are_partitioned_by_context() {
         let mut metrics = new_test_metrics();
@@ -270,6 +272,8 @@ mod tests {
         );
     }
 
+    /// Scenario: A terminal snapshot is taken from the topic receiver.
+    /// Guarantees: Terminal snapshots capture the measurement attributes properly and clear the buffers so subsequent snapshots are empty.
     #[test]
     fn terminal_snapshots_preserve_enum_attribute_values_once() {
         let mut metrics = new_test_metrics();
@@ -295,17 +299,10 @@ mod tests {
             })
             .events
             .add(1);
-        metrics.other.lagged_messages.add(42);
+        metrics.general.lagged_messages.add(42);
 
         let snapshots = metrics.terminal_snapshots();
         assert_eq!(snapshots.len(), 4);
-
-        for snapshot in &snapshots {
-            println!("Metric name: {}", snapshot.descriptor().name);
-            for attr in snapshot.measurement_attributes() {
-                println!("  Attribute: {} = {:?}", attr.0, attr.1);
-            }
-        }
 
         assert!(snapshots.iter().any(|snapshot| {
             snapshot.descriptor().name == "receiver.topic.forward"
@@ -323,11 +320,11 @@ mod tests {
         assert!(
             snapshots
                 .iter()
-                .any(|snapshot| { snapshot.descriptor().name == "receiver.topic.other" })
+                .any(|snapshot| { snapshot.descriptor().name == "receiver.topic" })
         );
 
         let second = metrics.terminal_snapshots();
         assert_eq!(second.len(), 1);
-        assert_eq!(second[0].descriptor().name, "receiver.topic.other");
+        assert_eq!(second[0].descriptor().name, "receiver.topic");
     }
 }

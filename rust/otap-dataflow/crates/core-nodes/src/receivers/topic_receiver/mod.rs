@@ -424,8 +424,8 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                     metrics.forward.with(OutcomeAttributes { outcome: Outcome::Success }).messages.add(1);
                                     let blocked_for = pending.send_started_at.elapsed();
                                     if blocked_for.as_millis() >= 500 {
-                                        metrics.other.downstream_backpressure_events.add(1);
-                                        metrics.other
+                                        metrics.general.downstream_backpressure_events.add(1);
+                                        metrics.general
                                             .downstream_blocked_ms
                                             .add(blocked_for.as_millis() as u64);
                                         otel_warn!(
@@ -641,7 +641,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                             }
                             Ok(RecvDelivery::Lagged { missed }) => {
                                 metrics.lag_events.with(LagEventAttributes { event_type: LagEventType::Notification }).events.add(1);
-                                metrics.other.lagged_messages.add(missed);
+                                metrics.general.lagged_messages.add(missed);
                                 if broadcast_on_lag == Some(TopicBroadcastOnLagPolicy::Disconnect) {
                                     metrics.lag_events.with(LagEventAttributes { event_type: LagEventType::Disconnect }).events.add(1);
                                     otel_warn!(

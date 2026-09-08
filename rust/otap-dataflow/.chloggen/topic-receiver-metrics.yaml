@@ -5,4 +5,5 @@ note: >-
 issues: [3530]
 subtext: |
   Migration: Update dashboards and queries to use dimensioned metrics:
-  - Topic receiver: forward metrics -> `forward{outcome}`, lag metrics -> `lag{event_type}`, bridge metrics -> `bridge{control, result}`.
+  - Topic receiver: forward metrics -> `forward.messages{outcome}`, lag metrics -> `lag.events{event.type}`, bridge metrics -> `bridge.controls{control, result}`.
+  - Also changed the unit of lagged_messages and forward metrics from `{item}` to `{message}`.
