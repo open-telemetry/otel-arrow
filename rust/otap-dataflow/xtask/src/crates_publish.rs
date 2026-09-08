@@ -20,6 +20,7 @@ use crate::publish_policy::PUBLISH_PACKAGES;
 
 const CRATES_IO_API: &str = "https://crates.io/api/v1";
 const VISIBILITY_DELAYS: [u64; 8] = [0, 5, 10, 20, 40, 80, 160, 300];
+const INDEPENDENT_VERSION_PACKAGES: &[&str] = &["otel-arrow-dfe-pdata-views"];
 
 #[derive(Debug, Deserialize)]
 struct CargoMetadata {
@@ -255,11 +256,10 @@ fn build_plan(
 }
 
 fn ensure_plan_version(plan: &PublishPlan, expected_version: &str) -> anyhow::Result<()> {
-    if let Some(package) = plan
-        .packages
-        .iter()
-        .find(|package| package.version != expected_version)
-    {
+    if let Some(package) = plan.packages.iter().find(|package| {
+        package.version != expected_version
+            && !INDEPENDENT_VERSION_PACKAGES.contains(&package.name.as_str())
+    }) {
         bail!(
             "publish plan version {} for {} does not match requested version {expected_version}",
             package.version,
@@ -286,6 +286,19 @@ fn preflight(expected_version: &str) -> anyhow::Result<PublishPlan> {
     ensure_plan_version(&plan, expected_version)?;
 
     for package in &plan.packages {
+        if package.version != expected_version {
+            let Some(version) = crates_io_version(&package.name, &package.version)? else {
+                bail!(
+                    "independently versioned package {} {} is not published; include it in \
+                     release {expected_version} or publish it separately",
+                    package.name,
+                    package.version
+                );
+            };
+            ensure_not_yanked(&package.name, &package.version, version.yanked)?;
+            continue;
+        }
+
         match crates_io_version(&package.name, &package.version)? {
             Some(version) => {
                 ensure_not_yanked(&package.name, &package.version, version.yanked)?;
@@ -301,10 +314,12 @@ fn preflight(expected_version: &str) -> anyhow::Result<PublishPlan> {
         }
     }
 
-    println!(
-        "preflight passed for {} crates at version {expected_version}",
-        plan.packages.len()
-    );
+    let release_package_count = plan
+        .packages
+        .iter()
+        .filter(|package| package.version == expected_version)
+        .count();
+    println!("preflight passed for {release_package_count} crates at version {expected_version}");
     Ok(plan)
 }
 
@@ -312,6 +327,14 @@ fn publish(expected_version: &str) -> anyhow::Result<()> {
     let plan = preflight(expected_version)?;
 
     for package in &plan.packages {
+        if package.version != expected_version {
+            println!(
+                "{} {} is independently versioned and excluded from release {}; skipping",
+                package.name, package.version, expected_version
+            );
+            continue;
+        }
+
         let expected_checksum = package_checksum(package, &plan.target_directory)?;
         if let Some(version) = crates_io_version(&package.name, &package.version)? {
             ensure_not_yanked(&package.name, &package.version, version.yanked)?;
@@ -717,6 +740,45 @@ mod tests {
         let error = build_plan(packages, PathBuf::from("/target"))
             .expect_err("self dependencies must be rejected");
         assert!(error.to_string().contains("depends on itself"));
+    }
+
+    /// Scenario: a stable boundary crate keeps an independent version.
+    /// Guarantees: release preflight accepts pdata-views outside the workspace release version.
+    #[test]
+    fn plan_version_allows_independent_pdata_views_version() {
+        let plan = PublishPlan {
+            packages: vec![
+                PublishPackage {
+                    name: "otel-arrow-dfe-pdata-views".to_owned(),
+                    version: "0.54.1".to_owned(),
+                    has_publish_dependencies: false,
+                },
+                PublishPackage {
+                    name: "otel-arrow-dfe-pdata".to_owned(),
+                    version: "0.55.0".to_owned(),
+                    has_publish_dependencies: true,
+                },
+            ],
+            target_directory: PathBuf::from("/target"),
+        };
+
+        assert!(ensure_plan_version(&plan, "0.55.0").is_ok());
+    }
+
+    /// Scenario: a regular publishable crate differs from the requested release version.
+    /// Guarantees: only explicitly independent crates may opt out of a release bump.
+    #[test]
+    fn plan_version_rejects_other_mismatched_versions() {
+        let plan = PublishPlan {
+            packages: vec![PublishPackage {
+                name: "otel-arrow-dfe-pdata".to_owned(),
+                version: "0.54.1".to_owned(),
+                has_publish_dependencies: true,
+            }],
+            target_directory: PathBuf::from("/target"),
+        };
+
+        assert!(ensure_plan_version(&plan, "0.55.0").is_err());
     }
 
     /// Scenario: dependency requirements use abbreviated, ranged, exact, and excluding syntax.
