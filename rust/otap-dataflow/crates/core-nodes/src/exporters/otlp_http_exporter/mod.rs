@@ -459,22 +459,20 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                     // force-drains buffered pdata even while auth was pending: with no
                     // usable token we cannot send, so NACK it as retryable -- a token
                     // may yet arrive, so nothing is dropped.
-                    if let Some(a) = auth.as_ref() {
-                        if !a.is_ready() {
-                            let export_duration = export_started_at.elapsed();
-                            // `NackMsg::new` is retryable by construction.
-                            let nack = NackMsg::new(
-                                a.not_ready_reason(),
-                                OtapPdata::new(context, payload),
-                            );
-                            _ = effect_handler.notify_nack(nack).await;
-                            self.metrics.record_failure(
-                                signal_type,
-                                OtlpHttpExporterErrorType::Authentication,
-                                export_duration,
-                            );
-                            continue;
-                        }
+                    if let Some(a) = auth.as_ref()
+                        && !a.is_ready()
+                    {
+                        let export_duration = export_started_at.elapsed();
+                        // `NackMsg::new` is retryable by construction.
+                        let nack =
+                            NackMsg::new(a.not_ready_reason(), OtapPdata::new(context, payload));
+                        _ = effect_handler.notify_nack(nack).await;
+                        self.metrics.record_failure(
+                            signal_type,
+                            OtlpHttpExporterErrorType::Authentication,
+                            export_duration,
+                        );
+                        continue;
                     }
 
                     // The cached bearer header, together with the generation of the

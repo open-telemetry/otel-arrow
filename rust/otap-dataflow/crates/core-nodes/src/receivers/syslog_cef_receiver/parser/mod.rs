@@ -49,10 +49,10 @@ pub(crate) fn parse(input: &[u8]) -> Result<ParsedSyslogMessage<'_>, ParseError>
     }
 
     // Try pure CEF first - it's the simplest check
-    if input.starts_with(b"CEF:") {
-        if let Ok(cef_msg) = parse_cef(input) {
-            return Ok(ParsedSyslogMessage::Cef(cef_msg));
-        }
+    if input.starts_with(b"CEF:")
+        && let Ok(cef_msg) = parse_cef(input)
+    {
+        return Ok(ParsedSyslogMessage::Cef(cef_msg));
     }
 
     // Parse priority once -- both RFC 5424 and RFC 3164 start with <priority>.
@@ -62,12 +62,11 @@ pub(crate) fn parse(input: &[u8]) -> Result<ParsedSyslogMessage<'_>, ParseError>
             // Try RFC 5424 first (has version number after priority)
             if let Ok(rfc5424_msg) = parse_rfc5424(priority.clone(), remaining, input) {
                 // Check if the message contains CEF
-                if let Some(msg) = rfc5424_msg.message {
-                    if msg.starts_with(b"CEF:") {
-                        if let Ok(cef_msg) = parse_cef(msg) {
-                            return Ok(ParsedSyslogMessage::CefWithRfc5424(rfc5424_msg, cef_msg));
-                        }
-                    }
+                if let Some(msg) = rfc5424_msg.message
+                    && msg.starts_with(b"CEF:")
+                    && let Ok(cef_msg) = parse_cef(msg)
+                {
+                    return Ok(ParsedSyslogMessage::CefWithRfc5424(rfc5424_msg, cef_msg));
                 }
                 return Ok(ParsedSyslogMessage::Rfc5424(rfc5424_msg));
             }
@@ -99,12 +98,11 @@ fn try_rfc3164_cef<'a>(
     input: &'a [u8],
 ) -> Result<ParsedSyslogMessage<'a>, ParseError> {
     // Check if the content contains CEF
-    if let Some(content) = rfc3164_msg.content {
-        if content.starts_with(b"CEF:") {
-            if let Ok(cef_msg) = parse_cef(content) {
-                return Ok(ParsedSyslogMessage::CefWithRfc3164(rfc3164_msg, cef_msg));
-            }
-        }
+    if let Some(content) = rfc3164_msg.content
+        && content.starts_with(b"CEF:")
+        && let Ok(cef_msg) = parse_cef(content)
+    {
+        return Ok(ParsedSyslogMessage::CefWithRfc3164(rfc3164_msg, cef_msg));
     }
 
     // Special case: If tag is "CEF", the full CEF message spans from "CEF:" in the input

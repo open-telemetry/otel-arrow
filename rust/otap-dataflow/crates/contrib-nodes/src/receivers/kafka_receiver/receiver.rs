@@ -290,11 +290,11 @@ impl KafkaReceiver {
         // unique group.instance.id. On a multi-core pipeline every core would
         // otherwise share the configured ID and fence one another, so suffix it
         // with the pipeline core ID.
-        if pipeline_ctx.num_cores() > 1 {
-            if let Some(base_id) = config.group_instance_id() {
-                let resolved = format!("{base_id}-{}", pipeline_ctx.core_id());
-                config.set_group_instance_id(resolved);
-            }
+        if pipeline_ctx.num_cores() > 1
+            && let Some(base_id) = config.group_instance_id()
+        {
+            let resolved = format!("{base_id}-{}", pipeline_ctx.core_id());
+            config.set_group_instance_id(resolved);
         }
 
         // Warn about consumer_config keys that may be overwritten by first-class fields.
@@ -828,12 +828,10 @@ impl KafkaReceiver {
         // A transient NACK configured for replay never advances the offset.
         // The timer delivers `NodeControlMsg::TimerTick` on the control
         // channel, which is handled in the main loop below.
-        if manual_commit {
-            if let Some(ms) = self.config.commit_interval_ms() {
-                let _commit_timer_handle = effect_handler
-                    .start_periodic_timer(Duration::from_millis(ms))
-                    .await?;
-            }
+        if manual_commit && let Some(ms) = self.config.commit_interval_ms() {
+            let _commit_timer_handle = effect_handler
+                .start_periodic_timer(Duration::from_millis(ms))
+                .await?;
         }
 
         // Opt-in consumer-lag refresh timer, derived from the configured
@@ -1751,20 +1749,20 @@ fn capture_transport_headers(
     capture_policy: Option<&HeaderCapturePolicy>,
     pdata: &mut OtapPdata,
 ) {
-    if let Some(policy) = capture_policy {
-        if let Some(headers) = kafka_message.headers() {
-            let pairs = headers.iter().filter_map(|h| h.value.map(|v| (h.key, v)));
-            let mut transport_headers = TransportHeaders::new();
-            let stats = policy.capture_from_pairs(pairs, &mut transport_headers);
-            if let Some(stats) = stats {
-                otel_error!(
-                    "kafka.capture_policy.limits_exceeded",
-                    stats = %stats,
-                );
-            }
-            if !transport_headers.is_empty() {
-                pdata.set_transport_headers(transport_headers);
-            }
+    if let Some(policy) = capture_policy
+        && let Some(headers) = kafka_message.headers()
+    {
+        let pairs = headers.iter().filter_map(|h| h.value.map(|v| (h.key, v)));
+        let mut transport_headers = TransportHeaders::new();
+        let stats = policy.capture_from_pairs(pairs, &mut transport_headers);
+        if let Some(stats) = stats {
+            otel_error!(
+                "kafka.capture_policy.limits_exceeded",
+                stats = %stats,
+            );
+        }
+        if !transport_headers.is_empty() {
+            pdata.set_transport_headers(transport_headers);
         }
     }
 }

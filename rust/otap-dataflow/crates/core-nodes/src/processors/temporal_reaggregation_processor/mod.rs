@@ -1485,10 +1485,10 @@ fn has_aggregatable_metrics<V: MetricsView>(view: &V) -> bool {
     for resource_metrics in view.resources() {
         for scope_metrics in resource_metrics.scopes() {
             for metric in scope_metrics.metrics() {
-                if let Some(data) = metric.data() {
-                    if is_data_aggregatable(&data) {
-                        return true;
-                    }
+                if let Some(data) = metric.data()
+                    && is_data_aggregatable(&data)
+                {
+                    return true;
                 }
             }
         }
