@@ -3,10 +3,11 @@
 
 //! Pipeline-local lifecycle and access for mutable codec implementations.
 //!
-//! [`CodecServiceBuilder`] combines an immutable validated registry with fresh
-//! runtime state. Cloned [`CodecService`] handles share that state within one
-//! pipeline, while decoder and encoder instances are created lazily and reused.
-//! Payload admission and matching-format forwarding therefore require neither
+//! [`CodecServiceBuilder`] combines an immutable validated registry and decode
+//! policy with fresh runtime state. Cloned [`CodecService`] handles share that
+//! state within one pipeline, while decoder and encoder instances are created
+//! lazily and reused. The decode policy is applied once at decoder creation;
+//! payload admission and matching-format forwarding therefore require neither
 //! codec construction nor mutable runtime access.
 //!
 //! Codec trait calls are currently synchronous. The service holds its runtime
@@ -28,8 +29,9 @@ use bytes::Bytes;
 use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayloadHelpers};
 
 use crate::{
-    CodecError, CodecOperation, CodecRegistry, EncodeOutput, EncodedPdata, EncodingPlan,
-    InspectionPlan, PdataDecoder, PdataEncoder, PdataView, RegistryError, ResolvedCodec,
+    CodecError, CodecOperation, CodecRegistry, DecodePolicy, EncodeOutput, EncodedPdata,
+    EncodingPlan, InspectionPlan, PdataDecoder, PdataEncoder, PdataView, RegistryError,
+    ResolvedCodec,
 };
 
 struct DecoderInstance {
@@ -51,6 +53,7 @@ struct CodecRuntime {
 /// Builds a pipeline-local codec service from a validated registry.
 pub struct CodecServiceBuilder {
     registry: Arc<CodecRegistry>,
+    decode_policy: DecodePolicy,
 }
 
 impl CodecServiceBuilder {
@@ -58,13 +61,24 @@ impl CodecServiceBuilder {
     pub fn from_global_registry() -> Result<Self, RegistryError> {
         Ok(Self {
             registry: CodecRegistry::global()?,
+            decode_policy: DecodePolicy::default(),
         })
     }
 
     /// Selects an already validated registry.
     #[must_use]
     pub fn from_registry(registry: Arc<CodecRegistry>) -> Self {
-        Self { registry }
+        Self {
+            registry,
+            decode_policy: DecodePolicy::default(),
+        }
+    }
+
+    /// Selects the policy supplied to every decoder created by this service.
+    #[must_use]
+    pub const fn with_decode_policy(mut self, decode_policy: DecodePolicy) -> Self {
+        self.decode_policy = decode_policy;
+        self
     }
 
     /// Creates fresh lazy mutable state for one pipeline runtime.
@@ -72,6 +86,7 @@ impl CodecServiceBuilder {
     pub fn build(self) -> CodecService {
         CodecService {
             registry: self.registry,
+            decode_policy: self.decode_policy,
             runtime: Arc::new(Mutex::new(CodecRuntime::default())),
         }
     }
@@ -85,6 +100,7 @@ impl CodecServiceBuilder {
 #[derive(Clone)]
 pub struct CodecService {
     registry: Arc<CodecRegistry>,
+    decode_policy: DecodePolicy,
     runtime: Arc<Mutex<CodecRuntime>>,
 }
 
@@ -100,6 +116,12 @@ impl CodecService {
         &self.registry
     }
 
+    /// Decode policy resolved for this pipeline-local service.
+    #[must_use]
+    pub const fn decode_policy(&self) -> DecodePolicy {
+        self.decode_policy
+    }
+
     fn lock(&self) -> Result<MutexGuard<'_, CodecRuntime>, CodecError> {
         match self.runtime.try_lock() {
             Ok(runtime) => Ok(runtime),
@@ -112,7 +134,7 @@ impl CodecService {
     pub fn decode(&self, encoded: &EncodedPdata) -> Result<OtapArrowRecords, CodecError> {
         let mut runtime = self.lock()?;
         let records = runtime
-            .decoder(encoded.codec())?
+            .decoder(encoded.codec(), self.decode_policy)?
             .decode(encoded.signal_type(), encoded.bytes())
             .map_err(|error| {
                 error.with_operation_context(encoded.encoding(), CodecOperation::Decode)
@@ -187,7 +209,11 @@ impl CodecService {
 }
 
 impl CodecRuntime {
-    fn decoder(&mut self, codec: ResolvedCodec) -> Result<&mut dyn PdataDecoder, CodecError> {
+    fn decoder(
+        &mut self,
+        codec: ResolvedCodec,
+        policy: DecodePolicy,
+    ) -> Result<&mut dyn PdataDecoder, CodecError> {
         let index = match self
             .decoders
             .iter()
@@ -198,7 +224,7 @@ impl CodecRuntime {
                 let index = self.decoders.len();
                 self.decoders.push(DecoderInstance {
                     codec,
-                    decoder: codec.create_decoder()?,
+                    decoder: codec.create_decoder(policy)?,
                 });
                 index
             }
@@ -245,7 +271,7 @@ mod tests {
         CodecMetadata::new(LOGS_ONLY_ENCODING, &[SignalType::Logs]);
     static LOGS_ONLY_REGISTRATIONS: [CodecRegistration; 1] =
         [CodecRegistration::new(&LOGS_ONLY_METADATA)
-            .with_decoder(|| Box::new(FailingDecoder))
+            .with_decoder(|_| Box::new(FailingDecoder))
             .with_encoder(|_| Ok(Box::new(PanicEncoder)))
             .with_item_counter(|_, _| Some(0))];
 

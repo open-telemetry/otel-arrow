@@ -22,7 +22,8 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::*;
 use otel_arrow_dfe_pdata::testing::round_trip::{otlp_message_to_bytes, otlp_to_otap};
 use otel_arrow_dfe_pdata::{OtapPayload, TryIntoWithOptions};
 use otel_arrow_dfe_pdata_codec::{
-    CodecService, EncodePolicy, EncodingPlan, InspectionPlan, PdataEncoding,
+    CodecService, CodecServiceBuilder, DecodePolicy, DecodeValidation, EncodePolicy, EncodingPlan,
+    InspectionPlan, PdataEncoding,
 };
 
 #[cfg(not(windows))]
@@ -296,6 +297,10 @@ fn direct_codec_paths(c: &mut Criterion) {
         let encoded = otlp_bytes.clone_bytes();
         let otap_records: OtapArrowRecords = otlp_to_otap(&message);
         let service = CodecService::new().expect("valid codec registry");
+        let strict_service = CodecServiceBuilder::from_global_registry()
+            .expect("valid codec registry")
+            .with_decode_policy(DecodePolicy::new(DecodeValidation::Strict))
+            .build();
         let codec = service
             .registry()
             .resolve_decoder(&PdataEncoding::OTLP, SignalType::Logs)
@@ -319,8 +324,19 @@ fn direct_codec_paths(c: &mut Criterion) {
             b.iter(|| black_box(service.view(&encoded, &view_plan).expect("OTLP codec view")))
         });
 
-        _ = group.bench_function(BenchmarkId::new("OTLP/decode", record_count), |b| {
-            b.iter(|| black_box(service.decode(&encoded).expect("OTLP codec decode")))
+        _ = group.bench_function(
+            BenchmarkId::new("OTLP/decode_best_effort", record_count),
+            |b| b.iter(|| black_box(service.decode(&encoded).expect("OTLP codec decode"))),
+        );
+
+        _ = group.bench_function(BenchmarkId::new("OTLP/decode_strict", record_count), |b| {
+            b.iter(|| {
+                black_box(
+                    strict_service
+                        .decode(&encoded)
+                        .expect("strict OTLP codec decode"),
+                )
+            })
         });
 
         _ = group.bench_function(

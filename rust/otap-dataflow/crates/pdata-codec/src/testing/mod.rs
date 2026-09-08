@@ -5,9 +5,10 @@
 //!
 //! The helpers exercise the representation-independent guarantees expected by
 //! the engine: signal preservation, stateless item counting, successful decode,
-//! repeated malformed-input failures, recovery on the same decoder instance,
-//! and decoder-state reuse. A codec should run these checks for every supported
-//! signal with representative valid and malformed batches.
+//! strict malformed-input failures, recovery on the same decoder instance, and
+//! decoder-state reuse. A codec should run these checks for every supported
+//! signal with representative valid and malformed batches. When a malformed
+//! sample is supplied, the service must use [`crate::DecodeValidation::Strict`].
 //!
 //! Conformance checks do not replace codec-specific coverage. Implementations
 //! remain responsible for format edge cases, resource and decompression limits,
@@ -50,6 +51,11 @@ pub fn assert_decode_conformance(service: &CodecService, case: DecodeConformance
     assert_eq!(records.num_items(), case.expected_items);
 
     if let Some(malformed) = case.malformed {
+        assert_eq!(
+            service.decode_policy().validation(),
+            crate::DecodeValidation::Strict,
+            "malformed-input conformance requires strict decode validation"
+        );
         let malformed = codec
             .admit(case.signal, malformed)
             .expect("admission must remain lazy");

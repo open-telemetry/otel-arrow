@@ -13,7 +13,7 @@
 //! owners. This boundary keeps the service bundle focused and avoids turning it
 //! into a container for unrelated runtime objects.
 
-use otel_arrow_dfe_pdata_codec::{CodecService, RegistryError};
+use otel_arrow_dfe_pdata_codec::{CodecService, CodecServiceBuilder, DecodePolicy, RegistryError};
 
 /// Runtime-owned services shared by every effect handler in one pipeline.
 ///
@@ -26,9 +26,11 @@ pub struct PipelineRuntimeServices {
 
 impl PipelineRuntimeServices {
     /// Validates linked codec extensions and creates lazy pipeline-local state.
-    pub fn new() -> Result<Self, RegistryError> {
+    pub fn new(decode_policy: DecodePolicy) -> Result<Self, RegistryError> {
         Ok(Self {
-            codecs: CodecService::new()?,
+            codecs: CodecServiceBuilder::from_global_registry()?
+                .with_decode_policy(decode_policy)
+                .build(),
         })
     }
 
@@ -70,7 +72,7 @@ mod tests {
         requires_codec_effect_handler::<crate::local::exporter::EffectHandler<()>>();
         requires_codec_effect_handler::<crate::shared::exporter::EffectHandler<()>>();
 
-        let runtime_services = PipelineRuntimeServices::new().unwrap();
+        let runtime_services = PipelineRuntimeServices::new(DecodePolicy::default()).unwrap();
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let local = crate::local::exporter::EffectHandler::<()>::new(
             test_node("local"),

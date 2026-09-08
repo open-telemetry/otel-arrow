@@ -127,10 +127,26 @@ static EXAMPLE_METADATA: CodecMetadata = CodecMetadata::new(
 register_pdata_codec!(
     EXAMPLE_CODEC,
     CodecRegistration::new(&EXAMPLE_METADATA)
-        .with_decoder(|| Box::new(ExampleDecoder::default()))
+        .with_decoder(|policy| match policy.validation() {
+            DecodeValidation::BestEffort => Box::new(ExampleDecoder::best_effort()),
+            DecodeValidation::Strict => Box::new(ExampleDecoder::strict()),
+        })
         .with_item_counter(count_items),
 );
 ```
+
+Decoder factories receive the pipeline decode policy once, when the lazy
+pipeline-local instance is created. `BestEffort` permits a faster parser that
+may not discover malformed fields it does not visit. `Strict` must reject
+malformed content anywhere in the encoded batch. A codec without a useful
+relaxed implementation can return the same strict decoder for both policies.
+
+The built-in OTLP codec uses allocation-free borrowed protobuf views in
+best-effort mode. Those views validate outer framing, but their nested
+iterators currently cannot distinguish malformed content from normal
+exhaustion. Strict OTLP decoding therefore uses Prost to validate the complete
+nested message before Arrow conversion. Encoded pass-through performs no
+decoding or validation under either policy.
 
 The function-style macro is intentionally thin. It hides the link-time inventory
 and required unsafe-lint exemption, so an extension crate does not need a direct
@@ -152,9 +168,10 @@ keeping an unavailable count distinct from zero.
 ## Test a codec
 
 Enable the `testing` feature and run `assert_decode_conformance` with valid and
-malformed samples for every supported signal. The shared harness verifies
-signal and item-count preservation, repeated failure behavior, recovery, and
-state reuse.
+malformed samples for every supported signal. Use a codec service configured
+with `DecodeValidation::Strict` when supplying malformed input. The shared
+harness verifies signal and item-count preservation, repeated failure behavior,
+recovery, and state reuse.
 
 Add codec-specific tests for:
 

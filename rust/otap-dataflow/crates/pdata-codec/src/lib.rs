@@ -14,7 +14,7 @@ mod view;
 
 mod codecs;
 
-pub use decoder::PdataDecoder;
+pub use decoder::{DecodePolicy, DecodeValidation, PdataDecoder};
 pub use encoder::{EncodeOutput, PdataEncoder};
 pub use error::{CodecError, CodecOperation, RegistryError};
 pub use identity::{EncodedPdata, PdataEncoding};
@@ -42,6 +42,7 @@ macro_rules! register_pdata_codec {
     ($name:ident, $registration:expr $(,)?) => {
         #[allow(unsafe_code)]
         #[$crate::__private::distributed_slice($crate::PDATA_CODEC_FACTORIES)]
+        #[linkme(crate = $crate::__private)]
         static $name: $crate::CodecRegistration = $registration;
     };
 }
@@ -49,12 +50,12 @@ macro_rules! register_pdata_codec {
 /// Implementation details used by exported macros.
 #[doc(hidden)]
 pub mod __private {
-    pub use linkme::distributed_slice;
+    pub use linkme::*;
 }
 
 /// Built-in codec identities and implementations.
 pub mod builtins {
-    pub use crate::codecs::otlp::{OTLP_ENCODING, OtlpDecoder, OtlpEncoder};
+    pub use crate::codecs::otlp::{OTLP_ENCODING, OtlpBestEffortDecoder, OtlpEncoder};
 }
 
 /// Reusable codec extension conformance checks.

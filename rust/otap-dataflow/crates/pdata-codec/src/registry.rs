@@ -24,8 +24,8 @@ use bytes::Bytes;
 use otel_arrow_dfe_config::SignalType;
 
 use crate::{
-    CodecError, CodecOperation, EncodePolicy, EncodedPdata, PdataDecoder, PdataEncoder,
-    PdataEncoding, RegistryError,
+    CodecError, CodecOperation, DecodePolicy, EncodePolicy, EncodedPdata, PdataDecoder,
+    PdataEncoder, PdataEncoding, RegistryError,
 };
 
 /// Stateless item scan that needs no mutable codec instance.
@@ -36,7 +36,12 @@ use crate::{
 pub type ItemCounter = fn(SignalType, &[u8]) -> Option<usize>;
 
 /// Creates independent decoder state for one pipeline runtime.
-pub type DecoderFactory = fn() -> Box<dyn PdataDecoder>;
+///
+/// The policy is resolved once for the pipeline before the decoder is created.
+/// `BestEffort` permits a codec-specific relaxed path; `Strict` requires full
+/// malformed-input detection. Codecs may return the same strict decoder for
+/// both modes.
+pub type DecoderFactory = fn(DecodePolicy) -> Box<dyn PdataDecoder>;
 
 /// Creates encoder state configured once for one output plan.
 pub type EncoderFactory = fn(EncodePolicy) -> Result<Box<dyn PdataEncoder>, CodecError>;
@@ -252,10 +257,13 @@ impl ResolvedCodec {
         Ok(EncodedPdata::from_resolved(self, signal, bytes))
     }
 
-    pub(crate) fn create_decoder(self) -> Result<Box<dyn PdataDecoder>, CodecError> {
+    pub(crate) fn create_decoder(
+        self,
+        policy: DecodePolicy,
+    ) -> Result<Box<dyn PdataDecoder>, CodecError> {
         self.0
             .decoder
-            .map(|factory| factory())
+            .map(|factory| factory(policy))
             .ok_or_else(|| CodecError::Unsupported {
                 encoding: self.encoding().clone(),
                 operation: CodecOperation::Decode,
@@ -399,7 +407,7 @@ mod tests {
     static EMPTY_REGISTRATIONS: [CodecRegistration; 1] = [CodecRegistration::new(&EMPTY_METADATA)];
 
     static DECODER_WITHOUT_COUNTER_REGISTRATIONS: [CodecRegistration; 1] =
-        [CodecRegistration::new(&EMPTY_METADATA).with_decoder(|| Box::new(TestDecoder))];
+        [CodecRegistration::new(&EMPTY_METADATA).with_decoder(|_| Box::new(TestDecoder))];
 
     struct TestDecoder;
 

@@ -3,14 +3,19 @@
 
 //! Built-in codec for uncompressed OTLP protobuf service-request messages.
 //!
-//! The decoder validates and converts independently decodable logs, metrics,
-//! and traces requests into native OTAP Arrow records. The encoder keeps lazy,
-//! signal-specific protobuf encoders and bounded scratch buffers so repeated
-//! output avoids reallocating while an unused signal consumes no buffer.
+//! The decoder converts independently decodable logs, metrics, and traces
+//! requests into native OTAP Arrow records. A best-effort implementation uses
+//! borrowed protobuf views and validates only outer framing. A strict
+//! implementation decodes the complete nested message with Prost before
+//! conversion. The pipeline policy selects one implementation when its lazy
+//! decoder instance is created.
+//!
+//! The encoder keeps lazy, signal-specific protobuf encoders and bounded
+//! scratch buffers so repeated output avoids reallocating while an unused
+//! signal consumes no buffer.
 
 use bytes::Bytes;
 use otel_arrow_dfe_config::SignalType;
-use otel_arrow_dfe_pdata::OtapPayloadHelpers;
 use otel_arrow_dfe_pdata::encode::{
     encode_logs_otap_batch, encode_metrics_otap_batch, encode_spans_otap_batch,
 };
@@ -26,11 +31,12 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::TracesData;
 use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
 use otel_arrow_dfe_pdata::views::otlp::bytes::metrics::RawMetricsData;
 use otel_arrow_dfe_pdata::views::otlp::bytes::traces::RawTraceData;
+use otel_arrow_dfe_pdata::{OtapPayloadHelpers, OtlpProtoBytes, TryIntoWithOptions};
 use prost::Message;
 
 use crate::{
-    CodecError, CodecMetadata, CodecOperation, CodecRegistration, EncodeOutput, EncodePolicy,
-    PdataDecoder, PdataEncoder, PdataEncoding,
+    CodecError, CodecMetadata, CodecOperation, CodecRegistration, DecodePolicy, DecodeValidation,
+    EncodeOutput, EncodePolicy, PdataDecoder, PdataEncoder, PdataEncoding,
 };
 
 /// Stable identity of uncompressed OTLP protobuf service-request bytes.
@@ -39,11 +45,38 @@ pub const OTLP_ENCODING: PdataEncoding = PdataEncoding::OTLP;
 const INITIAL_BUFFER_CAPACITY: usize = 8 * 1024;
 const MAX_RETAINED_BUFFER_CAPACITY: usize = 256 * 1024;
 
-/// Stateless OTLP protobuf decoder.
+/// OTLP decoder using borrowed raw views and best-effort validation.
+///
+/// Top-level protobuf framing is validated before conversion. Nested fields
+/// are parsed lazily by the views, whose iterators cannot currently distinguish
+/// malformed input from clean exhaustion. Use strict pipeline validation when
+/// malformed content anywhere in the message must reject the complete batch.
 #[derive(Default)]
-pub struct OtlpDecoder;
+pub struct OtlpBestEffortDecoder;
 
-impl PdataDecoder for OtlpDecoder {
+impl PdataDecoder for OtlpBestEffortDecoder {
+    fn decode(
+        &mut self,
+        signal: SignalType,
+        bytes: &Bytes,
+    ) -> Result<OtapArrowRecords, CodecError> {
+        let outer_framing = match signal {
+            SignalType::Logs => RawLogsData::try_new(bytes).map(|_| ()),
+            SignalType::Metrics => RawMetricsData::try_new(bytes).map(|_| ()),
+            SignalType::Traces => RawTraceData::try_new(bytes).map(|_| ()),
+        };
+        outer_framing.map_err(decode_error)?;
+
+        OtlpProtoBytes::new_from_bytes(signal, bytes.clone())
+            .try_into_with_default()
+            .map_err(decode_error)
+    }
+}
+
+/// OTLP decoder that validates the complete nested protobuf message.
+struct OtlpStrictDecoder;
+
+impl PdataDecoder for OtlpStrictDecoder {
     fn decode(
         &mut self,
         signal: SignalType,
@@ -63,6 +96,13 @@ impl PdataDecoder for OtlpDecoder {
                 encode_spans_otap_batch(&data).map_err(decode_error)
             }
         }
+    }
+}
+
+fn create_decoder(policy: DecodePolicy) -> Box<dyn PdataDecoder> {
+    match policy.validation() {
+        DecodeValidation::BestEffort => Box::new(OtlpBestEffortDecoder),
+        DecodeValidation::Strict => Box::new(OtlpStrictDecoder),
     }
 }
 
@@ -211,7 +251,7 @@ static OTLP_METADATA: CodecMetadata = CodecMetadata::new(
 crate::register_pdata_codec!(
     OTLP_CODEC,
     CodecRegistration::new(&OTLP_METADATA)
-        .with_decoder(|| Box::new(OtlpDecoder))
+        .with_decoder(create_decoder)
         .with_encoder(|policy| Ok(Box::new(OtlpEncoder::new(policy))))
         .with_item_counter(|signal, bytes| Some(count_items(signal, bytes))),
 );
@@ -297,7 +337,10 @@ mod tests {
     use prost::Message;
 
     use super::*;
-    use crate::{CodecRegistry, CodecService, EncodingPlan, InspectionPlan, PdataView};
+    use crate::{
+        CodecRegistry, CodecService, CodecServiceBuilder, DecodePolicy, DecodeValidation,
+        EncodingPlan, InspectionPlan, PdataView,
+    };
     use otel_arrow_dfe_pdata::testing::fixtures::{
         logs_with_full_resource_and_scope, metrics_sum_with_full_resource_and_scope,
         traces_with_full_resource_and_scope,
@@ -305,6 +348,13 @@ mod tests {
 
     fn logs_bytes() -> Bytes {
         logs_with_full_resource_and_scope().encode_to_vec().into()
+    }
+
+    fn service(validation: DecodeValidation) -> CodecService {
+        CodecServiceBuilder::from_global_registry()
+            .expect("valid codec registry")
+            .with_decode_policy(DecodePolicy::new(validation))
+            .build()
     }
 
     /// Scenario: OTLP admission uses the validated registry without mutable state.
@@ -386,10 +436,10 @@ mod tests {
         );
     }
 
-    /// Scenario: OTLP logs, metrics, and traces decode through the same extension contract.
-    /// Guarantees: Each supported signal preserves its primary item count.
+    /// Scenario: OTLP logs, metrics, and traces decode under both validation policies.
+    /// Guarantees: Both implementations preserve the signal and primary item count.
     #[test]
-    fn decodes_all_otlp_signals() {
+    fn decodes_all_otlp_signals_in_both_modes() {
         let cases = [
             (
                 SignalType::Logs,
@@ -407,22 +457,24 @@ mod tests {
                 2,
             ),
         ];
-        let service = CodecService::new().unwrap();
-        for (signal, bytes, expected) in cases {
-            let codec = service
-                .registry()
-                .resolve_decoder(&OTLP_ENCODING, signal)
-                .unwrap();
-            let encoded = codec.admit(signal, bytes).unwrap();
-            assert_eq!(service.decode(&encoded).unwrap().num_items(), expected);
+        for validation in [DecodeValidation::BestEffort, DecodeValidation::Strict] {
+            let service = service(validation);
+            for (signal, bytes, expected) in &cases {
+                let codec = service
+                    .registry()
+                    .resolve_decoder(&OTLP_ENCODING, *signal)
+                    .unwrap();
+                let encoded = codec.admit(*signal, bytes.clone()).unwrap();
+                assert_eq!(service.decode(&encoded).unwrap().num_items(), *expected);
+            }
         }
     }
 
     /// Scenario: Valid OTLP logs are followed by a resource with malformed nested framing.
-    /// Guarantees: Codec decoding rejects the complete batch instead of returning partial records.
+    /// Guarantees: Best-effort decoding retains the legacy behavior of returning the valid prefix.
     #[test]
-    fn rejects_malformed_nested_fields_after_valid_records() {
-        let service = CodecService::new().unwrap();
+    fn best_effort_may_omit_malformed_nested_content() {
+        let service = service(DecodeValidation::BestEffort);
         let codec = service
             .registry()
             .resolve_decoder(&OTLP_ENCODING, SignalType::Logs)
@@ -432,12 +484,49 @@ mod tests {
         bytes.extend_from_slice(&[0x0a, 0x03, 0x1a, 0x05, 0x00]);
         let encoded = codec.admit(SignalType::Logs, bytes.into()).unwrap();
 
-        assert!(matches!(
-            service.decode(&encoded),
-            Err(CodecError::Operation {
-                operation: CodecOperation::Decode,
-                ..
-            })
-        ));
+        assert_eq!(service.decode(&encoded).unwrap().num_items(), 4);
+    }
+
+    /// Scenario: Each OTLP signal contains valid records followed by malformed nested framing.
+    /// Guarantees: Strict decoding rejects the complete batch repeatedly and then recovers.
+    #[test]
+    fn strict_rejects_nested_malformed_content_and_recovers() {
+        let cases = [
+            (
+                SignalType::Logs,
+                Bytes::from(logs_with_full_resource_and_scope().encode_to_vec()),
+            ),
+            (
+                SignalType::Metrics,
+                Bytes::from(metrics_sum_with_full_resource_and_scope().encode_to_vec()),
+            ),
+            (
+                SignalType::Traces,
+                Bytes::from(traces_with_full_resource_and_scope().encode_to_vec()),
+            ),
+        ];
+        let service = service(DecodeValidation::Strict);
+        for (signal, valid_bytes) in cases {
+            let codec = service
+                .registry()
+                .resolve_decoder(&OTLP_ENCODING, signal)
+                .unwrap();
+            let mut malformed_bytes = valid_bytes.to_vec();
+            malformed_bytes.extend_from_slice(&[0x0a, 0x03, 0x1a, 0x05, 0x00]);
+            let malformed = codec.admit(signal, malformed_bytes.into()).unwrap();
+
+            for _ in 0..2 {
+                assert!(matches!(
+                    service.decode(&malformed),
+                    Err(CodecError::Operation {
+                        operation: CodecOperation::Decode,
+                        ..
+                    })
+                ));
+            }
+            let valid = codec.admit(signal, valid_bytes).unwrap();
+            assert!(service.decode(&valid).is_ok());
+        }
+        assert_eq!(service.test_instance_count().unwrap(), 1);
     }
 }

@@ -54,7 +54,8 @@ pub fn test_pipeline_runtime_services() -> PipelineRuntimeServices {
 }
 
 fn create_test_pipeline_runtime_services() -> PipelineRuntimeServices {
-    PipelineRuntimeServices::new().expect("test binary must link valid pdata codec registrations")
+    PipelineRuntimeServices::new(Default::default())
+        .expect("test binary must link valid pdata codec registrations")
 }
 
 /// Create a minimal [`PipelineContext`] suitable for unit tests that

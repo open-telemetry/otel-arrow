@@ -33,7 +33,7 @@ impl PdataDecoder for ExternalDecoder {
 register_pdata_codec!(
     EXTERNAL_CODEC,
     CodecRegistration::new(&EXTERNAL_METADATA)
-        .with_decoder(|| Box::new(ExternalDecoder))
+        .with_decoder(|_| Box::new(ExternalDecoder))
         .with_item_counter(|_, _| Some(0)),
 );
 
