@@ -108,10 +108,8 @@ impl ObservedEventReporter {
             None => match self.sender.try_send(event) {
                 Ok(_) => {}
                 Err(err) => {
-                    if is_log {
-                        if let Some(drop_counter) = &self.drop_counter {
-                            drop_counter.increment();
-                        }
+                    if is_log && let Some(drop_counter) = &self.drop_counter {
+                        drop_counter.increment();
                     }
                     if !self.policy.console_fallback {
                         return;
@@ -129,10 +127,8 @@ impl ObservedEventReporter {
             Some(timeout) => match self.sender.send_timeout(event, timeout) {
                 Ok(_) => {}
                 Err(err) => {
-                    if is_log {
-                        if let Some(drop_counter) = &self.drop_counter {
-                            drop_counter.increment();
-                        }
+                    if is_log && let Some(drop_counter) = &self.drop_counter {
+                        drop_counter.increment();
                     }
                     if !self.policy.console_fallback {
                         return;

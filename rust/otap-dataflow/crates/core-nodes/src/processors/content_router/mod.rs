@@ -287,12 +287,12 @@ impl ContentRouterConfig {
                 });
             }
         }
-        if let Some(ref default) = self.default_output {
-            if default.trim().is_empty() {
-                return Err(ConfigError::InvalidUserConfig {
-                    error: "default_output must not be empty when specified".to_string(),
-                });
-            }
+        if let Some(ref default) = self.default_output
+            && default.trim().is_empty()
+        {
+            return Err(ConfigError::InvalidUserConfig {
+                error: "default_output must not be empty when specified".to_string(),
+            });
         }
         // Detect case-insensitive key collisions
         if !self.case_sensitive {
@@ -318,18 +318,17 @@ impl ContentRouterConfig {
                     });
                 }
             }
-            if let Some(ref default) = self.default_output {
-                if !declared_outputs
+            if let Some(ref default) = self.default_output
+                && !declared_outputs
                     .iter()
                     .any(|o| o.as_ref() == default.as_str())
-                {
-                    return Err(ConfigError::InvalidUserConfig {
-                        error: format!(
-                            "default_output '{}' references undeclared output port",
-                            default
-                        ),
-                    });
-                }
+            {
+                return Err(ConfigError::InvalidUserConfig {
+                    error: format!(
+                        "default_output '{}' references undeclared output port",
+                        default
+                    ),
+                });
             }
         }
         Ok(())

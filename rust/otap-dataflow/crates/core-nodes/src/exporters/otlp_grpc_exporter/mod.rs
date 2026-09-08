@@ -476,19 +476,19 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     // force-drains buffered pdata even while auth is pending: with no
                     // usable token we cannot send, so NACK it as retryable -- a token
                     // may yet arrive, so nothing is dropped.
-                    if let Some(a) = auth.as_ref() {
-                        if !a.is_ready() {
-                            let reason = a.not_ready_reason();
-                            nack_without_usable_token(
-                                pdata,
-                                reason,
-                                export_started_at,
-                                &effect_handler,
-                                &mut self.metrics,
-                            )
-                            .await;
-                            continue;
-                        }
+                    if let Some(a) = auth.as_ref()
+                        && !a.is_ready()
+                    {
+                        let reason = a.not_ready_reason();
+                        nack_without_usable_token(
+                            pdata,
+                            reason,
+                            export_started_at,
+                            &effect_handler,
+                            &mut self.metrics,
+                        )
+                        .await;
+                        continue;
                     }
 
                     let signal_type = pdata.signal_type();
@@ -1735,10 +1735,10 @@ mod tests {
 
             let interceptor =
                 move |req: tonic::Request<()>| -> Result<tonic::Request<()>, tonic::Status> {
-                    if let Some(value) = req.metadata().get("authorization") {
-                        if let Ok(value) = value.to_str() {
-                            *captured_auth_srv.lock().unwrap() = Some(value.to_string());
-                        }
+                    if let Some(value) = req.metadata().get("authorization")
+                        && let Ok(value) = value.to_str()
+                    {
+                        *captured_auth_srv.lock().unwrap() = Some(value.to_string());
                     }
                     Ok(req)
                 };

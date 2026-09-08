@@ -300,13 +300,12 @@ pub(super) fn join_and_eval_value(
                 }
             }
         };
-
         // Check for short-circuit: skip remaining children and the join when the
         // outcome is already determined by this child's result.
-        if let Some(strategy) = short_circuit {
-            if strategy.should_short_circuit(&result.scope, &result.values) {
-                return Ok(Some(strategy.value()));
-            }
+        if let Some(strategy) = short_circuit
+            && strategy.should_short_circuit(&result.scope, &result.values)
+        {
+            return Ok(Some(strategy.value()));
         }
 
         child_results.push(result)
@@ -445,16 +444,15 @@ fn coerce_nulls_for_predicate(
 ) -> ColumnarValue {
     match &result_vals {
         ColumnarValue::Array(arr) => {
-            if let Some(boolean_arr) = arr.as_boolean_opt() {
-                if let Some(nulls) = boolean_arr.nulls() {
-                    let combined = if missing_data_passes {
-                        boolean_arr.values().clone()
-                    } else {
-                        boolean_arr.values() & nulls.inner()
-                    };
-
-                    return ColumnarValue::Array(Arc::new(BooleanArray::new(combined, None)));
-                }
+            if let Some(boolean_arr) = arr.as_boolean_opt()
+                && let Some(nulls) = boolean_arr.nulls()
+            {
+                let combined = if missing_data_passes {
+                    boolean_arr.values().clone()
+                } else {
+                    boolean_arr.values() & nulls.inner()
+                };
+                return ColumnarValue::Array(Arc::new(BooleanArray::new(combined, None)));
             }
         }
         ColumnarValue::Scalar(ScalarValue::Boolean(None)) => {
@@ -618,23 +616,21 @@ pub(crate) fn scoped_value_to_join_input(
     };
 
     // for root-scoped results, extract scope_ids and resource_ids from the root batch
-    if is_root {
-        if let Some(root_rb) = otap_batch.root_record_batch() {
-            if let Ok(Some(resource_ids)) = get_optional_array_from_struct_array_from_record_batch(
-                root_rb,
-                consts::RESOURCE,
-                consts::ID,
-            ) {
-                result.resource_ids = Some(Arc::clone(resource_ids));
-            }
+    if is_root && let Some(root_rb) = otap_batch.root_record_batch() {
+        if let Ok(Some(resource_ids)) = get_optional_array_from_struct_array_from_record_batch(
+            root_rb,
+            consts::RESOURCE,
+            consts::ID,
+        ) {
+            result.resource_ids = Some(Arc::clone(resource_ids));
+        }
 
-            if let Ok(Some(scope_ids)) = get_optional_array_from_struct_array_from_record_batch(
-                root_rb,
-                consts::SCOPE,
-                consts::ID,
-            ) {
-                result.scope_ids = Some(Arc::clone(scope_ids));
-            }
+        if let Ok(Some(scope_ids)) = get_optional_array_from_struct_array_from_record_batch(
+            root_rb,
+            consts::SCOPE,
+            consts::ID,
+        ) {
+            result.scope_ids = Some(Arc::clone(scope_ids));
         }
     }
 
