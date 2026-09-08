@@ -17,6 +17,7 @@
 {% set generator_core_end = generator_core_end | default(2) -%}
 {% set data_source = data_source | default(static) %}
 {% set transport_headers = transport_headers | default(false) -%}
+{% set stage_nonce = stage_nonce | default("") -%}
 
 {{ generator_label }}:
   policies:
@@ -46,6 +47,10 @@
           metric_weight: {{ metric_weight }}
           trace_weight: {{ trace_weight }}
           log_weight: {{ log_weight }}
+{% if stage_nonce | length > 0 %}
+        resource_attributes:
+          "otel.validation.stage": "{{ stage_nonce }}"
+{% endif %}
 {% if transport_headers %}
         transport_headers:
 {% for key, value in transport_headers | items %}
