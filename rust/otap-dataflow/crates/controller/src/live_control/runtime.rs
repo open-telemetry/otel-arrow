@@ -248,8 +248,10 @@ impl<
                 .compact_pipeline_instances(&logical_pipeline_key);
         }
         self.state_changed.notify_all();
-        if exit_was_applied && let RuntimeInstanceExit::Error(error) = exit {
-            self.schedule_runtime_recovery(pipeline_key, error);
+        if exit_was_applied {
+            if let RuntimeInstanceExit::Error(error) = exit {
+                self.schedule_runtime_recovery(pipeline_key, error);
+            }
         }
     }
 

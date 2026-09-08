@@ -5790,8 +5790,8 @@ fn runtime_thread_panic_populates_error_source_in_observed_status() {
     assert!(source.contains("backtrace:"));
 }
 
-static LAUNCH_PAUSE: Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>> =
-    Mutex::new(None);
+static LAUNCH_STARTED: AtomicUsize = AtomicUsize::new(0);
+static LAUNCH_PROCEED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
 fn blocking_create(
     _pipeline_ctx: PipelineContext,
@@ -5800,9 +5800,11 @@ fn blocking_create(
     receiver_config: &ReceiverConfig,
     _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
 ) -> Result<ReceiverWrapper<()>, otel_arrow_dfe_config::error::Error> {
-    if let Some((tx, rx)) = LAUNCH_PAUSE.lock().unwrap().as_mut() {
-        tx.send(()).unwrap();
-        rx.recv().unwrap();
+    if !LAUNCH_PROCEED.load(Ordering::SeqCst) {
+        let _ = LAUNCH_STARTED.fetch_add(1, Ordering::SeqCst);
+        while !LAUNCH_PROCEED.load(Ordering::SeqCst) {
+            thread::sleep(Duration::from_millis(10));
+        }
     }
     Ok(ReceiverWrapper::local(
         RecoveryTestReceiver,
@@ -5819,11 +5821,8 @@ fn blocking_create(
 /// is even tracked.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn has_active_instances_checks_multiple_state_fields() {
-    use std::sync::mpsc;
-    let (launch_started_tx, launch_started_rx) = mpsc::channel();
-    let (allow_launch_tx, allow_launch_rx) = mpsc::channel();
-
-    *LAUNCH_PAUSE.lock().unwrap() = Some((launch_started_tx, allow_launch_rx));
+    LAUNCH_STARTED.store(0, Ordering::SeqCst);
+    LAUNCH_PROCEED.store(false, Ordering::SeqCst);
 
     let receiver_factories: &'static [ReceiverFactory<()>] = Box::leak(Box::new(vec![
         ReceiverFactory {
@@ -5848,20 +5847,24 @@ async fn has_active_instances_checks_multiple_state_fields() {
 
     let config = engine_config_with_pipeline(simple_pipeline_yaml());
     let runtime = test_runtime_with_factory(&config, test_factory);
-    let control_plane = runtime.control_plane();
 
-    // Start reconciliation which will launch the pipeline
+    let control_plane = runtime.control_plane();
     let control_plane_clone = control_plane.clone();
     let config_clone = config.clone();
+
     let _reconcile_task = tokio::spawn(async move {
         let req = reconcile_request(config_clone, false);
         let _ = control_plane_clone.reconcile_engine_config(req).unwrap();
     });
 
     // Wait for the pipeline creation to begin and block
-    launch_started_rx
-        .recv_timeout(Duration::from_secs(5))
-        .unwrap();
+    let start_wait = Instant::now();
+    while LAUNCH_STARTED.load(Ordering::SeqCst) == 0 {
+        if start_wait.elapsed() > Duration::from_secs(5) {
+            panic!("timeout waiting for launch to start");
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 
     // At this point, the instance is launching but NOT yet registered.
     // The "pending lifecycle work" predicate keeps has_active_instances() true.
@@ -5874,7 +5877,7 @@ async fn has_active_instances_checks_multiple_state_fields() {
     assert!(control_plane.has_active_instances());
 
     // Allow the launch to finish, which will now register the instance *after* global_shutdown_requested is true.
-    allow_launch_tx.send(()).unwrap();
+    LAUNCH_PROCEED.store(true, Ordering::SeqCst);
 
     // The newly registered instance should immediately receive the shutdown message and exit.
     // We poll has_active_instances until it becomes false (or we timeout).
