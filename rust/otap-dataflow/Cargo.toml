@@ -292,7 +292,7 @@ tracepoint_decode = "0.5.0"
 tracelogging = "1.2.4"
 tracelogging_dynamic = "1.2.4"
 urlencoding = "2"
-geneva-uploader = { version = "0.7.0", default-features = false, features = ["tls-rustls"] }
+geneva-uploader = { version = "0.7.1", default-features = false, features = ["tls-rustls"] }
 opentelemetry-resource-detectors = "0.12.0"
 
 [patch.crates-io]

@@ -134,7 +134,6 @@ fn publish_order(packages: &[CargoPackage]) -> anyhow::Result<Vec<&CargoPackage>
         let mut dependencies = package
             .dependencies
             .iter()
-            .filter(|dependency| dependency.kind.as_deref() != Some("dev"))
             .filter_map(|dependency| packages.get_key_value(dependency.name.as_str()))
             .map(|(name, _)| *name)
             .collect::<Vec<_>>();
@@ -210,11 +209,12 @@ fn build_plan(
         .map(|package| (package.name.as_str(), package.version.as_str()))
         .collect::<HashMap<_, _>>();
     for package in &publishable {
-        for dependency in package
-            .dependencies
-            .iter()
-            .filter(|dependency| dependency.kind.as_deref() != Some("dev"))
-        {
+        for dependency in &package.dependencies {
+            if dependency.kind.as_deref() == Some("dev")
+                && !package_versions.contains_key(dependency.name.as_str())
+            {
+                continue;
+            }
             let Some(dependency_version) = package_versions.get(dependency.name.as_str()) else {
                 if dependency.path.is_some() {
                     bail!(
@@ -244,10 +244,10 @@ fn build_plan(
             .map(|package| PublishPackage {
                 name: package.name.clone(),
                 version: package.version.clone(),
-                has_publish_dependencies: package.dependencies.iter().any(|dependency| {
-                    dependency.kind.as_deref() != Some("dev")
-                        && package_versions.contains_key(dependency.name.as_str())
-                }),
+                has_publish_dependencies: package
+                    .dependencies
+                    .iter()
+                    .any(|dependency| package_versions.contains_key(dependency.name.as_str())),
             })
             .collect(),
         target_directory,
@@ -514,6 +514,13 @@ mod tests {
         }
     }
 
+    fn dev_dependency(name: &str) -> CargoDependency {
+        CargoDependency {
+            kind: Some("dev".to_owned()),
+            ..dependency(name)
+        }
+    }
+
     fn package(name: &str, publish: Option<Vec<String>>, dependencies: &[&str]) -> CargoPackage {
         CargoPackage {
             name: name.to_owned(),
@@ -524,7 +531,7 @@ mod tests {
     }
 
     fn publishable_packages() -> Vec<CargoPackage> {
-        PUBLISH_PACKAGES
+        let mut packages = PUBLISH_PACKAGES
             .iter()
             .map(|name| {
                 let dependencies: &[&str] = match *name {
@@ -581,7 +588,14 @@ mod tests {
                 };
                 package(name, None, dependencies)
             })
-            .collect()
+            .collect::<Vec<_>>();
+        packages
+            .iter_mut()
+            .find(|package| package.name == "otel-arrow-dfe-query-engine")
+            .expect("query engine package should exist")
+            .dependencies
+            .push(dev_dependency("otel-arrow-dfe-query-engine-languages"));
+        packages
     }
 
     /// Scenario: the approved packages and dependency edges are publishable.
@@ -644,6 +658,50 @@ mod tests {
         assert!(build_plan(packages, PathBuf::from("/target")).is_err());
     }
 
+    /// Scenario: a publishable crate has a dev-dependency on an unpublished test helper.
+    /// Guarantees: test-only workspace crates do not have to join the publication set.
+    #[test]
+    fn plan_allows_unpublished_dev_dependency() {
+        let mut packages = publishable_packages();
+        packages
+            .iter_mut()
+            .find(|package| package.name == "otel-arrow-dfe-config")
+            .expect("config package should exist")
+            .dependencies
+            .push(dev_dependency("otel-arrow-dfe-test-support"));
+
+        assert!(build_plan(packages, PathBuf::from("/target")).is_ok());
+    }
+
+    /// Scenario: a crate has only a dev-dependency on another publishable crate.
+    /// Guarantees: preflight defers full packaging and orders the dependency first.
+    #[test]
+    fn plan_orders_publishable_dev_dependency() {
+        let mut packages = publishable_packages();
+        packages
+            .iter_mut()
+            .find(|package| package.name == "otel-arrow-dfe-quiver")
+            .expect("quiver package should exist")
+            .dependencies
+            .push(dev_dependency("otel-arrow-dfe-query-engine-languages"));
+
+        let plan = build_plan(packages, PathBuf::from("/target"))
+            .expect("publishable dev-dependency should be accepted");
+        let languages = plan
+            .packages
+            .iter()
+            .position(|package| package.name == "otel-arrow-dfe-query-engine-languages")
+            .expect("languages package should be planned");
+        let quiver = plan
+            .packages
+            .iter()
+            .position(|package| package.name == "otel-arrow-dfe-quiver")
+            .expect("quiver package should be planned");
+
+        assert!(languages < quiver);
+        assert!(plan.packages[quiver].has_publish_dependencies);
+    }
+
     /// Scenario: a publishable crate uses a self dev-dependency to enable test features.
     /// Guarantees: release preparation rejects the first-publication cycle before packaging.
     #[test]
@@ -654,12 +712,7 @@ mod tests {
             .find(|package| package.name == "otel-arrow-dfe-engine")
             .expect("engine package should exist")
             .dependencies
-            .push(CargoDependency {
-                name: "otel-arrow-dfe-engine".to_owned(),
-                kind: Some("dev".to_owned()),
-                path: Some("/crates/otel-arrow-dfe-engine".into()),
-                req: "^0.51.0".to_owned(),
-            });
+            .push(dev_dependency("otel-arrow-dfe-engine"));
 
         let error = build_plan(packages, PathBuf::from("/target"))
             .expect_err("self dependencies must be rejected");
