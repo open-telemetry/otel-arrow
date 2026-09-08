@@ -1,4 +1,0 @@
-change_type: enhancement
-component: query-engine
-note: Add capability to cast expression evaluation results to specific primitive type in OPL and OTAP query engine
-issues: [3972]

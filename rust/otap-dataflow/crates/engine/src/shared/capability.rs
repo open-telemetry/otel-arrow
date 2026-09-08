@@ -18,6 +18,10 @@ pub mod auth {
     pub mod agent_fed_credential_provider {
         pub use crate::capability::auth::agent_fed_credential_provider::shared::AgentFedCredentialProvider;
     }
+    /// Shared (Send + Sync) trait variant of the api-key-provider capability.
+    pub mod api_key_provider {
+        pub use crate::capability::auth::api_key_provider::shared::ApiKeyProvider;
+    }
     /// Shared (Send + Sync) trait variant of the bearer-token-authorizer capability.
     pub mod bearer_token_authorizer {
         pub use crate::capability::auth::bearer_token_authorizer::shared::BearerTokenAuthorizer;
