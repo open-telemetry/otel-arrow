@@ -1570,10 +1570,10 @@ mod tests {
 
     impl Drop for TestSession {
         fn drop(&mut self) {
-            if let Ok(mut guard) = SESSIONS.lock() {
-                if let Some(sessions) = guard.as_mut() {
-                    let _ = sessions.remove(&self.name);
-                }
+            if let Ok(mut guard) = SESSIONS.lock()
+                && let Some(sessions) = guard.as_mut()
+            {
+                let _ = sessions.remove(&self.name);
             }
         }
     }
