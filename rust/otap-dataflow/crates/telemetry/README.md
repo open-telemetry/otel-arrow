@@ -118,11 +118,13 @@ metrics. Log provider modes determine how logging is configured in different
 parts of the code.
 
 All modes use a [`tracing_subscriber::EnvFilter`](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html).
-The `engine.telemetry.logs.level` field accepts either a severity such as
-`warn` or a complete target directive string. Successful full-engine
-reconciliation applies changes to this field to existing tracing subscribers,
-so an OpAMP or admin control plane can temporarily increase verbosity without
-restarting the engine. Failed reconciliation preserves the active filter.
+The optional `engine.telemetry.logs.level` field accepts either a severity such
+as `warn` or a complete target directive string. When specified, it takes
+precedence over `RUST_LOG` from the first tracing subscriber onward. Successful
+full-engine reconciliation applies changes to this field to existing tracing
+subscribers, so an OpAMP or admin control plane can temporarily increase
+verbosity without restarting the engine. Failed reconciliation preserves the
+active filter.
 
 `EnvFilter` target directives use prefix matching. A directive for
 `<namespace>.<kind>.<name>` also matches another component whose target begins
@@ -137,19 +139,21 @@ by `otel-arrow-dfe-otap`:
 warn,otel.receiver.otlp=debug,otel-arrow-dfe-otap=debug
 ```
 
-At startup, a valid `RUST_LOG` environment variable takes precedence over
-`logs.level`. After startup, a successful full-engine reconciliation makes the
-reconciled `logs.level` authoritative and replaces the environment-derived
-filter. This lets an OpAMP or admin control plane reliably change verbosity
-even when the process was launched with `RUST_LOG`.
+When `logs.level` is omitted, a valid `RUST_LOG` value captured at startup
+remains authoritative. If both are absent, the effective default is
+`info,h2=off,hyper=off`. A later reconciliation can install an explicit
+`logs.level`; removing it restores the captured `RUST_LOG` value or the
+built-in default. This preserves `RUST_LOG` as a restart-time operator override
+without allowing it to supersede explicit engine configuration.
 
 ### Limitation: active span state is not reconstructed
 
 `EnvFilter` supports span-scoped directives such as
 `warn,[pipeline_thread]=debug`, which raise verbosity only while a matching
-span is entered. Those directives work when supplied at startup through
-`logs.level` or `RUST_LOG`, but reconciliation cannot apply them to spans that
-are already entered.
+span is entered. Those directives work when supplied before the span is
+created, through an explicit initial `logs.level` or through `RUST_LOG` when
+the field is omitted. Reconciliation cannot apply them to spans that are
+already entered.
 
 Reconciliation installs a newly built `EnvFilter` into each live dispatcher.
 `EnvFilter` tracks span scopes through `on_new_span` and `on_enter`, so a
