@@ -67,19 +67,19 @@ jobs:
         run: make otelarrowcol
       - name: Run tests with coverage (Linux x86_64)
         if: matrix.os == 'ubuntu-latest'
-        run: cargo llvm-cov nextest --all-features --workspace --lcov --output-path lcov.info
+        run: cargo llvm-cov nextest --locked --all-features --workspace --lcov --output-path lcov.info
         working-directory: ./rust/${{ matrix.folder }}
       - name: Run tests (Linux ARM64)
         if: matrix.os == 'ubuntu-24.04-arm'
-        run: cargo nextest run --all-features --workspace
+        run: cargo nextest run --locked --all-features --workspace
         working-directory: ./rust/${{ matrix.folder }}
       - name: Run tests (Windows)
         if: runner.os == 'Windows'
-        run: cargo nextest run --all-features --workspace
+        run: cargo nextest run --locked --all-features --workspace
         working-directory: ./rust/${{ matrix.folder }}
       - name: Run tests (macOS)
         if: runner.os == 'macOS'
-        run: cargo nextest run --all-features --workspace
+        run: cargo nextest run --locked --all-features --workspace
         working-directory: ./rust/${{ matrix.folder }}
       # NOTE: when adding or removing a codecov upload step anywhere in
       # the repo, update `codecov.notify.after_n_builds` in
@@ -380,7 +380,7 @@ jobs:
           save-if: false
       - name: Run cargo clippy for ${{ matrix.folder }}
         run: |
-          cargo clippy --all-targets --all-features --workspace -- -D warnings
+          cargo clippy --locked --all-targets --all-features --workspace -- -D warnings
         working-directory: ./rust/${{ matrix.folder }}
 
   deny:
@@ -441,7 +441,7 @@ jobs:
         with:
           toolchain: stable
       - name: Run cargo doc for ${{ matrix.folder }}
-        run: cargo doc --no-deps
+        run: cargo doc --locked --no-deps
         working-directory: ./rust/${{ matrix.folder }}
 
   structure_check:
@@ -1193,7 +1193,7 @@ jobs:
         with:
           submodules: true
       - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
       - name: Set up Docker Buildx
@@ -1217,15 +1217,19 @@ jobs:
           cd tools/pipeline_perf_test
           python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/100klrps-docker.yaml
 
-  # License header check (korandoru/hawkeye, config in licenserc.toml). Covers
+  # License header check (hawkeye CLI, config in licenserc.toml). Covers
   # both *.go and *.rs; hosted here so it can be made a required check
   # transitively via rust-required-status-check.needs without editing the
   # branch-protection ruleset.
+  # HawkEye v7 removed the korandoru/hawkeye GitHub Action.
   license-header-check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: korandoru/hawkeye@c57037afedf940370c41eb660837c8aa928d472a # v6.5.1
+      - uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
+        with:
+          tool: hawkeye@7.0.1
+      - run: hawkeye check
 
   # Aggregated status check - depends only on the required matrix combinations.
   # Add/remove jobs from the needs list to change what is required via PR,
