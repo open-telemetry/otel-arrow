@@ -508,7 +508,7 @@ mod preserve_original_name_tests {
                 selector: ContextConsumerSelector::Entries {
                     entries: vec![ContextEntrySelector {
                         name: self.entry.clone(),
-                        read: ContextEntrySelectorForm::Value,
+                        form: ContextEntrySelectorForm::Value,
                     }]
                     .into_boxed_slice(),
                 },
@@ -568,7 +568,7 @@ mod preserve_original_name_tests {
                         entries: ["x-first", "canonical"]
                             .map(|name| ContextEntrySelector {
                                 name: context_name(name),
-                                read: ContextEntrySelectorForm::OriginalKeyValue,
+                                form: ContextEntrySelectorForm::OriginalKeyValue,
                             })
                             .into(),
                     },
@@ -615,7 +615,7 @@ mod preserve_original_name_tests {
                 selector: ContextConsumerSelector::Entries {
                     entries: vec![ContextEntrySelector {
                         name: context_name("original"),
-                        read: ContextEntrySelectorForm::OriginalKeyValue,
+                        form: ContextEntrySelectorForm::OriginalKeyValue,
                     }]
                     .into_boxed_slice(),
                 },
@@ -624,7 +624,7 @@ mod preserve_original_name_tests {
                 selector: ContextConsumerSelector::Entries {
                     entries: vec![ContextEntrySelector {
                         name: context_name("value"),
-                        read: ContextEntrySelectorForm::Value,
+                        form: ContextEntrySelectorForm::Value,
                     }]
                     .into_boxed_slice(),
                 },

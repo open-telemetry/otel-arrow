@@ -359,7 +359,7 @@ impl ConfigNodeContextDeclaration for KafkaExporterConfig {
                             selector: ContextConsumerSelector::Entries {
                                 entries: vec![ContextEntrySelector {
                                     name: name.clone(),
-                                    read: ContextEntrySelectorForm::Value,
+                                    form: ContextEntrySelectorForm::Value,
                                 }]
                                 .into_boxed_slice(),
                             },
@@ -1671,7 +1671,7 @@ pub mod test_support {
                     selector: ContextConsumerSelector::Entries {
                         entries: vec![ContextEntrySelector {
                             name: context_name("x-traces-topic"),
-                            read: ContextEntrySelectorForm::Value,
+                            form: ContextEntrySelectorForm::Value,
                         }]
                         .into_boxed_slice(),
                     },

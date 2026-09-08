@@ -310,7 +310,6 @@ groups: {{}}
             observability_pipeline.pipeline,
             channel_capacity.clone(),
             telemetry_policy,
-            None,
             std::collections::BTreeMap::new(),
             None,
             Some(internal_settings),
