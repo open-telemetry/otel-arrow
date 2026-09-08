@@ -500,18 +500,18 @@ impl KafkaExporter {
 
         // Propagate transport headers onto the Kafka record if a propagation
         // policy is configured and the pdata context carries transport headers.
-        if let Some(policy) = effect_handler.and_then(|eh| eh.propagation_policy()) {
-            if let Some(transport_headers) = context.transport_headers() {
-                for propagated in policy.propagate(transport_headers) {
-                    // Skip propagated headers that collide with the format header.
-                    if propagated.header_name == format_header_key {
-                        continue;
-                    }
-                    headers = headers.insert(Header {
-                        key: propagated.header_name,
-                        value: Some(propagated.value),
-                    });
+        if let Some(policy) = effect_handler.and_then(|eh| eh.propagation_policy())
+            && let Some(transport_headers) = context.transport_headers()
+        {
+            for propagated in policy.propagate(transport_headers) {
+                // Skip propagated headers that collide with the format header.
+                if propagated.header_name == format_header_key {
+                    continue;
                 }
+                headers = headers.insert(Header {
+                    key: propagated.header_name,
+                    value: Some(propagated.value),
+                });
             }
         }
 
@@ -744,14 +744,14 @@ impl KafkaExporter {
                 } else {
                     reporter.nack(reason, refused).await
                 };
-                if let Err(e) = nack_result {
-                    if let Some(eh) = effect_handler {
-                        eh.info(&format!(
-                            "Failed to report nack for Kafka export enqueue failure: {}",
-                            e
-                        ))
-                        .await;
-                    }
+                if let Err(e) = nack_result
+                    && let Some(eh) = effect_handler
+                {
+                    eh.info(&format!(
+                        "Failed to report nack for Kafka export enqueue failure: {}",
+                        e
+                    ))
+                    .await;
                 }
                 // Enqueue failure was reported synchronously; there is no
                 // in-flight delivery to track.
@@ -800,14 +800,14 @@ impl KafkaExporter {
                 );
                 self.metrics
                     .record_success(signal_type, export_start.elapsed(), payload_bytes);
-                if let Err(e) = reporter.ack(pdata).await {
-                    if let Some(eh) = effect_handler {
-                        eh.info(&format!(
-                            "Failed to report ack for Kafka export (export succeeded): {}",
-                            e
-                        ))
-                        .await;
-                    }
+                if let Err(e) = reporter.ack(pdata).await
+                    && let Some(eh) = effect_handler
+                {
+                    eh.info(&format!(
+                        "Failed to report ack for Kafka export (export succeeded): {}",
+                        e
+                    ))
+                    .await;
                 }
                 return;
             }
@@ -843,14 +843,14 @@ impl KafkaExporter {
         } else {
             reporter.nack(reason, pdata).await
         };
-        if let Err(e) = nack_result {
-            if let Some(eh) = effect_handler {
-                eh.info(&format!(
-                    "Failed to report nack for Kafka export failure: {}",
-                    e
-                ))
-                .await;
-            }
+        if let Err(e) = nack_result
+            && let Some(eh) = effect_handler
+        {
+            eh.info(&format!(
+                "Failed to report nack for Kafka export failure: {}",
+                e
+            ))
+            .await;
         }
     }
 
@@ -1154,17 +1154,15 @@ impl Exporter<OtapPdata> for KafkaExporter {
                     if let Ok(Some((delivery, meta))) = self
                         .enqueue_pdata(pdata, &ack_nack_reporter, Some(&effect_handler))
                         .await
+                        && let Some((done_meta, done_result)) = in_flight.push(delivery, meta).await
                     {
-                        if let Some((done_meta, done_result)) = in_flight.push(delivery, meta).await
-                        {
-                            self.finalize_send_completion(
-                                done_meta,
-                                done_result,
-                                &ack_nack_reporter,
-                                Some(&effect_handler),
-                            )
-                            .await;
-                        }
+                        self.finalize_send_completion(
+                            done_meta,
+                            done_result,
+                            &ack_nack_reporter,
+                            Some(&effect_handler),
+                        )
+                        .await;
                     }
                 }
                 Message::Control(NodeControlMsg::CollectTelemetry {

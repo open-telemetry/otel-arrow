@@ -293,10 +293,10 @@ async fn run_backpressure_interblock_seed(seed: u64) {
                     biased;
 
                     _ = async {
-                        if let Some(when) = next_due {
-                            if when > clock::now() {
-                                clock::sleep_until(when).await;
-                            }
+                        if let Some(when) = next_due
+                            && when > clock::now()
+                        {
+                            clock::sleep_until(when).await;
                         }
                     }, if next_due.is_some() => {
                         let now = clock::now();
