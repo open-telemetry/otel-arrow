@@ -468,10 +468,9 @@ impl<
                         // expiry, but a value stays usable until ~30 s before
                         // expiry, so reusing it here would defer the planned
                         // early refresh far too long.
-                        if rx.has_changed().unwrap_or(false) {
+                        if rx.has_changed().unwrap_or(false)
                             && let Some(value) = self.current_fresh_value() {
-                                return Ok(value);
-                            }
+                            return Ok(value);
                         }
                         self.refresh_once().await
                     };
