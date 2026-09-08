@@ -1,5 +1,8 @@
 # Core Nodes
 
+This crate is currently pre-1.0. Its public API may evolve between minor
+releases.
+
 Core nodes are the built-in OTAP Dataflow Engine receivers, processors, and
 exporters. Use this catalog to find the node `type` to put in runtime YAML and
 to open the node-specific documentation for configuration examples, telemetry,
