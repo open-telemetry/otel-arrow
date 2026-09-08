@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788902579704,
+  "lastUpdate": 1788903995782,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -33331,6 +33331,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 102.66,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "29139614+renovate[bot]@users.noreply.github.com",
+            "name": "renovate[bot]",
+            "username": "renovate[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "58f8481bd26b13a448802c02e20df990c274052b",
+          "message": "chore(deps): update rust patch versions (#4012)\n\nThis PR contains the following updates:\n\n| Package | Type | Update | Change |\n|---|---|---|---|\n| [indexmap](https://redirect.github.com/indexmap-rs/indexmap) |\nworkspace.dependencies | patch | `2.14.1` → `2.14.2` |\n| [ipnet](https://redirect.github.com/krisprice/ipnet) |\nworkspace.dependencies | patch | `2.12.1` → `2.12.2` |\n| [pest](https://pest.rs/)\n([source](https://redirect.github.com/pest-parser/pest)) |\nworkspace.dependencies | patch | `2.9.0` → `2.9.1` |\n| [pest_derive](https://pest.rs/)\n([source](https://redirect.github.com/pest-parser/pest)) |\nworkspace.dependencies | patch | `2.9.0` → `2.9.1` |\n| [rustls](https://redirect.github.com/rustls/rustls) |\nworkspace.dependencies | patch | `0.23.43` → `0.23.44` |\n| [tokio-rustls](https://redirect.github.com/rustls/tokio-rustls) |\nworkspace.dependencies | patch | `0.26.4` → `0.26.5` |\n\n---\n\n### Release Notes\n\n<details>\n<summary>indexmap-rs/indexmap (indexmap)</summary>\n\n###\n[`v2.14.2`](https://redirect.github.com/indexmap-rs/indexmap/blob/HEAD/RELEASES.md#2142-2026-09-04)\n\n[Compare\nSource](https://redirect.github.com/indexmap-rs/indexmap/compare/2.14.1...2.14.2)\n\n- Fix item hygiene in map and set macros. Previously, an internal `const\nCAP`\n  could shadow the same name in the caller's namespace.\n- Allow `const` initialization of empty `indexmap_with_default!` and\n`indexset_with_default!`. The hasher may also be omitted if it's\ninferrable.\n\n</details>\n\n<details>\n<summary>krisprice/ipnet (ipnet)</summary>\n\n###\n[`v2.12.2`](https://redirect.github.com/krisprice/ipnet/blob/HEAD/RELEASES.md#Version-2122)\n\n- Fixes bug with `IpNet::aggregate()` where if a network containing\n`u32::MAX-1` or `u128::MAX-1` is provided, then `u32::MAX` and\n`u128::MAX` respectively are always included in the output. See issue\n[#&#8203;71](https://redirect.github.com/krisprice/ipnet/issues/71).\n\n</details>\n\n<details>\n<summary>pest-parser/pest (pest)</summary>\n\n###\n[`v2.9.1`](https://redirect.github.com/pest-parser/pest/releases/tag/v2.9.1)\n\n[Compare\nSource](https://redirect.github.com/pest-parser/pest/compare/v2.9.0...v2.9.1)\n\n##### What's Changed\n\n- Add PairsBuilder to construct Pairs without a parser by\n[@&#8203;ChrisJr404](https://redirect.github.com/ChrisJr404) in\n[#&#8203;1194](https://redirect.github.com/pest-parser/pest/pull/1194)\n- Make Display for Expr and OptimizedExpr re-parse to the same AST by\n[@&#8203;dylanpulver](https://redirect.github.com/dylanpulver) in\n[#&#8203;1197](https://redirect.github.com/pest-parser/pest/pull/1197)\n\n##### New Contributors\n\n- [@&#8203;ChrisJr404](https://redirect.github.com/ChrisJr404) made\ntheir first contribution in\n[#&#8203;1194](https://redirect.github.com/pest-parser/pest/pull/1194)\n- [@&#8203;dylanpulver](https://redirect.github.com/dylanpulver) made\ntheir first contribution in\n[#&#8203;1197](https://redirect.github.com/pest-parser/pest/pull/1197)\n\n**Full Changelog**:\n<https://github.com/pest-parser/pest/compare/v2.9.0...v2.9.1>\n\n##### Warning: Semantic Versioning\n\nNote that the node tag feature in 2.6.0 was a technically\nsemver-breaking change even though it is a backwards-compatible /\nnon-breaking change in the meta-grammar. There may be similar\nnon-breaking changes to the meta-grammar between minor versions in the\nfuture. These non-breaking changes, however, may translate into\nsemver-breaking changes due to the additional variants propagated from\nthe generated `Rule` enum.\n\nThis new feature caused issues in some Cargo version resolution\nsituations where Cargo mixed different versions of pest dependencies.\nFor this reason, these \"grammar non-breaking but semver-breaking\"\nchanges are now available only under the \"grammar-extras\" feature flag.\nIf you would like to use node tags (or other future grammar features),\nyou can do so by enabling this flag on the pest\\_derive crate in your\nCargo.toml:\n\n```\n...\npest_derive = { version = \"2.9\", features = [\"grammar-extras\"] }\n```\n\n</details>\n\n---\n\n### Configuration\n\n📅 **Schedule**: (UTC)\n\n- Branch creation\n  - \"before 8am on Monday\"\n- Automerge\n  - At any time (no schedule defined)\n\n🚦 **Automerge**: Disabled by config. Please merge this manually once you\nare satisfied.\n\n♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the\nrebase/retry checkbox.\n\n👻 **Immortal**: This PR will be recreated if closed unmerged. Get\n[config\nhelp](https://redirect.github.com/renovatebot/renovate/discussions) if\nthat's undesired.\n\n---\n\n- [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check\nthis box\n\n---\n\nThis PR was generated by [Mend Renovate](https://mend.io/renovate/).\nView the [repository job\nlog](https://developer.mend.io/github/open-telemetry/otel-arrow).\n\n<!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0NC42MS4zIiwidXBkYXRlZEluVmVyIjoiNDQuNjkuMSIsInRhcmdldEJyYW5jaCI6Im1haW4iLCJsYWJlbHMiOlsiZGVwZW5kZW5jaWVzIl19-->\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>\nCo-authored-by: Lalit Kumar Bhasin <lalit_fin@yahoo.com>",
+          "timestamp": "2026-09-08T20:11:43Z",
+          "tree_id": "387dac1e54b9dabeb2141034b76c72360785c638",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/58f8481bd26b13a448802c02e20df990c274052b"
+        },
+        "date": 1788903979397,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 83.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.71,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.53,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.7,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 70.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.78,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 115.27,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 102.6,
             "unit": "MB"
           }
         ]
