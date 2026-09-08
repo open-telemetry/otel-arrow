@@ -1270,6 +1270,17 @@ impl<
         timeout_secs: u64,
         reason: &str,
     ) -> Result<(), String> {
+        let drain_deadline = Instant::now() + Duration::from_secs(timeout_secs.max(1));
+        self.request_instance_shutdown_until(deployed_key, drain_deadline, reason)
+    }
+
+    /// Sends shutdown with an absolute drain deadline.
+    pub(super) fn request_instance_shutdown_until(
+        &self,
+        deployed_key: &DeployedPipelineKey,
+        drain_deadline: Instant,
+        reason: &str,
+    ) -> Result<(), String> {
         let sender = {
             let state = self
                 .state
@@ -1304,10 +1315,7 @@ impl<
             })?
         };
 
-        if let Err(err) = sender.try_send_shutdown(
-            Instant::now() + Duration::from_secs(timeout_secs.max(1)),
-            reason.to_owned(),
-        ) {
+        if let Err(err) = sender.try_send_shutdown(drain_deadline, reason.to_owned()) {
             return match self.instance_exit(deployed_key) {
                 Some(RuntimeInstanceExit::Success) => Ok(()),
                 Some(RuntimeInstanceExit::Error(error)) => Err(error.message),
@@ -1412,10 +1420,11 @@ impl<
         timeout_secs: u64,
         reason: &str,
     ) -> Result<(), String> {
-        self.request_instance_shutdown(deployed_key, timeout_secs, reason)?;
+        let drain_deadline = Instant::now() + Duration::from_secs(timeout_secs.max(1));
+        self.request_instance_shutdown_until(deployed_key, drain_deadline, reason)?;
         self.wait_for_instance_exit(
             deployed_key,
-            Instant::now() + Duration::from_secs(timeout_secs.max(1)),
+            pipeline_shutdown_completion_deadline(drain_deadline),
         )
     }
 
@@ -1618,8 +1627,10 @@ impl<
         shutdown_timeout: Duration,
     ) {
         let mut wait_failures = Vec::new();
+        let producer_completion_deadline = pipeline_shutdown_completion_deadline(producer_deadline);
         for deployed_key in &producer_keys {
-            if let Err(error) = self.wait_for_global_shutdown_exit(deployed_key, producer_deadline)
+            if let Err(error) =
+                self.wait_for_global_shutdown_exit(deployed_key, producer_completion_deadline)
             {
                 wait_failures.push(error);
             }
@@ -1707,9 +1718,11 @@ impl<
             }
         }
 
+        let observability_completion_deadline =
+            pipeline_shutdown_completion_deadline(observability_deadline);
         for deployed_key in observability_keys {
             if let Err(error) =
-                self.wait_for_global_shutdown_exit(&deployed_key, observability_deadline)
+                self.wait_for_global_shutdown_exit(&deployed_key, observability_completion_deadline)
             {
                 self.record_async_global_shutdown_failure(format!(
                     "system observability shutdown did not complete: {error}"

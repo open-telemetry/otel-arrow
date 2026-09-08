@@ -54,6 +54,23 @@ use self::state::{
 };
 pub(crate) use self::state::{PanicReport, RuntimeInstanceError, RuntimeInstanceExit};
 
+/// Bounded time for a runtime thread to finish after its graceful drain deadline.
+///
+/// The engine uses the drain deadline to force-stop unresolved node work, so the
+/// runtime thread can only report that forced exit after the deadline. Pipeline
+/// extensions may then consume their own bounded five-second shutdown window.
+#[cfg(not(test))]
+const PIPELINE_SHUTDOWN_COMPLETION_GRACE: Duration = Duration::from_secs(10);
+
+/// Short completion grace for unit tests that exercise both sides of the deadline.
+#[cfg(test)]
+const PIPELINE_SHUTDOWN_COMPLETION_GRACE: Duration = Duration::from_millis(250);
+
+/// Returns the controller deadline for observing an instance's terminal exit.
+fn pipeline_shutdown_completion_deadline(drain_deadline: Instant) -> Instant {
+    drain_deadline + PIPELINE_SHUTDOWN_COMPLETION_GRACE
+}
+
 /// Shared live-control runtime used by the admin control plane and workers.
 ///
 /// `ControllerRuntime` is the synchronization point for logical pipeline
