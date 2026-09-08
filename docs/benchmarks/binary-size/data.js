@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788863306781,
+  "lastUpdate": 1788866421060,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -32422,6 +32422,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
             "value": 3.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 115.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 102.6,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "drewrelmas@gmail.com",
+            "name": "Drew Relmas",
+            "username": "drewrelmas"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ef5f4ab646d9049a77dec43a2c4721b5a5fef902",
+          "message": "chore(release): Account for dev dependencies in crate publish order (#3986)\n\n# Chore Summary\n\nRunning `cargo xtask crates-publish plan` accounts for the ordering now.\nIn below, `query-engine-languages` comes before `query-engine`.\n\n```json\n{\n  \"packages\": [\n    {\n      \"name\": \"otel-arrow-dfe-config\",\n      \"version\": \"0.54.1\"\n    },\n    {\n      \"name\": \"otel-arrow-dfe-admin-types\",\n      \"version\": \"0.54.1\"\n    },\n    {\n      \"name\": \"otel-arrow-dfe-channel\",\n      \"version\": \"0.54.1\"\n    },\n    {\n      \"name\": \"otel-arrow-dfe-component-inventory-syntax\",\n      \"version\": \"0.54.1\"\n    },\n    {\n      \"name\": \"otel-arrow-dfe-engine-macros\",\n      \"version\": \"0.54.1\"\n    },\n    {\n      \"name\": \"otel-arrow-dfe-pdata-otlp-model\",\n      \"version\": \"0.54.1\"\n    },\n    {\n      \"name\": \"otel-arrow-dfe-pdata-otlp-macros\",\n      \"version\": \"0.54.1\"\n    },\n    {\n      \"name\": \"otel-arrow-dfe-pdata-views\",\n      \"version\": \"0.54.1\"\n    },\n    {\n      \"name\": \"otel-arrow-dfe-pdata\",\n      \"version\": \"0.54.1\"\n    },\n    {\n      \"name\": \"otel-arrow-dfe-expohisto\",\n      \"version\": \"0.54.1\"\n    },\n    {\n      \"name\": \"otel-arrow-dfe-telemetry-macros\",\n      \"version\": \"0.54.1\"\n    },\n    {\n      \"name\": \"otel-arrow-dfe-telemetry\",\n      \"version\": \"0.54.1\"\n    },\n    {\n      \"name\": \"otel-arrow-dfe-state\",\n      \"version\": \"0.54.1\"\n    },\n    {\n      \"name\": \"otel-arrow-dfe-engine\",\n      \"version\": \"0.54.1\"\n    },\n    {\n      \"name\": \"otel-arrow-dfe-admin\",\n      \"version\": \"0.54.1\"\n    },\n    {\n      \"name\": \"otel-arrow-dfe-controller\",\n      \"version\": \"0.54.1\"\n    },\n    {\n      \"name\": \"otel-arrow-dfe-query-engine-languages\",\n      \"version\": \"0.54.1\"\n    },\n    {\n      \"name\": \"otel-arrow-dfe-query-engine\",\n      \"version\": \"0.54.1\"\n    },\n    {\n      \"name\": \"otel-arrow-dfe-quiver\",\n      \"version\": \"0.54.1\"\n    }\n  ]\n}\n```\n\nCo-authored-by: albertlockett <a.lockett@f5.com>",
+          "timestamp": "2026-09-08T10:15:16Z",
+          "tree_id": "7b99f22e8c3511dcfe6cdeda8d6e17b71974cd74",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/ef5f4ab646d9049a77dec43a2c4721b5a5fef902"
+        },
+        "date": 1788866407243,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 83.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.53,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.98,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.7,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 70.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.79,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.48,
             "unit": "MB"
           },
           {
