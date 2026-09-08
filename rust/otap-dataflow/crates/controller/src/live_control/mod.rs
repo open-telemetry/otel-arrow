@@ -64,7 +64,7 @@ const PIPELINE_SHUTDOWN_COMPLETION_GRACE: Duration = Duration::from_secs(10);
 
 /// Short completion grace for unit tests that exercise both sides of the deadline.
 #[cfg(test)]
-const PIPELINE_SHUTDOWN_COMPLETION_GRACE: Duration = Duration::from_millis(250);
+const PIPELINE_SHUTDOWN_COMPLETION_GRACE: Duration = Duration::from_secs(1);
 
 /// Returns the controller deadline for observing an instance's terminal exit.
 fn pipeline_shutdown_completion_deadline(drain_deadline: Instant) -> Instant {

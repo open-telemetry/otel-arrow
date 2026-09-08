@@ -1351,7 +1351,7 @@ impl<
 
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                 return Err(format!(
-                    "timed out waiting for pipeline {}:{} core={} generation={} to drain",
+                    "timed out waiting for pipeline {}:{} core={} generation={} to shut down",
                     deployed_key.pipeline_group_id.as_ref(),
                     deployed_key.pipeline_id.as_ref(),
                     deployed_key.core_id,
@@ -1401,7 +1401,7 @@ impl<
 
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                 return Err(format!(
-                    "timed out waiting for pipeline {} to drain before system observability shutdown",
+                    "timed out waiting for pipeline {} to shut down before system observability shutdown",
                     deployed_instance_label(deployed_key)
                 ));
             };
@@ -1637,7 +1637,7 @@ impl<
         }
         if !wait_failures.is_empty() {
             self.record_async_global_shutdown_failure(format!(
-                "producer drain failed before system observability shutdown: {}",
+                "producer shutdown failed before system observability shutdown: {}",
                 wait_failures.join("; ")
             ));
         }

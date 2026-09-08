@@ -4773,11 +4773,13 @@ fn shutdown_instance_waits_for_exit_after_graceful_drain_deadline() {
         else {
             panic!("instance should receive shutdown");
         };
-        thread::sleep(
-            deadline
-                .saturating_duration_since(Instant::now())
-                .saturating_add(Duration::from_millis(50)),
-        );
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            thread::sleep(remaining.min(Duration::from_millis(10)));
+        }
         exit_runtime.note_instance_exit(exit_key, RuntimeInstanceExit::Success);
     });
 

@@ -276,7 +276,7 @@ impl<
                     .next()
                     .map(|deployed_key| {
                         format!(
-                            "timed out waiting for pipeline {}:{} core={} generation={} to drain",
+                            "timed out waiting for pipeline {}:{} core={} generation={} to shut down",
                             deployed_key.pipeline_group_id.as_ref(),
                             deployed_key.pipeline_id.as_ref(),
                             deployed_key.core_id,
