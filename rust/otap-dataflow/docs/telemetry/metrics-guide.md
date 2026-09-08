@@ -253,6 +253,11 @@ must not independently inspect telemetry interests before reading the clock,
 counting items, or recording payload size. `PipelineContext` provides the
 effective node interests when the helper is registered.
 
+Components with additional diagnostics should compose the shared helper into
+their component metrics aggregate under a `boundary` field. The aggregate owns
+combined reporting and terminal snapshots, while operation lifecycle calls go
+directly through `boundary`.
+
 ### Receiver implementation
 
 Every receiver implementation should follow this shape:
@@ -260,31 +265,28 @@ Every receiver implementation should follow this shape:
 ```rust
 let signal = request.signal_type();
 
-// Shared instrumentation: starts optional duration capture.
-let processing = self.metrics.start_processing(signal);
+let completed = self.metrics.boundary.processing(signal).run(|processing| {
+    // Component-specific: classify, decode, validate, or otherwise process the request.
+    let result = self.decode(request);
+    processing.set_payload_size(request.encoded_len());
+    result
+});
 
-// Component-specific: classify, decode, validate, or otherwise process the request.
-let result = self.decode(request);
-
-// Shared instrumentation: records the terminal local outcome before handoff.
-self.metrics.record(
-    processing.finish(&result, Some(request.encoded_len())),
-);
+// Shared instrumentation: records the terminal local outcome before handoff
+// and returns the component result.
+let result = self.metrics.boundary.record(completed);
 
 // Component-specific: propagate the result and hand accepted data downstream.
 let decoded = result?;
 effect_handler.send_message(decoded).await?;
 ```
 
-The receiver finishes exactly one processing token and records its completed
-observation before awaiting downstream handoff. Finishing the token closes the
-processing duration and captures the received outcome. A component-specific
-rejection metric may be more appropriate when a request is rejected before the
-receiver can classify its signal or admit it as a received message.
-
-The payload-size argument to `finish` is `Some(encoded_len)` when the receiver
-exposes the encoded application size by its terminal local outcome and `None`
-otherwise.
+The receiver runs exactly one processing closure and records its completed
+observation before awaiting downstream handoff. The closure receives the
+processing context so it can add payload size when that value becomes available.
+A component-specific rejection metric may be more appropriate when a request is
+rejected before the receiver can classify its signal or admit it as a received
+message.
 
 ### Exporter implementation
 
@@ -293,17 +295,21 @@ Every exporter implementation should follow this shape:
 ```rust
 let signal = data.signal_type();
 
-// Shared instrumentation: starts optional duration and lazy item counting.
-let attempt = self
+let completed = self
     .metrics
-    .start_attempt(signal, || data.num_items() as u64);
+    .boundary
+    .attempt(signal)
+    .run(async |attempt| {
+        // Component-specific: encode and submit one attempt.
+        attempt.set_item_count(|| data.num_items() as u64);
+        let encoded = self.encode(data.payload_ref())?;
+        attempt.set_payload_size(encoded.len());
+        self.submit(encoded).await
+    })
+    .await;
 
-// Component-specific: encode, submit, retry, or otherwise implement the export.
-let result = self.export(data.payload_ref()).await;
-
-// Shared instrumentation: records one terminal attempt. Pass Some(encoded.len())
-// when the component submits an encoded application payload, otherwise None.
-self.metrics.record(attempt.finish(&result, None));
+// Shared instrumentation: records one terminal attempt and returns its result.
+let result = self.metrics.boundary.record(completed);
 
 // Component-specific: record bounded diagnostics and apply Ack/Nack semantics.
 if let Err(error_type) = result {
@@ -312,8 +318,8 @@ if let Err(error_type) = result {
 effect_handler.notify_ack(AckMsg::new(data)).await?;
 ```
 
-The optional payload-size argument is `Some(encoded.len())` when the exporter
-submits an encoded application payload and `None` when payload size is not
+The attempt context records encoded application payload size when the exporter
+produces or submits one. Components leave it unset when payload size is not
 meaningful or unavailable. Encoding structure, retries, component-specific
 failure metrics, and Ack/Nack behavior remain owned by the component.
 

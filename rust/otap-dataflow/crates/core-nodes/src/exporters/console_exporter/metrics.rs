@@ -6,7 +6,7 @@
 use super::ConsoleOutputFormat;
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_engine::context::PipelineContext;
-use otel_arrow_dfe_otap::metrics::{CompletedExporterAttempt, ExporterAttempt, ExporterMetrics};
+use otel_arrow_dfe_otap::metrics::ExporterMetrics;
 #[cfg(test)]
 use otel_arrow_dfe_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
@@ -61,7 +61,7 @@ struct ConsoleExporterFailureMetrics {
 
 /// Metric sets emitted directly by a console exporter.
 pub(super) struct ConsoleExporterMetrics {
-    shared: ExporterMetrics,
+    pub(super) boundary: ExporterMetrics,
     failure_metrics: MeasurementMetricSet<ConsoleExporterFailureMetrics>,
 }
 
@@ -69,7 +69,7 @@ impl ConsoleExporterMetrics {
     /// Registers console exporter metrics with the selected output format.
     pub(super) fn register(pipeline_ctx: &PipelineContext, format: ConsoleOutputFormat) -> Self {
         Self {
-            shared: ExporterMetrics::register(pipeline_ctx),
+            boundary: ExporterMetrics::register(pipeline_ctx),
             failure_metrics: ConsoleExporterFailureMetrics::register(
                 pipeline_ctx,
                 &ConsoleFormatAttributes { format },
@@ -77,23 +77,9 @@ impl ConsoleExporterMetrics {
         }
     }
 
-    /// Starts one console export attempt.
-    pub(super) fn start_attempt(
-        &self,
-        signal: SignalType,
-        item_count: impl FnOnce() -> u64,
-    ) -> ExporterAttempt {
-        self.shared.start_attempt(signal, item_count)
-    }
-
-    /// Records one completed console export attempt.
-    pub(super) fn record(&mut self, completed: CompletedExporterAttempt) {
-        self.shared.record(completed);
-    }
-
-    /// Reports all console exporter metric sets.
+    /// Reports shared boundary and console-specific metric sets.
     pub(super) fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), TelemetryError> {
-        self.shared
+        self.boundary
             .report(reporter)
             .and_then(|()| reporter.report_measurement(&mut self.failure_metrics))
     }
@@ -101,7 +87,7 @@ impl ConsoleExporterMetrics {
     /// Takes terminal snapshots of every touched metric bucket.
     #[must_use]
     pub(super) fn terminal_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
-        let mut snapshots = self.shared.terminal_snapshots();
+        let mut snapshots = self.boundary.terminal_snapshots();
         snapshots.extend(self.failure_metrics.terminal_snapshots());
         snapshots
     }
@@ -113,14 +99,6 @@ impl ConsoleExporterMetrics {
             .with(ConsoleFailureAttributes { signal, error_type })
             .messages
             .inc();
-    }
-
-    #[cfg(test)]
-    fn attempted_for(
-        &self,
-        attributes: SignalOutcomeAttributes,
-    ) -> &otel_arrow_dfe_otap::metrics::ExporterAttemptedMetrics {
-        self.shared.attempted_for(attributes)
     }
 }
 
@@ -149,20 +127,48 @@ mod tests {
 
     /// Scenario: Console exports succeed and fail for different telemetry signals.
     /// Guarantees: Outcome counts and durations stay paired while failure types use isolated buckets.
-    #[test]
-    fn export_outcomes_and_failures_are_bucketed_consistently() {
+    #[tokio::test]
+    async fn export_outcomes_and_failures_are_bucketed_consistently() {
         let mut metrics = new_test_metrics(ConsoleOutputFormat::RecordJson);
-        let attempt = metrics.start_attempt(SignalType::Logs, || 0);
-        metrics.record(attempt.finish(&Ok::<(), ConsoleExportErrorType>(()), None));
-        let attempt = metrics.start_attempt(SignalType::Logs, || 0);
-        metrics.record(attempt.finish(&Ok::<(), ConsoleExportErrorType>(()), None));
-        let attempt = metrics.start_attempt(SignalType::Logs, || 0);
-        let result: Result<(), _> = Err(ConsoleExportErrorType::OtlpViewCreation);
-        metrics.record(attempt.finish(&result, None));
+        let completed = metrics
+            .boundary
+            .attempt(SignalType::Logs)
+            .run(async |attempt| {
+                attempt.set_item_count(|| 0);
+                Ok::<(), ConsoleExportErrorType>(())
+            })
+            .await;
+        metrics.boundary.record(completed).expect("export succeeds");
+        let completed = metrics
+            .boundary
+            .attempt(SignalType::Logs)
+            .run(async |attempt| {
+                attempt.set_item_count(|| 0);
+                Ok::<(), ConsoleExportErrorType>(())
+            })
+            .await;
+        metrics.boundary.record(completed).expect("export succeeds");
+        let completed = metrics
+            .boundary
+            .attempt(SignalType::Logs)
+            .run(async |attempt| {
+                attempt.set_item_count(|| 0);
+                Err::<(), _>(ConsoleExportErrorType::OtlpViewCreation)
+            })
+            .await;
+        let result = metrics.boundary.record(completed);
+        assert_eq!(result, Err(ConsoleExportErrorType::OtlpViewCreation));
         metrics.record_error(SignalType::Logs, ConsoleExportErrorType::OtlpViewCreation);
-        let attempt = metrics.start_attempt(SignalType::Metrics, || 0);
-        let result: Result<(), _> = Err(ConsoleExportErrorType::UnsupportedSignal);
-        metrics.record(attempt.finish(&result, None));
+        let completed = metrics
+            .boundary
+            .attempt(SignalType::Metrics)
+            .run(async |attempt| {
+                attempt.set_item_count(|| 0);
+                Err::<(), _>(ConsoleExportErrorType::UnsupportedSignal)
+            })
+            .await;
+        let result = metrics.boundary.record(completed);
+        assert_eq!(result, Err(ConsoleExportErrorType::UnsupportedSignal));
         metrics.record_error(
             SignalType::Metrics,
             ConsoleExportErrorType::UnsupportedSignal,
@@ -170,6 +176,7 @@ mod tests {
 
         assert_eq!(
             metrics
+                .boundary
                 .attempted_for(SignalOutcomeAttributes {
                     signal: SignalType::Logs,
                     outcome: Outcome::Success,
@@ -180,6 +187,7 @@ mod tests {
         );
         assert_eq!(
             metrics
+                .boundary
                 .attempted_for(SignalOutcomeAttributes {
                     signal: SignalType::Logs,
                     outcome: Outcome::Failure,
@@ -225,16 +233,23 @@ mod tests {
 
     /// Scenario: A failed console export is handed off during terminal shutdown twice.
     /// Guarantees: Outcome and diagnostic buckets have stable attributes, emit once, and drain.
-    #[test]
-    fn terminal_snapshots_emit_touched_buckets_once() {
+    #[tokio::test]
+    async fn terminal_snapshots_emit_touched_buckets_once() {
         let (registry, mut metrics) = new_test_metrics_with_registry(ConsoleOutputFormat::Pretty);
-        let attempt = metrics.start_attempt(SignalType::Traces, || 0);
-        let result: Result<(), _> = Err(ConsoleExportErrorType::UnsupportedSignal);
-        metrics.record(attempt.finish(&result, None));
+        let completed = metrics
+            .boundary
+            .attempt(SignalType::Traces)
+            .run(async |attempt| {
+                attempt.set_item_count(|| 0);
+                Err::<(), _>(ConsoleExportErrorType::UnsupportedSignal)
+            })
+            .await;
+        let result = metrics.boundary.record(completed);
         metrics.record_error(
             SignalType::Traces,
             ConsoleExportErrorType::UnsupportedSignal,
         );
+        assert!(result.is_err());
 
         let snapshots = metrics.terminal_snapshots();
         assert_eq!(snapshots.len(), 2);

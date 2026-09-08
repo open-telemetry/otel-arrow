@@ -17,6 +17,7 @@ use otel_arrow_dfe_telemetry::instrument::{Counter, HistogramNormal};
 use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use otel_arrow_dfe_telemetry_macros::metric_set;
+use std::ops::AsyncFnOnce;
 use std::time::{Duration, Instant};
 
 /// Receiver-local handling of classified messages received at the external boundary.
@@ -87,18 +88,19 @@ impl ReceiverProcessingMetrics {
 #[derive(Debug)]
 pub struct ReceiverProcessing {
     signal: SignalType,
-    started_at: Option<Instant>,
-    record_payload_size: bool,
+    measure_duration: bool,
+    payload_size: Option<u64>,
+    accepts_payload_size: bool,
 }
 
 /// Completed receiver processing ready to be recorded.
 #[derive(Debug)]
 #[must_use = "completed receiver processing must be recorded"]
-pub struct CompletedReceiverProcessing {
+pub struct CompletedReceiverProcessing<T, E> {
     signal: SignalType,
-    outcome: Outcome,
     duration: Option<Duration>,
     payload_size: Option<u64>,
+    result: Result<T, E>,
 }
 
 /// Shared receiver metrics with node-interest-gated processing duration.
@@ -122,21 +124,19 @@ impl ReceiverMetrics {
         }
     }
 
-    /// Starts receiver-local processing for one classified external message.
+    /// Creates receiver-local processing instrumentation for one classified message.
     #[must_use]
-    pub fn start_processing(&self, signal: SignalType) -> ReceiverProcessing {
+    pub fn processing(&self, signal: SignalType) -> ReceiverProcessing {
         ReceiverProcessing {
             signal,
-            started_at: self
-                .interests
-                .contains(Interests::COMPONENT_DURATION)
-                .then(Instant::now),
-            record_payload_size: self.interests.contains(Interests::PRODUCED_CONSUMED_SIZE),
+            measure_duration: self.interests.contains(Interests::COMPONENT_DURATION),
+            payload_size: None,
+            accepts_payload_size: self.interests.contains(Interests::PRODUCED_CONSUMED_SIZE),
         }
     }
 
     /// Records one completed receiver processing observation.
-    pub fn record(&mut self, completed: CompletedReceiverProcessing) {
+    pub fn record<T, E>(&mut self, completed: CompletedReceiverProcessing<T, E>) -> Result<T, E> {
         if let Some(duration) = completed.duration {
             self.processing
                 .with(SignalAttributes {
@@ -146,12 +146,17 @@ impl ReceiverMetrics {
         }
         let attributes = SignalOutcomeAttributes {
             signal: completed.signal,
-            outcome: completed.outcome,
+            outcome: if completed.result.is_ok() {
+                Outcome::Success
+            } else {
+                Outcome::Failure
+            },
         };
         self.received.with(attributes).record();
         if let Some(payload_size) = completed.payload_size {
             self.payload.with(attributes).record(payload_size);
         }
+        completed.result
     }
 
     /// Reports every touched shared receiver metric bucket.
@@ -178,25 +183,26 @@ impl ReceiverMetrics {
 }
 
 impl ReceiverProcessing {
-    /// Finishes receiver-local processing before handoff.
+    /// Sets the encoded application payload size when it becomes available.
+    pub fn set_payload_size(&mut self, payload_size: usize) {
+        if self.accepts_payload_size {
+            self.payload_size = Some(u64::try_from(payload_size).unwrap_or(u64::MAX));
+        }
+    }
+
+    /// Runs receiver-local processing and captures its terminal result.
     #[must_use = "the completed receiver processing observation must be recorded"]
-    pub fn finish<T, E>(
-        self,
-        result: &Result<T, E>,
-        payload_size: Option<usize>,
-    ) -> CompletedReceiverProcessing {
-        let outcome = if result.is_ok() {
-            Outcome::Success
-        } else {
-            Outcome::Failure
-        };
+    pub fn run<T, E>(
+        mut self,
+        work: impl FnOnce(&mut ReceiverProcessing) -> Result<T, E>,
+    ) -> CompletedReceiverProcessing<T, E> {
+        let started_at = self.measure_duration.then(Instant::now);
+        let result = work(&mut self);
         CompletedReceiverProcessing {
             signal: self.signal,
-            outcome,
-            duration: self.started_at.map(|started_at| started_at.elapsed()),
-            payload_size: payload_size
-                .filter(|_| self.record_payload_size)
-                .map(|size| u64::try_from(size).unwrap_or(u64::MAX)),
+            duration: started_at.map(|started_at| started_at.elapsed()),
+            payload_size: self.payload_size,
+            result,
         }
     }
 }
@@ -284,24 +290,26 @@ impl ExporterAttemptedItemsMetrics {
     }
 }
 
-/// Per-message state captured only for enabled shared exporter metrics.
+/// Prepared instrumentation for one component-local exporter attempt.
 #[derive(Debug)]
 pub struct ExporterAttempt {
     signal: SignalType,
-    started_at: Option<Instant>,
+    measure_duration: bool,
     items: Option<u64>,
-    record_payload_size: bool,
+    accepts_item_count: bool,
+    payload_size: Option<u64>,
+    accepts_payload_size: bool,
 }
 
 /// Completed exporter attempt ready to be recorded.
 #[derive(Debug)]
 #[must_use = "completed exporter attempts must be recorded"]
-pub struct CompletedExporterAttempt {
+pub struct CompletedExporterAttempt<T, E> {
     signal: SignalType,
-    outcome: Outcome,
     duration: Option<Duration>,
     payload_size: Option<u64>,
     items: Option<u64>,
+    result: Result<T, E>,
 }
 
 /// Shared exporter attempt metrics with node-interest-gated optional measurements.
@@ -327,32 +335,30 @@ impl ExporterMetrics {
         }
     }
 
-    /// Starts one attempt without paying optional measurement costs when disabled.
+    /// Creates instrumentation for one attempt without measuring until it runs.
     #[must_use]
-    pub fn start_attempt(
-        &self,
-        signal: SignalType,
-        item_count: impl FnOnce() -> u64,
-    ) -> ExporterAttempt {
+    pub fn attempt(&self, signal: SignalType) -> ExporterAttempt {
         ExporterAttempt {
             signal,
-            started_at: self
+            measure_duration: self.interests.contains(Interests::COMPONENT_DURATION),
+            items: None,
+            accepts_item_count: self
                 .interests
-                .contains(Interests::COMPONENT_DURATION)
-                .then(Instant::now),
-            items: self
-                .interests
-                .contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS)
-                .then(item_count),
-            record_payload_size: self.interests.contains(Interests::PRODUCED_CONSUMED_SIZE),
+                .contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS),
+            payload_size: None,
+            accepts_payload_size: self.interests.contains(Interests::PRODUCED_CONSUMED_SIZE),
         }
     }
 
     /// Records one completed exporter attempt.
-    pub fn record(&mut self, completed: CompletedExporterAttempt) {
+    pub fn record<T, E>(&mut self, completed: CompletedExporterAttempt<T, E>) -> Result<T, E> {
         let attributes = SignalOutcomeAttributes {
             signal: completed.signal,
-            outcome: completed.outcome,
+            outcome: if completed.result.is_ok() {
+                Outcome::Success
+            } else {
+                Outcome::Failure
+            },
         };
         self.attempted.with(attributes).record();
         if let Some(duration) = completed.duration {
@@ -364,6 +370,7 @@ impl ExporterMetrics {
         if let Some(items) = completed.items {
             self.items.with(attributes).record(items);
         }
+        completed.result
     }
 
     /// Reports every touched shared exporter metric bucket.
@@ -392,26 +399,34 @@ impl ExporterMetrics {
 }
 
 impl ExporterAttempt {
-    /// Finishes one exporter attempt.
+    /// Sets the signal item count without evaluating it when disabled.
+    pub fn set_item_count(&mut self, item_count: impl FnOnce() -> u64) {
+        if self.accepts_item_count {
+            self.items = Some(item_count());
+        }
+    }
+
+    /// Sets the encoded application payload size when it becomes available.
+    pub fn set_payload_size(&mut self, payload_size: usize) {
+        if self.accepts_payload_size {
+            self.payload_size = Some(u64::try_from(payload_size).unwrap_or(u64::MAX));
+        }
+    }
+
+    /// Runs one exporter attempt and captures its terminal result.
     #[must_use = "the completed exporter attempt must be recorded"]
-    pub fn finish<T, E>(
-        self,
-        result: &Result<T, E>,
-        payload_size: Option<usize>,
-    ) -> CompletedExporterAttempt {
-        let outcome = if result.is_ok() {
-            Outcome::Success
-        } else {
-            Outcome::Failure
-        };
+    pub async fn run<T, E>(
+        mut self,
+        work: impl AsyncFnOnce(&mut ExporterAttempt) -> Result<T, E>,
+    ) -> CompletedExporterAttempt<T, E> {
+        let started_at = self.measure_duration.then(Instant::now);
+        let result = work(&mut self).await;
         CompletedExporterAttempt {
             signal: self.signal,
-            outcome,
-            duration: self.started_at.map(|started_at| started_at.elapsed()),
-            payload_size: payload_size
-                .filter(|_| self.record_payload_size)
-                .map(|size| u64::try_from(size).unwrap_or(u64::MAX)),
+            duration: started_at.map(|started_at| started_at.elapsed()),
+            payload_size: self.payload_size,
             items: self.items,
+            result,
         }
     }
 }
@@ -761,17 +776,24 @@ mod tests {
 
     /// Scenario: Optional exporter measurements are disabled for one node.
     /// Guarantees: Item inspection, clock timing, and payload-size snapshots are skipped while the attempt message is recorded.
-    #[test]
-    fn exporter_helper_skips_disabled_optional_measurements() {
+    #[tokio::test]
+    async fn exporter_helper_skips_disabled_optional_measurements() {
         let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::empty());
         let mut metrics = ExporterMetrics::register(&pipeline_ctx);
         let item_count_called = Cell::new(false);
 
-        let attempt = metrics.start_attempt(SignalType::Logs, || {
-            item_count_called.set(true);
-            5
-        });
-        metrics.record(attempt.finish(&Ok::<(), ()>(()), Some(128)));
+        let completed = metrics
+            .attempt(SignalType::Logs)
+            .run(async |attempt| {
+                attempt.set_item_count(|| {
+                    item_count_called.set(true);
+                    5
+                });
+                attempt.set_payload_size(128);
+                Ok::<(), ()>(())
+            })
+            .await;
+        metrics.record(completed).expect("attempt succeeds");
 
         assert!(!item_count_called.get());
         let snapshots = metrics.terminal_snapshots();
@@ -788,8 +810,8 @@ mod tests {
 
     /// Scenario: All optional exporter measurements are enabled for one node.
     /// Guarantees: One attempt records duration, encoded payload size, and lazily counted items under the same signal and outcome.
-    #[test]
-    fn exporter_helper_records_enabled_optional_measurements() {
+    #[tokio::test]
+    async fn exporter_helper_records_enabled_optional_measurements() {
         let interests = Interests::COMPONENT_DURATION
             | Interests::PRODUCED_CONSUMED_ITEM_COUNTS
             | Interests::PRODUCED_CONSUMED_SIZE;
@@ -797,11 +819,18 @@ mod tests {
         let mut metrics = ExporterMetrics::register(&pipeline_ctx);
         let item_count_called = Cell::new(false);
 
-        let attempt = metrics.start_attempt(SignalType::Metrics, || {
-            item_count_called.set(true);
-            5
-        });
-        metrics.record(attempt.finish(&Err::<(), ()>(()), Some(128)));
+        let completed = metrics
+            .attempt(SignalType::Metrics)
+            .run(async |attempt| {
+                attempt.set_item_count(|| {
+                    item_count_called.set(true);
+                    5
+                });
+                attempt.set_payload_size(128);
+                Err::<(), ()>(())
+            })
+            .await;
+        assert!(metrics.record(completed).is_err());
 
         assert!(item_count_called.get());
         let snapshots = metrics.terminal_snapshots();
@@ -827,8 +856,11 @@ mod tests {
         let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::empty());
         let mut metrics = ReceiverMetrics::register(&pipeline_ctx);
 
-        let processing = metrics.start_processing(SignalType::Logs);
-        metrics.record(processing.finish(&Ok::<(), ()>(()), Some(128)));
+        let completed = metrics.processing(SignalType::Logs).run(|processing| {
+            processing.set_payload_size(128);
+            Ok::<(), ()>(())
+        });
+        metrics.record(completed).expect("processing succeeds");
 
         let snapshots = metrics.terminal_snapshots();
         assert_eq!(snapshots.len(), 1);
@@ -850,8 +882,11 @@ mod tests {
         let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(interests);
         let mut metrics = ReceiverMetrics::register(&pipeline_ctx);
 
-        let processing = metrics.start_processing(SignalType::Traces);
-        metrics.record(processing.finish(&Err::<(), ()>(()), Some(128)));
+        let completed = metrics.processing(SignalType::Traces).run(|processing| {
+            processing.set_payload_size(128);
+            Err::<(), ()>(())
+        });
+        assert!(metrics.record(completed).is_err());
 
         let snapshots = metrics.terminal_snapshots();
         assert_eq!(snapshots.len(), 3);
@@ -882,8 +917,10 @@ mod tests {
         let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(interests);
         let mut metrics = ReceiverMetrics::register(&pipeline_ctx);
 
-        let processing = metrics.start_processing(SignalType::Logs);
-        metrics.record(processing.finish(&Ok::<(), ()>(()), None));
+        let completed = metrics
+            .processing(SignalType::Logs)
+            .run(|_| Ok::<(), ()>(()));
+        metrics.record(completed).expect("processing succeeds");
 
         let snapshots = metrics.terminal_snapshots();
         assert_eq!(snapshots.len(), 2);
