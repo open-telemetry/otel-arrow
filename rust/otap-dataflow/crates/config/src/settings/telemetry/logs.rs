@@ -11,26 +11,28 @@ use tracing_subscriber::EnvFilter;
 /// Internal logs configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct LogsConfig {
-    /// The log level for internal engine logs.
+    /// Optional log level for internal engine logs.
     ///
     /// Accepts either a simple level keyword (`off`, `debug`, `info`, `warn`, `error`)
     /// or a full [`RUST_LOG`-style directive string][env-filter] for fine-grained
     /// control (e.g., `"info,typespec_client_core=warn,azure_core=off"`).
     ///
-    /// The value is passed directly to [`tracing_subscriber::EnvFilter`]. When not
-    /// specified, the default is `"info,h2=off,hyper=off"` which silences known
-    /// noisy HTTP dependencies.
+    /// The value is passed directly to [`tracing_subscriber::EnvFilter`]. When
+    /// specified, it takes precedence over `RUST_LOG` from the first tracing
+    /// subscriber onward.
     ///
-    /// At startup, a valid `RUST_LOG` environment variable takes precedence over this field.
-    /// A subsequent successful full-engine reconciliation makes this field authoritative.
+    /// When omitted, a valid `RUST_LOG` value captured at startup remains
+    /// authoritative. If neither is present, the effective default is
+    /// `"info,h2=off,hyper=off"`, which silences known noisy HTTP dependencies.
     ///
     /// Successful full-engine reconciliation applies changes to this field to running
-    /// subscribers without restarting the engine. Reconciled span-scoped directives apply
-    /// to spans created after the update, but not to spans that are already active.
+    /// subscribers without restarting the engine. Removing an explicit value restores the
+    /// startup `RUST_LOG` value or the built-in default. Reconciled span-scoped directives
+    /// apply to spans created after the update, but not to spans that are already active.
     ///
     /// [env-filter]: https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#directives
-    #[serde(default)]
-    pub level: LogLevel,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<LogLevel>,
 
     /// Logging provider configuration.
     #[serde(default = "default_providers")]
@@ -65,14 +67,9 @@ pub struct InternalLogTapConfig {
 ///
 /// See the [`EnvFilter` directives documentation][env-filter] for the full syntax.
 ///
-/// Defaults to `"info,h2=off,hyper=off"`.
+/// The built-in fallback is `"info,h2=off,hyper=off"`.
 ///
-/// At startup, a valid `RUST_LOG` environment variable takes precedence over this value.
-/// A subsequent successful full-engine reconciliation makes this value authoritative.
-///
-/// Successful full-engine reconciliation applies changes to this value to running
-/// subscribers without restarting the engine. Reconciled span-scoped directives apply
-/// to spans created after the update, but not to spans that are already active.
+/// See [`LogsConfig::level`] for precedence and runtime reconciliation behavior.
 ///
 /// [env-filter]: https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#directives
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -248,7 +245,7 @@ impl Default for InternalLogTapConfig {
 impl Default for LogsConfig {
     fn default() -> Self {
         Self {
-            level: LogLevel::default(),
+            level: None,
             providers: default_providers(),
             tap: InternalLogTapConfig::default(),
         }
@@ -352,11 +349,13 @@ mod tests {
         );
     }
 
+    /// Scenario: log settings are constructed through Rust and serde defaults.
+    /// Guarantees: both paths omit an explicit level and select identical provider and tap settings.
     #[test]
     fn test_defaults() {
         // Manual Default impl matches serde defaults
         let config = LogsConfig::default();
-        assert_eq!(config.level.as_str(), "info,h2=off,hyper=off");
+        assert!(config.level.is_none());
         assert_eq!(config.providers.global, ProviderMode::ConsoleAsync);
         assert_eq!(config.providers.engine, ProviderMode::ConsoleAsync);
         assert_eq!(config.providers.internal, ProviderMode::Noop);
@@ -375,23 +374,52 @@ mod tests {
         assert_eq!(parsed.tap.enabled, config.tap.enabled);
         assert_eq!(parsed.tap.max_entries, config.tap.max_entries);
         assert_eq!(parsed.tap.max_bytes, config.tap.max_bytes);
+
+        let serialized = serde_json::to_value(&config).expect("default config should serialize");
+        assert!(serialized.get("level").is_none());
+        assert!(parse("level: null").level.is_none());
     }
 
+    /// Scenario: each supported simple directive is supplied as an explicit logs.level.
+    /// Guarantees: deserialization preserves every explicit level as a configured override.
     #[test]
     fn test_log_level_parsing_simple() {
         for name in ["off", "debug", "info", "warn", "error"] {
             let config = parse(&format!("level: {name}"));
-            assert_eq!(config.level.as_str(), name);
+            assert_eq!(
+                config
+                    .level
+                    .as_ref()
+                    .expect("level should be explicit")
+                    .as_str(),
+                name
+            );
         }
     }
 
+    /// Scenario: target-specific EnvFilter directives are supplied as explicit logs.level values.
+    /// Guarantees: deserialization preserves each complete directive string without normalization.
     #[test]
     fn test_log_level_parsing_directive_string() {
         let config = parse("level: \"info,typespec_client_core=warn\"");
-        assert_eq!(config.level.as_str(), "info,typespec_client_core=warn");
+        assert_eq!(
+            config
+                .level
+                .as_ref()
+                .expect("level should be explicit")
+                .as_str(),
+            "info,typespec_client_core=warn"
+        );
 
         let config = parse("level: \"warn,azure_core=off,h2=off\"");
-        assert_eq!(config.level.as_str(), "warn,azure_core=off,h2=off");
+        assert_eq!(
+            config
+                .level
+                .as_ref()
+                .expect("level should be explicit")
+                .as_str(),
+            "warn,azure_core=off,h2=off"
+        );
     }
 
     #[test]

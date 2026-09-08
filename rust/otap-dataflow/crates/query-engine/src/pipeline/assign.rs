@@ -643,8 +643,20 @@ impl AssignPipelineStage {
         };
 
         let attrs_record_batch = match otap_batch.get(attrs_payload_type) {
-            Some(attrs_batch) => attrs_batch,
-            None => EMPTY_U16_ATTRS_RECORD_BATCH.deref(),
+            Some(attrs_batch) => Cow::Borrowed(attrs_batch),
+            None => {
+                // add an indicator to the parent id column that it is not transport/delta encoded.
+                // the upsert_attrs function assumes that transport/delta encoding has already been
+                // removed from the parent ID.
+                let batch = EMPTY_U16_ATTRS_RECORD_BATCH.deref();
+                let schema = batch.schema_ref();
+                Cow::Owned(RecordBatch::new_empty(Arc::new(update_field_metadata(
+                    schema,
+                    consts::PARENT_ID,
+                    metadata::COLUMN_ENCODING,
+                    metadata::encodings::PLAIN,
+                ))))
+            }
         };
 
         let mut parent_id_set = self.id_bitmap_pool.acquire();
@@ -821,7 +833,7 @@ impl AssignPipelineStage {
         self.id_bitmap_pool.release(parent_id_set);
 
         // replace attributes batch
-        let new_attrs = upsert_attributes(attrs_record_batch, &attrs_upserts)?;
+        let new_attrs = upsert_attributes(&attrs_record_batch, &attrs_upserts)?;
         otap_batch.set(attrs_payload_type, new_attrs)?;
 
         Ok(otap_batch)
@@ -2474,7 +2486,7 @@ mod test {
                 trace::v1::Span,
             },
         },
-        schema::consts,
+        schema::{consts, is_parent_id_plain_encoded},
         testing::round_trip::{
             otap_to_otlp, otlp_to_otap, to_logs_data, to_metrics_data, to_traces_data,
         },
@@ -4794,6 +4806,7 @@ mod test {
         let logs_data = to_logs_data(vec![
             LogRecord::build().event_name("event1").finish(),
             LogRecord::build().event_name("event2").finish(),
+            LogRecord::build().event_name("event2").finish(),
         ]);
 
         // there is no attribute z
@@ -5567,9 +5580,66 @@ mod test {
         );
     }
 
+    /// Scenario: inserting an attribute to the root record when there are no existing attributes
+    /// Guarantees: a new attribute record batch is created containing the new attributes and with
+    /// the correct ID column encoding to ensure attrs can be decoded to OTLP.
+    #[tokio::test]
+    async fn test_insert_root_attribute_no_existing_batch() {
+        // use three logs - these should get assigned ids [0, 1, 2], so if for some reason the
+        // new attrs parent_id column wasn't plain encoded, we'd have trouble associating the IDs
+        // because the decoder may consider them delta encoded.
+        let log_records = vec![
+            LogRecord::build().finish(),
+            LogRecord::build().finish(),
+            LogRecord::build().finish(),
+        ];
+        let query = "logs 
+            | extend attributes[\"x\"] = \"a\"
+            | extend attributes[\"y\"] = \"b\"
+            | extend attributes[\"z\"] = \"c\"
+            ";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records)));
+        assert!(input.get(ArrowPayloadType::LogAttrs).is_none());
+
+        let result = pipeline.execute(input).await.unwrap();
+        let log_attrs = result.get(ArrowPayloadType::LogAttrs).unwrap();
+        assert!(is_parent_id_plain_encoded(log_attrs));
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let result_log_records = &result_logs_data.resource_logs[0].scope_logs[0].log_records;
+        assert_eq!(result_log_records.len(), 3);
+        for log_record in result_log_records {
+            assert_eq!(
+                log_record.attributes,
+                vec![
+                    KeyValue::new("x", AnyValue::new_string("a")),
+                    KeyValue::new("y", AnyValue::new_string("b")),
+                    KeyValue::new("z", AnyValue::new_string("c")),
+                ]
+            )
+        }
+    }
+
+    /// Scenario: inserting an attribute to the root record when there are no existing attributes
+    /// Guarantees: a new attribute record batch is created containing the new attributes and with
+    /// the correct ID column encoding to ensure attrs can be decoded to OTLP.
     #[tokio::test]
     async fn test_insert_non_root_attribute_no_existing_batch() {
+        // use three resources - these should get assigned ids [0, 1, 2], so if for some reason the
+        // new attrs parent_id column wasn't plain encoded, we'd have trouble associating the IDs
+        // because the decoder may consider them delta encoded.
         let logs_data = LogsData::new(vec![
+            ResourceLogs::new(
+                Resource::build().finish(),
+                vec![ScopeLogs::new(
+                    InstrumentationScope::default(),
+                    vec![LogRecord::build().finish()],
+                )],
+            ),
             ResourceLogs::new(
                 Resource::build().finish(),
                 vec![ScopeLogs::new(
@@ -5593,6 +5663,9 @@ mod test {
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         assert!(input.get(ArrowPayloadType::ResourceAttrs).is_none());
         let result = pipeline.execute(input).await.unwrap();
+
+        let resource_attrs = result.get(ArrowPayloadType::ResourceAttrs).unwrap();
+        assert!(is_parent_id_plain_encoded(resource_attrs));
         let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
             panic!("invalid signal type");
         };
@@ -5602,6 +5675,11 @@ mod test {
             vec![KeyValue::new("y", AnyValue::new_string("b")),]
         );
         let resource = &result_logs_data.resource_logs[1].resource.as_ref().unwrap();
+        assert_eq!(
+            resource.attributes,
+            vec![KeyValue::new("y", AnyValue::new_string("b")),]
+        );
+        let resource = &result_logs_data.resource_logs[2].resource.as_ref().unwrap();
         assert_eq!(
             resource.attributes,
             vec![KeyValue::new("y", AnyValue::new_string("b")),]
