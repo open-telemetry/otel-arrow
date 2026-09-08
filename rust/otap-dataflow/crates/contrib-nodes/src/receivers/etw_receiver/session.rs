@@ -783,7 +783,9 @@ fn decode_utf16le(data: &[u8]) -> String {
 
     // ASCII fast path: find the first NUL or first non-ASCII code unit.
     let ascii_end = bytes
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .position(|c| c[0] == 0 || c[1] != 0)
         .map(|i| i * 2)
         .unwrap_or(len);
@@ -792,7 +794,7 @@ fn decode_utf16le(data: &[u8]) -> String {
         // Entirely ASCII up to the end (or a terminating NUL): copy the low
         // bytes directly, no surrogate logic needed.
         let mut out = String::with_capacity(ascii_end / 2);
-        for chunk in bytes[..ascii_end].chunks_exact(2) {
+        for chunk in bytes[..ascii_end].as_chunks::<2>().0 {
             out.push(chunk[0] as char);
         }
         return out;
@@ -802,7 +804,9 @@ fn decode_utf16le(data: &[u8]) -> String {
     // substituting U+FFFD for invalid surrogate pairs.
     let mut out = String::with_capacity(len / 2);
     let u16_iter = bytes
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|c| u16::from_le_bytes([c[0], c[1]]))
         .take_while(|&c| c != 0);
     out.extend(char::decode_utf16(u16_iter).map(|r| r.unwrap_or('\u{FFFD}')));
