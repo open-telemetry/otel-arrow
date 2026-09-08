@@ -1,0 +1,8 @@
+change_type: new_component
+component: pipeline
+note: "Add an opt-in Oracle database receiver that pages rows after a durable composite watermark and emits them as OTLP logs."
+issues: [3918]
+subtext: |
+  Delivery is at least once. Set watermark.mode to composite and supply SQL with both named cursor
+  binds and a final ascending ORDER BY. Checkpoints commit only after a downstream ACK; a NACK
+  replays the page. Scalar and snapshot modes are not supported yet.

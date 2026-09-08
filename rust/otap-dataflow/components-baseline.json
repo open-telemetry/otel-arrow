@@ -246,6 +246,12 @@
     "attributes": {}
   },
   {
+    "id": "urn:otel:receiver:oracle",
+    "category": "Receiver",
+    "description": null,
+    "attributes": {}
+  },
+  {
     "id": "urn:otel:receiver:otap",
     "category": "Receiver",
     "description": null,

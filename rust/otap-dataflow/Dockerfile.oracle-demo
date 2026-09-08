@@ -1,0 +1,60 @@
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+
+FROM docker.io/rust:1.98-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922 AS builder
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build/rust/otap-dataflow
+
+COPY proto /build/proto
+COPY rust/contrib /build/rust/contrib
+COPY rust/otap-dataflow /build/rust/otap-dataflow
+COPY THIRD_PARTY_NOTICES.txt /build/THIRD_PARTY_NOTICES.txt
+
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/build/rust/otap-dataflow/target \
+    cargo build --locked --release \
+      --features oracle-receiver \
+      --bin df_engine \
+    && cargo build --locked --release \
+      --package otel-arrow-dfe-contrib-nodes \
+      --features oracle-receiver \
+      --example oracle_load_generator \
+    && mkdir /out \
+    && cp target/release/df_engine /out/df_engine \
+    && cp target/release/examples/oracle_load_generator /out/oracle_load_generator
+
+FROM docker.io/debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
+
+ARG ORACLE_INSTANT_CLIENT_VERSION=23.26.0.0.0
+ARG ORACLE_INSTANT_CLIENT_ZIP_VERSION=2326000
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends ca-certificates curl libaio1 libnsl2 unzip \
+    && curl --fail --location --silent --show-error \
+      "https://download.oracle.com/otn_software/linux/instantclient/${ORACLE_INSTANT_CLIENT_ZIP_VERSION}/instantclient-basiclite-linux.x64-${ORACLE_INSTANT_CLIENT_VERSION}.zip" \
+      --output /tmp/instantclient.zip \
+    && mkdir --parents /opt/oracle \
+    && unzip -q /tmp/instantclient.zip -d /opt/oracle \
+    && rm /tmp/instantclient.zip \
+    && apt-get purge --yes --auto-remove curl unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY --from=builder /out/df_engine /app/df_engine
+COPY --from=builder /out/oracle_load_generator /app/oracle_load_generator
+COPY rust/otap-dataflow/configs/oracle-oci-console.yaml /app/oracle-oci-console.yaml
+COPY rust/otap-dataflow/oracle-demo-entrypoint.sh /app/oracle-demo-entrypoint.sh
+
+RUN sed -i 's/\r$//' /app/oracle-demo-entrypoint.sh \
+    && chmod 755 /app/oracle-demo-entrypoint.sh
+
+ENV LD_LIBRARY_PATH=/opt/oracle/instantclient_23_26
+ENV ORACLE_INSTANT_CLIENT_DIR=/opt/oracle/instantclient_23_26
+
+ENTRYPOINT ["/app/oracle-demo-entrypoint.sh"]

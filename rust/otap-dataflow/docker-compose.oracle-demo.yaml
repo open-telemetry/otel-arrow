@@ -1,0 +1,47 @@
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+
+name: otel-arrow-oracle-demo
+
+services:
+  oracle:
+    image: container-registry.oracle.com/database/free:latest-lite@sha256:b97a43b16688df49582698cc5d2e81c50e6d4f663141366ee101af54413e8758
+    platform: linux/amd64
+    environment:
+      ORACLE_PWD: ${ORACLE_DEMO_PASSWORD:-OtelArrowDemo123}
+    ports:
+      - "127.0.0.1:${ORACLE_DEMO_PORT:-1521}:1521"
+    volumes:
+      - oracle-data:/opt/oracle/oradata
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          printf "WHENEVER SQLERROR EXIT FAILURE\nSET HEADING OFF FEEDBACK OFF\nSELECT
+          'READY' FROM DUAL;\nEXIT\n" |
+          sqlplus -L -s "SYSTEM/$${ORACLE_PWD}@//localhost:1521/FREEPDB1" |
+          grep -q READY
+      interval: 15s
+      timeout: 30s
+      retries: 40
+      start_period: 10m
+
+  receiver:
+    platform: linux/amd64
+    build:
+      context: ../..
+      dockerfile: rust/otap-dataflow/Dockerfile.oracle-demo
+    depends_on:
+      oracle:
+        condition: service_healthy
+    environment:
+      ORACLE_CONNECT_STRING: //oracle:1521/FREEPDB1
+      ORACLE_USERNAME: SYSTEM
+      ORACLE_PWD: ${ORACLE_DEMO_PASSWORD:-OtelArrowDemo123}
+      ORACLE_USERNAME_FILE: /run/oracle-secrets/username
+      ORACLE_PASSWORD_FILE: /run/oracle-secrets/password
+      ORACLE_DEMO_ROWS: ${ORACLE_DEMO_ROWS:-25}
+      ORACLE_DEMO_COLLISION_SIZE: ${ORACLE_DEMO_COLLISION_SIZE:-5}
+
+volumes:
+  oracle-data:
