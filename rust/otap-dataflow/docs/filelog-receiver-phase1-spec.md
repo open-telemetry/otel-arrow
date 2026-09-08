@@ -100,8 +100,11 @@ Phase 1 provides:
 - best-effort detection and handling of copytruncate.
 
 Phase 1 preserves ordering within each file. It defines no ordering across files.
-Delivery is at least once after emission. Retry and a crash after downstream acceptance
-but before durable progress can produce duplicates.
+In-process retries preserve the retained batch until matching completion or
+terminal policy and can duplicate delivery. Across a crash, recovery reprocesses
+source bytes and may produce different records; it does not guarantee
+at-least-once replay of previously emitted records. See
+[Crash recovery and record reproduction](#crash-recovery-and-record-reproduction).
 
 Initial Phase 1 release qualification is Linux-first. Portable macOS and
 Windows locator, path, rotation, and checkpoint semantics remain normative so
@@ -237,7 +240,7 @@ receivers:
 | `rotation.rotate_wait` | `5s` | Nonzero post-EOF inactivity interval |
 | `rotation.on_truncate` | `fail` | `fail` durably quarantines; `read_new` accepts an explicit reported gap and continues at epoch-reset offset zero |
 | `checkpoint.id` | Derived logical receiver key | Optional stable namespace name of 1 to 127 ASCII bytes; set explicitly to preserve continuity across logical-key renames |
-| `checkpoint.sync_interval` | `0s` | Zero syncs every Ack transaction before release; nonzero permits duplicate replay and, after storage/power failure, possible fail-closed recovery of a damaged unsynced WAL region |
+| `checkpoint.sync_interval` | `0s` | Zero syncs every Ack transaction before release; nonzero permits rereading/reframing and, after storage/power failure, possible fail-closed recovery of a damaged unsynced WAL region |
 | `checkpoint.compact_after_bytes` | `64MiB` | Complete-WAL byte threshold, including the 56-byte header; at least one maximum transaction plus the header |
 | `checkpoint.compact_after_transactions` | `10000` | Nonzero transaction threshold |
 | `checkpoint.retention` | `7d` | Continuous runtime-proven absence interval before eligibility; restart or incomplete evidence resets it, zero disables removal, and removal loses durable association |
@@ -305,6 +308,69 @@ exclusion.
 Version 1 has no released predecessor namespace layout. The versioned
 lowercase-hex path above is the first supported v1 layout. The receiver does
 not search for, import, or migrate a direct-`checkpoint.id` sibling directory.
+
+### Stable engine state root
+
+`${engine.state_dir}` denotes a root supplied by the engine, not a Filelog
+string-expansion rule. The engine state-root configuration/API, provisioning
+implementation, and platform qualification are explicit Phase 1 release
+prerequisites. Filelog must not start without that integration.
+
+For Phase 1, require an explicitly configured absolute root. There is no
+Filelog-selected default, working-directory-relative fallback, or receiver-local
+lookup of `OTAP_DF_STATE_DIR`. In particular, converting `.otap-state` to an
+absolute path at startup does not satisfy stability across different launch
+directories. The engine integration must document the public setting and any
+supported engine-wide configuration-source precedence; every selected value
+must meet this contract. A future automatic platform default requires separate
+review of its stable resolution and provisioning rules.
+
+The engine establishes the root once before handing it to Filelog:
+
+1. Reject empty, unresolved, or relative root values. Resolution must not depend
+   on process working directory, pipeline/core placement, or deployment
+   generation. Freeze the selected root for the instance's lifetime.
+2. Resolve and validate opened directory objects from a trusted ancestor.
+   Reject untrusted symlink/reparse-point traversal, non-directory components,
+   and replacement substitution. Path-string normalization alone is not
+   validation. Preserve validated directory identity during provisioning and
+   namespace access using platform-appropriate handles or equivalent checks.
+3. Create missing directories with least-privilege permissions for the engine
+   service identity. Validate existing directories and their access controls;
+   they must prevent untrusted principals from replacing checkpoint state.
+   Do not silently repair an invalid root, change existing ownership, or select
+   a different root after access, storage, or validation failure.
+4. Establish durable directory creation from the already durable trusted
+   ancestor downward. After each component is opened or created, synchronize
+   the parent directory entry, including when that component already exists
+   because a previous attempt or another creator made it visible. Synchronize
+   the root as required by the platform before declaring it ready. Mere
+   existence after interrupted creation is not proof of durability.
+5. On interrupted root creation, retry only the same configured path, revalidate
+   existing components, and repeat the required syncs. Never remove existing
+   checkpoint artifacts or interpret a namespace lacking valid authority as
+   empty. Namespace repair remains governed by the checkpoint-format state
+   machine, not root provisioning.
+6. Supply the validated absolute root and its established access/identity
+   context to Filelog. Root setup may perform blocking filesystem work only
+   outside the pipeline's async runtime. Missing integration, unavailable
+   storage, invalid permissions/objects, or failed required sync fails startup
+   with an actionable state-root error before namespace publication or source
+   admission. No alternate location is tried.
+
+A platform may be enabled only after its implementation demonstrates the
+required directory durability and substitution checks. An unsupported required
+sync is not silently treated as success; the existing platform qualification
+limitations still apply.
+
+With the same configured root and underlying storage, restarting from a
+different working directory selects the same namespace. An intentional root
+change selects different existing state or a genuinely new namespace; it is
+not checkpoint relocation and may cause replay or new-file `start_at`
+exclusion. Filelog does not search the old root or migrate state automatically.
+Administrative tools must use the same root-resolution and namespace-ownership
+contract. Changing the selected root requires restart and an explicit operator
+state-location decision, not an unnoticed live reload.
 
 ### Configuration variants
 
@@ -2000,6 +2066,52 @@ An administrative tool satisfies this invariant by excluding or stopping the
 receiver, acquiring exclusive namespace ownership, and proving no open,
 retained, or carry-over delta exists before changing state.
 
+## Crash recovery and record reproduction
+
+In-process retries resend the retained logical batch without reframing it.
+That batch, uncommitted idle/terminal framing boundaries, partial decoder
+state, and observed-time metadata are volatile; Phase 1 does not persist them
+before emission. The checkpoint's applied operations and durable framing resume
+remain authoritative only under their existing append, replay, and sync rules.
+
+After a crash, recover the selected namespace, validate source identity and
+continuity, and reprocess surviving bytes from recovered committed progress.
+Persisted split continuations still follow their exact restart rules; ordinary
+recovery must not invent an unpersisted boundary merely to reproduce previous
+output. Even with unchanged configuration and all old bytes surviving:
+
+- an idle-flushed `ABC` can be reread as `ABCDEF` when `DEF\n` was appended
+  before recovery, changing body and frame boundaries;
+- an incomplete UTF-8/UTF-16 unit previously emitted under `replace` may now
+  decode as a valid character; under `preserve_raw`, an earlier byte body may
+  become clean text with different malformed evidence;
+- newly appended malformed input under `on_decode_error: fail` can quarantine
+  the now-combined logical record before an earlier emitted record is
+  re-emitted; survival of its bytes alone does not promise eventual delivery;
+- multiline grouping and time-dependent completion reasons may change; and
+- `observed_time_unix_nano` is assigned again when recovered output becomes
+  ready. Body equality does not imply equality of record metadata.
+
+The same limitation applies to previously Acked output when its progress did
+not survive under delayed checkpoint sync. Recovery can also recover a later
+complete valid WAL prefix that survived; it never deliberately rewinds valid
+recovered progress to reproduce earlier output. With the default synchronous
+checkpoint policy, durably applied progress is not reread solely to replay its
+records, but uncommitted emissions still have the limitation above.
+
+Consequently, Phase 1 promises neither identical emitted-record replay across
+restart nor unconditional source-byte delivery. Source survival and validated
+checkpoint/identity state are necessary but not sufficient: configured decoding,
+framing, explicit-loss and failure policies still apply. No previously read or
+emitted byte is checkpointed merely to avoid rereading it. Downstream consumers
+may see overlapping or differently framed output, not only identical duplicates;
+fragment correlation metadata is not a general record deduplication guarantee.
+
+Exact replay of pre-crash emissions would require durable pre-emission boundary
+and reconstruction state or durable batches, with its own admission and
+publication protocol. That is outside Phase 1; this clarification changes no
+version-1 checkpoint bytes or Ack authorization.
+
 ## Ack, Nack, and checkpoint timing
 
 ### Correlation
@@ -2114,14 +2226,17 @@ With a nonzero interval:
 - drain syncs all outstanding applied progress before releasing namespace ownership.
 
 A crash after aggregate downstream Ack and release but before filesystem sync may recover only
-the guaranteed durable frontier and replay the Acked data. It may instead replay a
+the guaranteed durable frontier and reprocess the Acked source range, with the
+possible reframing and decoding changes described in
+[Crash recovery and record reproduction](#crash-recovery-and-record-reproduction).
+It may instead replay a
 later complete, valid, Ack-authorized WAL prefix that survived even though its sync was
 not guaranteed. A structurally complete corrupted transaction still fails closed.
 Delayed sync never permits recovery beyond validated Ack-authorized progress or
 skipping unacknowledged source data.
 
-The ordinary expected consequence of delayed sync is duplicate replay. It is
-not the only permitted crash consequence: storage or power failure can expose
+The ordinary expected consequence of delayed sync is rereading, with possible
+duplicates or reframing. It is not the only permitted crash consequence: storage or power failure can expose
 zeroed, reordered, or corrupt bytes before a later surviving transaction. Such
 non-tail damage follows D16 and requires the supported namespace
 inspection/backup/reset procedure; it is never softened into automatic prefix
@@ -2178,8 +2293,9 @@ who explicitly selects `drop_and_continue` authorizes intentional loss only
 after the complete retry budget reaches terminal exhaustion; that policy, not
 the preceding Nack or `NoRoute`, authorizes the atomic progress transition.
 
-`drop_and_continue` is an intentional data-loss policy and an exception to the
-at-least-once delivery claim. After applying its progress, the receiver counts
+`drop_and_continue` is an intentional data-loss policy and an explicit exception
+to Ack-only progress authorization. It does not provide record-level replay
+across restart. After applying its progress, the receiver counts
 the loss and attempts a bounded operator-visible event. Metrics and health
 events are not durable audit state, so a crash after progress becomes durable
 can prevent that evidence from being emitted. A requirement for permanent loss
@@ -2846,7 +2962,8 @@ Phase 1 has no engine readiness signal for that stronger condition.
 
 Startup order is:
 
-1. Parse and validate configuration.
+1. Parse and validate configuration; require the engine to establish and supply
+   the [stable durable state root](#stable-engine-state-root) before proceeding.
 2. Create bounded channels and fixed workers.
 3. Enter waiting-for-ownership.
 4. Acquire the checkpoint namespace lock.

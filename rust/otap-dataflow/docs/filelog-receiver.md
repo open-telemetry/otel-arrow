@@ -26,10 +26,14 @@ and retry behavior tractable, but intentionally couples all files to the same
 aggregate downstream Ack latency, checkpoint transaction, failure policy, and
 drain.
 
-The receiver preserves ordering within each file and provides at-least-once
-delivery after emission when no explicitly configured loss policy authorizes
-progress. Crash recovery of uncommitted records requires both a valid durable
-checkpoint and the corresponding source bytes. The receiver is not a durable
+The receiver preserves source order within each file during a run. In-process
+retries preserve the retained batch until matching completion or terminal
+policy. Crash recovery instead reprocesses surviving source bytes from recovered
+checkpoint progress; unpersisted framing boundaries, decoded bodies, body types,
+and metadata may change. Phase 1 therefore does not guarantee at-least-once
+replay of the same emitted records across a crash. Recovery requires valid
+checkpoint state and source identity/continuity, surviving bytes, and successful
+processing under the configured policies. The receiver is not a durable
 telemetry spool. Ordinary move/create rotation is supported. Copytruncate
 copies the active file to another path and then truncates the original in
 place; bytes written between those steps can be destroyed before the receiver
@@ -141,10 +145,10 @@ reading implementation detail first.
 | Capture | Reads eligible complete records while their source bytes remain available; unread bytes destroyed by rotation or retention are unrecoverable |
 | Delivery | Retains and retries one emitted receiver-wide batch until Ack or terminal policy |
 | Progress | A Nack never directly advances progress. Progress follows a matching aggregate Ack, or an explicit configured loss policy after terminal retry exhaustion, and is applied through one atomic WAL transaction |
-| Crash recovery | Reconstructs uncommitted records only when valid checkpoint state and corresponding source bytes survive |
+| Crash recovery | Reprocesses surviving source bytes from validated recovered progress; may reframe, change decoding outcomes, or stop under configured failure policy |
 | Ordering | Preserves ordering within each file; defines no cross-file ordering |
 | Rotation | Supports move/create; a recognized replacement needing a new identity starts at zero, while its own existing durable state wins; copytruncate remains best-effort |
-| Delivery semantics | At least once after emission when no intentional-loss policy is selected; retry or crash can produce duplicates |
+| Delivery semantics | In-process retries preserve the retained batch; restart does not promise identical record replay and can produce overlapping or differently framed output |
 | Durability | Does not spool emitted OTAP batches to disk |
 | Resource behavior | Uses fixed workers, bounded state and turns; descriptor turnover preserves partial progress within the local byte budget, whose exhaustion is an explicit receiver failure |
 | Failure isolation | Most source failures are per-file; batch, ownership, runtime-lease integrity, and checkpoint failures can stop the receiver |
@@ -165,13 +169,20 @@ Three different guarantees must not be conflated:
    exclusion.
 2. **Delivery** covers a live emitted batch retained until a matching downstream
    completion and terminal policy.
-3. **Recovery** covers reconstruction after failure from durable progress and
-   surviving source bytes. It is not a durable copy of the emitted batch.
+3. **Recovery** reprocesses surviving source bytes from recovered checkpoint
+   progress under the configured policies. It does not reproduce a durable copy
+   of the emitted batch or its unpersisted timing-dependent boundaries.
 
-An aggregate downstream Ack followed by a crash before progress becomes durable can cause
-duplicate replay. It does not authorize skipping the data. If the source bytes
-have disappeared, the receiver cannot reconstruct them even when its checkpoint
-is intact.
+An aggregate downstream Ack followed by a crash before its progress becomes
+durable can cause rereading and possible reframing, not just identical duplicate
+records. An idle-flushed `ABC` can become `ABCDEF` if `DEF\n` arrives before
+recovery. Appended bytes may also complete an earlier incomplete character or
+cause decode-fail quarantine before an earlier record is re-emitted. These are
+not unconditional source-byte delivery guarantees. Recovery never advances over
+source bytes merely because they were previously read or emitted. If source
+bytes have disappeared, they cannot be reconstructed even with an intact
+checkpoint. The behavioral [restart contract](filelog-receiver-phase1-spec.md#crash-recovery-and-record-reproduction)
+defines the limits, including changes to observed-time and framing metadata.
 
 In this document, reconciliation is a bounded discovery pass that compares
 current filesystem evidence with the receiver's tracked view. It may find new
@@ -319,6 +330,13 @@ candidate evidence collection. The read/checkpoint thread owns identity
 resolution, runtime leases, resident tail handles, decoding, framing, batch
 construction, retained batch state, and checkpoint I/O. The async task owns
 engine lifecycle, downstream emission, completion correlation, and drain.
+
+A stable, durable engine state root is a Phase 1 release prerequisite. The
+engine must supply a validated absolute root independent of the working
+directory, under the behavioral [state-root contract](filelog-receiver-phase1-spec.md#stable-engine-state-root).
+Filelog does not expand a journald-local placeholder or fall back to a relative
+directory. Root provisioning, durability, and validation must finish before
+namespace access or source admission.
 
 The topology is fixed: one discovery thread and one read/checkpoint thread per
 Phase 1 receiver, never one thread per file, directory, or mount. The factory
@@ -765,6 +783,8 @@ tests alone do not establish production readiness.
 | Decoding and framing | Every supported encoding; LF, CR, BOM, NUL, malformed input, source ranges, multiline bounds, split/truncate determinism and decode-fail precedence, continuation restart, incomplete-unit idle flush, and marked D17 terminal emission |
 | OTAP boundary | Raw body; lossless registered path when available; bounded native-path/fragment registry; observed time; deferred generic offset/number; no receiver semantic parsing; bounded cardinality |
 | Delivery | Nonempty ready membership; engine-aggregated all-required Ack; graph rejection without every Ack dependency; universal unresolved-delta ordering; uniform bounded Nack retry; retry exhaustion; atomic progress bound; receiver-wide coupling |
+| State root | Engine-supplied absolute root independent of working directory; secure provisioning and ancestor durability; interrupted creation and unavailable/invalid-root failures; explicit root-change semantics |
+| Recovery output | Crash after idle flush with appended text, completed UTF-8/UTF-16 units, or malformed input; delayed-sync loss; changed metadata; no claim of identical record replay |
 | Checkpoints | Crash-safe first publication and later compaction; namespace-digest association; bounded transaction classes; append repair; reachable snapshot invariants; bounded advisory paths; missing authority; corruption/torn-tail distinction; protected cleanup; exact keep-failed; durable reset/retention |
 | Rotation | Matched-path move/create recognition, descriptor-dependent late writes, finalization behind open/retained/carry-over state, Nack and drain ordering, diagnosable pinned-descriptor pressure, marked D17 terminal emission, detectable truncation, copytruncate gap, both truncate policies, and post-transition old-epoch completion rejection |
 | Lifecycle | Startup ordering; drain under backpressure; drain timeout; clean drain without Shutdown; direct Shutdown; cooperative cancellation; blocked-kernel limitation |
@@ -780,7 +800,10 @@ must remain aligned with it and provide the required evidence. The
 [checkpoint-format specification](filelog-checkpoint-format.md)
 must exist, be approved, match the implementation, and provide conformance
 vectors for encoding, replay, corruption, torn writes, versions, platforms, and
-migration. Its absence is a release blocker.
+migration. Its absence is a release blocker. The engine configuration/API and
+provisioning path implementing the stable state-root contract must also be
+reviewed, implemented, and qualified before Phase 1 release; a literal
+`${engine.state_dir}` in this document is not evidence that integration exists.
 
 ## Detailed specification references
 

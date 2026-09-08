@@ -636,6 +636,18 @@ while their semantic and format definitions remain normative from version 1.
 | Checkpoint | Parent sync for newly created namespace entry fails | Publication remains incomplete and source reading is prohibited |
 | Checkpoint | Process A creates a shared ancestor and crashes before parent sync; process B observes it and publishes another namespace | B unconditionally syncs each ancestor parent before publication; later power loss cannot remove the shared tree |
 | Checkpoint | A direct-`checkpoint.id` sibling directory exists outside `filelog/@v1/<hex>` | Not searched, selected, or migrated; v1 recognizes only the versioned lowercase-hex namespace |
+| State root | Same explicit absolute root and storage, restart from a different working directory | Same namespace and recovered progress; no new-file `start_at` fallback |
+| State root | Missing engine integration, empty/unresolved/relative root, or only journald-local fallback available | Startup fails before namespace publication or source admission |
+| State root | Missing root components beneath a trusted durable ancestor | Engine creates with least privilege and completes required parent/root syncs before handoff |
+| State root | Crash after any directory creation or before a required sync | Retry the same path, validate and repeat syncs; never delete checkpoint artifacts or treat missing namespace authority as empty |
+| State root | Existing root, including one made visible by another creator | Validate opened objects, permissions and identity; repeat required durability steps rather than assuming existence proves sync |
+| State root | Untrusted symlink/reparse traversal, non-directory, substitution, permissions failure, unavailable storage, or failed required sync | Actionable startup failure; no alternate root or checkpoint reset |
+| State root | Intentional root change | Select only that root; document different-state/new-namespace consequences; no sibling search or automatic relocation |
+| Recovery output | Idle flush emits `ABC`; crash before Ack; append `DEF` and LF before recovery | Recovered offset is unchanged; may emit `ABCDEF`, not identical `ABC` replay |
+| Recovery output | Idle flush resolves an incomplete UTF-8/UTF-16 unit; crash before Ack; append completing bytes | Decode combined input under the configured policy; body/type and malformed evidence may differ |
+| Recovery output | Idle-flushed clean record; crash before Ack; append malformed input before its LF under decode `fail` | Quarantine at recovered progress before the combined record; earlier emission is not guaranteed to reappear |
+| Recovery output | Acked idle-flushed record released with nonzero sync interval; fault leaves a permitted missing/torn WAL suffix | Reprocess from recovered progress with the same reframing limits; complete corruption still fails closed |
+| Recovery output | Identical source body is reconstructed after restart | Observed time is reassigned; identical metadata is not promised |
 | Checkpoint | Artifacts exist without valid `CURRENT` | Repair only recognized interrupted first publication; otherwise fail closed |
 | Checkpoint | WAL append writes no bytes | Retry from known boundary |
 | Checkpoint | WAL append is partial | Validate, truncate/sync exact torn suffix, then retry |
@@ -1063,3 +1075,57 @@ at most `WAL_MAX_NON_PROGRESS_OPS_PER_TX` operations and fitting
 `WAL_MAX_TX_BODY_BYTES`. Files in chunk 1 become readable only after chunk 1 is
 durable. A failure while appending chunk 2 exposes no prefix of chunk 2 and does
 not invalidate chunk 1.
+
+### Example 39: Idle-flush boundary lost across restart
+
+Start from recovered offset zero with newline framing and idle flush enabled.
+The source contains `ABC` without LF. Idle expiry emits body `ABC`, but a crash
+occurs before Ack, so no progress transaction has been appended. The writer
+appends `DEF` and LF before recovery. With source identity/continuity still valid, recovery
+starts at zero and can emit `ABCDEF`. If downstream accepted `ABC` before the
+crash, it can observe both outputs. No boundary after `C` is persisted merely
+by emission. A retry without a crash instead preserves the retained `ABC` batch.
+
+The same recovery outcome is allowed after Ack and release with delayed sync
+if fault injection leaves the progress transaction as a permitted missing/torn
+suffix. A surviving complete valid transaction is replayed instead; complete
+corruption is never reclassified as missing progress.
+
+### Example 40: Decoding changes after a pre-crash idle flush
+
+UTF-8 source `61 62 63 e2` is idle-flushed under `replace` as `abc` followed by
+U+FFFD, owning `[0,4)`. Crash before Ack, then append `82 ac 0a`. Recovery
+from zero sees `abc`, a complete U+20AC, and LF, so it can emit `abc` followed by
+U+20AC. Under `preserve_raw`, the first emission is a byte body while recovered
+clean output may be text. Every original byte survives; the decoding result and
+malformed evidence still change.
+
+For UTF-16LE, start with `61 00 00 d8`, idle-flush under `replace`, crash before
+Ack, and append `00 dc 0a 00`. Recovery sees `a`, U+10000, and LF instead
+of `a` plus the earlier replacement. Apply the equivalent test in UTF-16BE.
+The decoder must not recover a volatile pre-crash completion decision.
+
+### Example 41: Appended malformed input prevents record reproduction
+
+Under newline framing, idle flush enabled, and `on_decode_error: fail`, `ABC`
+is emitted before a crash that leaves recovered progress at zero. The writer
+appends `ff 0a`. Recovery encounters malformed UTF-8 inside the now-combined
+logical record. It quarantines without emitting the `ABC` prefix or advancing
+that record's progress. Earlier independently complete records, if present,
+retain their normal ordering and completion rules. This is not source loss,
+but it disproves an unconditional promise to redeliver each prior emission.
+
+### Example 42: Stable state root across working-directory changes
+
+The engine is explicitly configured with absolute root `/var/lib/otelcol`.
+It validates/provisions the root and completes the required directory syncs
+before Filelog accesses `filelog/@v1/<checkpoint-id-hex>`. Starting once from
+`/opt/collector` and later from `/home/service` selects the same checkpoint
+namespace on the same storage. Neither launch may substitute `.otap-state`.
+
+Inject interruption after each missing root-component creation and before each
+required sync. Retry validates the same components and repeats durability work
+before namespace access. Root repair never deletes existing namespace artifacts
+or bypasses missing/corrupt `CURRENT` handling. Invalid roots or unavailable
+required durability fail startup without source admission. Selecting a different
+absolute root is an explicit different-state decision, not relocation.

@@ -165,6 +165,15 @@ Recovery does not search for or migrate a direct-`checkpoint.id` directory.
 The raw ID remains unchanged in the namespace digest and administrative
 operation fields; only its filesystem path component is lowercase-hex encoded.
 
+The namespace root must satisfy the behavioral
+[stable engine state-root contract](filelog-receiver-phase1-spec.md#stable-engine-state-root).
+The engine supplies an explicitly configured, validated absolute root independent
+of working directory. Its provisioning, required ancestor/root syncs, and secure
+directory access must complete before the publication steps below. Missing or
+invalid integration fails startup; Filelog never substitutes a relative fallback.
+An intentional root change selects different state, not automatic migration.
+Implementing and qualifying this engine integration is a Phase 1 release gate.
+
 ## Namespace digest
 
 Snapshot and WAL headers bind an artifact to the selected opaque
@@ -266,8 +275,10 @@ CURRENT.create.tmp
 
 Under least-privilege permissions, first publication is:
 
-1. Require `engine.state_dir` to be an already durable engine-owned root.
-   Open or create `filelog`, validate that it is a directory, and sync
+1. Require the engine-supplied root to have completed the behavioral
+   [resolution, provisioning, durability, and validation contract](filelog-receiver-phase1-spec.md#stable-engine-state-root).
+   A visible directory or expanded path string is not sufficient. Open or
+   create `filelog` relative to that validated root, validate it, and sync
    `engine.state_dir` unconditionally. Then open or create `@v1`, validate it,
    and sync `filelog` unconditionally. These parent syncs are required even
    when another process created the visible ancestor.
@@ -1460,6 +1471,13 @@ Logical application occurs only after the append is known complete and valid.
 A failed required sync may leave already applied progress newer than the
 durable frontier, but it does not authorize a duplicate append or partial
 operation application.
+
+The format persists checkpoint state and the defined framing resume, not
+unacknowledged emitted batches or their timing-dependent boundaries. The
+behavioral [restart-reproduction limits](filelog-receiver-phase1-spec.md#crash-recovery-and-record-reproduction)
+therefore apply even when source bytes survive. A matching framing-profile digest
+establishes configuration compatibility, not reproduction of pre-crash timing or
+identical emitted records. No new pre-emission record journal is defined here.
 
 ## Framing-profile canonical serialization and digest
 
