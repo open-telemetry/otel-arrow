@@ -434,41 +434,41 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
 
             let now = clock::now();
 
-            if let Some(deadline) = shutdown_deadline {
-                if now >= deadline {
-                    shutdown_deadline_forced = true;
-                    self.runtime_control_metrics
-                        .record_shutdown_deadline_forced(now);
-                    self.event_reporter
-                        .report(EngineEvent::drain_deadline_reached(
-                            self.pipeline_key.clone(),
-                            shutdown_reason.clone(),
-                        ));
-                    if let Some(reason) = shutdown_reason.as_ref() {
-                        for node_id in self.control_senders.non_receiver_ids() {
-                            self.send(
-                                node_id,
-                                NodeControlMsg::Shutdown {
-                                    deadline,
-                                    reason: reason.clone(),
-                                },
-                            );
-                        }
-                        for node_id in pending_receivers.iter().copied() {
-                            self.send(
-                                node_id,
-                                NodeControlMsg::Shutdown {
-                                    deadline,
-                                    reason: reason.clone(),
-                                },
-                            );
-                        }
+            if let Some(deadline) = shutdown_deadline
+                && now >= deadline
+            {
+                shutdown_deadline_forced = true;
+                self.runtime_control_metrics
+                    .record_shutdown_deadline_forced(now);
+                self.event_reporter
+                    .report(EngineEvent::drain_deadline_reached(
+                        self.pipeline_key.clone(),
+                        shutdown_reason.clone(),
+                    ));
+                if let Some(reason) = shutdown_reason.as_ref() {
+                    for node_id in self.control_senders.non_receiver_ids() {
+                        self.send(
+                            node_id,
+                            NodeControlMsg::Shutdown {
+                                deadline,
+                                reason: reason.clone(),
+                            },
+                        );
                     }
-                    // Deadline-forced drain is a major lifecycle boundary; do
-                    // not wait for the periodic flush interval to surface it.
-                    self.report_runtime_control_metrics();
-                    break;
+                    for node_id in pending_receivers.iter().copied() {
+                        self.send(
+                            node_id,
+                            NodeControlMsg::Shutdown {
+                                deadline,
+                                reason: reason.clone(),
+                            },
+                        );
+                    }
                 }
+                // Deadline-forced drain is a major lifecycle boundary; do
+                // not wait for the periodic flush interval to surface it.
+                self.report_runtime_control_metrics();
+                break;
             }
 
             let next_earliest = if is_draining_ingress {
@@ -678,11 +678,11 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                     }
                 }
                 _ = async {
-                    if let Some(when) = next_earliest {
-                        if when > now {
+                    if let Some(when) = next_earliest
+                        && when > now
+                    {
                             clock::sleep_until(when).await;
                         }
-                    }
                 }, if next_earliest.is_some() => {
                     consecutive_runtime_ctrl = 0;
                     if !is_draining_ingress {
@@ -860,10 +860,10 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                 }
             }
         }
-        if self.telemetry.runtime_metrics >= MetricLevel::Normal {
-            if let Err(err) = self.report_node_metrics() {
-                otel_warn!("node.metrics.reporting.fail", error = err.to_string());
-            }
+        if self.telemetry.runtime_metrics >= MetricLevel::Normal
+            && let Err(err) = self.report_node_metrics()
+        {
+            otel_warn!("node.metrics.reporting.fail", error = err.to_string());
         }
 
         for (node_id, msg) in to_send {
@@ -1056,77 +1056,77 @@ impl<PData> PipelineCompletionMsgDispatcher<PData> {
     ) {
         let mut handles_guard = self.node_metric_handles.borrow_mut();
         if let Some(Some(handles)) = handles_guard.get_mut(node_id) {
-            if interests.contains(Interests::CONSUMER_METRICS) {
-                if let Some(input) = &mut handles.input {
-                    if let Some(signal) = signal {
-                        let outcome = match outcome {
-                            RequestOutcome::Success => Outcome::Success,
-                            RequestOutcome::Failure => Outcome::Failure,
-                            RequestOutcome::Refused => Outcome::Refused,
-                        };
-                        let input = input.with(SignalOutcomeAttributes { signal, outcome });
-                        input.messages.inc();
-                        if consumed_items > 0
-                            && let Some(input_items) = &mut handles.input_items
-                        {
-                            input_items
-                                .with(SignalOutcomeAttributes { signal, outcome })
-                                .items
-                                .add(consumed_items as u64);
-                        }
-                        if consumed_size > 0
-                            && let Some(input_size) = &mut handles.input_size
-                        {
-                            input_size
-                                .with(SignalOutcomeAttributes { signal, outcome })
-                                .size
-                                .add(consumed_size);
-                        }
-                        if route.entry_time_ns > 0 && now_ns > 0 {
-                            let duration_ns = now_ns.saturating_sub(route.entry_time_ns);
-                            input
-                                .duration
-                                .record(Duration::from_nanos(duration_ns).as_secs_f64());
-                        }
-                    }
+            if interests.contains(Interests::CONSUMER_METRICS)
+                && let Some(input) = &mut handles.input
+                && let Some(signal) = signal
+            {
+                let outcome = match outcome {
+                    RequestOutcome::Success => Outcome::Success,
+                    RequestOutcome::Failure => Outcome::Failure,
+                    RequestOutcome::Refused => Outcome::Refused,
+                };
+                let input = input.with(SignalOutcomeAttributes { signal, outcome });
+                input.messages.inc();
+                if consumed_items > 0
+                    && let Some(input_items) = &mut handles.input_items
+                {
+                    input_items
+                        .with(SignalOutcomeAttributes { signal, outcome })
+                        .items
+                        .add(consumed_items as u64);
+                }
+                if consumed_size > 0
+                    && let Some(input_size) = &mut handles.input_size
+                {
+                    input_size
+                        .with(SignalOutcomeAttributes { signal, outcome })
+                        .size
+                        .add(consumed_size);
+                }
+                if route.entry_time_ns > 0 && now_ns > 0 {
+                    let duration_ns = now_ns.saturating_sub(route.entry_time_ns);
+                    input
+                        .duration
+                        .record(Duration::from_nanos(duration_ns).as_secs_f64());
                 }
             }
+
             if interests.contains(Interests::PRODUCER_METRICS) {
                 let port = route.output_port_index as usize;
-                if let Some(output) = handles.outputs.get_mut(port) {
-                    if let Some(signal) = signal {
-                        let outcome = match outcome {
-                            RequestOutcome::Success => Outcome::Success,
-                            RequestOutcome::Failure => Outcome::Failure,
-                            RequestOutcome::Refused => Outcome::Refused,
-                        };
-                        let output = output.with(SignalOutcomeAttributes { signal, outcome });
-                        output.messages.inc();
-                        if produced_items > 0
-                            && let Some(output_items) = handles.output_items.get_mut(port)
-                        {
-                            output_items
-                                .with(SignalOutcomeAttributes { signal, outcome })
-                                .items
-                                .add(produced_items as u64);
-                        }
-                        if produced_size > 0
-                            && let Some(output_size) = handles.output_size.get_mut(port)
-                        {
-                            output_size
-                                .with(SignalOutcomeAttributes { signal, outcome })
-                                .size
-                                .add(produced_size);
-                        }
-                        if !interests.contains(Interests::CONSUMER_METRICS)
-                            && route.entry_time_ns > 0
-                            && now_ns > 0
-                        {
-                            let duration_ns = now_ns.saturating_sub(route.entry_time_ns);
-                            output
-                                .duration
-                                .record(Duration::from_nanos(duration_ns).as_secs_f64());
-                        }
+                if let Some(output) = handles.outputs.get_mut(port)
+                    && let Some(signal) = signal
+                {
+                    let outcome = match outcome {
+                        RequestOutcome::Success => Outcome::Success,
+                        RequestOutcome::Failure => Outcome::Failure,
+                        RequestOutcome::Refused => Outcome::Refused,
+                    };
+                    let output = output.with(SignalOutcomeAttributes { signal, outcome });
+                    output.messages.inc();
+                    if produced_items > 0
+                        && let Some(output_items) = handles.output_items.get_mut(port)
+                    {
+                        output_items
+                            .with(SignalOutcomeAttributes { signal, outcome })
+                            .items
+                            .add(produced_items as u64);
+                    }
+                    if produced_size > 0
+                        && let Some(output_size) = handles.output_size.get_mut(port)
+                    {
+                        output_size
+                            .with(SignalOutcomeAttributes { signal, outcome })
+                            .size
+                            .add(produced_size);
+                    }
+                    if !interests.contains(Interests::CONSUMER_METRICS)
+                        && route.entry_time_ns > 0
+                        && now_ns > 0
+                    {
+                        let duration_ns = now_ns.saturating_sub(route.entry_time_ns);
+                        output
+                            .duration
+                            .record(Duration::from_nanos(duration_ns).as_secs_f64());
                     }
                 }
             }

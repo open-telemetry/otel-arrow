@@ -459,10 +459,10 @@ where
 {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        if let Some(status) = runtime.observed_state_handle.pipeline_status(pipeline_key) {
-            if predicate(&status) {
-                return status;
-            }
+        if let Some(status) = runtime.observed_state_handle.pipeline_status(pipeline_key)
+            && predicate(&status)
+        {
+            return status;
         }
         assert!(
             Instant::now() < deadline,
