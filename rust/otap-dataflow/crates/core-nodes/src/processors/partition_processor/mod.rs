@@ -162,11 +162,15 @@ impl PartitionProcessor {
         if let Some(inbound) = self.contexts.clear_outbound(outbound_key) {
             // if we're in this location, we've cleared the final outbound context for some inbound
             // batch, which means we can now Ack or Nack the inbound context
-            let pdata = OtapPdata::new(inbound.context, OtapPayload::empty(signal_type));
+            let payload = inbound.payload.unwrap_or(OtapPayload::empty(signal_type));
+            let pdata = OtapPdata::new(inbound.context, payload);
             if let Some(error) = inbound.error {
-                effect_handler
-                    .notify_nack(NackMsg::new_with_cause(error.reason, pdata, error.cause))
-                    .await
+                let nack_msg = if inbound.outbound_all_transient_errors {
+                    NackMsg::new_with_cause(error.reason, pdata, error.cause)
+                } else {
+                    NackMsg::new_permanent_with_cause(error.reason, pdata, error.cause)
+                };
+                effect_handler.notify_nack(nack_msg).await
             } else {
                 effect_handler.notify_ack(AckMsg::new(pdata)).await
             }
@@ -196,8 +200,11 @@ impl Processor<OtapPdata> for PartitionProcessor {
                 }
 
                 NodeControlMsg::Ack(ack_msg) => {
+                    let outbound_key: Key = ack_msg.unwind.route.calldata.try_into()?;
+                    self.contexts
+                        .set_outbound_all_transient_errors(outbound_key, false);
                     self.handle_ack_nack(
-                        ack_msg.unwind.route.calldata.try_into()?,
+                        outbound_key,
                         ack_msg.accepted.signal_type(),
                         effect_handler,
                     )
@@ -213,6 +220,10 @@ impl Processor<OtapPdata> for PartitionProcessor {
                             cause: nack_msg.cause,
                         },
                     );
+                    if nack_msg.permanent {
+                        self.contexts
+                            .set_outbound_all_transient_errors(outbound_key, false);
+                    }
                     self.handle_ack_nack(
                         outbound_key,
                         nack_msg.refused.signal_type(),
@@ -240,6 +251,7 @@ impl Processor<OtapPdata> for PartitionProcessor {
                 }
 
                 let (mut inbound_context, payload) = pdata.into_parts();
+                let inbound_payload = inbound_context.may_return_payload().then_some(payload.clone());
                 let signal_type = payload.signal_type();
                 let mut otap_batch: OtapArrowRecords = payload.try_into_with_default()?;
                 otap_batch.decode_transport_optimized_ids()?;
@@ -308,7 +320,7 @@ impl Processor<OtapPdata> for PartitionProcessor {
                         // create context key for inbound batch
                         let inbound_ctx_key = self
                             .contexts
-                            .insert_inbound(inbound_context.clone(), None, None)
+                            .insert_inbound(inbound_context.clone(), inbound_payload, None)
                             .ok_or_else(|| otel_arrow_dfe_engine::error::Error::ProcessorError {
                                 processor: effect_handler.processor_id(),
                                 kind: ProcessorErrorKind::Other,
@@ -591,8 +603,26 @@ mod test {
             .await
     }
 
-    /// Helper to send a Nack for a given context
+    /// Helper to send a non-permanent Nack for a given context
     async fn send_nack(
+        ctx: &mut TestContext<OtapPdata>,
+        context: Context,
+        signal_type: SignalType,
+        reason: &str,
+        cause: NackCause,
+    ) -> Result<(), otel_arrow_dfe_engine::error::Error> {
+        let nack = next_nack(NackMsg::new_with_cause(
+            reason,
+            OtapPdata::new(context, OtapPayload::empty(signal_type)),
+            cause,
+        ));
+        let (_, nack) = nack.unwrap();
+        ctx.process(Message::Control(NodeControlMsg::Nack(nack)))
+            .await
+    }
+
+    /// Helper to send a permanent Nack for a given context
+    async fn send_permanent_nack(
         ctx: &mut TestContext<OtapPdata>,
         context: Context,
         signal_type: SignalType,
@@ -873,7 +903,7 @@ mod test {
     /// Guarantees: The processor returns an error and reports one failed partition operation.
     #[test]
     fn test_partition_error_reports_failure_outcome() {
-        let runtime = TestRuntime::<OtapPdata>::new();
+        let runtime = TestRuntime::<OtapPData>::new();
         let telemetry_registry = runtime.metrics_registry();
         let metrics_reporter = runtime.metrics_reporter();
         let processor = create_processor_with_config(
@@ -1104,6 +1134,8 @@ mod test {
             .validate(|_ctx| async move {})
     }
 
+    /// Scenario: One partition is ACK'd and another is NACK'd transiently.
+    /// Guarantees: The inbound batch is NACK'd permanently because some data was consumed.
     #[test]
     fn test_partitioned_outbound_nack_causes_inbound_to_be_nackd() {
         let runtime = TestRuntime::<OtapPdata>::new();
@@ -1165,21 +1197,17 @@ mod test {
                     })
                     .collect::<Vec<_>>();
 
-                // send the Acks and ensure we eventually get an Ack for the inbound context
                 let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
                 let (pipeline_completion_tx, mut pipeline_completion_rx) =
                     pipeline_completion_msg_channel(10);
                 ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
                 ctx.set_pipeline_completion_sender(pipeline_completion_tx);
 
-                // first outbound partition Ack'd
                 send_ack(&mut ctx, outbound_contexts.pop().unwrap(), SignalType::Logs)
                     .await
                     .unwrap();
-                // no ack b/c not all outbound are ack'd
                 assert!(pipeline_completion_rx.is_empty());
 
-                // second outbound partition Nack'd
                 send_nack(
                     &mut ctx,
                     outbound_contexts.pop().unwrap(),
@@ -1190,12 +1218,15 @@ mod test {
                 .await
                 .unwrap();
 
-                // assert we finally receive an Ack for the inbound pdata
-                let ack_msg = pipeline_completion_rx.recv().await.unwrap();
-                match ack_msg {
+                let completion = pipeline_completion_rx.recv().await.unwrap();
+                match completion {
                     PipelineCompletionMsg::DeliverNack { nack } => {
-                        let (node_id, nack) = next_nack(nack).expect("expected ack subscriber");
+                        let (node_id, nack) = next_nack(nack).expect("expected nack subscriber");
                         assert_eq!(node_id, upstream_node_id);
+                        assert!(
+                            nack.permanent,
+                            "nack should be permanent when any downstream partition was ACK'd"
+                        );
                         assert_eq!(nack.reason, "error happened");
                         assert_eq!(nack.cause, NackCause::Refused);
                     }
@@ -1203,6 +1234,215 @@ mod test {
                         panic!("got unexpected pipeline ctrl message {other:?}")
                     }
                 };
+            })
+            .validate(|_ctx| async move {})
+    }
+
+    /// Scenario: Every partition is NACK'd transiently and the upstream subscriber requests data.
+    /// Guarantees: The inbound Nack remains transient and includes the original inbound payload.
+    #[test]
+    fn test_partitioned_all_transient_nacks_preserve_payload() {
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let expression = "attributes[\"x\"]";
+        let processor = create_processor_with_config(
+            serde_json::json!({
+                "partition_by": { "opl_expression": expression },
+                "partition_header_name": "partition-header",
+            }),
+            &runtime,
+        )
+        .unwrap();
+
+        runtime
+            .set_processor(processor)
+            .run_test(move |mut ctx| async move {
+                let upstream_node_id = 999;
+                let log_records = vec![
+                    LogRecord::build()
+                        .event_name("event0")
+                        .attributes(vec![KeyValue::new("x", AnyValue::new_string("0"))])
+                        .finish(),
+                    LogRecord::build()
+                        .event_name("event1")
+                        .attributes(vec![KeyValue::new("x", AnyValue::new_string("1"))])
+                        .finish(),
+                ];
+                let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
+                    resource_logs: vec![ResourceLogs::new(
+                        Resource::default(),
+                        vec![ScopeLogs::new(
+                            InstrumentationScope::default(),
+                            log_records,
+                        )],
+                    )],
+                }));
+                let expected_num_items = OtapPayload::from(otap_batch.clone()).num_items();
+                let pdata = create_pdata_with_subscriber(
+                    otap_batch,
+                    Interests::NACKS | Interests::RETURN_DATA,
+                    1,
+                    upstream_node_id,
+                );
+
+                ctx.process(Message::PData(pdata))
+                    .await
+                    .expect("no process error");
+
+                let out = ctx.drain_pdata().await.into_iter().collect::<Vec<_>>();
+                assert_eq!(out.len(), 2);
+                let mut outbound_contexts = out
+                    .into_iter()
+                    .map(|pdata| pdata.into_parts().0)
+                    .collect::<Vec<_>>();
+
+                let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
+                let (pipeline_completion_tx, mut pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(10);
+                ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
+
+                send_nack(
+                    &mut ctx,
+                    outbound_contexts.pop().unwrap(),
+                    SignalType::Logs,
+                    "first transient error",
+                    NackCause::Refused,
+                )
+                .await
+                .unwrap();
+                assert!(pipeline_completion_rx.is_empty());
+
+                send_nack(
+                    &mut ctx,
+                    outbound_contexts.pop().unwrap(),
+                    SignalType::Logs,
+                    "second transient error",
+                    NackCause::NodeShutdown,
+                )
+                .await
+                .unwrap();
+
+                let completion = pipeline_completion_rx.recv().await.unwrap();
+                match completion {
+                    PipelineCompletionMsg::DeliverNack { nack } => {
+                        let (node_id, mut nack) =
+                            next_nack(nack).expect("expected nack subscriber");
+                        assert_eq!(node_id, upstream_node_id);
+                        assert!(
+                            !nack.permanent,
+                            "nack should remain transient when all downstream nacks are transient"
+                        );
+                        assert_eq!(nack.reason, "first transient error");
+                        assert_eq!(nack.cause, NackCause::Refused);
+                        assert_eq!(
+                            nack.refused.num_items(),
+                            expected_num_items,
+                            "nack should preserve the original payload when RETURN_DATA is set"
+                        );
+                    }
+                    other => panic!("expected DeliverNack, got {other:?}"),
+                }
+            })
+            .validate(|_ctx| async move {})
+    }
+
+    /// Scenario: A partition is NACK'd transiently and another partition is NACK'd permanently.
+    /// Guarantees: The inbound Nack is permanent because not every downstream Nack was transient.
+    #[test]
+    fn test_partitioned_permanent_nack_makes_inbound_permanent() {
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let expression = "attributes[\"x\"]";
+        let processor = create_processor_with_config(
+            serde_json::json!({
+                "partition_by": { "opl_expression": expression },
+                "partition_header_name": "partition-header",
+            }),
+            &runtime,
+        )
+        .unwrap();
+
+        runtime
+            .set_processor(processor)
+            .run_test(move |mut ctx| async move {
+                let upstream_node_id = 999;
+                let log_records = vec![
+                    LogRecord::build()
+                        .event_name("event0")
+                        .attributes(vec![KeyValue::new("x", AnyValue::new_string("0"))])
+                        .finish(),
+                    LogRecord::build()
+                        .event_name("event1")
+                        .attributes(vec![KeyValue::new("x", AnyValue::new_string("1"))])
+                        .finish(),
+                ];
+                let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
+                    resource_logs: vec![ResourceLogs::new(
+                        Resource::default(),
+                        vec![ScopeLogs::new(
+                            InstrumentationScope::default(),
+                            log_records,
+                        )],
+                    )],
+                }));
+                let pdata = create_pdata_with_subscriber(
+                    otap_batch,
+                    Interests::NACKS,
+                    1,
+                    upstream_node_id,
+                );
+
+                ctx.process(Message::PData(pdata))
+                    .await
+                    .expect("no process error");
+
+                let out = ctx.drain_pdata().await.into_iter().collect::<Vec<_>>();
+                assert_eq!(out.len(), 2);
+                let mut outbound_contexts = out
+                    .into_iter()
+                    .map(|pdata| pdata.into_parts().0)
+                    .collect::<Vec<_>>();
+
+                let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
+                let (pipeline_completion_tx, mut pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(10);
+                ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
+
+                send_nack(
+                    &mut ctx,
+                    outbound_contexts.pop().unwrap(),
+                    SignalType::Logs,
+                    "transient error",
+                    NackCause::Refused,
+                )
+                .await
+                .unwrap();
+                assert!(pipeline_completion_rx.is_empty());
+
+                send_permanent_nack(
+                    &mut ctx,
+                    outbound_contexts.pop().unwrap(),
+                    SignalType::Logs,
+                    "permanent error",
+                    NackCause::NodeShutdown,
+                )
+                .await
+                .unwrap();
+
+                let completion = pipeline_completion_rx.recv().await.unwrap();
+                match completion {
+                    PipelineCompletionMsg::DeliverNack { nack } => {
+                        let (node_id, nack) = next_nack(nack).expect("expected nack subscriber");
+                        assert_eq!(node_id, upstream_node_id);
+                        assert!(
+                            nack.permanent,
+                            "nack should be permanent when any downstream nack is permanent"
+                        );
+                        assert_eq!(nack.reason, "transient error");
+                        assert_eq!(nack.cause, NackCause::Refused);
+                    }
+                    other => panic!("expected DeliverNack, got {other:?}"),
+                }
             })
             .validate(|_ctx| async move {})
     }
