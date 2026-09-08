@@ -161,11 +161,14 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 #### `receiver.journald`
 
-| Metric | Unit | Description |
-| --- | --- | --- |
-| `receiver.journald.starts` | `{start}` | Number of times the receiver was started. |
-| `receiver.journald.drains` | `{drain}` | Number of clean drain transitions. |
-| `receiver.journald.shutdowns` | `{shutdown}` | Number of clean shutdown transitions. |
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `receiver.journald.lifecycle` | `{transition}` | `transition_type` | Number of receiver lifecycle transitions (`Start`, `Drain`, `Shutdown`). |
+| `receiver.journald.acknowledgements` | `{completion}` | `outcome` | Number of downstream completions (`Ack`, `Nack`). |
+| `receiver.journald.checkpoints` | `{checkpoint}` | `outcome` | Number of durable cursor checkpoint outcomes (`Success`, `Failure`). |
+| `receiver.journald.source` | `{event}` | `event_type` | Number of source events (`ReadFailure`, `DroppedField`, `Rewind`). |
+| `receiver.journald.output.batches` | `{batch}` | | Number of log batches emitted downstream. |
+| `receiver.journald.output.records` | `{record}` | | Number of log records emitted downstream. |
 
 ### Events
 

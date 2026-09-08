@@ -1,0 +1,8 @@
+change_type: breaking
+component: pipeline
+note: >-
+  Migrated journald receiver telemetry from flat counters to dimensioned metric populations with enum attributes.
+issues: [3530]
+subtext: >-
+  Migration: Update dashboards to use dimensioned metrics: lifecycle.transitions,
+  acknowledgements.responses, checkpoints.commits, source.events, and output.*.
