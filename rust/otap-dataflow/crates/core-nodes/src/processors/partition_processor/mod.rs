@@ -251,7 +251,9 @@ impl Processor<OtapPdata> for PartitionProcessor {
                 }
 
                 let (mut inbound_context, payload) = pdata.into_parts();
-                let inbound_payload = inbound_context.may_return_payload().then_some(payload.clone());
+                let inbound_payload = inbound_context
+                    .may_return_payload()
+                    .then_some(payload.clone());
                 let signal_type = payload.signal_type();
                 let mut otap_batch: OtapArrowRecords = payload.try_into_with_default()?;
                 otap_batch.decode_transport_optimized_ids()?;
@@ -903,7 +905,7 @@ mod test {
     /// Guarantees: The processor returns an error and reports one failed partition operation.
     #[test]
     fn test_partition_error_reports_failure_outcome() {
-        let runtime = TestRuntime::<OtapPData>::new();
+        let runtime = TestRuntime::<OtapPdata>::new();
         let telemetry_registry = runtime.metrics_registry();
         let metrics_reporter = runtime.metrics_reporter();
         let processor = create_processor_with_config(
