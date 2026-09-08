@@ -28,7 +28,7 @@ use super::topic_router::TopicRouter;
 use crate::common::kafka::aws::ProducerClientContext;
 #[cfg(feature = "aws")]
 use crate::common::kafka::security::build_aws_msk_context;
-use crate::common::kafka::{MSG_FORMAT_OTAP, MSG_FORMAT_OTLP, MessageFormat};
+use crate::common::kafka::{MSG_FORMAT_OTAP, MSG_FORMAT_OTLP, MSG_FORMAT_SYSLOG, MessageFormat};
 use async_trait::async_trait;
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt};
@@ -491,6 +491,7 @@ impl KafkaExporter {
         let format_value = match encoding {
             MessageFormat::OtlpProto => MSG_FORMAT_OTLP,
             MessageFormat::OtapProto => MSG_FORMAT_OTAP,
+            MessageFormat::Syslog => MSG_FORMAT_SYSLOG,
         };
         headers = headers.insert(Header {
             key: format_header_key,
@@ -645,6 +646,9 @@ impl KafkaExporter {
                 payload.clone(),
                 &mut self.pdata_producer,
             ),
+            MessageFormat::Syslog => Err(KafkaExporterError::Configuration(
+                "syslog encoding is not supported by the Kafka exporter".to_string(),
+            )),
         };
 
         // nack on failed encoding bytes
