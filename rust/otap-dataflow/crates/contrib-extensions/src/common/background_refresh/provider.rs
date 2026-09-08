@@ -138,17 +138,21 @@ impl BackgroundProviderRefreshPolicy {
         usable_margin: Duration,
         mut non_expiring_refresh_interval: Duration,
         expiry_buffer: Duration,
-    ) -> BackgroundProviderRefreshPolicy {
+    ) -> Result<BackgroundProviderRefreshPolicy, &'static str> {
         // Note: We don't allow zero duration for non_expiring_refresh_interval
         // because that would cause a busy loop in refresh.
         non_expiring_refresh_interval =
             non_expiring_refresh_interval.max(Duration::from_secs(MIN_REFRESH_INTERVAL_SECS));
 
-        Self {
+        if expiry_buffer <= usable_margin {
+            return Err("expiry_buffer should be greater than usable_marge");
+        }
+
+        Ok(Self {
             usable_margin,
             non_expiring_refresh_interval,
             expiry_buffer,
-        }
+        })
     }
 }
 

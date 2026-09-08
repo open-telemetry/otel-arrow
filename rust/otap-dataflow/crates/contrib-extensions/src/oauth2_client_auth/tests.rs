@@ -61,7 +61,8 @@ fn make_extension(token_url: &str) -> OAuth2ClientAuthExtension {
             TOKEN_USABLE_MARGIN,
             NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
             cfg.expiry_buffer,
-        ),
+        )
+        .expect("valid refresh_policy"),
         tx,
         make_tracker(),
     )
@@ -125,7 +126,8 @@ fn extension_from_config(cfg: &Config) -> OAuth2ClientAuthExtension {
             TOKEN_USABLE_MARGIN,
             NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
             cfg.expiry_buffer,
-        ),
+        )
+        .expect("valid refresh_policy"),
         tx,
         make_tracker(),
     )
@@ -732,7 +734,8 @@ async fn request_includes_scope_and_endpoint_params() {
             TOKEN_USABLE_MARGIN,
             NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
             cfg.expiry_buffer,
-        ),
+        )
+        .expect("valid refresh_policy"),
         tx,
         make_tracker(),
     );
@@ -770,7 +773,8 @@ async fn oversized_client_secret_file_is_rejected() {
             TOKEN_USABLE_MARGIN,
             NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
             cfg.expiry_buffer,
-        ),
+        )
+        .expect("valid refresh_policy"),
         tx,
         make_tracker(),
     );
@@ -815,7 +819,8 @@ async fn client_secret_file_rotation_takes_effect() {
             TOKEN_USABLE_MARGIN,
             NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
             cfg.expiry_buffer,
-        ),
+        )
+        .expect("valid refresh_policy"),
         tx,
         make_tracker(),
     );
@@ -977,7 +982,8 @@ async fn jwt_bearer_signs_assertion_and_acquires_token() {
             TOKEN_USABLE_MARGIN,
             NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
             cfg.expiry_buffer,
-        ),
+        )
+        .expect("valid refresh_policy"),
         tx,
         make_tracker(),
     );
@@ -1053,7 +1059,8 @@ async fn absurd_expires_in_yields_token_without_expiry_jwt_bearer() {
             TOKEN_USABLE_MARGIN,
             NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
             cfg.expiry_buffer,
-        ),
+        )
+        .expect("valid refresh_policy"),
         tx,
         make_tracker(),
     );
@@ -1092,7 +1099,8 @@ async fn jwt_bearer_reads_signing_key_from_file() {
             TOKEN_USABLE_MARGIN,
             NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
             cfg.expiry_buffer,
-        ),
+        )
+        .expect("valid refresh_policy"),
         tx,
         make_tracker(),
     );

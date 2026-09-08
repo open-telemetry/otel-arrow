@@ -7,6 +7,8 @@ use std::time::{Duration, Instant};
 
 use otel_arrow_dfe_engine::capability::auth::BearerToken;
 
+use crate::common::background_refresh::BackgroundProviderRefreshPolicy;
+
 use super::provider::{
     jitter_refresh, negative_cache_window_secs, retry_backoff_secs, schedule_next,
 };
@@ -16,6 +18,37 @@ use super::provider::{
 /// Next-refresh delay used for non-expiring values (~1 year). The loop is still
 /// woken by control messages in the meantime.
 const NON_EXPIRING_REFRESH_SECS: u64 = 365 * 24 * 60 * 60;
+
+#[tokio::test]
+async fn ctor_validates_expiry_buffer() {
+    let usable_margin = Duration::from_secs(1);
+    let non_expiring_refresh_interval = Duration::from_secs(10);
+
+    assert!(
+        BackgroundProviderRefreshPolicy::new(
+            usable_margin,
+            non_expiring_refresh_interval,
+            Duration::from_secs(0)
+        )
+        .is_err()
+    );
+    assert!(
+        BackgroundProviderRefreshPolicy::new(
+            usable_margin,
+            non_expiring_refresh_interval,
+            Duration::from_secs(1)
+        )
+        .is_err()
+    );
+    assert!(
+        BackgroundProviderRefreshPolicy::new(
+            usable_margin,
+            non_expiring_refresh_interval,
+            Duration::from_secs(2)
+        )
+        .is_ok()
+    );
+}
 
 /// Scenario: Schedule the next refresh for a token expiring in ~1 hour with a 5m buffer.
 /// Guarantees: The refresh is scheduled `expiry_buffer` before expiry (~3300s out), ahead of expiry.

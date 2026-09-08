@@ -99,7 +99,10 @@ fn create(
             TOKEN_USABLE_MARGIN,
             NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
             config.expiry_buffer,
-        ),
+        )
+        .map_err(|e| ConfigError::InvalidUserConfig {
+            error: format!("failed to initialize OAuth2 client: {e}"),
+        })?,
         tx,
         tracker,
     );
