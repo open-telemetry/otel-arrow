@@ -139,7 +139,8 @@ impl TopicReceiverMetrics {
             bridge: pipeline_ctx.register_measurement_metrics_with_topic::<TopicBridgeMetrics>(
                 topic_name.clone().into(),
             ),
-            general: pipeline_ctx.register_metrics_with_topic::<TopicGeneralMetrics>(topic_name.into()),
+            general: pipeline_ctx
+                .register_metrics_with_topic::<TopicGeneralMetrics>(topic_name.into()),
         }
     }
 
