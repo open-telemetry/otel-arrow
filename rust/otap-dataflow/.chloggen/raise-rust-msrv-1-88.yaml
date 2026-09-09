@@ -1,6 +1,0 @@
-change_type: breaking
-component: all
-note: Raise the minimum supported Rust version for OTAP Dataflow from 1.87 to 1.88.
-issues: [1340]
-subtext: |
-  Migration: Upgrade the Rust toolchain used to build OTAP Dataflow to Rust 1.88 or newer.
