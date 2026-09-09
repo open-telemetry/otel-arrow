@@ -177,7 +177,7 @@ impl<
         };
 
         if let Some(sender) = shutdown_sender {
-            // Lalit: "the shutdown message should be sent after releasing the state lock."
+            // Send shutdown after releasing the state lock to avoid lock contention or deadlocks.
             let _ = sender.try_send_shutdown(
                 Instant::now() + Duration::from_secs(60),
                 "global shutdown (late registration)".to_owned(),

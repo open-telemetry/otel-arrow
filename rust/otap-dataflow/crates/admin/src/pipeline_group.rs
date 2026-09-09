@@ -345,7 +345,14 @@ mod tests {
         let metrics_registry = TelemetryRegistryHandle::new();
         let observed_state_store =
             ObservedStateStore::new(&ObservedStateSettings::default(), metrics_registry.clone());
+        test_app_state_with_store(controller, &observed_state_store, metrics_registry)
+    }
 
+    fn test_app_state_with_store(
+        controller: Arc<dyn ControlPlane>,
+        observed_state_store: &ObservedStateStore,
+        metrics_registry: TelemetryRegistryHandle,
+    ) -> AppState {
         AppState {
             observed_state_store: observed_state_store.handle(),
             metrics_registry,
@@ -705,6 +712,10 @@ mod tests {
         );
     }
 
+    /// Scenario: shutdown is requested with `wait=true` when the observed state
+    /// snapshot contains pipelines and all of them have reached a terminated status.
+    /// Guarantees: the handler detects that all pipelines are terminated and returns
+    /// HTTP 200 immediately without waiting for the timeout.
     #[tokio::test]
     async fn shutdown_returns_ok_when_snapshot_is_non_empty_and_all_terminated() {
         let metrics_registry = TelemetryRegistryHandle::new();
@@ -743,20 +754,15 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        let app_state = AppState {
-            observed_state_store: store.handle(),
-            metrics_registry,
-            controller: stub(
+        let app_state = test_app_state_with_store(
+            stub(
                 Ok(None),
                 Ok(PipelineGroupConfig::new()),
                 Ok(delete_status("succeeded")),
             ),
-            terminal_control_plane_permits: Arc::new(tokio::sync::Semaphore::new(1)),
-            heap_profile_permits: Arc::new(tokio::sync::Semaphore::new(1)),
-            log_tap: None,
-            memory_pressure_state: MemoryPressureState::default(),
-            target_info: Arc::from(""),
-        };
+            &store,
+            metrics_registry,
+        );
 
         let response = shutdown_all_pipelines(
             State(app_state),
@@ -777,6 +783,10 @@ mod tests {
         );
     }
 
+    /// Scenario: shutdown is requested with `wait=true` when the observed state
+    /// snapshot contains pipelines and at least one is still active.
+    /// Guarantees: the handler polls until the timeout expires and returns
+    /// HTTP 504 Gateway Timeout.
     #[tokio::test]
     async fn shutdown_times_out_when_snapshot_is_non_empty_but_not_all_terminated() {
         let metrics_registry = TelemetryRegistryHandle::new();
@@ -808,20 +818,15 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        let app_state = AppState {
-            observed_state_store: store.handle(),
-            metrics_registry,
-            controller: stub(
+        let app_state = test_app_state_with_store(
+            stub(
                 Ok(None),
                 Ok(PipelineGroupConfig::new()),
                 Ok(delete_status("succeeded")),
             ),
-            terminal_control_plane_permits: Arc::new(tokio::sync::Semaphore::new(1)),
-            heap_profile_permits: Arc::new(tokio::sync::Semaphore::new(1)),
-            log_tap: None,
-            memory_pressure_state: MemoryPressureState::default(),
-            target_info: Arc::from(""),
-        };
+            &store,
+            metrics_registry,
+        );
 
         let response = shutdown_all_pipelines(
             State(app_state),
