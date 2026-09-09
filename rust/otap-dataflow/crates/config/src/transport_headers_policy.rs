@@ -668,6 +668,8 @@ mod tests {
         ContextEntryName::try_from(raw).expect("valid test context entry name")
     }
 
+    /// Scenario: the capture policy is constructed with defaults.
+    /// Guarantees: it captures no headers and retains the documented limits and drop behavior.
     #[test]
     fn default_capture_policy_captures_nothing() {
         let policy = HeaderCapturePolicy::default();
@@ -709,6 +711,8 @@ mod tests {
         );
     }
 
+    /// Scenario: the propagation policy is constructed with defaults.
+    /// Guarantees: it selects no headers, preserves selected wire names, and has no overrides.
     #[test]
     fn default_propagation_policy() {
         let policy = HeaderPropagationPolicy::default();
@@ -783,6 +787,8 @@ mod tests {
         assert_eq!(headers.as_slice()[0].wire_name(), "tenant");
     }
 
+    /// Scenario: YAML configures capture limits, renaming, and sensitive-header rules.
+    /// Guarantees: parsing and JSON round-tripping preserve the complete capture policy.
     #[test]
     fn capture_policy_serde_roundtrip() {
         let yaml = r#"
@@ -815,6 +821,8 @@ headers:
         assert_eq!(back, policy);
     }
 
+    /// Scenario: YAML configures an all-captured propagation policy with an authorization-drop override.
+    /// Guarantees: parsing and JSON round-tripping preserve the selector and override.
     #[test]
     fn propagation_policy_serde_roundtrip() {
         let yaml = r#"
@@ -842,6 +850,8 @@ overrides:
         assert_eq!(back, policy);
     }
 
+    /// Scenario: one YAML document configures both capture and propagation.
+    /// Guarantees: both policy sections and their rules are deserialized.
     #[test]
     fn full_transport_headers_policy_serde() {
         let yaml = r#"
@@ -865,6 +875,8 @@ header_propagation:
         assert_eq!(policy.header_propagation.overrides.len(), 1);
     }
 
+    /// Scenario: a YAML named selector lists two logical header entries.
+    /// Guarantees: the selector kind and ordered entry names are preserved.
     #[test]
     fn selector_named_variant() {
         let yaml = r#"!
@@ -886,6 +898,8 @@ named:
         );
     }
 
+    /// Scenario: an all-captured selector has no named-entry list.
+    /// Guarantees: validation accepts the selector without requiring individual names.
     #[test]
     fn selector_validate_all_captured_valid() {
         let selector = PropagationSelector {
@@ -895,6 +909,8 @@ named:
         assert!(selector.validate().is_ok());
     }
 
+    /// Scenario: a none selector has no named-entry list.
+    /// Guarantees: validation accepts explicitly disabled propagation.
     #[test]
     fn selector_validate_none_valid() {
         let selector = PropagationSelector {
@@ -904,6 +920,8 @@ named:
         assert!(selector.validate().is_ok());
     }
 
+    /// Scenario: a named selector supplies a nonempty entry list.
+    /// Guarantees: validation accepts a well-formed named selection.
     #[test]
     fn selector_validate_named_valid() {
         let selector = PropagationSelector {
@@ -913,6 +931,8 @@ named:
         assert!(selector.validate().is_ok());
     }
 
+    /// Scenario: a named selector omits its entry list.
+    /// Guarantees: validation reports that the named list is required.
     #[test]
     fn selector_validate_named_missing_list() {
         let selector = PropagationSelector {
@@ -923,6 +943,8 @@ named:
         assert!(err.contains("'named' list is required"));
     }
 
+    /// Scenario: a named selector supplies an empty entry list.
+    /// Guarantees: validation rejects the empty list instead of silently selecting nothing.
     #[test]
     fn selector_validate_named_empty_list() {
         let selector = PropagationSelector {
@@ -933,6 +955,8 @@ named:
         assert!(err.contains("must not be empty"));
     }
 
+    /// Scenario: an all-captured selector also supplies named entries.
+    /// Guarantees: validation rejects the contradictory named field.
     #[test]
     fn selector_validate_all_captured_with_named_field() {
         let selector = PropagationSelector {
@@ -943,6 +967,8 @@ named:
         assert!(err.contains("'named' must not be set"));
     }
 
+    /// Scenario: a none selector also supplies named entries.
+    /// Guarantees: validation rejects the contradictory named field.
     #[test]
     fn selector_validate_none_with_named_field() {
         let selector = PropagationSelector {
@@ -953,6 +979,8 @@ named:
         assert!(err.contains("'named' must not be set"));
     }
 
+    /// Scenario: a propagation policy embeds a named selector without an entry list.
+    /// Guarantees: policy validation surfaces the selector's missing-list error.
     #[test]
     fn propagation_policy_validate_delegates_to_selector() {
         let policy = HeaderPropagationPolicy::new(
@@ -969,6 +997,8 @@ named:
         assert!(err.contains("'named' list is required"));
     }
 
+    /// Scenario: a propagation policy embeds a valid all-captured selector.
+    /// Guarantees: policy validation accepts the complete configuration.
     #[test]
     fn propagation_policy_validate_valid() {
         let policy = HeaderPropagationPolicy::new(
