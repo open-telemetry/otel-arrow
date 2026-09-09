@@ -229,10 +229,10 @@ jobs:
               echo "_No Rust changes in this release._"
             fi
           } > /tmp/release_content.txt
-          echo "package_count=$(jq --arg version "${{ inputs.version }}" \
+          PACKAGE_COUNT=$(jq --arg version "${{ inputs.version }}" \
             '[.packages[] | select(.version == $version)] | length' \
-            /tmp/crates_publish_plan.json)" \
-            >> "$GITHUB_OUTPUT"
+            /tmp/crates_publish_plan.json)
+          echo "package_count=${PACKAGE_COUNT}" >> "$GITHUB_OUTPUT"
 
       - name: Dry run - Show planned changes
         if: inputs.dry_run
