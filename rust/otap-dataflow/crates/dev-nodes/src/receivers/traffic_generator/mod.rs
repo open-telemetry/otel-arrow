@@ -211,7 +211,7 @@ impl TrafficGeneratorReceiver {
                                 .with(SmoothRunTerminationAttributes {
                                     outcome: RunTerminationOutcome::Late,
                                 })
-                                .runs
+                                .terminations
                                 .add(1);
                             self.metrics
                                 .other
@@ -233,7 +233,7 @@ impl TrafficGeneratorReceiver {
                                 .with(SmoothRunTerminationAttributes {
                                     outcome: RunTerminationOutcome::OnTime,
                                 })
-                                .runs
+                                .terminations
                                 .add(1);
                             run_completed = true;
                         }
@@ -274,7 +274,7 @@ impl TrafficGeneratorReceiver {
                                             .with(SmoothRunTerminationAttributes {
                                                 outcome: RunTerminationOutcome::OnTime,
                                             })
-                                            .runs
+                                            .terminations
                                             .add(1);
                                         run_completed = true;
                                     }
@@ -488,10 +488,10 @@ impl TrafficGeneratorReceiver {
                         .completion_pending
                         .set(self.pending_completions);
                 }
-                if matches!(signal, otel_arrow_dfe_config::SignalType::Logs) {
-                    if let Some(bytes) = payload_bytes {
-                        self.metrics.other.logs_bytes_produced.add(bytes as u64);
-                    }
+                if matches!(signal, otel_arrow_dfe_config::SignalType::Logs)
+                    && let Some(bytes) = payload_bytes
+                {
+                    self.metrics.other.logs_bytes_produced.add(bytes as u64);
                 }
                 Ok(Ok(count))
             }
@@ -753,12 +753,10 @@ impl local::Receiver<OtapPdata> for TrafficGeneratorReceiver {
             config::ProductionMode::Smooth => {
                 if let Some(batch_duration) = smooth_batch_interval(run_len) {
                     self.metrics.other.smooth_run_batches.set(run_len as u64);
-                    if let Some(interval) = smooth_batch_interval(run_len) {
-                        self.metrics
-                            .other
-                            .smooth_batch_interval_ns
-                            .set(interval.as_nanos() as u64);
-                    }
+                    self.metrics
+                        .other
+                        .smooth_batch_interval_ns
+                        .set(batch_duration.as_nanos() as u64);
                     let mut batch_ticker = interval(batch_duration);
                     batch_ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
                     self.run_smooth(

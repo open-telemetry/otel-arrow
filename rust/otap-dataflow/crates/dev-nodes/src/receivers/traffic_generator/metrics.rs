@@ -32,14 +32,14 @@ pub struct SmoothRunTerminationAttributes {
 
 /// Smooth-mode production run termination counters.
 #[metric_set(
-    name = "receiver.traffic_generator.smooth.runs.terminations",
+    name = "receiver.traffic_generator.smooth.runs",
     measurement_attributes = SmoothRunTerminationAttributes
 )]
 #[derive(Debug, Default, Clone)]
 pub struct TrafficGeneratorSmoothRunTerminationMetrics {
     /// Number of smooth-mode production runs terminated.
     #[metric(unit = "{run}")]
-    pub runs: Counter<u64>,
+    pub terminations: Counter<u64>,
 }
 
 // -- Smooth payload send result attributes ------------------------------------
@@ -198,15 +198,22 @@ mod tests {
             .with(SmoothRunTerminationAttributes {
                 outcome: RunTerminationOutcome::OnTime,
             })
-            .runs
+            .terminations
             .add(8);
         metrics
             .smooth_run_terminations
             .with(SmoothRunTerminationAttributes {
                 outcome: RunTerminationOutcome::Late,
             })
-            .runs
+            .terminations
             .add(2);
+        metrics
+            .smooth_run_terminations
+            .with(SmoothRunTerminationAttributes {
+                outcome: RunTerminationOutcome::Cancelled,
+            })
+            .terminations
+            .add(1);
 
         // Record smooth send
         metrics
@@ -234,8 +241,12 @@ mod tests {
 
         // Verify metric set names
         assert!(snapshots.iter().any(|s| {
-            s.descriptor().name == "receiver.traffic_generator.smooth.runs.terminations"
+            s.descriptor().name == "receiver.traffic_generator.smooth.runs"
                 && s.measurement_attribute_value("outcome") == Some("late")
+        }));
+        assert!(snapshots.iter().any(|s| {
+            s.descriptor().name == "receiver.traffic_generator.smooth.runs"
+                && s.measurement_attribute_value("outcome") == Some("cancelled")
         }));
         assert!(snapshots.iter().any(|s| {
             s.descriptor().name == "receiver.traffic_generator.smooth.payload.sends"
@@ -253,8 +264,7 @@ mod tests {
         assert!(
             !snapshots2
                 .iter()
-                .any(|s| s.descriptor().name
-                    == "receiver.traffic_generator.smooth.runs.terminations")
+                .any(|s| s.descriptor().name == "receiver.traffic_generator.smooth.runs")
         );
 
         let other_second_snapshot = snapshots2
