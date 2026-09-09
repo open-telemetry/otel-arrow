@@ -12,6 +12,59 @@ changes. See [`RELEASING.md`](../../RELEASING.md) for the versioning policy.
 
 <!-- next version -->
 
+## v0.55.0
+
+### :stop_sign: Breaking changes :stop_sign:
+
+- `all`: Raise the minimum supported Rust version for OTAP Dataflow from 1.87 to 1.88. ([#1340](https://github.com/open-telemetry/otel-arrow/issues/1340))
+  Migration: Upgrade the Rust toolchain used to build OTAP Dataflow to Rust 1.88 or newer.
+
+### :rocket: New components :rocket:
+
+- `engine`: Add the `BasicAuthProvider` capability.
+ ([#3901](https://github.com/open-telemetry/otel-arrow/issues/3901))
+  A capability for feeding Basic Auth credentials into components (typically
+  used for authorization) retrieved via extensions. Credentials are treated as
+  secrets and may be accompanied by optional expiration.
+
+### :bulb: Enhancements :bulb:
+
+- `all`: Publish otap, core-nodes, contrib-nodes, and contrib-extensions as versioned crates.io packages. ([#1340](https://github.com/open-telemetry/otel-arrow/issues/1340))
+- `dependencies`: Upgrade various Rust dependencies. ([#4012](https://github.com/open-telemetry/otel-arrow/issues/4012), [#4013](https://github.com/open-telemetry/otel-arrow/issues/4013), [#4015](https://github.com/open-telemetry/otel-arrow/issues/4015))
+- `engine`: Add TLS and mTLS support to the OpAMP controller extension WebSocket client. ([#3884](https://github.com/open-telemetry/otel-arrow/issues/3884))
+  The OpAMP extension now accepts a `tls` configuration block with support for
+  CA trust (inline PEM or file), client certificate authentication (mTLS), and
+  system CA trust pool. Endpoints must use the `wss://` scheme when TLS is enabled.
+
+- `observability`: Internal telemetry logs batching ([#1902](https://github.com/open-telemetry/otel-arrow/issues/1902))
+  Configure receiver logs.otlp min_size, max_size, and sizer plus logs.max_batch_duration; defaults are 64 KiB, 2 MiB, bytes, and 200 ms.
+
+- `pipeline`: Add Syslog decoding for Kafka log topics, including RFC 3164, RFC 5424, and embedded CEF messages. ([#3837](https://github.com/open-telemetry/otel-arrow/issues/3837))
+  Set a logs signal encoding to `syslog`, or use a `MessageFormat: syslog` Kafka header. Each Kafka record must contain one complete Syslog message.
+
+### :toolbox: Bug fixes :toolbox:
+
+- `engine`: Live pipeline reconciliation no longer fails when a runtime finishes forced shutdown just after its graceful drain deadline. ([#3266](https://github.com/open-telemetry/otel-arrow/issues/3266))
+  The drain timeout still bounds graceful processing. The controller now allows a separate bounded window for forced runtime and extension shutdown to report completion.
+- `observability`: Honor `RUST_LOG` when `engine.telemetry.logs.level` is omitted, while applying an explicit level before pipelines start. ([#3996](https://github.com/open-telemetry/otel-arrow/issues/3996))
+  Log level precedence is explicit configuration, then startup `RUST_LOG`, then the built-in default. Removing an explicit level during reconciliation restores the startup fallback.
+- `pdata`: Return the input batch unchanged instead of panicking when `upsert_attributes` is called with no upserts ([#3987](https://github.com/open-telemetry/otel-arrow/issues/3987))
+  An assignment whose source attributes are all absent from the batch resolves to zero
+  upserts, and the transform then indexed an empty slice. This panicked the pipeline task
+  while the process stayed healthy.
+
+- `pipeline`: OTAP exporter shutdown now NACKs the batch already sent to the server when a streaming request is still opening. ([#2720](https://github.com/open-telemetry/otel-arrow/issues/2720), [#3870](https://github.com/open-telemetry/otel-arrow/issues/3870))
+  A known gap remains when many batches are queued while the stream is still
+  opening: a batch already pulled off the queue but not yet correlated can
+  still be dropped on shutdown without a NACK. Issue #3870 tracks closing
+  this remaining gap.
+
+- `pipeline`: Reject invalid traffic generator receiver settings during configuration loading and live reconfiguration by validating max_batch_size to be strictly positive and preventing all-zero-weight config. ([#3569](https://github.com/open-telemetry/otel-arrow/issues/3569))
+  Invalid settings now produce an invalid-user-configuration error before the receiver starts.
+- `query-engine`: fix invalid ID column encoding when inserting new attributes when no prior attributes existed ([#3985](https://github.com/open-telemetry/otel-arrow/issues/3985))
+
+<!-- previous-version -->
+
 ## v0.54.1
 
 ### :rocket: New components :rocket:
