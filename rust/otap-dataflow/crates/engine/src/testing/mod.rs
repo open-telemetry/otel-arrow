@@ -18,7 +18,12 @@ use crate::attributes::{ExtensionScopeAttributeSet, PipelineAttributeSet};
 use crate::context::{ControllerContext, ExtensionContext, PipelineContext};
 use crate::control::NodeControlMsg;
 use otel_arrow_dfe_channel::mpsc;
+use otel_arrow_dfe_config::engine::{
+    ResolvedOtelDataflowSpec, ResolvedPipelineConfig, ResolvedPipelineRole,
+};
 use otel_arrow_dfe_config::node::NodeKind;
+use otel_arrow_dfe_config::pipeline::PipelineConfig;
+use otel_arrow_dfe_config::policy::Policies;
 use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -55,6 +60,34 @@ pub fn test_pipeline_ctx() -> (PipelineContext, TelemetryRegistryHandle) {
             HashMap::new(),
         );
     (ctx, registry)
+}
+
+/// Compiles and installs context declarations for a single test pipeline.
+///
+/// Resolves pipeline-level policies without engine or group inheritance. Tests
+/// involving multiple pipelines or inherited policies should compile their full
+/// resolved engine configuration instead.
+///
+/// # Errors
+///
+/// Returns an error when a node configuration or its declarations are invalid.
+pub fn install_test_context_policy<PData: 'static + Clone + std::fmt::Debug>(
+    pipeline_ctx: &mut PipelineContext,
+    factory: &crate::PipelineFactory<PData>,
+    pipeline: PipelineConfig,
+) -> Result<(), crate::error::Error> {
+    let resolved = ResolvedOtelDataflowSpec {
+        engine: Default::default(),
+        pipelines: vec![ResolvedPipelineConfig {
+            pipeline_group_id: pipeline_ctx.pipeline_group_id(),
+            pipeline_id: pipeline_ctx.pipeline_id(),
+            policies: Policies::resolve(pipeline.policies()),
+            pipeline,
+            role: ResolvedPipelineRole::Regular,
+        }],
+    };
+    pipeline_ctx.set_compiled_context_policy(factory.compile_context_policy(&resolved)?);
+    Ok(())
 }
 
 /// Create a minimal [`ExtensionContext`] suitable for unit tests of the

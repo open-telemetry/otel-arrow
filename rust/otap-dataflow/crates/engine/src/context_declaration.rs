@@ -135,7 +135,7 @@ pub trait ConfigNodeContextDeclaration: serde::de::DeserializeOwned {
 // `#[allow(unsafe_code)]` is required because `linkme::distributed_slice`
 // emits a static with `#[link_section = "..."]`, which the engine crate's
 // `-D unsafe-code` lint would otherwise reject.
-/// Context declaration providers registered by components.
+/// Context declaration providers registered by nodes.
 #[allow(unsafe_code)]
 #[distributed_slice]
 pub static CONTEXT_DECLARATION_PROVIDERS: [ContextDeclarationProvider];
@@ -766,7 +766,7 @@ mod preserve_original_name_tests {
     }
 
     /// Scenario: a node has component declarations plus an engine-owned propagation declaration.
-    /// Guarantees: the full set is retained while component declarations validate verbatim.
+    /// Guarantees: bindings retain wrapper declarations and reject changed declarations or missing nodes.
     #[test]
     fn parsed_config_declarations_are_validated_against_compiled_policy() {
         let pipeline = pipeline("group", "pipeline");
@@ -802,6 +802,20 @@ mod preserve_original_name_tests {
         );
         assert!(
             policy
+                .validate_node_declarations(
+                    &pipeline,
+                    &ConfigNodeId::from("other"),
+                    &matching.context_declarations(),
+                )
+                .is_err()
+        );
+        assert!(
+            CompiledContextPolicy::empty()
+                .validate_node_declarations(&pipeline, &node, &matching.context_declarations())
+                .is_err()
+        );
+        assert!(
+            policy
                 .nodes
                 .get(&pipeline)
                 .and_then(|nodes| nodes.get(&node))
@@ -809,6 +823,32 @@ mod preserve_original_name_tests {
                 .bindings
                 .iter()
                 .any(|binding| binding.declaration == propagation_declaration)
+        );
+    }
+
+    /// Scenario: a node with no context declarations is absent from the compiled policy.
+    /// Guarantees: it should be present with empty declarations, not bypass validation.
+    #[test]
+    fn empty_declarations_require_a_compiled_node() {
+        let key = pipeline("group", "pipeline");
+        let node = ConfigNodeId::from("node");
+        let declarations = NodeContextDeclarations::default();
+        let policy = compiled_policy(declarations.clone());
+
+        assert!(
+            policy
+                .validate_node_declarations(&key, &node, &declarations)
+                .is_ok()
+        );
+        assert!(
+            policy
+                .validate_node_declarations(&pipeline("group", "other"), &node, &declarations)
+                .is_err()
+        );
+        assert!(
+            CompiledContextPolicy::empty()
+                .validate_node_declarations(&key, &node, &declarations)
+                .is_err()
         );
     }
 }

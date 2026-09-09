@@ -47,6 +47,7 @@ use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
 use otel_arrow_dfe_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use std::marker::PhantomData;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Send-friendly exporter inbox for shared exporter runtimes.
@@ -100,7 +101,8 @@ pub struct EffectHandler<PData> {
     _pd: PhantomData<PData>,
     /// Propagation policy for filtering captured headers on egress.
     /// `None` when no propagation policy is configured (zero overhead).
-    propagation_policy: Option<HeaderPropagationPolicy>,
+    /// Shared immutably across Send handler clones instead of copying policy rules.
+    propagation_policy: Option<Arc<HeaderPropagationPolicy>>,
 }
 
 impl<PData> EffectHandler<PData> {
@@ -132,12 +134,12 @@ impl<PData> EffectHandler<PData> {
     /// Returns `None` when no propagation policy is active (zero overhead).
     #[must_use]
     pub fn propagation_policy(&self) -> Option<&HeaderPropagationPolicy> {
-        self.propagation_policy.as_ref()
+        self.propagation_policy.as_deref()
     }
 
     /// Sets the propagation policy for transport header filtering.
     pub fn set_propagation_policy(&mut self, policy: Option<HeaderPropagationPolicy>) {
-        self.propagation_policy = policy;
+        self.propagation_policy = policy.map(Arc::new);
     }
 
     /// Print an info message to stdout.

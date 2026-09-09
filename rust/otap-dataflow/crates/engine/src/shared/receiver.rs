@@ -51,6 +51,7 @@ use otel_arrow_dfe_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
 
@@ -105,7 +106,8 @@ pub struct EffectHandler<PData> {
     pub router: OutputRouter<SharedSender<PData>>,
     /// Capture policy for extracting transport headers from inbound metadata.
     /// `None` when no capture policy is configured (zero overhead).
-    capture_policy: Option<CompiledHeaderCapturePolicy>,
+    /// Shared immutably because Send request handlers clone this per request.
+    capture_policy: Option<Arc<CompiledHeaderCapturePolicy>>,
 }
 
 /// Implementation for the `Send` effect handler.
@@ -167,12 +169,12 @@ impl<PData> EffectHandler<PData> {
     /// Returns `None` when no capture policy is active (zero overhead).
     #[must_use]
     pub fn capture_policy(&self) -> Option<&CompiledHeaderCapturePolicy> {
-        self.capture_policy.as_ref()
+        self.capture_policy.as_deref()
     }
 
     /// Sets the capture policy for transport header extraction.
     pub fn set_capture_policy(&mut self, policy: Option<CompiledHeaderCapturePolicy>) {
-        self.capture_policy = policy;
+        self.capture_policy = policy.map(Arc::new);
     }
 
     /// Sends a message to the next node(s) in the pipeline.
