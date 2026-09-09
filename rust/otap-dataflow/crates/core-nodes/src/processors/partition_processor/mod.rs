@@ -515,7 +515,7 @@ impl ConfigNodeContextDeclaration for Config {
 
 #[cfg(test)]
 mod test {
-    use std::collections::VecDeque;
+    use std::collections::{HashMap, VecDeque};
 
     use super::*;
 
@@ -527,6 +527,7 @@ mod test {
             PipelineCompletionMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
         },
         testing::{
+            install_test_context_policy,
             processor::{TestContext, TestRuntime},
             test_node,
         },
@@ -544,6 +545,7 @@ mod test {
         TransportHeader::new(context_name(name.as_ref()), value_kind, value)
     }
     use otel_arrow_dfe_otap::{
+        OTAP_PIPELINE_FACTORY,
         pdata::Context,
         testing::{TestCallData, next_ack, next_nack},
     };
@@ -572,7 +574,7 @@ mod test {
 
         let telemetry_registry_handle = runtime.metrics_registry();
         let controller_context = ControllerContext::new(telemetry_registry_handle);
-        let pipeline_context = controller_context.pipeline_context_with(
+        let mut pipeline_context = controller_context.pipeline_context_with(
             "group_id".into(),
             "pipeline_id".into(),
             0,
@@ -580,6 +582,22 @@ mod test {
             0,
         );
         let node_id = test_node("partition_processor");
+        let pipeline_config = serde_json::from_value(serde_json::json!({
+            "nodes": { "partition_processor": &node_config }
+        }))
+        .expect("test pipeline configuration");
+        install_test_context_policy(
+            &mut pipeline_context,
+            &OTAP_PIPELINE_FACTORY,
+            pipeline_config,
+        )
+        .expect("test context policy should compile");
+        let pipeline_context = pipeline_context.with_node_context(
+            "partition_processor".into(),
+            node_config.r#type.clone(),
+            node_config.kind(),
+            HashMap::new(),
+        );
         create_partition_processor(
             pipeline_context,
             node_id,

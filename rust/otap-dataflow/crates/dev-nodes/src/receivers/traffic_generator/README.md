@@ -70,6 +70,9 @@ config:
     log_body_size_bytes: 1024
 ```
 
+Transport-header names are normalized to ASCII lowercase, and
+duplicate normalized header names are not permitted.
+
 ## Purpose
 
 Verify that a **single traffic-gen sender core can saturate a single

@@ -28,6 +28,7 @@ use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
 use otel_arrow_dfe_engine::message::{ExporterInbox, Message as EngineMessage};
 use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_engine::testing::install_test_context_policy;
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
 use otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY;
 use otel_arrow_dfe_state::store::ObservedStateStore;
@@ -622,13 +623,15 @@ fn run_retry_topology_pipeline(bootstrap_servers: String) {
     let telemetry_system = InternalTelemetrySystem::default();
     let registry = telemetry_system.registry();
     let controller_ctx = ControllerContext::new(registry.clone());
-    let pipeline_ctx = controller_ctx.pipeline_context_with(
+    let mut pipeline_ctx = controller_ctx.pipeline_context_with(
         pipeline_group_id.clone(),
         pipeline_id.clone(),
         0,
         1,
         0,
     );
+    install_test_context_policy(&mut pipeline_ctx, &OTAP_PIPELINE_FACTORY, config.clone())
+        .expect("test context policy should compile");
     let pipeline_entity_key = pipeline_ctx.register_pipeline_entity();
     let channel_capacity_policy = ChannelCapacityPolicy::default();
     let runtime_pipeline = OTAP_PIPELINE_FACTORY
@@ -637,7 +640,6 @@ fn run_retry_topology_pipeline(bootstrap_servers: String) {
             config,
             channel_capacity_policy.clone(),
             TelemetryPolicy::default(),
-            None,
             std::collections::BTreeMap::new(),
             None,
             None,
