@@ -11,6 +11,10 @@ It allows developers, platform engineers, and observability vendors to:
 - Observe and report on system behavior under various load and deployment scenarios.
 - Automate benchmarking at scale using CI/CD systems or local environments.
 
+For a map of the repository's benchmark systems, automation, result
+publication, and current DFE Kafka receiver suites, see the
+[Kafka benchmarking workflow](docs/kafka-benchmarking-workflow.md).
+
 The framework has evolved from simple load tests to a
 **strategy-driven orchestration engine** with first-class support for
 **component lifecycle management**, **test hooks**, **dynamic configuration**,
