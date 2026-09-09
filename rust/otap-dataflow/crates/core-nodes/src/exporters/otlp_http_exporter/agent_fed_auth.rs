@@ -165,21 +165,21 @@ impl AgentFedAuth {
         &mut self,
         snapshot: Arc<AgentFedCredentialSnapshot>,
     ) -> Result<(), AgentFedAuthFailure> {
-        if let Some(cached) = &self.cached_credential {
-            if Arc::ptr_eq(&cached.snapshot, &snapshot) {
-                if self.rejected_generation == Some(cached.generation) {
-                    return Err(self.record_failure(AgentFedAuthError::RejectedCredentialUnchanged));
-                }
-                if cached
-                    .expires_on
-                    .is_some_and(|expires_on| expires_on <= Instant::now() + TOKEN_USABLE_MARGIN)
-                {
-                    return Err(self.record_failure(AgentFedAuthError::TokenNearExpiry));
-                }
-                self.lookup_required = false;
-                self.failure_limiter.record_success();
-                return Ok(());
+        if let Some(cached) = &self.cached_credential
+            && Arc::ptr_eq(&cached.snapshot, &snapshot)
+        {
+            if self.rejected_generation == Some(cached.generation) {
+                return Err(self.record_failure(AgentFedAuthError::RejectedCredentialUnchanged));
             }
+            if cached
+                .expires_on
+                .is_some_and(|expires_on| expires_on <= Instant::now() + TOKEN_USABLE_MARGIN)
+            {
+                return Err(self.record_failure(AgentFedAuthError::TokenNearExpiry));
+            }
+            self.lookup_required = false;
+            self.failure_limiter.record_success();
+            return Ok(());
         }
 
         let credential = self

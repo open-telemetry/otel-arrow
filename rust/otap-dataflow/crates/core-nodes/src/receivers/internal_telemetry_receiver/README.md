@@ -72,10 +72,28 @@ block or its `interval` field is omitted, the receiver uses
 `engine.telemetry.reporting_interval`. That engine setting also controls the
 metric-set snapshot cadence. Setting `metrics` to `null` is invalid.
 
+The `logs` block follows the [batch
+processor](../../processors/batch_processor/README.md)'s
+format-specific configuration. Each `otap` or `otlp` block contains
+optional `min_size` and `max_size` values and `sizer`. The default is
+OTLP. OTAP is not currently supported. The OTLP defaults are 64 KiB
+and 2 MiB. OTLP `max_size` cannot exceed 2 MiB. The default
+`max_batch_duration` is 200 ms.
+
+For logs, since one log event arrives at a time, `min_size` determines
+when to flush and `max_size` determines whether the arriving log will
+be included in the outgoing batch or begin the first to wait.
+
 ```yaml
 type: receiver:internal_telemetry
 config:
   signals: [logs, metrics]
+  logs:
+    otlp:
+      min_size: 65536
+      max_size: 2097152
+      sizer: bytes
+    max_batch_duration: 200ms
   metrics:
     interval: 2s
     views:
@@ -125,6 +143,10 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
   telemetry receiver.
 - Logs and metrics can be selected independently with a non-empty `signals`
   list.
+- Internal log batches flush on their retained-size estimate, latency bound,
+  ingress drain, shutdown, and log channel closure.
+- Backpressure leaves queued logs in the bounded ITS channel while one batch
+  export is pending.
 - Internal metric batches use the receiver's `metrics.interval`, or
   `engine.telemetry.reporting_interval` when no receiver interval is set.
 - Receiver-local views support exact scope name, scalar scope attribute, and

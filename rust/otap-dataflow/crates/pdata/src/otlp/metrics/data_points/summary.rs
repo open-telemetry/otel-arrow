@@ -118,64 +118,64 @@ pub(crate) fn proto_encode_summary_data_point(
     attrs_cursor: &mut SortedBatchCursor,
     result_buf: &mut ProtoBuffer,
 ) -> Result<()> {
-    if let Some(attrs) = attr_arrays {
-        if let Some(id) = summary_dp_arrays.id.value_at(index) {
-            let attrs_index_iter = ChildIndexIter::new(id, &attrs.parent_id, attrs_cursor);
-            for attrs_index in attrs_index_iter {
-                result_buf.encode_len_delimited(SUMMARY_DP_ATTRIBUTES, |result_buf| {
-                    encode_key_value(attrs, attrs_index, result_buf)
-                })?;
-            }
+    if let Some(attrs) = attr_arrays
+        && let Some(id) = summary_dp_arrays.id.value_at(index)
+    {
+        let attrs_index_iter = ChildIndexIter::new(id, &attrs.parent_id, attrs_cursor);
+        for attrs_index in attrs_index_iter {
+            result_buf.encode_len_delimited(SUMMARY_DP_ATTRIBUTES, |result_buf| {
+                encode_key_value(attrs, attrs_index, result_buf)
+            })?;
         }
     }
 
-    if let Some(col) = summary_dp_arrays.start_time_unix_nano {
-        if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(SUMMARY_DP_START_TIME_UNIX_NANO, wire_types::FIXED64)?;
-            result_buf.extend_from_slice(&val.to_le_bytes())?;
+    if let Some(col) = summary_dp_arrays.start_time_unix_nano
+        && let Some(val) = col.value_at(index)
+    {
+        result_buf.encode_field_tag(SUMMARY_DP_START_TIME_UNIX_NANO, wire_types::FIXED64)?;
+        result_buf.extend_from_slice(&val.to_le_bytes())?;
+    }
+
+    if let Some(col) = summary_dp_arrays.time_unix_nano
+        && let Some(val) = col.value_at(index)
+    {
+        result_buf.encode_field_tag(SUMMARY_DP_TIME_UNIX_NANO, wire_types::FIXED64)?;
+        result_buf.extend_from_slice(&val.to_le_bytes())?;
+    }
+
+    if let Some(col) = summary_dp_arrays.summary_count
+        && let Some(val) = col.value_at(index)
+    {
+        result_buf.encode_field_tag(SUMMARY_DP_COUNT, wire_types::FIXED64)?;
+        result_buf.extend_from_slice(&val.to_le_bytes())?;
+    }
+
+    if let Some(col) = summary_dp_arrays.summary_sum
+        && let Some(val) = col.value_at(index)
+    {
+        result_buf.encode_field_tag(SUMMARY_DP_SUM, wire_types::FIXED64)?;
+        result_buf.extend_from_slice(&val.to_le_bytes())?;
+    }
+
+    if let Some(quantile_arrays) = &summary_dp_arrays.summary_quantile_values
+        && quantile_arrays.list_array.is_valid(index)
+    {
+        let value_offsets = quantile_arrays.list_array.value_offsets();
+        let start = value_offsets[index];
+        let end = value_offsets[index + 1];
+
+        for i in start..end {
+            result_buf.encode_len_delimited(SUMMARY_DP_QUANTILE_VALUES, |result_buf| {
+                proto_encode_value_quantile(i as usize, quantile_arrays, result_buf)
+            })?;
         }
     }
 
-    if let Some(col) = summary_dp_arrays.time_unix_nano {
-        if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(SUMMARY_DP_TIME_UNIX_NANO, wire_types::FIXED64)?;
-            result_buf.extend_from_slice(&val.to_le_bytes())?;
-        }
-    }
-
-    if let Some(col) = summary_dp_arrays.summary_count {
-        if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(SUMMARY_DP_COUNT, wire_types::FIXED64)?;
-            result_buf.extend_from_slice(&val.to_le_bytes())?;
-        }
-    }
-
-    if let Some(col) = summary_dp_arrays.summary_sum {
-        if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(SUMMARY_DP_SUM, wire_types::FIXED64)?;
-            result_buf.extend_from_slice(&val.to_le_bytes())?;
-        }
-    }
-
-    if let Some(quantile_arrays) = &summary_dp_arrays.summary_quantile_values {
-        if quantile_arrays.list_array.is_valid(index) {
-            let value_offsets = quantile_arrays.list_array.value_offsets();
-            let start = value_offsets[index];
-            let end = value_offsets[index + 1];
-
-            for i in start..end {
-                result_buf.encode_len_delimited(SUMMARY_DP_QUANTILE_VALUES, |result_buf| {
-                    proto_encode_value_quantile(i as usize, quantile_arrays, result_buf)
-                })?;
-            }
-        }
-    }
-
-    if let Some(col) = summary_dp_arrays.flags {
-        if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(SUMMARY_DP_FLAGS, wire_types::VARINT)?;
-            result_buf.encode_varint(val as u64)?;
-        }
+    if let Some(col) = summary_dp_arrays.flags
+        && let Some(val) = col.value_at(index)
+    {
+        result_buf.encode_field_tag(SUMMARY_DP_FLAGS, wire_types::VARINT)?;
+        result_buf.encode_varint(val as u64)?;
     }
 
     Ok(())
