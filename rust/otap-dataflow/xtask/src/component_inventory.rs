@@ -175,31 +175,31 @@ fn check_controlled_values(components: &[Component]) -> Vec<String> {
         if !is_first_party(&c.id) {
             continue;
         }
-        if let Some(v) = c.attributes.get("protocol") {
-            if Protocol::parse(v).is_custom() {
-                errors.push(format!(
-                    "{}:{}: {}: protocol value {v:?} is not in the known set \
-                     ({}); `Custom` values are only allowed for external \
-                     (non-urn:otel) components",
-                    c.file,
-                    c.line,
-                    c.id,
-                    Protocol::known_list()
-                ));
-            }
+        if let Some(v) = c.attributes.get("protocol")
+            && Protocol::parse(v).is_custom()
+        {
+            errors.push(format!(
+                "{}:{}: {}: protocol value {v:?} is not in the known set \
+                 ({}); `Custom` values are only allowed for external \
+                 (non-urn:otel) components",
+                c.file,
+                c.line,
+                c.id,
+                Protocol::known_list()
+            ));
         }
-        if let Some(v) = c.attributes.get("auth") {
-            if Auth::parse(v).is_custom() {
-                errors.push(format!(
-                    "{}:{}: {}: auth value {v:?} is not in the known set ({}); \
-                     `Custom` values are only allowed for external \
-                     (non-urn:otel) components",
-                    c.file,
-                    c.line,
-                    c.id,
-                    Auth::known_list()
-                ));
-            }
+        if let Some(v) = c.attributes.get("auth")
+            && Auth::parse(v).is_custom()
+        {
+            errors.push(format!(
+                "{}:{}: {}: auth value {v:?} is not in the known set ({}); \
+                 `Custom` values are only allowed for external \
+                 (non-urn:otel) components",
+                c.file,
+                c.line,
+                c.id,
+                Auth::known_list()
+            ));
         }
     }
     errors
@@ -476,17 +476,17 @@ fn extract_from_items(
 ) {
     for item in items {
         // Recurse into inline modules.
-        if let Item::Mod(m) = item {
-            if let Some((_, inner)) = &m.content {
-                extract_from_items(
-                    inner,
-                    rel_path,
-                    urn_table,
-                    components,
-                    missing,
-                    parse_errors,
-                );
-            }
+        if let Item::Mod(m) = item
+            && let Some((_, inner)) = &m.content
+        {
+            extract_from_items(
+                inner,
+                rel_path,
+                urn_table,
+                components,
+                missing,
+                parse_errors,
+            );
         }
 
         let Some((attrs, name_field)) = item_parts(item) else {
@@ -607,10 +607,10 @@ fn resolve_id(
 fn struct_field_expr(expr: &Expr, field: &str) -> Option<Expr> {
     if let Expr::Struct(s) = expr {
         for fv in &s.fields {
-            if let syn::Member::Named(ident) = &fv.member {
-                if ident == field {
-                    return Some(fv.expr.clone());
-                }
+            if let syn::Member::Named(ident) = &fv.member
+                && ident == field
+            {
+                return Some(fv.expr.clone());
             }
         }
     }
@@ -626,12 +626,12 @@ fn distributed_slice_otap(attrs: &[Attribute]) -> Option<String> {
         if let Meta::List(list) = &attr.meta {
             // The single argument is the slice path, e.g. `OTAP_RECEIVER_FACTORIES`
             // or `otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES`.
-            if let Ok(path) = syn::parse2::<syn::Path>(list.tokens.clone()) {
-                if let Some(last) = path.segments.last() {
-                    let name = last.ident.to_string();
-                    if name.starts_with("OTAP_") {
-                        return Some(name);
-                    }
+            if let Ok(path) = syn::parse2::<syn::Path>(list.tokens.clone())
+                && let Some(last) = path.segments.last()
+            {
+                let name = last.ident.to_string();
+                if name.starts_with("OTAP_") {
+                    return Some(name);
                 }
             }
         }

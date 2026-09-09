@@ -218,10 +218,10 @@ impl RetryManager {
         partition: i32,
         ownership_generation: OwnershipGeneration,
     ) -> DeliveryGeneration {
-        if let Some(state) = self.state(topic, partition) {
-            if state.ownership_generation == ownership_generation {
-                return state.delivery_generation;
-            }
+        if let Some(state) = self.state(topic, partition)
+            && state.ownership_generation == ownership_generation
+        {
+            return state.delivery_generation;
         }
 
         if let Some(previous) = self.take_state(topic, partition) {

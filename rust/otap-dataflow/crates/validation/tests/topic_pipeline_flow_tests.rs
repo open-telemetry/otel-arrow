@@ -39,6 +39,8 @@ fn make_test_pdata() -> OtapPdata {
     OtapPdata::new_todo_context(OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes)).into())
 }
 
+/// Scenario: an OTAP topic exporter sends pdata to a receiver on the same broker topic.
+/// Guarantees: the receiver obtains the original signal payload.
 #[test]
 fn topic_exporter_to_topic_receiver_transfers_pdata() {
     let (rt, local_tasks) = setup_test_runtime();
@@ -196,6 +198,8 @@ fn topic_exporter_to_topic_receiver_transfers_pdata() {
     }));
 }
 
+/// Scenario: a topic receiver is configured to tag incoming pdata with its source.
+/// Guarantees: received pdata contains the configured source tag.
 #[test]
 fn topic_receiver_applies_source_tag_when_enabled() {
     let (rt, local_tasks) = setup_test_runtime();
