@@ -181,12 +181,16 @@ jobs:
           done
 
       - name: Preflight Rust crates.io publish
-        run: cargo xtask crates-publish preflight "${{ inputs.version }}"
-        working-directory: rust/otap-dataflow
-
-      - name: Forecast Rust crates.io publish
-        if: inputs.dry_run
-        run: cargo xtask crates-publish forecast "${{ inputs.version }}" > /tmp/crates_publish_forecast.json
+        id: crates-preflight
+        continue-on-error: ${{ inputs.dry_run }}
+        run: |
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            cargo xtask crates-publish preflight \
+              "${{ inputs.version }}" \
+              /tmp/crates_publish_forecast.json
+          else
+            cargo xtask crates-publish preflight "${{ inputs.version }}"
+          fi
         working-directory: rust/otap-dataflow
 
       - name: Extract changelog content for this release
@@ -247,7 +251,7 @@ jobs:
           echo "package_count=${PACKAGE_COUNT}" >> "$GITHUB_OUTPUT"
 
       - name: Dry run - Show planned changes
-        if: inputs.dry_run
+        if: inputs.dry_run && (success() || steps.crates-preflight.outcome == 'failure')
         run: |
           # Write to GitHub Step Summary
           cat >> $GITHUB_STEP_SUMMARY << 'EOF'
@@ -309,6 +313,12 @@ jobs:
           ---
           **Note**: This is a dry run. To execute the actual release push, set `dry_run` to `false`.
           EOF
+
+      - name: Check Rust crates.io preflight result
+        if: inputs.dry_run && steps.crates-preflight.outcome == 'failure'
+        run: |
+          echo "Error: Rust crates.io preflight failed; review the package actions above"
+          exit 1
 
       - name: Authenticate to crates.io with trusted publishing
         if: "!inputs.dry_run"
@@ -397,7 +407,7 @@ jobs:
             echo "- Version: v${{ inputs.version }}"
             echo "- Release PR: ${{ steps.release.outputs.repository }}#${{ steps.release.outputs.pr_number }}"
             echo "- Tagged commit: ${{ steps.release.outputs.sha }}"
-            echo "- GitHub release: https://github.com/open-telemetry/otel-arrow/releases/tag/v${{ inputs.version }}"
+            echo "- GitHub release: https://github.com/${{ steps.release.outputs.repository }}/releases/tag/v${{ inputs.version }}"
             echo ""
             echo "Git tags created:"
             echo "- v${{ inputs.version }}"

@@ -4,7 +4,7 @@
 //! Publication policy and release commands for OTAP Dataflow crates.
 
 use std::collections::{HashMap, HashSet};
-use std::fs::File;
+use std::fs::{File, write};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -63,7 +63,7 @@ struct PublishForecast {
     packages: Vec<ForecastPackage>,
 }
 
-#[derive(Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 struct ForecastPackage {
     name: String,
     version: String,
@@ -94,14 +94,18 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
             Ok(())
         }
         [command, version] if command == "preflight" => {
-            preflight(version)?;
+            preflight(version, None)?;
+            Ok(())
+        }
+        [command, version, forecast_path] if command == "preflight" => {
+            preflight(version, Some(Path::new(forecast_path)))?;
             Ok(())
         }
         [command, version] if command == "forecast" => print_forecast(version),
         [command, version] if command == "publish" => publish(version),
         _ => bail!(
             "Usage: cargo xtask crates-publish \
-             <plan|check|forecast VERSION|preflight VERSION|publish VERSION>"
+             <plan|check|forecast VERSION|preflight VERSION [FORECAST_PATH]|publish VERSION>"
         ),
     }
 }
@@ -117,12 +121,12 @@ fn print_forecast(expected_version: &str) -> anyhow::Result<()> {
 
     let mut packages = Vec::with_capacity(plan.packages.len());
     for package in &plan.packages {
-        let version_exists = crates_io_version(&package.name, &package.version)?.is_some();
-        let crate_exists = version_exists || crates_io_crate_exists(&package.name)?;
+        let version = crates_io_version(&package.name, &package.version)?;
+        let crate_exists = version.is_some() || crates_io_crate_exists(&package.name)?;
         packages.push(forecast_package(
             package,
             expected_version,
-            version_exists,
+            version.as_ref(),
             crate_exists,
         ));
     }
@@ -137,10 +141,12 @@ fn print_forecast(expected_version: &str) -> anyhow::Result<()> {
 fn forecast_package(
     package: &PublishPackage,
     expected_version: &str,
-    version_exists: bool,
+    version: Option<&CratesIoVersion>,
     crate_exists: bool,
 ) -> ForecastPackage {
-    let (registry_state, expected_action) = if version_exists {
+    let (registry_state, expected_action) = if version.is_some_and(|version| version.yanked) {
+        ("Version yanked", "Blocked")
+    } else if version.is_some() {
         if package.version == expected_version {
             ("Version present", "Skip after preflight verification")
         } else {
@@ -160,6 +166,14 @@ fn forecast_package(
         registry_state,
         expected_action,
     }
+}
+
+fn write_forecast(path: &Path, packages: &[ForecastPackage]) -> anyhow::Result<()> {
+    let json = serde_json::to_string_pretty(&PublishForecast {
+        packages: packages.to_vec(),
+    })?;
+    write(path, format!("{json}\n"))
+        .with_context(|| format!("failed to write forecast to {}", path.display()))
 }
 
 fn load_plan() -> anyhow::Result<PublishPlan> {
@@ -346,13 +360,29 @@ fn check_package(package: &PublishPackage, allow_dirty: bool) -> anyhow::Result<
     run_cargo(&args)
 }
 
-fn preflight(expected_version: &str) -> anyhow::Result<PublishPlan> {
+fn preflight(expected_version: &str, forecast_path: Option<&Path>) -> anyhow::Result<PublishPlan> {
     let plan = load_plan()?;
     ensure_plan_version(&plan, expected_version)?;
+    let mut forecast = Vec::with_capacity(plan.packages.len());
+    if let Some(path) = forecast_path {
+        write_forecast(path, &forecast)?;
+    }
 
     for package in &plan.packages {
+        let version = crates_io_version(&package.name, &package.version)?;
+        if let Some(path) = forecast_path {
+            let crate_exists = version.is_some() || crates_io_crate_exists(&package.name)?;
+            forecast.push(forecast_package(
+                package,
+                expected_version,
+                version.as_ref(),
+                crate_exists,
+            ));
+            write_forecast(path, &forecast)?;
+        }
+
         if package.version != expected_version {
-            let Some(version) = crates_io_version(&package.name, &package.version)? else {
+            let Some(version) = version else {
                 bail!(
                     "independently versioned package {} {} is not published; include it in \
                      release {expected_version} or publish it separately",
@@ -364,7 +394,7 @@ fn preflight(expected_version: &str) -> anyhow::Result<PublishPlan> {
             continue;
         }
 
-        match crates_io_version(&package.name, &package.version)? {
+        match version {
             Some(version) => {
                 ensure_not_yanked(&package.name, &package.version, version.yanked)?;
                 let expected_checksum = package_checksum(package, &plan.target_directory)?;
@@ -389,7 +419,7 @@ fn preflight(expected_version: &str) -> anyhow::Result<PublishPlan> {
 }
 
 fn publish(expected_version: &str) -> anyhow::Result<()> {
-    let plan = preflight(expected_version)?;
+    let plan = preflight(expected_version, None)?;
 
     for package in &plan.packages {
         if package.version != expected_version {
@@ -898,7 +928,11 @@ mod tests {
             has_publish_dependencies: false,
         };
 
-        let forecast = forecast_package(&package, "0.55.0", true, true);
+        let version = CratesIoVersion {
+            checksum: String::new(),
+            yanked: false,
+        };
+        let forecast = forecast_package(&package, "0.55.0", Some(&version), true);
 
         assert_eq!(forecast.registry_state, "Version present");
         assert_eq!(
@@ -917,7 +951,7 @@ mod tests {
             has_publish_dependencies: false,
         };
 
-        let forecast = forecast_package(&package, "0.55.0", false, true);
+        let forecast = forecast_package(&package, "0.55.0", None, true);
 
         assert_eq!(forecast.registry_state, "Version missing");
         assert_eq!(forecast.expected_action, "Publish");
@@ -933,10 +967,66 @@ mod tests {
             has_publish_dependencies: true,
         };
 
-        let forecast = forecast_package(&package, "0.55.0", false, false);
+        let forecast = forecast_package(&package, "0.55.0", None, false);
 
         assert_eq!(forecast.registry_state, "Crate not yet created");
         assert_eq!(forecast.expected_action, "Bootstrap required");
+    }
+
+    /// Scenario: an independently versioned crate already exists on crates.io.
+    /// Guarantees: the forecast reports that the release will skip the independent version.
+    #[test]
+    fn forecast_skips_existing_independent_version() {
+        let package = PublishPackage {
+            name: "otel-arrow-dfe-pdata-views".to_owned(),
+            version: "0.54.1".to_owned(),
+            has_publish_dependencies: false,
+        };
+        let version = CratesIoVersion {
+            checksum: String::new(),
+            yanked: false,
+        };
+
+        let forecast = forecast_package(&package, "0.55.0", Some(&version), true);
+
+        assert_eq!(forecast.registry_state, "Version present");
+        assert_eq!(forecast.expected_action, "Skip independent version");
+    }
+
+    /// Scenario: an independently versioned crate is missing from an existing crates.io package.
+    /// Guarantees: the forecast reports that the release is blocked until the version is published.
+    #[test]
+    fn forecast_blocks_missing_independent_version() {
+        let package = PublishPackage {
+            name: "otel-arrow-dfe-pdata-views".to_owned(),
+            version: "0.54.1".to_owned(),
+            has_publish_dependencies: false,
+        };
+
+        let forecast = forecast_package(&package, "0.55.0", None, true);
+
+        assert_eq!(forecast.registry_state, "Independent version missing");
+        assert_eq!(forecast.expected_action, "Blocked");
+    }
+
+    /// Scenario: crates.io reports an independently versioned crate as yanked.
+    /// Guarantees: the forecast matches preflight by reporting the yanked version as blocked.
+    #[test]
+    fn forecast_blocks_yanked_version() {
+        let package = PublishPackage {
+            name: "otel-arrow-dfe-pdata-views".to_owned(),
+            version: "0.54.1".to_owned(),
+            has_publish_dependencies: false,
+        };
+        let version = CratesIoVersion {
+            checksum: String::new(),
+            yanked: true,
+        };
+
+        let forecast = forecast_package(&package, "0.55.0", Some(&version), true);
+
+        assert_eq!(forecast.registry_state, "Version yanked");
+        assert_eq!(forecast.expected_action, "Blocked");
     }
 
     /// Scenario: dependency requirements use abbreviated, ranged, exact, and excluding syntax.
