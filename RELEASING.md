@@ -76,6 +76,9 @@ make chlog-preview
 4. Fill in the required inputs:
    - **Version**: The new version number (e.g., `0.48.0`).
    - **Dry run**: Check this box to preview changes without making them.
+   - **Include pdata-views**: Leave unchecked for normal releases.
+     Select it only for a coordinated `otel-arrow-dfe-pdata-views` release
+     after external consumers support the new version.
 
 ### Step 3: Review Dry Run (Recommended)
 
@@ -102,7 +105,8 @@ Before making actual changes, run the workflow in dry-run mode:
      entries.
    - Bump the Rust workspace + root package versions in
      `rust/otap-dataflow/Cargo.toml`, including same-release dependency
-     constraints.
+     constraints. `otel-arrow-dfe-pdata-views` keeps its independent version
+     unless explicitly included.
    - Regenerate `rust/otap-dataflow/Cargo.lock`.
    - Validate the crates.io allowlist, dependency graph, semantic version
      requirements, and package contents.
@@ -117,6 +121,8 @@ Before making actual changes, run the workflow in dry-run mode:
      the expected entries.
    - `rust/otap-dataflow/Cargo.toml` reflects the new workspace version and
      uses that version for same-release crate dependencies.
+   - `otel-arrow-dfe-pdata-views` retains its previous version unless the
+     release intentionally included it.
    - `cargo xtask crates-publish plan`, run from `rust/otap-dataflow`, lists
      the intended crates in dependency order.
 3. Ensure all CI checks pass.
@@ -311,6 +317,28 @@ If the workflow fails partway through:
 Do not yank a version merely because a later tag or GitHub release step failed.
 Yanking prevents normal dependency resolution and does not permit republishing
 the same version.
+
+#### Complete a Partial Release Manually
+
+If a newly allowlisted crate cannot be published at the prepared version and
+the successfully published crates are valid, preserve their source provenance
+with a partial release:
+
+1. Stop the Push Release workflow. Do not bypass package verification or
+   publish a missing crate from modified sources.
+2. Confirm every published crate was built from the exact merged Prepare
+   Release commit. Leave valid versions published and unyanked.
+3. From a clean checkout of that commit, create and push the three release tags
+   using step 6 of the emergency release process below.
+4. Create a draft GitHub release using `vX.Y.Z`. List only the Rust crates that
+   were actually published, identify the omitted crates, and link the planned
+   patch release that will complete the set.
+5. Review and publish the draft release.
+6. Fix the blocker on `main`, then use Prepare Release normally for a new patch
+   version. Do not bump only the missing crates or reuse the partial version.
+
+This procedure records the Go module, Rust workspace source, and valid crate
+artifacts without claiming that the complete crates.io plan succeeded.
 
 ### Emergency Release Process
 

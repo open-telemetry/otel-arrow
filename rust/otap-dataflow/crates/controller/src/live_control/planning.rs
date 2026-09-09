@@ -1598,7 +1598,7 @@ impl<
 
     fn apply_reconcile_success(&self, desired_config: &OtelDataflowSpec) {
         self.log_filter_handle
-            .apply(&desired_config.engine.telemetry.logs.level);
+            .apply(desired_config.engine.telemetry.logs.level.as_ref());
         let mut state = self
             .state
             .lock()

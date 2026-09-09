@@ -255,10 +255,10 @@ fn validation_finished_and_passed(snapshot: &MetricsSnapshot) -> ValidationPollR
             return ValidationPollResult::NotFinished;
         }
         // Exporter is finished -- check its validation result in the same pass.
-        if metric_value(set, VALIDATION_METRIC_NAME).is_some_and(|v| v < 1) {
-            if let Some(label) = attribute_node_id(&set.attributes) {
-                failed_validation_exporters.push(label);
-            }
+        if metric_value(set, VALIDATION_METRIC_NAME).is_some_and(|v| v < 1)
+            && let Some(label) = attribute_node_id(&set.attributes)
+        {
+            failed_validation_exporters.push(label);
         }
     }
 

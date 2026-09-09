@@ -118,7 +118,7 @@ impl ComputeDuration {
     }
 }
 
-#[cfg(all(test, feature = "test-utils"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::testing::test_pipeline_ctx;

@@ -686,14 +686,14 @@ impl RebalanceState {
             build_commit_tpl(&committable, &revoked)
         };
 
-        if commit_tpl.count() > 0 {
-            if let Err(e) = consumer.commit(&commit_tpl, CommitMode::Sync) {
-                let _ = self.rebalance_commit_errors.fetch_add(1, Ordering::Relaxed);
-                otel_error!(
-                    "kafka.rebalance.commit_failed",
-                    error = %e,
-                );
-            }
+        if commit_tpl.count() > 0
+            && let Err(e) = consumer.commit(&commit_tpl, CommitMode::Sync)
+        {
+            let _ = self.rebalance_commit_errors.fetch_add(1, Ordering::Relaxed);
+            otel_error!(
+                "kafka.rebalance.commit_failed",
+                error = %e,
+            );
         }
 
         // Pause state is client-local and survives revocation/reassignment in

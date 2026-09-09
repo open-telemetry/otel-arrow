@@ -14,7 +14,7 @@ use otel_arrow_contrib_data_engine_parser_abstractions::ParserOptions;
 use crate::consts::SHA1_FUNC_NAME;
 use crate::consts::{
     ENCODE_FUNC_NAME, ENDS_WITH_FUNC_NAME, FNV_FUNC_NAME, FORMAT_DATETIME_FUNC_NAME, LOG_FUNC_NAME,
-    LOWER_CASE_FUNC_NAME, LTRIM_FUNC_NAME, MD5_FUNC_NAME, MURMUR3_FUNC_NAME,
+    LOWER_CASE_FUNC_NAME, LTRIM_FUNC_NAME, MD5_FUNC_NAME, MURMUR3_FUNC_NAME, NOW_FUNC_NAME,
     REGEXP_SUBSTR_FUNC_NAME, RTRIM_FUNC_NAME, SHA256_FUNC_NAME, SHA512_FUNC_NAME,
     STARTS_WITH_FUNC_NAME, UPPER_CASE_FUNC_NAME, UUID_FUNC_NAME, UUIDV7_FUNC_NAME, XXH3_FUNC_NAME,
     XXH128_FUNC_NAME,
@@ -42,6 +42,7 @@ pub fn default_parser_options() -> ParserOptions {
         .with_external_function(SHA256_FUNC_NAME, param_placeholders(1), None)
         .with_external_function(MD5_FUNC_NAME, param_placeholders(1), None)
         .with_external_function(FNV_FUNC_NAME, param_placeholders(1), None)
+        .with_external_function(NOW_FUNC_NAME, param_placeholders(0), None)
         .with_external_function(MURMUR3_FUNC_NAME, param_placeholders(1), None)
         .with_external_function(SHA512_FUNC_NAME, param_placeholders(1), None)
         .with_external_function(XXH3_FUNC_NAME, param_placeholders(1), None)

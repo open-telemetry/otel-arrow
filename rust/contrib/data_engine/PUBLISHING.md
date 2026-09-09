@@ -25,7 +25,7 @@ workspace version and all exact pins together for later releases.
 Authenticate with `cargo login` or `CARGO_REGISTRY_TOKEN`, then run:
 
 ```bash
-cd rust/experimental/data_engine
+cd rust/contrib/data_engine
 
 for crate in expressions parser-abstractions kql-parser engine-recordset; do
   (cd "$crate" && cargo package --list)
