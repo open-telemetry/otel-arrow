@@ -68,8 +68,33 @@ fn test_validate_config(
 }
 
 const CONTEXT_POLICY_TEST_RECEIVER_URN: &str = "urn:test:receiver:context-policy";
+static CONTEXT_POLICY_TEST_LOCK: Mutex<()> = Mutex::new(());
 static CONTEXT_POLICY_TEST_CAPTURE: Mutex<Option<std::sync::Weak<CompiledContextPolicy>>> =
     Mutex::new(None);
+
+fn reset_context_policy_test_capture() {
+    *CONTEXT_POLICY_TEST_CAPTURE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+}
+
+fn wait_for_context_policy_test_capture() -> std::sync::Weak<CompiledContextPolicy> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(policy) = CONTEXT_POLICY_TEST_CAPTURE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+        {
+            return policy;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for context policy installation"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+}
 
 #[derive(Deserialize)]
 struct ContextPolicyTestConfig {
@@ -3823,9 +3848,10 @@ fn delete_pipeline_removes_stopped_pipeline_from_live_config() {
 /// the post-delete policy, and the deleted pipeline's policy is released.
 #[test]
 fn delete_pipeline_recompiles_context_policy_without_removed_declarations() {
-    *CONTEXT_POLICY_TEST_CAPTURE
+    let _capture_guard = CONTEXT_POLICY_TEST_LOCK
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    reset_context_policy_test_capture();
     let config = engine_config_with_pipeline(
         r#"
         nodes:
@@ -3881,21 +3907,7 @@ fn delete_pipeline_recompiles_context_policy_without_removed_declarations() {
             0,
         )
         .expect("pipeline should launch");
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let installed_policy = loop {
-        if let Some(policy) = CONTEXT_POLICY_TEST_CAPTURE
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
-        {
-            break policy;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "timed out waiting for context policy installation"
-        );
-        thread::sleep(Duration::from_millis(25));
-    };
+    let installed_policy = wait_for_context_policy_test_capture();
     assert!(Arc::ptr_eq(
         &initial_policy,
         &installed_policy
@@ -3925,6 +3937,199 @@ fn delete_pipeline_recompiles_context_policy_without_removed_declarations() {
         installed_policy.upgrade().is_none(),
         "deleted pipeline policy should be released"
     );
+}
+
+/// Scenario: a pipeline changes its declared context entry during reconfiguration.
+/// Guarantees: the replacement generation receives and commits the policy compiled
+/// from the new configuration instead of retaining the previous snapshot.
+#[test]
+fn reconfigure_pipeline_installs_new_context_policy_snapshot() {
+    let _capture_guard = CONTEXT_POLICY_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    reset_context_policy_test_capture();
+    let config = engine_config_with_pipeline(
+        r#"
+        nodes:
+          receiver:
+            type: "urn:test:receiver:context-policy"
+            config:
+              produces: X-Tenant
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+        "#,
+    );
+    let runtime = test_runtime_with_factory(&config, &CONTEXT_POLICY_TEST_PIPELINE_FACTORY);
+    let _runner = ObservedStateRunner::start(&runtime);
+    register_existing_pipeline(&runtime, &config);
+    let initial_policy = {
+        let state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Arc::clone(&state.context_policy)
+    };
+    let mut old_runtime =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+    report_ready(&runtime, deployed_key("g1", "p1", 0, 0));
+
+    let replacement = PipelineConfig::from_yaml(
+        "g1".into(),
+        "p1".into(),
+        r#"
+nodes:
+  receiver:
+    type: "urn:test:receiver:context-policy"
+    config:
+      produces: X-Account
+  exporter:
+    type: "urn:test:exporter:example"
+    config: null
+connections:
+  - from: receiver
+    to: exporter
+"#,
+    )
+    .expect("replacement should parse");
+    let plan = runtime
+        .prepare_rollout_plan(
+            "g1",
+            "p1",
+            &ReconfigureRequest {
+                pipeline: replacement,
+                step_timeout_secs: 5,
+                drain_timeout_secs: 5,
+            },
+        )
+        .expect("changed declarations should produce a rollout plan");
+    assert_eq!(plan.action, RolloutAction::Replace);
+    reset_context_policy_test_capture();
+    let status = runtime
+        .spawn_rollout(plan)
+        .expect("replacement rollout should start");
+
+    assert!(matches!(
+        wait_for_shutdown_message(&mut old_runtime),
+        RuntimeControlMsg::Shutdown { .. }
+    ));
+    runtime.note_instance_exit(deployed_key("g1", "p1", 0, 0), RuntimeInstanceExit::Success);
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let rollout = runtime
+            .rollout_status_snapshot(&status.rollout_id)
+            .expect("rollout should remain queryable");
+        if rollout.state == ApiPipelineRolloutState::Succeeded {
+            break;
+        }
+        assert_ne!(rollout.state, ApiPipelineRolloutState::Failed);
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for replacement rollout"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+
+    let installed_policy = wait_for_context_policy_test_capture()
+        .upgrade()
+        .expect("replacement policy should remain installed");
+    let committed_policy = {
+        let state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Arc::clone(
+            &state
+                .logical_pipelines
+                .get(&PipelineKey::new("g1".into(), "p1".into()))
+                .expect("pipeline should remain committed")
+                .context_policy,
+        )
+    };
+    assert!(!Arc::ptr_eq(&initial_policy, &installed_policy));
+    assert!(Arc::ptr_eq(&installed_policy, &committed_policy));
+
+    runtime
+        .request_instance_shutdown(
+            &deployed_key("g1", "p1", 0, 1),
+            2,
+            "context policy reconfiguration test cleanup",
+        )
+        .expect("replacement runtime should accept shutdown");
+}
+
+/// Scenario: runtime recovery restarts a failed pipeline generation.
+/// Guarantees: the recovered runtime receives the same compiled context policy
+/// snapshot that was attached to the failed generation.
+#[test]
+fn runtime_recovery_reuses_context_policy_snapshot() {
+    let _capture_guard = CONTEXT_POLICY_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    reset_context_policy_test_capture();
+    let config = engine_config_with_pipeline(
+        r#"
+        policies:
+          runtime_recovery:
+            max_restarts: 1
+            initial_backoff: 1ms
+            max_backoff: 1ms
+            startup_timeout: 2s
+            reset_after: 1m
+        nodes:
+          receiver:
+            type: "urn:test:receiver:context-policy"
+            config:
+              produces: X-Tenant
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+        "#,
+    );
+    let runtime = test_runtime_with_factory(&config, &CONTEXT_POLICY_TEST_PIPELINE_FACTORY);
+    let _runner = ObservedStateRunner::start(&runtime);
+    register_existing_pipeline(&runtime, &config);
+    let expected_policy = {
+        let state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Arc::clone(&state.context_policy)
+    };
+    let _runtime_control =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+    report_ready(&runtime, deployed_key("g1", "p1", 0, 0));
+
+    runtime.note_instance_exit(
+        deployed_key("g1", "p1", 0, 0),
+        RuntimeInstanceExit::Error(RuntimeInstanceError::runtime("boom".to_owned())),
+    );
+
+    let recovered_policy = wait_for_context_policy_test_capture()
+        .upgrade()
+        .expect("recovered policy should remain installed");
+    assert!(Arc::ptr_eq(&expected_policy, &recovered_policy));
+
+    let pipeline_key = PipelineKey::new("g1".into(), "p1".into());
+    let _ = wait_for_observed_status(&runtime, &pipeline_key, |status| {
+        status
+            .instance_status(0, 1)
+            .is_some_and(|instance| matches!(instance.phase(), PipelinePhase::Running))
+    });
+    runtime
+        .request_instance_shutdown(
+            &deployed_key("g1", "p1", 0, 1),
+            2,
+            "context policy recovery test cleanup",
+        )
+        .expect("recovered runtime should accept shutdown");
 }
 
 /// Scenario: a control-plane caller deletes a pipeline that cannot be found.
