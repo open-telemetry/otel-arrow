@@ -21,6 +21,9 @@ concurrency:
   group: push-release
   cancel-in-progress: false
 
+env:
+  RELEASE_REPOSITORY: open-telemetry/otel-arrow
+
 jobs:
   push-release:
     permissions:
@@ -77,8 +80,9 @@ jobs:
           GH_TOKEN: ${{ inputs.dry_run && github.token || steps.app-token.outputs.token }}
         run: |
           BRANCH="otelbot/release-v${{ inputs.version }}"
+          RELEASE_REPOSITORY_OWNER="${RELEASE_REPOSITORY%%/*}"
           RELEASE_PRS=$(gh api \
-            "repos/${GITHUB_REPOSITORY}/pulls?state=closed&base=main&head=${GITHUB_REPOSITORY_OWNER}:${BRANCH}&per_page=100" \
+            "repos/${RELEASE_REPOSITORY}/pulls?state=closed&base=main&head=${RELEASE_REPOSITORY_OWNER}:${BRANCH}&per_page=100" \
             --jq '[.[] | select(.merged_at != null)]')
           RELEASE_PR_COUNT=$(jq 'length' <<< "$RELEASE_PRS")
 
@@ -90,14 +94,17 @@ jobs:
 
           RELEASE_PR=$(jq -r '.[0].number' <<< "$RELEASE_PRS")
           RELEASE_SHA=$(jq -r '.[0].merge_commit_sha' <<< "$RELEASE_PRS")
+          RELEASE_PR_URL=$(jq -r '.[0].html_url' <<< "$RELEASE_PRS")
 
           echo "pr_number=$RELEASE_PR" >> "$GITHUB_OUTPUT"
+          echo "pr_url=$RELEASE_PR_URL" >> "$GITHUB_OUTPUT"
+          echo "repository=$RELEASE_REPOSITORY" >> "$GITHUB_OUTPUT"
           echo "sha=$RELEASE_SHA" >> "$GITHUB_OUTPUT"
-          echo "Resolved release PR #${RELEASE_PR} to commit ${RELEASE_SHA}"
+          echo "Resolved ${RELEASE_REPOSITORY}#${RELEASE_PR} to commit ${RELEASE_SHA}"
 
       - name: Check out release pull request commit
         run: |
-          git fetch --quiet origin main --tags
+          git fetch --quiet "https://github.com/${RELEASE_REPOSITORY}.git" main --tags
           git checkout --detach "${{ steps.release.outputs.sha }}"
 
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
@@ -251,7 +258,7 @@ jobs:
 
           ## Planned Operations
           - **Version to tag**: `v${{ inputs.version }}`
-          - **Release PR**: `#${{ steps.release.outputs.pr_number }}`
+          - **Release PR**: [${{ steps.release.outputs.repository }}#${{ steps.release.outputs.pr_number }}](${{ steps.release.outputs.pr_url }})
           - **Commit to tag**: `${{ steps.release.outputs.sha }}`
           - **Last version**: `v${{ steps.last_version.outputs.last_version }}`
 
@@ -388,7 +395,7 @@ jobs:
             echo ""
             echo "Release details:"
             echo "- Version: v${{ inputs.version }}"
-            echo "- Release PR: #${{ steps.release.outputs.pr_number }}"
+            echo "- Release PR: ${{ steps.release.outputs.repository }}#${{ steps.release.outputs.pr_number }}"
             echo "- Tagged commit: ${{ steps.release.outputs.sha }}"
             echo "- GitHub release: https://github.com/open-telemetry/otel-arrow/releases/tag/v${{ inputs.version }}"
             echo ""
