@@ -248,6 +248,11 @@ retain additional bounded diagnostic metrics, such as protocol-specific
 rejection or failure categories, but should not redefine the shared message,
 duration, payload-size, or item instruments.
 
+The `failed` and `refused` helpers return an error wrapper carrying its outcome.
+If a component handles that error and continues, discarding the wrapper also
+discards its classification; it cannot affect a later error returned by the
+operation.
+
 Shared metric helpers own optional-measurement policy checks. Component code
 must not independently inspect telemetry interests before reading the clock,
 counting items, or recording payload size. `PipelineContext` provides the
@@ -318,7 +323,7 @@ let completed = self
     .attempt(signal)
     .run(async |attempt| {
         // Component-specific: encode and submit one attempt.
-        attempt.set_item_count(|| data.num_items() as u64);
+        attempt.set_item_count_with(|| data.num_items() as u64);
         let encoded = self
             .encode(data.payload_ref())
             .map_err(|error| attempt.failed(error))?;

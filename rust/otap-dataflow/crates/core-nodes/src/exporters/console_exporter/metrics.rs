@@ -6,6 +6,8 @@
 use super::ConsoleOutputFormat;
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_engine::context::PipelineContext;
+#[cfg(test)]
+use otel_arrow_dfe_otap::metrics::ErrorWithOutcome;
 use otel_arrow_dfe_otap::metrics::ExporterMetrics;
 #[cfg(test)]
 use otel_arrow_dfe_telemetry::common_attributes::Outcome;
@@ -157,8 +159,8 @@ mod tests {
             .boundary
             .attempt(SignalType::Logs)
             .run(async |attempt| {
-                attempt.set_item_count(|| 0);
-                Ok::<(), ConsoleExportErrorType>(())
+                attempt.set_item_count_with(|| 0);
+                Ok::<(), ErrorWithOutcome<ConsoleExportErrorType>>(())
             })
             .await;
         metrics.boundary.record(completed).expect("export succeeds");
@@ -166,8 +168,8 @@ mod tests {
             .boundary
             .attempt(SignalType::Logs)
             .run(async |attempt| {
-                attempt.set_item_count(|| 0);
-                Ok::<(), ConsoleExportErrorType>(())
+                attempt.set_item_count_with(|| 0);
+                Ok::<(), ErrorWithOutcome<ConsoleExportErrorType>>(())
             })
             .await;
         metrics.boundary.record(completed).expect("export succeeds");
@@ -175,7 +177,7 @@ mod tests {
             .boundary
             .attempt(SignalType::Logs)
             .run(async |attempt| {
-                attempt.set_item_count(|| 0);
+                attempt.set_item_count_with(|| 0);
                 Err::<(), _>(attempt.failed(ConsoleExportErrorType::OtlpViewCreation))
             })
             .await;
@@ -186,7 +188,7 @@ mod tests {
             .boundary
             .attempt(SignalType::Metrics)
             .run(async |attempt| {
-                attempt.set_item_count(|| 0);
+                attempt.set_item_count_with(|| 0);
                 Err::<(), _>(attempt.failed(ConsoleExportErrorType::UnsupportedSignal))
             })
             .await;
@@ -244,7 +246,7 @@ mod tests {
             .boundary
             .attempt(SignalType::Traces)
             .run(async |attempt| {
-                attempt.set_item_count(|| 0);
+                attempt.set_item_count_with(|| 0);
                 Err::<(), _>(attempt.failed(ConsoleExportErrorType::UnsupportedSignal))
             })
             .await;

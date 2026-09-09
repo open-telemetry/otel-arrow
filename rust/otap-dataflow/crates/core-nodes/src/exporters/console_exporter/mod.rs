@@ -279,7 +279,7 @@ impl Exporter<OtapPdata> for ConsoleExporter {
                         .boundary
                         .attempt(signal)
                         .run(async |attempt| {
-                            attempt.set_item_count(|| data.num_items() as u64);
+                            attempt.set_item_count_with(|| data.num_items() as u64);
                             self.export(data.payload_ref())
                                 .await
                                 .map_err(|error| attempt.failed(error))

@@ -87,11 +87,27 @@ impl ReceiverProcessingMetrics {
 /// Receiver-local processing state captured for enabled shared metrics.
 #[derive(Debug)]
 pub struct ReceiverProcessing {
-    signal: Option<SignalType>,
-    error_outcome: Outcome,
     measure_duration: bool,
     payload_size: Option<u64>,
     accepts_payload_size: bool,
+}
+
+/// Operation error paired with the outcome and optional receiver signal it represents.
+#[derive(Debug)]
+pub struct ErrorWithOutcome<E> {
+    signal: Option<SignalType>,
+    outcome: Outcome,
+    error: E,
+}
+
+impl<E> From<E> for ErrorWithOutcome<E> {
+    fn from(error: E) -> Self {
+        Self {
+            signal: None,
+            outcome: Outcome::Failure,
+            error,
+        }
+    }
 }
 
 /// Completed receiver processing ready to be recorded.
@@ -130,8 +146,6 @@ impl ReceiverMetrics {
     #[must_use]
     pub fn processing(&self) -> ReceiverProcessing {
         ReceiverProcessing {
-            signal: None,
-            error_outcome: Outcome::Failure,
             measure_duration: self.interests.contains(Interests::COMPONENT_DURATION),
             payload_size: None,
             accepts_payload_size: self.interests.contains(Interests::PRODUCED_CONSUMED_SIZE),
@@ -178,19 +192,23 @@ impl ReceiverMetrics {
 
 impl ReceiverProcessing {
     /// Classifies and returns an error from the processing closure as failed.
-    pub fn failed<E>(&mut self, signal: SignalType, error: E) -> E {
-        self.signal = Some(signal);
-        self.error_outcome = Outcome::Failure;
-        error
+    pub fn failed<E>(&self, signal: SignalType, error: E) -> ErrorWithOutcome<E> {
+        ErrorWithOutcome {
+            signal: Some(signal),
+            outcome: Outcome::Failure,
+            error,
+        }
     }
 
     /// Classifies and returns an error from the processing closure as refused.
     ///
     /// Pass the returned error directly to `Err`.
-    pub fn refused<E>(&mut self, signal: SignalType, error: E) -> E {
-        self.signal = Some(signal);
-        self.error_outcome = Outcome::Refused;
-        error
+    pub fn refused<E>(&self, signal: SignalType, error: E) -> ErrorWithOutcome<E> {
+        ErrorWithOutcome {
+            signal: Some(signal),
+            outcome: Outcome::Refused,
+            error,
+        }
     }
 
     /// Sets the encoded application payload size without evaluating it when disabled.
@@ -208,13 +226,17 @@ impl ReceiverProcessing {
     #[must_use = "the completed receiver processing observation must be recorded"]
     pub fn run<T, E>(
         mut self,
-        work: impl FnOnce(&mut ReceiverProcessing) -> Result<(SignalType, T), E>,
+        work: impl FnOnce(&mut ReceiverProcessing) -> Result<(SignalType, T), ErrorWithOutcome<E>>,
     ) -> CompletedReceiverProcessing<T, E> {
         let started_at = self.measure_duration.then(Instant::now);
         let result = work(&mut self);
         let (signal, outcome, result) = match result {
             Ok((signal, value)) => (Some(signal), Outcome::Success, Ok(value)),
-            Err(error) => (self.signal, self.error_outcome, Err(error)),
+            Err(ErrorWithOutcome {
+                signal,
+                outcome,
+                error,
+            }) => (signal, outcome, Err(error)),
         };
         CompletedReceiverProcessing {
             signal,
@@ -313,7 +335,6 @@ impl ExporterAttemptedItemsMetrics {
 #[derive(Debug)]
 pub struct ExporterAttempt {
     signal: SignalType,
-    error_outcome: Outcome,
     started_at: Option<Instant>,
     items: Option<u64>,
     accepts_item_count: bool,
@@ -361,7 +382,6 @@ impl ExporterMetrics {
     pub fn attempt(&self, signal: SignalType) -> ExporterAttempt {
         ExporterAttempt {
             signal,
-            error_outcome: Outcome::Failure,
             started_at: self
                 .interests
                 .contains(Interests::COMPONENT_DURATION)
@@ -415,22 +435,28 @@ impl ExporterMetrics {
 
 impl ExporterAttempt {
     /// Classifies and returns an error from the attempt closure as failed.
-    pub fn failed<E>(&mut self, error: E) -> E {
-        self.error_outcome = Outcome::Failure;
-        error
+    pub fn failed<E>(&self, error: E) -> ErrorWithOutcome<E> {
+        ErrorWithOutcome {
+            signal: None,
+            outcome: Outcome::Failure,
+            error,
+        }
     }
 
     /// Classifies and returns an error from the attempt closure as refused.
     ///
     /// Pass the returned error directly to `Err`. Other errors are classified
     /// as failures, while successful results are classified as successes.
-    pub fn refused<E>(&mut self, error: E) -> E {
-        self.error_outcome = Outcome::Refused;
-        error
+    pub fn refused<E>(&self, error: E) -> ErrorWithOutcome<E> {
+        ErrorWithOutcome {
+            signal: None,
+            outcome: Outcome::Refused,
+            error,
+        }
     }
 
     /// Sets the signal item count without evaluating it when disabled.
-    pub fn set_item_count(&mut self, item_count: impl FnOnce() -> u64) {
+    pub fn set_item_count_with(&mut self, item_count: impl FnOnce() -> u64) {
         if self.accepts_item_count {
             self.items = Some(item_count());
         }
@@ -450,13 +476,11 @@ impl ExporterAttempt {
     #[must_use = "the completed exporter attempt must be recorded"]
     pub async fn run<T, E>(
         mut self,
-        work: impl AsyncFnOnce(&mut ExporterAttempt) -> Result<T, E>,
+        work: impl AsyncFnOnce(&mut ExporterAttempt) -> Result<T, ErrorWithOutcome<E>>,
     ) -> CompletedExporterAttempt<T, E> {
-        let result = work(&mut self).await;
-        let outcome = if result.is_ok() {
-            Outcome::Success
-        } else {
-            self.error_outcome
+        let (outcome, result) = match work(&mut self).await {
+            Ok(value) => (Outcome::Success, Ok(value)),
+            Err(ErrorWithOutcome { outcome, error, .. }) => (outcome, Err(error)),
         };
         CompletedExporterAttempt {
             signal: self.signal,
@@ -824,7 +848,7 @@ mod tests {
         let completed = metrics
             .attempt(SignalType::Logs)
             .run(async |attempt| {
-                attempt.set_item_count(|| {
+                attempt.set_item_count_with(|| {
                     item_count_called.set(true);
                     5
                 });
@@ -832,7 +856,7 @@ mod tests {
                     payload_size_called.set(true);
                     128
                 });
-                Ok::<(), ()>(())
+                Ok::<(), ErrorWithOutcome<()>>(())
             })
             .await;
         metrics.record(completed).expect("attempt succeeds");
@@ -866,7 +890,7 @@ mod tests {
         let completed = metrics
             .attempt(SignalType::Metrics)
             .run(async |attempt| {
-                attempt.set_item_count(|| {
+                attempt.set_item_count_with(|| {
                     item_count_called.set(true);
                     5
                 });
@@ -910,7 +934,7 @@ mod tests {
                 payload_size_called.set(true);
                 128
             });
-            Ok::<_, ()>((SignalType::Logs, ()))
+            Ok::<_, ErrorWithOutcome<()>>((SignalType::Logs, ()))
         });
         metrics.record(completed).expect("processing succeeds");
 
@@ -977,7 +1001,7 @@ mod tests {
 
         let completed = metrics
             .processing()
-            .run(|_| Ok::<_, ()>((SignalType::Logs, ())));
+            .run(|_| Ok::<_, ErrorWithOutcome<()>>((SignalType::Logs, ())));
         metrics.record(completed).expect("processing succeeds");
 
         let snapshots = metrics.terminal_snapshots();
@@ -1013,7 +1037,7 @@ mod tests {
 
         let completed = metrics
             .processing()
-            .run(|_| Err::<(SignalType, ()), _>("invalid envelope"));
+            .run(|_| Err::<(SignalType, ()), ErrorWithOutcome<_>>("invalid envelope".into()));
         assert_eq!(metrics.record(completed), Err("invalid envelope"));
         assert!(metrics.terminal_snapshots().is_empty());
     }
@@ -1075,6 +1099,31 @@ mod tests {
             .position(|metric| metric.name == "messages")
             .expect("messages metric");
         assert_eq!(snapshot.get_metrics()[messages].to_u64_lossy(), 1);
+    }
+
+    /// Scenario: An exporter handles a refused primary error before a fallback fails.
+    /// Guarantees: The discarded refusal cannot classify the returned fallback error as refused.
+    #[tokio::test]
+    async fn exporter_helper_keeps_outcome_attached_to_returned_error() {
+        let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::empty());
+        let mut metrics = ExporterMetrics::register(&pipeline_ctx);
+
+        let completed = metrics
+            .attempt(SignalType::Logs)
+            .run(async |attempt| {
+                let primary = Err::<(), _>(attempt.refused("primary refused"));
+                assert!(primary.is_err());
+                Err::<(), _>(attempt.failed("fallback failed"))
+            })
+            .await;
+        assert_eq!(metrics.record(completed), Err("fallback failed"));
+
+        let snapshots = metrics.terminal_snapshots();
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(
+            snapshots[0].measurement_attribute_value("outcome"),
+            Some("failure")
+        );
     }
 
     /// Scenario: One logical export requires a failed attempt followed by a successful retry.
