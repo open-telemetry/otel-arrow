@@ -16,11 +16,10 @@ use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::publish_policy::PUBLISH_PACKAGES;
+use crate::publish_policy::{INDEPENDENT_VERSION_PACKAGES, PUBLISH_PACKAGES};
 
 const CRATES_IO_API: &str = "https://crates.io/api/v1";
 const VISIBILITY_DELAYS: [u64; 8] = [0, 5, 10, 20, 40, 80, 160, 300];
-const INDEPENDENT_VERSION_PACKAGES: &[&str] = &["otel-arrow-dfe-pdata-views"];
 
 #[derive(Debug, Deserialize)]
 struct CargoMetadata {

@@ -3,6 +3,8 @@
 
 //! Shared crates.io publication policy.
 
+pub(crate) const INDEPENDENT_VERSION_PACKAGES: &[&str] = &["otel-arrow-dfe-pdata-views"];
+
 pub(crate) const PUBLISH_PACKAGES: &[&str] = &[
     "otel-arrow-dfe-admin",
     "otel-arrow-dfe-admin-types",
