@@ -222,6 +222,8 @@ mod tests {
         )
     }
 
+    /// Scenario: several headers share a logical name among unrelated entries.
+    /// Guarantees: lookup returns every matching value in insertion order.
     #[test]
     fn find_by_name_returns_matching_headers() {
         let mut headers = TransportHeaders::new();
@@ -235,6 +237,8 @@ mod tests {
         assert_eq!(&*tenants[1].value.bytes, b"c");
     }
 
+    /// Scenario: two captured headers have the same logical and wire names.
+    /// Guarantees: inserting the second header does not overwrite the first.
     #[test]
     fn duplicate_names_preserved() {
         let mut headers = TransportHeaders::new();
@@ -243,12 +247,16 @@ mod tests {
         assert_eq!(headers.len(), 2);
     }
 
+    /// Scenario: a captured text header contains valid UTF-8 bytes.
+    /// Guarantees: its string view exposes the original text.
     #[test]
     fn value_as_str_for_text() {
         let h = header("name", "Name", b"hello");
         assert_eq!(h.value_as_str(), Some("hello"));
     }
 
+    /// Scenario: a binary header contains invalid UTF-8 bytes.
+    /// Guarantees: string conversion returns None instead of panicking or replacing bytes.
     #[test]
     fn value_as_str_for_invalid_utf8() {
         let h = TransportHeader::binary(context_name("name-bin"), vec![0xFF, 0xFE]);
@@ -270,6 +278,8 @@ mod tests {
         }
     }
 
+    /// Scenario: input headers are processed with an empty compiled capture policy.
+    /// Guarantees: no headers are retained and no limit violations are reported.
     #[test]
     fn capture_empty_policy_captures_nothing() {
         let policy = HeaderCapturePolicy::default().compile(|_| true);
@@ -280,6 +290,8 @@ mod tests {
         assert!(stats.is_none());
     }
 
+    /// Scenario: capture rules select some incoming headers and rename one logical entry.
+    /// Guarantees: unmatched headers are excluded while selected values and original names are retained.
     #[test]
     fn capture_matching_headers() {
         let policy = make_capture_policy(vec![
@@ -303,6 +315,8 @@ mod tests {
         assert_eq!(result.as_slice()[1].name, "x-request-id");
     }
 
+    /// Scenario: an incoming wire name differs in casing from its capture rule.
+    /// Guarantees: matching is case-insensitive and the original wire spelling is retained.
     #[test]
     fn capture_case_insensitive_matching() {
         let policy = make_capture_policy(vec![rule(&["x-tenant-id"], None)]).compile(|_| true);
@@ -338,6 +352,8 @@ mod tests {
         assert!(result.iter().all(|header| header.name == "combined"));
     }
 
+    /// Scenario: matching incoming headers exceed the configured entry limit.
+    /// Guarantees: only the allowed entries are captured and each excess entry is counted.
     #[test]
     fn capture_respects_max_entries() {
         let mut policy = make_capture_policy(vec![rule(&["x-key"], None)]);
@@ -354,6 +370,8 @@ mod tests {
         assert_eq!(stats.skipped_value_too_long, 0);
     }
 
+    /// Scenario: an oversized header value precedes a value within the configured limit.
+    /// Guarantees: the oversized value is counted and dropped without discarding the later valid value.
     #[test]
     fn capture_drops_oversized_value() {
         let mut policy = make_capture_policy(vec![rule(&["x-key"], None)]);
@@ -371,6 +389,8 @@ mod tests {
         assert_eq!(stats.skipped_name_too_long, 0);
     }
 
+    /// Scenario: a captured header name ends in the binary suffix.
+    /// Guarantees: its value is classified as binary without requiring valid text.
     #[test]
     fn capture_binary_detection() {
         let policy = make_capture_policy(vec![rule(&["auth-token-bin"], None)]).compile(|_| true);
@@ -385,6 +405,8 @@ mod tests {
 
     // -- Propagation policy tests --------------------------------------------
 
+    /// Scenario: propagation selects every captured header using the default name strategy.
+    /// Guarantees: all selected entries retain their original wire names.
     #[test]
     fn propagate_all_captured_default() {
         let policy = HeaderPropagationPolicy::new(
@@ -407,6 +429,8 @@ mod tests {
         assert_eq!(propagated[1].header_name, "X-Request-Id");
     }
 
+    /// Scenario: an authorization-drop override accompanies an all-captured default.
+    /// Guarantees: the authorization header is excluded while unrelated headers are propagated.
     #[test]
     fn propagate_override_drops_auth() {
         let policy = HeaderPropagationPolicy::new(
@@ -436,6 +460,8 @@ mod tests {
         assert_eq!(propagated[0].header_name, "X-Tenant-Id");
     }
 
+    /// Scenario: the default selector selects nothing but an override explicitly propagates one entry.
+    /// Guarantees: only the overridden entry is emitted with its original wire name.
     #[test]
     fn propagate_selector_none_drops_all_unless_override() {
         let policy = HeaderPropagationPolicy {
@@ -465,6 +491,8 @@ mod tests {
         assert_eq!(propagated[0].header_name, "X-Tenant-Id");
     }
 
+    /// Scenario: propagation requests stored names for a renamed captured entry.
+    /// Guarantees: the emitted header uses the logical name rather than the original wire name.
     #[test]
     fn propagate_stored_name_strategy() {
         let policy = HeaderPropagationPolicy::new(
@@ -487,6 +515,8 @@ mod tests {
         assert_eq!(propagated[0].header_name, "tenant_id");
     }
 
+    /// Scenario: a named selector selects one of several captured logical entries.
+    /// Guarantees: only that entry is propagated, retaining its original wire name.
     #[test]
     fn propagate_named_selector() {
         let policy = HeaderPropagationPolicy {
