@@ -540,6 +540,10 @@ fn parse_crates_io_existence(output: &Output) -> anyhow::Result<bool> {
     let (body, status) = stdout
         .rsplit_once('\n')
         .context("crates.io response did not include an HTTP status")?;
+    parse_crates_io_existence_response(body, status)
+}
+
+fn parse_crates_io_existence_response(body: &str, status: &str) -> anyhow::Result<bool> {
     match status {
         "200" => Ok(true),
         "404" => Ok(false),
@@ -1026,6 +1030,36 @@ mod tests {
 
         assert_eq!(forecast.registry_state, "Version yanked");
         assert_eq!(forecast.expected_action, "Blocked");
+    }
+
+    /// Scenario: crates.io returns success for a crate lookup.
+    /// Guarantees: the existence parser reports that the crate is present.
+    #[test]
+    fn crate_existence_accepts_http_200() {
+        assert!(
+            parse_crates_io_existence_response("{}", "200")
+                .expect("HTTP 200 should indicate existence")
+        );
+    }
+
+    /// Scenario: crates.io returns not found for a crate lookup.
+    /// Guarantees: the existence parser reports that the crate is absent.
+    #[test]
+    fn crate_existence_accepts_http_404() {
+        assert!(
+            !parse_crates_io_existence_response("{}", "404")
+                .expect("HTTP 404 should indicate absence")
+        );
+    }
+
+    /// Scenario: crates.io returns an unexpected HTTP status for a crate lookup.
+    /// Guarantees: the existence parser surfaces the response instead of guessing crate state.
+    #[test]
+    fn crate_existence_rejects_unexpected_http_status() {
+        let error = parse_crates_io_existence_response("rate limited", "429")
+            .expect_err("unexpected HTTP status should fail the lookup");
+
+        assert!(error.to_string().contains("HTTP 429: rate limited"));
     }
 
     /// Scenario: dependency requirements use abbreviated, ranged, exact, and excluding syntax.
