@@ -101,40 +101,16 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
             preflight(version, Some(Path::new(forecast_path)))?;
             Ok(())
         }
-        [command, version] if command == "forecast" => print_forecast(version),
         [command, version] if command == "publish" => publish(version),
         _ => bail!(
             "Usage: cargo xtask crates-publish \
-             <plan|check|forecast VERSION|preflight VERSION [FORECAST_PATH]|publish VERSION>"
+             <plan|check|preflight VERSION [FORECAST_PATH]|publish VERSION>"
         ),
     }
 }
 
 fn print_plan() -> anyhow::Result<()> {
     println!("{}", serde_json::to_string_pretty(&load_plan()?)?);
-    Ok(())
-}
-
-fn print_forecast(expected_version: &str) -> anyhow::Result<()> {
-    let plan = load_plan()?;
-    ensure_plan_version(&plan, expected_version)?;
-
-    let mut packages = Vec::with_capacity(plan.packages.len());
-    for package in &plan.packages {
-        let version = crates_io_version(&package.name, &package.version)?;
-        let crate_exists = version.is_some() || crates_io_crate_exists(&package.name)?;
-        packages.push(forecast_package(
-            package,
-            expected_version,
-            version.as_ref(),
-            crate_exists,
-        ));
-    }
-
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&PublishForecast { packages })?
-    );
     Ok(())
 }
 
@@ -360,6 +336,40 @@ fn check_package(package: &PublishPackage, allow_dirty: bool) -> anyhow::Result<
     run_cargo(&args)
 }
 
+fn preflight_package(
+    package: &PublishPackage,
+    expected_version: &str,
+    target_directory: &Path,
+    version: Option<&CratesIoVersion>,
+) -> anyhow::Result<()> {
+    if package.version != expected_version {
+        let Some(version) = version else {
+            bail!(
+                "independently versioned package {} {} is not published; include it in \
+                 release {expected_version} or publish it separately",
+                package.name,
+                package.version
+            );
+        };
+        ensure_not_yanked(&package.name, &package.version, version.yanked)?;
+        return Ok(());
+    }
+
+    match version {
+        Some(version) => {
+            ensure_not_yanked(&package.name, &package.version, version.yanked)?;
+            let expected_checksum = package_checksum(package, target_directory)?;
+            verify_checksum(
+                &package.name,
+                &package.version,
+                &expected_checksum,
+                &version.checksum,
+            )
+        }
+        None => check_package(package, false),
+    }
+}
+
 fn preflight(expected_version: &str, forecast_path: Option<&Path>) -> anyhow::Result<PublishPlan> {
     let plan = load_plan()?;
     ensure_plan_version(&plan, expected_version)?;
@@ -381,31 +391,20 @@ fn preflight(expected_version: &str, forecast_path: Option<&Path>) -> anyhow::Re
             write_forecast(path, &forecast)?;
         }
 
-        if package.version != expected_version {
-            let Some(version) = version else {
-                bail!(
-                    "independently versioned package {} {} is not published; include it in \
-                     release {expected_version} or publish it separately",
-                    package.name,
-                    package.version
-                );
-            };
-            ensure_not_yanked(&package.name, &package.version, version.yanked)?;
-            continue;
-        }
-
-        match version {
-            Some(version) => {
-                ensure_not_yanked(&package.name, &package.version, version.yanked)?;
-                let expected_checksum = package_checksum(package, &plan.target_directory)?;
-                verify_checksum(
-                    &package.name,
-                    &package.version,
-                    &expected_checksum,
-                    &version.checksum,
-                )?;
+        if let Err(error) = preflight_package(
+            package,
+            expected_version,
+            &plan.target_directory,
+            version.as_ref(),
+        ) {
+            if let Some(path) = forecast_path {
+                forecast
+                    .last_mut()
+                    .expect("the current package was added to the forecast")
+                    .expected_action = "Blocked";
+                write_forecast(path, &forecast)?;
             }
-            None => check_package(package, false)?,
+            return Err(error);
         }
     }
 

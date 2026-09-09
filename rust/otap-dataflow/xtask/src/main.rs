@@ -80,7 +80,7 @@ Tasks:
   - structure-check: Validate the entire structure of the project.
   - compile-proto: Compile the protobufs files
   - component-inventory [--check <baseline>] [--update-baseline] [--format <table|json|yaml>]: Manage and verify the component inventory baseline.
-  - crates-publish <plan|check|forecast VERSION|preflight VERSION [FORECAST_PATH]|publish VERSION>: Plan, validate, forecast, preflight, or publish crates.io packages.
+  - crates-publish <plan|check|preflight VERSION [FORECAST_PATH]|publish VERSION>: Plan, validate, preflight, or publish crates.io packages.
 "
     );
     Ok(())
