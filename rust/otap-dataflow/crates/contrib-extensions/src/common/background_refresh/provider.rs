@@ -133,7 +133,6 @@ pub struct BackgroundProviderRefreshPolicy {
 
 impl BackgroundProviderRefreshPolicy {
     /// Builds a new instance.
-    #[must_use]
     pub fn new(
         usable_margin: Duration,
         mut non_expiring_refresh_interval: Duration,
