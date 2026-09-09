@@ -658,6 +658,10 @@ while their semantic and format definitions remain normative from version 1.
 | Checkpoint | Transaction lands exactly on compaction threshold | Append is accepted without overshoot; compaction occurs before the next append or at an earlier retention deadline |
 | Checkpoint | Byte threshold binds before transaction threshold, or transaction threshold binds first | Recovery admission uses the checked interacting conservative bounds rather than claiming both configured thresholds are simultaneously reachable |
 | Checkpoint | Compaction crash during `CURRENT` replacement | Valid marker names complete old or complete new generation; never partial authority |
+| Checkpoint | Process exits after first-publication or compaction marker rename but before directory sync; restart sees the new valid marker | Validate selected generation, then sync namespace directory before source reads, appends/progress acceptance, deletion, or another publication |
+| Checkpoint | Recovery publication barrier fails, including with nonzero checkpoint sync interval | Protected operations remain blocked through bounded retries; exhaustion fails receiver; no fallback or deletion |
+| Checkpoint | Power loss after successful recovery barrier and later synced progress/retired cleanup | Recovered marker still selects the validated generation; its synced progress remains recoverable and its files were not deleted |
+| Checkpoint | Process exits again before recovery barrier succeeds | No new source work, append, publication, or cleanup was admitted; next recovery validates visible authority and repeats the barrier |
 | Checkpoint | Abandoned unpublished `G+1` generation after crash | Never authoritative; exact artifacts removed and directory-synced before the number is proposed again |
 | Checkpoint | New compaction collides with an uncleared proposed-generation artifact | Exclusive/no-replace creation fails; cleanup must complete before retry |
 | Checkpoint | Previously published generation number proposed again | Rejected; published generations are never reused |
@@ -1129,3 +1133,25 @@ before namespace access. Root repair never deletes existing namespace artifacts
 or bypasses missing/corrupt `CURRENT` handling. Invalid roots or unavailable
 required durability fail startup without source admission. Selecting a different
 absolute root is an explicit different-state decision, not relocation.
+
+### Example 43: Visible publication needs a recovery barrier
+
+Generation G-1 is durable. Compaction writes and syncs generation G, publishes
+its final filenames durably, and renames the synced replacement `CURRENT` to
+select G. The process exits before syncing the namespace directory. On process
+restart, G may be visible even though its marker replacement is not yet durable.
+
+Under exclusive ownership, recovery validates `CURRENT`, G's snapshot and WAL,
+and the recoverable WAL suffix. It then syncs the namespace directory before
+source reads, new appends/progress acceptance, artifact deletion, or another
+publication. Inject a barrier-sync failure and verify every protected operation
+remains blocked; neither G nor G-1 is deleted and no older marker is selected.
+An interrupted retry repeats validation and the barrier.
+
+After the barrier and recovery succeed, append and sync progress in G and
+perform retired cleanup. Inject a later power loss: the marker must still
+select G and its synced progress must remain recoverable. Also exercise first
+publication with the same process-exit window; recovery cannot rely on a visible
+but unsynced generation-zero marker. These cases require fault modeling that
+distinguishes process exit from later loss of unsynced filesystem metadata;
+a simple process restart alone does not prove directory durability.

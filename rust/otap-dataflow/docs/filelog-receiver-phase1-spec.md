@@ -2636,10 +2636,11 @@ cleanup recognizes only the exact temporary and final artifacts for the one
 proposed `current_generation + 1`: its snapshot/WAL final names,
 `offsets-G.snapshot.compact.tmp`, `offsets-G.wal.compact.tmp`, and the
 generation-independent `CURRENT.compact.tmp`. Cleanup rereads and validates
-`CURRENT` under exclusive ownership, removes those abandoned artifacts, and
-syncs the directory. The unpublished number may then be proposed again. Cleanup never
-deletes the generation named by `CURRENT`, is idempotent after interruption,
-and completes before exclusive creation for the next attempt. Ambiguous
+`CURRENT` under exclusive ownership and requires its selection to have been
+made durable by publication sync or the [recovery barrier](#recovery-and-publication-barrier)
+before removing abandoned artifacts. It then syncs the directory. The
+unpublished number may then be proposed again. Cleanup never deletes the
+generation named by `CURRENT`, is idempotent after interruption, and completes before exclusive creation for the next attempt. Ambiguous
 authority or an invalid `CURRENT` fails closed rather than selecting by
 generation number or modification time.
 
@@ -2651,21 +2652,34 @@ snapshot and WAL remain, snapshot only remains, WAL only remains, or neither
 remains. All four are valid cleanup states and none is authoritative.
 
 Each cleanup attempt rereads and validates `CURRENT` under exclusive namespace
-ownership. If it still names G, cleanup removes the retired WAL and then the
-retired snapshot, treating either already-absent file as idempotent success,
-and syncs the namespace directory after the deletion set. A crash or sync
+ownership. Only after publication sync or the recovery barrier has made that
+selection durable, and if it still names G, cleanup removes the retired WAL and
+then the retired snapshot, treating either already-absent file as idempotent
+success, and syncs the namespace directory after the deletion set. A crash or sync
 failure leaves one of the same recognized states and cleanup resumes from the
 remaining subset. Cleanup never deletes either file belonging to the generation
 currently named by `CURRENT`.
 
 Appends to the authoritative G WAL may continue while retired cleanup is
-pending only while its configured artifact bounds do not require another
+pending only after authority is durable through publication sync or the recovery
+barrier, and while its configured artifact bounds do not require another
 compaction. A later compaction remains blocked until retired cleanup and its
 directory sync succeed; inability to finish before the next required
 compaction enters the checkpoint-store failure/backpressure path rather than
 exceeding the WAL bound.
 
-Recovery:
+#### Recovery and publication barrier
+
+Recovery holds exclusive namespace ownership throughout validation and the
+barrier below. A marker rename can remain visible after process exit without
+having survived the required directory sync. Reading a valid `CURRENT` therefore
+selects recovery input but does not by itself establish durable publication.
+Checkpoint structural or replay validation failures abort recovery immediately:
+corruption, invalid length, checksum failure, unsupported artifact/envelope
+version or operation, sequence error, impossible transition, and non-tail damage
+remain fail closed. The barrier never repairs or authorizes invalid authority.
+
+Recovery proceeds as follows:
 
 1. Reads and validates `CURRENT` and selects exactly the named authoritative
    generation.
@@ -2680,13 +2694,31 @@ Recovery:
    and one another. Any mismatch is a distinct namespace-mismatch error.
 6. Loads a bounded snapshot.
 7. Replays complete transactions in strict sequence.
-8. Applies each transaction atomically.
-9. Discards only the exact structurally incomplete final transaction defined by the
-   checkpoint-format specification.
-10. Truncates and syncs an allowed torn suffix to the last valid transaction
+8. Applies each transaction atomically to recovery state, which is not yet
+   available for new source work or checkpoint mutation.
+9. Classifies only the exact structurally incomplete final transaction defined
+   by the checkpoint-format specification as a discardable torn suffix.
+10. After validating `CURRENT` and its selected generation, synchronizes the
+    opened checkpoint namespace directory before relying on that selection.
+    This required recovery publication barrier makes the visible authority
+    selection durable, including a rename left unsynced by a previous process.
+11. Truncates and syncs an allowed torn suffix to the last valid transaction
     boundary before permitting a new append.
-11. Fails closed on every other corruption, invalid length, checksum failure, unknown
-   version or operation, sequence error, impossible transition, or non-tail damage.
+
+Until the barrier and remaining recovery steps succeed, source reads, new WAL
+appends/progress acceptance, abandoned or retired artifact deletion, and another
+publication remain blocked. Barrier failure enters the existing checkpoint-store
+failure path; bounded retries keep those operations blocked, and exhaustion
+fails the receiver. It never selects an older generation or treats visibility
+as successful sync. Reopening for recovery repeats the barrier under exclusive
+ownership. Read-only validation/inspection does not authorize mutation.
+
+The barrier is independent of `checkpoint.sync_interval` and applies to recovery
+of both first publication and later compaction. It synchronizes the namespace
+containing `CURRENT`, not merely the engine root or the WAL file. It does not
+replace generation-file sync before publication, torn-tail repair sync, or
+post-deletion directory sync. A platform cannot enable this durability contract
+without implementing and qualifying the required directory barrier.
 
 Live WAL append failure distinguishes no-write, known-partial, ambiguous-write,
 and append-success/sync-failure outcomes using the

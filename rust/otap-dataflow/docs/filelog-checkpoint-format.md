@@ -256,7 +256,21 @@ exception and does not make the authoritative generation incomplete. No error
 above authorizes automatic WAL-prefix recovery after a complete bad-CRC frame.
 Cleanup, including recovery after interrupted cleanup, MUST reread `CURRENT`
 under exclusive namespace ownership and MUST NOT delete either file belonging
-to the generation it currently names.
+to the generation it currently names. Before deletion, its authority selection
+MUST be durable through completed publication sync or the required recovery
+barrier below; validating visible marker bytes alone is insufficient.
+
+After read-only validation of `CURRENT` and its selected generation, recovery
+MUST synchronize the opened checkpoint namespace directory under exclusive
+ownership, as specified by the behavioral
+[recovery publication barrier](filelog-receiver-phase1-spec.md#recovery-and-publication-barrier).
+A process exit after marker rename but before directory sync can leave a new
+marker visible without durable publication. Until this barrier and remaining
+recovery steps succeed, source reads, WAL appends/progress acceptance, cleanup,
+and another publication MUST remain blocked. A sync failure never permits
+fallback to another generation. This requirement also applies to recovery of
+first publication and is independent of the checkpoint sync interval; engine
+root sync and WAL-file sync do not substitute for it.
 
 ## First-generation namespace publication
 
