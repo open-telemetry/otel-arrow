@@ -50,6 +50,7 @@ pub enum Query {
     KqlQuery(String),
     OplQuery(String),
     Ottl(OttlConfig),
+    ParseLogs(Box<super::parse_logs::ParseConfig>),
 }
 
 #[derive(Debug, Deserialize)]

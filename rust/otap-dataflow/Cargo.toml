@@ -110,6 +110,7 @@ clap = { version = "4.5.42", features = ["derive"] }
 clap_complete = "4.5.55"
 core_affinity = "0.8.3"
 criterion = "0.8.0"
+csv-core = "0.1.13"
 data-encoding = "2.9.0"
 datafusion = { version = "53.0.0", default-features = false }
 dhat = "0.3.3"
@@ -182,6 +183,7 @@ rand = "0.10.1"
 rcgen = "0.14"
 rdkafka = { version = "=0.38.0", features = ["tokio", "tracing"] }
 regex = "1.12"
+regex-automata = "0.4.14"
 ring = "0.17"
 roaring = "0.11.2"
 ryu = "1"

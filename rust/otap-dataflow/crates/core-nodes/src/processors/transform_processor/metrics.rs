@@ -21,6 +21,8 @@ pub(super) enum TransformLanguage {
     Opl,
     /// OpenTelemetry Transformation Language.
     Ottl,
+    /// Declarative framed log parsing.
+    ParseLogs,
 }
 
 /// Fixed query-language context for transform processor metrics.
@@ -91,6 +93,22 @@ struct TransformFailureMetrics {
 pub(super) struct TransformMetrics {
     operations: MeasurementMetricSet<TransformOperationMetrics>,
     failures: MeasurementMetricSet<TransformFailureMetrics>,
+    parsing: MeasurementMetricSet<ParsingMetrics>,
+}
+
+#[attribute_set(item, measurement)]
+#[derive(Debug, Clone, Copy)]
+struct ParsingAttributes {
+    format: super::parse_logs::Format,
+    reason: super::parse_logs::DataError,
+}
+
+#[metric_set(name = "processor.transform.parse_logs", measurement_attributes = ParsingAttributes)]
+#[derive(Debug, Default, Clone)]
+struct ParsingMetrics {
+    /// Preserved malformed records, grouped by bounded format and reason.
+    #[metric(unit = "{record}")]
+    records: Counter<u64>,
 }
 
 impl TransformMetrics {
@@ -100,6 +118,7 @@ impl TransformMetrics {
         Self {
             operations: TransformOperationMetrics::register(pipeline_ctx, &language_attributes),
             failures: TransformFailureMetrics::register(pipeline_ctx, &language_attributes),
+            parsing: ParsingMetrics::register(pipeline_ctx),
         }
     }
 
@@ -108,6 +127,22 @@ impl TransformMetrics {
         reporter
             .report_measurement(&mut self.operations)
             .and_then(|()| reporter.report_measurement(&mut self.failures))
+            .and_then(|()| reporter.report_measurement(&mut self.parsing))
+    }
+
+    pub(super) fn record_parsing(
+        &mut self,
+        format: super::parse_logs::Format,
+        counts: super::parse_logs::Counts,
+    ) {
+        for (reason, count) in counts.values() {
+            if count != 0 {
+                self.parsing
+                    .with(ParsingAttributes { format, reason })
+                    .records
+                    .add(count);
+            }
+        }
     }
 
     /// Records one locally successful transform operation.
