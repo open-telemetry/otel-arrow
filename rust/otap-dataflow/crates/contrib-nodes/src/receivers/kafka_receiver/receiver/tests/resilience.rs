@@ -422,16 +422,15 @@ async fn adversarial_topic_and_header_values_do_not_stall_loop() {
             let mut found_tenant = false;
             for rs in &result.resource_spans {
                 let resource = rs.resource.as_ref().expect("resource present");
-                if let Some(kv) = resource.attributes.iter().find(|kv| kv.key == "tenant.id") {
-                    if let Some(any_value::Value::StringValue(s)) =
+                if let Some(kv) = resource.attributes.iter().find(|kv| kv.key == "tenant.id")
+                    && let Some(any_value::Value::StringValue(s)) =
                         kv.value.as_ref().and_then(|v| v.value.as_ref())
-                    {
-                        assert_eq!(
-                            s, &adversarial_value,
-                            "adversarial header value is extracted verbatim",
-                        );
-                        found_tenant = true;
-                    }
+                {
+                    assert_eq!(
+                        s, &adversarial_value,
+                        "adversarial header value is extracted verbatim",
+                    );
+                    found_tenant = true;
                 }
             }
             assert!(found_tenant, "the tenant.id attribute should be extracted");

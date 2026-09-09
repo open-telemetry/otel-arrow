@@ -586,11 +586,11 @@ async fn rebalance_cooperative_sticky_retains_owned_partitions() {
             // Poll B until it is assigned a partition (drives the rebalance).
             let mut b_partition = None;
             for _ in 0..40 {
-                if let Ok(a) = consumer_b.assignment() {
-                    if let Some(elem) = a.elements().first() {
-                        b_partition = Some(elem.partition());
-                        break;
-                    }
+                if let Ok(a) = consumer_b.assignment()
+                    && let Some(elem) = a.elements().first()
+                {
+                    b_partition = Some(elem.partition());
+                    break;
                 }
                 let _ = tokio::time::timeout(Duration::from_millis(500), consumer_b.recv()).await;
             }

@@ -142,11 +142,11 @@ impl KafkaReceiver {
         // unique group.instance.id. On a multi-core pipeline every core would
         // otherwise share the configured ID and fence one another, so suffix it
         // with the pipeline core ID.
-        if pipeline_ctx.num_cores() > 1 {
-            if let Some(base_id) = config.group_instance_id() {
-                let resolved = format!("{base_id}-{}", pipeline_ctx.core_id());
-                config.set_group_instance_id(resolved);
-            }
+        if pipeline_ctx.num_cores() > 1
+            && let Some(base_id) = config.group_instance_id()
+        {
+            let resolved = format!("{base_id}-{}", pipeline_ctx.core_id());
+            config.set_group_instance_id(resolved);
         }
 
         // Warn about consumer_config keys that may be overwritten by first-class fields.
@@ -476,12 +476,10 @@ impl KafkaReceiver {
         // A transient NACK configured for replay never advances the offset.
         // The timer delivers `NodeControlMsg::TimerTick` on the control
         // channel, which is handled in the main loop below.
-        if manual_commit {
-            if let Some(ms) = self.config.commit_interval_ms() {
-                let _commit_timer_handle = effect_handler
-                    .start_periodic_timer(Duration::from_millis(ms))
-                    .await?;
-            }
+        if manual_commit && let Some(ms) = self.config.commit_interval_ms() {
+            let _commit_timer_handle = effect_handler
+                .start_periodic_timer(Duration::from_millis(ms))
+                .await?;
         }
 
         // Opt-in consumer-lag refresh timer, derived from the configured

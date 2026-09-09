@@ -24,20 +24,20 @@ pub(super) fn capture_transport_headers(
     capture_policy: Option<&HeaderCapturePolicy>,
     pdata: &mut OtapPdata,
 ) {
-    if let Some(policy) = capture_policy {
-        if let Some(headers) = kafka_message.headers() {
-            let pairs = headers.iter().filter_map(|h| h.value.map(|v| (h.key, v)));
-            let mut transport_headers = TransportHeaders::new();
-            let stats = policy.capture_from_pairs(pairs, &mut transport_headers);
-            if let Some(stats) = stats {
-                otel_error!(
-                    "kafka.capture_policy.limits_exceeded",
-                    stats = %stats,
-                );
-            }
-            if !transport_headers.is_empty() {
-                pdata.set_transport_headers(transport_headers);
-            }
+    if let Some(policy) = capture_policy
+        && let Some(headers) = kafka_message.headers()
+    {
+        let pairs = headers.iter().filter_map(|h| h.value.map(|v| (h.key, v)));
+        let mut transport_headers = TransportHeaders::new();
+        let stats = policy.capture_from_pairs(pairs, &mut transport_headers);
+        if let Some(stats) = stats {
+            otel_error!(
+                "kafka.capture_policy.limits_exceeded",
+                stats = %stats,
+            );
+        }
+        if !transport_headers.is_empty() {
+            pdata.set_transport_headers(transport_headers);
         }
     }
 }

@@ -352,10 +352,10 @@ impl RecordBundle for OtapRecordBundleAdapter {
         let payload_type = slot_to_payload_type(slot)?;
 
         // For signal-specific slots, verify the signal type matches
-        if let Some((signal_type, _)) = from_slot_id(slot) {
-            if signal_type != self.signal_type {
-                return None;
-            }
+        if let Some((signal_type, _)) = from_slot_id(slot)
+            && signal_type != self.signal_type
+        {
+            return None;
         }
         // Shared slots (RESOURCE_ATTRS, SCOPE_ATTRS) are allowed for any signal type
 
@@ -702,12 +702,12 @@ where
                 .map_err(|e| BundleConversionError::RecordBatchCreationError(e.to_string()))?;
         }
         // Also include shared slots (RESOURCE_ATTRS, SCOPE_ATTRS)
-        else if let Some(payload_type) = slot_to_payload_type(*slot_id) {
-            if is_shared_slot(*slot_id) {
-                store
-                    .set(payload_type, batch.clone())
-                    .map_err(|e| BundleConversionError::RecordBatchCreationError(e.to_string()))?;
-            }
+        else if let Some(payload_type) = slot_to_payload_type(*slot_id)
+            && is_shared_slot(*slot_id)
+        {
+            store
+                .set(payload_type, batch.clone())
+                .map_err(|e| BundleConversionError::RecordBatchCreationError(e.to_string()))?;
         }
     }
 

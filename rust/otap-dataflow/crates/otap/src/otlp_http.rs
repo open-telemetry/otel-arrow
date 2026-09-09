@@ -758,18 +758,18 @@ impl HttpHandler {
 
             // Collect request body.
             let size_hint = body.size_hint();
-            if let Some(upper) = size_hint.upper() {
-                if (upper as usize) > max_len {
-                    otel_arrow_dfe_telemetry::otel_debug!(
-                        "otlp_http_receiver.request_rejected",
-                        reason = "body_too_large_hint",
-                        max_len = max_len,
-                        size_hint = upper,
-                        path = parts.uri.path().to_string()
-                    );
-                    self.record_rejection(ReceiverRejectionErrorType::PayloadTooLarge);
-                    return Err(limited_body_too_large());
-                }
+            if let Some(upper) = size_hint.upper()
+                && (upper as usize) > max_len
+            {
+                otel_arrow_dfe_telemetry::otel_debug!(
+                    "otlp_http_receiver.request_rejected",
+                    reason = "body_too_large_hint",
+                    max_len = max_len,
+                    size_hint = upper,
+                    path = parts.uri.path().to_string()
+                );
+                self.record_rejection(ReceiverRejectionErrorType::PayloadTooLarge);
+                return Err(limited_body_too_large());
             }
 
             let collected = Limited::new(body, max_len).collect().await.map_err(|e| {

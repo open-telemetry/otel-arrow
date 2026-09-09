@@ -1,8 +1,12 @@
-# OTAP Pipeline
+# OTAP Common Runtime
 
-The OTAP (OpenTelemetry Arrow Protocol) crate now primarily contains shared OTAP
-and OTLP transport infrastructure, pdata types, TLS/compression helpers, and
-test support used by node implementations in other crates.
+This crate is currently pre-1.0. Its public API may evolve between minor
+releases.
+
+The OTAP (OpenTelemetry Arrow Protocol) crate is the common runtime layer used
+by Dataflow node crates. It provides the shared OTAP and OTLP transport
+infrastructure, pdata types, TLS and compression helpers, metrics, and test
+support that core, contrib, development, and custom nodes build on.
 
 Core node implementations live in `crates/core-nodes`.
 

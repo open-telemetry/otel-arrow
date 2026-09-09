@@ -38,16 +38,39 @@ otel-arrow-dfe-controller = { workspace = true }
 prost = { workspace = true }
 
 [features]
+integration-tests = []
 crypto-ring = ["otel-arrow-dfe-otap/crypto-ring"]
 crypto-aws-lc = ["otel-arrow-dfe-otap/crypto-aws-lc"]
 crypto-symcrypt = ["otel-arrow-dfe-otap/crypto-symcrypt"]
 crypto-openssl = ["otel-arrow-dfe-otap/crypto-openssl"]
 
 [dev-dependencies]
+bytes = { workspace = true }
+otel-arrow-dfe-contrib-nodes = { workspace = true }
+otel-arrow-dfe-quiver = { workspace = true }
+otel-arrow-dfe-state = { workspace = true }
+parking_lot = { workspace = true }
 tempfile = { workspace = true }
+tokio-util = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["fmt", "std", "env-filter"] }
 wiremock = { workspace = true }
 otel-arrow-dfe-test-tls-certs = { workspace = true }
 weaver_common = { workspace = true }
 weaver_forge = { workspace = true }
 weaver_resolver = { workspace = true }
 weaver_semconv = { workspace = true }
+
+[[test]]
+name = "pipeline_tests"
+path = "tests/pipeline_tests.rs"
+required-features = ["integration-tests"]
+
+[[test]]
+name = "durable_buffer_processor_tests"
+path = "tests/durable_buffer_processor_tests.rs"
+required-features = ["integration-tests"]
+
+[[test]]
+name = "core_node_liveness_tests"
+path = "tests/core_node_liveness_tests.rs"
+required-features = ["integration-tests"]
