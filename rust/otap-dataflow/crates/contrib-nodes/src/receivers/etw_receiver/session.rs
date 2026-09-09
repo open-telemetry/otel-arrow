@@ -1195,7 +1195,7 @@ fn spawn_etw_session(
                     enabler.ensure_keyword(*kw);
                 }
                 for id in event_ids {
-                    enabler.add_event(id, false);
+                    enabler.add_event(*id, false);
                 }
             }
 
