@@ -1522,7 +1522,7 @@ mod tests {
                             runtime_ctrl_tx,
                             completion_tx,
                             metrics_reporter,
-                            crate::Interests::PROCESS_DURATION,
+                            crate::Interests::COMPONENT_DURATION,
                             None,
                             true,
                             true,

@@ -440,30 +440,6 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         } = self;
 
         let metric_level = telemetry_policy.runtime_metrics;
-        let base_node_interests = Interests::from_metric_level(metric_level);
-        // Per-node measurement opt-ins enable the corresponding detailed-level
-        // measurement without enabling every detailed runtime metric.
-        let item_count_optin: HashSet<&str> = pipeline_config
-            .node_iter()
-            .filter(|(_, cfg)| {
-                cfg.policies
-                    .as_ref()
-                    .and_then(|policies| policies.telemetry.as_ref())
-                    .is_some_and(|telemetry| telemetry.item_counts)
-            })
-            .map(|(node_id, _)| node_id.as_ref())
-            .collect();
-        let size_optin: HashSet<&str> = pipeline_config
-            .node_iter()
-            .filter(|(_, cfg)| {
-                cfg.policies
-                    .as_ref()
-                    .and_then(|policies| policies.telemetry.as_ref())
-                    .is_some_and(|telemetry| telemetry.size)
-            })
-            .map(|(node_id, _)| node_id.as_ref())
-            .collect();
-
         // Single-threaded runtime so we can drive !Send node tasks on the core thread.
         let rt = Builder::new_current_thread()
             .enable_all()
@@ -578,13 +554,11 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         for exporter in exporters {
             let mut exporter = exporter;
             let node_id = exporter.node_id();
-            let mut node_interests = base_node_interests;
-            if item_count_optin.contains(node_id.name.as_ref()) {
-                node_interests |= Interests::PRODUCED_CONSUMED_ITEM_COUNTS;
-            }
-            if size_optin.contains(node_id.name.as_ref()) {
-                node_interests |= Interests::PRODUCED_CONSUMED_SIZE;
-            }
+            let node_config = pipeline_config
+                .nodes()
+                .get(node_id.name.as_ref())
+                .expect("runtime exporter has pipeline configuration");
+            let node_interests = Interests::for_node(metric_level, node_config);
             control_senders.register(
                 node_id.clone(),
                 NodeType::Exporter,
@@ -660,13 +634,11 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         for processor in processors {
             let mut processor = processor;
             let node_id = processor.node_id();
-            let mut node_interests = base_node_interests;
-            if item_count_optin.contains(node_id.name.as_ref()) {
-                node_interests |= Interests::PRODUCED_CONSUMED_ITEM_COUNTS;
-            }
-            if size_optin.contains(node_id.name.as_ref()) {
-                node_interests |= Interests::PRODUCED_CONSUMED_SIZE;
-            }
+            let node_config = pipeline_config
+                .nodes()
+                .get(node_id.name.as_ref())
+                .expect("runtime processor has pipeline configuration");
+            let node_interests = Interests::for_node(metric_level, node_config);
             control_senders.register(
                 node_id.clone(),
                 NodeType::Processor,
@@ -800,13 +772,11 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         for receiver in receivers {
             let mut receiver = receiver;
             let node_id = receiver.node_id();
-            let mut node_interests = base_node_interests;
-            if item_count_optin.contains(node_id.name.as_ref()) {
-                node_interests |= Interests::PRODUCED_CONSUMED_ITEM_COUNTS;
-            }
-            if size_optin.contains(node_id.name.as_ref()) {
-                node_interests |= Interests::PRODUCED_CONSUMED_SIZE;
-            }
+            let node_config = pipeline_config
+                .nodes()
+                .get(node_id.name.as_ref())
+                .expect("runtime receiver has pipeline configuration");
+            let node_interests = Interests::for_node(metric_level, node_config);
             control_senders.register(
                 node_id.clone(),
                 NodeType::Receiver,
