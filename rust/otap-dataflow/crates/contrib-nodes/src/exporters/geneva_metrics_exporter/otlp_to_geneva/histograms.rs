@@ -21,19 +21,33 @@ pub(super) fn explicit_histogram(point: &HistogramDataPoint) -> Option<MetricHis
     if point.bucket_counts.is_empty() {
         return None;
     }
-    let mut buckets = point
-        .explicit_bounds
-        .iter()
-        .zip(&point.bucket_counts)
-        .map(|(bound, count)| (*bound, (*count).min(u64::from(u32::MAX)) as u32))
-        .collect::<Vec<_>>();
+    let mut buckets = Vec::with_capacity(point.bucket_counts.len());
+    for (&bound, &count) in point.explicit_bounds.iter().zip(&point.bucket_counts) {
+        add_explicit_bucket(&mut buckets, bound, clamp_bucket_count(count));
+    }
     let overflow_count = point.bucket_counts[point.explicit_bounds.len()];
     let overflow_bound = point.explicit_bounds.last().copied().unwrap_or(0.0) + 1.0;
-    buckets.push((
+    add_explicit_bucket(
+        &mut buckets,
         overflow_bound,
-        overflow_count.min(u64::from(u32::MAX)) as u32,
-    ));
+        clamp_bucket_count(overflow_count),
+    );
     Some(MetricHistogram::Explicit(buckets))
+}
+
+fn clamp_bucket_count(count: u64) -> u32 {
+    count.min(u64::from(u32::MAX)) as u32
+}
+
+fn add_explicit_bucket(buckets: &mut Vec<(f64, u32)>, bound: f64, count: u32) {
+    let index = buckets.partition_point(|(existing_bound, _)| *existing_bound < bound);
+    if let Some((existing_bound, existing_count)) = buckets.get_mut(index)
+        && *existing_bound == bound
+    {
+        *existing_count = existing_count.wrapping_add(count);
+    } else {
+        buckets.insert(index, (bound, count));
+    }
 }
 
 pub(super) fn sparse_buckets(
@@ -143,6 +157,25 @@ mod tests {
         );
     }
 
+    /// Scenario: Explicit histogram bounds are unordered, duplicated, and share a bound with the synthetic overflow bucket.
+    /// Guarantees: Buckets are sorted and equal boundaries are coalesced using ME-compatible count addition.
+    #[test]
+    fn sorts_and_coalesces_explicit_histogram_buckets() {
+        let histogram = explicit_histogram(&explicit_point(
+            vec![3.0, 1.0, 1.0, f64::MAX],
+            vec![1, 2, 3, 4, 5],
+        ));
+
+        assert_eq!(
+            histogram,
+            Some(MetricHistogram::Explicit(vec![
+                (1.0, 5),
+                (3.0, 1),
+                (f64::MAX, 9),
+            ]))
+        );
+    }
+
     /// Scenario: Explicit histogram bucket counts exceed the Geneva u32 representation.
     /// Guarantees: Every oversized bucket count is clamped to u32::MAX.
     #[test]
@@ -160,7 +193,7 @@ mod tests {
     }
 
     /// Scenario: An explicit histogram data point contains no bucket counts.
-    /// Guarantees: No histogram body is generated for an empty distribution.
+    /// Guarantees: No histogram body is generated when OTLP supplies only scalar count and sum.
     #[test]
     fn omits_empty_explicit_histogram() {
         assert_eq!(

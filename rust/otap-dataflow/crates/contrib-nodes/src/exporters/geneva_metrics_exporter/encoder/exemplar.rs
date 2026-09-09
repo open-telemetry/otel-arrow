@@ -15,23 +15,6 @@ pub(super) fn validate_exemplars(exemplars: &[MetricExemplar]) -> Result<(), Enc
     encoded_exemplar_list_size(exemplars).map(|_| ())
 }
 
-pub(crate) fn retain_exemplars_within_limits(exemplars: &mut Vec<MetricExemplar>) {
-    let mut payload_size: usize = 0;
-    exemplars.retain(|exemplar| {
-        let Ok(exemplar_size) = encoded_exemplar_size(exemplar) else {
-            return false;
-        };
-        let Some(updated_size) = payload_size.checked_add(exemplar_size) else {
-            return false;
-        };
-        if updated_size > MAX_EXEMPLAR_PAYLOAD_SIZE {
-            return false;
-        }
-        payload_size = updated_size;
-        true
-    });
-}
-
 pub(super) fn write_exemplars(
     writer: &mut Writer,
     exemplars: &[MetricExemplar],

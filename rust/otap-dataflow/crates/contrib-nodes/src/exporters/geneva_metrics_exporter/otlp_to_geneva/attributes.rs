@@ -9,33 +9,30 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{KeyValue, any_value
 use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::ScopeMetrics;
 
 use super::super::encoder::Dimension;
-use super::{Config, PointContext, ResourceContext};
+use super::{CardinalityOverflow, Config, PointContext, ResourceContext};
 
 const MAX_DIMENSIONS: usize = 74;
 pub(super) const MAX_DIMENSION_NAME_CHARS: usize = 512;
-const MAX_DIMENSION_VALUE_CHARS: usize = 1024;
+pub(super) const MAX_DIMENSION_VALUE_CHARS: usize = 1024;
 
 pub(super) const ACCOUNT_ATTRIBUTE: &str = "_microsoft_metrics_account";
 const PREVIOUS_ACCOUNT_ATTRIBUTE: &str = "microsoft_metrics_account";
 pub(super) const NAMESPACE_ATTRIBUTE: &str = "_microsoft_metrics_namespace";
 const PREVIOUS_NAMESPACE_ATTRIBUTE: &str = "microsoft_metrics_namespace";
+const CARDINALITY_OVERFLOW_ATTRIBUTE: &str = "otel.metric.overflow";
 
 pub(super) fn resource_context(attributes: &[KeyValue], config: &Config) -> ResourceContext {
-    let mut monitoring_account = config.monitoring_account.clone();
-    let mut namespace = config.metric_namespace.clone();
+    let mut monitoring_account = None;
+    let mut namespace = None;
     let mut dimensions = Vec::new();
     let mut dimensions_valid = true;
     for attribute in attributes {
         match attribute.key.as_str() {
             ACCOUNT_ATTRIBUTE | PREVIOUS_ACCOUNT_ATTRIBUTE => {
-                if let Some(value) = string_value(attribute) {
-                    monitoring_account = value;
-                }
+                monitoring_account = Some(routing_value(attribute));
             }
             NAMESPACE_ATTRIBUTE | PREVIOUS_NAMESPACE_ATTRIBUTE => {
-                if let Some(value) = string_value(attribute) {
-                    namespace = value;
-                }
+                namespace = Some(routing_value(attribute));
             }
             _ if selected_attribute(&attribute.key, &config.resource_attributes)
                 && !add_dimension(
@@ -46,14 +43,17 @@ pub(super) fn resource_context(attributes: &[KeyValue], config: &Config) -> Reso
                 ) =>
             {
                 dimensions_valid = false;
-                break;
             }
             _ => {}
         }
     }
     ResourceContext {
-        monitoring_account,
-        namespace,
+        monitoring_account: monitoring_account
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| config.monitoring_account.clone()),
+        namespace: namespace
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| config.metric_namespace.clone()),
         dimensions,
         dimensions_valid,
     }
@@ -72,16 +72,13 @@ pub(super) fn point_context(
     for attribute in attributes {
         match attribute.key.as_str() {
             ACCOUNT_ATTRIBUTE => {
-                if let Some(value) = string_value(attribute) {
-                    monitoring_account = value;
-                }
+                monitoring_account = routing_value(attribute);
             }
             NAMESPACE_ATTRIBUTE => {
-                if let Some(value) = string_value(attribute) {
-                    namespace = value;
-                }
+                namespace = routing_value(attribute);
             }
-            _ if !add_dimension(&mut point_dimensions, attribute, false, false) => return None,
+            CARDINALITY_OVERFLOW_ATTRIBUTE => {}
+            _ if !add_dimension(&mut point_dimensions, attribute, false, true) => return None,
             _ => {}
         }
     }
@@ -100,6 +97,42 @@ pub(super) fn point_context(
         monitoring_account,
         namespace,
         dimensions,
+    })
+}
+
+pub(super) fn overflow_diagnostic(
+    attributes: &[KeyValue],
+    resource: &ResourceContext,
+    scope_namespace: &str,
+    metric_name: &str,
+) -> Option<CardinalityOverflow> {
+    let mut monitoring_account = resource.monitoring_account.clone();
+    let mut namespace = scope_namespace.to_string();
+    let mut cardinality_overflow = false;
+    for attribute in attributes {
+        match attribute.key.as_str() {
+            ACCOUNT_ATTRIBUTE => {
+                monitoring_account = routing_value(attribute);
+            }
+            NAMESPACE_ATTRIBUTE => {
+                namespace = routing_value(attribute);
+            }
+            CARDINALITY_OVERFLOW_ATTRIBUTE => {
+                cardinality_overflow = matches!(
+                    attribute
+                        .value
+                        .as_ref()
+                        .and_then(|value| value.value.as_ref()),
+                    Some(any_value::Value::BoolValue(true))
+                );
+            }
+            _ => {}
+        }
+    }
+    cardinality_overflow.then(|| CardinalityOverflow {
+        monitoring_account,
+        namespace,
+        metric_name: metric_name.to_string(),
     })
 }
 
@@ -123,7 +156,9 @@ fn add_dimension(
                     }
                 }
                 Some(any_value::Value::IntValue(value)) if !string_only => value.to_string(),
-                Some(any_value::Value::DoubleValue(value)) if !string_only => value.to_string(),
+                Some(any_value::Value::DoubleValue(value)) if !string_only => {
+                    format_double_dimension(*value)
+                }
                 _ => String::new(),
             });
     if attribute.key.chars().count() > MAX_DIMENSION_NAME_CHARS
@@ -158,23 +193,31 @@ pub(super) fn selected_scope_dimensions(
     else {
         return Some(Vec::new());
     };
-    let selection = config
+    let wildcard_selection = config
         .scope_attributes
         .iter()
-        .find(|selection| selection.name == "*")
-        .or_else(|| {
-            config
-                .scope_attributes
-                .iter()
-                .find(|selection| selection.name == scope.name)
-        });
-    let Some(selection) = selection else {
-        return Some(Vec::new());
+        .find(|selection| selection.name == "*");
+    let selected_keys = if let Some(selection) = wildcard_selection {
+        selection
+            .keys
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+    } else {
+        config
+            .scope_attributes
+            .iter()
+            .filter(|selection| selection.name == scope.name)
+            .flat_map(|selection| selection.keys.iter())
+            .map(String::as_str)
+            .collect::<Vec<_>>()
     };
     let mut dimensions = Vec::new();
     for attribute in &scope.attributes {
         if attribute.key != NAMESPACE_ATTRIBUTE
-            && selected_attribute(&attribute.key, &selection.keys)
+            && selected_keys
+                .iter()
+                .any(|candidate| *candidate == "*" || *candidate == attribute.key.as_str())
             && !add_dimension(
                 &mut dimensions,
                 attribute,
@@ -186,6 +229,34 @@ pub(super) fn selected_scope_dimensions(
         }
     }
     Some(dimensions)
+}
+
+fn format_double_dimension(value: f64) -> String {
+    if value.is_nan() {
+        return "nan".to_string();
+    }
+    if value == f64::INFINITY {
+        return "inf".to_string();
+    }
+    if value == f64::NEG_INFINITY {
+        return "-inf".to_string();
+    }
+    if value.abs() >= 1e6 {
+        let formatted = format!("{value:.6e}");
+        let (mantissa, exponent) = formatted
+            .split_once('e')
+            .expect("scientific formatting always includes an exponent");
+        let exponent = exponent
+            .parse::<i32>()
+            .expect("a formatted f64 exponent always fits i32");
+        return format!("{mantissa}e{exponent:+03}");
+    }
+
+    let mut formatted = format!("{value:.6}");
+    while formatted.len() > 1 && (formatted.ends_with('0') || formatted.ends_with('.')) {
+        let _ = formatted.pop();
+    }
+    formatted
 }
 
 fn selected_attribute(key: &str, selected: &[String]) -> bool {
@@ -239,7 +310,8 @@ pub(super) fn attribute_string(attributes: &[KeyValue], key: &str) -> Option<Str
         .iter()
         .rev()
         .find(|attribute| attribute.key == key)
-        .and_then(string_value)
+        .map(routing_value)
+        .filter(|value| !value.is_empty())
 }
 
 pub(super) fn string_value(attribute: &KeyValue) -> Option<String> {
@@ -247,6 +319,10 @@ pub(super) fn string_value(attribute: &KeyValue) -> Option<String> {
         any_value::Value::StringValue(value) => Some(value.clone()),
         _ => None,
     }
+}
+
+fn routing_value(attribute: &KeyValue) -> String {
+    string_value(attribute).unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -278,6 +354,10 @@ mod tests {
 
     fn string_attribute(key: &str, value: &str) -> KeyValue {
         attribute(key, any_value::Value::StringValue(value.to_string()))
+    }
+
+    fn double_attribute(key: &str, value: f64) -> KeyValue {
+        attribute(key, any_value::Value::DoubleValue(value))
     }
 
     fn dimension(name: &str, value: &str) -> Dimension {
@@ -347,6 +427,25 @@ mod tests {
         assert_eq!(current.namespace, "current-namespace");
     }
 
+    /// Scenario: Final resource routing attributes are empty or non-string after earlier non-empty values.
+    /// Guarantees: ME routing falls back to the configured monitoring account and namespace.
+    #[test]
+    fn falls_back_from_empty_resource_routing_values() {
+        let mapping_config = config();
+        let context = resource_context(
+            &[
+                string_attribute(ACCOUNT_ATTRIBUTE, "ignored-account"),
+                attribute(ACCOUNT_ATTRIBUTE, any_value::Value::IntValue(1)),
+                string_attribute(NAMESPACE_ATTRIBUTE, "ignored-namespace"),
+                string_attribute(NAMESPACE_ATTRIBUTE, ""),
+            ],
+            &mapping_config,
+        );
+
+        assert_eq!(context.monitoring_account, "default-account");
+        assert_eq!(context.namespace, "default-namespace");
+    }
+
     /// Scenario: Resource attributes contain selected and unselected string dimensions.
     /// Guarantees: Only explicitly selected resource attributes become Geneva dimensions.
     #[test]
@@ -387,6 +486,41 @@ mod tests {
         assert_eq!(point.monitoring_account, "point-account");
         assert_eq!(point.namespace, "point-namespace");
         assert_eq!(point.dimensions, vec![dimension("region", "west")]);
+    }
+
+    /// Scenario: Point routing attributes contain non-string OTLP values.
+    /// Guarantees: Protobuf string-value semantics apply empty account and namespace overrides instead of retaining parent routing.
+    #[test]
+    fn applies_empty_point_overrides_for_non_string_routing_values() {
+        let point = point_context(
+            &[
+                string_attribute(ACCOUNT_ATTRIBUTE, "ignored-account"),
+                attribute(ACCOUNT_ATTRIBUTE, any_value::Value::IntValue(1)),
+                string_attribute(NAMESPACE_ATTRIBUTE, "ignored-namespace"),
+                attribute(NAMESPACE_ATTRIBUTE, any_value::Value::BoolValue(true)),
+            ],
+            &resource_with_dimensions(Vec::new()),
+            "scope-namespace",
+            &[],
+            &config(),
+        )
+        .expect("point context should be valid");
+
+        assert!(point.monitoring_account.is_empty());
+        assert!(point.namespace.is_empty());
+        assert!(point.dimensions.is_empty());
+    }
+
+    /// Scenario: A scope namespace attribute is empty or non-string.
+    /// Guarantees: Scope routing returns no override so the caller can retain the resource or configured namespace.
+    #[test]
+    fn ignores_empty_scope_namespace_overrides() {
+        for attribute in [
+            string_attribute(NAMESPACE_ATTRIBUTE, ""),
+            attribute(NAMESPACE_ATTRIBUTE, any_value::Value::BoolValue(true)),
+        ] {
+            assert_eq!(attribute_string(&[attribute], NAMESPACE_ATTRIBUTE), None);
+        }
     }
 
     /// Scenario: Point, resource, and scope dimensions use the same name with different casing.
@@ -431,9 +565,94 @@ mod tests {
         assert_eq!(
             point.dimensions,
             vec![
-                dimension("alpha", "second"),
+                dimension("alpha", "first"),
                 dimension("Beta", "scope"),
                 dimension("zeta", "resource"),
+            ]
+        );
+    }
+
+    /// Scenario: Case-insensitive duplicate point attributes carry different values.
+    /// Guarantees: The final OTLP occurrence replaces the earlier value while retaining one dimension.
+    #[test]
+    fn uses_last_duplicate_point_dimension_value() {
+        let point = point_context(
+            &[
+                string_attribute("region", "east"),
+                string_attribute("REGION", "west"),
+            ],
+            &resource_with_dimensions(Vec::new()),
+            "scope-namespace",
+            &[],
+            &config(),
+        )
+        .expect("point context should be valid");
+
+        assert_eq!(point.dimensions, vec![dimension("region", "west")]);
+    }
+
+    /// Scenario: Cardinality-overflow metadata is false or has a non-boolean value.
+    /// Guarantees: The reserved attribute is never emitted as a dimension and only boolean true raises the diagnostic marker.
+    #[test]
+    fn reserves_cardinality_overflow_attribute() {
+        for attribute in [
+            attribute(
+                CARDINALITY_OVERFLOW_ATTRIBUTE,
+                any_value::Value::BoolValue(false),
+            ),
+            string_attribute(CARDINALITY_OVERFLOW_ATTRIBUTE, "true"),
+        ] {
+            let diagnostic = overflow_diagnostic(
+                std::slice::from_ref(&attribute),
+                &resource_with_dimensions(Vec::new()),
+                "scope-namespace",
+                "metric",
+            );
+            let point = point_context(
+                &[attribute],
+                &resource_with_dimensions(Vec::new()),
+                "scope-namespace",
+                &[],
+                &config(),
+            )
+            .expect("point context should be valid");
+
+            assert!(point.dimensions.is_empty());
+            assert!(diagnostic.is_none());
+        }
+    }
+
+    /// Scenario: Double point attributes cover fixed, scientific, and special floating-point values.
+    /// Guarantees: Dimension values use ME's six-decimal locale-independent formatting contract.
+    #[test]
+    fn formats_double_dimensions_like_me() {
+        let point = point_context(
+            &[
+                double_attribute("fixed", 12_345.678_9),
+                double_attribute("rounded", 1.234_567_89),
+                double_attribute("scientific", 1_234_567_890_000_000.0),
+                double_attribute("negative-zero", -0.0),
+                double_attribute("nan", f64::NAN),
+                double_attribute("positive-infinity", f64::INFINITY),
+                double_attribute("negative-infinity", f64::NEG_INFINITY),
+            ],
+            &resource_with_dimensions(Vec::new()),
+            "scope-namespace",
+            &[],
+            &config(),
+        )
+        .expect("point context should be valid");
+
+        assert_eq!(
+            point.dimensions,
+            vec![
+                dimension("fixed", "12345.6789"),
+                dimension("nan", "nan"),
+                dimension("negative-infinity", "-inf"),
+                dimension("negative-zero", "-"),
+                dimension("positive-infinity", "inf"),
+                dimension("rounded", "1.234568"),
+                dimension("scientific", "1.234568e+15"),
             ]
         );
     }
@@ -546,6 +765,80 @@ mod tests {
                 dimension("service", "checkout"),
             ]
         );
+    }
+
+    /// Scenario: Multiple scope configuration entries target the same instrumentation scope.
+    /// Guarantees: Their selected key sets are unioned so no later configured dimension is lost.
+    #[test]
+    fn merges_repeated_scope_attribute_selections() {
+        let mut mapping_config = config();
+        mapping_config.scope_attributes = vec![
+            ScopeAttributes {
+                name: "meter".to_string(),
+                keys: vec!["region".to_string()],
+            },
+            ScopeAttributes {
+                name: "meter".to_string(),
+                keys: vec!["service".to_string()],
+            },
+        ];
+        let scope = scope_metrics(
+            "meter",
+            vec![
+                string_attribute("region", "west"),
+                string_attribute("service", "checkout"),
+            ],
+        );
+
+        let dimensions = selected_scope_dimensions(&scope, &mapping_config)
+            .expect("scope dimensions should be valid");
+
+        assert_eq!(
+            dimensions,
+            vec![
+                dimension("region", "west"),
+                dimension("service", "checkout"),
+            ]
+        );
+    }
+
+    /// Scenario: Exact scope selectors appear before and after a wildcard scope selector.
+    /// Guarantees: The first wildcard replaces exact selections and later entries are ignored like ME configuration loading.
+    #[test]
+    fn wildcard_scope_selection_replaces_exact_entries() {
+        let mut mapping_config = config();
+        mapping_config.scope_attributes = vec![
+            ScopeAttributes {
+                name: "meter".to_string(),
+                keys: vec!["exact-before".to_string()],
+            },
+            ScopeAttributes {
+                name: "*".to_string(),
+                keys: vec!["global".to_string()],
+            },
+            ScopeAttributes {
+                name: "*".to_string(),
+                keys: vec!["ignored-global".to_string()],
+            },
+            ScopeAttributes {
+                name: "meter".to_string(),
+                keys: vec!["exact-after".to_string()],
+            },
+        ];
+        let scope = scope_metrics(
+            "meter",
+            vec![
+                string_attribute("exact-before", "value"),
+                string_attribute("global", "value"),
+                string_attribute("ignored-global", "value"),
+                string_attribute("exact-after", "value"),
+            ],
+        );
+
+        let dimensions = selected_scope_dimensions(&scope, &mapping_config)
+            .expect("scope dimensions should be valid");
+
+        assert_eq!(dimensions, vec![dimension("global", "value")]);
     }
 
     /// Scenario: No configured scope selector matches the instrumentation scope.

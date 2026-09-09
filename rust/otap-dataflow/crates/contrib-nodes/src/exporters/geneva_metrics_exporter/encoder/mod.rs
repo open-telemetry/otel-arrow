@@ -13,7 +13,5 @@ mod writer;
 pub use model::*;
 pub use packet::{encode, validate_metric};
 
-pub(super) use exemplar::retain_exemplars_within_limits;
-
 #[cfg(test)]
 mod test_support;
