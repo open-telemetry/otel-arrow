@@ -230,9 +230,9 @@ mod tests {
     use std::cell::Cell;
 
     thread_local! {
-        /// Number of `invalid_token` notifications raised on this test thread.
-        static INVALID_TOKENS: Cell<usize> = const { Cell::new(0) };
-        /// Number of `token_stream_closed` notifications raised on this test thread.
+        /// Number of `invalid` notifications raised on this test thread.
+        static INVALID: Cell<usize> = const { Cell::new(0) };
+        /// Number of `stream_closed` notifications raised on this test thread.
         static STREAM_CLOSURES: Cell<usize> = const { Cell::new(0) };
     }
 
@@ -240,12 +240,12 @@ mod tests {
     /// thread-local; the test harness gives each test its own thread, and every
     /// test resets them before use.
     const TEST_EVENTS: HttpClientAuthProviderEvents = HttpClientAuthProviderEvents {
-        invalid: |_| INVALID_TOKENS.set(INVALID_TOKENS.get() + 1),
+        invalid: |_| INVALID.set(INVALID.get() + 1),
         stream_closed: || STREAM_CLOSURES.set(STREAM_CLOSURES.get() + 1),
     };
 
     fn reset_events() {
-        INVALID_TOKENS.set(0);
+        INVALID.set(0);
         STREAM_CLOSURES.set(0);
     }
 
@@ -351,7 +351,7 @@ mod tests {
         auth.poll_refresh(&TEST_EVENTS).await;
 
         assert_eq!(
-            INVALID_TOKENS.get(),
+            INVALID.get(),
             1,
             "a token that cannot become a header value must be reported"
         );
