@@ -70,6 +70,8 @@ pub async fn create_client_config(config: &TlsClientConfig) -> Result<Option<Cli
         }
     }
 
+    let builder = ClientConfig::builder().with_root_certificates(cert_store);
+
     // mTLS client certificate configuration
     let client_cert_configured = config.config.cert_file.is_some()
         || config
@@ -83,8 +85,6 @@ pub async fn create_client_config(config: &TlsClientConfig) -> Result<Option<Cli
             .key_pem
             .as_ref()
             .is_some_and(|pem| !pem.trim().is_empty());
-
-    let builder = ClientConfig::builder().with_root_certificates(cert_store);
 
     if client_cert_configured || client_key_configured {
         if !(client_cert_configured && client_key_configured) {

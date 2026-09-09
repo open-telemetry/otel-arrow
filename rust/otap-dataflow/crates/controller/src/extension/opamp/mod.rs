@@ -153,11 +153,12 @@ fn start(
     Ok(Box::new(move |cancellation_token| {
         Box::pin(async move {
             let client_tls_config = if let Some(tls_client_config) = &config.tls {
-                // safety: we've validated we can create the client TLS config from the supplied
-                // TLS config in the call to `validate_config`
-                create_client_config(tls_client_config)
-                    .await
-                    .expect("create TLS client config")
+                create_client_config(tls_client_config).await.map_err(|e| {
+                    // even though we've already validated that the TLS configuration is valid,
+                    // there could be a small window where the file-based certs were moved or
+                    // changed so surface the runtime error here from this unlikely scenario
+                    ControllerExtensionError::from(e)
+                })?
             } else {
                 None
             };
