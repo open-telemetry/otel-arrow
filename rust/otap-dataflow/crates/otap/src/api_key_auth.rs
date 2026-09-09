@@ -179,7 +179,7 @@ mod tests {
         STREAM_CLOSURES.set(0);
     }
 
-    /// Builds an adapter holding a usable, non-expiring API Key at `generation`,
+    /// Builds an adapter holding a usable, non-expiring api key at `generation`,
     /// with an inert (empty) stream so only `invalidate` behavior is exercised.
     fn auth_with_cached_api_key(generation: u64) -> ApiKeyAuth {
         ApiKeyAuth {
