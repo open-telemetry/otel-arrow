@@ -264,12 +264,12 @@ where
     D: Deserializer<'de>,
 {
     let value: Option<String> = Option::deserialize(deserializer)?;
-    if let Some(ref name) = value {
-        if name.trim().is_empty() {
-            return Err(serde::de::Error::custom(
-                "'default_event_name' must be a non-empty table name",
-            ));
-        }
+    if let Some(ref name) = value
+        && name.trim().is_empty()
+    {
+        return Err(serde::de::Error::custom(
+            "'default_event_name' must be a non-empty table name",
+        ));
     }
     Ok(value)
 }
@@ -296,14 +296,14 @@ fn validate_events_map(
                 "{signal}.event_name_mapping.events source keys must not be blank"
             ));
         }
-        if let Some(dest) = destination {
-            if dest.trim().is_empty() {
-                return Err(format!(
-                    "{signal}.event_name_mapping.events destination for source '{source}' must \
+        if let Some(dest) = destination
+            && dest.trim().is_empty()
+        {
+            return Err(format!(
+                "{signal}.event_name_mapping.events destination for source '{source}' must \
                      not be empty or whitespace; omit the value (use null) to route to the \
                      source value unchanged"
-                ));
-            }
+            ));
         }
     }
     Ok(())
@@ -596,13 +596,13 @@ impl TryFrom<OboConfigRaw> for OboConfig {
                     "obo.events entry for '{event_name}' must have a non-empty identity"
                 ));
             }
-            if let Some(annotations) = &entry.annotations {
-                if annotations.trim().is_empty() {
-                    return Err(format!(
-                        "obo.events entry for '{event_name}' has an empty annotations value; \
+            if let Some(annotations) = &entry.annotations
+                && annotations.trim().is_empty()
+            {
+                return Err(format!(
+                    "obo.events entry for '{event_name}' has an empty annotations value; \
                          omit the field (or use null) instead of an empty string"
-                    ));
-                }
+                ));
             }
         }
         Ok(Self { events: raw.events })

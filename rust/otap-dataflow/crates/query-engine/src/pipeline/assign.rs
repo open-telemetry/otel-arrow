@@ -238,15 +238,14 @@ impl AssignPipelineStage {
             // ambiguous, which is the case for attributes/AnyValues, but we've handled AnyValue
             // above, so the remaining types are all concrete and safe to expect here
             .expect("dest column data type");
-
         // if we've received an AnyValue as the assignment source, but the destination is not an
         // AnyValue, we coerce attempt to coerce it into a single value
-        if let ColumnarValue::Array(values) = &scoped_value.values {
-            if is_any_value_data_type(values.data_type()) {
-                let coerced_value_col =
-                    attempt_coerce_value_column_from_any_value_struct_column(values)?;
-                scoped_value.values = ColumnarValue::Array(coerced_value_col);
-            }
+        if let ColumnarValue::Array(values) = &scoped_value.values
+            && is_any_value_data_type(values.data_type())
+        {
+            let coerced_value_col =
+                attempt_coerce_value_column_from_any_value_struct_column(values)?;
+            scoped_value.values = ColumnarValue::Array(coerced_value_col);
         }
 
         // coerce static scalar int: if the result was a static scalar integer, it will have been
@@ -268,12 +267,12 @@ impl AssignPipelineStage {
 
         // if it's dict encoded, check if the dict values match the expected type
         let column_supports_dict_encoding = root_field_supports_dict_encoding(dest_column_name);
-        if !type_compatible && column_supports_dict_encoding {
-            if let DataType::Dictionary(_, dict_val_type) = &eval_result_column_type {
-                if dict_val_type.as_ref() == &expected_column_data_type {
-                    type_compatible = true
-                }
-            }
+        if !type_compatible
+            && column_supports_dict_encoding
+            && let DataType::Dictionary(_, dict_val_type) = &eval_result_column_type
+            && dict_val_type.as_ref() == &expected_column_data_type
+        {
+            type_compatible = true
         }
 
         // if result is not type compatible, return error
@@ -522,24 +521,22 @@ impl AssignPipelineStage {
         let column_supports_dict_encoding =
             nested_struct_field_supports_dict_encoding(dest_column_name, dest_field_name);
 
-        if let ColumnarValue::Array(values) = &scoped_value.values {
-            if is_any_value_data_type(values.data_type()) {
-                let coerced = attempt_coerce_value_column_from_any_value_struct_column(values)?;
-                scoped_value.values = ColumnarValue::Array(coerced);
-            }
+        if let ColumnarValue::Array(values) = &scoped_value.values
+            && is_any_value_data_type(values.data_type())
+        {
+            let coerced = attempt_coerce_value_column_from_any_value_struct_column(values)?;
+            scoped_value.values = ColumnarValue::Array(coerced);
         }
 
         // Coerce static scalar integers to the destination field type (e.g. AnyInt literal -> UInt32).
         // Mirrors the same cast done in assign_to_root.
-        if let Some(dest_logical_type) = nested_struct_field_type(dest_field_name) {
-            if let Some(dest_arrow_type) = dest_logical_type.datatype() {
-                if scoped_value.scope == DataScope::StaticScalar
-                    && scoped_value.values.data_type().is_integer()
-                    && dest_arrow_type.is_integer()
-                {
-                    scoped_value.values = scoped_value.values.cast_to(&dest_arrow_type, None)?;
-                }
-            }
+        if let Some(dest_logical_type) = nested_struct_field_type(dest_field_name)
+            && let Some(dest_arrow_type) = dest_logical_type.datatype()
+            && scoped_value.scope == DataScope::StaticScalar
+            && scoped_value.values.data_type().is_integer()
+            && dest_arrow_type.is_integer()
+        {
+            scoped_value.values = scoped_value.values.cast_to(&dest_arrow_type, None)?;
         }
 
         let mut values = eval_result_to_array(
@@ -749,12 +746,12 @@ impl AssignPipelineStage {
             // Attempt to coerce the AnyValue into a single column. In this case, we do this as an
             // optimization: this makes the join faster because we can take fewer columns, and it
             // also makes it so we avoid entering `decompose_any_value_upsert` upsert.
-            if let ColumnarValue::Array(ref arr) = scoped_value.values {
-                if is_any_value_data_type(arr.data_type()) {
-                    let coerced_value_col =
-                        attempt_coerce_value_column_from_any_value_struct_column(arr)?;
-                    scoped_value.values = ColumnarValue::Array(coerced_value_col);
-                }
+            if let ColumnarValue::Array(ref arr) = scoped_value.values
+                && is_any_value_data_type(arr.data_type())
+            {
+                let coerced_value_col =
+                    attempt_coerce_value_column_from_any_value_struct_column(arr)?;
+                scoped_value.values = ColumnarValue::Array(coerced_value_col);
             }
 
             let aligned_values = if let ColumnarValue::Scalar(s) = scoped_value.values {
@@ -807,19 +804,18 @@ impl AssignPipelineStage {
             // If the expression produced an AnyValue struct and we were not already able to
             // coerce it into a single array of a single concrete type array, we split the upsert
             // for this attribute into multiple upserts for each type:
-            if let ColumnarValue::Array(ref arr) = aligned_values {
-                if is_any_value_data_type(arr.data_type()) {
-                    let type_filled_arr = fill_null_type_as_empty(arr)?;
-                    let per_type = decompose_any_value_upsert(
-                        attrs_key,
-                        &existing_key_mask,
-                        &type_filled_arr,
-                        &parent_ids,
-                    )?;
-                    attrs_upserts.extend(per_type);
-
-                    continue;
-                }
+            if let ColumnarValue::Array(ref arr) = aligned_values
+                && is_any_value_data_type(arr.data_type())
+            {
+                let type_filled_arr = fill_null_type_as_empty(arr)?;
+                let per_type = decompose_any_value_upsert(
+                    attrs_key,
+                    &existing_key_mask,
+                    &type_filled_arr,
+                    &parent_ids,
+                )?;
+                attrs_upserts.extend(per_type);
+                continue;
             }
 
             attrs_upserts.push(AttributeUpsert {
@@ -911,12 +907,12 @@ impl AssignPipelineStage {
                 .take()
                 .unwrap_or_else(|| ScopedValue::new_scalar(ScalarValue::Null));
 
-            if let ColumnarValue::Array(ref arr) = scoped_value.values {
-                if is_any_value_data_type(arr.data_type()) {
-                    let coerced_value_col =
-                        attempt_coerce_value_column_from_any_value_struct_column(arr)?;
-                    scoped_value.values = ColumnarValue::Array(coerced_value_col);
-                }
+            if let ColumnarValue::Array(ref arr) = scoped_value.values
+                && is_any_value_data_type(arr.data_type())
+            {
+                let coerced_value_col =
+                    attempt_coerce_value_column_from_any_value_struct_column(arr)?;
+                scoped_value.values = ColumnarValue::Array(coerced_value_col);
             }
 
             let aligned_values = if let ColumnarValue::Scalar(s) = scoped_value.values {
@@ -1481,13 +1477,12 @@ impl PipelineStage for AssignPipelineStage {
         // this pipeline stage may be seeing a different subset of the overall batch, but we need
         // to ensure the IDs that are assigned are not duplicated across branches. That is why we
         // add this extension.
-        if let ColumnAccessor::Attributes(attrs_id, _) = &self.dest_columns[0] {
-            if *attrs_id == AttributesIdentifier::Root
-                && exec_state.get_extension::<NextIdTracker>().is_none()
-            {
-                let next_id_tracker = NextIdTracker::try_new(otap_batch)?;
-                exec_state.set_extension(next_id_tracker);
-            }
+        if let ColumnAccessor::Attributes(attrs_id, _) = &self.dest_columns[0]
+            && *attrs_id == AttributesIdentifier::Root
+            && exec_state.get_extension::<NextIdTracker>().is_none()
+        {
+            let next_id_tracker = NextIdTracker::try_new(otap_batch)?;
+            exec_state.set_extension(next_id_tracker);
         }
 
         Ok(())

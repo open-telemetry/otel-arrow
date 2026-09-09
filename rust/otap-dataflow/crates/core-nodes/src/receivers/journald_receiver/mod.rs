@@ -635,16 +635,16 @@ fn worker_loop_inner(
                     .filter(|remaining| !remaining.is_zero())
                     .map(|remaining| remaining.min(config.wait_timeout))
             };
-            if let Some(timeout) = read_timeout {
-                if let Some(entry) = reader.next_entry_with_wait_timeout(timeout)? {
-                    if builder.len() == 0 {
-                        first_cursor = entry.cursor.clone();
-                        first_record_at = StdInstant::now();
-                    }
-                    dropped_fields = dropped_fields.saturating_add(entry.dropped_fields);
-                    builder.append(&entry);
-                    last_cursor = entry.cursor;
+            if let Some(timeout) = read_timeout
+                && let Some(entry) = reader.next_entry_with_wait_timeout(timeout)?
+            {
+                if builder.len() == 0 {
+                    first_cursor = entry.cursor.clone();
+                    first_record_at = StdInstant::now();
                 }
+                dropped_fields = dropped_fields.saturating_add(entry.dropped_fields);
+                builder.append(&entry);
+                last_cursor = entry.cursor;
             }
         }
 
@@ -799,11 +799,11 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                                 continue;
                             };
                             if let Some(effect) = apply_pending_ack(&mut pending, batch_id) {
-                                if let Some(metrics) = metrics.as_mut() {
-                                    if effect.record_ack {
+                                if let Some(metrics) = metrics.as_mut()
+                                    && effect.record_ack
+                                {
                                         metrics.acks.add(1);
                                     }
-                                }
                                 if let Some(command) = effect.command {
                                     send_worker_command(&worker.cmd_tx, command, &effect_handler).await?;
                                 }
@@ -1105,12 +1105,12 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                         Some(WorkerEvent::Stopped) | None => {
                             drop(event_rx);
                             join_worker(worker, &effect_handler).await?;
-                            if let Some(deadline) = drain_deadline {
-                                if pending.is_empty() {
+                            if let Some(deadline) = drain_deadline
+                                && pending.is_empty()
+                            {
                                     effect_handler.notify_receiver_drained().await?;
                                     return Ok(terminal_state(deadline, &metrics));
                                 }
-                            }
                             return Err(terminal_error(&effect_handler, "journald worker stopped unexpectedly"));
                         }
                     }

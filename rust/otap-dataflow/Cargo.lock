@@ -147,7 +147,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -158,7 +158,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1096,11 +1096,12 @@ dependencies = [
 [[package]]
 name = "azure_core"
 version = "1.2.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=aacb2060111920f9fca2f72bff7e401e8a7198ce#aacb2060111920f9fca2f72bff7e401e8a7198ce"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c7dd9cc7f36a158fb897d029d97a9d2d52719a76ae2be2c729f63a380f5c4255"
 dependencies = [
  "async-lock",
  "async-trait",
- "azure_core_macros 1.1.0-beta.1",
+ "azure_core_macros 1.0.0",
  "bytes",
  "futures",
  "pin-project",
@@ -1127,8 +1128,9 @@ dependencies = [
 
 [[package]]
 name = "azure_core_macros"
-version = "1.1.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=aacb2060111920f9fca2f72bff7e401e8a7198ce#aacb2060111920f9fca2f72bff7e401e8a7198ce"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b9b52dba6a345f3ad2d42ff8d0d63df9d0994cfa29657bf18ffdbf149f78a4f5"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1156,7 +1158,8 @@ dependencies = [
 [[package]]
 name = "azure_identity"
 version = "1.1.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=aacb2060111920f9fca2f72bff7e401e8a7198ce#aacb2060111920f9fca2f72bff7e401e8a7198ce"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b90a143acdae0f21a90bbd056f1472ccf79850c834f79380d5ac303506efc9c"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -2504,7 +2507,7 @@ dependencies = [
  "openssl-sys",
  "pkg-config",
  "vcpkg",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3431,7 +3434,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3571,7 +3574,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3974,9 +3977,9 @@ dependencies = [
 
 [[package]]
 name = "geneva-uploader"
-version = "0.7.0"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a3a307a6d8a1aadc32faab67e1f8f8f6ab7842f8e3d679cd28cf4d2cec53401"
+checksum = "8b9df81ec31b2f02849b5f5dc9490479680fa76609c9d945033c278b3fd224d7"
 dependencies = [
  "azure_core 0.29.1",
  "azure_identity 0.29.0",
@@ -5522,9 +5525,9 @@ dependencies = [
 
 [[package]]
 name = "ipnet"
-version = "2.12.1"
+version = "2.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a756c3fac73139e83f14c2d742155dd2b78d3ee56597b419a0579b7bdd6dd78"
+checksum = "791930b43c0d5973160d90a8f3894509f2b273430f5c5c73b668636d0287c5c0"
 
 [[package]]
 name = "is_ci"
@@ -7652,14 +7655,10 @@ dependencies = [
  "object_store",
  "otel-arrow-dfe-channel",
  "otel-arrow-dfe-config",
- "otel-arrow-dfe-contrib-nodes",
- "otel-arrow-dfe-core-nodes",
- "otel-arrow-dfe-dev-nodes",
  "otel-arrow-dfe-engine",
  "otel-arrow-dfe-engine-macros",
  "otel-arrow-dfe-pdata",
  "otel-arrow-dfe-quiver",
- "otel-arrow-dfe-state",
  "otel-arrow-dfe-telemetry",
  "otel-arrow-dfe-telemetry-macros",
  "otel-arrow-dfe-test-net",
@@ -7693,7 +7692,6 @@ dependencies = [
  "tower-service",
  "tracing-subscriber",
  "url",
- "weaver_common",
  "wiremock",
  "zstd",
 ]
@@ -7937,21 +7935,26 @@ name = "otel-arrow-dfe-validation"
 version = "0.54.1"
 dependencies = [
  "async-trait",
+ "bytes",
  "humantime-serde",
  "linkme",
  "minijinja",
  "otel-arrow-dfe-admin-api",
  "otel-arrow-dfe-config",
+ "otel-arrow-dfe-contrib-nodes",
  "otel-arrow-dfe-controller",
  "otel-arrow-dfe-core-nodes",
  "otel-arrow-dfe-dev-nodes",
  "otel-arrow-dfe-engine",
  "otel-arrow-dfe-otap",
  "otel-arrow-dfe-pdata",
+ "otel-arrow-dfe-quiver",
+ "otel-arrow-dfe-state",
  "otel-arrow-dfe-telemetry",
  "otel-arrow-dfe-telemetry-macros",
  "otel-arrow-dfe-test-net",
  "otel-arrow-dfe-test-tls-certs",
+ "parking_lot",
  "prost 0.14.4",
  "serde",
  "serde_json",
@@ -7959,6 +7962,8 @@ dependencies = [
  "tempfile",
  "testcontainers",
  "tokio",
+ "tokio-util",
+ "tracing-subscriber",
  "weaver_common",
  "weaver_forge",
  "weaver_resolver",
@@ -8206,9 +8211,9 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "pest"
-version = "2.9.0"
+version = "2.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a07a60cc7a4d00c91f95c685609d1d2f79050e6804b70ebedd7650f0b839bcf"
+checksum = "6d45aeb61b4bf818e12d4205f2466f8c4748f85f4fce0146d1c03d69d753f0ad"
 dependencies = [
  "memchr",
  "ucd-trie",
@@ -8216,9 +8221,9 @@ dependencies = [
 
 [[package]]
 name = "pest_derive"
-version = "2.9.0"
+version = "2.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b3a83744a5c8455b8b3e0dc5031362780a347c878bdd11584d1a8984228cc88d"
+checksum = "89cc5a242e25ed4e7704d0be240f2cfbe20a8c27e7e252d94835be93d92dc39f"
 dependencies = [
  "pest",
  "pest_generator",
@@ -8226,9 +8231,9 @@ dependencies = [
 
 [[package]]
 name = "pest_generator"
-version = "2.9.0"
+version = "2.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e0cd3451aa3de60d4b9a1e736885e4dea6b31617598026f12256ad566d63304a"
+checksum = "7abf21475cc3820fe4b2ca2dc2142902f67a02189f3b5b3a229f4febc01a43e5"
 dependencies = [
  "pest",
  "pest_meta",
@@ -8239,9 +8244,9 @@ dependencies = [
 
 [[package]]
 name = "pest_meta"
-version = "2.9.0"
+version = "2.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e04d3a0849e241d7dfce834c83b1c5edc8622009e8dd51a12ba1927c32f05496"
+checksum = "adba4db388f687393c18c51348d44a41d870ca9df71a2c98172ea3035dc6936e"
 dependencies = [
  "pest",
 ]
@@ -8832,7 +8837,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -9435,14 +9440,14 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "rustls"
-version = "0.23.43"
+version = "0.23.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0283386ce02abc0151e1761d08802dfe86c173b0b494af5cbc086574e453da06"
+checksum = "6725596c3f2c3a0aef021139e145d4eafe314a6623e4680ca83852b2c67ab2ba"
 dependencies = [
  "aws-lc-rs",
  "log",
@@ -9508,7 +9513,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -10145,7 +10150,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -10451,10 +10456,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -10476,7 +10481,7 @@ dependencies = [
  "parking_lot",
  "rustix",
  "signal-hook",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -10486,7 +10491,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "230a1b821ccbd75b185820a1f1ff7b14d21da1e442e22c0863ea5f08771a8874"
 dependencies = [
  "rustix",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -10814,9 +10819,9 @@ dependencies = [
 
 [[package]]
 name = "tokio-rustls"
-version = "0.26.4"
+version = "0.26.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1729aa945f29d91ba541258c8df89027d5792d85a8841fb65e8bf0f4ede4ef61"
+checksum = "b0c85f2c3ef0b1cd58b36682f4b17aaa995f0e5db534d85692b4903abce21f67"
 dependencies = [
  "rustls",
  "tokio",
@@ -11211,7 +11216,8 @@ dependencies = [
 [[package]]
 name = "typespec"
 version = "1.2.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=aacb2060111920f9fca2f72bff7e401e8a7198ce#aacb2060111920f9fca2f72bff7e401e8a7198ce"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1bfbf9f6c7d77a4bb34e5fd05493c752827adff113a86928072a2030a056ce8"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -11249,7 +11255,8 @@ dependencies = [
 [[package]]
 name = "typespec_client_core"
 version = "1.2.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=aacb2060111920f9fca2f72bff7e401e8a7198ce#aacb2060111920f9fca2f72bff7e401e8a7198ce"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ae3020b828414079402a68d56d134b24b8ec58f8287e87149dee6765bc38a525"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -11264,7 +11271,7 @@ dependencies = [
  "time",
  "tracing",
  "typespec 1.2.0-beta.1",
- "typespec_macros 1.1.0-beta.1",
+ "typespec_macros 1.0.0",
  "url",
  "uuid",
 ]
@@ -11283,8 +11290,9 @@ dependencies = [
 
 [[package]]
 name = "typespec_macros"
-version = "1.1.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=aacb2060111920f9fca2f72bff7e401e8a7198ce#aacb2060111920f9fca2f72bff7e401e8a7198ce"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2c608f4427943f8adb211abc95c87672b1b98847152783507d54e3246e502f60"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -12162,7 +12170,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
