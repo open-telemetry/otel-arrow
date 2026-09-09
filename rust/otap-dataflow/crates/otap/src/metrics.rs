@@ -177,18 +177,18 @@ impl ReceiverMetrics {
 }
 
 impl ReceiverProcessing {
-    /// Sets the signal for a classified error returned by the processing closure.
-    ///
-    /// Successful processing returns its signal with the value instead.
-    pub fn set_signal(&mut self, signal: SignalType) {
+    /// Classifies and returns an error from the processing closure as failed.
+    pub fn failed<E>(&mut self, signal: SignalType, error: E) -> E {
         self.signal = Some(signal);
+        self.error_outcome = Outcome::Failure;
+        error
     }
 
     /// Classifies and returns an error from the processing closure as refused.
     ///
-    /// Pass the returned error directly to `Err`. Other errors are classified
-    /// as failures, while successful results are classified as successes.
-    pub fn refused<E>(&mut self, error: E) -> E {
+    /// Pass the returned error directly to `Err`.
+    pub fn refused<E>(&mut self, signal: SignalType, error: E) -> E {
+        self.signal = Some(signal);
         self.error_outcome = Outcome::Refused;
         error
     }
@@ -202,8 +202,9 @@ impl ReceiverProcessing {
 
     /// Runs receiver-local processing and captures its terminal result.
     ///
-    /// `Ok((signal, value))` records success. `Err(error)` records failure
-    /// unless the error was returned by [`Self::refused`].
+    /// `Ok((signal, value))` records success. Return errors through
+    /// [`Self::failed`] or [`Self::refused`] after signal classification.
+    /// An unclassified `Err(error)` emits no shared receiver metric.
     #[must_use = "the completed receiver processing observation must be recorded"]
     pub fn run<T, E>(
         mut self,
@@ -413,6 +414,12 @@ impl ExporterMetrics {
 }
 
 impl ExporterAttempt {
+    /// Classifies and returns an error from the attempt closure as failed.
+    pub fn failed<E>(&mut self, error: E) -> E {
+        self.error_outcome = Outcome::Failure;
+        error
+    }
+
     /// Classifies and returns an error from the attempt closure as refused.
     ///
     /// Pass the returned error directly to `Err`. Other errors are classified
@@ -438,8 +445,8 @@ impl ExporterAttempt {
 
     /// Runs one exporter attempt and captures its terminal result.
     ///
-    /// `Ok(value)` records success. `Err(error)` records failure unless the
-    /// error was returned by [`Self::refused`].
+    /// `Ok(value)` records success. Return errors through [`Self::failed`] or
+    /// [`Self::refused`] to classify their terminal outcome.
     #[must_use = "the completed exporter attempt must be recorded"]
     pub async fn run<T, E>(
         mut self,
@@ -867,7 +874,7 @@ mod tests {
                     payload_size_called.set(true);
                     128
                 });
-                Err::<(), ()>(())
+                Err::<(), ()>(attempt.failed(()))
             })
             .await;
         assert!(metrics.record(completed).is_err());
@@ -930,12 +937,11 @@ mod tests {
         let payload_size_called = Cell::new(false);
 
         let completed = metrics.processing().run(|processing| {
-            processing.set_signal(SignalType::Traces);
             processing.set_payload_size_with(|| {
                 payload_size_called.set(true);
                 128
             });
-            Err::<(SignalType, ()), ()>(())
+            Err::<(SignalType, ()), ()>(processing.failed(SignalType::Traces, ()))
         });
         assert!(metrics.record(completed).is_err());
 
@@ -1021,9 +1027,8 @@ mod tests {
         let mut metrics = ReceiverMetrics::register(&pipeline_ctx);
 
         let completed = metrics.processing().run(|processing| {
-            processing.set_signal(SignalType::Logs);
             processing.set_payload_size_with(|| 128);
-            Err::<(SignalType, ()), _>(processing.refused("capacity"))
+            Err::<(SignalType, ()), _>(processing.refused(SignalType::Logs, "capacity"))
         });
         assert_eq!(metrics.record(completed), Err("capacity"));
 

@@ -281,13 +281,9 @@ let completed = self.metrics.boundary.processing().run(|processing| {
     match self.process(decoded) {
         Ok(value) => Ok((signal, value)), // success
         Err(error) if error.is_refusal() => {
-            processing.set_signal(signal);
-            Err(processing.refused(error)) // refused
+            Err(processing.refused(signal, error)) // refused
         }
-        Err(error) => {
-            processing.set_signal(signal);
-            Err(error) // failure
-        }
+        Err(error) => Err(processing.failed(signal, error)), // failure
     }
 });
 
@@ -304,11 +300,10 @@ The receiver runs exactly one processing closure and records its completed
 observation before awaiting downstream handoff. The closure receives the
 processing context so it can add payload size when that value becomes
 available. Successful processing returns the classified signal with its value,
-so the signal cannot be omitted. For a classified error, call `set_signal`
-before returning it. A failure recorded before signal classification does not
-emit shared receiver metrics; use a component-specific rejection metric for
-that condition. Return `Err(processing.refused(error))` for validation, policy,
-admission, or capacity rejection.
+so the signal cannot be omitted. Return classified errors through
+`processing.failed(signal, error)` or `processing.refused(signal, error)`.
+A failure returned before signal classification does not emit shared receiver
+metrics; use a component-specific rejection metric for that condition.
 
 ### Exporter implementation
 
@@ -324,14 +319,16 @@ let completed = self
     .run(async |attempt| {
         // Component-specific: encode and submit one attempt.
         attempt.set_item_count(|| data.num_items() as u64);
-        let encoded = self.encode(data.payload_ref())?;
+        let encoded = self
+            .encode(data.payload_ref())
+            .map_err(|error| attempt.failed(error))?;
         attempt.set_payload_size_with(|| encoded.len());
         match self.submit(encoded).await {
             Ok(response) => Ok(response), // success
             Err(error) if error.is_refusal() => {
                 Err(attempt.refused(error)) // refused
             }
-            Err(error) => Err(error), // failure
+            Err(error) => Err(attempt.failed(error)), // failure
         }
     })
     .await;
@@ -350,8 +347,9 @@ The attempt context records encoded application payload size when the exporter
 produces or submits one. Components leave it unset when payload size is not
 meaningful or unavailable. Encoding structure, retries, component-specific
 failure metrics, and Ack/Nack behavior remain owned by the component.
-Return `Err(attempt.refused(error))` for a validation, policy, admission, or
-capacity rejection; other errors are recorded as failures.
+Return ordinary failures through `attempt.failed(error)`. Use
+`attempt.refused(error)` instead for a validation, policy, admission, or
+capacity rejection.
 
 `exporter.attempted.messages` counts component-local delivery attempts,
 including attempts that fail before a backend call. Each physical retry starts

@@ -176,7 +176,7 @@ mod tests {
             .attempt(SignalType::Logs)
             .run(async |attempt| {
                 attempt.set_item_count(|| 0);
-                Err::<(), _>(ConsoleExportErrorType::OtlpViewCreation)
+                Err::<(), _>(attempt.failed(ConsoleExportErrorType::OtlpViewCreation))
             })
             .await;
         let result = metrics.boundary.record(completed);
@@ -187,7 +187,7 @@ mod tests {
             .attempt(SignalType::Metrics)
             .run(async |attempt| {
                 attempt.set_item_count(|| 0);
-                Err::<(), _>(ConsoleExportErrorType::UnsupportedSignal)
+                Err::<(), _>(attempt.failed(ConsoleExportErrorType::UnsupportedSignal))
             })
             .await;
         let result = metrics.boundary.record(completed);
@@ -245,7 +245,7 @@ mod tests {
             .attempt(SignalType::Traces)
             .run(async |attempt| {
                 attempt.set_item_count(|| 0);
-                Err::<(), _>(ConsoleExportErrorType::UnsupportedSignal)
+                Err::<(), _>(attempt.failed(ConsoleExportErrorType::UnsupportedSignal))
             })
             .await;
         let result = metrics.boundary.record(completed);
