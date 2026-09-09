@@ -2733,6 +2733,26 @@ mod test {
         assert!(interests.contains(Interests::PRODUCED_CONSUMED_SIZE));
     }
 
+    /// Scenario: One node opts into optional component measurements at the basic metric level.
+    /// Guarantees: Component interests are enabled without enabling engine-owned node input or output metric sets.
+    #[test]
+    fn node_telemetry_policy_enables_component_interests_at_basic_level() {
+        let mut node_config = NodeUserConfig::new_exporter_config("console");
+        node_config.policies = Some(otel_arrow_dfe_config::node::NodePolicies {
+            telemetry: Some(otel_arrow_dfe_config::node::NodeTelemetryPolicy {
+                duration: true,
+                item_counts: true,
+                size: true,
+            }),
+        });
+
+        let interests = Interests::for_node(MetricLevel::Basic, &node_config);
+        assert!(!interests.intersects(Interests::PIPELINE_METRICS));
+        assert!(interests.contains(Interests::COMPONENT_DURATION));
+        assert!(interests.contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS));
+        assert!(interests.contains(Interests::PRODUCED_CONSUMED_SIZE));
+    }
+
     fn admission_policy(unit: RateLimitUnit) -> RateLimiterPolicy {
         RateLimiterPolicy {
             enforcement: RateLimitEnforcement::Enforce,

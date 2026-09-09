@@ -195,8 +195,8 @@ pub struct NodeTelemetryPolicy {
     #[serde(default)]
     pub duration: bool,
 
-    /// Opt this node into component-owned and per-signal input/output item
-    /// counts.
+    /// Opt this node into component-owned item counts and, at `normal` or
+    /// higher, per-signal input/output item counts.
     ///
     /// Off by default because counting items requires inspecting each batch,
     /// which is expensive for OTLP payloads. Component-owned metrics can honor
@@ -206,8 +206,8 @@ pub struct NodeTelemetryPolicy {
     #[serde(default)]
     pub item_counts: bool,
 
-    /// Opt this node into component-owned and per-signal input/output logical
-    /// payload size.
+    /// Opt this node into component-owned logical payload size and, at `normal`
+    /// or higher, per-signal input/output logical payload size.
     ///
     /// Off by default because measuring OTAP payloads requires walking their
     /// Arrow arrays and buffers. Component-owned metrics can honor this option
