@@ -7,9 +7,13 @@ use super::model::*;
 use super::numeric::{serializable_as_i64, write_double_or_long};
 use super::writer::Writer;
 
-const MAX_EXEMPLAR_PAYLOAD_SIZE: usize = 512;
+pub(crate) const MAX_EXEMPLAR_PAYLOAD_SIZE: usize = 512;
 const MAX_SINGLE_EXEMPLAR_SIZE: usize = 200;
 const MIN_SINGLE_EXEMPLAR_SIZE: usize = 5;
+
+pub(super) fn validate_exemplars(exemplars: &[MetricExemplar]) -> Result<(), EncodeError> {
+    encoded_exemplar_list_size(exemplars).map(|_| ())
+}
 
 pub(super) fn write_exemplars(
     writer: &mut Writer,
@@ -137,7 +141,7 @@ fn encoded_exemplar_list_size(exemplars: &[MetricExemplar]) -> Result<usize, Enc
     checked_size_add("exemplar list", header_size, payload_size)
 }
 
-fn encoded_exemplar_size(exemplar: &MetricExemplar) -> Result<usize, EncodeError> {
+pub(crate) fn encoded_exemplar_size(exemplar: &MetricExemplar) -> Result<usize, EncodeError> {
     let label_count = exemplar.filtered_attributes.len();
     if label_count > u8::MAX as usize {
         return Err(EncodeError::LengthOverflow {

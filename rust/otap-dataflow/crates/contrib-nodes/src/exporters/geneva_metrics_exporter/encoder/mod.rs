@@ -3,7 +3,7 @@
 
 //! Geneva Metrics ingestion protocol version 6 packet model and encoder.
 
-mod exemplar;
+pub(crate) mod exemplar;
 mod histogram;
 mod model;
 mod numeric;

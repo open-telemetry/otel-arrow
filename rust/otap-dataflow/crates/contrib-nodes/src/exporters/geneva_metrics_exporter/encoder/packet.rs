@@ -5,8 +5,8 @@
 
 use std::collections::HashMap;
 
-use super::exemplar::write_exemplars;
-use super::histogram::write_histogram;
+use super::exemplar::{validate_exemplars, write_exemplars};
+use super::histogram::{validate_histogram_encoding, write_histogram};
 use super::model::*;
 use super::numeric::{can_store_double_values_as_long, required, write_double_or_long};
 use super::writer::Writer;
@@ -39,48 +39,7 @@ pub fn encode(packet: &Packet) -> Result<Vec<u8>, EncodeError> {
     writer.write_u32(metric_count);
 
     for (metric_index, metric) in packet.metrics.iter().enumerate() {
-        if metric.time_bucket < 0 {
-            return Err(EncodeError::NegativeTimeBucket(metric.time_bucket));
-        }
-        if metric.dimensions.len() > MAX_DIMENSIONS {
-            return Err(EncodeError::DimensionCountOverflow {
-                metric_index,
-                count: metric.dimensions.len(),
-                maximum: MAX_DIMENSIONS,
-            });
-        }
-        validate_string_length("metric name", &metric.name, MAX_METRIC_NAME_LENGTH)?;
-        if let Some((dimension_index, _)) = metric
-            .dimensions
-            .iter()
-            .enumerate()
-            .find(|(_, dimension)| dimension.value.contains('\0'))
-        {
-            return Err(EncodeError::InvalidDimensionValue {
-                metric_index,
-                dimension_index,
-            });
-        }
-        for dimension in &metric.dimensions {
-            validate_string_length("dimension name", &dimension.name, MAX_DIMENSION_NAME_LENGTH)?;
-            validate_string_length(
-                "dimension value",
-                &dimension.value,
-                MAX_DIMENSION_VALUE_LENGTH,
-            )?;
-        }
-        let metric_time_bucket = metric.time_bucket as u64;
-        let milliseconds = if metric.sampling_type & HIGH_RESOLUTION_TIMESTAMP != 0 {
-            match &metric.values {
-                MetricValues::Unsigned(values) => values.milliseconds,
-                MetricValues::Double(values) => values.milliseconds,
-            }
-            .filter(|milliseconds| *milliseconds <= 999)
-            .unwrap_or(0)
-        } else {
-            0
-        };
-        validate_timestamp("metric", metric_time_bucket, milliseconds)?;
+        validate_metric_for_packet(metric_index, metric, packet.current_time_bucket)?;
         let metadata = MetadataKey {
             namespace: metric.namespace.clone(),
             name: metric.name.clone(),
@@ -165,6 +124,61 @@ pub fn encode(packet: &Packet) -> Result<Vec<u8>, EncodeError> {
     Ok(writer.finish())
 }
 
+fn validate_metric_for_packet(
+    metric_index: usize,
+    metric: &Metric,
+    current_time_bucket: u64,
+) -> Result<(), EncodeError> {
+    if metric.time_bucket < 0 {
+        return Err(EncodeError::NegativeTimeBucket(metric.time_bucket));
+    }
+    if metric.dimensions.len() > MAX_DIMENSIONS {
+        return Err(EncodeError::DimensionCountOverflow {
+            metric_index,
+            count: metric.dimensions.len(),
+            maximum: MAX_DIMENSIONS,
+        });
+    }
+    validate_string_length("metric name", &metric.name, MAX_METRIC_NAME_LENGTH)?;
+    if let Some((dimension_index, _)) = metric
+        .dimensions
+        .iter()
+        .enumerate()
+        .find(|(_, dimension)| dimension.value.contains('\0'))
+    {
+        return Err(EncodeError::InvalidDimensionValue {
+            metric_index,
+            dimension_index,
+        });
+    }
+    for dimension in &metric.dimensions {
+        validate_string_length("dimension name", &dimension.name, MAX_DIMENSION_NAME_LENGTH)?;
+        validate_string_length(
+            "dimension value",
+            &dimension.value,
+            MAX_DIMENSION_VALUE_LENGTH,
+        )?;
+    }
+    let metric_time_bucket = metric.time_bucket as u64;
+    let milliseconds = if metric.sampling_type & HIGH_RESOLUTION_TIMESTAMP != 0 {
+        match &metric.values {
+            MetricValues::Unsigned(values) => values.milliseconds,
+            MetricValues::Double(values) => values.milliseconds,
+        }
+        .filter(|milliseconds| *milliseconds <= 999)
+        .unwrap_or(0)
+    } else {
+        0
+    };
+    validate_timestamp("metric", metric_time_bucket, milliseconds)?;
+    let time_difference = i128::from(current_time_bucket) - i128::from(metric.time_bucket);
+    let _ = i64::try_from(time_difference).map_err(|_| EncodeError::TimeDifferenceOverflow {
+        current_time_bucket,
+        metric_time_bucket: metric.time_bucket,
+    })?;
+    validated_sampling_type(metric).map(|_| ())
+}
+
 fn validate_timestamp(
     field: &'static str,
     time_bucket: u64,
@@ -206,6 +220,21 @@ fn validate_string_length(
 }
 
 pub(super) fn write_metric(writer: &mut Writer, metric: &Metric) -> Result<(), EncodeError> {
+    let sampling_type = validated_sampling_type(metric)?;
+
+    writer.write_unsigned_base128(sampling_type as u64);
+    match &metric.values {
+        MetricValues::Unsigned(values) => write_unsigned_values(writer, sampling_type, values)?,
+        MetricValues::Double(values) => write_double_values(writer, sampling_type, values)?,
+    }
+
+    if sampling_type & EXEMPLAR != 0 {
+        write_exemplars(writer, &metric.exemplars)?;
+    }
+    Ok(())
+}
+
+fn validated_sampling_type(metric: &Metric) -> Result<u32, EncodeError> {
     let mut sampling_type = metric.sampling_type;
     let histogram = metric.values.histogram();
     if histogram.is_none()
@@ -236,8 +265,9 @@ pub(super) fn write_metric(writer: &mut Writer, metric: &Metric) -> Result<(), E
     }
 
     match &metric.values {
-        MetricValues::Unsigned(_) => {
+        MetricValues::Unsigned(values) => {
             sampling_type &= !(DOUBLE_VALUE_TYPE | DOUBLE_VALUE_STORED_AS_LONG_TYPE);
+            validate_unsigned_values(sampling_type, values)?;
         }
         MetricValues::Double(values) => {
             validate_double_values(sampling_type, values)?;
@@ -250,15 +280,65 @@ pub(super) fn write_metric(writer: &mut Writer, metric: &Metric) -> Result<(), E
     }
     validate_histogram(sampling_type, histogram)?;
     validate_exponential_histogram_count(sampling_type, &metric.values, histogram)?;
-
-    writer.write_unsigned_base128(sampling_type as u64);
     match &metric.values {
-        MetricValues::Unsigned(values) => write_unsigned_values(writer, sampling_type, values)?,
-        MetricValues::Double(values) => write_double_values(writer, sampling_type, values)?,
+        MetricValues::Unsigned(values) => {
+            validate_count_and_milliseconds(sampling_type, values)?;
+        }
+        MetricValues::Double(values) => {
+            validate_count_and_milliseconds(sampling_type, values)?;
+        }
     }
-
+    if sampling_type & HISTOGRAM != 0
+        && let Some(histogram) = histogram
+    {
+        validate_histogram_encoding(histogram)?;
+    }
     if sampling_type & EXEMPLAR != 0 {
-        write_exemplars(writer, &metric.exemplars)?;
+        validate_exemplars(&metric.exemplars)?;
+    }
+    Ok(sampling_type)
+}
+
+fn validate_unsigned_values(
+    sampling_type: u32,
+    values: &NumericValues<u64>,
+) -> Result<(), EncodeError> {
+    for (flag, field, value) in [
+        (MIN, "min", values.min),
+        (MAX, "max", values.max),
+        (SUM, "sum", values.sum),
+    ] {
+        if sampling_type & flag != 0 {
+            let _ = required(value, flag, field)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_count_and_milliseconds<T>(
+    sampling_type: u32,
+    values: &NumericValues<T>,
+) -> Result<(), EncodeError> {
+    if sampling_type & HIGH_RESOLUTION_TIMESTAMP != 0 {
+        let milliseconds = required(
+            values.milliseconds,
+            HIGH_RESOLUTION_TIMESTAMP,
+            "milliseconds",
+        )?;
+        if milliseconds > 999 {
+            return Err(EncodeError::ValueOverflow {
+                field: "milliseconds",
+                value: u64::from(milliseconds),
+                maximum: 999,
+            });
+        }
+    } else if sampling_type & COUNT != 0 {
+        let count = required(values.count, COUNT, "count")?;
+        let _ = u32::try_from(count).map_err(|_| EncodeError::ValueOverflow {
+            field: "count",
+            value: count,
+            maximum: u64::from(u32::MAX),
+        })?;
     }
     Ok(())
 }
@@ -357,7 +437,8 @@ fn validate_exponential_histogram_count(
             total.checked_add(u128::from(*count))
         })
         .ok_or(EncodeError::ExponentialHistogramBucketTotalOverflow)?;
-    if bucket_count != u128::from(count) {
+    let narrowed_bucket_count = u64::from(bucket_count as u32);
+    if count != narrowed_bucket_count {
         return Err(EncodeError::ExponentialHistogramCountMismatch {
             count,
             bucket_count,
