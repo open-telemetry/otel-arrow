@@ -1374,6 +1374,7 @@ mod tests {
             None,
             ctrl_tx,
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
 
         // Deliberately tiny, so the body below is unambiguously oversized.
@@ -1505,6 +1506,7 @@ mod tests {
             None,
             ctrl_tx,
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
 
         let settings = HttpServerSettings {
