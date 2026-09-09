@@ -5,6 +5,7 @@
 
 use crate::authorized_identity_policy::AuthorizedIdentityPolicy;
 use crate::byte_units;
+use crate::context_policy::{ContextEntryDeclaration, ContextPolicy};
 use crate::health::HealthPolicy;
 use crate::transport_headers_policy::TransportHeadersPolicy;
 use schemars::JsonSchema;
@@ -59,6 +60,9 @@ pub struct Policies {
     /// Authorized identity policy selecting verified claims for context storage.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) authorized_identity: Option<AuthorizedIdentityPolicy>,
+    /// Explicit entry definitions, accumulated across scopes without shadowing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) context: Option<ContextPolicy>,
 }
 
 impl Policies {
@@ -134,6 +138,7 @@ impl Policies {
             },
             transport_headers: transport_headers.cloned(),
             authorized_identity: authorized_identity.cloned(),
+            context: Vec::new(),
             rate_limiters: effective_rate_limiters.unwrap_or_default(),
             rate_limiter_scope: None,
         }
@@ -285,6 +290,8 @@ pub struct ResolvedPolicies {
     pub transport_headers: Option<TransportHeadersPolicy>,
     /// Authorized identity claim projection policy.
     pub authorized_identity: Option<AuthorizedIdentityPolicy>,
+    /// Complete entry definitions with their declaring scopes.
+    pub context: Vec<ContextEntryDeclaration>,
     /// Effective named pressure-aware receiver admission rate limiters.
     ///
     /// Names remain available to planning for node bindings, telemetry, and
@@ -304,6 +311,7 @@ impl PartialEq for ResolvedPolicies {
             resources,
             transport_headers,
             authorized_identity,
+            context,
             rate_limiters,
             rate_limiter_scope: _,
         } = self;
@@ -315,6 +323,7 @@ impl PartialEq for ResolvedPolicies {
             resources: other_resources,
             transport_headers: other_transport_headers,
             authorized_identity: other_authorized_identity,
+            context: other_context,
             rate_limiters: other_rate_limiters,
             rate_limiter_scope: _,
         } = other;
@@ -326,6 +335,7 @@ impl PartialEq for ResolvedPolicies {
             && resources == other_resources
             && transport_headers == other_transport_headers
             && authorized_identity == other_authorized_identity
+            && context == other_context
             && rate_limiters == other_rate_limiters
         // Declaration scope is retained for future shared-state planning but
         // has no V1 runtime effect. Include it when scope changes runtime shape.
@@ -370,6 +380,7 @@ impl ResolvedPolicies {
             resources: _,
             transport_headers: self_transport_headers,
             authorized_identity: self_authorized_identity,
+            context: self_context,
             rate_limiters: self_rate_limiters,
             rate_limiter_scope: _,
         } = self;
@@ -381,6 +392,7 @@ impl ResolvedPolicies {
             resources: _,
             transport_headers: other_transport_headers,
             authorized_identity: other_authorized_identity,
+            context: other_context,
             rate_limiters: other_rate_limiters,
             rate_limiter_scope: _,
         } = other;
@@ -391,6 +403,7 @@ impl ResolvedPolicies {
             && self_runtime_recovery == other_runtime_recovery
             && self_transport_headers == other_transport_headers
             && self_authorized_identity == other_authorized_identity
+            && self_context == other_context
             // Declaration scope is preserved for future shared-state planning,
             // but has no V1 runtime effect. Re-add it when scope changes runtime shape.
             && self_rate_limiters == other_rate_limiters

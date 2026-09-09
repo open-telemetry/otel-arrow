@@ -12,6 +12,9 @@
 //! - Stored context entry names for policy matching
 
 use crate::context::ContextEntryName;
+use crate::context_bindings::{
+    ContextAccessError, ContextEntryId, ContextFieldId, ContextIndex, ContextLayout,
+};
 use std::fmt;
 use std::sync::Arc;
 
@@ -130,6 +133,7 @@ impl TransportHeader {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TransportHeaders {
     headers: Arc<Vec<TransportHeader>>,
+    index: Option<Arc<ContextIndex>>,
 }
 
 impl TransportHeaders {
@@ -138,6 +142,7 @@ impl TransportHeaders {
     pub fn new() -> Self {
         Self {
             headers: Arc::new(Vec::new()),
+            index: None,
         }
     }
 
@@ -146,16 +151,20 @@ impl TransportHeaders {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             headers: Arc::new(Vec::with_capacity(capacity)),
+            index: None,
         }
     }
 
     /// Add a header to the collection.
     pub fn push(&mut self, header: TransportHeader) {
+        // Raw mutation cannot assert that a new field belongs to the compiled layout.
+        self.index = None;
         Arc::make_mut(&mut self.headers).push(header);
     }
 
     /// Clears the headers and reserves space for `capacity` entries.
     pub(crate) fn clear_and_reserve(&mut self, capacity: usize) -> &mut Vec<TransportHeader> {
+        self.index = None;
         if Arc::strong_count(&self.headers) != 1 {
             self.headers = Arc::new(Vec::with_capacity(capacity));
         }
@@ -163,6 +172,80 @@ impl TransportHeaders {
         headers.clear();
         headers.reserve(capacity);
         headers
+    }
+
+    pub(crate) fn index_with(
+        &mut self,
+        layout: Arc<ContextLayout>,
+        entries: &[ContextEntryId],
+        fields: Vec<ContextFieldId>,
+        names_preserved: Arc<[ContextFieldId]>,
+    ) {
+        self.index = Some(Arc::new(ContextIndex::build(
+            layout,
+            entries,
+            fields,
+            names_preserved,
+            &self.headers,
+        )));
+    }
+
+    pub(crate) fn bind_fields(
+        &mut self,
+        layout: Arc<ContextLayout>,
+        entries: Arc<[ContextEntryId]>,
+        fields: Vec<ContextFieldId>,
+        names_preserved: Arc<[ContextFieldId]>,
+    ) {
+        self.index_with(layout, &entries, fields, names_preserved);
+    }
+
+    pub(crate) fn append_bound(
+        &mut self,
+        layout: Arc<ContextLayout>,
+        entries: Arc<[ContextEntryId]>,
+        field: ContextFieldId,
+        header: TransportHeader,
+    ) {
+        let mut fields = self
+            .index
+            .as_ref()
+            .map(|index| index.fields.clone())
+            .unwrap_or_default();
+        let mut names_preserved: std::collections::BTreeSet<_> = self
+            .index
+            .as_ref()
+            .into_iter()
+            .flat_map(|index| {
+                index
+                    .fields
+                    .iter()
+                    .filter(|field| index.names_preserved.binary_search(field).is_ok())
+                    .copied()
+            })
+            .collect();
+        if !fields.contains(&field) {
+            let _ = names_preserved.insert(field);
+        }
+        fields.push(field);
+        Arc::make_mut(&mut self.headers).push(header);
+        self.index_with(
+            layout,
+            &entries,
+            fields,
+            names_preserved.into_iter().collect(),
+        );
+    }
+
+    pub(crate) fn context_index(
+        &self,
+        layout: &Arc<ContextLayout>,
+    ) -> Result<&ContextIndex, ContextAccessError> {
+        let index = self.index.as_deref().ok_or(ContextAccessError::Unbound)?;
+        if !Arc::ptr_eq(&index.layout, layout) && index.layout != *layout {
+            return Err(ContextAccessError::IncompatibleLayout);
+        }
+        Ok(index)
     }
 
     /// Returns `true` if there are no headers.
@@ -204,8 +287,12 @@ mod tests {
         PropagationSelector, PropagationSelectorType,
     };
 
-    fn context_name(raw: &str) -> ContextEntryName {
-        ContextEntryName::try_from(raw).expect("valid test context entry name")
+    fn context_name<'a, T>(raw: &'a str) -> T
+    where
+        T: TryFrom<&'a str>,
+        T::Error: fmt::Debug,
+    {
+        T::try_from(raw).expect("valid test context reference")
     }
 
     fn header(normal: &str, wire_name: &str, value: impl AsRef<[u8]>) -> TransportHeader {
@@ -401,6 +488,24 @@ mod tests {
 
     // -- Propagation policy tests --------------------------------------------
 
+    fn bind_propagation(
+        policy: HeaderPropagationPolicy,
+        headers: &mut TransportHeaders,
+    ) -> crate::context_bindings::CompiledHeaderPropagationPolicy {
+        use crate::context_bindings::ContextPrimitive;
+        let pipeline = crate::PipelineKey::new("g".into(), "p".into());
+        let layout = ContextLayout::compile(
+            headers
+                .iter()
+                .map(|header| ContextPrimitive::standalone(header.name.clone()))
+                .collect(),
+            Default::default(),
+        )
+        .unwrap();
+        layout.bind_headers(headers, &pipeline).unwrap();
+        policy.compile(layout, &pipeline).unwrap()
+    }
+
     /// Scenario: propagation selects all captured headers.
     /// Guarantees: every header keeps its original wire name.
     #[test]
@@ -419,7 +524,8 @@ mod tests {
         headers.push(header("tenant_id", "X-Tenant-Id", b"t-1"));
         headers.push(header("request_id", "X-Request-Id", b"r-1"));
 
-        let propagated: Vec<_> = policy.propagate(&headers).collect();
+        let policy = bind_propagation(policy, &mut headers);
+        let propagated: Vec<_> = policy.propagate(&headers).unwrap().collect();
         assert_eq!(propagated.len(), 2);
         assert_eq!(propagated[0].header_name, "X-Tenant-Id");
         assert_eq!(propagated[1].header_name, "X-Request-Id");
@@ -451,7 +557,8 @@ mod tests {
         headers.push(header("tenant_id", "X-Tenant-Id", b"t-1"));
         headers.push(header("authorization", "Authorization", b"Bearer secret"));
 
-        let propagated: Vec<_> = policy.propagate(&headers).collect();
+        let policy = bind_propagation(policy, &mut headers);
+        let propagated: Vec<_> = policy.propagate(&headers).unwrap().collect();
         assert_eq!(propagated.len(), 1);
         assert_eq!(propagated[0].header_name, "X-Tenant-Id");
     }
@@ -482,7 +589,8 @@ mod tests {
         headers.push(header("tenant_id", "X-Tenant-Id", b"t-1"));
         headers.push(header("request_id", "X-Request-Id", b"r-1"));
 
-        let propagated: Vec<_> = policy.propagate(&headers).collect();
+        let policy = bind_propagation(policy, &mut headers);
+        let propagated: Vec<_> = policy.propagate(&headers).unwrap().collect();
         assert_eq!(propagated.len(), 1);
         assert_eq!(propagated[0].header_name, "X-Tenant-Id");
     }
@@ -506,7 +614,8 @@ mod tests {
         let mut headers = TransportHeaders::new();
         headers.push(header("tenant_id", "X-Tenant-Id", b"t-1"));
 
-        let propagated: Vec<_> = policy.propagate(&headers).collect();
+        let policy = bind_propagation(policy, &mut headers);
+        let propagated: Vec<_> = policy.propagate(&headers).unwrap().collect();
         assert_eq!(propagated.len(), 1);
         assert_eq!(propagated[0].header_name, "tenant_id");
     }
@@ -530,7 +639,8 @@ mod tests {
         headers.push(header("tenant_id", "X-Tenant-Id", b"t-1"));
         headers.push(header("request_id", "X-Request-Id", b"r-1"));
 
-        let propagated: Vec<_> = policy.propagate(&headers).collect();
+        let policy = bind_propagation(policy, &mut headers);
+        let propagated: Vec<_> = policy.propagate(&headers).unwrap().collect();
         assert_eq!(propagated.len(), 1);
         assert_eq!(propagated[0].header_name, "X-Tenant-Id");
     }

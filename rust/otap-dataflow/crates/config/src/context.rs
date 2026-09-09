@@ -84,6 +84,77 @@ impl From<ContextEntryName> for String {
     }
 }
 
+/// An exact entry selection or qualified member reference.
+///
+/// Bare names select whole entries. Consumers requiring a field accept a bare
+/// name only for a standalone, singleton-field entry.
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(try_from = "String", into = "String")]
+pub struct ContextEntryRef {
+    entry: ContextEntryName,
+    field: Option<ContextEntryName>,
+}
+
+impl ContextEntryRef {
+    /// Returns the explicitly selected entry.
+    #[must_use]
+    pub fn entry(&self) -> &ContextEntryName {
+        &self.entry
+    }
+
+    /// Returns the explicitly selected member, if any.
+    #[must_use]
+    pub fn field(&self) -> Option<&ContextEntryName> {
+        self.field.as_ref()
+    }
+}
+
+impl TryFrom<&str> for ContextEntryRef {
+    type Error = Error;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        let mut parts = value.split(':');
+        let entry = ContextEntryName::try_from(parts.next().unwrap_or_default())?;
+        let field = parts.next().map(ContextEntryName::try_from).transpose()?;
+        if parts.next().is_some() {
+            return Err(Error::InvalidUserConfig {
+                error: format!(
+                    "invalid context reference `{value}`; expected `entry` or `entry:field`"
+                ),
+            });
+        }
+        Ok(Self { entry, field })
+    }
+}
+
+impl TryFrom<String> for ContextEntryRef {
+    type Error = Error;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_from(value.as_str())
+    }
+}
+
+impl std::fmt::Display for ContextEntryRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.entry.fmt(f)?;
+        if let Some(field) = &self.field {
+            write!(f, ":{field}")?;
+        }
+        Ok(())
+    }
+}
+
+impl From<ContextEntryRef> for String {
+    fn from(value: ContextEntryRef) -> Self {
+        value.to_string()
+    }
+}
+
+/// Tests are allowed to compare against bare strings.
+#[cfg(test)]
 impl PartialEq<str> for ContextEntryName {
     fn eq(&self, other: &str) -> bool {
         self.as_str() == other

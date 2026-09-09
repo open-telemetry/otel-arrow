@@ -11,7 +11,8 @@
 //!
 //! TODO: Implement the sensitive capability for headers
 
-use crate::context::ContextEntryName;
+use crate::context::{ContextEntryName, ContextEntryRef};
+use crate::context_bindings::{ContextEntryId, ContextFieldId, ContextLayout, ContextPrimitive};
 use crate::transport_headers::{TransportHeader, TransportHeaders, ValueKind};
 use hashbrown::{Equivalent, HashMap};
 use schemars::JsonSchema;
@@ -19,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::fmt;
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
 // -- Stats types --------------------------------------------------------------
 
@@ -93,6 +95,9 @@ pub struct HeaderCapturePolicy {
 pub struct CompiledHeaderCapturePolicy {
     defaults: CaptureDefaults,
     captures: HashMap<CaptureKey, CompiledCapture>,
+    layout: Option<Arc<ContextLayout>>,
+    entries: Arc<[ContextEntryId]>,
+    names_preserved: Arc<[ContextFieldId]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,6 +105,7 @@ struct CompiledCapture {
     stored_name: ContextEntryName,
     value_kind: Option<ValueKindConfig>,
     preserve_original_name: bool,
+    field: Option<ContextFieldId>,
 }
 
 #[derive(Debug, Clone)]
@@ -141,6 +147,49 @@ fn hash_header_name<H: Hasher>(name: &str, state: &mut H) {
 }
 
 impl HeaderCapturePolicy {
+    /// Declares exact primitive fields independently of whether original names are retained.
+    pub fn context_primitives(&self) -> impl Iterator<Item = ContextPrimitive> + '_ {
+        self.headers.iter().flat_map(|rule| {
+            rule.match_names.iter().map(|name| ContextPrimitive {
+                entry: rule.store_as.as_ref().unwrap_or(name).clone(),
+                field: name.clone(),
+                grouped: rule.store_as.is_some(),
+            })
+        })
+    }
+
+    /// Binds capture to an engine layout and per-field original-name requirements.
+    pub fn compile_bound(
+        self,
+        layout: Arc<ContextLayout>,
+        pipeline: &crate::PipelineKey,
+        mut preserve: impl FnMut(ContextFieldId) -> bool,
+    ) -> Result<CompiledHeaderCapturePolicy, crate::error::Error> {
+        self.validate()
+            .map_err(crate::context_bindings::config_error)?;
+        let fields: std::collections::BTreeMap<_, _> = self
+            .context_primitives()
+            .map(|primitive| {
+                let field = layout.primitive_field(&primitive)?;
+                Ok((primitive.field, field))
+            })
+            .collect::<Result<_, crate::error::Error>>()?;
+        let mut compiled = self.compile(|_| false);
+        let mut names_preserved = std::collections::BTreeSet::new();
+        for (key, capture) in &mut compiled.captures {
+            let field = fields[&key.0];
+            capture.field = Some(field);
+            capture.preserve_original_name = preserve(field);
+            if capture.preserve_original_name {
+                let _ = names_preserved.insert(field);
+            }
+        }
+        compiled.entries =
+            layout.construction_entries(pipeline, &fields.values().copied().collect());
+        compiled.layout = Some(layout);
+        compiled.names_preserved = names_preserved.into_iter().collect();
+        Ok(compiled)
+    }
     /// Create a new capture policy from the given defaults and rules.
     #[must_use]
     pub fn new(defaults: CaptureDefaults, headers: Vec<CaptureRule>) -> Self {
@@ -154,7 +203,30 @@ impl HeaderCapturePolicy {
         self.headers.is_empty()
     }
 
-    /// Indexes capture rules and resolves original-name retention.
+    /// Validates that each normalized wire name is matched only once.
+    pub fn validate(&self) -> Result<(), String> {
+        let mut seen = HashMap::new();
+        for (rule_index, rule) in self.headers.iter().enumerate() {
+            if rule.match_names.is_empty() {
+                return Err(format!(
+                    "headers[{rule_index}].match_names must not be empty"
+                ));
+            }
+            for (match_index, match_name) in rule.match_names.iter().enumerate() {
+                if let Some((first_rule_index, first_match_index)) =
+                    seen.insert(match_name, (rule_index, match_index))
+                {
+                    return Err(format!(
+                        "headers[{rule_index}].match_names[{match_index}] `{match_name}` duplicates \
+                         headers[{first_rule_index}].match_names[{first_match_index}]"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+    /// Compiles per-match original-name requirements into this capture policy.
+    /// Compiles per-match original-name requirements into this capture policy.
     #[must_use]
     pub fn compile(
         self,
@@ -176,11 +248,18 @@ impl HeaderCapturePolicy {
                         preserve_original_name: consumes_original_name(&stored_name),
                         stored_name,
                         value_kind: rule.value_kind,
+                        field: None,
                     });
             }
         }
 
-        CompiledHeaderCapturePolicy { defaults, captures }
+        CompiledHeaderCapturePolicy {
+            defaults,
+            captures,
+            layout: None,
+            entries: Arc::default(),
+            names_preserved: Arc::default(),
+        }
     }
 }
 
@@ -204,6 +283,14 @@ impl CompiledHeaderCapturePolicy {
     {
         if self.captures.is_empty() {
             let _ = result.clear_and_reserve(0);
+            if let Some(layout) = &self.layout {
+                result.index_with(
+                    layout.clone(),
+                    &self.entries,
+                    Vec::new(),
+                    self.names_preserved.clone(),
+                );
+            }
             return None;
         }
 
@@ -211,7 +298,8 @@ impl CompiledHeaderCapturePolicy {
         let pairs = pairs;
         let (lower, upper) = pairs.size_hint();
         let capacity = upper.unwrap_or(lower).min(defaults.max_entries);
-        let result = result.clear_and_reserve(capacity);
+        let captured = result.clear_and_reserve(capacity);
+        let mut fields = Vec::with_capacity(if self.layout.is_some() { capacity } else { 0 });
         let mut skipped_max_entries: usize = 0;
         let mut skipped_name_too_long: usize = 0;
         let mut skipped_value_too_long: usize = 0;
@@ -220,7 +308,7 @@ impl CompiledHeaderCapturePolicy {
             let value: Cow<'a, [u8]> = value.into();
             if let Some(capture) = self.find_capture(wire_name) {
                 // Enforce entry count limit.
-                if result.len() >= defaults.max_entries {
+                if captured.len() >= defaults.max_entries {
                     skipped_max_entries += 1;
                     continue;
                 }
@@ -249,16 +337,28 @@ impl CompiledHeaderCapturePolicy {
                     }
                 };
 
-                result.push(TransportHeader::captured(
+                let header = TransportHeader::captured(
                     capture.stored_name.clone(),
                     wire_name,
                     capture.preserve_original_name,
                     value_kind,
                     value,
-                ));
+                );
+                if let Some(field) = capture.field {
+                    fields.push(field);
+                }
+                captured.push(header);
             }
         }
 
+        if let Some(layout) = &self.layout {
+            result.index_with(
+                layout.clone(),
+                &self.entries,
+                fields,
+                self.names_preserved.clone(),
+            );
+        }
         if skipped_max_entries > 0 || skipped_name_too_long > 0 || skipped_value_too_long > 0 {
             Some(CaptureStats {
                 skipped_max_entries,
@@ -391,98 +491,18 @@ impl HeaderPropagationPolicy {
 
     /// Validate the propagation policy configuration.
     ///
-    /// Currently validates the default selector shape. This is the single
-    /// entry-point that both pipeline-level and node-level validation use so
-    /// that invalid selectors cannot be silently accepted in one path while
-    /// being rejected in another.
+    /// Pipeline and node policies share validation of default selectors and
+    /// explicit override selections.
     pub fn validate(&self) -> Result<(), String> {
-        self.default.selector.validate()
-    }
-
-    /// Returns whether this entry is propagated with its original name.
-    #[must_use]
-    pub fn propagates_original_name(&self, name: &ContextEntryName) -> bool {
-        let (action, name_strategy) = self.resolve_action_for_name(name);
-        action == PropagationAction::Propagate && name_strategy == NameStrategy::Preserve
-    }
-
-    /// Returns whether an otherwise-unmentioned captured header uses its original name.
-    #[must_use]
-    pub fn propagates_original_name_by_default(&self) -> bool {
-        self.default.selector.selector_type == PropagationSelectorType::AllCaptured
-            && self.default.action == PropagationAction::Propagate
-            && self.default.name == NameStrategy::Preserve
-    }
-
-    /// Visits names whose original-name disposition may differ from the default.
-    pub fn visit_original_name_requirement_names(&self, mut visit: impl FnMut(&ContextEntryName)) {
-        if let Some(names) = &self.default.selector.named {
-            for name in names {
-                visit(name);
+        self.default.selector.validate()?;
+        for (index, rule) in self.overrides.iter().enumerate() {
+            if rule.match_rule.stored_names.is_empty() {
+                return Err(format!(
+                    "overrides[{index}].match.stored_names must not be empty"
+                ));
             }
         }
-        for override_policy in &self.overrides {
-            for name in &override_policy.match_rule.stored_names {
-                visit(name);
-            }
-        }
-    }
-
-    /// Returns borrowed headers selected for propagation.
-    /// [`NameStrategy`] selects each header's original or stored name.
-    /// Headers with [`PropagationAction::Drop`] are omitted.
-    pub fn propagate<'a>(
-        &'a self,
-        headers: &'a TransportHeaders,
-    ) -> impl Iterator<Item = PropagatedHeader<'a>> {
-        headers.iter().filter_map(move |header| {
-            let (action, name_strategy) = self.resolve_action(header);
-            if action == PropagationAction::Drop {
-                return None;
-            }
-            let header_name = match name_strategy {
-                NameStrategy::StoredName => header.name.as_str(),
-                NameStrategy::Preserve => header.wire_name(),
-            };
-            Some(PropagatedHeader {
-                header_name,
-                value_kind: &header.value.value_kind,
-                value: &header.value.bytes,
-            })
-        })
-    }
-
-    /// Determine the action and name strategy for a single header by
-    /// checking overrides first, then falling back to the default.
-    fn resolve_action(&self, header: &TransportHeader) -> (PropagationAction, NameStrategy) {
-        self.resolve_action_for_name(&header.name)
-    }
-
-    fn resolve_action_for_name(
-        &self,
-        name: &ContextEntryName,
-    ) -> (PropagationAction, NameStrategy) {
-        // Check overrides first.
-        for ov in &self.overrides {
-            if ov
-                .match_rule
-                .stored_names
-                .iter()
-                .any(|stored| name.as_str().eq_ignore_ascii_case(stored.as_str()))
-            {
-                let name_strategy = ov.name.unwrap_or(self.default.name);
-                return (ov.action, name_strategy);
-            }
-        }
-
-        // Check whether the header passes the default selector.
-        let selected = self.default.selector.selects(name);
-
-        if selected {
-            (self.default.action, self.default.name)
-        } else {
-            (PropagationAction::Drop, self.default.name)
-        }
+        Ok(())
     }
 }
 
@@ -535,10 +555,9 @@ pub struct PropagationSelector {
     #[serde(rename = "type", default)]
     pub selector_type: PropagationSelectorType,
 
-    /// Required names for `named` selectors.
-    /// Must be absent for other selector types.
+    /// Exact entry or member references. Required when `type` is `named`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub named: Option<Vec<ContextEntryName>>,
+    pub named: Option<Vec<ContextEntryRef>>,
 }
 
 impl PropagationSelector {
@@ -555,23 +574,6 @@ impl PropagationSelector {
                 Err("'named' must not be set when type is not 'named'".into())
             }
             _ => Ok(()),
-        }
-    }
-    /// Returns true if the given header name is selected for propagation.
-    #[must_use]
-    pub fn selects(&self, header_name: &ContextEntryName) -> bool {
-        match &self.selector_type {
-            PropagationSelectorType::AllCaptured => true,
-            PropagationSelectorType::None => false,
-            PropagationSelectorType::Named => self
-                .named
-                .as_ref()
-                .map(|names| {
-                    names
-                        .iter()
-                        .any(|name| header_name.as_str().eq_ignore_ascii_case(name.as_str()))
-                })
-                .unwrap_or(false),
         }
     }
 }
@@ -672,16 +674,20 @@ pub struct PropagationOverride {
 )]
 #[serde(deny_unknown_fields)]
 pub struct PropagationMatch {
-    /// Stored names to match case-insensitively, preserving configured spelling.
-    pub stored_names: Vec<ContextEntryName>,
+    /// Exact entry or member references, including conditional composite members.
+    pub stored_names: Vec<ContextEntryRef>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn context_name(raw: &str) -> ContextEntryName {
-        ContextEntryName::try_from(raw).expect("valid test context entry name")
+    fn context_name<'a, T>(raw: &'a str) -> T
+    where
+        T: TryFrom<&'a str>,
+        T::Error: fmt::Debug,
+    {
+        T::try_from(raw).expect("valid test context reference")
     }
 
     /// Scenario: a capture policy uses defaults.
@@ -779,9 +785,29 @@ mod tests {
             ],
         );
 
-        assert!(policy.propagates_original_name(&context_name("preserved")));
-        assert!(!policy.propagates_original_name(&context_name("stored")));
-        assert!(!policy.propagates_original_name(&context_name("dropped")));
+        let layout = ContextLayout::compile(
+            ["preserved", "stored", "dropped"]
+                .map(|name| ContextPrimitive::standalone(context_name(name)))
+                .into_iter()
+                .collect(),
+            Default::default(),
+        )
+        .unwrap();
+        let compiled = policy
+            .compile(
+                layout.clone(),
+                &crate::PipelineKey::new("g".into(), "p".into()),
+            )
+            .unwrap();
+        let fields: Vec<_> = compiled.original_name_fields().collect();
+        assert_eq!(
+            fields,
+            vec![
+                layout
+                    .primitive_field(&ContextPrimitive::standalone(context_name("preserved")),)
+                    .unwrap()
+            ]
+        );
     }
 
     /// Scenario: no consumer needs original names and `store_as` uses mixed case.
@@ -832,7 +858,7 @@ headers:
         assert!(policy.headers[1].sensitive);
         assert_eq!(
             policy.headers[2].match_names,
-            vec![context_name("x-request-id")]
+            vec![context_name::<ContextEntryName>("x-request-id")]
         );
 
         // roundtrip
@@ -861,7 +887,7 @@ overrides:
         assert_eq!(policy.overrides.len(), 1);
         assert_eq!(
             policy.overrides[0].match_rule.stored_names,
-            vec!["authorization"]
+            vec![context_name::<ContextEntryRef>("authorization")]
         );
         assert_eq!(policy.overrides[0].action, PropagationAction::Drop);
 

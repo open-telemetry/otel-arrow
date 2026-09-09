@@ -517,13 +517,38 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     // token. Computed once before signal dispatch; the static
                     // template is cloned only when present so the no-metadata
                     // case stays allocation-free.
+                    let metadata = match build_grpc_metadata(
+                        &effect_handler,
+                        &context,
+                        static_metadata.as_ref(),
+                        auth_header,
+                    ) {
+                        Ok(metadata) => metadata,
+                        Err(error) => {
+                            let completed = attempt
+                                .run(async |attempt| {
+                                    Err::<(), _>(
+                                        attempt.failed(OtlpGrpcExporterErrorType::Encoding),
+                                    )
+                                })
+                                .await;
+                            let error_type = self
+                                .metrics
+                                .boundary
+                                .record(completed)
+                                .expect_err("metadata encoding attempt must fail");
+                            self.metrics.record_failure(signal_type, error_type);
+                            effect_handler
+                                .notify_nack(NackMsg::new_permanent(
+                                    error.to_string(),
+                                    OtapPdata::new(context, payload),
+                                ))
+                                .await?;
+                            continue;
+                        }
+                    };
                     let metadata = RequestMetadata {
-                        metadata: build_grpc_metadata(
-                            &effect_handler,
-                            &context,
-                            static_metadata.as_ref(),
-                            auth_header,
-                        ),
+                        metadata,
                         token_generation,
                     };
 
@@ -1105,14 +1130,14 @@ fn build_grpc_metadata(
     context: &Context,
     static_metadata: Option<&MetadataMap>,
     auth_header: Option<HeaderValue>,
-) -> Option<MetadataMap> {
+) -> Result<Option<MetadataMap>, otel_arrow_dfe_config::context_bindings::ContextAccessError> {
     let propagation = effect_handler
         .propagation_policy()
         .zip(context.transport_headers());
 
     // Zero-alloc fast path: nothing static configured, nothing to propagate, no token.
     if static_metadata.is_none() && propagation.is_none() && auth_header.is_none() {
-        return None;
+        return Ok(None);
     }
 
     let mut metadata = match static_metadata {
@@ -1121,7 +1146,7 @@ fn build_grpc_metadata(
     };
 
     if let Some((policy, transport_headers)) = propagation {
-        for header in policy.propagate(transport_headers) {
+        for header in policy.propagate(transport_headers)? {
             match header.value_kind {
                 ValueKind::Text => {
                     // ASCII metadata: parse the header name and value.
@@ -1192,9 +1217,9 @@ fn build_grpc_metadata(
     }
 
     if metadata.is_empty() {
-        None
+        Ok(None)
     } else {
-        Some(metadata)
+        Ok(Some(metadata))
     }
 }
 
@@ -3073,6 +3098,94 @@ mod tests {
 
     // ---- build_grpc_metadata unit tests ----------------------------------------
 
+    /// Scenario: the documented pipeline captures a conditional composite and selects its workspace member.
+    /// Guarantees: resolved engine policies reach real gRPC metadata construction and absent groups never emit it.
+    #[test]
+    fn documented_composite_context_reaches_grpc_metadata() {
+        use otel_arrow_dfe_config::engine::OtelDataflowSpec;
+        let config = OtelDataflowSpec::from_yaml(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../examples/composite-context.yaml",
+        )))
+        .expect("documented configuration");
+        config.validate().expect("valid configuration");
+        let compiled = otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY
+            .compile_initial_context(&config.resolve())
+            .expect("compiled engine configuration")
+            .bindings;
+        let pipeline = otel_arrow_dfe_config::PipelineKey::new("default".into(), "main".into());
+        let capture = compiled
+            .header_capture_policy(&pipeline, &"receive".into())
+            .unwrap();
+        let propagation = compiled
+            .header_propagation_policy(&pipeline, &"export".into())
+            .cloned()
+            .unwrap();
+        let (_rx, reporter) = MetricsReporter::create_new_and_receiver(1);
+        let mut handler = EffectHandler::new(
+            test_node("composite-export"),
+            reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
+        handler.set_propagation_policy(Some(propagation));
+        for (environment, expected) in [("production", 2), ("development", 0)] {
+            let mut headers = TransportHeaders::new();
+            let _ = capture.capture_from_pairs(
+                [
+                    ("x-customer", b"acme".as_slice()),
+                    ("x-workspace", b"one".as_slice()),
+                    ("x-workspace", b"two".as_slice()),
+                    ("environment", environment.as_bytes()),
+                ]
+                .into_iter(),
+                &mut headers,
+            );
+            let mut context = Context::default();
+            context.set_transport_headers(headers);
+            let metadata = super::build_grpc_metadata(&handler, &context, None, None)
+                .expect("compatible context");
+            let values: Vec<_> = metadata
+                .as_ref()
+                .into_iter()
+                .flat_map(|metadata| metadata.get_all("x-workspace").iter())
+                .map(|value| value.to_str().unwrap())
+                .collect();
+            assert_eq!(values.len(), expected);
+            if expected != 0 {
+                assert_eq!(values, ["one", "two"]);
+            }
+        }
+    }
+
+    fn metadata_context_layout() -> Arc<otel_arrow_dfe_config::context_bindings::ContextLayout> {
+        use otel_arrow_dfe_config::context_bindings::{ContextLayout, ContextPrimitive};
+        ContextLayout::compile(
+            [
+                "x-tenant-id",
+                "x-request-id",
+                "authorization",
+                "trace-context-bin",
+                "custom-binary",
+                "x-forwarded-for",
+            ]
+            .map(|name| ContextPrimitive::standalone(context_name(name)))
+            .into_iter()
+            .collect(),
+            Default::default(),
+        )
+        .expect("metadata fixture layout")
+    }
+
+    fn build_grpc_metadata(
+        handler: &EffectHandler<OtapPdata>,
+        context: &Context,
+        static_metadata: Option<&MetadataMap>,
+        auth_header: Option<HeaderValue>,
+    ) -> Option<MetadataMap> {
+        super::build_grpc_metadata(handler, context, static_metadata, auth_header)
+            .expect("compatible metadata fixture")
+    }
+
     /// Helper: Creates an [`EffectHandler`] with an optional propagation policy set.
     fn make_effect_handler_with_policy(
         policy: Option<HeaderPropagationPolicy>,
@@ -3084,12 +3197,25 @@ mod tests {
             metrics_reporter,
             otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
-        handler.set_propagation_policy(policy);
+        handler.set_propagation_policy(policy.map(|policy| {
+            policy
+                .compile(
+                    metadata_context_layout(),
+                    &otel_arrow_dfe_config::PipelineKey::new("g".into(), "p".into()),
+                )
+                .expect("compiled propagation")
+        }));
         handler
     }
 
     /// Helper: Creates a [`Context`] that carries the given transport headers.
-    fn context_with_headers(headers: TransportHeaders) -> Context {
+    fn context_with_headers(mut headers: TransportHeaders) -> Context {
+        metadata_context_layout()
+            .bind_headers(
+                &mut headers,
+                &otel_arrow_dfe_config::PipelineKey::new("g".into(), "p".into()),
+            )
+            .expect("bound headers");
         let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into())
             .with_transport_headers(headers);
         let (context, _) = pdata.into_parts();
@@ -3175,7 +3301,7 @@ mod tests {
             },
             vec![PropagationOverride {
                 match_rule: PropagationMatch {
-                    stored_names: vec![context_name("authorization")],
+                    stored_names: vec!["authorization".try_into().expect("valid reference")],
                 },
                 action: PropagationAction::Drop,
                 name: None,

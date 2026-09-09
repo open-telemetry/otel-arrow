@@ -22,6 +22,8 @@ pub mod byte_units;
 pub mod config_provider;
 /// Context entry names.
 pub mod context;
+pub mod context_bindings;
+pub mod context_policy;
 pub mod conversion;
 pub mod engine;
 /// Environment variable substitution for raw config text.
@@ -56,7 +58,7 @@ pub use topic::{
 /// Validation helpers for node configuration.
 pub mod validation;
 
-pub use context::ContextEntryName;
+pub use context::{ContextEntryName, ContextEntryRef};
 pub use conversion::ConversionOptions;
 
 /// Signal types

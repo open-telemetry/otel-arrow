@@ -73,6 +73,9 @@ pub(crate) fn is_permanent_send_error(err: &KafkaError) -> bool {
 /// Errors produced by the Kafka exporter.
 #[derive(Debug, thiserror::Error)]
 pub enum KafkaExporterError {
+    /// Context cannot be interpreted safely using the installed propagation binding.
+    #[error("Kafka context propagation failed: {0}")]
+    Context(#[from] otel_arrow_dfe_config::context_bindings::ContextAccessError),
     // ==================== Configuration / runtime ====================
     /// Configuration error (invalid config or producer construction failure).
     #[error("Kafka exporter configuration error: {0}")]

@@ -28,6 +28,12 @@ config:
 
 ## Configuration
 
+Request header propagation can select whole context entries or qualified
+members such as `production_workspace:workspace`. A conditional composite's
+member is emitted only when that composite is present. See
+[Conditional composite context entries](../../../../../docs/composite-context-entries.md)
+for capture rules, conditions, repeated values, and naming strategies.
+
 The config embeds shared gRPC client settings and adds exporter concurrency
 settings.
 

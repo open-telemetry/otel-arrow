@@ -28,8 +28,8 @@ use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::terminal_state::TerminalState;
 use otel_arrow_dfe_channel::error::SendError;
 use otel_arrow_dfe_channel::mpsc;
+use otel_arrow_dfe_config::context_bindings::CompiledHeaderPropagationPolicy;
 use otel_arrow_dfe_config::node::NodeUserConfig;
-use otel_arrow_dfe_config::transport_headers_policy::HeaderPropagationPolicy;
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use std::sync::Arc;
 
@@ -57,7 +57,7 @@ pub enum ExporterWrapper<PData> {
         /// Telemetry guard for node lifecycle cleanup.
         telemetry: Option<NodeTelemetryGuard>,
         /// Pre-resolved propagation policy for transport header forwarding.
-        propagation_policy: Option<HeaderPropagationPolicy>,
+        propagation_policy: Option<CompiledHeaderPropagationPolicy>,
     },
     /// An exporter with a `Send` implementation.
     Shared {
@@ -78,7 +78,7 @@ pub enum ExporterWrapper<PData> {
         /// Telemetry guard for node lifecycle cleanup.
         telemetry: Option<NodeTelemetryGuard>,
         /// Pre-resolved propagation policy for transport header forwarding.
-        propagation_policy: Option<HeaderPropagationPolicy>,
+        propagation_policy: Option<CompiledHeaderPropagationPolicy>,
     },
 }
 
@@ -398,7 +398,10 @@ impl<PData> ExporterWrapper<PData> {
 
     /// Returns the wrapper with the given pre-resolved propagation policy for
     /// transport header forwarding.
-    pub(crate) fn with_propagation_policy(self, policy: Option<HeaderPropagationPolicy>) -> Self {
+    pub(crate) fn with_propagation_policy(
+        self,
+        policy: Option<CompiledHeaderPropagationPolicy>,
+    ) -> Self {
         match self {
             ExporterWrapper::Local {
                 node_id,
@@ -1405,7 +1408,7 @@ mod tests {
 
     // -- with_propagation_policy tests ----------------------------------------
 
-    use otel_arrow_dfe_config::transport_headers_policy::HeaderPropagationPolicy;
+    use otel_arrow_dfe_config::context_bindings::CompiledHeaderPropagationPolicy;
 
     #[test]
     fn test_with_propagation_policy_none_by_default() {
@@ -1434,7 +1437,7 @@ mod tests {
             Arc::new(NodeUserConfig::new_exporter_config("test")),
             test_runtime.config(),
         )
-        .with_propagation_policy(Some(HeaderPropagationPolicy::default()));
+        .with_propagation_policy(Some(CompiledHeaderPropagationPolicy::default()));
 
         match wrapper {
             ExporterWrapper::Local {
@@ -1456,7 +1459,7 @@ mod tests {
             Arc::new(NodeUserConfig::new_exporter_config("test")),
             test_runtime.config(),
         )
-        .with_propagation_policy(Some(HeaderPropagationPolicy::default()));
+        .with_propagation_policy(Some(CompiledHeaderPropagationPolicy::default()));
 
         match wrapper {
             ExporterWrapper::Shared {

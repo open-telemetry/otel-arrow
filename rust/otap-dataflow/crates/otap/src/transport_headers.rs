@@ -4,17 +4,32 @@
 #[cfg(test)]
 mod tests {
     use otel_arrow_dfe_config::ContextEntryName;
+    use otel_arrow_dfe_config::context_bindings::ContextLayout;
     use otel_arrow_dfe_config::transport_headers::{TransportHeaders, ValueKind};
     use otel_arrow_dfe_config::transport_headers_policy::{
         CaptureDefaults, CaptureRule, CompiledHeaderCapturePolicy, HeaderCapturePolicy,
         HeaderPropagationPolicy, PropagationAction, PropagationDefault, PropagationMatch,
         PropagationOverride, PropagationSelector, PropagationSelectorType,
     };
+    use std::sync::Arc;
 
     // -- Helper functions for tests ------------------------------------------
 
-    fn make_capture_policy(rules: Vec<CaptureRule>) -> CompiledHeaderCapturePolicy {
-        HeaderCapturePolicy::new(CaptureDefaults::default(), rules).compile(|_| true)
+    fn make_capture_policy(
+        rules: Vec<CaptureRule>,
+    ) -> (CompiledHeaderCapturePolicy, Arc<ContextLayout>) {
+        let policy = HeaderCapturePolicy::new(CaptureDefaults::default(), rules);
+        let layout =
+            ContextLayout::compile(policy.context_primitives().collect(), Default::default())
+                .unwrap();
+        let capture = policy
+            .compile_bound(
+                layout.clone(),
+                &otel_arrow_dfe_config::PipelineKey::new("g".into(), "p".into()),
+                |_| true,
+            )
+            .unwrap();
+        (capture, layout)
     }
 
     fn context_name(raw: &str) -> ContextEntryName {
@@ -49,7 +64,7 @@ mod tests {
     fn end_to_end_capture_preserve_propagate() {
         // ========== Step 1: Simulate receiver header capture ==========
 
-        let capture_policy = make_capture_policy(vec![
+        let (capture_policy, layout) = make_capture_policy(vec![
             rule(&["x-tenant-id"], Some("tenant_id")),
             rule(&["x-request-id"], None),
             rule(&["authorization"], None),
@@ -113,7 +128,7 @@ mod tests {
             },
             vec![PropagationOverride {
                 match_rule: PropagationMatch {
-                    stored_names: vec![context_name("authorization")],
+                    stored_names: vec!["authorization".try_into().expect("valid reference")],
                 },
                 action: PropagationAction::Drop,
                 name: None,
@@ -121,7 +136,16 @@ mod tests {
             }],
         );
 
-        let propagated: Vec<_> = propagation_policy.propagate(headers_after).collect();
+        let propagation_policy = propagation_policy
+            .compile(
+                layout,
+                &otel_arrow_dfe_config::PipelineKey::new("g".into(), "p".into()),
+            )
+            .unwrap();
+        let propagated: Vec<_> = propagation_policy
+            .propagate(headers_after)
+            .unwrap()
+            .collect();
 
         assert_eq!(
             propagated.len(),
@@ -143,7 +167,7 @@ mod tests {
     /// the entire pipeline flow (a key semantic requirement).
     #[test]
     fn end_to_end_duplicate_headers_preserved() {
-        let capture_policy = make_capture_policy(vec![rule(&["x-forwarded-for"], None)]);
+        let (capture_policy, layout) = make_capture_policy(vec![rule(&["x-forwarded-for"], None)]);
 
         let inbound: Vec<(&str, &[u8])> = vec![
             ("X-Forwarded-For", b"10.0.0.1"),
@@ -180,7 +204,13 @@ mod tests {
             },
             vec![],
         );
-        let propagated: Vec<_> = propagation_policy.propagate(headers).collect();
+        let propagation_policy = propagation_policy
+            .compile(
+                layout,
+                &otel_arrow_dfe_config::PipelineKey::new("g".into(), "p".into()),
+            )
+            .unwrap();
+        let propagated: Vec<_> = propagation_policy.propagate(headers).unwrap().collect();
         assert_eq!(propagated.len(), 3, "duplicates must survive propagation");
 
         let values: Vec<&[u8]> = propagated.iter().map(|h| h.value).collect();
@@ -191,7 +221,8 @@ mod tests {
     /// Test binary header preservation through the entire flow.
     #[test]
     fn end_to_end_binary_headers_preserved() {
-        let capture_policy = make_capture_policy(vec![rule(&["trace-context-bin"], None)]);
+        let (capture_policy, layout) =
+            make_capture_policy(vec![rule(&["trace-context-bin"], None)]);
 
         let binary_value: Vec<u8> = vec![0x00, 0x01, 0xFF, 0xFE, 0x80, 0x7F];
         let inbound: Vec<(&str, &[u8])> = vec![("trace-context-bin", &binary_value)];
@@ -217,7 +248,13 @@ mod tests {
             },
             vec![],
         );
-        let propagated: Vec<_> = propagation_policy.propagate(headers).collect();
+        let propagation_policy = propagation_policy
+            .compile(
+                layout,
+                &otel_arrow_dfe_config::PipelineKey::new("g".into(), "p".into()),
+            )
+            .unwrap();
+        let propagated: Vec<_> = propagation_policy.propagate(headers).unwrap().collect();
 
         assert_eq!(*propagated[0].value_kind, ValueKind::Binary);
         assert_eq!(propagated[0].value, binary_value.as_slice());

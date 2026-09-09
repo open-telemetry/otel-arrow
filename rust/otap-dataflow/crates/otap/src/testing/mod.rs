@@ -17,6 +17,33 @@ use serde_json::Value;
 use std::ops::Add;
 use std::time::Instant;
 
+/// Compiles a regular test pipeline's complete context policy before constructing its nodes.
+#[must_use]
+pub fn with_test_context_policy(
+    mut context: otel_arrow_dfe_engine::context::PipelineContext,
+    pipeline: &otel_arrow_dfe_config::pipeline::PipelineConfig,
+) -> otel_arrow_dfe_engine::context::PipelineContext {
+    let key = context.pipeline_key();
+    let spec = otel_arrow_dfe_config::engine::OtelDataflowSpec::from_pipeline(
+        key.pipeline_group_id().clone(),
+        key.pipeline_id().clone(),
+        pipeline.clone(),
+        Default::default(),
+    )
+    .expect("valid test pipeline configuration");
+    let mut resolved = spec.resolve();
+    resolved.pipelines.retain(|pipeline| {
+        pipeline.role == otel_arrow_dfe_config::engine::ResolvedPipelineRole::Regular
+    });
+    context.set_compiled_context_bindings(
+        crate::OTAP_PIPELINE_FACTORY
+            .compile_initial_context(&resolved)
+            .expect("valid test context declarations")
+            .bindings,
+    );
+    context
+}
+
 /// Consume frames to locate the most recent subscriber with ACKS
 /// interest in test scenarios, simulating the runtime control manager.
 #[must_use]

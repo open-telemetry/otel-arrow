@@ -1,0 +1,48 @@
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+version: otel_dataflow/v1
+policies:
+  transport_headers:
+    header_capture:
+      headers:
+        - match_names: [x-customer, x-workspace]
+          store_as: request_identity
+        - match_names: [environment]
+    header_propagation:
+      default:
+        selector:
+          type: named
+          named: [production_workspace:workspace]
+        action: propagate
+        name: preserve
+  context:
+    entries:
+      production_workspace:
+        - type: transport_header
+          name: request_identity:x-customer
+          as: customer
+        - type: transport_header
+          name: request_identity:x-workspace
+          as: workspace
+        - type: transport_header_match
+          name: environment
+          value: production
+          match: all
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receive:
+            type: urn:otel:receiver:otlp
+            config:
+              protocols:
+                grpc:
+                  listening_addr: "127.0.0.1:4317"
+          export:
+            type: urn:otel:exporter:otlp_grpc
+            config:
+              grpc_endpoint: "http://127.0.0.1:5317"
+        connections:
+          - from: receive
+            to: export

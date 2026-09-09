@@ -1,5 +1,18 @@
 # Pipeline Data Context
 
+## Implementation status
+
+The first conditional transport-based composite slice is documented in
+[Conditional composite context entries](../docs/composite-context-entries.md).
+It supports exact entry/member references, explicit multi-value conditions,
+binding-specific scalar versus repeated-value access, and conditional member
+propagation through OTLP/gRPC and Kafka.
+
+The examples below describe the broader RFC direction. The implementation guide
+is authoritative for the currently supported syntax and its explicit `match`
+quantifiers. Identity/network sources, nested derived entries, general projector
+semantics, and routing/batching/resource-control integrations remain future work.
+
 ## Overview
 
 A **Pdata Context** is message-scoped metadata attached to an

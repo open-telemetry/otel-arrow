@@ -113,6 +113,7 @@ pub struct PartitionProcessor {
     contexts: Contexts,
     partitioner: Partitioner,
     header_name: ContextEntryName,
+    context_output: otel_arrow_dfe_config::context_bindings::ContextProducerBinding,
     serialization_strategy: PartitionValueSerializeStrategy,
     metrics: MeasurementMetricSet<Metrics>,
 }
@@ -148,6 +149,10 @@ impl PartitionProcessor {
         Ok(Self {
             partitioner,
             contexts: Contexts::new(config.inbound_request_limit, config.outbound_request_limit),
+            context_output: pipeline_ctx
+                .compiled_context_bindings()
+                .layout()
+                .bind_producer(&config.partition_header_name, &pipeline_ctx.pipeline_key())?,
             header_name: config.partition_header_name,
             serialization_strategy: config.header_serialization_strategy,
             metrics: Metrics::register(pipeline_ctx),
@@ -309,11 +314,24 @@ impl Processor<OtapPdata> for PartitionProcessor {
                         // update the header values
                         let mut headers =
                             inbound_context.take_transport_headers().unwrap_or_default();
-                        headers.push(partition_value_to_transport_header(
-                            &self.header_name,
-                            &self.serialization_strategy,
-                            partition.value,
-                        ));
+                        self.context_output
+                            .append(
+                                &mut headers,
+                                partition_value_to_transport_header(
+                                    &self.header_name,
+                                    &self.serialization_strategy,
+                                    partition.value,
+                                )
+                                .value,
+                            )
+                            .map_err(|error| {
+                                otel_arrow_dfe_engine::error::Error::ProcessorError {
+                                    processor: effect_handler.processor_id(),
+                                    kind: ProcessorErrorKind::Other,
+                                    error: error.to_string(),
+                                    source_detail: "partition context output".into(),
+                                }
+                            })?;
                         inbound_context.set_transport_headers(headers);
 
                         let pdata =
@@ -374,11 +392,24 @@ impl Processor<OtapPdata> for PartitionProcessor {
                             let mut pdata_context = inbound_context.clone_detached();
                             let mut headers =
                                 pdata_context.take_transport_headers().unwrap_or_default();
-                            headers.push(partition_value_to_transport_header(
-                                &self.header_name,
-                                &self.serialization_strategy,
-                                partition.value,
-                            ));
+                            self.context_output
+                                .append(
+                                    &mut headers,
+                                    partition_value_to_transport_header(
+                                        &self.header_name,
+                                        &self.serialization_strategy,
+                                        partition.value,
+                                    )
+                                    .value,
+                                )
+                                .map_err(|error| {
+                                    otel_arrow_dfe_engine::error::Error::ProcessorError {
+                                        processor: effect_handler.processor_id(),
+                                        kind: ProcessorErrorKind::Other,
+                                        error: error.to_string(),
+                                        source_detail: "partition context output".into(),
+                                    }
+                                })?;
                             pdata_context.set_transport_headers(headers);
 
                             let outbound_batch_num_items = partition.batch.num_items();
@@ -575,6 +606,14 @@ mod test {
             1,
             0,
         );
+        let typed: Config =
+            serde_json::from_value(node_config.config.clone()).map_err(|error| {
+                otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                    error: error.to_string(),
+                }
+            })?;
+        let policy = partition_test_context(&typed, &pipeline_context)?;
+        pipeline_context.set_compiled_context_bindings(Arc::new(policy));
         let node_id = test_node("partition_processor");
         let pipeline_config = serde_json::from_value(serde_json::json!({
             "nodes": { "partition_processor": &node_config }
@@ -599,6 +638,35 @@ mod test {
             runtime.config(),
             &Capabilities::empty(),
         )
+    }
+
+    fn partition_test_context(
+        config: &Config,
+        context: &PipelineContext,
+    ) -> Result<
+        otel_arrow_dfe_engine::context_declaration::CompiledContextBindings,
+        otel_arrow_dfe_config::error::Error,
+    > {
+        use otel_arrow_dfe_engine::context_declaration::{
+            CompiledContextBindings, DeclaredContextPolicy,
+        };
+        CompiledContextBindings::compile(DeclaredContextPolicy {
+            nodes: std::collections::HashMap::from([(
+                context.pipeline_key(),
+                std::collections::HashMap::from([
+                    (context.node_id(), config.context_declarations()),
+                    (
+                        "input".into(),
+                        [ContextDeclaration::Produces {
+                            entry: context_name("h1"),
+                        }]
+                        .into_iter()
+                        .collect(),
+                    ),
+                ]),
+            )]),
+            ..Default::default()
+        })
     }
 
     fn partition_operation_counts(
@@ -1049,6 +1117,18 @@ mod test {
         let runtime = TestRuntime::<OtapPdata>::new();
         let expression = "attributes[\"x\"]";
         let header_name = "partition-header";
+        let layout = otel_arrow_dfe_config::context_bindings::ContextLayout::compile(
+            [header_name, "h1"]
+                .map(|name| {
+                    otel_arrow_dfe_config::context_bindings::ContextPrimitive::standalone(
+                        context_name(name),
+                    )
+                })
+                .into_iter()
+                .collect(),
+            Default::default(),
+        )
+        .unwrap();
         let processor = create_processor_with_config(
             serde_json::json!({
                 "partition_by": { "opl_expression": expression },
@@ -1099,6 +1179,15 @@ mod test {
                     ValueKind::Text,
                     "hello world".as_bytes(),
                 ));
+                layout
+                    .bind_headers(
+                        &mut headers,
+                        &otel_arrow_dfe_config::PipelineKey::new(
+                            "group_id".into(),
+                            "pipeline_id".into(),
+                        ),
+                    )
+                    .unwrap();
                 context.set_transport_headers(headers);
                 context.set_peer_addr("10.0.0.1:5005".parse().unwrap());
                 let mut pdata = OtapPdata::new(context, OtapPayload::from(otap_batch));
@@ -1158,6 +1247,15 @@ mod test {
                     ValueKind::Text,
                     "hello world".as_bytes(),
                 ));
+                layout
+                    .bind_headers(
+                        &mut headers,
+                        &otel_arrow_dfe_config::PipelineKey::new(
+                            "group_id".into(),
+                            "pipeline_id".into(),
+                        ),
+                    )
+                    .unwrap();
                 context.set_transport_headers(headers);
                 let pdata = OtapPdata::new(context, OtapPayload::from(otap_batch));
                 ctx.process(Message::PData(pdata))

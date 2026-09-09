@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use otel_arrow_dfe_config::ContextEntryName;
+use otel_arrow_dfe_config::context_bindings::{CompiledHeaderPropagationPolicy, ContextLayout};
 use otel_arrow_dfe_config::transport_headers::{TransportHeader, TransportHeaders, ValueKind};
 use otel_arrow_dfe_config::transport_headers_policy::{
     CaptureDefaults, CaptureRule, CompiledHeaderCapturePolicy, HeaderCapturePolicy,
@@ -140,12 +141,10 @@ struct LegacyTransportHeader {
 
 fn bench_receive(c: &mut Criterion) {
     let mut group = c.benchmark_group("request_context/receive_grpc");
-    for header_count in HEADER_COUNTS {
-        for producer in PRODUCER_CASES {
-            for consumer in RECEIVE_CONSUMER_CASES {
-                let preserve_original_names = consumer.preserves_original_names();
-                let capture =
-                    capture_policy(header_count, producer).compile(|_| preserve_original_names);
+    for producer in PRODUCER_CASES {
+        for consumer in CONSUMER_CASES {
+            for header_count in HEADER_COUNTS {
+                let (capture, _) = compiled_policies(header_count, producer, consumer);
                 let metadata = inbound_metadata(header_count);
                 let _ = group.bench_with_input(
                     BenchmarkId::new(case_name(producer, consumer), header_count),
@@ -164,13 +163,10 @@ fn bench_receive(c: &mut Criterion) {
 
 fn bench_end_to_end(c: &mut Criterion) {
     let mut group = c.benchmark_group("request_context/end_to_end_grpc");
-    for header_count in HEADER_COUNTS {
-        for producer in PRODUCER_CASES {
-            for consumer in CONSUMER_CASES {
-                let propagation = consumer.propagation_policy();
-                let preserve_original_names = consumer.preserves_original_names();
-                let capture =
-                    capture_policy(header_count, producer).compile(|_| preserve_original_names);
+    for producer in PRODUCER_CASES {
+        for consumer in CONSUMER_CASES {
+            for header_count in HEADER_COUNTS {
+                let (capture, propagation) = compiled_policies(header_count, producer, consumer);
                 let metadata = inbound_metadata(header_count);
                 let _ = group.bench_with_input(
                     BenchmarkId::new(case_name(producer, consumer), header_count),
@@ -413,9 +409,38 @@ fn capture_kafka_headers<T>(
     Arc::new(captured)
 }
 
-fn propagate_metadata(context: &TransportHeaders, policy: &HeaderPropagationPolicy) -> MetadataMap {
+fn compiled_policies(
+    count: usize,
+    producer: ProducerCase,
+    consumer: ConsumerCase,
+) -> (
+    CompiledHeaderCapturePolicy,
+    Option<CompiledHeaderPropagationPolicy>,
+) {
+    let capture = capture_policy(count, producer);
+    let layout = ContextLayout::compile(capture.context_primitives().collect(), Default::default())
+        .expect("benchmark layout");
+    let pipeline = otel_arrow_dfe_config::PipelineKey::new("g".into(), "p".into());
+    let propagation = consumer.propagation_policy().map(|policy| {
+        policy
+            .compile(layout.clone(), &pipeline)
+            .expect("benchmark propagation")
+    });
+    let capture = capture
+        .compile_bound(layout, &pipeline, |_| consumer.preserves_original_names())
+        .expect("benchmark capture");
+    (capture, propagation)
+}
+
+fn propagate_metadata(
+    context: &TransportHeaders,
+    policy: &CompiledHeaderPropagationPolicy,
+) -> MetadataMap {
     let mut metadata = MetadataMap::new();
-    for header in policy.propagate(context) {
+    for header in policy
+        .propagate(context)
+        .expect("compatible benchmark context")
+    {
         append_text_metadata(&mut metadata, header.header_name, header.value);
     }
     metadata

@@ -153,7 +153,10 @@ pub struct Config {
     ///   x-tenant-id: "acme"
     ///   x-request-id:
     /// ```
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "otel_arrow_dfe_config::context_policy::deserialize_context_entries"
+    )]
     transport_headers: HashMap<ContextEntryName, Option<String>>,
 }
 

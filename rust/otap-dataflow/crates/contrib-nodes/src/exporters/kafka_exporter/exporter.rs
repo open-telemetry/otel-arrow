@@ -533,7 +533,7 @@ impl KafkaExporter {
         format_header_key: &str,
         context: &otel_arrow_dfe_otap::pdata::Context,
         effect_handler: Option<&EffectHandler<OtapPdata>>,
-    ) -> OwnedHeaders {
+    ) -> Result<OwnedHeaders, KafkaExporterError> {
         let mut headers = OwnedHeaders::new();
 
         // Always write the message format header.
@@ -552,8 +552,7 @@ impl KafkaExporter {
         if let Some(policy) = effect_handler.and_then(|eh| eh.propagation_policy())
             && let Some(transport_headers) = context.transport_headers()
         {
-            for propagated in policy.propagate(transport_headers) {
-                // Skip propagated headers that collide with the format header.
+            for propagated in policy.propagate(transport_headers)? {
                 if propagated.header_name == format_header_key {
                     continue;
                 }
@@ -564,7 +563,7 @@ impl KafkaExporter {
             }
         }
 
-        headers
+        Ok(headers)
     }
 
     /// Encodes a single PData message and enqueues it to Kafka, returning the
@@ -682,8 +681,26 @@ impl KafkaExporter {
 
         // Build Kafka headers (format header + propagated transport headers)
         let format_header_key = self.config.message_format_header();
-        let headers =
-            Self::build_kafka_headers(encoding, format_header_key, &context, effect_handler);
+        let headers = match Self::build_kafka_headers(
+            encoding,
+            format_header_key,
+            &context,
+            effect_handler,
+        ) {
+            Ok(headers) => headers,
+            Err(error) => {
+                self.metrics.record_failure(
+                    signal_type,
+                    KafkaExporterErrorType::Encoding,
+                    export_start.elapsed(),
+                    None,
+                );
+                let _ = reporter
+                    .nack_permanent(error.to_string(), OtapPdata::new(context, payload))
+                    .await;
+                return Err(error);
+            }
+        };
 
         // Encode payload to bytes using the per-signal encoding.
         // This block borrows &mut self.pdata_producer so it must complete
@@ -6972,6 +6989,7 @@ pub mod test_support {
         /// the format header.
         #[test]
         fn build_kafka_headers_propagates_transport_headers_under_policy() {
+            use otel_arrow_dfe_config::context_bindings::{ContextLayout, ContextPrimitive};
             // Context with two transport headers, one of which collides with the
             // format-header key and must be skipped.
             let mut transport = TransportHeaders::new();
@@ -6981,6 +6999,20 @@ pub mod test_support {
                 MSG_FORMAT_HEADER,
                 b"attacker-override",
             ));
+            let layout = ContextLayout::compile(
+                transport
+                    .iter()
+                    .map(|header| ContextPrimitive::standalone(header.name.clone()))
+                    .collect(),
+                Default::default(),
+            )
+            .expect("fixture layout");
+            layout
+                .bind_headers(
+                    &mut transport,
+                    &otel_arrow_dfe_config::PipelineKey::new("g".into(), "p".into()),
+                )
+                .expect("bound headers");
             let mut context = Context::default();
             context.set_transport_headers(transport);
 
@@ -7001,14 +7033,22 @@ pub mod test_support {
                 reporter,
                 otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
             );
-            eh.set_propagation_policy(Some(policy));
+            eh.set_propagation_policy(Some(
+                policy
+                    .compile(
+                        layout,
+                        &otel_arrow_dfe_config::PipelineKey::new("g".into(), "p".into()),
+                    )
+                    .expect("compiled propagation"),
+            ));
 
             let headers = KafkaExporter::build_kafka_headers(
                 MessageFormat::OtlpProto,
                 MSG_FORMAT_HEADER,
                 &context,
                 Some(&eh),
-            );
+            )
+            .expect("compatible context");
 
             // Collect the produced (key, value) pairs.
             let mut found: Vec<(String, Vec<u8>)> = Vec::new();
@@ -7067,7 +7107,8 @@ pub mod test_support {
                 MSG_FORMAT_HEADER,
                 &context,
                 Some(&eh),
-            );
+            )
+            .expect("no propagation");
 
             assert_eq!(
                 headers.count(),
