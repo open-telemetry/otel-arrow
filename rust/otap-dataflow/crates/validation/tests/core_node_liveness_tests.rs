@@ -452,6 +452,8 @@ where
 // Using the exporter's deterministic auto-flip removes any cross-thread timing
 // race between detecting the first Nack and the retry processor's elapsed-time
 // budget, so the test is purely liveness-bound.
+/// Scenario: a retry processor receives transient Nacks before the exporter recovers.
+/// Guarantees: admitted data is retried and eventually delivered.
 #[test]
 fn test_retry_pipeline_eventually_recovers_after_transient_nacks() {
     let pipeline_group_id: PipelineGroupId = "liveness-group".into();
@@ -491,6 +493,8 @@ fn test_retry_pipeline_eventually_recovers_after_transient_nacks() {
 // progress once the batch processor's delayed flush fires. The exporter count
 // proves that partial buffered input eventually leaves the pipeline under real
 // runtime scheduling instead of remaining stuck forever below the size limit.
+/// Scenario: a batch processor receives less than a full batch and then becomes idle.
+/// Guarantees: the partial batch is flushed by its timer without new input.
 #[test]
 fn test_batch_pipeline_eventually_flushes_partial_batch() {
     let pipeline_group_id: PipelineGroupId = "liveness-group".into();
@@ -538,6 +542,8 @@ fn test_batch_pipeline_eventually_flushes_partial_batch() {
 //   batches, so the wakeup-triggered flushes are producing real downstream
 //   pdata batches rather than being dropped internally, verifying delivery
 //   and flush metrics.
+/// Scenario: a batch processor handles OTLP bytes while timer wakeups are enabled.
+/// Guarantees: timer wakeup and batch metrics record the partial flush.
 #[test]
 fn test_batch_pipeline_uses_timer_wakeup_metrics_with_otlp_bytes_config() {
     let pipeline_group_id: PipelineGroupId = "liveness-group".into();

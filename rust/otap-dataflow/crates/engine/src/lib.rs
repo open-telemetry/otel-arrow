@@ -990,10 +990,10 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 otel_arrow_dfe_config::node::NodeKind::Receiver => {
                     // Inject internal telemetry settings into context if this is the ITR node.
                     // The ITR factory will extract these settings during construction.
-                    if node_config.r#type.as_ref() == INTERNAL_TELEMETRY_RECEIVER_URN {
-                        if let Some(ref settings) = internal_telemetry {
-                            base_ctx.set_internal_telemetry(settings.clone());
-                        }
+                    if node_config.r#type.as_ref() == INTERNAL_TELEMETRY_RECEIVER_URN
+                        && let Some(ref settings) = internal_telemetry
+                    {
+                        base_ctx.set_internal_telemetry(settings.clone());
                     }
 
                     let wrapper = self.build_node_wrapper(

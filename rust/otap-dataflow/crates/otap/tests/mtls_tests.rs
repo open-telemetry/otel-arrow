@@ -1,7 +1,7 @@
-//! Integration tests for mTLS functionality.
-
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
+
+//! Integration tests for mTLS functionality.
 
 use otel_arrow_dfe_config::tls::{TlsConfig, TlsServerConfig};
 use otel_arrow_dfe_otap::tls_utils::build_reloadable_server_config;

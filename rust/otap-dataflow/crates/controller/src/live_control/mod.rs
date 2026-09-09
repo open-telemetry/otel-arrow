@@ -54,6 +54,23 @@ use self::state::{
 };
 pub(crate) use self::state::{PanicReport, RuntimeInstanceError, RuntimeInstanceExit};
 
+/// Bounded time for a runtime thread to finish after its graceful drain deadline.
+///
+/// The engine uses the drain deadline to force-stop unresolved node work, so the
+/// runtime thread can only report that forced exit after the deadline. Pipeline
+/// extensions may then consume their own bounded five-second shutdown window.
+#[cfg(not(test))]
+const PIPELINE_SHUTDOWN_COMPLETION_GRACE: Duration = Duration::from_secs(10);
+
+/// Short completion grace for unit tests that exercise both sides of the deadline.
+#[cfg(test)]
+const PIPELINE_SHUTDOWN_COMPLETION_GRACE: Duration = Duration::from_secs(1);
+
+/// Returns the controller deadline for observing an instance's terminal exit.
+fn pipeline_shutdown_completion_deadline(drain_deadline: Instant) -> Instant {
+    drain_deadline + PIPELINE_SHUTDOWN_COMPLETION_GRACE
+}
+
 /// Shared live-control runtime used by the admin control plane and workers.
 ///
 /// `ControllerRuntime` is the synchronization point for logical pipeline
@@ -83,7 +100,7 @@ pub(super) struct ControllerRuntime<PData: 'static + Clone + Send + Sync + std::
     topology: NumaTopology,
     /// Tracing setup cloned into launched runtime threads.
     engine_tracing_setup: TracingSetup,
-    /// Applies reconciled log-level directives to every tracing setup.
+    /// Applies initial and reconciled log-level directives to every tracing setup.
     log_filter_handle: RuntimeLogFilterHandle,
     /// Runtime telemetry reporting cadence.
     telemetry_reporting_interval: Duration,
@@ -139,6 +156,7 @@ impl<
         memory_pressure_tx: tokio::sync::watch::Sender<MemoryPressureChanged>,
         live_config: OtelDataflowSpec,
     ) -> Self {
+        log_filter_handle.apply(live_config.engine.telemetry.logs.level.as_ref());
         Self {
             pipeline_factory,
             controller_context,
@@ -291,11 +309,12 @@ impl<
         now: Instant,
     ) {
         let mut enqueue = false;
-        if let Some(rollout) = state.rollouts.get_mut(rollout_id) {
-            if rollout.state.is_terminal() && rollout.completed_at.is_none() {
-                rollout.completed_at = Some(now);
-                enqueue = true;
-            }
+        if let Some(rollout) = state.rollouts.get_mut(rollout_id)
+            && rollout.state.is_terminal()
+            && rollout.completed_at.is_none()
+        {
+            rollout.completed_at = Some(now);
+            enqueue = true;
         }
         if enqueue {
             state
@@ -356,11 +375,12 @@ impl<
         now: Instant,
     ) {
         let mut enqueue = false;
-        if let Some(shutdown) = state.shutdowns.get_mut(shutdown_id) {
-            if shutdown.state.is_terminal() && shutdown.completed_at.is_none() {
-                shutdown.completed_at = Some(now);
-                enqueue = true;
-            }
+        if let Some(shutdown) = state.shutdowns.get_mut(shutdown_id)
+            && shutdown.state.is_terminal()
+            && shutdown.completed_at.is_none()
+        {
+            shutdown.completed_at = Some(now);
+            enqueue = true;
         }
         if enqueue {
             state

@@ -248,10 +248,10 @@ impl Config {
                     // `attributes: { key: Column, ... }` maps specific attributes.
                     Value::Object(map) => {
                         for v in map.values() {
-                            if let Value::String(s) = v {
-                                if !seen.insert(s.clone()) {
-                                    _ = duplicates.insert(s.clone());
-                                }
+                            if let Value::String(s) = v
+                                && !seen.insert(s.clone())
+                            {
+                                _ = duplicates.insert(s.clone());
                             }
                         }
                     }

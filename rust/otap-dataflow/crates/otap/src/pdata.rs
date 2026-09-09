@@ -256,20 +256,20 @@ impl Context {
     /// When `ENTRY_TIMESTAMP` is present in `interests`, the frame's
     /// entry timestamp is captured automatically.
     fn update_send_context(&mut self, node_id: usize, interests: Interests) {
-        if let Some(top) = self.stack.last_mut() {
-            if top.node_id == node_id {
-                top.interests |= interests;
-                if interests.contains(Interests::ENTRY_TIMESTAMP | Interests::PRODUCER_METRICS)
-                    && top.route.entry_time_ns == 0
-                {
-                    // Note: This update is only for receivers which need
-                    // to capture timestamp here in case they did not use
-                    // subscribe_to. If they called called subscribe_to,
-                    // this will be skipped by a non-zero timestamp.
-                    top.route.entry_time_ns = nanos_since_birth();
-                }
-                return;
+        if let Some(top) = self.stack.last_mut()
+            && top.node_id == node_id
+        {
+            top.interests |= interests;
+            if interests.contains(Interests::ENTRY_TIMESTAMP | Interests::PRODUCER_METRICS)
+                && top.route.entry_time_ns == 0
+            {
+                // Note: This update is only for receivers which need
+                // to capture timestamp here in case they did not use
+                // subscribe_to. If they called called subscribe_to,
+                // this will be skipped by a non-zero timestamp.
+                top.route.entry_time_ns = nanos_since_birth();
             }
+            return;
         }
         // Different node (or empty stack) -> push new frame.
         let mut frame_interests = interests;
@@ -960,10 +960,10 @@ fn flow_accumulate<H: FlowMetricEffectHandler>(
     }
     data.add_flow_compute(delta_ns);
     if is_end {
-        if let Some(total) = data.take_flow_compute() {
-            if interests.contains(FlowMetricInterests::COMPUTE_DURATION) {
-                handler.record_flow_duration(data.signal_type(), total);
-            }
+        if let Some(total) = data.take_flow_compute()
+            && interests.contains(FlowMetricInterests::COMPUTE_DURATION)
+        {
+            handler.record_flow_duration(data.signal_type(), total);
         }
         if emitted_output && interests.contains(FlowMetricInterests::OUTPUT_MESSAGES) {
             handler.record_flow_output_message(data.signal_type());

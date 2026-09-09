@@ -214,10 +214,9 @@ impl Policies {
             .resources
             .as_ref()
             .and_then(|resources| resources.core_allocation.as_ref())
+            && let Err(e) = core_allocation.validate()
         {
-            if let Err(e) = core_allocation.validate() {
-                errors.push(format!("{path_prefix}.resources.core_allocation: {e}"));
-            }
+            errors.push(format!("{path_prefix}.resources.core_allocation: {e}"));
         }
         if let Some(runtime_recovery) = &self.runtime_recovery {
             errors.extend(

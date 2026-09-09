@@ -85,10 +85,10 @@ pub fn partition_key_for_signal(
     signal_config: &super::config::SignalConfig,
     context: &otel_arrow_dfe_otap::pdata::Context,
 ) -> Option<String> {
-    if signal_config.partition_by_transport_headers() {
-        if let Some(headers) = context.transport_headers() {
-            return partition_key_from_transport_headers(headers);
-        }
+    if signal_config.partition_by_transport_headers()
+        && let Some(headers) = context.transport_headers()
+    {
+        return partition_key_from_transport_headers(headers);
     }
 
     None

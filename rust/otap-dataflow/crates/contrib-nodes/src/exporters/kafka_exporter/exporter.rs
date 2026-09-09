@@ -28,7 +28,7 @@ use super::topic_router::TopicRouter;
 use crate::common::kafka::aws::ProducerClientContext;
 #[cfg(feature = "aws")]
 use crate::common::kafka::security::build_aws_msk_context;
-use crate::common::kafka::{MSG_FORMAT_OTAP, MSG_FORMAT_OTLP, MessageFormat};
+use crate::common::kafka::{MSG_FORMAT_OTAP, MSG_FORMAT_OTLP, MSG_FORMAT_SYSLOG, MessageFormat};
 use async_trait::async_trait;
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt};
@@ -530,6 +530,7 @@ impl KafkaExporter {
         let format_value = match encoding {
             MessageFormat::OtlpProto => MSG_FORMAT_OTLP,
             MessageFormat::OtapProto => MSG_FORMAT_OTAP,
+            MessageFormat::Syslog => MSG_FORMAT_SYSLOG,
         };
         headers = headers.insert(Header {
             key: format_header_key,
@@ -538,18 +539,18 @@ impl KafkaExporter {
 
         // Propagate transport headers onto the Kafka record if a propagation
         // policy is configured and the pdata context carries transport headers.
-        if let Some(policy) = effect_handler.and_then(|eh| eh.propagation_policy()) {
-            if let Some(transport_headers) = context.transport_headers() {
-                for propagated in policy.propagate(transport_headers) {
-                    // Skip propagated headers that collide with the format header.
-                    if propagated.header_name == format_header_key {
-                        continue;
-                    }
-                    headers = headers.insert(Header {
-                        key: propagated.header_name,
-                        value: Some(propagated.value),
-                    });
+        if let Some(policy) = effect_handler.and_then(|eh| eh.propagation_policy())
+            && let Some(transport_headers) = context.transport_headers()
+        {
+            for propagated in policy.propagate(transport_headers) {
+                // Skip propagated headers that collide with the format header.
+                if propagated.header_name == format_header_key {
+                    continue;
                 }
+                headers = headers.insert(Header {
+                    key: propagated.header_name,
+                    value: Some(propagated.value),
+                });
             }
         }
 
@@ -684,6 +685,9 @@ impl KafkaExporter {
                 payload.clone(),
                 &mut self.pdata_producer,
             ),
+            MessageFormat::Syslog => Err(KafkaExporterError::Configuration(
+                "syslog encoding is not supported by the Kafka exporter".to_string(),
+            )),
         };
 
         // nack on failed encoding bytes
@@ -779,14 +783,14 @@ impl KafkaExporter {
                 } else {
                     reporter.nack(reason, refused).await
                 };
-                if let Err(e) = nack_result {
-                    if let Some(eh) = effect_handler {
-                        eh.info(&format!(
-                            "Failed to report nack for Kafka export enqueue failure: {}",
-                            e
-                        ))
-                        .await;
-                    }
+                if let Err(e) = nack_result
+                    && let Some(eh) = effect_handler
+                {
+                    eh.info(&format!(
+                        "Failed to report nack for Kafka export enqueue failure: {}",
+                        e
+                    ))
+                    .await;
                 }
                 // Enqueue failure was reported synchronously; there is no
                 // in-flight delivery to track.
@@ -835,14 +839,14 @@ impl KafkaExporter {
                 );
                 self.metrics
                     .record_success(signal_type, export_start.elapsed(), payload_bytes);
-                if let Err(e) = reporter.ack(pdata).await {
-                    if let Some(eh) = effect_handler {
-                        eh.info(&format!(
-                            "Failed to report ack for Kafka export (export succeeded): {}",
-                            e
-                        ))
-                        .await;
-                    }
+                if let Err(e) = reporter.ack(pdata).await
+                    && let Some(eh) = effect_handler
+                {
+                    eh.info(&format!(
+                        "Failed to report ack for Kafka export (export succeeded): {}",
+                        e
+                    ))
+                    .await;
                 }
                 return;
             }
@@ -878,14 +882,14 @@ impl KafkaExporter {
         } else {
             reporter.nack(reason, pdata).await
         };
-        if let Err(e) = nack_result {
-            if let Some(eh) = effect_handler {
-                eh.info(&format!(
-                    "Failed to report nack for Kafka export failure: {}",
-                    e
-                ))
-                .await;
-            }
+        if let Err(e) = nack_result
+            && let Some(eh) = effect_handler
+        {
+            eh.info(&format!(
+                "Failed to report nack for Kafka export failure: {}",
+                e
+            ))
+            .await;
         }
     }
 
@@ -1189,17 +1193,15 @@ impl Exporter<OtapPdata> for KafkaExporter {
                     if let Ok(Some((delivery, meta))) = self
                         .enqueue_pdata(pdata, &ack_nack_reporter, Some(&effect_handler))
                         .await
+                        && let Some((done_meta, done_result)) = in_flight.push(delivery, meta).await
                     {
-                        if let Some((done_meta, done_result)) = in_flight.push(delivery, meta).await
-                        {
-                            self.finalize_send_completion(
-                                done_meta,
-                                done_result,
-                                &ack_nack_reporter,
-                                Some(&effect_handler),
-                            )
-                            .await;
-                        }
+                        self.finalize_send_completion(
+                            done_meta,
+                            done_result,
+                            &ack_nack_reporter,
+                            Some(&effect_handler),
+                        )
+                        .await;
                     }
                 }
                 Message::Control(NodeControlMsg::CollectTelemetry {

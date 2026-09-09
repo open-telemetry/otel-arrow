@@ -33,6 +33,8 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use weaver_common::vdir::VirtualDirectoryPath;
 
+/// Scenario: a minimal pipeline is built, run, and shut down gracefully.
+/// Guarantees: pipeline, node, channel, and metric entities are unregistered after shutdown.
 #[test]
 fn test_telemetry_registries_cleanup() {
     let pipeline_group_id: PipelineGroupId = "test-group".into();
@@ -133,6 +135,8 @@ fn test_telemetry_registries_cleanup() {
     assert_eq!(registry.entity_count(), 0);
 }
 
+/// Scenario: two receivers feed one exporter through a shared pipeline channel.
+/// Guarantees: the pipeline factory accepts and builds fan-in topology.
 #[test]
 fn test_pipeline_fan_in_builds() {
     let pipeline_group_id: PipelineGroupId = "test-group".into();
@@ -171,6 +175,8 @@ fn test_pipeline_fan_in_builds() {
     assert_eq!(registry.entity_count(), expected_entities);
 }
 
+/// Scenario: heterogeneous receivers share a downstream channel and exporter.
+/// Guarantees: the pipeline factory builds mixed-receiver fan-in topology.
 #[test]
 fn test_pipeline_mixed_receivers_shared_channel_builds() {
     let pipeline_group_id: PipelineGroupId = "test-group".into();

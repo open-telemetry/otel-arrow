@@ -1,4 +1,0 @@
-change_type: enhancement
-component: query-engine
-note: Add `now` scalar UDF to OTAP query engine.
-issues: [3967]

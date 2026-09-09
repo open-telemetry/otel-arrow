@@ -104,12 +104,11 @@ impl AzureMonitorExporterState {
                 // Remove this message from ALL batches it belongs to
                 if let Some(other_batches) = self.msg_to_batch.remove(&msg_id) {
                     for other_batch_id in other_batches {
-                        if other_batch_id != batch_id {
-                            if let Some(other_batch_msgs) =
+                        if other_batch_id != batch_id
+                            && let Some(other_batch_msgs) =
                                 self.batch_to_msg.get_mut(&other_batch_id)
-                            {
-                                _ = other_batch_msgs.remove(&msg_id);
-                            }
+                        {
+                            _ = other_batch_msgs.remove(&msg_id);
                         }
                     }
                 }

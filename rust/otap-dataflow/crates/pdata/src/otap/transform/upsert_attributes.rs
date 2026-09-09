@@ -13,7 +13,7 @@ use arrow::util::bit_iterator::BitSliceIterator;
 use smallvec::{SmallVec, smallvec};
 
 use crate::otlp::attributes::AttributeValueType;
-use crate::schema::consts;
+use crate::schema::{consts, is_parent_id_plain_encoded};
 use arrow::array::{
     Array, ArrayData, ArrayRef, ArrowPrimitiveType, BooleanArray, BooleanBufferBuilder,
     DictionaryArray, MutableArrayData, PrimitiveArray, RecordBatch, StringArray, UInt8Array,
@@ -129,6 +129,18 @@ pub fn upsert_attributes<T: ArrowPrimitiveType>(
     existing_attrs: &RecordBatch,
     upserts: &[AttributeUpsert<'_, T>],
 ) -> Result<RecordBatch> {
+    if !is_parent_id_plain_encoded(existing_attrs) {
+        return Err(Error::UnexpectedRecordBatchState {
+            reason: "upsert_attributes expected parent_id column to be plain encoded".into(),
+        });
+    }
+
+    // Callers legitimately resolve to zero upserts, e.g. when every source attribute an
+    // assignment reads is absent from the batch. There is then nothing to merge.
+    if upserts.is_empty() {
+        return Ok(existing_attrs.clone());
+    }
+
     let num_existing = existing_attrs.num_rows();
 
     // Resolve each upsert: determine type, target column, extract values, compute counts, and
@@ -685,33 +697,33 @@ fn merge_type_column<T: ArrowPrimitiveType>(
                 let count = run.end - run.start;
                 let attr_type = resolved_upsert.attr_value_type as u8;
 
-                if let Some(arr) = &resolved_upsert.new_values_array {
-                    if let Some(nulls) = arr.nulls() {
-                        // Array with nulls: write Empty for null values, attr_type for
-                        // non-null.
-                        let counter = &mut update_counters[idx];
-                        let validity_iter =
-                            BitSliceIterator::new(nulls.buffer().as_slice(), *counter, count);
-                        let mut last_valid_range_end = 0;
-                        for (start, end) in validity_iter {
-                            if start != last_valid_range_end {
-                                output.extend(std::iter::repeat_n(
-                                    AttributeValueType::Empty as u8,
-                                    start - last_valid_range_end,
-                                ));
-                            }
-                            output.extend(std::iter::repeat_n(attr_type, end - start));
-                            last_valid_range_end = end;
-                        }
-                        if last_valid_range_end != count {
+                if let Some(arr) = &resolved_upsert.new_values_array
+                    && let Some(nulls) = arr.nulls()
+                {
+                    // Array with nulls: write Empty for null values, attr_type for
+                    // non-null.
+                    let counter = &mut update_counters[idx];
+                    let validity_iter =
+                        BitSliceIterator::new(nulls.buffer().as_slice(), *counter, count);
+                    let mut last_valid_range_end = 0;
+                    for (start, end) in validity_iter {
+                        if start != last_valid_range_end {
                             output.extend(std::iter::repeat_n(
                                 AttributeValueType::Empty as u8,
-                                count - last_valid_range_end,
+                                start - last_valid_range_end,
                             ));
                         }
-                        *counter += count;
-                        continue;
+                        output.extend(std::iter::repeat_n(attr_type, end - start));
+                        last_valid_range_end = end;
                     }
+                    if last_valid_range_end != count {
+                        output.extend(std::iter::repeat_n(
+                            AttributeValueType::Empty as u8,
+                            count - last_valid_range_end,
+                        ));
+                    }
+                    *counter += count;
+                    continue;
                 }
 
                 // No nulls (or scalar): fill with this upsert's type discriminant.
@@ -723,37 +735,36 @@ fn merge_type_column<T: ArrowPrimitiveType>(
     // Insert rows: each upsert's type discriminant
     for resolved_upsert in resolved {
         let attr_type = resolved_upsert.attr_value_type as u8;
-        if let Some(arr) = &resolved_upsert.new_values_array {
-            if let Some(nulls) = arr.nulls() {
-                let validity_slice_iter = BitSliceIterator::new(
-                    nulls.buffer().as_slice(),
-                    resolved_upsert.num_updates,
-                    resolved_upsert.num_inserts,
-                );
-                let mut last_valid_range_end = 0;
-                for (start, end) in validity_slice_iter {
-                    // put the null range that came before the last valid range
-                    if start != last_valid_range_end {
-                        output.extend(std::iter::repeat_n(
-                            AttributeValueType::Empty as u8,
-                            start - last_valid_range_end,
-                        ));
-                    }
-                    output.extend(std::iter::repeat_n(attr_type, end - start));
-
-                    last_valid_range_end = end;
-                }
-
-                // put the remaining nulls
-                if last_valid_range_end != resolved_upsert.num_inserts {
+        if let Some(arr) = &resolved_upsert.new_values_array
+            && let Some(nulls) = arr.nulls()
+        {
+            let validity_slice_iter = BitSliceIterator::new(
+                nulls.buffer().as_slice(),
+                resolved_upsert.num_updates,
+                resolved_upsert.num_inserts,
+            );
+            let mut last_valid_range_end = 0;
+            for (start, end) in validity_slice_iter {
+                // put the null range that came before the last valid range
+                if start != last_valid_range_end {
                     output.extend(std::iter::repeat_n(
                         AttributeValueType::Empty as u8,
-                        resolved_upsert.num_inserts - last_valid_range_end,
+                        start - last_valid_range_end,
                     ));
                 }
+                output.extend(std::iter::repeat_n(attr_type, end - start));
 
-                continue;
+                last_valid_range_end = end;
             }
+
+            // put the remaining nulls
+            if last_valid_range_end != resolved_upsert.num_inserts {
+                output.extend(std::iter::repeat_n(
+                    AttributeValueType::Empty as u8,
+                    resolved_upsert.num_inserts - last_valid_range_end,
+                ));
+            }
+            continue;
         }
 
         output.extend(std::iter::repeat_n(attr_type, resolved_upsert.num_inserts));
@@ -1933,24 +1944,24 @@ fn create_new_value_column_batched<T: ArrowPrimitiveType>(
     let supports_dict_encoding = values_column_supports_dictionary_encoding(target_col_name);
 
     // Try dict encoding path first if supported.
-    if supports_dict_encoding {
-        if let Some(unified) = try_build_unified_dict_multi(None, resolved, target_col_name)? {
-            let field = Field::new(
-                target_col_name,
-                DataType::Dictionary(
-                    Box::new(DataType::UInt16),
-                    Box::new(unified.values.data_type().clone()),
-                ),
-                true,
-            );
-            return merge_values_with_unified_dict(
-                &field,
-                row_owners,
-                &unified,
-                resolved,
-                total_output_rows,
-            );
-        }
+    if supports_dict_encoding
+        && let Some(unified) = try_build_unified_dict_multi(None, resolved, target_col_name)?
+    {
+        let field = Field::new(
+            target_col_name,
+            DataType::Dictionary(
+                Box::new(DataType::UInt16),
+                Box::new(unified.values.data_type().clone()),
+            ),
+            true,
+        );
+        return merge_values_with_unified_dict(
+            &field,
+            row_owners,
+            &unified,
+            resolved,
+            total_output_rows,
+        );
     }
 
     // Fallback: primitive merge with decoded-to-plain sources.
@@ -2053,6 +2064,8 @@ fn create_new_value_column_batched<T: ArrowPrimitiveType>(
 
 #[cfg(test)]
 mod tests {
+    use crate::schema::FieldExt;
+
     use super::*;
     use arrow::datatypes::UInt32Type;
 
@@ -2784,7 +2797,7 @@ mod tests {
         let strs = dict_utf8_u16(&rows.iter().map(|(_, _, _, s)| *s).collect::<Vec<_>>());
 
         let schema = Schema::new(vec![
-            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
             Field::new(consts::ATTRIBUTE_KEY, keys.data_type().clone(), true),
             Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
             Field::new(consts::ATTRIBUTE_STR, strs.data_type().clone(), true),
@@ -2810,6 +2823,24 @@ mod tests {
             .downcast_ref::<StringArray>()
             .unwrap()
             .clone()
+    }
+
+    /// Scenario: `upsert_attributes` is called with an empty upsert list, which happens when
+    /// every attribute an assignment reads is absent from the batch so no upsert resolves.
+    ///
+    /// Guarantees: the call returns the input batch unchanged instead of panicking while
+    /// indexing the empty resolved-upsert slice.
+    #[test]
+    fn test_upsert_attributes_no_upserts_returns_input_unchanged() {
+        let existing = build_attrs_batch(&[(0, "x", 1, "a"), (1, "y", 1, "b")]);
+
+        let result = upsert_attributes::<UInt16Type>(&existing, &[]).unwrap();
+
+        assert_eq!(result.num_rows(), existing.num_rows());
+        assert_eq!(result.schema(), existing.schema());
+        let keys = decode_to_utf8(result.column_by_name(consts::ATTRIBUTE_KEY).unwrap());
+        assert_eq!(keys.value(0), "x");
+        assert_eq!(keys.value(1), "y");
     }
 
     #[test]

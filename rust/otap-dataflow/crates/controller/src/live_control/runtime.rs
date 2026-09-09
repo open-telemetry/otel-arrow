@@ -1234,27 +1234,26 @@ impl<
             deployed_key.pipeline_id.clone(),
         );
         loop {
-            if let Some(status) = self.observed_state_handle.pipeline_status(&pipeline_key) {
-                if let Some(instance) =
+            if let Some(status) = self.observed_state_handle.pipeline_status(&pipeline_key)
+                && let Some(instance) =
                     status.instance_status(deployed_key.core_id, deployed_key.deployment_generation)
-                {
-                    let accepted = instance.accepted_condition().status == ConditionStatus::True;
-                    let ready = instance.ready_condition().status == ConditionStatus::True;
-                    if accepted && ready {
-                        return Ok(());
+            {
+                let accepted = instance.accepted_condition().status == ConditionStatus::True;
+                let ready = instance.ready_condition().status == ConditionStatus::True;
+                if accepted && ready {
+                    return Ok(());
+                }
+                match instance.phase() {
+                    PipelinePhase::Failed(_)
+                    | PipelinePhase::Rejected(_)
+                    | PipelinePhase::Deleted
+                    | PipelinePhase::Stopped => {
+                        return Err(format!(
+                            "pipeline failed to become ready on core {} (generation {})",
+                            deployed_key.core_id, deployed_key.deployment_generation
+                        ));
                     }
-                    match instance.phase() {
-                        PipelinePhase::Failed(_)
-                        | PipelinePhase::Rejected(_)
-                        | PipelinePhase::Deleted
-                        | PipelinePhase::Stopped => {
-                            return Err(format!(
-                                "pipeline failed to become ready on core {} (generation {})",
-                                deployed_key.core_id, deployed_key.deployment_generation
-                            ));
-                        }
-                        _ => {}
-                    }
+                    _ => {}
                 }
             }
 
@@ -1303,6 +1302,17 @@ impl<
         timeout_secs: u64,
         reason: &str,
     ) -> Result<(), String> {
+        let drain_deadline = Instant::now() + Duration::from_secs(timeout_secs.max(1));
+        self.request_instance_shutdown_until(deployed_key, drain_deadline, reason)
+    }
+
+    /// Sends shutdown with an absolute drain deadline.
+    pub(super) fn request_instance_shutdown_until(
+        &self,
+        deployed_key: &DeployedPipelineKey,
+        drain_deadline: Instant,
+        reason: &str,
+    ) -> Result<(), String> {
         let sender = {
             let state = self
                 .state
@@ -1337,10 +1347,7 @@ impl<
             })?
         };
 
-        if let Err(err) = sender.try_send_shutdown(
-            Instant::now() + Duration::from_secs(timeout_secs.max(1)),
-            reason.to_owned(),
-        ) {
+        if let Err(err) = sender.try_send_shutdown(drain_deadline, reason.to_owned()) {
             return match self.instance_exit(deployed_key) {
                 Some(RuntimeInstanceExit::Success) => Ok(()),
                 Some(RuntimeInstanceExit::Error(error)) => Err(error.message),
@@ -1376,7 +1383,7 @@ impl<
 
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                 return Err(format!(
-                    "timed out waiting for pipeline {}:{} core={} generation={} to drain",
+                    "timed out waiting for pipeline {}:{} core={} generation={} to shut down",
                     deployed_key.pipeline_group_id.as_ref(),
                     deployed_key.pipeline_id.as_ref(),
                     deployed_key.core_id,
@@ -1426,7 +1433,7 @@ impl<
 
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                 return Err(format!(
-                    "timed out waiting for pipeline {} to drain before system observability shutdown",
+                    "timed out waiting for pipeline {} to shut down before system observability shutdown",
                     deployed_instance_label(deployed_key)
                 ));
             };
@@ -1445,10 +1452,11 @@ impl<
         timeout_secs: u64,
         reason: &str,
     ) -> Result<(), String> {
-        self.request_instance_shutdown(deployed_key, timeout_secs, reason)?;
+        let drain_deadline = Instant::now() + Duration::from_secs(timeout_secs.max(1));
+        self.request_instance_shutdown_until(deployed_key, drain_deadline, reason)?;
         self.wait_for_instance_exit(
             deployed_key,
-            Instant::now() + Duration::from_secs(timeout_secs.max(1)),
+            pipeline_shutdown_completion_deadline(drain_deadline),
         )
     }
 
@@ -1651,15 +1659,17 @@ impl<
         shutdown_timeout: Duration,
     ) {
         let mut wait_failures = Vec::new();
+        let producer_completion_deadline = pipeline_shutdown_completion_deadline(producer_deadline);
         for deployed_key in &producer_keys {
-            if let Err(error) = self.wait_for_global_shutdown_exit(deployed_key, producer_deadline)
+            if let Err(error) =
+                self.wait_for_global_shutdown_exit(deployed_key, producer_completion_deadline)
             {
                 wait_failures.push(error);
             }
         }
         if !wait_failures.is_empty() {
             self.record_async_global_shutdown_failure(format!(
-                "producer drain failed before system observability shutdown: {}",
+                "producer shutdown failed before system observability shutdown: {}",
                 wait_failures.join("; ")
             ));
         }
@@ -1740,9 +1750,11 @@ impl<
             }
         }
 
+        let observability_completion_deadline =
+            pipeline_shutdown_completion_deadline(observability_deadline);
         for deployed_key in observability_keys {
             if let Err(error) =
-                self.wait_for_global_shutdown_exit(&deployed_key, observability_deadline)
+                self.wait_for_global_shutdown_exit(&deployed_key, observability_completion_deadline)
             {
                 self.record_async_global_shutdown_failure(format!(
                     "system observability shutdown did not complete: {error}"

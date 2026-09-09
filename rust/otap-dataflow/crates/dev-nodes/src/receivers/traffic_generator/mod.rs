@@ -123,12 +123,33 @@ pub static TRAFFIC_GENERATOR_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFact
             ))
         },
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<Config>,
+    validate_config,
 };
 
 #[distributed_slice(otel_arrow_dfe_engine::context_declaration::CONTEXT_DECLARATION_PROVIDERS)]
 static TRAFFIC_GENERATOR_CONTEXT_DECLARATIONS: ContextDeclarationProvider =
     ContextDeclarationProvider::from_typed_config::<Config>(TRAFFIC_GENERATOR_RECEIVER_URN);
+
+/// Validates the Traffic Generator receiver configuration at config load time.
+///
+/// Runs before any node is started (initial load and live reconfigure), so bad
+/// configuration is rejected fast and attributed to the offending node rather
+/// than surfacing as an opaque client error at startup.
+fn validate_config(config: &Value) -> Result<(), otel_arrow_dfe_config::error::Error> {
+    let _ = validate_config_impl(config)?;
+    Ok(())
+}
+
+fn validate_config_impl(config: &Value) -> Result<Config, otel_arrow_dfe_config::error::Error> {
+    let config: Config = serde_json::from_value(config.clone()).map_err(|err| {
+        otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+            error: err.to_string(),
+        }
+    })?;
+
+    config.get_traffic_config().validate()?;
+    Ok(config)
+}
 
 impl TrafficGeneratorReceiver {
     /// creates a new TrafficGeneratorReceiver
@@ -146,13 +167,8 @@ impl TrafficGeneratorReceiver {
         pipeline_ctx: PipelineContext,
         config: &Value,
     ) -> Result<Self, otel_arrow_dfe_config::error::Error> {
-        let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
-            otel_arrow_dfe_config::error::Error::InvalidUserConfig {
-                error: e.to_string(),
-            }
-        })?;
+        let config = validate_config_impl(config)?;
         config.validate_context_declarations(&pipeline_ctx)?;
-        config.get_traffic_config().validate()?;
         TrafficGeneratorReceiver::new(pipeline_ctx, config)
     }
 
@@ -797,6 +813,8 @@ mod tests {
     use std::collections::HashSet;
     use weaver_common::vdir::VirtualDirectoryPath;
     use weaver_forge::registry::ResolvedRegistry;
+
+    use serde_json::json;
 
     const RESOURCE_COUNT: usize = 1;
     const SCOPE_COUNT: usize = 1;
@@ -1990,5 +2008,38 @@ mod tests {
         });
 
         assert!((TRAFFIC_GENERATOR_CONTEXT_DECLARATIONS.declarations)(&config).is_err());
+    }
+
+    /// Scenario: Receiver config validation accepts configs with at least one non-zero signal weight and rejects configs where all weights are zero.
+    /// Guarantees: validate_config returns Ok for a valid config and InvalidUserConfig for an all-zero-weight config.
+    #[test]
+    fn test_config_validation() {
+        let valid_config = json!({
+            "traffic_config": {
+                "max_signal_count": 1,
+                "max_batch_size": 1,
+                "signals_per_second": 1,
+                "log_weight": 1,
+            }
+        });
+
+        let invalid_config = json!({
+            "traffic_config": {
+                "max_signal_count": 1,
+                "max_batch_size": 1,
+                "signals_per_second": 1,
+                // missing log_weight, metric_weight and trace_weight
+            }
+        });
+
+        assert!(
+            (TRAFFIC_GENERATOR_RECEIVER.validate_config)(&valid_config).is_ok(),
+            "traffic_generator_receiver factory should call validate_config"
+        );
+
+        assert!(
+            (TRAFFIC_GENERATOR_RECEIVER.validate_config)(&invalid_config).is_err(),
+            "traffic_generator_receiver factory should call validate_config"
+        );
     }
 }
