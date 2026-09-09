@@ -293,10 +293,10 @@ impl Exporter<OtapPdata> for FlakyExporter {
                                     .as_ref()
                                     .map(|n| n.load(Ordering::Acquire))
                                     .unwrap_or(0);
-                                if transient.saturating_add(permanent) >= threshold {
-                                    if let Some(ref should_ack) = self.should_ack {
-                                        should_ack.store(true, Ordering::SeqCst);
-                                    }
+                                if transient.saturating_add(permanent) >= threshold
+                                    && let Some(ref should_ack) = self.should_ack
+                                {
+                                    should_ack.store(true, Ordering::SeqCst);
                                 }
                             }
                         }

@@ -18,7 +18,7 @@ edition = "2024"
 repository = "https://github.com/open-telemetry/otel-arrow"
 license = "Apache-2.0"
 publish = false
-rust-version = "1.87.0"
+rust-version = "1.88.0"
 
 [package]
 name = "otel-arrow-dfe"
@@ -59,15 +59,15 @@ otel-arrow-dfe-admin-types = { version = "0.54.1", path = "crates/admin-types" }
 otel-arrow-dfe-pdata-otlp-macros = { version = "0.54.1", path = "./crates/pdata/src/otlp/macros"}
 otel-arrow-dfe-pdata-otlp-model = { version = "0.54.1", path = "./crates/pdata/src/otlp/model"}
 otel-arrow-dfe-config = { version = "0.54.1", path = "crates/config" }
-otel-arrow-dfe-contrib-extensions = { path = "crates/contrib-extensions" }
-otel-arrow-dfe-contrib-nodes = { path = "crates/contrib-nodes" }
+otel-arrow-dfe-contrib-extensions = { version = "0.54.1", path = "crates/contrib-extensions" }
+otel-arrow-dfe-contrib-nodes = { version = "0.54.1", path = "crates/contrib-nodes" }
 otel-arrow-dfe-control-channel = { path = "crates/control-channel" }
 otel-arrow-dfe-controller = { version = "0.54.1", path = "crates/controller" }
-otel-arrow-dfe-core-nodes = { path = "crates/core-nodes" }
+otel-arrow-dfe-core-nodes = { version = "0.54.1", path = "crates/core-nodes" }
 otel-arrow-dfe-dev-nodes = { path = "crates/dev-nodes" }
 otel-arrow-dfe-engine = { version = "0.54.1", path = "crates/engine" }
 otel-arrow-dfe-expohisto = { version = "0.54.1", path = "crates/expohisto" }
-otel-arrow-dfe-otap = { path = "crates/otap" }
+otel-arrow-dfe-otap = { version = "0.54.1", path = "crates/otap" }
 otel-arrow-dfe-wasm-host = { path = "crates/wasm-host" }
 otel-arrow-dfe-test-tls-certs = { path = "crates/otap-test-tls-certs" }
 otel-arrow-dfe-test-net = { path = "crates/otap-test-net" }
@@ -257,9 +257,8 @@ cpu-time = "1.0.0"
 
 one_collect = "0.1.35021"
 
-# TODO: un-pin these dependencies as soon as Arc support is available in a released version: https://github.com/open-telemetry/otel-arrow/issues/3551
-azure_core = { git = "https://github.com/Azure/azure-sdk-for-rust.git", rev = "aacb2060111920f9fca2f72bff7e401e8a7198ce", default-features = false }
-azure_identity = { git = "https://github.com/Azure/azure-sdk-for-rust.git", rev = "aacb2060111920f9fca2f72bff7e401e8a7198ce", default-features = false }
+azure_core = { version = "1.2.0-beta.1", default-features = false }
+azure_identity = { version = "1.1.0-beta.1", default-features = false }
 flate2 = "1.1.5"
 
 # Keep reqwest default features off to avoid pulling in default-tls (and aws-lc-rs via reqwest's rustls feature).
@@ -292,7 +291,7 @@ tracepoint_decode = "0.5.0"
 tracelogging = "1.2.4"
 tracelogging_dynamic = "1.2.4"
 urlencoding = "2"
-geneva-uploader = { version = "0.7.0", default-features = false, features = ["tls-rustls"] }
+geneva-uploader = { version = "0.7.1", default-features = false, features = ["tls-rustls"] }
 opentelemetry-resource-detectors = "0.12.0"
 
 [patch.crates-io]
@@ -321,15 +320,10 @@ dhat-heap = [
     "dep:dhat",
 ]
 
-# Development nodes and the otap integration tests
-# that exercise it. Activating this from the workspace default keeps
-# `cargo test` running the full suite locally; CI jobs that drop
-# `dev-tools` (e.g. the Linux ARM `build_nonrequired` job) avoid the
-# weaver / gix / reqwest / native-tls / openssl-sys C build.
+# Development-only test, fault-injection, and benchmark nodes.
 dev-tools = [
     "dep:otel-arrow-dfe-dev-nodes",
     "otel-arrow-dfe-core-nodes/dev-tools",
-    "otel-arrow-dfe-otap/integration-tests",
 ]
 
 # Admin UI live log streaming over WebSocket.
