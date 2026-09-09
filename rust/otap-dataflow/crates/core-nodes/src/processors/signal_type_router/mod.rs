@@ -274,10 +274,8 @@ impl SignalTypeRouter {
             }
         }
 
-        if default_reachable {
-            if let Some(default_port) = effect_handler.default_port() {
-                let _ = candidates.insert(default_port.clone());
-            }
+        if default_reachable && let Some(default_port) = effect_handler.default_port() {
+            let _ = candidates.insert(default_port.clone());
         }
 
         self.admission.observe_pause_candidate_ports(candidates);

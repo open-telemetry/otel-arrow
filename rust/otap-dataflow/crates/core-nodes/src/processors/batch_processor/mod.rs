@@ -54,9 +54,9 @@ use otel_arrow_dfe_engine::{
 use otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES;
 use otel_arrow_dfe_otap::accessory::slots::{Key as SlotKey, State as SlotState};
 use otel_arrow_dfe_otap::pdata::{Context, OtapPdata, PeerAddrMerger};
-use otel_arrow_dfe_pdata::TryIntoWithOptions;
 use otel_arrow_dfe_pdata::{
-    OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProtoBytes, PayloadData,
+    OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProtoBytes, PayloadData, Sizer,
+    TryIntoWithOptions,
     error::Error as PDataError,
     otap::batching::make_item_batches,
     otlp::batching::{BytesBatches, make_bytes_batches_owned},
@@ -112,36 +112,6 @@ const fn signal_from_wakeup_slot(slot: WakeupSlot) -> Option<(SignalFormat, Sign
         4 => Some((SignalFormat::OtlpBytes, SignalType::Metrics)),
         5 => Some((SignalFormat::OtlpBytes, SignalType::Traces)),
         _ => None,
-    }
-}
-
-/// How to size a batch.
-///
-/// Note: these are not always supported. In the present code, the only
-/// supported Sizer value is Items. We expect future support for bytes and
-/// requests sizers.
-#[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum Sizer {
-    /// Count requests. This metric counts one per OtapPdata message.
-    Requests,
-    /// Count items.  The number of log records, trace spans, or
-    /// metric data points.
-    Items,
-    /// Count bytes.
-    Bytes,
-}
-
-impl Sizer {
-    /// Returns Sizer-specific size logic.
-    fn batch_size<T: OtapPayloadHelpers>(&self, payload: &T) -> Result<usize, PDataError> {
-        match self {
-            Self::Requests => Ok(1),
-            Self::Items => Ok(payload.num_items()),
-            Self::Bytes => payload.num_bytes().ok_or_else(|| PDataError::Format {
-                error: "bytes encoding not known".into(),
-            }),
-        }
     }
 }
 
@@ -457,15 +427,15 @@ impl FormatConfig {
         }
 
         // If both sizes are set, check max_size is >= the min_size.
-        if let (Some(max_size), Some(min_size)) = (self.max_size, self.min_size) {
-            if max_size < min_size {
-                return Err(ConfigError::InvalidUserConfig {
-                    error: format!(
-                        "max_size ({}) must be >= min_size ({}) or unset",
-                        max_size, min_size,
-                    ),
-                });
-            }
+        if let (Some(max_size), Some(min_size)) = (self.max_size, self.min_size)
+            && max_size < min_size
+        {
+            return Err(ConfigError::InvalidUserConfig {
+                error: format!(
+                    "max_size ({}) must be >= min_size ({}) or unset",
+                    max_size, min_size,
+                ),
+            });
         }
 
         // immediate_flush indicates there is not a time-based flush criteria, which

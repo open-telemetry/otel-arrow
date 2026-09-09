@@ -149,10 +149,10 @@ impl FanoutConfig {
         }
 
         // Default primary to the first destination if none set.
-        if !self.destinations.iter().any(|d| d.primary) {
-            if let Some(first) = self.destinations.first_mut() {
-                first.primary = true;
-            }
+        if !self.destinations.iter().any(|d| d.primary)
+            && let Some(first) = self.destinations.first_mut()
+        {
+            first.primary = true;
         }
 
         let mut primary_seen = false;
@@ -244,18 +244,18 @@ impl FanoutConfig {
         // Reject ambiguous configs where multiple destinations declare fallback_for the same port.
         let mut fallback_for_dest = vec![None; self.destinations.len()];
         for (fb_idx, fb_dest) in self.destinations.iter().enumerate() {
-            if let Some(fb_for_port) = &fb_dest.fallback_for {
-                if let Some(&origin_idx) = port_index.get(fb_for_port) {
-                    if fallback_for_dest[origin_idx].is_some() {
-                        return Err(ConfigError::InvalidUserConfig {
-                            error: format!(
-                                "fanout: multiple fallbacks declared for port `{}`",
-                                fb_for_port
-                            ),
-                        });
-                    }
-                    fallback_for_dest[origin_idx] = Some(fb_idx);
+            if let Some(fb_for_port) = &fb_dest.fallback_for
+                && let Some(&origin_idx) = port_index.get(fb_for_port)
+            {
+                if fallback_for_dest[origin_idx].is_some() {
+                    return Err(ConfigError::InvalidUserConfig {
+                        error: format!(
+                            "fanout: multiple fallbacks declared for port `{}`",
+                            fb_for_port
+                        ),
+                    });
                 }
+                fallback_for_dest[origin_idx] = Some(fb_idx);
             }
         }
 
@@ -633,25 +633,25 @@ impl FanoutProcessor {
         };
 
         // Trigger fallback if configured (O(1) lookup via precomputed map).
-        if let Some(fb_idx) = self.config.fallback_for_dest[dest_index] {
-            if inflight.destinations[fb_idx].status == DestinationStatus::PendingSend {
-                inflight.destinations[fb_idx].status = DestinationStatus::InFlight;
-                let timeout_at = self.config.destinations[fb_idx].timeout.map(|d| now() + d);
-                inflight.destinations[fb_idx].timeout_at = timeout_at;
-                // Push fallback deadline to the heap if timeout is configured.
-                if let Some(at) = timeout_at {
-                    self.deadline_heap.push(Reverse(Deadline {
-                        at,
-                        request_id,
-                        dest_index: fb_idx,
-                    }));
-                }
-                if matches!(inflight.mode, DeliveryMode::Sequential) {
-                    inflight.next_send_queue.clear();
-                    inflight.next_send_queue.push(fb_idx);
-                }
-                return None;
+        if let Some(fb_idx) = self.config.fallback_for_dest[dest_index]
+            && inflight.destinations[fb_idx].status == DestinationStatus::PendingSend
+        {
+            inflight.destinations[fb_idx].status = DestinationStatus::InFlight;
+            let timeout_at = self.config.destinations[fb_idx].timeout.map(|d| now() + d);
+            inflight.destinations[fb_idx].timeout_at = timeout_at;
+            // Push fallback deadline to the heap if timeout is configured.
+            if let Some(at) = timeout_at {
+                self.deadline_heap.push(Reverse(Deadline {
+                    at,
+                    request_id,
+                    dest_index: fb_idx,
+                }));
             }
+            if matches!(inflight.mode, DeliveryMode::Sequential) {
+                inflight.next_send_queue.clear();
+                inflight.next_send_queue.push(fb_idx);
+            }
+            return None;
         }
 
         // No fallback, produce a nack using original pdata for correct upstream routing.
@@ -791,8 +791,8 @@ impl FanoutProcessor {
             if matches!(inflight.mode, DeliveryMode::Sequential) {
                 inflight.next_send_queue.retain(|idx| *idx != dest_index);
                 // Advance to the next pending send for this request (skip Skipped destinations).
-                if inflight.next_send_queue.is_empty() {
-                    if let Some(next_idx) = inflight
+                if inflight.next_send_queue.is_empty()
+                    && let Some(next_idx) = inflight
                         .destinations
                         .iter()
                         .enumerate()
@@ -800,10 +800,9 @@ impl FanoutProcessor {
                             dest.status == DestinationStatus::PendingSend && dest.payload.is_some()
                         })
                         .map(|(idx, _)| idx)
-                    {
-                        inflight.destinations[next_idx].status = DestinationStatus::InFlight;
-                        inflight.next_send_queue.push(next_idx);
-                    }
+                {
+                    inflight.destinations[next_idx].status = DestinationStatus::InFlight;
+                    inflight.next_send_queue.push(next_idx);
                 }
             }
             (origin, inflight.await_ack, inflight.primary, inflight.mode)
@@ -827,19 +826,19 @@ impl FanoutProcessor {
             return Ok(());
         }
 
-        if matches!(mode, DeliveryMode::Sequential) {
-            if let Some(inflight) = self.inflight.get_mut(&request_id) {
-                let deadlines = Self::dispatch_ready(
-                    request_id,
-                    inflight,
-                    &self.config.destinations,
-                    effect_handler,
-                )
-                .await
-                .map_err(|error| *error)?;
-                for d in deadlines {
-                    self.deadline_heap.push(Reverse(d));
-                }
+        if matches!(mode, DeliveryMode::Sequential)
+            && let Some(inflight) = self.inflight.get_mut(&request_id)
+        {
+            let deadlines = Self::dispatch_ready(
+                request_id,
+                inflight,
+                &self.config.destinations,
+                effect_handler,
+            )
+            .await
+            .map_err(|error| *error)?;
+            for d in deadlines {
+                self.deadline_heap.push(Reverse(d));
             }
         }
 

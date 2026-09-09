@@ -223,7 +223,7 @@ fn coerce_integer_types(left: &ExprLogicalType, right: &ExprLogicalType) -> Expr
 /// Adds a cast logical expression to cast the value of the expression to the passed data type.
 ///
 /// This is used when coercing the input types for expression operations.
-fn cast_expr(expr: &mut Expr, data_type: DataType) {
+pub fn cast_expr(expr: &mut Expr, data_type: DataType) {
     *expr = cast(std::mem::take(expr), data_type)
 }
 

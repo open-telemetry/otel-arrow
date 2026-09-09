@@ -703,19 +703,17 @@ impl<PData> ProcessorWrapper<PData> {
                 }
                 // Collect final metrics before exiting
                 let terminal_metrics_deadline = terminal_metrics_deadline.get();
-                if effect_handler.is_flow_start()
+                if (effect_handler.is_flow_start()
                     || effect_handler.is_flow_end()
-                    || effect_handler.is_flow_decision()
-                {
-                    if let Err(error) = effect_handler
+                    || effect_handler.is_flow_decision())
+                    && let Err(error) = effect_handler
                         .report_flow_metrics_reliably(terminal_metrics_deadline)
                         .await
-                    {
-                        otel_arrow_dfe_telemetry::otel_warn!(
-                            "processor.flow_metrics.final_reporting.fail",
-                            error = error.to_string()
-                        );
-                    }
+                {
+                    otel_arrow_dfe_telemetry::otel_warn!(
+                        "processor.flow_metrics.final_reporting.fail",
+                        error = error.to_string()
+                    );
                 }
                 let (terminal_metrics_tx, terminal_metrics_rx) = flume::unbounded();
                 let terminal_metrics_reporter = MetricsReporter::new(terminal_metrics_tx);
@@ -802,19 +800,17 @@ impl<PData> ProcessorWrapper<PData> {
                 }
                 // Collect final metrics before exiting
                 let terminal_metrics_deadline = terminal_metrics_deadline.get();
-                if effect_handler.is_flow_start()
+                if (effect_handler.is_flow_start()
                     || effect_handler.is_flow_end()
-                    || effect_handler.is_flow_decision()
-                {
-                    if let Err(error) = effect_handler
+                    || effect_handler.is_flow_decision())
+                    && let Err(error) = effect_handler
                         .report_flow_metrics_reliably(terminal_metrics_deadline)
                         .await
-                    {
-                        otel_arrow_dfe_telemetry::otel_warn!(
-                            "processor.flow_metrics.final_reporting.fail",
-                            error = error.to_string()
-                        );
-                    }
+                {
+                    otel_arrow_dfe_telemetry::otel_warn!(
+                        "processor.flow_metrics.final_reporting.fail",
+                        error = error.to_string()
+                    );
                 }
                 let (terminal_metrics_tx, terminal_metrics_rx) = flume::unbounded();
                 let terminal_metrics_reporter = MetricsReporter::new(terminal_metrics_tx);

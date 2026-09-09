@@ -128,27 +128,27 @@ impl Config {
         }
 
         // Validate that destination_key is not in source_keys
-        if let Some(ref keys) = source_keys {
-            if keys.contains(&destination_key) {
-                return Err(ConfigError::InvalidUserConfig {
-                    error: format!(
-                        "destination_key '{}' cannot be included in source_keys",
-                        destination_key
-                    ),
-                });
-            }
+        if let Some(ref keys) = source_keys
+            && keys.contains(&destination_key)
+        {
+            return Err(ConfigError::InvalidUserConfig {
+                error: format!(
+                    "destination_key '{}' cannot be included in source_keys",
+                    destination_key
+                ),
+            });
         }
 
         // Validate that destination_key is not in exclude_keys
-        if let Some(ref keys) = exclude_keys {
-            if keys.contains(&destination_key) {
-                return Err(ConfigError::InvalidUserConfig {
-                    error: format!(
-                        "destination_key '{}' cannot be included in exclude_keys",
-                        destination_key
-                    ),
-                });
-            }
+        if let Some(ref keys) = exclude_keys
+            && keys.contains(&destination_key)
+        {
+            return Err(ConfigError::InvalidUserConfig {
+                error: format!(
+                    "destination_key '{}' cannot be included in exclude_keys",
+                    destination_key
+                ),
+            });
         }
 
         Ok(Self {

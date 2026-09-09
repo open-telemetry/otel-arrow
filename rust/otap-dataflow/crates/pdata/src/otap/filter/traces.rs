@@ -469,27 +469,26 @@ impl TraceFilter {
             );
         }
 
-        if let Some(span_link_attrs_record_batch) = span_link_attrs {
-            if let Some(link_filter) = &span_link_filter {
-                let span_link_ids_column = if let Some(span_links_record_batch) = span_links {
-                    get_required_array(span_links_record_batch, consts::ID)?
-                } else {
-                    return Err(Error::UnexpectedRecordBatchState {
-                        reason:
-                            "Span Link Attribute Record Batch found without Span Link Record Batch"
-                                .to_string(),
-                    });
-                };
-                _ = child_record_batch_filters.insert(
-                    ArrowPayloadType::SpanLinkAttrs,
-                    update_child_record_batch_filter(
-                        span_link_attrs_record_batch,
-                        span_link_ids_column,
-                        &span_link_attr_filter,
-                        link_filter,
-                    )?,
-                );
-            }
+        if let Some(span_link_attrs_record_batch) = span_link_attrs
+            && let Some(link_filter) = &span_link_filter
+        {
+            let span_link_ids_column = if let Some(span_links_record_batch) = span_links {
+                get_required_array(span_links_record_batch, consts::ID)?
+            } else {
+                return Err(Error::UnexpectedRecordBatchState {
+                    reason: "Span Link Attribute Record Batch found without Span Link Record Batch"
+                        .to_string(),
+                });
+            };
+            _ = child_record_batch_filters.insert(
+                ArrowPayloadType::SpanLinkAttrs,
+                update_child_record_batch_filter(
+                    span_link_attrs_record_batch,
+                    span_link_ids_column,
+                    &span_link_attr_filter,
+                    link_filter,
+                )?,
+            );
         }
 
         Ok((span_filter, child_record_batch_filters))

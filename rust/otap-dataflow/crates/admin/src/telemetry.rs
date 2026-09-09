@@ -2113,17 +2113,17 @@ struct LogFilter {
 impl LogFilter {
     /// Returns `true` when the rendered log entry passes all active criteria.
     fn matches(&self, entry: &LogEntry) -> bool {
-        if let Some(min_ts) = &self.minimum_timestamp {
-            if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(&entry.timestamp) {
-                if ts.with_timezone(&chrono::Utc) < *min_ts {
-                    return false;
-                }
-            }
+        if let Some(min_ts) = &self.minimum_timestamp
+            && let Ok(ts) = chrono::DateTime::parse_from_rfc3339(&entry.timestamp)
+            && ts.with_timezone(&chrono::Utc) < *min_ts
+        {
+            return false;
         }
-        if let Some(min_level) = self.minimum_level {
-            if level_severity(&entry.level) < min_level {
-                return false;
-            }
+
+        if let Some(min_level) = self.minimum_level
+            && level_severity(&entry.level) < min_level
+        {
+            return false;
         }
         if let Some(q) = &self.search_query {
             // `q` is already lowercased at construction time; only the entry

@@ -187,10 +187,13 @@ impl<
             shutdown.state = ShutdownLifecycleState::Running;
         });
 
+        let drain_deadline = Instant::now() + Duration::from_secs(plan.timeout_secs.max(1));
         for deployed_key in &plan.target_instances {
-            if let Err(message) =
-                self.request_instance_shutdown(deployed_key, plan.timeout_secs, "pipeline shutdown")
-            {
+            if let Err(message) = self.request_instance_shutdown_until(
+                deployed_key,
+                drain_deadline,
+                "pipeline shutdown",
+            ) {
                 self.update_shutdown(&plan.pipeline_key, &plan.shutdown.shutdown_id, |shutdown| {
                     shutdown.state = ShutdownLifecycleState::Failed;
                     shutdown.failure_reason = Some(message.clone());
@@ -217,7 +220,7 @@ impl<
             });
         }
 
-        let deadline = Instant::now() + Duration::from_secs(plan.timeout_secs);
+        let deadline = pipeline_shutdown_completion_deadline(drain_deadline);
         let mut remaining: HashSet<_> = plan.target_instances.iter().cloned().collect();
         while !remaining.is_empty() {
             let mut completed = Vec::new();
@@ -273,7 +276,7 @@ impl<
                     .next()
                     .map(|deployed_key| {
                         format!(
-                            "timed out waiting for pipeline {}:{} core={} generation={} to drain",
+                            "timed out waiting for pipeline {}:{} core={} generation={} to shut down",
                             deployed_key.pipeline_group_id.as_ref(),
                             deployed_key.pipeline_id.as_ref(),
                             deployed_key.core_id,

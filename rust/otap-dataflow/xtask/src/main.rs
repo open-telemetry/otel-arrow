@@ -161,10 +161,10 @@ fn run_structure_step(
         diagnostics.record_step("structure", duration, step_status_from_result(&result));
     }
 
-    if result.is_err() {
-        if let Some(diagnostics) = &mut diagnostics {
-            diagnostics.print_summary();
-        }
+    if result.is_err()
+        && let Some(diagnostics) = &mut diagnostics
+    {
+        diagnostics.print_summary();
     }
 
     result
@@ -188,10 +188,10 @@ fn run_component_inventory_step(
         );
     }
 
-    if result.is_err() {
-        if let Some(diagnostics) = &mut diagnostics {
-            diagnostics.print_summary();
-        }
+    if result.is_err()
+        && let Some(diagnostics) = &mut diagnostics
+    {
+        diagnostics.print_summary();
     }
 
     result
@@ -209,10 +209,10 @@ fn format_all(
         diagnostics.record_step("fmt", duration, step_status_from_result(&result));
     }
 
-    if result.is_err() {
-        if let Some(diagnostics) = &mut diagnostics {
-            diagnostics.print_summary();
-        }
+    if result.is_err()
+        && let Some(diagnostics) = &mut diagnostics
+    {
+        diagnostics.print_summary();
     }
 
     result?;

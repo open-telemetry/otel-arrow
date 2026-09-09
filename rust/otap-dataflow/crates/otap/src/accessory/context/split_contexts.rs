@@ -187,10 +187,10 @@ impl Contexts {
     /// this outbound key. This should be set to `false` when any outbound succeeds (is ACk'd) or
     /// is Nack'd with a permanent error.
     pub fn set_outbound_all_transient_errors(&mut self, outbound_key: Key, value: bool) {
-        if let Some(inbound_key) = self.outbound.get(outbound_key).map(|o| o.inbound_key) {
-            if let Some(inbound) = self.inbound.get_mut(inbound_key) {
-                inbound.outbound_all_transient_errors = value
-            }
+        if let Some(inbound_key) = self.outbound.get(outbound_key).map(|o| o.inbound_key)
+            && let Some(inbound) = self.inbound.get_mut(inbound_key)
+        {
+            inbound.outbound_all_transient_errors = value
         }
     }
 }

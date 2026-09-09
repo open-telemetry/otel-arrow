@@ -362,12 +362,12 @@ impl NodeUserConfig {
 
         // Validate the selector shape inside node-level header_propagation so
         // that invalid selectors are rejected uniformly.
-        if let Some(propagation) = &self.header_propagation {
-            if let Err(e) = propagation.validate() {
-                errors.push(Error::InvalidUserConfig {
-                    error: format!("node `{node_name}`: header_propagation.default.selector: {e}"),
-                });
-            }
+        if let Some(propagation) = &self.header_propagation
+            && let Err(e) = propagation.validate()
+        {
+            errors.push(Error::InvalidUserConfig {
+                error: format!("node `{node_name}`: header_propagation.default.selector: {e}"),
+            });
         }
     }
 
@@ -446,11 +446,10 @@ pub(crate) fn redact_secret_headers(value: &mut Value) {
                         }
                         Value::Array(entries) => {
                             for entry in entries.iter_mut() {
-                                if let Value::Object(fields) = entry {
-                                    if let Some(static_value) = fields.get_mut("value") {
-                                        *static_value =
-                                            Value::String(REDACTED_HEADER_VALUE.to_owned());
-                                    }
+                                if let Value::Object(fields) = entry
+                                    && let Some(static_value) = fields.get_mut("value")
+                                {
+                                    *static_value = Value::String(REDACTED_HEADER_VALUE.to_owned());
                                 }
                             }
                             continue;

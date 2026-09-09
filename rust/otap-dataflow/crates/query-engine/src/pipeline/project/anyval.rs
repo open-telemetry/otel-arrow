@@ -659,10 +659,10 @@ fn stitch_as_any_value_struct(
     // We'll create one value column per distinct field name.
     let mut distinct_fields: Vec<(&'static str, AttributeValueType)> = Vec::new();
     for &(type_val, field_name) in &partition_type_info {
-        if let Some(field_name) = field_name {
-            if !distinct_fields.iter().any(|(n, _)| *n == field_name) {
-                distinct_fields.push((field_name, type_val));
-            }
+        if let Some(field_name) = field_name
+            && !distinct_fields.iter().any(|(n, _)| *n == field_name)
+        {
+            distinct_fields.push((field_name, type_val));
         }
     }
 

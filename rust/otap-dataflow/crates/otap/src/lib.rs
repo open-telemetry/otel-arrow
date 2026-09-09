@@ -22,6 +22,8 @@ pub mod metrics;
 /// Shared OTLP receiver metric definitions used by OTLP protocol support.
 pub mod otlp_metrics;
 
+mod bearer_authorization;
+
 /// testing utilities
 #[cfg(any(test, feature = "test-utils"))]
 pub mod otap_mock;

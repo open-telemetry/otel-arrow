@@ -419,11 +419,11 @@ impl<S: TokenSource, M: TokenProviderMetrics> SharedExtension for TokenProviderE
                         // expiry, but a token stays usable until ~30 s before
                         // expiry, so reusing it here would defer the planned
                         // early refresh far too long.
-                        if rx.has_changed().unwrap_or(false) {
-                            if let Some(token) = inner.current_fresh_token() {
+                        if rx.has_changed().unwrap_or(false)
+                            && let Some(token) = inner.current_fresh_token()
+                        {
                                 return Ok(token);
                             }
-                        }
                         inner.refresh_once().await
                     };
                     tokio::pin!(refresh);

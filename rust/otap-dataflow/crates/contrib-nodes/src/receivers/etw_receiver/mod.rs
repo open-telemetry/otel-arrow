@@ -271,23 +271,19 @@ impl Config {
             // here rather than letting it fail later (a blank GUID errors at
             // parse time; a blank name would hash to a bogus GUID on the
             // automatic path).
-            if let Some(name) = &provider.name {
-                if name.trim().is_empty() {
-                    return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
-                        error: format!(
-                            "provider[{i}]: 'name' must not be empty or whitespace-only"
-                        ),
-                    });
-                }
+            if let Some(name) = &provider.name
+                && name.trim().is_empty()
+            {
+                return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                    error: format!("provider[{i}]: 'name' must not be empty or whitespace-only"),
+                });
             }
-            if let Some(guid) = &provider.guid {
-                if guid.trim().is_empty() {
-                    return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
-                        error: format!(
-                            "provider[{i}]: 'guid' must not be empty or whitespace-only"
-                        ),
-                    });
-                }
+            if let Some(guid) = &provider.guid
+                && guid.trim().is_empty()
+            {
+                return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                    error: format!("provider[{i}]: 'guid' must not be empty or whitespace-only"),
+                });
             }
 
             // `kind` selects a name-resolution strategy and is meaningless for a
@@ -302,13 +298,12 @@ impl Config {
             }
         }
 
-        if let Some(ref batching) = self.batching {
-            if batching.max_duration.is_zero() {
-                return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
-                    error: "ETW receiver `batching.max_duration` must be greater than zero"
-                        .to_string(),
-                });
-            }
+        if let Some(ref batching) = self.batching
+            && batching.max_duration.is_zero()
+        {
+            return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                error: "ETW receiver `batching.max_duration` must be greater than zero".to_string(),
+            });
         }
 
         Ok(())

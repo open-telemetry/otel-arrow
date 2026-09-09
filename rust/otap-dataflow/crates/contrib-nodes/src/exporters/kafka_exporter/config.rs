@@ -653,6 +653,9 @@ pub struct KafkaExporterConfig(KafkaExporterConfigBuilder);
 /// the factory `validate_config` path, which runs this validation without
 /// constructing an exporter.
 fn validate_signal_topics(signal: &SignalConfig) -> Result<(), String> {
+    if signal.encoding == MessageFormat::Syslog {
+        return Err("encoding: syslog is not supported by the Kafka exporter".to_string());
+    }
     validate_kafka_topic(&signal.topic).map_err(|e| format!("topic: {e}"))?;
     for (i, t) in signal.allowed_topics.iter().enumerate() {
         validate_kafka_topic(t).map_err(|e| format!("allowed_topics[{i}]: {e}"))?;
@@ -1188,6 +1191,21 @@ mod tests {
             MessageFormat::OtapProto
         );
         assert_eq!(config.logs().unwrap().encoding(), MessageFormat::OtlpProto);
+    }
+
+    /// Scenario: a Kafka exporter signal is configured with Syslog encoding.
+    /// Guarantees: exporter validation rejects the receiver-only encoding.
+    #[test]
+    fn test_config_syslog_encoding_fails() {
+        let json = r#"{
+            "brokers": "kafka:9092",
+            "client_id": "test",
+            "logs": {"topic": "l", "encoding": "syslog"}
+        }"#;
+
+        let err = serde_json::from_str::<KafkaExporterConfig>(json)
+            .expect_err("Syslog encoding must be rejected");
+        assert!(err.to_string().contains("syslog is not supported"));
     }
 
     // ---- Validation via TryFrom ----

@@ -214,10 +214,9 @@ impl Policies {
             .resources
             .as_ref()
             .and_then(|resources| resources.core_allocation.as_ref())
+            && let Err(e) = core_allocation.validate()
         {
-            if let Err(e) = core_allocation.validate() {
-                errors.push(format!("{path_prefix}.resources.core_allocation: {e}"));
-            }
+            errors.push(format!("{path_prefix}.resources.core_allocation: {e}"));
         }
         if let Some(runtime_recovery) = &self.runtime_recovery {
             errors.extend(
@@ -227,12 +226,12 @@ impl Policies {
         if let Some(telemetry) = &self.telemetry {
             errors.extend(telemetry.validation_errors(&format!("{path_prefix}.telemetry")));
         }
-        if let Some(transport_headers) = &self.transport_headers {
-            if let Err(e) = transport_headers.header_propagation.validate() {
-                errors.push(format!(
-                    "{path_prefix}.transport_headers.header_propagation.default.selector: {e}"
-                ));
-            }
+        if let Some(transport_headers) = &self.transport_headers
+            && let Err(e) = transport_headers.header_propagation.validate()
+        {
+            errors.push(format!(
+                "{path_prefix}.transport_headers.header_propagation.default.selector: {e}"
+            ));
         }
         if let Some(rate_limiters) = self
             .resources

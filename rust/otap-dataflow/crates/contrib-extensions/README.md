@@ -2,6 +2,9 @@
 
 # Contrib Extensions
 
+This crate is currently pre-1.0. Its public API may evolve between minor
+releases.
+
 Contrib extensions are optional, feature-gated extensions that extend the
 default OTel Arrow Dataflow Engine build. Extensions provide cross-cutting
 capabilities (such as authentication) that data-path nodes bind to via their

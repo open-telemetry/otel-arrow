@@ -706,15 +706,15 @@ mod tests {
             }
             result.push_str(&kv.key);
             result.push('=');
-            if let Some(ref v) = kv.value {
-                if let Some(ref val) = v.value {
-                    match val {
-                        Value::StringValue(s) => result.push_str(s),
-                        Value::IntValue(i) => result.push_str(&i.to_string()),
-                        Value::BoolValue(b) => result.push_str(if *b { "true" } else { "false" }),
-                        Value::DoubleValue(d) => result.push_str(&format!("{:.6}", d)),
-                        _ => unreachable!(),
-                    }
+            if let Some(ref v) = kv.value
+                && let Some(ref val) = v.value
+            {
+                match val {
+                    Value::StringValue(s) => result.push_str(s),
+                    Value::IntValue(i) => result.push_str(&i.to_string()),
+                    Value::BoolValue(b) => result.push_str(if *b { "true" } else { "false" }),
+                    Value::DoubleValue(d) => result.push_str(&format!("{:.6}", d)),
+                    _ => unreachable!(),
                 }
             }
         }

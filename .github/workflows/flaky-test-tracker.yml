@@ -18,7 +18,7 @@ env:
   # The label applied to the flaky test tracking issue.
   FLAKY_ISSUE_LABEL: "flaky-test"
   # How many recent Rust-CI workflow runs to scan.
-  LOOKBACK_RUNS: 20
+  LOOKBACK_RUNS: 50
   # The canonical tracking issue to update. Keep a stable default to avoid
   # duplicate issues when GitHub's search/label indexes are stale, but allow
   # overriding it via a repository variable if the canonical issue changes
@@ -61,11 +61,42 @@ jobs:
 
           echo "Rust-CI workflow ID: $WORKFLOW_ID"
 
-          # Get recent completed runs on the default branch
-          RUN_IDS=$(gh api "repos/${{ github.repository }}/actions/workflows/$WORKFLOW_ID/runs?branch=main&status=completed&per_page=$LOOKBACK_RUNS" \
-            --jq '.workflow_runs[].id')
+          # Recent pull requests, so that runs from draft pull requests can
+          # be excluded. Draft pull requests are not ready for review, so
+          # their failures are not yet actionable.
+          #
+          # Runs triggered from forks -- how nearly every contribution to
+          # this repository arrives -- leave the run's `pull_requests` field
+          # empty, so runs are matched to pull requests by head label
+          # ("owner:branch") below. This is best effort: if the lookup
+          # fails, draft runs are simply not filtered out.
+          #
+          # Two pages are fetched so the pull request window comfortably
+          # outspans the run window below: draft filtering only works for
+          # runs whose head label appears here, and a run's pull request is
+          # missed if more pull requests were updated than are fetched.
+          for PAGE in 1 2; do
+            gh api "repos/${{ github.repository }}/pulls?state=all&sort=updated&direction=desc&per_page=100&page=$PAGE" \
+              --jq '.[] | {label: .head.label, draft: .draft}' || true
+          done | jq -s '.' > pull-requests.json
 
-          echo "Found $(echo "$RUN_IDS" | wc -l) recent runs"
+          # Get recent completed runs, skipping draft pull requests. Rust-CI
+          # no longer runs on pushes to main, so this scans pull request and
+          # merge queue runs rather than filtering to a single branch.
+          #
+          # The pull request list is ordered most-recently-updated first, so
+          # the first entry for a head label is that branch's current pull
+          # request. A label with no known pull request is kept: that is how
+          # merge queue runs ("gh-readonly-queue/...") reach the report, and
+          # it keeps a failed lookup from dropping every run.
+          RUN_IDS=$(gh api "repos/${{ github.repository }}/actions/workflows/$WORKFLOW_ID/runs?status=completed&per_page=100" \
+            --jq '[.workflow_runs[] | {id, label: ((.head_repository.owner.login // "") + ":" + (.head_branch // ""))}]' \
+            | jq -r --slurpfile pulls pull-requests.json --argjson limit "$LOOKBACK_RUNS" '
+                (reduce $pulls[0][] as $pr ({};
+                  if has($pr.label) then . else .[$pr.label] = $pr.draft end)) as $draft
+                | [.[] | select($draft[.label] != true) | .id][:$limit][]')
+
+          echo "Found $(echo "$RUN_IDS" | wc -w) recent runs"
 
           for RUN_ID in $RUN_IDS; do
             echo "Checking run $RUN_ID for JUnit artifacts..."
@@ -110,22 +141,6 @@ jobs:
           gh issue edit "$FLAKY_ISSUE_NUMBER" \
             --body "$BODY" \
             --add-label "$FLAKY_ISSUE_LABEL"
-
-          STATE=$(gh issue view "$FLAKY_ISSUE_NUMBER" --json state --jq '.state')
-
-          if [[ "$FLAKY_COUNT" -gt 0 ]]; then
-            if [[ "$STATE" == "CLOSED" ]]; then
-              echo "Issue #$FLAKY_ISSUE_NUMBER was closed; reopening because flaky tests detected."
-              gh issue reopen "$FLAKY_ISSUE_NUMBER" \
-                --comment "Reopened automatically because flaky tests are still being detected. See the updated report above."
-            fi
-          else
-            if [[ "$STATE" == "OPEN" ]]; then
-              echo "Issue #$FLAKY_ISSUE_NUMBER is open but no flaky tests detected; closing."
-              gh issue close "$FLAKY_ISSUE_NUMBER" \
-                --comment "Closed automatically because no flaky tests are currently detected."
-            fi
-          fi
 
       - name: Post summary
         if: always()
