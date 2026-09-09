@@ -251,7 +251,9 @@ duration, payload-size, or item instruments.
 Shared metric helpers own optional-measurement policy checks. Component code
 must not independently inspect telemetry interests before reading the clock,
 counting items, or recording payload size. `PipelineContext` provides the
-effective node interests when the helper is registered.
+effective node interests when the helper is registered. Constructing an
+exporter attempt starts its optional duration measurement so synchronous
+preparation before an in-flight request is included.
 
 Components with additional diagnostics should compose the shared helper into
 their component metrics aggregate under a `boundary` field. The aggregate owns

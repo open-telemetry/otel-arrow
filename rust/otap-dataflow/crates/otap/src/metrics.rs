@@ -294,7 +294,7 @@ impl ExporterAttemptedItemsMetrics {
 #[derive(Debug)]
 pub struct ExporterAttempt {
     signal: SignalType,
-    measure_duration: bool,
+    started_at: Option<Instant>,
     items: Option<u64>,
     accepts_item_count: bool,
     payload_size: Option<u64>,
@@ -335,12 +335,15 @@ impl ExporterMetrics {
         }
     }
 
-    /// Creates instrumentation for one attempt without measuring until it runs.
+    /// Starts instrumentation for one component-local exporter attempt.
     #[must_use]
     pub fn attempt(&self, signal: SignalType) -> ExporterAttempt {
         ExporterAttempt {
             signal,
-            measure_duration: self.interests.contains(Interests::COMPONENT_DURATION),
+            started_at: self
+                .interests
+                .contains(Interests::COMPONENT_DURATION)
+                .then(Instant::now),
             items: None,
             accepts_item_count: self
                 .interests
@@ -419,11 +422,10 @@ impl ExporterAttempt {
         mut self,
         work: impl AsyncFnOnce(&mut ExporterAttempt) -> Result<T, E>,
     ) -> CompletedExporterAttempt<T, E> {
-        let started_at = self.measure_duration.then(Instant::now);
         let result = work(&mut self).await;
         CompletedExporterAttempt {
             signal: self.signal,
-            duration: started_at.map(|started_at| started_at.elapsed()),
+            duration: self.started_at.map(|started_at| started_at.elapsed()),
             payload_size: self.payload_size,
             items: self.items,
             result,
