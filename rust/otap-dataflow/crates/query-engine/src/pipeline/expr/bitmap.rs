@@ -221,21 +221,21 @@ fn scoped_value_to_id_mask(
                 // For attribute-scoped scalars, "all true" means "all rows that matched
                 // the key filter pass", not ALL rows in the batch. We need to build an
                 // IdMask from the parent_ids of the matching rows.
-                if matches!(sv.scope, DataScope::Attribute(_, _)) {
-                    if let Some(parent_ids) = &sv.parent_ids {
-                        let parent_id_col = parent_ids
-                            .as_any()
-                            .downcast_ref::<UInt16Array>()
-                            .ok_or_else(|| Error::ExecutionError {
-                                cause: format!(
-                                    "expected parent_id to be UInt16, found {:?}",
-                                    parent_ids.data_type()
-                                ),
-                            })?;
-                        let mut bitmap = pool.acquire();
-                        bitmap.populate(parent_id_col.values().iter().map(|pid| *pid as u32));
-                        return Ok(IdMask::Some(bitmap));
-                    }
+                if matches!(sv.scope, DataScope::Attribute(_, _))
+                    && let Some(parent_ids) = &sv.parent_ids
+                {
+                    let parent_id_col = parent_ids
+                        .as_any()
+                        .downcast_ref::<UInt16Array>()
+                        .ok_or_else(|| Error::ExecutionError {
+                            cause: format!(
+                                "expected parent_id to be UInt16, found {:?}",
+                                parent_ids.data_type()
+                            ),
+                        })?;
+                    let mut bitmap = pool.acquire();
+                    bitmap.populate(parent_id_col.values().iter().map(|pid| *pid as u32));
+                    return Ok(IdMask::Some(bitmap));
                 }
                 Ok(IdMask::All)
             }

@@ -459,10 +459,10 @@ where
 {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        if let Some(status) = runtime.observed_state_handle.pipeline_status(pipeline_key) {
-            if predicate(&status) {
-                return status;
-            }
+        if let Some(status) = runtime.observed_state_handle.pipeline_status(pipeline_key)
+            && predicate(&status)
+        {
+            return status;
         }
         assert!(
             Instant::now() < deadline,
@@ -4738,6 +4738,55 @@ fn explicit_shutdown_retains_initiator_in_status() {
         wait_for_shutdown_state(&runtime, &initial.shutdown_id, "succeeded").initiator,
         Some(PipelineShutdownInitiator::Dfctl)
     );
+}
+
+/// Scenario: an instance can only finish after the engine reaches its graceful
+/// drain deadline and force-stops unresolved node work.
+/// Guarantees: the controller allows bounded post-deadline completion time and
+/// does not falsely report the forced runtime exit as a drain timeout.
+#[test]
+fn shutdown_instance_waits_for_exit_after_graceful_drain_deadline() {
+    let config = engine_config_with_pipeline(simple_pipeline_yaml());
+    let runtime = test_runtime(&config);
+    register_existing_pipeline(&runtime, &config);
+    let deployed_key = deployed_key("g1", "p1", 0, 0);
+    let mut notifications =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+    {
+        // A rollout retains the terminal runtime record long enough for its
+        // worker to observe the exit rather than compacting it immediately.
+        let mut state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        _ = state.active_rollouts.insert(
+            PipelineKey::new("g1".into(), "p1".into()),
+            "deadline-completion-test".to_owned(),
+        );
+    }
+
+    let exit_runtime = Arc::clone(&runtime);
+    let exit_key = deployed_key.clone();
+    let exit_thread = thread::spawn(move || {
+        let RuntimeControlMsg::Shutdown { deadline, .. } =
+            wait_for_shutdown_message(&mut notifications)
+        else {
+            panic!("instance should receive shutdown");
+        };
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            thread::sleep(remaining.min(Duration::from_millis(10)));
+        }
+        exit_runtime.note_instance_exit(exit_key, RuntimeInstanceExit::Success);
+    });
+
+    runtime
+        .shutdown_instance(&deployed_key, 1, "deadline completion test")
+        .expect("forced shutdown should complete during the controller grace period");
+    exit_thread.join().expect("exit reporter should not panic");
 }
 
 /// Scenario: a shutdown request targets one logical pipeline while other

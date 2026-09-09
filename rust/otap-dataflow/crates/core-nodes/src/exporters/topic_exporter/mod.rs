@@ -417,8 +417,9 @@ impl Exporter<OtapPdata> for TopicExporter {
                         biased;
 
                         maybe_outcome = pending_outcomes.next(), if !pending_outcomes.is_empty() => {
-                            if let Some((message_id, outcome)) = maybe_outcome {
-                                if let Some(data) = pending_messages.remove(&message_id) {
+                            if let Some((message_id, outcome)) = maybe_outcome
+                                && let Some(data) = pending_messages.remove(&message_id)
+                            {
                                     match outcome {
                                         TrackedPublishOutcome::Ack => {
                                             metrics.end_to_end_acks.add(1);
@@ -447,7 +448,6 @@ impl Exporter<OtapPdata> for TopicExporter {
                                                 .await?;
                                         }
                                     }
-                                }
                             }
                         }
 
@@ -510,8 +510,9 @@ impl Exporter<OtapPdata> for TopicExporter {
                         biased;
 
                         maybe_outcome = pending_outcomes.next(), if !pending_outcomes.is_empty() => {
-                            if let Some((message_id, outcome)) = maybe_outcome {
-                                if let Some(data) = pending_messages.remove(&message_id) {
+                            if let Some((message_id, outcome)) = maybe_outcome
+                                && let Some(data) = pending_messages.remove(&message_id)
+                            {
                                     match outcome {
                                         TrackedPublishOutcome::Ack => {
                                             metrics.end_to_end_acks.add(1);
@@ -540,7 +541,6 @@ impl Exporter<OtapPdata> for TopicExporter {
                                                 .await?;
                                         }
                                     }
-                                }
                             }
                         }
 

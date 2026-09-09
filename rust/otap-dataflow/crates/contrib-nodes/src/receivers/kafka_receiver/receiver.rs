@@ -862,12 +862,10 @@ impl KafkaReceiver {
         // A transient NACK configured for replay never advances the offset.
         // The timer delivers `NodeControlMsg::TimerTick` on the control
         // channel, which is handled in the main loop below.
-        if manual_commit {
-            if let Some(ms) = self.config.commit_interval_ms() {
-                let _commit_timer_handle = effect_handler
-                    .start_periodic_timer(Duration::from_millis(ms))
-                    .await?;
-            }
+        if manual_commit && let Some(ms) = self.config.commit_interval_ms() {
+            let _commit_timer_handle = effect_handler
+                .start_periodic_timer(Duration::from_millis(ms))
+                .await?;
         }
 
         // Opt-in consumer-lag refresh timer, derived from the configured
@@ -1808,20 +1806,20 @@ fn capture_transport_headers(
     capture_policy: Option<&HeaderCapturePolicy>,
     pdata: &mut OtapPdata,
 ) {
-    if let Some(policy) = capture_policy {
-        if let Some(headers) = kafka_message.headers() {
-            let pairs = headers.iter().filter_map(|h| h.value.map(|v| (h.key, v)));
-            let mut transport_headers = TransportHeaders::new();
-            let stats = policy.capture_from_pairs(pairs, &mut transport_headers);
-            if let Some(stats) = stats {
-                otel_error!(
-                    "kafka.capture_policy.limits_exceeded",
-                    stats = %stats,
-                );
-            }
-            if !transport_headers.is_empty() {
-                pdata.set_transport_headers(transport_headers);
-            }
+    if let Some(policy) = capture_policy
+        && let Some(headers) = kafka_message.headers()
+    {
+        let pairs = headers.iter().filter_map(|h| h.value.map(|v| (h.key, v)));
+        let mut transport_headers = TransportHeaders::new();
+        let stats = policy.capture_from_pairs(pairs, &mut transport_headers);
+        if let Some(stats) = stats {
+            otel_error!(
+                "kafka.capture_policy.limits_exceeded",
+                stats = %stats,
+            );
+        }
+        if !transport_headers.is_empty() {
+            pdata.set_transport_headers(transport_headers);
         }
     }
 }
@@ -4161,11 +4159,11 @@ mod tests {
                 // Poll B until it is assigned a partition (drives the rebalance).
                 let mut b_partition = None;
                 for _ in 0..40 {
-                    if let Ok(a) = consumer_b.assignment() {
-                        if let Some(elem) = a.elements().first() {
-                            b_partition = Some(elem.partition());
-                            break;
-                        }
+                    if let Ok(a) = consumer_b.assignment()
+                        && let Some(elem) = a.elements().first()
+                    {
+                        b_partition = Some(elem.partition());
+                        break;
                     }
                     let _ =
                         tokio::time::timeout(Duration::from_millis(500), consumer_b.recv()).await;
@@ -9875,16 +9873,15 @@ mod tests {
                 let mut found_tenant = false;
                 for rs in &result.resource_spans {
                     let resource = rs.resource.as_ref().expect("resource present");
-                    if let Some(kv) = resource.attributes.iter().find(|kv| kv.key == "tenant.id") {
-                        if let Some(any_value::Value::StringValue(s)) =
+                    if let Some(kv) = resource.attributes.iter().find(|kv| kv.key == "tenant.id")
+                        && let Some(any_value::Value::StringValue(s)) =
                             kv.value.as_ref().and_then(|v| v.value.as_ref())
-                        {
-                            assert_eq!(
-                                s, &adversarial_value,
-                                "adversarial header value is extracted verbatim",
-                            );
-                            found_tenant = true;
-                        }
+                    {
+                        assert_eq!(
+                            s, &adversarial_value,
+                            "adversarial header value is extracted verbatim",
+                        );
+                        found_tenant = true;
                     }
                 }
                 assert!(found_tenant, "the tenant.id attribute should be extracted");

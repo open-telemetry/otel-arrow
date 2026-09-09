@@ -373,10 +373,10 @@ pub async fn run(
         // Periodic cleanup of completed segments (all engines use their own cleanup)
         if last_cleanup.elapsed() >= cleanup_interval {
             for engine in &engines {
-                if let Ok(deleted) = engine.cleanup_completed_segments() {
-                    if deleted > 0 {
-                        let _ = total_cleaned.fetch_add(deleted as u64, Ordering::Relaxed);
-                    }
+                if let Ok(deleted) = engine.cleanup_completed_segments()
+                    && deleted > 0
+                {
+                    let _ = total_cleaned.fetch_add(deleted as u64, Ordering::Relaxed);
                 }
             }
             last_cleanup = Instant::now();
@@ -598,11 +598,11 @@ pub async fn run(
     }
 
     // Handle temp directory
-    if let Some(tmp) = tmp {
-        if config.keep_temp {
-            let kept_path = tmp.keep();
-            output.log(&format!("Keeping temp directory: {}", kept_path.display()));
-        }
+    if let Some(tmp) = tmp
+        && config.keep_temp
+    {
+        let kept_path = tmp.keep();
+        output.log(&format!("Keeping temp directory: {}", kept_path.display()));
     }
 
     // Check for concerning growth

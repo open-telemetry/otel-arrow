@@ -550,12 +550,12 @@ impl TryFrom<KafkaReceiverConfigBuilder> for KafkaReceiverConfig {
         }
 
         // Reject empty optional string fields when explicitly set
-        if let Some(ref id) = builder.group_instance_id {
-            if id.is_empty() {
-                return Err(KafkaReceiverError::ConfigEmptyField {
-                    field: "group_instance_id".to_string(),
-                });
-            }
+        if let Some(ref id) = builder.group_instance_id
+            && id.is_empty()
+        {
+            return Err(KafkaReceiverError::ConfigEmptyField {
+                field: "group_instance_id".to_string(),
+            });
         }
         if builder.message_format_header.is_empty() {
             return Err(KafkaReceiverError::ConfigEmptyField {
@@ -1069,10 +1069,8 @@ impl KafkaReceiverConfigBuilder {
 
         // Commit settings derived from CommitConfig
         let auto_commit = matches!(self.commit.mode, CommitMode::Auto);
-        if auto_commit {
-            if let Some(interval) = self.commit.interval_ms {
-                _ = config.set("auto.commit.interval.ms", interval.to_string());
-            }
+        if auto_commit && let Some(interval) = self.commit.interval_ms {
+            _ = config.set("auto.commit.interval.ms", interval.to_string());
         }
         _ = config.set(
             "enable.auto.commit",
