@@ -177,6 +177,11 @@ jobs:
         run: cargo xtask crates-publish preflight "${{ inputs.version }}"
         working-directory: rust/otap-dataflow
 
+      - name: Forecast Rust crates.io publish
+        if: inputs.dry_run
+        run: cargo xtask crates-publish forecast "${{ inputs.version }}" > /tmp/crates_publish_forecast.json
+        working-directory: rust/otap-dataflow
+
       - name: Extract changelog content for this release
         id: changelog
         run: |
@@ -259,6 +264,16 @@ jobs:
           - **Packages**: ${{ steps.changelog.outputs.package_count }} OTAP Dataflow crates in dependency order
           - **Authentication**: crates.io trusted publishing (OIDC)
           - Existing versions are detected and skipped.
+
+          ### Expected package actions
+
+          | Package | Registry state | Expected action |
+          | --- | --- | --- |
+          EOF
+          jq -r \
+            '.packages[] | "| `\(.name)@\(.version)` | \(.registry_state) | \(.expected_action) |"' \
+            /tmp/crates_publish_forecast.json >> "$GITHUB_STEP_SUMMARY"
+          cat >> "$GITHUB_STEP_SUMMARY" << 'EOF'
 
           ## GitHub Release
           - **Title**: Release v${{ inputs.version }}

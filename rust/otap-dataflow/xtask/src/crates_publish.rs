@@ -58,6 +58,19 @@ struct PublishPackage {
     has_publish_dependencies: bool,
 }
 
+#[derive(Debug, Eq, PartialEq, Serialize)]
+struct PublishForecast {
+    packages: Vec<ForecastPackage>,
+}
+
+#[derive(Debug, Eq, PartialEq, Serialize)]
+struct ForecastPackage {
+    name: String,
+    version: String,
+    registry_state: &'static str,
+    expected_action: &'static str,
+}
+
 #[derive(Debug, Deserialize)]
 struct CratesIoResponse {
     version: CratesIoVersion,
@@ -84,9 +97,11 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
             preflight(version)?;
             Ok(())
         }
+        [command, version] if command == "forecast" => print_forecast(version),
         [command, version] if command == "publish" => publish(version),
         _ => bail!(
-            "Usage: cargo xtask crates-publish <plan|check|preflight VERSION|publish VERSION>"
+            "Usage: cargo xtask crates-publish \
+             <plan|check|forecast VERSION|preflight VERSION|publish VERSION>"
         ),
     }
 }
@@ -94,6 +109,57 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
 fn print_plan() -> anyhow::Result<()> {
     println!("{}", serde_json::to_string_pretty(&load_plan()?)?);
     Ok(())
+}
+
+fn print_forecast(expected_version: &str) -> anyhow::Result<()> {
+    let plan = load_plan()?;
+    ensure_plan_version(&plan, expected_version)?;
+
+    let mut packages = Vec::with_capacity(plan.packages.len());
+    for package in &plan.packages {
+        let version_exists = crates_io_version(&package.name, &package.version)?.is_some();
+        let crate_exists = version_exists || crates_io_crate_exists(&package.name)?;
+        packages.push(forecast_package(
+            package,
+            expected_version,
+            version_exists,
+            crate_exists,
+        ));
+    }
+
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&PublishForecast { packages })?
+    );
+    Ok(())
+}
+
+fn forecast_package(
+    package: &PublishPackage,
+    expected_version: &str,
+    version_exists: bool,
+    crate_exists: bool,
+) -> ForecastPackage {
+    let (registry_state, expected_action) = if version_exists {
+        if package.version == expected_version {
+            ("Version present", "Skip after preflight verification")
+        } else {
+            ("Version present", "Skip independent version")
+        }
+    } else if !crate_exists {
+        ("Crate not yet created", "Bootstrap required")
+    } else if package.version == expected_version {
+        ("Version missing", "Publish")
+    } else {
+        ("Independent version missing", "Blocked")
+    };
+
+    ForecastPackage {
+        name: package.name.clone(),
+        version: package.version.clone(),
+        registry_state,
+        expected_action,
+    }
 }
 
 fn load_plan() -> anyhow::Result<PublishPlan> {
@@ -408,6 +474,48 @@ fn crates_io_version(name: &str, version: &str) -> anyhow::Result<Option<CratesI
         .output()
         .context("failed to query crates.io")?;
     parse_crates_io_response(&output)
+}
+
+fn crates_io_crate_exists(name: &str) -> anyhow::Result<bool> {
+    let url = format!("{CRATES_IO_API}/crates/{name}");
+    let output = Command::new("curl")
+        .args([
+            "--silent",
+            "--show-error",
+            "--location",
+            "--connect-timeout",
+            "10",
+            "--max-time",
+            "30",
+            "--user-agent",
+            "otel-arrow-release-publisher",
+            "--write-out",
+            "\n%{http_code}",
+            &url,
+        ])
+        .output()
+        .context("failed to query crates.io")?;
+    parse_crates_io_existence(&output)
+}
+
+fn parse_crates_io_existence(output: &Output) -> anyhow::Result<bool> {
+    if !output.status.success() {
+        bail!(
+            "crates.io request failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+
+    let stdout = String::from_utf8(output.stdout.clone())
+        .context("crates.io returned a non-UTF-8 response")?;
+    let (body, status) = stdout
+        .rsplit_once('\n')
+        .context("crates.io response did not include an HTTP status")?;
+    match status {
+        "200" => Ok(true),
+        "404" => Ok(false),
+        _ => bail!("crates.io returned HTTP {status}: {}", body.trim()),
+    }
 }
 
 fn parse_crates_io_response(output: &Output) -> anyhow::Result<Option<CratesIoVersion>> {
@@ -778,6 +886,57 @@ mod tests {
         };
 
         assert!(ensure_plan_version(&plan, "0.55.0").is_err());
+    }
+
+    /// Scenario: a release version already exists on crates.io.
+    /// Guarantees: the forecast reports that publishing will skip it after preflight verification.
+    #[test]
+    fn forecast_skips_existing_release_version() {
+        let package = PublishPackage {
+            name: "otel-arrow-dfe-config".to_owned(),
+            version: "0.55.0".to_owned(),
+            has_publish_dependencies: false,
+        };
+
+        let forecast = forecast_package(&package, "0.55.0", true, true);
+
+        assert_eq!(forecast.registry_state, "Version present");
+        assert_eq!(
+            forecast.expected_action,
+            "Skip after preflight verification"
+        );
+    }
+
+    /// Scenario: an existing crate does not have the requested release version.
+    /// Guarantees: the forecast reports that the workflow will publish the missing version.
+    #[test]
+    fn forecast_publishes_missing_release_version() {
+        let package = PublishPackage {
+            name: "otel-arrow-dfe-config".to_owned(),
+            version: "0.55.0".to_owned(),
+            has_publish_dependencies: false,
+        };
+
+        let forecast = forecast_package(&package, "0.55.0", false, true);
+
+        assert_eq!(forecast.registry_state, "Version missing");
+        assert_eq!(forecast.expected_action, "Publish");
+    }
+
+    /// Scenario: a newly allowlisted crate does not exist on crates.io.
+    /// Guarantees: the forecast identifies the required first-publication bootstrap.
+    #[test]
+    fn forecast_identifies_bootstrap_requirement() {
+        let package = PublishPackage {
+            name: "otel-arrow-dfe-otap".to_owned(),
+            version: "0.55.0".to_owned(),
+            has_publish_dependencies: true,
+        };
+
+        let forecast = forecast_package(&package, "0.55.0", false, false);
+
+        assert_eq!(forecast.registry_state, "Crate not yet created");
+        assert_eq!(forecast.expected_action, "Bootstrap required");
     }
 
     /// Scenario: dependency requirements use abbreviated, ranged, exact, and excluding syntax.
