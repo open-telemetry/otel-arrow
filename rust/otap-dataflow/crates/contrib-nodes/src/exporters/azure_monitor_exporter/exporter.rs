@@ -12,7 +12,9 @@ use otel_arrow_dfe_engine::local::capability::auth::bearer_token_provider::Beare
 use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
 use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
-use otel_arrow_dfe_otap::http_client_auth_provider::HttpClientAuthProviderEvents;
+use otel_arrow_dfe_otap::http_client_auth_provider::{
+    HttpClientAuthProvider, HttpClientAuthProviderEvents,
+};
 use otel_arrow_dfe_pdata::otlp::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::views::otap::OtapLogsView;
 use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;

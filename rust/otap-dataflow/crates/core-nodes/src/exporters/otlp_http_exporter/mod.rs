@@ -229,7 +229,9 @@ impl OtlpHttpExporter {
             metrics,
             auth_provider: new_http_client_auth_provider(
                 capabilities,
-                HttpClientAuthProviders::BEARER_TOKEN | HttpClientAuthProviders::API_KEY | HttpClientAuthProviders::BASIC,
+                HttpClientAuthProviders::BEARER_TOKEN
+                    | HttpClientAuthProviders::API_KEY
+                    | HttpClientAuthProviders::BASIC,
             )?,
         })
     }

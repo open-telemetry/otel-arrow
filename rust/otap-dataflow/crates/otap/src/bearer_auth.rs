@@ -67,17 +67,15 @@ impl BearerAuth {
             generation: 0,
         }
     }
+}
 
-    /// Whether the token stream is still live and worth polling. Once the
-    /// provider closes it, this returns `false` and the last cached token (if
-    /// any) keeps being used.
-    pub fn is_active(&self) -> bool {
+#[async_trait(?Send)]
+impl HttpClientAuthProvider for BearerAuth {
+    fn is_active(&self) -> bool {
         self.stream_active
     }
 
-    /// Whether a usable token is cached: present and, if it expires, comfortably
-    /// before expiry. The exporter admits data only when this is `true`.
-    pub fn is_ready(&self) -> bool {
+    fn is_ready(&self) -> bool {
         match (self.cached_header.is_some(), self.cached_expiry) {
             (false, _) => false,
             (true, None) => true, // non-expiring token
@@ -85,9 +83,7 @@ impl BearerAuth {
         }
     }
 
-    /// A human-readable reason [`is_ready`](Self::is_ready) is false, for NACK
-    /// messages.
-    pub fn not_ready_reason(&self) -> &'static str {
+    fn not_ready_reason(&self) -> &'static str {
         if self.cached_header.is_some() {
             "bearer token at/near expiry; awaiting refresh"
         } else {
@@ -95,22 +91,13 @@ impl BearerAuth {
         }
     }
 
-    /// The cached `Authorization` header to stamp on a request, together with the
-    /// generation of the token it was built from, cloned for the per-request send
-    /// (a cheap refcount bump). `None` when no token is cached; callers
-    /// should gate on [`is_ready`](Self::is_ready) first.
-    pub fn header(&self) -> Option<(HeaderName, HeaderValue, u64)> {
+    fn header(&self) -> Option<(HeaderName, HeaderValue, u64)> {
         self.cached_header
             .clone()
             .map(|header| (http::header::AUTHORIZATION, header, self.generation))
     }
 
-    /// The instant at which a currently-usable, expiring token crosses the
-    /// usability margin (when [`is_ready`](Self::is_ready) flips to false).
-    /// `None` when no usable token is cached or the token never expires, so the
-    /// caller arms no timer in those cases. When `Some`, it is always in the
-    /// future: a usable token is by definition still beyond the margin.
-    pub fn refresh_deadline(&self) -> Option<Instant> {
+    fn refresh_deadline(&self) -> Option<Instant> {
         if !self.is_ready() {
             return None;
         }
@@ -118,27 +105,14 @@ impl BearerAuth {
             .and_then(|expires_on| expires_on.checked_sub(TOKEN_USABLE_MARGIN))
     }
 
-    /// Drops the cached token *if* `generation` is still the one currently cached,
-    /// so [`is_ready`](Self::is_ready) returns false until the provider publishes a
-    /// replacement. Called when the server rejects a token (HTTP 401, or gRPC
-    /// `UNAUTHENTICATED`) so the rejected credential is not sent again.
-    ///
-    /// The generation guard makes a stale 401 harmless: if a newer token was
-    /// cached (or the rejected token already cleared) after the failing request
-    /// was sent, `generation` no longer matches the current one and the
-    /// still-valid token is kept, avoiding a needless back-pressure stall.
-    pub fn invalidate(&mut self, generation: u64) {
+    fn invalidate(&mut self, generation: u64) {
         if generation == self.generation && self.cached_header.is_some() {
             self.cached_header = None;
             self.cached_expiry = None;
         }
     }
 
-    /// Awaits the next published token and refreshes the cache. Only meaningful
-    /// while [`is_active`](Self::is_active); on stream close it flips inactive
-    /// and keeps the last cached token. Malformed tokens and stream closure are
-    /// logged internally.
-    pub async fn poll_refresh(&mut self, events: &HttpClientAuthProviderEvents) {
+    async fn poll_refresh(&mut self, events: &HttpClientAuthProviderEvents) {
         match self.stream.next().await {
             Some(token) => {
                 match HeaderValue::from_str(&format!("Bearer {}", token.expose_token())) {
@@ -165,37 +139,6 @@ impl BearerAuth {
                 (events.stream_closed)();
             }
         }
-    }
-}
-
-#[async_trait(?Send)]
-impl HttpClientAuthProvider for BearerAuth {
-    fn is_active(&self) -> bool {
-        self.is_active()
-    }
-
-    fn is_ready(&self) -> bool {
-        self.is_ready()
-    }
-
-    fn not_ready_reason(&self) -> &'static str {
-        self.not_ready_reason()
-    }
-
-    fn header(&self) -> Option<(HeaderName, HeaderValue, u64)> {
-        self.header()
-    }
-
-    fn refresh_deadline(&self) -> Option<Instant> {
-        self.refresh_deadline()
-    }
-
-    fn invalidate(&mut self, generation: u64) {
-        self.invalidate(generation)
-    }
-
-    async fn poll_refresh(&mut self, events: &HttpClientAuthProviderEvents) {
-        self.poll_refresh(events).await
     }
 }
 

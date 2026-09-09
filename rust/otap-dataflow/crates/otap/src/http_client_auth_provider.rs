@@ -11,7 +11,7 @@ use otel_arrow_dfe_engine::{
 };
 use tonic::async_trait;
 
-use crate::{api_key_auth::ApiKeyAuth, bearer_auth::BearerAuth};
+use crate::{api_key_auth::ApiKeyAuth, basic_auth::BasicAuth, bearer_auth::BearerAuth};
 
 /// The warnings this adapter can raise, supplied by the owning component so
 /// each event name is namespaced to that component (e.g.
@@ -143,10 +143,14 @@ pub fn new_http_client_auth_provider(
         false => None
     };
 
-    let count_of_providers = vec![bearer_auth.is_some(), api_key_auth.is_some(), basic_auth.is_some()]
-        .into_iter()
-        .filter(|v| *v)
-        .count();
+    let count_of_providers = vec![
+        bearer_auth.is_some(),
+        api_key_auth.is_some(),
+        basic_auth.is_some(),
+    ]
+    .into_iter()
+    .filter(|v| *v)
+    .count();
     if count_of_providers > 1 {
         return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
             error: "Multiple authentication providers cannot be bound to a single component".into(),
