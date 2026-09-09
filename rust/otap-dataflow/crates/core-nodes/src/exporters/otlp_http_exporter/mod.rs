@@ -33,7 +33,6 @@ use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otel_arrow_dfe_engine::error::{Error as EngineError, ExporterErrorKind};
 use otel_arrow_dfe_engine::exporter::ExporterWrapper;
-use otel_arrow_dfe_engine::local::capability::auth::bearer_token_provider::BearerTokenProvider;
 use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
 use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
 use otel_arrow_dfe_engine::node::NodeId;
@@ -63,7 +62,7 @@ use secrecy::ExposeSecret;
 use self::config::Config;
 use crate::exporters::otlp_grpc_exporter::InFlightExports;
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
-use otel_arrow_dfe_otap::bearer_auth::{BearerAuth, BearerAuthEvents, apply_auth_rejection};
+use otel_arrow_dfe_otap::http_client_auth_provider::*;
 use otel_arrow_dfe_otap::otlp_http::client_settings::{HttpClientError, HttpClientSettings};
 use otel_arrow_dfe_otap::otlp_http::{
     LOGS_PATH, METRICS_PATH, PROTOBUF_CONTENT_TYPE, RpcStatus, TRACES_PATH,
@@ -78,16 +77,16 @@ use self::metrics::{OtlpHttpExporterErrorType, OtlpHttpExporterMetrics};
 /// The URN for the OTLP HTTP exporter
 pub const OTLP_HTTP_EXPORTER_URN: &str = "urn:otel:exporter:otlp_http";
 
-/// Raises the shared bearer-auth warnings under this exporter's event namespace.
-const HTTP_BEARER_AUTH_EVENTS: BearerAuthEvents = BearerAuthEvents {
-    invalid_token: |error| {
-        otel_warn!("otlp.exporter.http.invalid_bearer_token", error = %error);
+/// Raises the shared auth warnings under this exporter's event namespace.
+const HTTP_AUTH_EVENTS: HttpClientAuthProviderEvents = HttpClientAuthProviderEvents {
+    invalid: |error| {
+        otel_warn!("otlp.exporter.http.invalid_auth", error = %error);
     },
-    token_stream_closed: || {
+    stream_closed: || {
         otel_warn!(
-            "otlp.exporter.http.token_stream_closed",
-            message = "bearer token provider closed its stream; \
-                no further token refreshes will arrive"
+            "otlp.exporter.http.auth_stream_closed",
+            message = "auth provider closed its stream; \
+                no further auth refreshes will arrive"
         );
     },
 };
@@ -96,11 +95,10 @@ const HTTP_BEARER_AUTH_EVENTS: BearerAuthEvents = BearerAuthEvents {
 pub struct OtlpHttpExporter {
     config: Config,
     metrics: OtlpHttpExporterMetrics,
-    /// Optional bearer token provider resolved from the
-    /// `bearer_token_provider` capability. When bound, a fresh
-    /// `Authorization: Bearer <token>` is injected on every outgoing
-    /// request; when absent, the exporter behaves exactly as before.
-    token_provider: Option<Box<dyn BearerTokenProvider>>,
+    /// Optional auth provider resolved from capabilities. When bound,
+    /// authentication is injected on every outgoing request; when absent, the
+    /// exporter behaves exactly as before.
+    auth_provider: Option<Box<dyn HttpClientAuthProvider>>,
 }
 
 /// Declare the OTLP HTTP Exporter as a local exporter factory
@@ -139,16 +137,8 @@ fn factory_create(
     exporter_config: &ExporterConfig,
     capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
 ) -> Result<ExporterWrapper<OtapPdata>, ConfigError> {
-    // Optionally resolve a bound bearer token provider. Absent binding keeps the
-    // default (no-auth) behavior; a bound provider (e.g. the `azure_identity_auth`
-    // extension) supplies refreshed OAuth tokens.
-    let token_provider = capabilities
-        .optional_local::<otel_arrow_dfe_engine::capability::auth::bearer_token_provider::BearerTokenProvider>()
-        .map_err(|e| ConfigError::InvalidUserConfig {
-            error: e.to_string(),
-        })?;
     Ok(ExporterWrapper::local(
-        OtlpHttpExporter::from_config(pipeline, &node_config.config, token_provider)?,
+        OtlpHttpExporter::from_config(pipeline, &node_config.config, capabilities)?,
         node,
         node_config,
         exporter_config,
@@ -160,7 +150,7 @@ impl OtlpHttpExporter {
     pub fn from_config(
         pipeline_ctx: PipelineContext,
         config: &serde_json::Value,
-        token_provider: Option<Box<dyn BearerTokenProvider>>,
+        capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
     ) -> Result<Self, ConfigError> {
         let metrics = OtlpHttpExporterMetrics::register(&pipeline_ctx);
 
@@ -237,7 +227,12 @@ impl OtlpHttpExporter {
         Ok(Self {
             config,
             metrics,
-            token_provider,
+            auth_provider: new_http_client_auth_provider(
+                capabilities,
+                HttpClientAuthProviders::BEARER_TOKEN
+                    | HttpClientAuthProviders::API_KEY
+                    | HttpClientAuthProviders::BASIC,
+            )?,
         })
     }
 }
@@ -321,14 +316,11 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
         // buffer size.
         let mut compressed_buffer: Vec<u8> = Vec::new();
 
-        // Consumer-side bearer-token adapter, if a provider is bound. It owns
-        // the token subscription, the cached `Authorization` header, and token
-        // usability; the loop below stays auth-agnostic -- it only asks whether
-        // it may send and stamps the header the adapter hands back.
-        let mut auth = self
-            .token_provider
-            .take()
-            .map(|provider| BearerAuth::new(provider, HTTP_BEARER_AUTH_EVENTS));
+        // Consumer-side auth adapter, if a provider is bound. It owns the auth
+        // subscription, the cached `Authorization` header, and usability; the
+        // loop below stays auth-agnostic -- it only asks whether it may send
+        // and stamps the header the adapter hands back.
+        let mut auth = self.auth_provider.take();
 
         // Timer that fires when the cached token crosses its usability margin.
         // Hoisted out of the loop and re-armed only when the deadline actually
@@ -349,14 +341,14 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
             // holds data-path startup until the first publish, and its watch stream
             // stays live while we hold the provider handle -- so waiting (not
             // dropping) is always correct here.
-            let accepting_pdata = auth.as_ref().is_none_or(BearerAuth::is_ready)
+            let accepting_pdata = auth.as_ref().is_none_or(|a| a.is_ready())
                 && inflight_exports.len() < max_in_flight;
 
             // Instant at which a currently-usable token crosses the usability
             // margin. Used to wake the loop so `accepting_pdata` re-evaluates
             // (and gates) before a near-expiry batch is admitted, since the recv
             // arm below may already be parked when the margin is reached.
-            let token_margin_deadline = auth.as_ref().and_then(BearerAuth::refresh_deadline);
+            let token_margin_deadline = auth.as_ref().and_then(|a| a.refresh_deadline());
             if token_margin_deadline != armed_margin_deadline {
                 if let Some(deadline) = token_margin_deadline {
                     margin_sleep
@@ -386,10 +378,10 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                 // while the guard holds; it pends rather than panics.
                 () = async {
                     match auth.as_mut() {
-                        Some(a) => a.poll_refresh().await,
+                        Some(a) => a.poll_refresh(&HTTP_AUTH_EVENTS).await,
                         None => std::future::pending().await,
                     }
-                }, if auth.as_ref().is_some_and(BearerAuth::is_active) => {
+                }, if auth.as_ref().is_some_and(|a| a.is_active()) => {
                     // A refresh was drained (the adapter caches it and logs any
                     // anomaly); loop to re-evaluate intake readiness.
                     continue;
@@ -480,11 +472,13 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                     // precedence over any statically configured `authorization`; the
                     // generation is echoed back on completion so a 401 can be matched
                     // to the exact token used and a stale rejection ignored.
-                    let (auth_header, token_generation) =
-                        match auth.as_ref().and_then(BearerAuth::header) {
-                            Some((header, generation)) => (Some(header), Some(generation)),
-                            None => (None, None),
-                        };
+                    let (auth_header, token_generation) = match auth
+                        .as_ref()
+                        .and_then(|a| a.header())
+                    {
+                        Some((name, value, generation)) => (Some((name, value)), Some(generation)),
+                        None => (None, None),
+                    };
 
                     // For the OtapArrowRecords path we keep the uncompressed bytes in
                     // `proto_buffer` rather than materializing them into a `Bytes` up front: when
@@ -621,7 +615,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                             // client's default headers, so the refreshed bearer
                             // token overrides any statically configured
                             // `authorization` credential.
-                            req = req.header(http::header::AUTHORIZATION, auth);
+                            req = req.header(auth.0, auth.1);
                         }
                         if let Some(method) = compression {
                             req = req.header(
@@ -1162,6 +1156,7 @@ mod test {
     use hyper_util::rt::TokioIo;
     use otel_arrow_dfe_config::PortName;
     use otel_arrow_dfe_engine::Interests;
+    use otel_arrow_dfe_engine::capability::registry::Capabilities;
     use otel_arrow_dfe_engine::context::ControllerContext;
     use otel_arrow_dfe_engine::control::{PipelineCompletionMsg, runtime_ctrl_msg_channel};
     use otel_arrow_dfe_engine::shared::message::SharedSender;
@@ -1733,7 +1728,7 @@ mod test {
             OtlpHttpExporter {
                 config,
                 metrics: OtlpHttpExporterMetrics::register(&pipeline_ctx),
-                token_provider: Some(Box::new(provider)),
+                auth_provider: Some(provider.into()),
             },
             node_id,
             node_config,
@@ -2252,7 +2247,7 @@ mod test {
             OtlpHttpExporter {
                 config,
                 metrics: OtlpHttpExporterMetrics::register(&pipeline_ctx),
-                token_provider: None,
+                auth_provider: None,
             },
             node_id.clone(),
             node_config,
@@ -2346,7 +2341,8 @@ mod test {
             0,
         );
 
-        let result = OtlpHttpExporter::from_config(pipeline_ctx, &invalid_config, None);
+        let result =
+            OtlpHttpExporter::from_config(pipeline_ctx, &invalid_config, &Capabilities::empty());
         assert!(result.is_err());
         let err = result.err().unwrap();
         assert!(matches!(err, ConfigError::InvalidUserConfig { .. }));
@@ -2396,7 +2392,11 @@ mod test {
                 0,
             );
 
-            let result = OtlpHttpExporter::from_config(pipeline_ctx, &invalid_config, None);
+            let result = OtlpHttpExporter::from_config(
+                pipeline_ctx,
+                &invalid_config,
+                &Capabilities::empty(),
+            );
             assert!(result.is_err());
             let err = result.err().unwrap();
             assert!(matches!(err, ConfigError::InvalidUserConfig { .. }));
@@ -3783,7 +3783,8 @@ mod test {
             0,
         );
 
-        let result = OtlpHttpExporter::from_config(pipeline_ctx, &invalid_config, None);
+        let result =
+            OtlpHttpExporter::from_config(pipeline_ctx, &invalid_config, &Capabilities::empty());
         assert!(result.is_err());
         let err = result.err().unwrap();
         assert!(matches!(err, ConfigError::InvalidUserConfig { .. }));

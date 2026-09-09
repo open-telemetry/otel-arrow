@@ -20,28 +20,15 @@
 
 use std::time::Instant;
 
+use async_trait::async_trait;
 use futures::StreamExt;
-use http::HeaderValue;
-use http::header::InvalidHeaderValue;
+use http::{HeaderName, HeaderValue};
 use otel_arrow_dfe_engine::capability::auth::bearer_token_provider::{
     TOKEN_USABLE_MARGIN, TokenStream,
 };
 use otel_arrow_dfe_engine::local::capability::auth::bearer_token_provider::BearerTokenProvider;
 
-/// The warnings this adapter can raise, supplied by the owning exporter so each
-/// event name is namespaced to that exporter (e.g. `otlp.exporter.grpc.*`)
-/// rather than to the shared adapter. `otel_warn!` const-validates its event
-/// name, so the name has to be a literal at the emitting call site; passing the
-/// emitters as function pointers satisfies that without making the adapter
-/// generic over an exporter marker type.
-#[derive(Clone, Copy)]
-pub struct BearerAuthEvents {
-    /// A published token could not be turned into an `Authorization` header.
-    pub invalid_token: fn(&InvalidHeaderValue),
-
-    /// The provider closed its token stream; no further refreshes will arrive.
-    pub token_stream_closed: fn(),
-}
+use crate::http_client_auth_provider::*;
 
 /// Consumer-side bearer-token authenticator: subscribes to a provider's token
 /// stream, caches the built `Authorization` header, and reports usability.
@@ -62,8 +49,6 @@ pub struct BearerAuth {
     /// each request so a later 401 can be matched to the exact token generation
     /// it used, letting a rejection for an already-replaced token be ignored.
     generation: u64,
-    /// The owning exporter's namespaced warning emitters.
-    events: BearerAuthEvents,
 }
 
 impl BearerAuth {
@@ -73,27 +58,24 @@ impl BearerAuth {
     /// that current token, so the exporter needs no separate `get_token()`
     /// seeding step.
     #[must_use]
-    pub fn new(provider: Box<dyn BearerTokenProvider>, events: BearerAuthEvents) -> Self {
+    pub fn new(provider: Box<dyn BearerTokenProvider>) -> Self {
         Self {
             stream: provider.token_stream(),
             stream_active: true,
             cached_header: None,
             cached_expiry: None,
             generation: 0,
-            events,
         }
     }
+}
 
-    /// Whether the token stream is still live and worth polling. Once the
-    /// provider closes it, this returns `false` and the last cached token (if
-    /// any) keeps being used.
-    pub fn is_active(&self) -> bool {
+#[async_trait(?Send)]
+impl HttpClientAuthProvider for BearerAuth {
+    fn is_active(&self) -> bool {
         self.stream_active
     }
 
-    /// Whether a usable token is cached: present and, if it expires, comfortably
-    /// before expiry. The exporter admits data only when this is `true`.
-    pub fn is_ready(&self) -> bool {
+    fn is_ready(&self) -> bool {
         match (self.cached_header.is_some(), self.cached_expiry) {
             (false, _) => false,
             (true, None) => true, // non-expiring token
@@ -101,9 +83,7 @@ impl BearerAuth {
         }
     }
 
-    /// A human-readable reason [`is_ready`](Self::is_ready) is false, for NACK
-    /// messages.
-    pub fn not_ready_reason(&self) -> &'static str {
+    fn not_ready_reason(&self) -> &'static str {
         if self.cached_header.is_some() {
             "bearer token at/near expiry; awaiting refresh"
         } else {
@@ -111,22 +91,13 @@ impl BearerAuth {
         }
     }
 
-    /// The cached `Authorization` header to stamp on a request, together with the
-    /// generation of the token it was built from, cloned for the per-request send
-    /// (a cheap refcount bump). `None` when no token is cached; callers
-    /// should gate on [`is_ready`](Self::is_ready) first.
-    pub fn header(&self) -> Option<(HeaderValue, u64)> {
+    fn header(&self) -> Option<(HeaderName, HeaderValue, u64)> {
         self.cached_header
             .clone()
-            .map(|header| (header, self.generation))
+            .map(|header| (http::header::AUTHORIZATION, header, self.generation))
     }
 
-    /// The instant at which a currently-usable, expiring token crosses the
-    /// usability margin (when [`is_ready`](Self::is_ready) flips to false).
-    /// `None` when no usable token is cached or the token never expires, so the
-    /// caller arms no timer in those cases. When `Some`, it is always in the
-    /// future: a usable token is by definition still beyond the margin.
-    pub fn refresh_deadline(&self) -> Option<Instant> {
+    fn refresh_deadline(&self) -> Option<Instant> {
         if !self.is_ready() {
             return None;
         }
@@ -134,27 +105,14 @@ impl BearerAuth {
             .and_then(|expires_on| expires_on.checked_sub(TOKEN_USABLE_MARGIN))
     }
 
-    /// Drops the cached token *if* `generation` is still the one currently cached,
-    /// so [`is_ready`](Self::is_ready) returns false until the provider publishes a
-    /// replacement. Called when the server rejects a token (HTTP 401, or gRPC
-    /// `UNAUTHENTICATED`) so the rejected credential is not sent again.
-    ///
-    /// The generation guard makes a stale 401 harmless: if a newer token was
-    /// cached (or the rejected token already cleared) after the failing request
-    /// was sent, `generation` no longer matches the current one and the
-    /// still-valid token is kept, avoiding a needless back-pressure stall.
-    pub fn invalidate(&mut self, generation: u64) {
+    fn invalidate(&mut self, generation: u64) {
         if generation == self.generation && self.cached_header.is_some() {
             self.cached_header = None;
             self.cached_expiry = None;
         }
     }
 
-    /// Awaits the next published token and refreshes the cache. Only meaningful
-    /// while [`is_active`](Self::is_active); on stream close it flips inactive
-    /// and keeps the last cached token. Malformed tokens and stream closure are
-    /// logged internally.
-    pub async fn poll_refresh(&mut self) {
+    async fn poll_refresh(&mut self, events: &HttpClientAuthProviderEvents) {
         match self.stream.next().await {
             Some(token) => {
                 match HeaderValue::from_str(&format!("Bearer {}", token.expose_token())) {
@@ -167,9 +125,9 @@ impl BearerAuth {
                         // an earlier token no longer matches and is ignored.
                         self.generation = self.generation.wrapping_add(1);
                     }
-                    Err(e) => {
+                    Err(_) => {
                         // Malformed token: keep the previous cached token (if any).
-                        (self.events.invalid_token)(&e);
+                        (events.invalid)("Malformed token");
                     }
                 }
             }
@@ -178,24 +136,9 @@ impl BearerAuth {
                 // Keep using the last cached token. Not expected with a
                 // watch-backed provider while we hold its handle, so warn.
                 self.stream_active = false;
-                (self.events.token_stream_closed)();
+                (events.stream_closed)();
             }
         }
-    }
-}
-
-/// Applies a token rejection reported by a completed export to the bearer
-/// adapter: drops the rejected token generation so it is not sent again, leaving
-/// the consumer back-pressured until the provider's next publication.
-///
-/// Takes the exporter's `Option<BearerAuth>` directly so the common
-/// "rejection reported, provider may or may not be bound" shape is expressed
-/// once. A no-op when no provider is bound (`rejected_generation` is `None`) or
-/// the rejection is stale (a newer token was already cached), per
-/// [`BearerAuth::invalidate`]'s generation guard.
-pub fn apply_auth_rejection(auth: &mut Option<BearerAuth>, rejected_generation: Option<u64>) {
-    if let (Some(generation), Some(adapter)) = (rejected_generation, auth.as_mut()) {
-        adapter.invalidate(generation);
     }
 }
 
@@ -287,22 +230,22 @@ mod tests {
     use std::cell::Cell;
 
     thread_local! {
-        /// Number of `invalid_token` notifications raised on this test thread.
-        static INVALID_TOKENS: Cell<usize> = const { Cell::new(0) };
-        /// Number of `token_stream_closed` notifications raised on this test thread.
+        /// Number of `invalid` notifications raised on this test thread.
+        static INVALID: Cell<usize> = const { Cell::new(0) };
+        /// Number of `stream_closed` notifications raised on this test thread.
         static STREAM_CLOSURES: Cell<usize> = const { Cell::new(0) };
     }
 
     /// Recording event hooks. The hooks take no receiver, so the counters are
     /// thread-local; the test harness gives each test its own thread, and every
     /// test resets them before use.
-    const TEST_EVENTS: BearerAuthEvents = BearerAuthEvents {
-        invalid_token: |_error| INVALID_TOKENS.set(INVALID_TOKENS.get() + 1),
-        token_stream_closed: || STREAM_CLOSURES.set(STREAM_CLOSURES.get() + 1),
+    const TEST_EVENTS: HttpClientAuthProviderEvents = HttpClientAuthProviderEvents {
+        invalid: |_| INVALID.set(INVALID.get() + 1),
+        stream_closed: || STREAM_CLOSURES.set(STREAM_CLOSURES.get() + 1),
     };
 
     fn reset_events() {
-        INVALID_TOKENS.set(0);
+        INVALID.set(0);
         STREAM_CLOSURES.set(0);
     }
 
@@ -315,7 +258,6 @@ mod tests {
             cached_header: Some(HeaderValue::from_static("Bearer test-token")),
             cached_expiry: None,
             generation,
-            events: TEST_EVENTS,
         }
     }
 
@@ -330,7 +272,6 @@ mod tests {
             cached_header: None,
             cached_expiry: None,
             generation: 0,
-            events: TEST_EVENTS,
         }
     }
 
@@ -375,13 +316,13 @@ mod tests {
     async fn poll_refresh_caches_the_published_token_as_a_sensitive_header() {
         let mut auth = auth_over(vec![BearerToken::without_expiry("first")]);
 
-        auth.poll_refresh().await;
+        auth.poll_refresh(&TEST_EVENTS).await;
 
         assert!(
             auth.is_ready(),
             "a published token must make the adapter ready"
         );
-        let (header, generation) = auth.header().expect("a cached token must yield a header");
+        let (_, header, generation) = auth.header().expect("a cached token must yield a header");
         assert_eq!(header.to_str().unwrap(), "Bearer first");
         assert!(
             header.is_sensitive(),
@@ -406,15 +347,15 @@ mod tests {
             BearerToken::without_expiry("bad\nvalue"),
         ]);
 
-        auth.poll_refresh().await;
-        auth.poll_refresh().await;
+        auth.poll_refresh(&TEST_EVENTS).await;
+        auth.poll_refresh(&TEST_EVENTS).await;
 
         assert_eq!(
-            INVALID_TOKENS.get(),
+            INVALID.get(),
             1,
             "a token that cannot become a header value must be reported"
         );
-        let (header, generation) = auth.header().expect("the earlier token must be kept");
+        let (_, header, generation) = auth.header().expect("the earlier token must be kept");
         assert_eq!(header.to_str().unwrap(), "Bearer good");
         assert_eq!(
             generation, 1,
@@ -430,8 +371,8 @@ mod tests {
     async fn a_closed_stream_is_reported_and_the_last_token_stays_usable() {
         let mut auth = auth_over(vec![BearerToken::without_expiry("last")]);
 
-        auth.poll_refresh().await;
-        auth.poll_refresh().await;
+        auth.poll_refresh(&TEST_EVENTS).await;
+        auth.poll_refresh(&TEST_EVENTS).await;
 
         assert_eq!(
             STREAM_CLOSURES.get(),
@@ -474,7 +415,7 @@ mod tests {
             Some(Instant::now() + TOKEN_USABLE_MARGIN / 2),
         )]);
 
-        auth.poll_refresh().await;
+        auth.poll_refresh(&TEST_EVENTS).await;
 
         assert!(
             !auth.is_ready(),
@@ -503,7 +444,7 @@ mod tests {
             Some(expires_on),
         )]);
 
-        auth.poll_refresh().await;
+        auth.poll_refresh(&TEST_EVENTS).await;
 
         assert!(auth.is_ready());
         assert_eq!(
@@ -520,7 +461,7 @@ mod tests {
     async fn a_non_expiring_token_arms_no_refresh_deadline() {
         let mut auth = auth_over(vec![BearerToken::without_expiry("forever")]);
 
-        auth.poll_refresh().await;
+        auth.poll_refresh(&TEST_EVENTS).await;
 
         assert!(auth.is_ready());
         assert!(auth.refresh_deadline().is_none());
@@ -532,7 +473,8 @@ mod tests {
     // the rejected credential.
     #[test]
     fn apply_auth_rejection_drops_the_reported_generation() {
-        let mut auth = Some(auth_with_cached_token(3));
+        let mut auth: Option<Box<dyn HttpClientAuthProvider>> =
+            Some(Box::new(auth_with_cached_token(3)));
 
         apply_auth_rejection(&mut auth, Some(3));
 
@@ -545,7 +487,8 @@ mod tests {
     // not stall intake behind an unnecessary refresh.
     #[test]
     fn apply_auth_rejection_keeps_the_token_when_nothing_was_rejected() {
-        let mut auth = Some(auth_with_cached_token(3));
+        let mut auth: Option<Box<dyn HttpClientAuthProvider>> =
+            Some(Box::new(auth_with_cached_token(3)));
 
         apply_auth_rejection(&mut auth, None);
 
@@ -558,7 +501,7 @@ mod tests {
     // completion.
     #[test]
     fn apply_auth_rejection_without_a_bound_provider_is_a_no_op() {
-        let mut auth: Option<BearerAuth> = None;
+        let mut auth: Option<Box<dyn HttpClientAuthProvider>> = None;
 
         apply_auth_rejection(&mut auth, Some(1));
 

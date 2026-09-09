@@ -18,7 +18,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::future::FutureExt;
 use futures::stream::{FuturesUnordered, StreamExt};
-use http::HeaderValue;
+use http::{HeaderName, HeaderValue};
 use linkme::distributed_slice;
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_config::node::NodeUserConfig;
@@ -29,7 +29,6 @@ use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otel_arrow_dfe_engine::error::{Error, ExporterErrorKind, format_error_sources};
 use otel_arrow_dfe_engine::exporter::ExporterWrapper;
-use otel_arrow_dfe_engine::local::capability::auth::bearer_token_provider::BearerTokenProvider;
 use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
 use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
 use otel_arrow_dfe_engine::node::NodeId;
@@ -58,7 +57,7 @@ use tonic::codec::CompressionEncoding;
 use tonic::metadata::{MetadataKey, MetadataMap, MetadataValue};
 use tonic::transport::Channel;
 
-use otel_arrow_dfe_otap::bearer_auth::{BearerAuth, BearerAuthEvents, apply_auth_rejection};
+use otel_arrow_dfe_otap::http_client_auth_provider::*;
 
 mod metrics;
 
@@ -67,16 +66,16 @@ use metrics::{OtlpGrpcExporterErrorType, OtlpGrpcExporterMetrics};
 /// The URN for the OTLP gRPC exporter
 pub const OTLP_EXPORTER_URN: &str = "urn:otel:exporter:otlp_grpc";
 
-/// Raises the shared bearer-auth warnings under this exporter's event namespace.
-const GRPC_BEARER_AUTH_EVENTS: BearerAuthEvents = BearerAuthEvents {
-    invalid_token: |error| {
-        otel_warn!("otlp.exporter.grpc.invalid_bearer_token", error = %error);
+/// Raises the shared auth warnings under this exporter's event namespace.
+const GRPC_AUTH_EVENTS: HttpClientAuthProviderEvents = HttpClientAuthProviderEvents {
+    invalid: |error| {
+        otel_warn!("otlp.exporter.grpc.invalid_auth", error = %error);
     },
-    token_stream_closed: || {
+    stream_closed: || {
         otel_warn!(
-            "otlp.exporter.grpc.token_stream_closed",
-            message = "bearer token provider closed its stream; \
-                no further token refreshes will arrive"
+            "otlp.exporter.grpc.auth_stream_closed",
+            message = "auth provider closed its stream; \
+                no further auth refreshes will arrive"
         );
     },
 };
@@ -110,11 +109,10 @@ pub(crate) const fn default_num_connections() -> usize {
 pub struct OTLPExporter {
     config: Config,
     metrics: OtlpGrpcExporterMetrics,
-    /// Optional bearer token provider resolved from the
-    /// `bearer_token_provider` capability. When bound, a fresh
-    /// `authorization: Bearer <token>` is injected on every outgoing request;
-    /// when absent, the exporter behaves exactly as before.
-    token_provider: Option<Box<dyn BearerTokenProvider>>,
+    /// Optional auth provider resolved from capabilities. When bound,
+    /// authentication is injected on every outgoing request; when absent, the
+    /// exporter behaves exactly as before.
+    auth_provider: Option<Box<dyn HttpClientAuthProvider>>,
 }
 
 /// Declare the OTLP Exporter as a local exporter factory
@@ -128,16 +126,8 @@ pub static OTLP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
              node_config: Arc<NodeUserConfig>,
              exporter_config: &ExporterConfig,
              capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
-        // Optionally resolve a bound bearer token provider. Absent binding keeps
-        // the default (no-auth) behavior; a bound provider (e.g. the
-        // `oauth2_client_auth` extension) supplies refreshed OAuth tokens.
-        let token_provider = capabilities
-            .optional_local::<otel_arrow_dfe_engine::capability::auth::bearer_token_provider::BearerTokenProvider>()
-            .map_err(|e| otel_arrow_dfe_config::error::Error::InvalidUserConfig {
-                error: e.to_string(),
-            })?;
         Ok(ExporterWrapper::local(
-            OTLPExporter::from_config(pipeline, &node_config.config, token_provider)?,
+            OTLPExporter::from_config(pipeline, &node_config.config, capabilities)?,
             node,
             node_config,
             exporter_config,
@@ -171,7 +161,7 @@ impl OTLPExporter {
     pub fn from_config(
         pipeline_ctx: PipelineContext,
         config: &serde_json::Value,
-        token_provider: Option<Box<dyn BearerTokenProvider>>,
+        capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
     ) -> Result<Self, otel_arrow_dfe_config::error::Error> {
         let metrics = OtlpGrpcExporterMetrics::register(&pipeline_ctx);
 
@@ -184,7 +174,12 @@ impl OTLPExporter {
         Ok(Self {
             config,
             metrics,
-            token_provider,
+            auth_provider: new_http_client_auth_provider(
+                capabilities,
+                HttpClientAuthProviders::BEARER_TOKEN
+                    | HttpClientAuthProviders::API_KEY
+                    | HttpClientAuthProviders::BASIC,
+            )?,
         })
     }
 }
@@ -266,14 +261,11 @@ impl Exporter<OtapPdata> for OTLPExporter {
         let mut inflight_exports = InFlightExports::new();
         let mut pending_msg: Option<(OtapPdata, Instant)> = None;
 
-        // Consumer-side bearer-token adapter, if a provider is bound. It owns
-        // the token subscription, the cached `authorization` header, and token
-        // usability; the loop below stays auth-agnostic -- it only asks whether
-        // it may send and stamps the header the adapter hands back.
-        let mut auth = self
-            .token_provider
-            .take()
-            .map(|provider| BearerAuth::new(provider, GRPC_BEARER_AUTH_EVENTS));
+        // Consumer-side auth adapter, if a provider is bound. It owns the auth
+        // subscription, the cached `Authorization` header, and usability; the
+        // loop below stays auth-agnostic -- it only asks whether it may send
+        // and stamps the header the adapter hands back.
+        let mut auth = self.auth_provider.take();
 
         // Timer that fires when the cached token crosses its usability margin.
         // Hoisted out of the loop and re-armed only when the deadline actually
@@ -317,13 +309,13 @@ impl Exporter<OtapPdata> for OTLPExporter {
             // the extension's readiness probe holds data-path startup until the
             // first publish, and its watch stream stays live while we hold the
             // provider handle -- so waiting (not dropping) is always correct here.
-            let accepting_pdata = auth.as_ref().is_none_or(BearerAuth::is_ready);
+            let accepting_pdata = auth.as_ref().is_none_or(|a| a.is_ready());
 
             // Instant at which a currently-usable token crosses the usability
             // margin. Used to wake the loop so `accepting_pdata` re-evaluates
             // (and gates) before a near-expiry batch is admitted, since the recv
             // arm below may already be parked when the margin is reached.
-            let token_margin_deadline = auth.as_ref().and_then(BearerAuth::refresh_deadline);
+            let token_margin_deadline = auth.as_ref().and_then(|a| a.refresh_deadline());
             if token_margin_deadline != armed_margin_deadline {
                 if let Some(deadline) = token_margin_deadline {
                     margin_sleep
@@ -371,10 +363,10 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     // while the guard holds; it pends rather than panics.
                     () = async {
                         match auth.as_mut() {
-                            Some(a) => a.poll_refresh().await,
+                            Some(a) => a.poll_refresh(&GRPC_AUTH_EVENTS).await,
                             None => std::future::pending().await,
                         }
-                    }, if auth.as_ref().is_some_and(BearerAuth::is_active) => {
+                    }, if auth.as_ref().is_some_and(|a| a.is_active()) => {
                         // A refresh was drained (the adapter caches it and logs any
                         // anomaly); loop to re-evaluate intake readiness.
                         continue;
@@ -432,7 +424,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                         );
                         let reason = auth
                             .as_ref()
-                            .map_or("no usable bearer token", BearerAuth::not_ready_reason);
+                            .map_or("no usable bearer token", |a| a.not_ready_reason());
                         nack_without_usable_token(
                             pdata,
                             reason,
@@ -508,11 +500,13 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     // token it was built from. The generation is echoed back on
                     // completion so an UNAUTHENTICATED response can be matched to the
                     // exact token used and a stale rejection ignored.
-                    let (auth_header, token_generation) =
-                        match auth.as_ref().and_then(BearerAuth::header) {
-                            Some((header, generation)) => (Some(header), Some(generation)),
-                            None => (None, None),
-                        };
+                    let (auth_header, token_generation) = match auth
+                        .as_ref()
+                        .and_then(|a| a.header())
+                    {
+                        Some((name, value, generation)) => (Some((name, value)), Some(generation)),
+                        None => (None, None),
+                    };
 
                     // Build gRPC metadata from configured static headers, any
                     // propagated transport headers, and the refreshed bearer
@@ -1090,7 +1084,7 @@ fn build_grpc_metadata(
     effect_handler: &EffectHandler<OtapPdata>,
     context: &Context,
     static_metadata: Option<&MetadataMap>,
-    auth_header: Option<HeaderValue>,
+    auth_header: Option<(HeaderName, HeaderValue)>,
 ) -> Option<MetadataMap> {
     let propagation = effect_handler
         .propagation_policy()
@@ -1173,7 +1167,7 @@ fn build_grpc_metadata(
     // avoids re-validating and copying the token bytes on every request.
     if let Some(auth_header) = auth_header {
         let mut headers = metadata.into_headers();
-        let _ = headers.insert(http::header::AUTHORIZATION, auth_header);
+        let _ = headers.insert(auth_header.0, auth_header.1);
         metadata = MetadataMap::from_headers(headers);
     }
 
@@ -1423,6 +1417,7 @@ mod tests {
     use super::*;
 
     use otel_arrow_dfe_config::node::NodeUserConfig;
+    use otel_arrow_dfe_engine::local::capability::auth::bearer_token_provider::BearerTokenProvider;
     use otel_arrow_dfe_otap::bearer_auth::test_support::MockTokenProvider;
     use std::collections::HashMap;
 
@@ -1676,7 +1671,7 @@ mod tests {
                     num_connections: default_num_connections(),
                 },
                 metrics: OtlpGrpcExporterMetrics::register(&pipeline_ctx),
-                token_provider: None,
+                auth_provider: None,
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -1801,7 +1796,7 @@ mod tests {
                     num_connections: default_num_connections(),
                 },
                 metrics: OtlpGrpcExporterMetrics::register(&pipeline_ctx),
-                token_provider: None,
+                auth_provider: None,
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -1930,7 +1925,7 @@ mod tests {
                     num_connections: default_num_connections(),
                 },
                 metrics: OtlpGrpcExporterMetrics::register(&pipeline_ctx),
-                token_provider: Some(Box::new(provider)),
+                auth_provider: Some(provider.into()),
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -2080,7 +2075,7 @@ mod tests {
                     num_connections: default_num_connections(),
                 },
                 metrics: OtlpGrpcExporterMetrics::register(&pipeline_ctx),
-                token_provider: Some(Box::new(MockTokenProvider::never_publishes())),
+                auth_provider: Some(MockTokenProvider::never_publishes().into()),
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -2198,7 +2193,7 @@ mod tests {
                     num_connections: default_num_connections(),
                 },
                 metrics: OtlpGrpcExporterMetrics::register(&pipeline_ctx),
-                token_provider: None,
+                auth_provider: None,
             },
             node_id.clone(),
             node_config,
@@ -2771,6 +2766,11 @@ mod tests {
         let node_id = test_node(test_runtime.config().name.clone());
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let auth_provider = token_provider.map(|provider| {
+            let a: Box<dyn HttpClientAuthProvider> =
+                Box::new(new_http_client_auth_provider_from_token_provider(provider));
+            a
+        });
         let mut exporter = ExporterWrapper::local(
             OTLPExporter {
                 config: Config {
@@ -2783,7 +2783,7 @@ mod tests {
                     num_connections: default_num_connections(),
                 },
                 metrics: OtlpGrpcExporterMetrics::register(&pipeline_ctx),
-                token_provider,
+                auth_provider,
             },
             node_id.clone(),
             node_config,
@@ -3389,7 +3389,10 @@ mod tests {
             &handler,
             &context,
             None,
-            Some(HeaderValue::from_static("Bearer refreshed")),
+            Some((
+                http::header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer refreshed"),
+            )),
         )
         .expect("a cached bearer token must produce request metadata");
 
@@ -3430,7 +3433,10 @@ mod tests {
             &handler,
             &context,
             Some(&static_metadata),
-            Some(HeaderValue::from_static("Bearer refreshed")),
+            Some((
+                http::header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer refreshed"),
+            )),
         )
         .expect("should produce metadata");
 
@@ -3460,8 +3466,13 @@ mod tests {
         let mut token = HeaderValue::from_static("Bearer refreshed");
         token.set_sensitive(true);
 
-        let metadata = build_grpc_metadata(&handler, &context, None, Some(token))
-            .expect("a cached bearer token must produce request metadata");
+        let metadata = build_grpc_metadata(
+            &handler,
+            &context,
+            None,
+            Some((http::header::AUTHORIZATION, token)),
+        )
+        .expect("a cached bearer token must produce request metadata");
 
         assert!(
             metadata

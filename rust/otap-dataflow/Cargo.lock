@@ -7636,6 +7636,7 @@ dependencies = [
  "azure_core 1.2.0-beta.1",
  "azure_identity 1.1.0-beta.1",
  "base64 0.23.1",
+ "bitflags 2.13.1",
  "bytes",
  "cfg-if",
  "flate2",
