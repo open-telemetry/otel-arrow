@@ -152,6 +152,21 @@ fn write_forecast(path: &Path, packages: &[ForecastPackage]) -> anyhow::Result<(
         .with_context(|| format!("failed to write forecast to {}", path.display()))
 }
 
+fn record_lookup_failure(
+    path: &Path,
+    forecast: &mut Vec<ForecastPackage>,
+    package: &PublishPackage,
+    registry_state: &'static str,
+) -> anyhow::Result<()> {
+    forecast.push(ForecastPackage {
+        name: package.name.clone(),
+        version: package.version.clone(),
+        registry_state,
+        expected_action: "Blocked",
+    });
+    write_forecast(path, forecast)
+}
+
 fn load_plan() -> anyhow::Result<PublishPlan> {
     let output = Command::new("cargo")
         .args(["metadata", "--no-deps", "--format-version", "1"])
@@ -379,9 +394,27 @@ fn preflight(expected_version: &str, forecast_path: Option<&Path>) -> anyhow::Re
     }
 
     for package in &plan.packages {
-        let version = crates_io_version(&package.name, &package.version)?;
+        let version = match crates_io_version(&package.name, &package.version) {
+            Ok(version) => version,
+            Err(error) => {
+                if let Some(path) = forecast_path {
+                    record_lookup_failure(path, &mut forecast, package, "Version lookup failed")?;
+                }
+                return Err(error);
+            }
+        };
         if let Some(path) = forecast_path {
-            let crate_exists = version.is_some() || crates_io_crate_exists(&package.name)?;
+            let crate_exists = if version.is_some() {
+                true
+            } else {
+                match crates_io_crate_exists(&package.name) {
+                    Ok(crate_exists) => crate_exists,
+                    Err(error) => {
+                        record_lookup_failure(path, &mut forecast, package, "Crate lookup failed")?;
+                        return Err(error);
+                    }
+                }
+            };
             forecast.push(forecast_package(
                 package,
                 expected_version,
@@ -1030,6 +1063,49 @@ mod tests {
 
         assert_eq!(forecast.registry_state, "Version yanked");
         assert_eq!(forecast.expected_action, "Blocked");
+    }
+
+    /// Scenario: a registry lookup fails after earlier packages were forecast successfully.
+    /// Guarantees: the report retains earlier rows and adds the failed package as blocked.
+    #[test]
+    fn forecast_preserves_report_on_lookup_failure() {
+        let path = std::env::temp_dir().join(format!(
+            "otel-arrow-crates-publish-forecast-{}.json",
+            std::process::id()
+        ));
+        let mut forecast = vec![ForecastPackage {
+            name: "otel-arrow-dfe-config".to_owned(),
+            version: "0.55.0".to_owned(),
+            registry_state: "Version present",
+            expected_action: "Skip after preflight verification",
+        }];
+        let failed_package = PublishPackage {
+            name: "otel-arrow-dfe-otap".to_owned(),
+            version: "0.55.0".to_owned(),
+            has_publish_dependencies: true,
+        };
+
+        record_lookup_failure(
+            &path,
+            &mut forecast,
+            &failed_package,
+            "Version lookup failed",
+        )
+        .expect("lookup failure should be written to the forecast");
+
+        let report = std::fs::read_to_string(&path).expect("forecast should be readable");
+        let report: serde_json::Value =
+            serde_json::from_str(&report).expect("forecast should contain valid JSON");
+        let packages = report["packages"]
+            .as_array()
+            .expect("forecast should contain packages");
+        assert_eq!(packages.len(), 2);
+        assert_eq!(packages[0]["name"], "otel-arrow-dfe-config");
+        assert_eq!(packages[1]["name"], "otel-arrow-dfe-otap");
+        assert_eq!(packages[1]["registry_state"], "Version lookup failed");
+        assert_eq!(packages[1]["expected_action"], "Blocked");
+
+        std::fs::remove_file(path).expect("forecast should be removable");
     }
 
     /// Scenario: crates.io returns success for a crate lookup.
