@@ -267,10 +267,9 @@ Every receiver implementation should follow this shape:
 ```rust
 let completed = self.metrics.boundary.processing().run(|processing| {
     // Component-specific: classify, decode, validate, or otherwise process the request.
-    let payload_size = request.encoded_len();
+    processing.set_payload_size(|| request.encoded_len());
     let decoded = self.decode(request)?;
     processing.set_signal(decoded.signal_type());
-    processing.set_payload_size(payload_size);
     Ok(decoded)
 });
 
@@ -306,7 +305,7 @@ let completed = self
         // Component-specific: encode and submit one attempt.
         attempt.set_item_count(|| data.num_items() as u64);
         let encoded = self.encode(data.payload_ref())?;
-        attempt.set_payload_size(encoded.len());
+        attempt.set_payload_size(|| encoded.len());
         self.submit(encoded).await
     })
     .await;

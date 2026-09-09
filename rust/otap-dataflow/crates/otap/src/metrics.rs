@@ -193,10 +193,10 @@ impl ReceiverProcessing {
         self.signal = Some(signal);
     }
 
-    /// Sets the encoded application payload size when it becomes available.
-    pub fn set_payload_size(&mut self, payload_size: usize) {
+    /// Sets the encoded application payload size without evaluating it when disabled.
+    pub fn set_payload_size(&mut self, payload_size: impl FnOnce() -> usize) {
         if self.accepts_payload_size {
-            self.payload_size = Some(u64::try_from(payload_size).unwrap_or(u64::MAX));
+            self.payload_size = Some(u64::try_from(payload_size()).unwrap_or(u64::MAX));
         }
     }
 
@@ -419,10 +419,10 @@ impl ExporterAttempt {
         }
     }
 
-    /// Sets the encoded application payload size when it becomes available.
-    pub fn set_payload_size(&mut self, payload_size: usize) {
+    /// Sets the encoded application payload size without evaluating it when disabled.
+    pub fn set_payload_size(&mut self, payload_size: impl FnOnce() -> usize) {
         if self.accepts_payload_size {
-            self.payload_size = Some(u64::try_from(payload_size).unwrap_or(u64::MAX));
+            self.payload_size = Some(u64::try_from(payload_size()).unwrap_or(u64::MAX));
         }
     }
 
@@ -793,6 +793,7 @@ mod tests {
         let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::empty());
         let mut metrics = ExporterMetrics::register(&pipeline_ctx);
         let item_count_called = Cell::new(false);
+        let payload_size_called = Cell::new(false);
 
         let completed = metrics
             .attempt(SignalType::Logs)
@@ -801,13 +802,17 @@ mod tests {
                     item_count_called.set(true);
                     5
                 });
-                attempt.set_payload_size(128);
+                attempt.set_payload_size(|| {
+                    payload_size_called.set(true);
+                    128
+                });
                 Ok::<(), ()>(())
             })
             .await;
         metrics.record(completed).expect("attempt succeeds");
 
         assert!(!item_count_called.get());
+        assert!(!payload_size_called.get());
         let snapshots = metrics.terminal_snapshots();
         assert_eq!(snapshots.len(), 1);
         assert_eq!(snapshots[0].descriptor().name, "exporter.attempted");
@@ -830,6 +835,7 @@ mod tests {
         let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(interests);
         let mut metrics = ExporterMetrics::register(&pipeline_ctx);
         let item_count_called = Cell::new(false);
+        let payload_size_called = Cell::new(false);
 
         let completed = metrics
             .attempt(SignalType::Metrics)
@@ -838,13 +844,17 @@ mod tests {
                     item_count_called.set(true);
                     5
                 });
-                attempt.set_payload_size(128);
+                attempt.set_payload_size(|| {
+                    payload_size_called.set(true);
+                    128
+                });
                 Err::<(), ()>(())
             })
             .await;
         assert!(metrics.record(completed).is_err());
 
         assert!(item_count_called.get());
+        assert!(payload_size_called.get());
         let snapshots = metrics.terminal_snapshots();
         assert_eq!(snapshots.len(), 4);
         for metric_name in ["messages", "duration", "payload.size", "items"] {
@@ -867,14 +877,19 @@ mod tests {
     fn receiver_helper_skips_disabled_optional_measurements() {
         let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::empty());
         let mut metrics = ReceiverMetrics::register(&pipeline_ctx);
+        let payload_size_called = Cell::new(false);
 
         let completed = metrics.processing().run(|processing| {
             processing.set_signal(SignalType::Logs);
-            processing.set_payload_size(128);
+            processing.set_payload_size(|| {
+                payload_size_called.set(true);
+                128
+            });
             Ok::<(), ()>(())
         });
         metrics.record(completed).expect("processing succeeds");
 
+        assert!(!payload_size_called.get());
         let snapshots = metrics.terminal_snapshots();
         assert_eq!(snapshots.len(), 1);
         assert_eq!(snapshots[0].descriptor().name, "receiver.received");
@@ -894,14 +909,19 @@ mod tests {
         let interests = Interests::COMPONENT_DURATION | Interests::PRODUCED_CONSUMED_SIZE;
         let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(interests);
         let mut metrics = ReceiverMetrics::register(&pipeline_ctx);
+        let payload_size_called = Cell::new(false);
 
         let completed = metrics.processing().run(|processing| {
             processing.set_signal(SignalType::Traces);
-            processing.set_payload_size(128);
+            processing.set_payload_size(|| {
+                payload_size_called.set(true);
+                128
+            });
             Err::<(), ()>(())
         });
         assert!(metrics.record(completed).is_err());
 
+        assert!(payload_size_called.get());
         let snapshots = metrics.terminal_snapshots();
         assert_eq!(snapshots.len(), 3);
         assert!(snapshots.iter().any(|snapshot| {
