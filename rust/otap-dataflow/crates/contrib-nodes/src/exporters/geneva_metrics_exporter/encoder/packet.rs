@@ -124,6 +124,12 @@ pub fn encode(packet: &Packet) -> Result<Vec<u8>, EncodeError> {
     Ok(writer.finish())
 }
 
+/// Validates one metric against packet-level encoding constraints.
+pub fn validate_metric(metric: &Metric, current_time_bucket: u64) -> Result<(), EncodeError> {
+    validate_timestamp("packet", current_time_bucket, 0)?;
+    validate_metric_for_packet(0, metric, current_time_bucket)
+}
+
 fn validate_metric_for_packet(
     metric_index: usize,
     metric: &Metric,

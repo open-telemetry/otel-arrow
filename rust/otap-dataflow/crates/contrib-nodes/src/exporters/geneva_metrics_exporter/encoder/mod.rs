@@ -11,7 +11,7 @@ mod packet;
 mod writer;
 
 pub use model::*;
-pub use packet::encode;
+pub use packet::{encode, validate_metric};
 
 #[cfg(test)]
 mod test_support;
