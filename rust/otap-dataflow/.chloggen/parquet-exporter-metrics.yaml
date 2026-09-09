@@ -4,4 +4,4 @@ note: >-
   Migrated parquet exporter telemetry from flat counters to dimensioned metric populations with enum attributes.
 issues: [3530]
 subtext: |
-  Migration: Update queries: flat file metrics -> files{operation}, rows_written -> rows.written.
+  Migration: Update queries: flat file metrics -> files.count{operation}, rows_written -> rows.written.

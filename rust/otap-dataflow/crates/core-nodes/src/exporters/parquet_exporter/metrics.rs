@@ -47,7 +47,7 @@ pub struct ParquetExporterFileAttributes {
 )]
 #[derive(Debug, Default, Clone)]
 pub struct ParquetExporterFileMetrics {
-    /// Number of Parquet files processed (across all payload types and partitions).
+    /// Number of Parquet file lifecycle and flush operations.
     #[metric(unit = "{file}")]
     pub count: Counter<u64>,
 }
@@ -91,7 +91,7 @@ impl ParquetExporterMetrics {
     pub fn terminal_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
         let mut snapshots = self.files.terminal_snapshots();
         if self.rows.needs_flush() {
-            snapshots.push(self.rows.snapshot());
+            snapshots.extend(self.rows.terminal_snapshots());
         }
         snapshots
     }
