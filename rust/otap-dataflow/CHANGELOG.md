@@ -37,7 +37,7 @@ changes. See [`RELEASING.md`](../../RELEASING.md) for the versioning policy.
   system CA trust pool. Endpoints must use the `wss://` scheme when TLS is enabled.
 
 - `observability`: Internal telemetry logs batching ([#1902](https://github.com/open-telemetry/otel-arrow/issues/1902))
-  Configure receiver logs.otlp min_size, max_size, and sizer plus logs.max_batch_duration; defaults are 64 KiB, 2 MiB, bytes, and 200 ms.
+  Configure internal telemetry receiver `logs.otlp.min_size`, `logs.otlp.max_size`, and `logs.otlp.sizer`, plus `logs.max_batch_duration`; defaults are 64 KiB, 2 MiB, bytes, and 200 ms.
 
 - `pipeline`: Add Syslog decoding for Kafka log topics, including RFC 3164, RFC 5424, and embedded CEF messages. ([#3837](https://github.com/open-telemetry/otel-arrow/issues/3837))
   Set a logs signal encoding to `syslog`, or use a `MessageFormat: syslog` Kafka header. Each Kafka record must contain one complete Syslog message.
@@ -61,7 +61,7 @@ changes. See [`RELEASING.md`](../../RELEASING.md) for the versioning policy.
 
 - `pipeline`: Reject invalid traffic generator receiver settings during configuration loading and live reconfiguration by validating max_batch_size to be strictly positive and preventing all-zero-weight config. ([#3569](https://github.com/open-telemetry/otel-arrow/issues/3569))
   Invalid settings now produce an invalid-user-configuration error before the receiver starts.
-- `query-engine`: fix invalid ID column encoding when inserting new attributes when no prior attributes existed ([#3985](https://github.com/open-telemetry/otel-arrow/issues/3985))
+- `query-engine`: Fix invalid ID column encoding when inserting new attributes when no prior attributes existed ([#3985](https://github.com/open-telemetry/otel-arrow/issues/3985))
 
 <!-- previous-version -->
 
