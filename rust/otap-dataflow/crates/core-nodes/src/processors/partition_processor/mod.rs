@@ -1272,10 +1272,7 @@ mod test {
                 let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
                     resource_logs: vec![ResourceLogs::new(
                         Resource::default(),
-                        vec![ScopeLogs::new(
-                            InstrumentationScope::default(),
-                            log_records,
-                        )],
+                        vec![ScopeLogs::new(InstrumentationScope::default(), log_records)],
                     )],
                 }));
                 let expected_num_items = OtapPayload::from(otap_batch.clone()).num_items();
@@ -1380,18 +1377,11 @@ mod test {
                 let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
                     resource_logs: vec![ResourceLogs::new(
                         Resource::default(),
-                        vec![ScopeLogs::new(
-                            InstrumentationScope::default(),
-                            log_records,
-                        )],
+                        vec![ScopeLogs::new(InstrumentationScope::default(), log_records)],
                     )],
                 }));
-                let pdata = create_pdata_with_subscriber(
-                    otap_batch,
-                    Interests::NACKS,
-                    1,
-                    upstream_node_id,
-                );
+                let pdata =
+                    create_pdata_with_subscriber(otap_batch, Interests::NACKS, 1, upstream_node_id);
 
                 ctx.process(Message::PData(pdata))
                     .await
