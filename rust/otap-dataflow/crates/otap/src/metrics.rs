@@ -184,9 +184,13 @@ impl ReceiverProcessing {
         self.signal = Some(signal);
     }
 
-    /// Classifies an error returned by the processing closure as refused.
-    pub fn mark_refused(&mut self) {
+    /// Classifies and returns an error from the processing closure as refused.
+    ///
+    /// Pass the returned error directly to `Err`. Other errors are classified
+    /// as failures, while successful results are classified as successes.
+    pub fn refused<E>(&mut self, error: E) -> E {
         self.error_outcome = Outcome::Refused;
+        error
     }
 
     /// Sets the encoded application payload size without evaluating it when disabled.
@@ -197,6 +201,9 @@ impl ReceiverProcessing {
     }
 
     /// Runs receiver-local processing and captures its terminal result.
+    ///
+    /// `Ok((signal, value))` records success. `Err(error)` records failure
+    /// unless the error was returned by [`Self::refused`].
     #[must_use = "the completed receiver processing observation must be recorded"]
     pub fn run<T, E>(
         mut self,
@@ -406,9 +413,13 @@ impl ExporterMetrics {
 }
 
 impl ExporterAttempt {
-    /// Classifies an error returned by the attempt closure as refused.
-    pub fn mark_refused(&mut self) {
+    /// Classifies and returns an error from the attempt closure as refused.
+    ///
+    /// Pass the returned error directly to `Err`. Other errors are classified
+    /// as failures, while successful results are classified as successes.
+    pub fn refused<E>(&mut self, error: E) -> E {
         self.error_outcome = Outcome::Refused;
+        error
     }
 
     /// Sets the signal item count without evaluating it when disabled.
@@ -426,6 +437,9 @@ impl ExporterAttempt {
     }
 
     /// Runs one exporter attempt and captures its terminal result.
+    ///
+    /// `Ok(value)` records success. `Err(error)` records failure unless the
+    /// error was returned by [`Self::refused`].
     #[must_use = "the completed exporter attempt must be recorded"]
     pub async fn run<T, E>(
         mut self,
@@ -1008,9 +1022,8 @@ mod tests {
 
         let completed = metrics.processing().run(|processing| {
             processing.set_signal(SignalType::Logs);
-            processing.mark_refused();
             processing.set_payload_size_with(|| 128);
-            Err::<(SignalType, ()), _>("capacity")
+            Err::<(SignalType, ()), _>(processing.refused("capacity"))
         });
         assert_eq!(metrics.record(completed), Err("capacity"));
 
@@ -1035,10 +1048,7 @@ mod tests {
 
         let completed = metrics
             .attempt(SignalType::Metrics)
-            .run(async |attempt| {
-                attempt.mark_refused();
-                Err::<(), _>("policy")
-            })
+            .run(async |attempt| Err::<(), _>(attempt.refused("policy")))
             .await;
         assert_eq!(metrics.record(completed), Err("policy"));
         let snapshots = metrics.terminal_snapshots();
