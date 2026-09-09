@@ -1,0 +1,6 @@
+change_type: enhancement
+component: pipeline
+note: Add agent-fed bearer-token authentication to the OTLP/HTTP exporter.
+issues: [3275]
+subtext: |
+  Bind `agent_fed_credential_provider` to use host-managed rotating credentials. Existing bearer-provider and unauthenticated configurations are unchanged.
