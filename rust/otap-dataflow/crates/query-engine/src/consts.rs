@@ -12,6 +12,7 @@ pub(crate) const ENDS_WITH_FUNC_NAME: &str = "ends_with";
 pub(crate) const FORMAT_DATETIME_FUNC_NAME: &str = "format_datetime";
 pub(crate) const LOG_FUNC_NAME: &str = "log10";
 pub(crate) const LTRIM_FUNC_NAME: &str = "ltrim";
+pub(crate) const NOW_FUNC_NAME: &str = "now";
 pub(crate) const REGEXP_SUBSTR_FUNC_NAME: &str = "regexp_substr";
 pub(crate) const RTRIM_FUNC_NAME: &str = "rtrim";
 pub(crate) const SHA256_FUNC_NAME: &str = "sha256";

@@ -46,6 +46,12 @@ config:
 
   # Exponential backoff multiplier (default: 1.5).
   multiplier: 2.0
+
+  # Action applied to the final NACK when retries are exhausted or otherwise
+  # terminated (default: propagate_transient).
+  #   propagate_transient: leave the final NACK unchanged.
+  #   mark_permanent:      force the final NACK to be permanent to notify upstream nodes.
+  exhaustion_action: propagate_transient
 ```
 
 ## Telemetry
@@ -56,9 +62,9 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 ### Metric Sets
 
 Message outcomes are reported by the engine through
-`node.consumer.consumed.messages` and `node.producer.produced.messages`.
+`node.input.messages` and `node.output.messages`.
 Per-signal item outcomes are available through
-`node.consumer.consumed.items` and `node.producer.produced.items` when detailed
+`node.input.items` and `node.output.items` when detailed
 runtime metrics are enabled or the node opts in with
 `policies.telemetry.item_counts`. The processor does not duplicate these
 engine-owned metrics.

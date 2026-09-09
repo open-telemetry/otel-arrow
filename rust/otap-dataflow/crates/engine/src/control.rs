@@ -190,6 +190,10 @@ pub enum NackCause {
     RouteClosed,
     /// The node had to refuse locally parked work because shutdown started.
     NodeShutdown,
+    /// The request was permanently refused due to its content or a policy
+    /// decision (client error). Non-retryable; the client must change the
+    /// request or its configuration.
+    Refused,
 }
 
 /// The NACK message.
@@ -710,10 +714,10 @@ impl<PData> ControlSenders<PData> {
 
         for typed_sender in self.senders.values() {
             // Apply filter if specified
-            if let Some(filter_type) = node_type_filter {
-                if typed_sender.node_type != filter_type {
-                    continue;
-                }
+            if let Some(filter_type) = node_type_filter
+                && typed_sender.node_type != filter_type
+            {
+                continue;
             }
 
             let shutdown_msg = NodeControlMsg::Shutdown {

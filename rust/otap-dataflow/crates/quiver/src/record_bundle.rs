@@ -240,6 +240,16 @@ pub trait RecordBundle {
     fn item_count_is_known(&self) -> bool {
         true
     }
+
+    /// Returns the authoritative logical byte size of this bundle.
+    ///
+    /// This describes the current logical payload representation, not its
+    /// encoded WAL size, finalized segment-file size, or retained allocation
+    /// capacity. Returns `None` when the adapter cannot measure it exactly.
+    #[must_use]
+    fn byte_count(&self) -> Option<u64> {
+        None
+    }
 }
 
 #[cfg(test)]

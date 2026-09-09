@@ -12,6 +12,7 @@ pub mod config;
 pub mod error;
 /// Kafka header extraction and injection into telemetry payloads.
 pub mod headers;
+mod identity;
 /// Implementation of the metrics to collect from the kafka receiver
 pub mod metrics;
 /// Per-offset tracking for Kafka consumer offset management.
@@ -20,3 +21,4 @@ pub mod offset_tracker;
 pub mod rebalance;
 /// Implementation of the main kafka receiver
 pub mod receiver;
+mod retry;

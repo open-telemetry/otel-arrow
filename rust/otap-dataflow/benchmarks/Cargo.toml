@@ -12,7 +12,8 @@ rust-version.workspace = true
 arrow.workspace = true
 tokio.workspace = true
 serde_json.workspace = true
-otel-arrow-dfe-core-nodes = { workspace = true, features = ["dev-tools", "bench"] }
+otel-arrow-dfe-core-nodes = { workspace = true, features = ["bench"] }
+otel-arrow-dfe-dev-nodes = { workspace = true }
 otel-arrow-dfe-otap = { workspace = true }
 
 [dev-dependencies]

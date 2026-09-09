@@ -49,6 +49,18 @@ use std::time::{Duration, Instant, SystemTime};
 /// URN for the RetryProcessor processor
 pub const RETRY_PROCESSOR_URN: &str = "urn:otel:processor:retry";
 
+/// Action taken on the final NACK when the retry processor stops retrying a
+/// PData message (retries exhausted or otherwise terminated).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExhaustionAction {
+    /// Leave the final NACK's permanent flag unchanged (default).
+    #[default]
+    PropagateTransient,
+    /// Force the final NACK to be permanent so upstream nodes do not retry it.
+    MarkPermanent,
+}
+
 /// Configuration for the retry processor. Modeled exactly on
 /// https://github.com/open-telemetry/opentelemetry-collector/blob/main/exporter/exporterhelper/README.md#retry-on-failure.
 ///
@@ -85,6 +97,12 @@ pub struct RetryConfig {
     /// Multiplier for the retry interval.
     #[serde(default = "default_multiplier")]
     pub multiplier: f64,
+
+    /// Action applied to the final NACK when the processor stops retrying.
+    /// Defaults to `propagate_transient`, which leaves the NACK unchanged.
+    /// `mark_permanent` forces the final NACK to be permanent.
+    #[serde(default)]
+    pub exhaustion_action: ExhaustionAction,
 }
 
 // These defaults are copied from the Collector (exporterhelper) retry sender.
@@ -119,6 +137,7 @@ impl Default for RetryConfig {
             initial_interval: default_initial_interval(),
             max_elapsed_time: default_max_elapsed_time(),
             multiplier: default_multiplier(),
+            exhaustion_action: ExhaustionAction::default(),
         }
     }
 }
@@ -449,13 +468,23 @@ impl RetryProcessor {
         Ok(())
     }
 
+    /// Applies the configured exhaustion action to a final NACK before it is
+    /// handed back to the engine. `mark_permanent` forces the NACK to be
+    /// permanent; `propagate_transient` leaves it unchanged.
+    fn apply_exhaustion_action(&self, nack: &mut NackMsg<OtapPdata>) {
+        if self.config.exhaustion_action == ExhaustionAction::MarkPermanent {
+            nack.permanent = true;
+        }
+    }
+
     async fn terminate_nack(
         &mut self,
-        nack: NackMsg<OtapPdata>,
+        mut nack: NackMsg<OtapPdata>,
         signal: SignalType,
         reason: RetryTerminationReason,
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
+        self.apply_exhaustion_action(&mut nack);
         // Count only after the terminal NACK is handed back to the engine.
         effect_handler.notify_nack(nack).await?;
         self.metrics.record_message_terminated(signal, reason);
@@ -569,9 +598,9 @@ impl RetryProcessor {
                 Ok(())
             }
             Err(refused) => {
-                effect_handler
-                    .notify_nack(NackMsg::new("cannot requeue", refused))
-                    .await?;
+                let mut nack = NackMsg::new("cannot requeue", refused);
+                self.apply_exhaustion_action(&mut nack);
+                effect_handler.notify_nack(nack).await?;
                 Ok(())
             }
         }
@@ -702,8 +731,9 @@ impl RetryProcessor {
 #[cfg(test)]
 mod test {
     use super::{
-        RETRY_PROCESSOR_URN, RetryConfig, RetryMessageMetrics, RetryOperationalMetrics,
-        RetryTerminationAttributes, RetryTerminationReason, SignalAttributes,
+        ExhaustionAction, RETRY_PROCESSOR_URN, RetryConfig, RetryMessageMetrics,
+        RetryOperationalMetrics, RetryTerminationAttributes, RetryTerminationReason,
+        SignalAttributes,
     };
     use otel_arrow_dfe_channel::mpsc::Channel;
     use otel_arrow_dfe_config::{SignalType, node::NodeUserConfig};
@@ -868,6 +898,34 @@ mod test {
         assert_eq!(cfg, RetryConfig::default());
     }
 
+    /// Scenario: A configuration omits the `exhaustion_action` field.
+    /// Guarantees: The processor defaults to `propagate_transient`.
+    #[test]
+    fn test_exhaustion_action_defaults_to_propagate_transient() {
+        let cfg: RetryConfig = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(cfg.exhaustion_action, ExhaustionAction::PropagateTransient);
+        assert_eq!(
+            ExhaustionAction::default(),
+            ExhaustionAction::PropagateTransient
+        );
+    }
+
+    /// Scenario: Both `exhaustion_action` variants are parsed from their wire names.
+    /// Guarantees: `propagate_transient` and `mark_permanent` map to the matching enum values.
+    #[test]
+    fn test_exhaustion_action_deserializes_both_variants() {
+        let propagate: RetryConfig =
+            serde_json::from_value(json!({ "exhaustion_action": "propagate_transient" })).unwrap();
+        assert_eq!(
+            propagate.exhaustion_action,
+            ExhaustionAction::PropagateTransient
+        );
+
+        let permanent: RetryConfig =
+            serde_json::from_value(json!({ "exhaustion_action": "mark_permanent" })).unwrap();
+        assert_eq!(permanent.exhaustion_action, ExhaustionAction::MarkPermanent);
+    }
+
     /// Scenario: Retry intervals contain valid fractional-second values.
     /// Guarantees: Deserialization preserves subsecond precision and the configured multiplier.
     #[test]
@@ -886,6 +944,7 @@ mod test {
                 max_interval: Duration::new(1, 750000000),
                 max_elapsed_time: Duration::new(9, 900000000),
                 multiplier: 1.999,
+                exhaustion_action: ExhaustionAction::PropagateTransient,
             }
         );
     }
@@ -961,6 +1020,12 @@ mod test {
         })
     }
 
+    fn create_test_config_mark_permanent() -> serde_json::Value {
+        let mut cfg = create_test_config();
+        cfg["exhaustion_action"] = json!("mark_permanent");
+        cfg
+    }
+
     #[derive(Debug, Default, PartialEq, Eq)]
     struct RetryMetricSummary {
         retries_scheduled: u64,
@@ -1008,10 +1073,10 @@ mod test {
         // For the success case, we expect success with or without a
         // working clock.  Test both ways.
         for i in 0..3 {
-            test_retry_processor(create_test_config(), i, None, true, false, None)
+            test_retry_processor(create_test_config(), i, None, true, false, None, None)
         }
         for i in 0..3 {
-            test_retry_processor(create_test_config(), i, None, false, false, None)
+            test_retry_processor(create_test_config(), i, None, false, false, None, None)
         }
     }
 
@@ -1026,6 +1091,8 @@ mod test {
             true,  // working clock
             false, // retryable
             Some("deadline"),
+            // Default exhaustion action leaves the final NACK transient.
+            Some(false),
         )
     }
 
@@ -1040,6 +1107,8 @@ mod test {
             true,
             true, // permanent error
             Some("permanent_refusal"),
+            // Permanent downstream refusals stay permanent.
+            Some(true),
         )
     }
 
@@ -1056,6 +1125,40 @@ mod test {
             false, // broken clock
             false, // retryable
             Some("retry_limit"),
+            // Default exhaustion action leaves the final NACK transient.
+            Some(false),
+        )
+    }
+
+    /// Scenario: The deadline is exhausted while `exhaustion_action` is `mark_permanent`.
+    /// Guarantees: The final NACK returned upstream is marked permanent.
+    #[test]
+    fn test_retry_processor_mark_permanent_on_deadline() {
+        test_retry_processor(
+            create_test_config_mark_permanent(),
+            4,
+            Some("final retry: simulated downstream".into()),
+            true,  // working clock
+            false, // retryable
+            Some("deadline"),
+            // mark_permanent converts the final transient NACK to permanent.
+            Some(true),
+        )
+    }
+
+    /// Scenario: The retry-count limit is reached while `exhaustion_action` is `mark_permanent`.
+    /// Guarantees: The final NACK returned upstream is marked permanent.
+    #[test]
+    fn test_retry_processor_mark_permanent_on_limit() {
+        test_retry_processor(
+            create_test_config_mark_permanent(),
+            4,
+            Some("final retry: simulated".into()),
+            false, // broken clock
+            false, // retryable
+            Some("retry_limit"),
+            // mark_permanent converts the final transient NACK to permanent.
+            Some(true),
         )
     }
 
@@ -1273,6 +1376,7 @@ mod test {
         working_clock: bool,
         permanent_error: bool,
         expected_termination: Option<&'static str>,
+        expected_final_permanent: Option<bool>,
     ) {
         let pipeline_ctx = create_test_pipeline_context();
         let node = test_node("retry-processor-full-test");
@@ -1415,6 +1519,13 @@ mod test {
                                 .contains(outcome_failure.as_deref().expect("expecting nack"))
                         );
                         assert_eq!(node_id, 4444);
+
+                        if let Some(expected_permanent) = expected_final_permanent {
+                            assert_eq!(
+                                nack.permanent, expected_permanent,
+                                "final nack permanent flag mismatch"
+                            );
+                        }
 
                         let nackdata: TestCallData =
                             nack.unwind.route.calldata.try_into().expect("my calldata");

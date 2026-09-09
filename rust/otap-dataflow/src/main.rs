@@ -19,6 +19,9 @@ use otel_arrow_dfe_controller::{BuildInfo, Controller, ControllerRunOptions};
 // distributed-slice registrations (core nodes) are visible
 // in `OTAP_PIPELINE_FACTORY` at runtime.
 use otel_arrow_dfe_core_nodes as _;
+// Development nodes are omitted from builds that disable `dev-tools`.
+#[cfg(feature = "dev-tools")]
+use otel_arrow_dfe_dev_nodes as _;
 use otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY;
 // Keep this side-effect import so the experimental wasm-host crate is linked
 // and its `linkme` distributed-slice registration (the `wasm_processor`

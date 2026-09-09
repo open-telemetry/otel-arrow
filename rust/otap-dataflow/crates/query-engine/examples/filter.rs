@@ -7,7 +7,7 @@
 
 use arrow::util::pretty::print_batches;
 
-use data_engine_kql_parser::{KqlParser, Parser};
+use otel_arrow_contrib_data_engine_kql_parser::{KqlParser, Parser};
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{
     AnyValue, InstrumentationScope, KeyValue,

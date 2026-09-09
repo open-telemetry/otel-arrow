@@ -1,11 +1,11 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use data_engine_expressions::{
+use otel_arrow_contrib_data_engine_expressions::{
     ScalarExpression, SourceScalarExpression, StaticScalarExpression, StringScalarExpression,
     ValueAccessor,
 };
-use data_engine_parser_abstractions::{ParserError, to_query_location};
+use otel_arrow_contrib_data_engine_parser_abstractions::{ParserError, to_query_location};
 use pest::iterators::Pair;
 
 use crate::opl::parser::expression::{
@@ -107,11 +107,11 @@ pub(crate) fn parse_assignment_expression(
 
 #[cfg(test)]
 mod test {
-    use data_engine_expressions::{
+    use otel_arrow_contrib_data_engine_expressions::{
         IntegerScalarExpression, QueryLocation, ScalarExpression, StaticScalarExpression,
         StringScalarExpression,
     };
-    use data_engine_parser_abstractions::ParserState;
+    use otel_arrow_contrib_data_engine_parser_abstractions::ParserState;
     use pest::Parser;
 
     use super::*;

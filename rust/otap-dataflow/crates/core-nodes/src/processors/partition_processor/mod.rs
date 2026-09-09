@@ -19,7 +19,7 @@ use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_engine::config::ProcessorConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
-use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
+use otel_arrow_dfe_engine::control::{AckMsg, NackCause, NackMsg, NodeControlMsg};
 use otel_arrow_dfe_engine::error::ProcessorErrorKind;
 use otel_arrow_dfe_engine::local::processor::{EffectHandler, Processor};
 use otel_arrow_dfe_engine::message::Message;
@@ -31,7 +31,7 @@ use otel_arrow_dfe_engine::{
     MessageSourceLocalEffectHandlerExtension, ProcessorFactory, ProducerEffectHandlerExtension,
 };
 use otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES;
-use otel_arrow_dfe_otap::accessory::context::split_contexts::Contexts;
+use otel_arrow_dfe_otap::accessory::context::split_contexts::{Contexts, OutboundError};
 use otel_arrow_dfe_otap::accessory::slots::Key;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
 use otel_arrow_dfe_otap::transport_headers::{TransportHeader, ValueKind};
@@ -162,10 +162,11 @@ impl PartitionProcessor {
         if let Some(inbound) = self.contexts.clear_outbound(outbound_key) {
             // if we're in this location, we've cleared the final outbound context for some inbound
             // batch, which means we can now Ack or Nack the inbound context
-            let (context, error_reason) = inbound;
-            let pdata = OtapPdata::new(context, OtapPayload::empty(signal_type));
-            if let Some(error) = error_reason {
-                effect_handler.notify_nack(NackMsg::new(error, pdata)).await
+            let pdata = OtapPdata::new(inbound.context, OtapPayload::empty(signal_type));
+            if let Some(error) = inbound.error {
+                effect_handler
+                    .notify_nack(NackMsg::new_with_cause(error.reason, pdata, error.cause))
+                    .await
             } else {
                 effect_handler.notify_ack(AckMsg::new(pdata)).await
             }
@@ -205,8 +206,13 @@ impl Processor<OtapPdata> for PartitionProcessor {
 
                 NodeControlMsg::Nack(nack_msg) => {
                     let outbound_key: Key = nack_msg.unwind.route.calldata.try_into()?;
-                    self.contexts
-                        .set_failed_outbound(outbound_key, nack_msg.reason);
+                    self.contexts.set_failed_outbound(
+                        outbound_key,
+                        OutboundError {
+                            reason: nack_msg.reason,
+                            cause: nack_msg.cause,
+                        },
+                    );
                     self.handle_ack_nack(
                         outbound_key,
                         nack_msg.refused.signal_type(),
@@ -302,7 +308,7 @@ impl Processor<OtapPdata> for PartitionProcessor {
                         // create context key for inbound batch
                         let inbound_ctx_key = self
                             .contexts
-                            .insert_inbound(inbound_context.clone(), None)
+                            .insert_inbound(inbound_context.clone(), None, None)
                             .ok_or_else(|| otel_arrow_dfe_engine::error::Error::ProcessorError {
                                 processor: effect_handler.processor_id(),
                                 kind: ProcessorErrorKind::Other,
@@ -330,7 +336,11 @@ impl Processor<OtapPdata> for PartitionProcessor {
                                     // indicating that some partition was not emitted.
                                     self.contexts.set_failed_inbound(
                                         inbound_ctx_key,
-                                        "insufficient outbound slots for partitions".into(),
+                                        OutboundError {
+                                            reason: "insufficient outbound slots for partitions"
+                                                .into(),
+                                            cause: NackCause::RouteFull,
+                                        },
                                     );
                                 }
 
@@ -587,10 +597,12 @@ mod test {
         context: Context,
         signal_type: SignalType,
         reason: &str,
+        cause: NackCause,
     ) -> Result<(), otel_arrow_dfe_engine::error::Error> {
-        let nack = next_nack(NackMsg::new(
+        let nack = next_nack(NackMsg::new_permanent_with_cause(
             reason,
             OtapPdata::new(context, OtapPayload::empty(signal_type)),
+            cause,
         ));
         let (_, nack) = nack.unwrap();
         ctx.process(Message::Control(NodeControlMsg::Nack(nack)))
@@ -1173,6 +1185,7 @@ mod test {
                     outbound_contexts.pop().unwrap(),
                     SignalType::Logs,
                     "error happened",
+                    NackCause::Refused,
                 )
                 .await
                 .unwrap();
@@ -1183,7 +1196,8 @@ mod test {
                     PipelineCompletionMsg::DeliverNack { nack } => {
                         let (node_id, nack) = next_nack(nack).expect("expected ack subscriber");
                         assert_eq!(node_id, upstream_node_id);
-                        assert_eq!(nack.reason, "error happened")
+                        assert_eq!(nack.reason, "error happened");
+                        assert_eq!(nack.cause, NackCause::Refused);
                     }
                     other => {
                         panic!("got unexpected pipeline ctrl message {other:?}")

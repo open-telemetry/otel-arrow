@@ -185,8 +185,8 @@ pub struct NodePolicies {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NodeTelemetryPolicy {
-    /// Opt this node into per-signal produced/consumed item counts on its
-    /// `node.producer` / `node.consumer` metric sets.
+    /// Opt this node into per-signal input/output item counts on its
+    /// `node.input` / `node.output` metric sets.
     ///
     /// Off by default because counting items requires inspecting each batch,
     /// which is expensive for OTLP payloads. Only recorded when the resolved
@@ -195,8 +195,8 @@ pub struct NodeTelemetryPolicy {
     #[serde(default)]
     pub item_counts: bool,
 
-    /// Opt this node into per-signal produced/consumed logical payload size on
-    /// its `node.producer` / `node.consumer` metric sets.
+    /// Opt this node into per-signal input/output logical payload size on its
+    /// `node.input` / `node.output` metric sets.
     ///
     /// Off by default because measuring OTAP payloads requires walking their
     /// Arrow arrays and buffers. Only recorded when the resolved
@@ -362,12 +362,12 @@ impl NodeUserConfig {
 
         // Validate the selector shape inside node-level header_propagation so
         // that invalid selectors are rejected uniformly.
-        if let Some(propagation) = &self.header_propagation {
-            if let Err(e) = propagation.validate() {
-                errors.push(Error::InvalidUserConfig {
-                    error: format!("node `{node_name}`: header_propagation.default.selector: {e}"),
-                });
-            }
+        if let Some(propagation) = &self.header_propagation
+            && let Err(e) = propagation.validate()
+        {
+            errors.push(Error::InvalidUserConfig {
+                error: format!("node `{node_name}`: header_propagation.default.selector: {e}"),
+            });
         }
     }
 
@@ -446,11 +446,10 @@ pub(crate) fn redact_secret_headers(value: &mut Value) {
                         }
                         Value::Array(entries) => {
                             for entry in entries.iter_mut() {
-                                if let Value::Object(fields) = entry {
-                                    if let Some(static_value) = fields.get_mut("value") {
-                                        *static_value =
-                                            Value::String(REDACTED_HEADER_VALUE.to_owned());
-                                    }
+                                if let Value::Object(fields) = entry
+                                    && let Some(static_value) = fields.get_mut("value")
+                                {
+                                    *static_value = Value::String(REDACTED_HEADER_VALUE.to_owned());
                                 }
                             }
                             continue;

@@ -7,7 +7,6 @@
 use arrow::array::RecordBatch;
 use arrow::compute::concat_batches;
 use async_trait::async_trait;
-use data_engine_expressions::PipelineExpression;
 use datafusion::config::ConfigOptions;
 use datafusion::execution::TaskContext;
 use datafusion::execution::config::SessionConfig;
@@ -15,6 +14,7 @@ use datafusion::execution::context::SessionContext;
 use datafusion::physical_plan::common::collect;
 use datafusion::physical_plan::streaming::PartitionStream;
 use datafusion::physical_plan::{ExecutionPlan, execute_stream};
+use otel_arrow_contrib_data_engine_expressions::PipelineExpression;
 use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use std::sync::Arc;
@@ -376,11 +376,11 @@ impl Pipeline {
 mod test {
     use std::sync::Arc;
 
-    use data_engine_expressions::PipelineExpression;
+    use otel_arrow_contrib_data_engine_expressions::PipelineExpression;
 
-    use data_engine_parser_abstractions::Parser;
     use datafusion::catalog::streaming::StreamingTable;
     use datafusion::logical_expr::{col, lit};
+    use otel_arrow_contrib_data_engine_parser_abstractions::Parser;
     use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
     use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{LogRecord, LogsData};

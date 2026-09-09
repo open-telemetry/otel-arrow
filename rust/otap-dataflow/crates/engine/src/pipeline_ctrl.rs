@@ -10,8 +10,8 @@
 //! Note 2: Other runtime-control messages coordinate shutdown and completion flow.
 
 use crate::channel_metrics::{
-    ConsumedItemMetrics, ConsumedMetrics, ConsumedSizeMetrics, ProducedItemMetrics,
-    ProducedMetrics, ProducedSizeMetrics,
+    NodeInputItemMetrics, NodeInputMetrics, NodeInputSizeMetrics, NodeOutputItemMetrics,
+    NodeOutputMetrics, NodeOutputSizeMetrics,
 };
 use crate::clock;
 use crate::completion_emission_metrics::CompletionEmissionMetricsHandle;
@@ -165,17 +165,17 @@ pub(crate) struct NodeMetricHandles {
     /// Registry handle for automatic unregistration on drop.
     pub(crate) registry: TelemetryRegistryHandle,
     /// Consumed-message metrics for the node's input channel.
-    pub(crate) input: Option<MeasurementMetricSet<ConsumedMetrics>>,
+    pub(crate) input: Option<MeasurementMetricSet<NodeInputMetrics>>,
     /// Optional consumed-item metrics for the node's input channel.
-    pub(crate) input_items: Option<MeasurementMetricSet<ConsumedItemMetrics>>,
+    pub(crate) input_items: Option<MeasurementMetricSet<NodeInputItemMetrics>>,
     /// Optional consumed-size metrics for the node's input channel.
-    pub(crate) input_size: Option<MeasurementMetricSet<ConsumedSizeMetrics>>,
+    pub(crate) input_size: Option<MeasurementMetricSet<NodeInputSizeMetrics>>,
     /// Produced-message metrics indexed by output port.
-    pub(crate) outputs: Vec<MeasurementMetricSet<ProducedMetrics>>,
+    pub(crate) outputs: Vec<MeasurementMetricSet<NodeOutputMetrics>>,
     /// Optional produced-item metrics indexed by output port.
-    pub(crate) output_items: Vec<MeasurementMetricSet<ProducedItemMetrics>>,
+    pub(crate) output_items: Vec<MeasurementMetricSet<NodeOutputItemMetrics>>,
     /// Optional produced-size metrics indexed by output port.
-    pub(crate) output_size: Vec<MeasurementMetricSet<ProducedSizeMetrics>>,
+    pub(crate) output_size: Vec<MeasurementMetricSet<NodeOutputSizeMetrics>>,
     /// Completion-emission metrics for completions routed by the node.
     pub(crate) completion_emission: Option<CompletionEmissionMetricsHandle>,
 }
@@ -434,41 +434,41 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
 
             let now = clock::now();
 
-            if let Some(deadline) = shutdown_deadline {
-                if now >= deadline {
-                    shutdown_deadline_forced = true;
-                    self.runtime_control_metrics
-                        .record_shutdown_deadline_forced(now);
-                    self.event_reporter
-                        .report(EngineEvent::drain_deadline_reached(
-                            self.pipeline_key.clone(),
-                            shutdown_reason.clone(),
-                        ));
-                    if let Some(reason) = shutdown_reason.as_ref() {
-                        for node_id in self.control_senders.non_receiver_ids() {
-                            self.send(
-                                node_id,
-                                NodeControlMsg::Shutdown {
-                                    deadline,
-                                    reason: reason.clone(),
-                                },
-                            );
-                        }
-                        for node_id in pending_receivers.iter().copied() {
-                            self.send(
-                                node_id,
-                                NodeControlMsg::Shutdown {
-                                    deadline,
-                                    reason: reason.clone(),
-                                },
-                            );
-                        }
+            if let Some(deadline) = shutdown_deadline
+                && now >= deadline
+            {
+                shutdown_deadline_forced = true;
+                self.runtime_control_metrics
+                    .record_shutdown_deadline_forced(now);
+                self.event_reporter
+                    .report(EngineEvent::drain_deadline_reached(
+                        self.pipeline_key.clone(),
+                        shutdown_reason.clone(),
+                    ));
+                if let Some(reason) = shutdown_reason.as_ref() {
+                    for node_id in self.control_senders.non_receiver_ids() {
+                        self.send(
+                            node_id,
+                            NodeControlMsg::Shutdown {
+                                deadline,
+                                reason: reason.clone(),
+                            },
+                        );
                     }
-                    // Deadline-forced drain is a major lifecycle boundary; do
-                    // not wait for the periodic flush interval to surface it.
-                    self.report_runtime_control_metrics();
-                    break;
+                    for node_id in pending_receivers.iter().copied() {
+                        self.send(
+                            node_id,
+                            NodeControlMsg::Shutdown {
+                                deadline,
+                                reason: reason.clone(),
+                            },
+                        );
+                    }
                 }
+                // Deadline-forced drain is a major lifecycle boundary; do
+                // not wait for the periodic flush interval to surface it.
+                self.report_runtime_control_metrics();
+                break;
             }
 
             let next_earliest = if is_draining_ingress {
@@ -678,11 +678,11 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                     }
                 }
                 _ = async {
-                    if let Some(when) = next_earliest {
-                        if when > now {
+                    if let Some(when) = next_earliest
+                        && when > now
+                    {
                             clock::sleep_until(when).await;
                         }
-                    }
                 }, if next_earliest.is_some() => {
                     consecutive_runtime_ctrl = 0;
                     if !is_draining_ingress {
@@ -860,10 +860,10 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                 }
             }
         }
-        if self.telemetry.runtime_metrics >= MetricLevel::Normal {
-            if let Err(err) = self.report_node_metrics() {
-                otel_warn!("node.metrics.reporting.fail", error = err.to_string());
-            }
+        if self.telemetry.runtime_metrics >= MetricLevel::Normal
+            && let Err(err) = self.report_node_metrics()
+        {
+            otel_warn!("node.metrics.reporting.fail", error = err.to_string());
         }
 
         for (node_id, msg) in to_send {
@@ -1056,73 +1056,77 @@ impl<PData> PipelineCompletionMsgDispatcher<PData> {
     ) {
         let mut handles_guard = self.node_metric_handles.borrow_mut();
         if let Some(Some(handles)) = handles_guard.get_mut(node_id) {
-            if interests.contains(Interests::CONSUMER_METRICS) {
-                if let Some(input) = &mut handles.input {
-                    if let Some(signal) = signal {
-                        let outcome = match outcome {
-                            RequestOutcome::Success => Outcome::Success,
-                            RequestOutcome::Failure => Outcome::Failure,
-                            RequestOutcome::Refused => Outcome::Refused,
-                        };
-                        let input = input.with(SignalOutcomeAttributes { signal, outcome });
-                        input.consumed_messages.inc();
-                        if consumed_items > 0
-                            && let Some(input_items) = &mut handles.input_items
-                        {
-                            input_items
-                                .with(SignalOutcomeAttributes { signal, outcome })
-                                .consumed_items
-                                .add(consumed_items as u64);
-                        }
-                        if consumed_size > 0
-                            && let Some(input_size) = &mut handles.input_size
-                        {
-                            input_size
-                                .with(SignalOutcomeAttributes { signal, outcome })
-                                .consumed_size
-                                .add(consumed_size);
-                        }
-                        if route.entry_time_ns > 0 && now_ns > 0 {
-                            let duration_ns = now_ns.saturating_sub(route.entry_time_ns);
-                            input.consumed_duration_ns.record(duration_ns as f64);
-                        }
-                    }
+            if interests.contains(Interests::CONSUMER_METRICS)
+                && let Some(input) = &mut handles.input
+                && let Some(signal) = signal
+            {
+                let outcome = match outcome {
+                    RequestOutcome::Success => Outcome::Success,
+                    RequestOutcome::Failure => Outcome::Failure,
+                    RequestOutcome::Refused => Outcome::Refused,
+                };
+                let input = input.with(SignalOutcomeAttributes { signal, outcome });
+                input.messages.inc();
+                if consumed_items > 0
+                    && let Some(input_items) = &mut handles.input_items
+                {
+                    input_items
+                        .with(SignalOutcomeAttributes { signal, outcome })
+                        .items
+                        .add(consumed_items as u64);
+                }
+                if consumed_size > 0
+                    && let Some(input_size) = &mut handles.input_size
+                {
+                    input_size
+                        .with(SignalOutcomeAttributes { signal, outcome })
+                        .size
+                        .add(consumed_size);
+                }
+                if route.entry_time_ns > 0 && now_ns > 0 {
+                    let duration_ns = now_ns.saturating_sub(route.entry_time_ns);
+                    input
+                        .duration
+                        .record(Duration::from_nanos(duration_ns).as_secs_f64());
                 }
             }
+
             if interests.contains(Interests::PRODUCER_METRICS) {
                 let port = route.output_port_index as usize;
-                if let Some(output) = handles.outputs.get_mut(port) {
-                    if let Some(signal) = signal {
-                        let outcome = match outcome {
-                            RequestOutcome::Success => Outcome::Success,
-                            RequestOutcome::Failure => Outcome::Failure,
-                            RequestOutcome::Refused => Outcome::Refused,
-                        };
-                        let output = output.with(SignalOutcomeAttributes { signal, outcome });
-                        output.produced_messages.inc();
-                        if produced_items > 0
-                            && let Some(output_items) = handles.output_items.get_mut(port)
-                        {
-                            output_items
-                                .with(SignalOutcomeAttributes { signal, outcome })
-                                .produced_items
-                                .add(produced_items as u64);
-                        }
-                        if produced_size > 0
-                            && let Some(output_size) = handles.output_size.get_mut(port)
-                        {
-                            output_size
-                                .with(SignalOutcomeAttributes { signal, outcome })
-                                .produced_size
-                                .add(produced_size);
-                        }
-                        if !interests.contains(Interests::CONSUMER_METRICS)
-                            && route.entry_time_ns > 0
-                            && now_ns > 0
-                        {
-                            let duration_ns = now_ns.saturating_sub(route.entry_time_ns);
-                            output.produced_duration_ns.record(duration_ns as f64);
-                        }
+                if let Some(output) = handles.outputs.get_mut(port)
+                    && let Some(signal) = signal
+                {
+                    let outcome = match outcome {
+                        RequestOutcome::Success => Outcome::Success,
+                        RequestOutcome::Failure => Outcome::Failure,
+                        RequestOutcome::Refused => Outcome::Refused,
+                    };
+                    let output = output.with(SignalOutcomeAttributes { signal, outcome });
+                    output.messages.inc();
+                    if produced_items > 0
+                        && let Some(output_items) = handles.output_items.get_mut(port)
+                    {
+                        output_items
+                            .with(SignalOutcomeAttributes { signal, outcome })
+                            .items
+                            .add(produced_items as u64);
+                    }
+                    if produced_size > 0
+                        && let Some(output_size) = handles.output_size.get_mut(port)
+                    {
+                        output_size
+                            .with(SignalOutcomeAttributes { signal, outcome })
+                            .size
+                            .add(produced_size);
+                    }
+                    if !interests.contains(Interests::CONSUMER_METRICS)
+                        && route.entry_time_ns > 0
+                        && now_ns > 0
+                    {
+                        let duration_ns = now_ns.saturating_sub(route.entry_time_ns);
+                        output
+                            .duration
+                            .record(Duration::from_nanos(duration_ns).as_secs_f64());
                     }
                 }
             }
@@ -1345,7 +1349,7 @@ mod tests {
     use super::*;
     use crate::attributes::{ChannelImplementation, ChannelKind, ChannelMode, ChannelType};
     use crate::channel_metrics::{
-        ConsumedItemMetrics, ConsumedMetrics, ProducedItemMetrics, ProducedMetrics,
+        NodeInputItemMetrics, NodeInputMetrics, NodeOutputItemMetrics, NodeOutputMetrics,
     };
     use crate::context::{ControllerContext, PipelineContextParams};
     use crate::control::{AckMsg, Frame, NackMsg, RouteData, nanos_since_birth};
@@ -2949,29 +2953,29 @@ mod tests {
             ChannelImplementation::Internal,
         );
 
-        let recv_produced: MeasurementMetricSet<ProducedMetrics> =
+        let recv_produced: MeasurementMetricSet<NodeOutputMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(recv_out_key);
-        let recv_produced_items: MeasurementMetricSet<ProducedItemMetrics> =
+        let recv_produced_items: MeasurementMetricSet<NodeOutputItemMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(recv_out_key);
-        let recv_produced_size: MeasurementMetricSet<ProducedSizeMetrics> =
+        let recv_produced_size: MeasurementMetricSet<NodeOutputSizeMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(recv_out_key);
-        let proc_consumed: MeasurementMetricSet<ConsumedMetrics> =
+        let proc_consumed: MeasurementMetricSet<NodeInputMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(proc_in_key);
-        let proc_consumed_items: MeasurementMetricSet<ConsumedItemMetrics> =
+        let proc_consumed_items: MeasurementMetricSet<NodeInputItemMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(proc_in_key);
-        let proc_consumed_size: MeasurementMetricSet<ConsumedSizeMetrics> =
+        let proc_consumed_size: MeasurementMetricSet<NodeInputSizeMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(proc_in_key);
-        let proc_produced: MeasurementMetricSet<ProducedMetrics> =
+        let proc_produced: MeasurementMetricSet<NodeOutputMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(proc_out_key);
-        let proc_produced_items: MeasurementMetricSet<ProducedItemMetrics> =
+        let proc_produced_items: MeasurementMetricSet<NodeOutputItemMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(proc_out_key);
-        let proc_produced_size: MeasurementMetricSet<ProducedSizeMetrics> =
+        let proc_produced_size: MeasurementMetricSet<NodeOutputSizeMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(proc_out_key);
-        let exp_consumed: MeasurementMetricSet<ConsumedMetrics> =
+        let exp_consumed: MeasurementMetricSet<NodeInputMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(exp_in_key);
-        let exp_consumed_items: MeasurementMetricSet<ConsumedItemMetrics> =
+        let exp_consumed_items: MeasurementMetricSet<NodeInputItemMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(exp_in_key);
-        let exp_consumed_size: MeasurementMetricSet<ConsumedSizeMetrics> =
+        let exp_consumed_size: MeasurementMetricSet<NodeInputSizeMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(exp_in_key);
 
         // Save metric set keys for snapshot identification.
@@ -3143,6 +3147,37 @@ mod tests {
                 otel_arrow_dfe_telemetry::instrument::DistributionValue::Basic(mmsc),
             ) => **mmsc,
             other => panic!("{msg}: expected a basic-tier distribution, got {other:?}"),
+        }
+    }
+
+    /// Extract a normal-tier histogram summary from a MetricValue.
+    fn assert_dist_is_normal_histogram(
+        values: &[MetricValue],
+        index: usize,
+        msg: &str,
+    ) -> (u64, f64, f64, f64) {
+        match &values[index] {
+            MetricValue::Distribution(distribution) => {
+                assert_eq!(
+                    distribution.tier_name(),
+                    "normal",
+                    "{msg}: expected a normal-tier histogram"
+                );
+                distribution.summary()
+            }
+            other => panic!("{msg}: expected a distribution, got {other:?}"),
+        }
+    }
+
+    /// Assert that a normal-tier histogram contains one expected duration in seconds.
+    fn assert_duration_seconds(values: &[MetricValue], index: usize, expected: f64, msg: &str) {
+        let (count, sum, min, max) = assert_dist_is_normal_histogram(values, index, msg);
+        assert_eq!(count, 1, "{msg}: expected one duration observation");
+        for (name, actual) in [("sum", sum), ("min", min), ("max", max)] {
+            assert!(
+                (actual - expected).abs() < f64::EPSILON,
+                "{msg}: expected {name}={expected}, got {actual}"
+            );
         }
     }
 
@@ -3820,87 +3855,109 @@ mod tests {
         assert_u64(proc_p, PRODUCER_REQUESTS, 1, "Processor produced requests");
     }
 
-    /// Verify that consumed_duration_ns, an Mmsc histogram, is recorded
-    /// when entry_time_ns > 0 and return_time_ns > 0.
+    /// Scenario: An acknowledgement unwinds frames with valid entry and return timestamps.
+    /// Guarantees: Consumed durations are recorded as normal-tier histograms in seconds.
     #[tokio::test]
     async fn test_ack_lifecycle_duration_histogram() {
+        const ENTRY_TIME_NS: u64 = 1_000_000_000;
+        const RETURN_TIME_NS: u64 = 1_250_000_000;
+        const EXPECTED_DURATION_SECONDS: f64 = 0.25;
+
         let harness = setup_test_manager_with_metrics();
         let snapshots = run_and_collect(harness, |nodes| {
-            let pdata = build_3node_pdata(nodes, true);
+            let mut pdata = build_3node_pdata(nodes, true);
+            for frame in &mut pdata.frames {
+                if frame.route.entry_time_ns > 0 {
+                    frame.route.entry_time_ns = ENTRY_TIME_NS;
+                }
+            }
             let mut ack = AckMsg::new(pdata);
-            ack.unwind.return_time_ns = nanos_since_birth();
+            ack.unwind.return_time_ns = RETURN_TIME_NS;
             vec![PipelineCompletionMsg::DeliverAck { ack }]
         })
         .await;
 
-        // Exporter consumed duration: 1 observation, min > 0
         let exp = &snapshots[&MetricLabel::ExpConsumed];
-        let snap = assert_dist_is_mmsc(exp, CONSUMER_DURATION, "Exporter duration");
-        assert_eq!(snap.count, 1, "Exporter should have 1 duration observation");
-        assert!(snap.min > 0.0, "Duration min should be > 0");
-        assert!(snap.max >= snap.min, "Duration max >= min");
-
-        // Processor consumed duration: 1 observation, min > 0
-        let proc_c = &snapshots[&MetricLabel::ProcConsumed];
-        let snap = assert_dist_is_mmsc(proc_c, CONSUMER_DURATION, "Processor consumed duration");
-        assert_eq!(
-            snap.count, 1,
-            "Processor should have 1 consumed duration observation"
+        assert_duration_seconds(
+            exp,
+            CONSUMER_DURATION,
+            EXPECTED_DURATION_SECONDS,
+            "Exporter consumed duration",
         );
-        assert!(snap.min > 0.0, "Processor consumed duration should be > 0");
+
+        let proc_c = &snapshots[&MetricLabel::ProcConsumed];
+        assert_duration_seconds(
+            proc_c,
+            CONSUMER_DURATION,
+            EXPECTED_DURATION_SECONDS,
+            "Processor consumed duration",
+        );
 
         // Processor produced duration: should be 0 observations because the
-        // processor frame has CONSUMER_METRICS, so produced_duration_ns is
+        // processor frame has CONSUMER_METRICS, so produced duration is
         // suppressed.
         let proc_p = &snapshots[&MetricLabel::ProcProduced];
-        let snap = assert_dist_is_mmsc(proc_p, PRODUCER_DURATION, "Processor produced duration");
+        let (count, _, _, _) = assert_dist_is_normal_histogram(
+            proc_p,
+            PRODUCER_DURATION,
+            "Processor produced duration",
+        );
         assert_eq!(
-            snap.count, 0,
+            count, 0,
             "Processor should have 0 produced duration observations (suppressed by CONSUMER_METRICS)"
         );
     }
 
-    /// Verify that produced_duration_ns is recorded for producer-only frames
-    /// (receiver) but NOT for frames that also have CONSUMER_METRICS (processor).
-    /// Uses a no-subscriber pipeline so all frames are popped in a single unwind.
+    /// Scenario: An acknowledgement unwinds receiver-only and processor frames.
+    /// Guarantees: Produced duration is recorded only when no consumed duration owns the frame.
     #[tokio::test]
     async fn test_ack_lifecycle_produced_duration_histogram() {
+        const ENTRY_TIME_NS: u64 = 1_000_000_000;
+        const RETURN_TIME_NS: u64 = 1_250_000_000;
+        const EXPECTED_DURATION_SECONDS: f64 = 0.25;
+
         let harness = setup_test_manager_with_metrics();
         let snapshots = run_and_collect(harness, |nodes| {
-            let pdata = build_3node_pdata_no_subscribers(nodes, true);
+            let mut pdata = build_3node_pdata_no_subscribers(nodes, true);
+            for frame in &mut pdata.frames {
+                frame.route.entry_time_ns = ENTRY_TIME_NS;
+            }
             let mut ack = AckMsg::new(pdata);
-            ack.unwind.return_time_ns = nanos_since_birth();
+            ack.unwind.return_time_ns = RETURN_TIME_NS;
             vec![PipelineCompletionMsg::DeliverAck { ack }]
         })
         .await;
 
-        // Receiver produced duration: 1 observation, min > 0
         let recv_p = &snapshots[&MetricLabel::RecvProduced];
-        let snap = assert_dist_is_mmsc(recv_p, PRODUCER_DURATION, "Receiver produced duration");
-        assert_eq!(
-            snap.count, 1,
-            "Receiver should have 1 produced duration observation"
-        );
-        assert!(snap.min > 0.0, "Receiver produced duration should be > 0");
-        assert!(
-            snap.max >= snap.min,
-            "Receiver produced duration max >= min"
+        assert_duration_seconds(
+            recv_p,
+            PRODUCER_DURATION,
+            EXPECTED_DURATION_SECONDS,
+            "Receiver produced duration",
         );
 
         // Processor produced duration: 0 observations
         // (merged frame has CONSUMER_METRICS -> produced_duration suppressed)
         let proc_p = &snapshots[&MetricLabel::ProcProduced];
-        let snap = assert_dist_is_mmsc(proc_p, PRODUCER_DURATION, "Processor produced duration");
+        let (count, _, _, _) = assert_dist_is_normal_histogram(
+            proc_p,
+            PRODUCER_DURATION,
+            "Processor produced duration",
+        );
         assert_eq!(
-            snap.count, 0,
+            count, 0,
             "Processor should have 0 produced duration observations"
         );
 
         // Processor consumed duration: 1 observation (still works)
         let proc_c = &snapshots[&MetricLabel::ProcConsumed];
-        let snap = assert_dist_is_mmsc(proc_c, CONSUMER_DURATION, "Processor consumed duration");
+        let (count, _, _, _) = assert_dist_is_normal_histogram(
+            proc_c,
+            CONSUMER_DURATION,
+            "Processor consumed duration",
+        );
         assert_eq!(
-            snap.count, 1,
+            count, 1,
             "Processor should have 1 consumed duration observation"
         );
     }
@@ -4210,7 +4267,8 @@ mod tests {
         assert_u64(&produced_traces, ITEMS, 6, "traces failure produced items");
     }
 
-    /// Verify that produced_duration_ns is NOT recorded when entry_time_ns is 0.
+    /// Scenario: A producer-only frame has no entry timestamp.
+    /// Guarantees: No produced duration observation is recorded.
     #[tokio::test]
     async fn test_produced_duration_not_recorded_without_timestamp() {
         let harness = setup_test_manager_with_metrics();
@@ -4224,14 +4282,19 @@ mod tests {
 
         // Receiver produced duration: 0 observations (no timestamp)
         let recv_p = &snapshots[&MetricLabel::RecvProduced];
-        let snap = assert_dist_is_mmsc(recv_p, PRODUCER_DURATION, "Receiver produced duration");
+        let (count, _, _, _) = assert_dist_is_normal_histogram(
+            recv_p,
+            PRODUCER_DURATION,
+            "Receiver produced duration",
+        );
         assert_eq!(
-            snap.count, 0,
+            count, 0,
             "No produced duration should be recorded when entry_time_ns == 0"
         );
     }
 
-    /// Verify that when entry_time_ns is 0 (or return_time_ns is 0), no duration histogram is recorded.
+    /// Scenario: An acknowledgement unwinds frames without entry timestamps.
+    /// Guarantees: No consumed duration observations are recorded.
     #[tokio::test]
     async fn test_ack_lifecycle_no_duration_without_timestamp() {
         let harness = setup_test_manager_with_metrics();
@@ -4244,16 +4307,18 @@ mod tests {
         .await;
 
         let exp = &snapshots[&MetricLabel::ExpConsumed];
-        let snap = assert_dist_is_mmsc(exp, CONSUMER_DURATION, "Exporter duration");
+        let (count, _, _, _) =
+            assert_dist_is_normal_histogram(exp, CONSUMER_DURATION, "Exporter duration");
         assert_eq!(
-            snap.count, 0,
+            count, 0,
             "No duration should be recorded when entry_time_ns == 0"
         );
 
         let proc_c = &snapshots[&MetricLabel::ProcConsumed];
-        let snap = assert_dist_is_mmsc(proc_c, CONSUMER_DURATION, "Processor duration");
+        let (count, _, _, _) =
+            assert_dist_is_normal_histogram(proc_c, CONSUMER_DURATION, "Processor duration");
         assert_eq!(
-            snap.count, 0,
+            count, 0,
             "No duration should be recorded when entry_time_ns == 0"
         );
     }
@@ -4380,14 +4445,19 @@ mod tests {
         // From pass 1: exporter and processor consumer metrics are recorded.
         let exp = &snapshots[&MetricLabel::ExpConsumed];
         assert_u64(exp, CONSUMER_REQUESTS, 1, "Exporter consumed requests");
-        let snap = assert_dist_is_mmsc(exp, CONSUMER_DURATION, "Exporter consumed duration");
-        assert_eq!(snap.count, 1, "Exporter should have 1 consumed duration");
-        assert!(snap.min > 0.0, "Exporter consumed duration > 0");
+        let (count, _, min, _) =
+            assert_dist_is_normal_histogram(exp, CONSUMER_DURATION, "Exporter consumed duration");
+        assert_eq!(count, 1, "Exporter should have 1 consumed duration");
+        assert!(min > 0.0, "Exporter consumed duration > 0");
 
         let proc_c = &snapshots[&MetricLabel::ProcConsumed];
         assert_u64(proc_c, CONSUMER_REQUESTS, 1, "Processor consumed requests");
-        let snap = assert_dist_is_mmsc(proc_c, CONSUMER_DURATION, "Processor consumed duration");
-        assert_eq!(snap.count, 1, "Processor should have 1 consumed duration");
+        let (count, _, _, _) = assert_dist_is_normal_histogram(
+            proc_c,
+            CONSUMER_DURATION,
+            "Processor consumed duration",
+        );
+        assert_eq!(count, 1, "Processor should have 1 consumed duration");
 
         // From pass 1: processor produced counter recorded.
         let proc_p = &snapshots[&MetricLabel::ProcProduced];
@@ -4396,12 +4466,16 @@ mod tests {
         // From pass 2: receiver produced counter AND duration recorded.
         let recv_p = &snapshots[&MetricLabel::RecvProduced];
         assert_u64(recv_p, PRODUCER_REQUESTS, 1, "Receiver produced requests");
-        let snap = assert_dist_is_mmsc(recv_p, PRODUCER_DURATION, "Receiver produced duration");
+        let (count, _, min, _) = assert_dist_is_normal_histogram(
+            recv_p,
+            PRODUCER_DURATION,
+            "Receiver produced duration",
+        );
         assert_eq!(
-            snap.count, 1,
+            count, 1,
             "Receiver should have 1 produced duration observation from two-pass unwind"
         );
-        assert!(snap.min > 0.0, "Receiver produced duration should be > 0");
+        assert!(min > 0.0, "Receiver produced duration should be > 0");
     }
 
     // Shutdown of a receiver+processor pipeline should first stop ingress, then

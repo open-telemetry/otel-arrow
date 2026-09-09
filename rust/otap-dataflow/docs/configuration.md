@@ -9,8 +9,9 @@ Read it sequentially if you are configuring the engine for the first time, or
 use the section headings as a checklist when reviewing YAML. For exact field
 semantics, defaults, precedence rules, and validation behavior, use the
 [configuration model reference](configuration-model.md); for node-specific
-config payloads, use the [core node catalog](../crates/core-nodes/README.md)
-and [contrib node catalog](../crates/contrib-nodes/README.md).
+config payloads, use the [core node catalog](../crates/core-nodes/README.md),
+[development node catalog](../crates/dev-nodes/README.md), and
+[contrib node catalog](../crates/contrib-nodes/README.md).
 
 > [!WARNING]
 > This project is experimental. The configuration format is not yet stable and

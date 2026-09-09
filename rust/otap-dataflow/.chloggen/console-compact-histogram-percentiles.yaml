@@ -1,5 +1,0 @@
-change_type: enhancement
-component: pipeline
-note: "Show approximate p50, p90, and p99 values in compact console histogram output."
-issues: [3840]
-subtext:

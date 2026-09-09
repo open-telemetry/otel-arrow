@@ -6,7 +6,7 @@
 //! # Expression Tree
 //!
 //! The expressions are planned an executed as a tree of various expression types. The input
-//! for planning is an AST of expressions from the [`data_engine_expressions`]. The planning stage
+//! for planning is an AST of expressions from the [`otel_arrow_contrib_data_engine_expressions`]. The planning stage
 //! converts this into a tree containing datafusion logical plans ([`Expr`]s). At runtime, these
 //! logical plans are converted to datafusion physical expressions
 //! ([`PhysicalExpr`s](datafusion::physical_expr::PhysicalExprRef)) during evaluation.

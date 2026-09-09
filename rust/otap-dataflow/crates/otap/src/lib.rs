@@ -22,6 +22,8 @@ pub mod metrics;
 /// Shared OTLP receiver metric definitions used by OTLP protocol support.
 pub mod otlp_metrics;
 
+mod bearer_authorization;
+
 /// testing utilities
 #[cfg(any(test, feature = "test-utils"))]
 pub mod otap_mock;
@@ -44,6 +46,9 @@ pub mod memory_pressure_layer;
 
 /// Shared ingress shedding based on receiver-local rate limits.
 pub mod rate_limit_layer;
+
+/// Shared mapping from a pipeline NACK to OTLP wire status codes.
+mod nack_status;
 
 /// gRPC service implementation
 pub mod otlp_grpc;

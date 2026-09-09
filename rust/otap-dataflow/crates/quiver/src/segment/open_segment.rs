@@ -164,7 +164,8 @@ impl OpenSegment {
 
         let bundle_index = self.manifest.len() as u32;
         let item_count = bundle.item_count_is_known().then(|| bundle.item_count());
-        let mut entry = ManifestEntry::new_with_item_count(bundle_index, item_count);
+        let mut entry =
+            ManifestEntry::new_with_counts(bundle_index, item_count, bundle.byte_count());
 
         // Iterate over all slots defined in the bundle's descriptor
         for slot_desc in &bundle.descriptor().slots {

@@ -33,7 +33,7 @@ use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_engine::config::ProcessorConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_engine::control::{
-    AckMsg, CallData, Context8u8, NackMsg, NodeControlMsg, UnwindData,
+    AckMsg, CallData, Context8u8, NackCause, NackMsg, NodeControlMsg, UnwindData,
 };
 use otel_arrow_dfe_engine::error::{Error, TypedError};
 use otel_arrow_dfe_engine::local::processor::{EffectHandler, Processor};
@@ -149,10 +149,10 @@ impl FanoutConfig {
         }
 
         // Default primary to the first destination if none set.
-        if !self.destinations.iter().any(|d| d.primary) {
-            if let Some(first) = self.destinations.first_mut() {
-                first.primary = true;
-            }
+        if !self.destinations.iter().any(|d| d.primary)
+            && let Some(first) = self.destinations.first_mut()
+        {
+            first.primary = true;
         }
 
         let mut primary_seen = false;
@@ -244,18 +244,18 @@ impl FanoutConfig {
         // Reject ambiguous configs where multiple destinations declare fallback_for the same port.
         let mut fallback_for_dest = vec![None; self.destinations.len()];
         for (fb_idx, fb_dest) in self.destinations.iter().enumerate() {
-            if let Some(fb_for_port) = &fb_dest.fallback_for {
-                if let Some(&origin_idx) = port_index.get(fb_for_port) {
-                    if fallback_for_dest[origin_idx].is_some() {
-                        return Err(ConfigError::InvalidUserConfig {
-                            error: format!(
-                                "fanout: multiple fallbacks declared for port `{}`",
-                                fb_for_port
-                            ),
-                        });
-                    }
-                    fallback_for_dest[origin_idx] = Some(fb_idx);
+            if let Some(fb_for_port) = &fb_dest.fallback_for
+                && let Some(&origin_idx) = port_index.get(fb_for_port)
+            {
+                if fallback_for_dest[origin_idx].is_some() {
+                    return Err(ConfigError::InvalidUserConfig {
+                        error: format!(
+                            "fanout: multiple fallbacks declared for port `{}`",
+                            fb_for_port
+                        ),
+                    });
                 }
+                fallback_for_dest[origin_idx] = Some(fb_idx);
             }
         }
 
@@ -618,6 +618,10 @@ impl FanoutProcessor {
         dest_index: usize,
         reason: String,
         is_timeout: bool,
+        // Classification for the terminal upstream NACK: a propagated downstream
+        // NACK carries its own permanence/cause; a fanout timeout stays transient.
+        permanent: bool,
+        cause: NackCause,
     ) -> Option<NackMsg<OtapPdata>> {
         let inflight = self.inflight.get_mut(&request_id)?;
         // Mark as TimedOut for timeouts, Nacked for explicit nacks.
@@ -629,25 +633,25 @@ impl FanoutProcessor {
         };
 
         // Trigger fallback if configured (O(1) lookup via precomputed map).
-        if let Some(fb_idx) = self.config.fallback_for_dest[dest_index] {
-            if inflight.destinations[fb_idx].status == DestinationStatus::PendingSend {
-                inflight.destinations[fb_idx].status = DestinationStatus::InFlight;
-                let timeout_at = self.config.destinations[fb_idx].timeout.map(|d| now() + d);
-                inflight.destinations[fb_idx].timeout_at = timeout_at;
-                // Push fallback deadline to the heap if timeout is configured.
-                if let Some(at) = timeout_at {
-                    self.deadline_heap.push(Reverse(Deadline {
-                        at,
-                        request_id,
-                        dest_index: fb_idx,
-                    }));
-                }
-                if matches!(inflight.mode, DeliveryMode::Sequential) {
-                    inflight.next_send_queue.clear();
-                    inflight.next_send_queue.push(fb_idx);
-                }
-                return None;
+        if let Some(fb_idx) = self.config.fallback_for_dest[dest_index]
+            && inflight.destinations[fb_idx].status == DestinationStatus::PendingSend
+        {
+            inflight.destinations[fb_idx].status = DestinationStatus::InFlight;
+            let timeout_at = self.config.destinations[fb_idx].timeout.map(|d| now() + d);
+            inflight.destinations[fb_idx].timeout_at = timeout_at;
+            // Push fallback deadline to the heap if timeout is configured.
+            if let Some(at) = timeout_at {
+                self.deadline_heap.push(Reverse(Deadline {
+                    at,
+                    request_id,
+                    dest_index: fb_idx,
+                }));
             }
+            if matches!(inflight.mode, DeliveryMode::Sequential) {
+                inflight.next_send_queue.clear();
+                inflight.next_send_queue.push(fb_idx);
+            }
+            return None;
         }
 
         // No fallback, produce a nack using original pdata for correct upstream routing.
@@ -655,8 +659,8 @@ impl FanoutProcessor {
             reason,
             unwind: UnwindData::default(),
             refused: Box::new(inflight.original_pdata.clone()),
-            permanent: false, // Timeout is retriable
-            cause: otel_arrow_dfe_engine::control::NackCause::Unspecified,
+            permanent,
+            cause,
         })
     }
 
@@ -708,7 +712,9 @@ impl FanoutProcessor {
                 req,
                 idx,
                 format!("fanout: timeout on {}", self.config.destinations[idx].port),
-                true, // is_timeout
+                true,  // is_timeout
+                false, // timeouts are retriable
+                NackCause::Unspecified,
             ) {
                 Some(nack) => {
                     // Ignore non-primary timeouts when awaiting primary only.
@@ -785,8 +791,8 @@ impl FanoutProcessor {
             if matches!(inflight.mode, DeliveryMode::Sequential) {
                 inflight.next_send_queue.retain(|idx| *idx != dest_index);
                 // Advance to the next pending send for this request (skip Skipped destinations).
-                if inflight.next_send_queue.is_empty() {
-                    if let Some(next_idx) = inflight
+                if inflight.next_send_queue.is_empty()
+                    && let Some(next_idx) = inflight
                         .destinations
                         .iter()
                         .enumerate()
@@ -794,10 +800,9 @@ impl FanoutProcessor {
                             dest.status == DestinationStatus::PendingSend && dest.payload.is_some()
                         })
                         .map(|(idx, _)| idx)
-                    {
-                        inflight.destinations[next_idx].status = DestinationStatus::InFlight;
-                        inflight.next_send_queue.push(next_idx);
-                    }
+                {
+                    inflight.destinations[next_idx].status = DestinationStatus::InFlight;
+                    inflight.next_send_queue.push(next_idx);
                 }
             }
             (origin, inflight.await_ack, inflight.primary, inflight.mode)
@@ -821,19 +826,19 @@ impl FanoutProcessor {
             return Ok(());
         }
 
-        if matches!(mode, DeliveryMode::Sequential) {
-            if let Some(inflight) = self.inflight.get_mut(&request_id) {
-                let deadlines = Self::dispatch_ready(
-                    request_id,
-                    inflight,
-                    &self.config.destinations,
-                    effect_handler,
-                )
-                .await
-                .map_err(|error| *error)?;
-                for d in deadlines {
-                    self.deadline_heap.push(Reverse(d));
-                }
+        if matches!(mode, DeliveryMode::Sequential)
+            && let Some(inflight) = self.inflight.get_mut(&request_id)
+        {
+            let deadlines = Self::dispatch_ready(
+                request_id,
+                inflight,
+                &self.config.destinations,
+                effect_handler,
+            )
+            .await
+            .map_err(|error| *error)?;
+            for d in deadlines {
+                self.deadline_heap.push(Reverse(d));
             }
         }
 
@@ -885,9 +890,14 @@ impl FanoutProcessor {
             return Ok(());
         }
 
-        if let Some(nackmsg) =
-            self.handle_failure(request_id, dest_index, nack.reason.clone(), false)
-        {
+        if let Some(nackmsg) = self.handle_failure(
+            request_id,
+            dest_index,
+            nack.reason.clone(),
+            false,
+            nack.permanent,
+            nack.cause,
+        ) {
             let _ = self.inflight.remove(&request_id);
             effect_handler.notify_nack(nackmsg).await?;
             return Ok(());
@@ -1815,6 +1825,58 @@ mod tests {
         }
         assert_eq!(delivered_ack, 0, "should not ack upstream");
         assert_eq!(delivered_nack, 1, "should nack upstream immediately");
+    }
+
+    /// Scenario: a permanent, `Refused` downstream NACK propagates through the
+    /// fanout full path (no fallback) to the upstream subscriber.
+    /// Guarantees: the upstream NACK preserves `permanent` and `cause` so the
+    /// receiver can still map it to a client error, while fanout timeouts stay
+    /// transient.
+    #[tokio::test]
+    async fn nack_permanence_and_cause_are_preserved_upstream() {
+        let mut h = build_harness(
+            json!([
+                make_dest("p1", true, None, None),
+                make_dest("p2", false, None, None)
+            ]),
+            "parallel",
+            "all",
+        );
+        h.fanout
+            .process(Message::PData(make_pdata()), &mut h.effect)
+            .await
+            .expect("process ok");
+
+        let mut p1 = drain(h.outputs.get_mut("p1").expect("p1"));
+        let _p2 = drain(h.outputs.get_mut("p2").expect("p2"));
+        assert_eq!(p1.len(), 1);
+
+        // Permanent, client-caused refusal from p1 (no fallback -> fail-fast).
+        let mut nack =
+            NackMsg::new_permanent_with_cause("p1 refused", p1.pop().unwrap(), NackCause::Refused);
+        nack.unwind.route = nack.refused.source_route().unwrap();
+        h.fanout
+            .process(Message::Control(NodeControlMsg::Nack(nack)), &mut h.effect)
+            .await
+            .expect("nack ok");
+
+        let mut upstream_nacks = Vec::new();
+        while let Ok(Ok(msg)) =
+            tokio::time::timeout(Duration::from_millis(50), h.pipeline_completion_rx.recv()).await
+        {
+            if let PipelineCompletionMsg::DeliverNack { nack } = msg {
+                upstream_nacks.push(nack);
+            }
+        }
+
+        assert_eq!(upstream_nacks.len(), 1, "should nack upstream once");
+        let upstream = &upstream_nacks[0];
+        assert!(upstream.permanent, "propagated NACK must remain permanent");
+        assert_eq!(
+            upstream.cause,
+            NackCause::Refused,
+            "propagated NACK must preserve the downstream cause"
+        );
     }
 
     #[tokio::test]
