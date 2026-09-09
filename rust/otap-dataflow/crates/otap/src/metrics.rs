@@ -874,7 +874,7 @@ mod tests {
                     payload_size_called.set(true);
                     128
                 });
-                Err::<(), ()>(attempt.failed(()))
+                Err::<(), _>(attempt.failed("export failed"))
             })
             .await;
         assert!(metrics.record(completed).is_err());
@@ -941,7 +941,7 @@ mod tests {
                 payload_size_called.set(true);
                 128
             });
-            Err::<(SignalType, ()), ()>(processing.failed(SignalType::Traces, ()))
+            Err::<(SignalType, ()), _>(processing.failed(SignalType::Traces, "processing failed"))
         });
         assert!(metrics.record(completed).is_err());
 
