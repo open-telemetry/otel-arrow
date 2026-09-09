@@ -1,0 +1,6 @@
+change_type: enhancement
+component: observability
+note: "Internal telemetry logs batching"
+issues: [1902]
+subtext: |
+  Configure receiver logs.otlp min_size, max_size, and sizer plus logs.max_batch_duration; defaults are 64 KiB, 2 MiB, bytes, and 200 ms.

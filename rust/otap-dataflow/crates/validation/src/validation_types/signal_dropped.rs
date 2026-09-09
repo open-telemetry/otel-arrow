@@ -24,16 +24,16 @@ pub(crate) fn validate_signal_drop(
 
     let drop_ratio = (control_total as f64 - suv_total as f64) / control_total as f64;
 
-    if let Some(min) = min_drop_ratio {
-        if drop_ratio < min {
-            return false;
-        }
+    if let Some(min) = min_drop_ratio
+        && drop_ratio < min
+    {
+        return false;
     }
 
-    if let Some(max) = max_drop_ratio {
-        if drop_ratio > max {
-            return false;
-        }
+    if let Some(max) = max_drop_ratio
+        && drop_ratio > max
+    {
+        return false;
     }
 
     true

@@ -76,6 +76,9 @@ make chlog-preview
 4. Fill in the required inputs:
    - **Version**: The new version number (e.g., `0.48.0`).
    - **Dry run**: Check this box to preview changes without making them.
+   - **Include pdata-views**: Leave unchecked for normal releases.
+     Select it only for a coordinated `otel-arrow-dfe-pdata-views` release
+     after external consumers support the new version.
 
 ### Step 3: Review Dry Run (Recommended)
 
@@ -102,7 +105,8 @@ Before making actual changes, run the workflow in dry-run mode:
      entries.
    - Bump the Rust workspace + root package versions in
      `rust/otap-dataflow/Cargo.toml`, including same-release dependency
-     constraints.
+     constraints. `otel-arrow-dfe-pdata-views` keeps its independent version
+     unless explicitly included.
    - Regenerate `rust/otap-dataflow/Cargo.lock`.
    - Validate the crates.io allowlist, dependency graph, semantic version
      requirements, and package contents.
@@ -117,6 +121,8 @@ Before making actual changes, run the workflow in dry-run mode:
      the expected entries.
    - `rust/otap-dataflow/Cargo.toml` reflects the new workspace version and
      uses that version for same-release crate dependencies.
+   - `otel-arrow-dfe-pdata-views` retains its previous version unless the
+     release intentionally included it.
    - `cargo xtask crates-publish plan`, run from `rust/otap-dataflow`, lists
      the intended crates in dependency order.
 3. Ensure all CI checks pass.
