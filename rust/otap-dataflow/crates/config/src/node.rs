@@ -360,12 +360,12 @@ impl NodeUserConfig {
             });
         }
 
-        if let Some(capture) = &self.header_capture {
-            if let Err(e) = capture.validate() {
-                errors.push(Error::InvalidUserConfig {
-                    error: format!("node `{node_name}`: header_capture.{e}"),
-                });
-            }
+        if let Some(capture) = &self.header_capture
+            && let Err(e) = capture.validate()
+        {
+            errors.push(Error::InvalidUserConfig {
+                error: format!("node `{node_name}`: header_capture.{e}"),
+            });
         }
 
         // Validate the selector shape inside node-level header_propagation so
