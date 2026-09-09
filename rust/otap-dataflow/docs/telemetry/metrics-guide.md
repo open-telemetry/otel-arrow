@@ -265,13 +265,13 @@ directly through `boundary`.
 Every receiver implementation should follow this shape:
 
 ```rust
-let signal = request.signal_type();
-
-let completed = self.metrics.boundary.processing(signal).run(|processing| {
+let completed = self.metrics.boundary.processing().run(|processing| {
     // Component-specific: classify, decode, validate, or otherwise process the request.
-    let result = self.decode(request);
-    processing.set_payload_size(request.encoded_len());
-    result
+    let payload_size = request.encoded_len();
+    let decoded = self.decode(request)?;
+    processing.set_signal(decoded.signal_type());
+    processing.set_payload_size(payload_size);
+    Ok(decoded)
 });
 
 // Shared instrumentation: records the terminal local outcome before handoff
@@ -285,10 +285,11 @@ effect_handler.send_message(decoded).await?;
 
 The receiver runs exactly one processing closure and records its completed
 observation before awaiting downstream handoff. The closure receives the
-processing context so it can add payload size when that value becomes available.
-A component-specific rejection metric may be more appropriate when a request is
-rejected before the receiver can classify its signal or admit it as a received
-message.
+processing context so it can set the signal after classification and add
+payload size when that value becomes available. Successful processing must set
+the signal. A failure recorded before the receiver can classify its signal does
+not emit shared receiver metrics; use a component-specific rejection metric for
+that condition.
 
 ### Exporter implementation
 

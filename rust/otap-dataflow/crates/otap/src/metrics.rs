@@ -87,7 +87,7 @@ impl ReceiverProcessingMetrics {
 /// Receiver-local processing state captured for enabled shared metrics.
 #[derive(Debug)]
 pub struct ReceiverProcessing {
-    signal: SignalType,
+    signal: Option<SignalType>,
     measure_duration: bool,
     payload_size: Option<u64>,
     accepts_payload_size: bool,
@@ -97,7 +97,7 @@ pub struct ReceiverProcessing {
 #[derive(Debug)]
 #[must_use = "completed receiver processing must be recorded"]
 pub struct CompletedReceiverProcessing<T, E> {
-    signal: SignalType,
+    signal: Option<SignalType>,
     duration: Option<Duration>,
     payload_size: Option<u64>,
     result: Result<T, E>,
@@ -124,11 +124,11 @@ impl ReceiverMetrics {
         }
     }
 
-    /// Creates receiver-local processing instrumentation for one classified message.
+    /// Creates receiver-local processing instrumentation for one external message.
     #[must_use]
-    pub fn processing(&self, signal: SignalType) -> ReceiverProcessing {
+    pub fn processing(&self) -> ReceiverProcessing {
         ReceiverProcessing {
-            signal,
+            signal: None,
             measure_duration: self.interests.contains(Interests::COMPONENT_DURATION),
             payload_size: None,
             accepts_payload_size: self.interests.contains(Interests::PRODUCED_CONSUMED_SIZE),
@@ -137,15 +137,20 @@ impl ReceiverMetrics {
 
     /// Records one completed receiver processing observation.
     pub fn record<T, E>(&mut self, completed: CompletedReceiverProcessing<T, E>) -> Result<T, E> {
+        let Some(signal) = completed.signal else {
+            assert!(
+                completed.result.is_err(),
+                "successful receiver processing must set its signal"
+            );
+            return completed.result;
+        };
         if let Some(duration) = completed.duration {
             self.processing
-                .with(SignalAttributes {
-                    signal: completed.signal,
-                })
+                .with(SignalAttributes { signal })
                 .record(duration);
         }
         let attributes = SignalOutcomeAttributes {
-            signal: completed.signal,
+            signal,
             outcome: if completed.result.is_ok() {
                 Outcome::Success
             } else {
@@ -183,6 +188,11 @@ impl ReceiverMetrics {
 }
 
 impl ReceiverProcessing {
+    /// Sets the signal after the receiver classifies the external message.
+    pub fn set_signal(&mut self, signal: SignalType) {
+        self.signal = Some(signal);
+    }
+
     /// Sets the encoded application payload size when it becomes available.
     pub fn set_payload_size(&mut self, payload_size: usize) {
         if self.accepts_payload_size {
@@ -858,7 +868,8 @@ mod tests {
         let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::empty());
         let mut metrics = ReceiverMetrics::register(&pipeline_ctx);
 
-        let completed = metrics.processing(SignalType::Logs).run(|processing| {
+        let completed = metrics.processing().run(|processing| {
+            processing.set_signal(SignalType::Logs);
             processing.set_payload_size(128);
             Ok::<(), ()>(())
         });
@@ -884,7 +895,8 @@ mod tests {
         let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(interests);
         let mut metrics = ReceiverMetrics::register(&pipeline_ctx);
 
-        let completed = metrics.processing(SignalType::Traces).run(|processing| {
+        let completed = metrics.processing().run(|processing| {
+            processing.set_signal(SignalType::Traces);
             processing.set_payload_size(128);
             Err::<(), ()>(())
         });
@@ -919,9 +931,10 @@ mod tests {
         let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(interests);
         let mut metrics = ReceiverMetrics::register(&pipeline_ctx);
 
-        let completed = metrics
-            .processing(SignalType::Logs)
-            .run(|_| Ok::<(), ()>(()));
+        let completed = metrics.processing().run(|processing| {
+            processing.set_signal(SignalType::Logs);
+            Ok::<(), ()>(())
+        });
         metrics.record(completed).expect("processing succeeds");
 
         let snapshots = metrics.terminal_snapshots();
@@ -946,6 +959,32 @@ mod tests {
                 .iter()
                 .all(|metric| metric.name != "payload.size")
         }));
+    }
+
+    /// Scenario: Receiver processing succeeds without classifying its signal.
+    /// Guarantees: Recording fails loudly instead of silently omitting mandatory shared metrics.
+    #[test]
+    #[should_panic(expected = "successful receiver processing must set its signal")]
+    fn receiver_helper_rejects_success_without_signal() {
+        let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::empty());
+        let mut metrics = ReceiverMetrics::register(&pipeline_ctx);
+
+        let completed = metrics.processing().run(|_| Ok::<(), ()>(()));
+        metrics.record(completed).expect("processing succeeds");
+    }
+
+    /// Scenario: Receiver processing fails before the message signal can be classified.
+    /// Guarantees: The original error is returned without emitting incorrectly attributed shared metrics.
+    #[test]
+    fn receiver_helper_allows_failure_before_signal_classification() {
+        let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::all());
+        let mut metrics = ReceiverMetrics::register(&pipeline_ctx);
+
+        let completed = metrics
+            .processing()
+            .run(|_| Err::<(), _>("invalid envelope"));
+        assert_eq!(metrics.record(completed), Err("invalid envelope"));
+        assert!(metrics.terminal_snapshots().is_empty());
     }
 
     /// Scenario: One logical export requires a failed attempt followed by a successful retry.
