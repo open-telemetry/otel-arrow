@@ -8,7 +8,7 @@ use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_otap::metrics::ExporterMetrics;
 #[cfg(test)]
-use otel_arrow_dfe_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
+use otel_arrow_dfe_telemetry::common_attributes::Outcome;
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
 use otel_arrow_dfe_telemetry::instrument::Counter;
 use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
@@ -125,6 +125,29 @@ mod tests {
         )
     }
 
+    fn attempted_messages(snapshots: &[MetricSetSnapshot], signal: &str, outcome: Outcome) -> u64 {
+        let outcome = match outcome {
+            Outcome::Success => "success",
+            Outcome::Failure => "failure",
+            Outcome::Refused => "refused",
+        };
+        let snapshot = snapshots
+            .iter()
+            .find(|snapshot| {
+                snapshot.descriptor().name == "exporter.attempted"
+                    && snapshot.measurement_attribute_value("signal") == Some(signal)
+                    && snapshot.measurement_attribute_value("outcome") == Some(outcome)
+            })
+            .expect("exporter attempt snapshot");
+        let messages = snapshot
+            .descriptor()
+            .metrics
+            .iter()
+            .position(|metric| metric.name == "messages")
+            .expect("messages metric");
+        snapshot.get_metrics()[messages].to_u64_lossy()
+    }
+
     /// Scenario: Console exports succeed and fail for different telemetry signals.
     /// Guarantees: Outcome counts and durations stay paired while failure types use isolated buckets.
     #[tokio::test]
@@ -174,28 +197,9 @@ mod tests {
             ConsoleExportErrorType::UnsupportedSignal,
         );
 
-        assert_eq!(
-            metrics
-                .boundary
-                .attempted_for(SignalOutcomeAttributes {
-                    signal: SignalType::Logs,
-                    outcome: Outcome::Success,
-                })
-                .messages
-                .get(),
-            2
-        );
-        assert_eq!(
-            metrics
-                .boundary
-                .attempted_for(SignalOutcomeAttributes {
-                    signal: SignalType::Logs,
-                    outcome: Outcome::Failure,
-                })
-                .messages
-                .get(),
-            1
-        );
+        let snapshots = metrics.boundary.terminal_snapshots();
+        assert_eq!(attempted_messages(&snapshots, "logs", Outcome::Success), 2);
+        assert_eq!(attempted_messages(&snapshots, "logs", Outcome::Failure), 1);
         assert_eq!(
             metrics
                 .failure_metrics

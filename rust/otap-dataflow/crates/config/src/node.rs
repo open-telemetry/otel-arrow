@@ -195,23 +195,25 @@ pub struct NodeTelemetryPolicy {
     #[serde(default)]
     pub duration: bool,
 
-    /// Opt this node into per-signal input/output item counts on its
-    /// `node.input` / `node.output` metric sets.
+    /// Opt this node into component-owned and per-signal input/output item
+    /// counts.
     ///
     /// Off by default because counting items requires inspecting each batch,
-    /// which is expensive for OTLP payloads. Only recorded when the resolved
-    /// `runtime_metrics` is `normal` or higher; `runtime_metrics: detailed`
-    /// enables it for every node without this flag.
+    /// which is expensive for OTLP payloads. Component-owned metrics can honor
+    /// this option at any runtime metric level. `node.input` / `node.output`
+    /// item counts also require `runtime_metrics: normal` or higher.
+    /// `runtime_metrics: detailed` enables it for every node without this flag.
     #[serde(default)]
     pub item_counts: bool,
 
-    /// Opt this node into per-signal input/output logical payload size on its
-    /// `node.input` / `node.output` metric sets.
+    /// Opt this node into component-owned and per-signal input/output logical
+    /// payload size.
     ///
     /// Off by default because measuring OTAP payloads requires walking their
-    /// Arrow arrays and buffers. Only recorded when the resolved
-    /// `runtime_metrics` is `normal` or higher; `runtime_metrics: detailed`
-    /// enables it for every node without this flag.
+    /// Arrow arrays and buffers. Component-owned metrics can honor this option
+    /// at any runtime metric level. `node.input` / `node.output` size metrics
+    /// also require `runtime_metrics: normal` or higher.
+    /// `runtime_metrics: detailed` enables it for every node without this flag.
     #[serde(default)]
     pub size: bool,
 }

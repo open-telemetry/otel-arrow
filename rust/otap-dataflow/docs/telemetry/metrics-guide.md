@@ -255,6 +255,14 @@ effective node interests when the helper is registered. Constructing an
 exporter attempt starts its optional duration measurement so synchronous
 preparation before an in-flight request is included.
 
+`runtime_metrics: detailed` enables all shared optional component
+measurements. A node can instead opt into component duration, item counts,
+and/or payload size at any runtime metric level with its
+`policies.telemetry` flags. These per-node flags do not enable the engine-owned
+`node.input` or `node.output` metric sets below `runtime_metrics: normal`;
+therefore, at `none` or `basic`, only the opted-in component measurements are
+emitted.
+
 Components with additional diagnostics should compose the shared helper into
 their component metrics aggregate under a `boundary` field. The aggregate owns
 combined reporting and terminal snapshots, while operation lifecycle calls go
@@ -267,10 +275,9 @@ Every receiver implementation should follow this shape:
 ```rust
 let completed = self.metrics.boundary.processing().run(|processing| {
     // Component-specific: classify, decode, validate, or otherwise process the request.
-    processing.set_payload_size(|| request.encoded_len());
+    processing.set_payload_size_with(|| request.encoded_len());
     let decoded = self.decode(request)?;
-    processing.set_signal(decoded.signal_type());
-    Ok(decoded)
+    Ok((decoded.signal_type(), decoded))
 });
 
 // Shared instrumentation: records the terminal local outcome before handoff
@@ -284,11 +291,13 @@ effect_handler.send_message(decoded).await?;
 
 The receiver runs exactly one processing closure and records its completed
 observation before awaiting downstream handoff. The closure receives the
-processing context so it can set the signal after classification and add
-payload size when that value becomes available. Successful processing must set
-the signal. A failure recorded before the receiver can classify its signal does
-not emit shared receiver metrics; use a component-specific rejection metric for
-that condition.
+processing context so it can add payload size when that value becomes
+available. Successful processing returns the classified signal with its value,
+so the signal cannot be omitted. For a classified error, call `set_signal`
+before returning it. A failure recorded before signal classification does not
+emit shared receiver metrics; use a component-specific rejection metric for
+that condition. Call `mark_refused` before returning an error caused by
+validation, policy, admission, or capacity rejection.
 
 ### Exporter implementation
 
@@ -305,7 +314,7 @@ let completed = self
         // Component-specific: encode and submit one attempt.
         attempt.set_item_count(|| data.num_items() as u64);
         let encoded = self.encode(data.payload_ref())?;
-        attempt.set_payload_size(|| encoded.len());
+        attempt.set_payload_size_with(|| encoded.len());
         self.submit(encoded).await
     })
     .await;
@@ -324,6 +333,8 @@ The attempt context records encoded application payload size when the exporter
 produces or submits one. Components leave it unset when payload size is not
 meaningful or unavailable. Encoding structure, retries, component-specific
 failure metrics, and Ack/Nack behavior remain owned by the component.
+Call `mark_refused` before returning a validation, policy, admission, or
+capacity rejection; other errors are recorded as failures.
 
 `exporter.attempted.messages` counts component-local delivery attempts,
 including attempts that fail before a backend call. Each physical retry starts

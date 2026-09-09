@@ -26,10 +26,10 @@ use std::time::{Duration, Instant};
     measurement_attributes = SignalOutcomeAttributes
 )]
 #[derive(Debug, Default, Clone)]
-pub struct ReceiverReceivedMetrics {
+struct ReceiverReceivedMetrics {
     /// Number of classified external messages whose receiver-local handling terminated.
     #[metric(unit = "{message}")]
-    pub messages: Counter<u64>,
+    messages: Counter<u64>,
 }
 
 impl ReceiverReceivedMetrics {
@@ -46,10 +46,10 @@ impl ReceiverReceivedMetrics {
     measurement_attributes = SignalOutcomeAttributes
 )]
 #[derive(Debug, Default, Clone)]
-pub struct ReceiverReceivedPayloadMetrics {
+struct ReceiverReceivedPayloadMetrics {
     /// Encoded application payload size observed before receiver decoding.
     #[metric(name = "payload.size", unit = "By")]
-    pub payload_size: Counter<u64>,
+    payload_size: Counter<u64>,
 }
 
 impl ReceiverReceivedPayloadMetrics {
@@ -66,14 +66,14 @@ impl ReceiverReceivedPayloadMetrics {
     measurement_attributes = SignalAttributes
 )]
 #[derive(Debug, Default, Clone)]
-pub struct ReceiverProcessingMetrics {
+struct ReceiverProcessingMetrics {
     /// Component-defined receiver-local processing time.
     ///
     /// Each receiver documents its stable start and end boundary. Downstream
     /// processing, batching wait, handoff wait, and Ack/Nack completion are
     /// excluded.
     #[metric(unit = "s")]
-    pub duration: HistogramNormal,
+    duration: HistogramNormal,
 }
 
 impl ReceiverProcessingMetrics {
@@ -88,6 +88,7 @@ impl ReceiverProcessingMetrics {
 #[derive(Debug)]
 pub struct ReceiverProcessing {
     signal: Option<SignalType>,
+    error_outcome: Outcome,
     measure_duration: bool,
     payload_size: Option<u64>,
     accepts_payload_size: bool,
@@ -98,6 +99,7 @@ pub struct ReceiverProcessing {
 #[must_use = "completed receiver processing must be recorded"]
 pub struct CompletedReceiverProcessing<T, E> {
     signal: Option<SignalType>,
+    outcome: Outcome,
     duration: Option<Duration>,
     payload_size: Option<u64>,
     result: Result<T, E>,
@@ -129,6 +131,7 @@ impl ReceiverMetrics {
     pub fn processing(&self) -> ReceiverProcessing {
         ReceiverProcessing {
             signal: None,
+            error_outcome: Outcome::Failure,
             measure_duration: self.interests.contains(Interests::COMPONENT_DURATION),
             payload_size: None,
             accepts_payload_size: self.interests.contains(Interests::PRODUCED_CONSUMED_SIZE),
@@ -138,10 +141,6 @@ impl ReceiverMetrics {
     /// Records one completed receiver processing observation.
     pub fn record<T, E>(&mut self, completed: CompletedReceiverProcessing<T, E>) -> Result<T, E> {
         let Some(signal) = completed.signal else {
-            assert!(
-                completed.result.is_err(),
-                "successful receiver processing must set its signal"
-            );
             return completed.result;
         };
         if let Some(duration) = completed.duration {
@@ -151,11 +150,7 @@ impl ReceiverMetrics {
         }
         let attributes = SignalOutcomeAttributes {
             signal,
-            outcome: if completed.result.is_ok() {
-                Outcome::Success
-            } else {
-                Outcome::Failure
-            },
+            outcome: completed.outcome,
         };
         self.received.with(attributes).record();
         if let Some(payload_size) = completed.payload_size {
@@ -179,22 +174,23 @@ impl ReceiverMetrics {
         snapshots.extend(self.processing.terminal_snapshots());
         snapshots
     }
-
-    /// Returns a received bucket for component tests.
-    #[must_use]
-    pub fn received_for(&self, attributes: SignalOutcomeAttributes) -> &ReceiverReceivedMetrics {
-        self.received.get(attributes)
-    }
 }
 
 impl ReceiverProcessing {
-    /// Sets the signal after the receiver classifies the external message.
+    /// Sets the signal for a classified error returned by the processing closure.
+    ///
+    /// Successful processing returns its signal with the value instead.
     pub fn set_signal(&mut self, signal: SignalType) {
         self.signal = Some(signal);
     }
 
+    /// Classifies an error returned by the processing closure as refused.
+    pub fn mark_refused(&mut self) {
+        self.error_outcome = Outcome::Refused;
+    }
+
     /// Sets the encoded application payload size without evaluating it when disabled.
-    pub fn set_payload_size(&mut self, payload_size: impl FnOnce() -> usize) {
+    pub fn set_payload_size_with(&mut self, payload_size: impl FnOnce() -> usize) {
         if self.accepts_payload_size {
             self.payload_size = Some(u64::try_from(payload_size()).unwrap_or(u64::MAX));
         }
@@ -204,12 +200,17 @@ impl ReceiverProcessing {
     #[must_use = "the completed receiver processing observation must be recorded"]
     pub fn run<T, E>(
         mut self,
-        work: impl FnOnce(&mut ReceiverProcessing) -> Result<T, E>,
+        work: impl FnOnce(&mut ReceiverProcessing) -> Result<(SignalType, T), E>,
     ) -> CompletedReceiverProcessing<T, E> {
         let started_at = self.measure_duration.then(Instant::now);
         let result = work(&mut self);
+        let (signal, outcome, result) = match result {
+            Ok((signal, value)) => (Some(signal), Outcome::Success, Ok(value)),
+            Err(error) => (self.signal, self.error_outcome, Err(error)),
+        };
         CompletedReceiverProcessing {
-            signal: self.signal,
+            signal,
+            outcome,
             duration: started_at.map(|started_at| started_at.elapsed()),
             payload_size: self.payload_size,
             result,
@@ -223,13 +224,13 @@ impl ReceiverProcessing {
     measurement_attributes = SignalOutcomeAttributes
 )]
 #[derive(Debug, Default, Clone)]
-pub struct ExporterAttemptedMetrics {
+struct ExporterAttemptedMetrics {
     /// Number of component-local delivery attempts.
     ///
     /// Retries count again. This differs from `node.input.messages`, which
     /// counts PData messages entering the exporter.
     #[metric(unit = "{message}")]
-    pub messages: Counter<u64>,
+    messages: Counter<u64>,
 }
 
 impl ExporterAttemptedMetrics {
@@ -246,10 +247,10 @@ impl ExporterAttemptedMetrics {
     measurement_attributes = SignalOutcomeAttributes
 )]
 #[derive(Debug, Default, Clone)]
-pub struct ExporterAttemptedDurationMetrics {
+struct ExporterAttemptedDurationMetrics {
     /// Time spent performing export attempts, including backend latency.
     #[metric(unit = "s")]
-    pub duration: HistogramNormal,
+    duration: HistogramNormal,
 }
 
 impl ExporterAttemptedDurationMetrics {
@@ -266,10 +267,10 @@ impl ExporterAttemptedDurationMetrics {
     measurement_attributes = SignalOutcomeAttributes
 )]
 #[derive(Debug, Default, Clone)]
-pub struct ExporterAttemptedPayloadMetrics {
+struct ExporterAttemptedPayloadMetrics {
     /// Encoded application payload size produced or submitted across export attempts.
     #[metric(name = "payload.size", unit = "By")]
-    pub payload_size: Counter<u64>,
+    payload_size: Counter<u64>,
 }
 
 impl ExporterAttemptedPayloadMetrics {
@@ -286,10 +287,10 @@ impl ExporterAttemptedPayloadMetrics {
     measurement_attributes = SignalOutcomeAttributes
 )]
 #[derive(Debug, Default, Clone)]
-pub struct ExporterAttemptedItemsMetrics {
+struct ExporterAttemptedItemsMetrics {
     /// Number of signal items handled across export attempts.
     #[metric(unit = "{item}")]
-    pub items: Counter<u64>,
+    items: Counter<u64>,
 }
 
 impl ExporterAttemptedItemsMetrics {
@@ -304,6 +305,7 @@ impl ExporterAttemptedItemsMetrics {
 #[derive(Debug)]
 pub struct ExporterAttempt {
     signal: SignalType,
+    error_outcome: Outcome,
     started_at: Option<Instant>,
     items: Option<u64>,
     accepts_item_count: bool,
@@ -316,6 +318,7 @@ pub struct ExporterAttempt {
 #[must_use = "completed exporter attempts must be recorded"]
 pub struct CompletedExporterAttempt<T, E> {
     signal: SignalType,
+    outcome: Outcome,
     duration: Option<Duration>,
     payload_size: Option<u64>,
     items: Option<u64>,
@@ -350,6 +353,7 @@ impl ExporterMetrics {
     pub fn attempt(&self, signal: SignalType) -> ExporterAttempt {
         ExporterAttempt {
             signal,
+            error_outcome: Outcome::Failure,
             started_at: self
                 .interests
                 .contains(Interests::COMPONENT_DURATION)
@@ -367,11 +371,7 @@ impl ExporterMetrics {
     pub fn record<T, E>(&mut self, completed: CompletedExporterAttempt<T, E>) -> Result<T, E> {
         let attributes = SignalOutcomeAttributes {
             signal: completed.signal,
-            outcome: if completed.result.is_ok() {
-                Outcome::Success
-            } else {
-                Outcome::Failure
-            },
+            outcome: completed.outcome,
         };
         self.attempted.with(attributes).record();
         if let Some(duration) = completed.duration {
@@ -403,15 +403,14 @@ impl ExporterMetrics {
         snapshots.extend(self.items.terminal_snapshots());
         snapshots
     }
-
-    /// Returns an attempt bucket for component tests.
-    #[must_use]
-    pub fn attempted_for(&self, attributes: SignalOutcomeAttributes) -> &ExporterAttemptedMetrics {
-        self.attempted.get(attributes)
-    }
 }
 
 impl ExporterAttempt {
+    /// Classifies an error returned by the attempt closure as refused.
+    pub fn mark_refused(&mut self) {
+        self.error_outcome = Outcome::Refused;
+    }
+
     /// Sets the signal item count without evaluating it when disabled.
     pub fn set_item_count(&mut self, item_count: impl FnOnce() -> u64) {
         if self.accepts_item_count {
@@ -420,7 +419,7 @@ impl ExporterAttempt {
     }
 
     /// Sets the encoded application payload size without evaluating it when disabled.
-    pub fn set_payload_size(&mut self, payload_size: impl FnOnce() -> usize) {
+    pub fn set_payload_size_with(&mut self, payload_size: impl FnOnce() -> usize) {
         if self.accepts_payload_size {
             self.payload_size = Some(u64::try_from(payload_size()).unwrap_or(u64::MAX));
         }
@@ -433,8 +432,14 @@ impl ExporterAttempt {
         work: impl AsyncFnOnce(&mut ExporterAttempt) -> Result<T, E>,
     ) -> CompletedExporterAttempt<T, E> {
         let result = work(&mut self).await;
+        let outcome = if result.is_ok() {
+            Outcome::Success
+        } else {
+            self.error_outcome
+        };
         CompletedExporterAttempt {
             signal: self.signal,
+            outcome,
             duration: self.started_at.map(|started_at| started_at.elapsed()),
             payload_size: self.payload_size,
             items: self.items,
@@ -446,7 +451,7 @@ impl ExporterAttempt {
 /// Completed export operations.
 ///
 /// This set will be deprecated after exporters migrate to
-/// [`ExporterAttemptedMetrics`] and node-consumer terminal accounting.
+/// the shared exporter attempt metrics and node-consumer terminal accounting.
 #[metric_set(
     name = "exporter.exports",
     measurement_attributes = SignalOutcomeAttributes
@@ -473,7 +478,7 @@ impl ExporterExportMetrics {
 
 /// Lifecycle and wire bytes for messages admitted by a receiver.
 ///
-/// This set will be deprecated after receivers migrate to [`ReceiverReceivedMetrics`].
+/// This set will be deprecated after receivers migrate to the shared receiver metrics.
 #[metric_set(
     name = "receiver.messages",
     measurement_attributes = SignalAttributes
@@ -802,7 +807,7 @@ mod tests {
                     item_count_called.set(true);
                     5
                 });
-                attempt.set_payload_size(|| {
+                attempt.set_payload_size_with(|| {
                     payload_size_called.set(true);
                     128
                 });
@@ -844,7 +849,7 @@ mod tests {
                     item_count_called.set(true);
                     5
                 });
-                attempt.set_payload_size(|| {
+                attempt.set_payload_size_with(|| {
                     payload_size_called.set(true);
                     128
                 });
@@ -880,12 +885,11 @@ mod tests {
         let payload_size_called = Cell::new(false);
 
         let completed = metrics.processing().run(|processing| {
-            processing.set_signal(SignalType::Logs);
-            processing.set_payload_size(|| {
+            processing.set_payload_size_with(|| {
                 payload_size_called.set(true);
                 128
             });
-            Ok::<(), ()>(())
+            Ok::<_, ()>((SignalType::Logs, ()))
         });
         metrics.record(completed).expect("processing succeeds");
 
@@ -913,11 +917,11 @@ mod tests {
 
         let completed = metrics.processing().run(|processing| {
             processing.set_signal(SignalType::Traces);
-            processing.set_payload_size(|| {
+            processing.set_payload_size_with(|| {
                 payload_size_called.set(true);
                 128
             });
-            Err::<(), ()>(())
+            Err::<(SignalType, ()), ()>(())
         });
         assert!(metrics.record(completed).is_err());
 
@@ -951,10 +955,9 @@ mod tests {
         let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(interests);
         let mut metrics = ReceiverMetrics::register(&pipeline_ctx);
 
-        let completed = metrics.processing().run(|processing| {
-            processing.set_signal(SignalType::Logs);
-            Ok::<(), ()>(())
-        });
+        let completed = metrics
+            .processing()
+            .run(|_| Ok::<_, ()>((SignalType::Logs, ())));
         metrics.record(completed).expect("processing succeeds");
 
         let snapshots = metrics.terminal_snapshots();
@@ -981,18 +984,6 @@ mod tests {
         }));
     }
 
-    /// Scenario: Receiver processing succeeds without classifying its signal.
-    /// Guarantees: Recording fails loudly instead of silently omitting mandatory shared metrics.
-    #[test]
-    #[should_panic(expected = "successful receiver processing must set its signal")]
-    fn receiver_helper_rejects_success_without_signal() {
-        let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::empty());
-        let mut metrics = ReceiverMetrics::register(&pipeline_ctx);
-
-        let completed = metrics.processing().run(|_| Ok::<(), ()>(()));
-        metrics.record(completed).expect("processing succeeds");
-    }
-
     /// Scenario: Receiver processing fails before the message signal can be classified.
     /// Guarantees: The original error is returned without emitting incorrectly attributed shared metrics.
     #[test]
@@ -1002,9 +993,73 @@ mod tests {
 
         let completed = metrics
             .processing()
-            .run(|_| Err::<(), _>("invalid envelope"));
+            .run(|_| Err::<(SignalType, ()), _>("invalid envelope"));
         assert_eq!(metrics.record(completed), Err("invalid envelope"));
         assert!(metrics.terminal_snapshots().is_empty());
+    }
+
+    /// Scenario: A classified receiver operation is refused by local policy.
+    /// Guarantees: The error and optional measurements are recorded with the refused outcome.
+    #[test]
+    fn receiver_helper_records_explicit_refused_outcome() {
+        let interests = Interests::COMPONENT_DURATION | Interests::PRODUCED_CONSUMED_SIZE;
+        let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(interests);
+        let mut metrics = ReceiverMetrics::register(&pipeline_ctx);
+
+        let completed = metrics.processing().run(|processing| {
+            processing.set_signal(SignalType::Logs);
+            processing.mark_refused();
+            processing.set_payload_size_with(|| 128);
+            Err::<(SignalType, ()), _>("capacity")
+        });
+        assert_eq!(metrics.record(completed), Err("capacity"));
+
+        let snapshots = metrics.terminal_snapshots();
+        assert_eq!(snapshots.len(), 3);
+        assert!(snapshots.iter().all(|snapshot| {
+            snapshot.measurement_attribute_value("signal") == Some("logs")
+                && snapshot.measurement_attribute_value("outcome") != Some("failure")
+        }));
+        assert!(snapshots.iter().any(|snapshot| {
+            snapshot.descriptor().name == "receiver.received"
+                && snapshot.measurement_attribute_value("outcome") == Some("refused")
+        }));
+    }
+
+    /// Scenario: An exporter attempt is refused by local policy before delivery.
+    /// Guarantees: The original error is returned and the attempt is recorded as refused.
+    #[tokio::test]
+    async fn exporter_helper_records_explicit_refused_outcome() {
+        let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::empty());
+        let mut metrics = ExporterMetrics::register(&pipeline_ctx);
+
+        let completed = metrics
+            .attempt(SignalType::Metrics)
+            .run(async |attempt| {
+                attempt.mark_refused();
+                Err::<(), _>("policy")
+            })
+            .await;
+        assert_eq!(metrics.record(completed), Err("policy"));
+        let snapshots = metrics.terminal_snapshots();
+        assert_eq!(snapshots.len(), 1);
+        let snapshot = &snapshots[0];
+        assert_eq!(snapshot.descriptor().name, "exporter.attempted");
+        assert_eq!(
+            snapshot.measurement_attribute_value("signal"),
+            Some("metrics")
+        );
+        assert_eq!(
+            snapshot.measurement_attribute_value("outcome"),
+            Some("refused")
+        );
+        let messages = snapshot
+            .descriptor()
+            .metrics
+            .iter()
+            .position(|metric| metric.name == "messages")
+            .expect("messages metric");
+        assert_eq!(snapshot.get_metrics()[messages].to_u64_lossy(), 1);
     }
 
     /// Scenario: One logical export requires a failed attempt followed by a successful retry.
