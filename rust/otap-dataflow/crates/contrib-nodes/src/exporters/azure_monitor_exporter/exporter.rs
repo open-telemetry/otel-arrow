@@ -45,12 +45,19 @@ const PERIODIC_EXPORT_INTERVAL: u64 = 3;
 
 /// Raises shared auth warnings under the Azure Monitor event namespace.
 const AZURE_MONITOR_AUTH_EVENTS: HttpClientAuthProviderEvents = HttpClientAuthProviderEvents {
-    invalid: |error| {
-        otel_warn!("azure_monitor_exporter.auth.invalid", error = %error);
+    invalid: |source, error| {
+        otel_warn!("azure_monitor_exporter.auth.invalid", source = %source, error = %error);
     },
-    stream_closed: || {
+    error: |source, error| {
+        otel_error!("azure_monitor_exporter.auth.error", source = %source, error = %error);
+    },
+    retry: |source, error| {
+        otel_warn!("azure_monitor_exporter.auth.retry", source = %source, error = %error);
+    },
+    stream_closed: |source| {
         otel_warn!(
             "azure_monitor_exporter.auth.stream_closed",
+            source = %source,
             message = "auth provider closed its stream; no further auth refreshes will arrive"
         );
     },
@@ -1239,8 +1246,9 @@ mod tests {
     /// can be raised without panicking.
     #[test]
     fn bearer_auth_events_are_reportable() {
-        (AZURE_MONITOR_AUTH_EVENTS.invalid)("");
-        (AZURE_MONITOR_AUTH_EVENTS.stream_closed)();
+        (AZURE_MONITOR_AUTH_EVENTS.invalid)("", "");
+        (AZURE_MONITOR_AUTH_EVENTS.error)("", "");
+        (AZURE_MONITOR_AUTH_EVENTS.stream_closed)("");
     }
 
     // Azure Monitor can temporarily stop accepting new pdata while it is at

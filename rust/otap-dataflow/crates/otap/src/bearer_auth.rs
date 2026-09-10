@@ -127,7 +127,7 @@ impl HttpClientAuthProvider for BearerAuth {
                     }
                     Err(e) => {
                         // Malformed token: keep the previous cached token (if any).
-                        (events.invalid)(&format!("Malformed token: {e}"));
+                        (events.invalid)("BearerAuth", &format!("Malformed token: {e}"));
                     }
                 }
             }
@@ -136,7 +136,7 @@ impl HttpClientAuthProvider for BearerAuth {
                 // Keep using the last cached token. Not expected with a
                 // watch-backed provider while we hold its handle, so warn.
                 self.stream_active = false;
-                (events.stream_closed)();
+                (events.stream_closed)("BearerAuth");
             }
         }
     }
@@ -240,8 +240,10 @@ mod tests {
     /// thread-local; the test harness gives each test its own thread, and every
     /// test resets them before use.
     const TEST_EVENTS: HttpClientAuthProviderEvents = HttpClientAuthProviderEvents {
-        invalid: |_| INVALID.set(INVALID.get() + 1),
-        stream_closed: || STREAM_CLOSURES.set(STREAM_CLOSURES.get() + 1),
+        invalid: |_, _| INVALID.set(INVALID.get() + 1),
+        error: |_, _| {},
+        retry: |_, _| {},
+        stream_closed: |_| STREAM_CLOSURES.set(STREAM_CLOSURES.get() + 1),
     };
 
     fn reset_events() {

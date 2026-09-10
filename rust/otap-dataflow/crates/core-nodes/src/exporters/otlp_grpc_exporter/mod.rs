@@ -68,12 +68,19 @@ pub const OTLP_EXPORTER_URN: &str = "urn:otel:exporter:otlp_grpc";
 
 /// Raises the shared auth warnings under this exporter's event namespace.
 const GRPC_AUTH_EVENTS: HttpClientAuthProviderEvents = HttpClientAuthProviderEvents {
-    invalid: |error| {
-        otel_warn!("otlp.exporter.grpc.auth.invalid", error = %error);
+    invalid: |source, error| {
+        otel_warn!("otlp.exporter.grpc.auth.invalid", source = %source, error = %error);
     },
-    stream_closed: || {
+    error: |source, error| {
+        otel_error!("otlp.exporter.grpc.auth.error", source = %source, error = %error);
+    },
+    retry: |source, error| {
+        otel_warn!("otlp.exporter.grpc.auth.retry", source = %source, error = %error);
+    },
+    stream_closed: |source| {
         otel_warn!(
             "otlp.exporter.grpc.auth.stream_closed",
+            source = %source,
             message = "auth provider closed its stream; \
                 no further auth refreshes will arrive"
         );

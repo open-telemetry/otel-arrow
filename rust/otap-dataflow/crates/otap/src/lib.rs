@@ -62,6 +62,8 @@ pub mod http_client_auth_provider;
 /// Cloud specific auth utilities
 pub mod cloud_auth;
 
+mod agent_fed_auth;
+
 mod api_key_auth;
 
 mod basic_auth;

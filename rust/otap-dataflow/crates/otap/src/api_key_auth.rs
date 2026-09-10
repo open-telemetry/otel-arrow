@@ -106,14 +106,20 @@ impl HttpClientAuthProvider for ApiKeyAuth {
                     Some(header) => match HeaderName::from_str(header) {
                         Ok(header) => header,
                         Err(e) => {
-                            (events.invalid)(&format!(
-                                "API Key configured HTTP header attribute is malformed: {e}"
-                            ));
+                            (events.invalid)(
+                                "ApiKeyAuth",
+                                &format!(
+                                    "API Key configured HTTP header attribute is malformed: {e}"
+                                ),
+                            );
                             return;
                         }
                     },
                     None => {
-                        (events.invalid)("API Key HTTP header attribute not configured");
+                        (events.invalid)(
+                            "ApiKeyAuth",
+                            "API Key HTTP header attribute not configured",
+                        );
                         return;
                     }
                 };
@@ -137,7 +143,7 @@ impl HttpClientAuthProvider for ApiKeyAuth {
                     }
                     Err(e) => {
                         // Malformed API Key: keep the previous cached API Key (if any).
-                        (events.invalid)(&format!("Malformed API Key: {e}"));
+                        (events.invalid)("ApiKeyAuth", &format!("Malformed API Key: {e}"));
                     }
                 }
             }
@@ -146,7 +152,7 @@ impl HttpClientAuthProvider for ApiKeyAuth {
                 // Keep using the last cached API Key. Not expected with a
                 // watch-backed provider while we hold its handle, so warn.
                 self.stream_active = false;
-                (events.stream_closed)();
+                (events.stream_closed)("ApiKeyAuth");
             }
         }
     }
@@ -170,8 +176,10 @@ mod tests {
     /// thread-local; the test harness gives each test its own thread, and every
     /// test resets them before use.
     const TEST_EVENTS: HttpClientAuthProviderEvents = HttpClientAuthProviderEvents {
-        invalid: |_| INVALID.set(INVALID.get() + 1),
-        stream_closed: || STREAM_CLOSURES.set(STREAM_CLOSURES.get() + 1),
+        invalid: |_, _| INVALID.set(INVALID.get() + 1),
+        error: |_, _| {},
+        retry: |_, _| {},
+        stream_closed: |_| STREAM_CLOSURES.set(STREAM_CLOSURES.get() + 1),
     };
 
     fn reset_events() {

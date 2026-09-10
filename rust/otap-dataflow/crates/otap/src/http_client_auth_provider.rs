@@ -11,7 +11,10 @@ use otel_arrow_dfe_engine::{
 };
 use tonic::async_trait;
 
-use crate::{api_key_auth::ApiKeyAuth, basic_auth::BasicAuth, bearer_auth::BearerAuth};
+use crate::{
+    agent_fed_auth::AgentFedAuth, api_key_auth::ApiKeyAuth, basic_auth::BasicAuth,
+    bearer_auth::BearerAuth,
+};
 
 /// The warnings this adapter can raise, supplied by the owning component so
 /// each event name is namespaced to that component (e.g.
@@ -22,10 +25,16 @@ use crate::{api_key_auth::ApiKeyAuth, basic_auth::BasicAuth, bearer_auth::Bearer
 #[derive(Clone, Copy)]
 pub struct HttpClientAuthProviderEvents {
     /// A published credential could not be turned into a header.
-    pub invalid: fn(&str),
+    pub invalid: fn(&str, &str),
+
+    /// An error occured publishing a credential.
+    pub error: fn(&str, &str),
+
+    /// A credential retrieval will be retried.
+    pub retry: fn(&str, &str),
 
     /// The provider closed its stream; no further refreshes will arrive.
-    pub stream_closed: fn(),
+    pub stream_closed: fn(&str),
 }
 
 /// Manages credentials and injects HTTP Authorization headers.
@@ -110,59 +119,64 @@ pub fn new_http_client_auth_provider(
     capabilities: &Capabilities,
     supported_providers: HttpClientAuthProviders,
 ) -> Result<Option<Box<dyn HttpClientAuthProvider>>, otel_arrow_dfe_config::error::Error> {
-    // Optionally resolve a bound bearer token provider. A bound provider supplies refreshed tokens.
-    let bearer_auth = match supported_providers.contains(HttpClientAuthProviders::BEARER_TOKEN) {
-        true => capabilities
+    let mut providers: Vec<Box<dyn HttpClientAuthProvider>> = vec![];
+
+    if supported_providers.contains(HttpClientAuthProviders::BEARER_TOKEN) {
+        // Optionally resolve a bound bearer token provider. A bound provider supplies refreshed bearer tokens.
+        if let Some(bearer_auth) = capabilities
             .optional_local::<otel_arrow_dfe_engine::capability::auth::bearer_token_provider::BearerTokenProvider>()
             .map_err(|e| otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
             })?
-            .map(BearerAuth::new),
-        false => None
-    };
+            .map(BearerAuth::new) {
+            providers.push(Box::new(bearer_auth));
+        }
 
-    // Optionally resolve a bound api key provider. A bound provider supplies refreshed API Keys.
-    let api_key_auth = match supported_providers.contains(HttpClientAuthProviders::API_KEY) {
-        true => capabilities
+        // Optionally resolve an agent fed credential provider. A bound provider supplies refreshed bearer tokens.
+        if let Some(agent_fed_auth) = capabilities
+            .optional_local::<otel_arrow_dfe_engine::capability::auth::agent_fed_credential_provider::AgentFedCredentialProvider>()
+            .map_err(|e| otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                error: e.to_string(),
+            })?
+            .map(AgentFedAuth::new) {
+            providers.push(Box::new(agent_fed_auth));
+        }
+    }
+
+    if supported_providers.contains(HttpClientAuthProviders::API_KEY) {
+        // Optionally resolve a bound api key provider. A bound provider supplies refreshed API Keys.
+        if let Some(api_key_auth) = capabilities
             .optional_local::<otel_arrow_dfe_engine::capability::auth::api_key_provider::ApiKeyProvider>()
             .map_err(|e| otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
             })?
-            .map(ApiKeyAuth::new),
-        false => None
-    };
+            .map(ApiKeyAuth::new) {
+            providers.push(Box::new(api_key_auth));
+        }
+    }
 
-    // Optionally resolve a bound basic auth provider. A bound provider supplies refreshed credentials.
-    let basic_auth = match supported_providers.contains(HttpClientAuthProviders::BASIC) {
-        true => capabilities
+    if supported_providers.contains(HttpClientAuthProviders::BASIC) {
+        // Optionally resolve a bound basic auth provider. A bound provider supplies refreshed credentials.
+        if let Some(basic_auth) = capabilities
             .optional_local::<otel_arrow_dfe_engine::capability::auth::basic_auth_provider::BasicAuthProvider>()
             .map_err(|e| otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
             })?
-            .map(BasicAuth::new),
-        false => None
-    };
-
-    let count_of_providers = vec![
-        bearer_auth.is_some(),
-        api_key_auth.is_some(),
-        basic_auth.is_some(),
-    ]
-    .into_iter()
-    .filter(|v| *v)
-    .count();
-    if count_of_providers > 1 {
-        return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
-            error: "Multiple authentication providers cannot be bound to a single component".into(),
-        });
+            .map(BasicAuth::new) {
+            providers.push(Box::new(basic_auth));
+        }
     }
 
-    Ok(if let Some(bearer_auth) = bearer_auth {
-        Some(Box::new(bearer_auth))
-    } else if let Some(api_key_auth) = api_key_auth {
-        Some(Box::new(api_key_auth))
-    } else if let Some(basic_auth) = basic_auth {
-        Some(Box::new(basic_auth))
+    let mut providers = providers.into_iter();
+
+    Ok(if let Some(first_provider) = providers.next() {
+        if providers.next().is_some() {
+            return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                error: "Multiple authentication providers cannot be bound to a single component"
+                    .into(),
+            });
+        }
+        Some(first_provider)
     } else {
         // Absent bindings keeps the default (no-auth) behavior
         None

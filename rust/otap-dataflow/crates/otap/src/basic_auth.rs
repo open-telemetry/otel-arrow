@@ -122,7 +122,7 @@ impl HttpClientAuthProvider for BasicAuth {
                     }
                     Err(e) => {
                         // Malformed credential: keep the previous cached credential (if any).
-                        (events.invalid)(&format!("Malformed credential: {e}"));
+                        (events.invalid)("BasicAuth", &format!("Malformed credential: {e}"));
                     }
                 }
             }
@@ -131,7 +131,7 @@ impl HttpClientAuthProvider for BasicAuth {
                 // Keep using the last cached credential. Not expected with a
                 // watch-backed provider while we hold its handle, so warn.
                 self.stream_active = false;
-                (events.stream_closed)();
+                (events.stream_closed)("BasicAuth");
             }
         }
     }
@@ -155,8 +155,10 @@ mod tests {
     /// thread-local; the test harness gives each test its own thread, and every
     /// test resets them before use.
     const TEST_EVENTS: HttpClientAuthProviderEvents = HttpClientAuthProviderEvents {
-        invalid: |_| INVALID.set(INVALID.get() + 1),
-        stream_closed: || STREAM_CLOSURES.set(STREAM_CLOSURES.get() + 1),
+        invalid: |_, _| INVALID.set(INVALID.get() + 1),
+        error: |_, _| {},
+        retry: |_, _| {},
+        stream_closed: |_| STREAM_CLOSURES.set(STREAM_CLOSURES.get() + 1),
     };
 
     fn reset_events() {
