@@ -2,13 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! This module contains a [`PipelineStage`] implementation that can apply transformation pipeline
-//! to attributes [`RecordBatch`].
+//! to some nested, repeated field in the OTAP model (e.g. attributes or metric datapoints).
 //!
-//! This allows us to treat attributes individually as members of a stream, as opposed to members
-//! properties on a stream of logs/traces/metrics.
-
-// TODO fix all the comments in this where it says stuff that it's like attribute specific or whatever
-// TODO we might want unit tests for applying to data points
+//! This allows us to treat attributes/datapoints individually as members of a stream, as opposed
+//! to properties on a stream of logs/traces/metrics.
 
 use std::sync::Arc;
 
@@ -24,9 +21,13 @@ use crate::pipeline::PipelineStage;
 use crate::pipeline::planner::AttributesIdentifier;
 use crate::pipeline::state::ExecutionState;
 
+/// The source for which to apply the pipeline. Records belonging to this source data will be
+/// treated as the main record by execution of the child pipeline stages.
 pub enum ApplySource {
+    /// Apply the child pipeline to attributes
     Attributes(AttributesIdentifier),
 
+    /// Apply the child pipeline to metric attributes
     DataPoints,
 }
 
@@ -181,6 +182,8 @@ mod test {
     use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
 
     use crate::pipeline::{Pipeline, planner::PipelinePlanner, test::exec_logs_pipeline};
+
+    mod data_point;
 
     fn gen_logs_records_with_string_attrs() -> Vec<LogRecord> {
         vec![

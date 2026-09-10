@@ -422,8 +422,6 @@ mod test {
 
     use super::*;
 
-    mod data_point;
-
     /// helper function for converting [`OtapArrowRecords`] to [`LogsData`]
     pub fn otap_to_logs_data(otap_batch: OtapArrowRecords) -> LogsData {
         let otap_payload: OtapPayload = otap_batch.into();

@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Tests for pipelines that process metrics data points
+//! Tests for pipelines applied to metrics data points
 
 use otel_arrow_contrib_data_engine_kql_parser::Parser;
 use otel_arrow_dfe_pdata::{
