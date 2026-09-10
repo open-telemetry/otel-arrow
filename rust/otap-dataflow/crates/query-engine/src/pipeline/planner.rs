@@ -894,6 +894,8 @@ impl PipelinePlanner {
 
                     // TODO - we should maybe have tests that we plan/identify data_points as a source ...?
 
+                    println!("here {:?}", apply_source);
+
                     results.push(Box::new(ApplyPipelineStage::new(
                         apply_source,
                         child_pipeline,
@@ -935,6 +937,7 @@ impl PipelinePlanner {
             results.push(Box::new(pipeline_stage));
         }
 
+        println!("number of sets = {:?}", results.len());
         Ok(results)
     }
 }

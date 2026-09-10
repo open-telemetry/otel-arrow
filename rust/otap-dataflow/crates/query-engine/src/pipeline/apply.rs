@@ -23,6 +23,7 @@ use crate::pipeline::state::ExecutionState;
 
 /// The source for which to apply the pipeline. Records belonging to this source data will be
 /// treated as the main record by execution of the child pipeline stages.
+#[derive(Debug)]
 pub enum ApplySource {
     /// Apply the child pipeline to attributes
     Attributes(AttributesIdentifier),
