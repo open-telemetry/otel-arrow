@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789058440755,
+  "lastUpdate": 1789060320086,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -35487,6 +35487,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 103.35,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "drewrelmas@gmail.com",
+            "name": "Drew Relmas",
+            "username": "drewrelmas"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "90191244ea20be54895599be25e54e0279fe9df7",
+          "message": "feat(flow): Add per-flow duration_distribution configuration for Mmsc/Histogram instruments (#3995)\n\n# Change summary\n\n- Add per-flow `duration_distribution` configuration for\n`flow.compute.duration`.\n- Add a dedicated `DistributionTier` to select basic MMSC, normal\nexponential histogram, or detailed exponential histogram aggregation\nindependently from metric enablement.\n- Preserve `normal` as the default and keep the metric name, scope,\nattributes, unit, and recording semantics unchanged.\n- Document the compatibility, fidelity, and memory tradeoffs of each\ntier.\n- Keep this aggregation policy complementary to the component-duration\nenablement introduced by\nhttps://github.com/open-telemetry/otel-arrow/pull/3983.\n- Establish the flow metric as the proof point for a follow-up\ntelemetry-wide distribution policy.\n\n## Rationale\n\n| Decision | Rationale |\n| --- | --- |\n| Separate `MetricLevel` and `DistributionTier` | Enablement and\naggregation fidelity are independent; `none` is not a distribution tier.\n|\n| Keep three typed metric sets | Descriptors are derived from Rust field\ntypes, so static selection prevents descriptor/value mismatches. |\n| Pair each typed metric set with its accumulator | Tier mismatches are\nunrepresentable instead of requiring a runtime panic. |\n| Allow different tiers across flows | Existing flow attributes create\ndistinct OTLP scope identities; backends that flatten scopes should use\none wire type across flows and deployments. |\n\n## Related issue\n\n- Part of #3670\n- This is a proof-of-concept of the strategy described in that issue.\nFollow-up should apply it more broadly in an engine-level policy that\nall distribution-recording components respect.\n\n## Validation\n\nUnit tests\n\n## User-facing changes\n\nAllow flow compute duration metrics to select basic, normal, or detailed\ndistribution aggregation.",
+          "timestamp": "2026-09-10T16:20:03Z",
+          "tree_id": "dcc5615f82867ad32e17452265ba6a89a5073092",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/90191244ea20be54895599be25e54e0279fe9df7"
+        },
+        "date": 1789060304547,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 83.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.88,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.71,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 71.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.8,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 116.08,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 103.29,
             "unit": "MB"
           }
         ]
