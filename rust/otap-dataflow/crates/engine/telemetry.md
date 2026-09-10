@@ -33,18 +33,21 @@ control-plane metrics. Its default value is `basic`.
 | --- | --- |
 | `none` | No channel or node input/output metrics. |
 | `basic` | `channel.*` metrics. |
-| `normal` | `basic`, plus `node.input.messages` and `node.output.messages`. A node can also opt into item and size metrics. |
-| `detailed` | `normal`, plus node duration, component duration, item, and size metrics for every node. |
+| `normal` | `basic`, plus `node.input.messages` and `node.output.messages`. |
+| `detailed` | `normal`, plus completion duration, local duration, item, and size metrics for every node. |
 
-At any level, enable component-owned optional measurements on an individual
+At any level, enable optional measurements on an individual
 node with
+`policies.telemetry.messages: true`,
+`policies.telemetry.completion_duration: true`,
 `policies.telemetry.duration: true`,
 `policies.telemetry.item_counts: true`, and/or
-`policies.telemetry.size: true`. These flags always affect component-owned
-metrics. Item counts and size additionally affect engine-owned node input/output
-metrics only when `runtime_metrics` is `normal` or higher. The duration option
-controls component-owned metrics such as `receiver.processing.duration` and
-`exporter.attempted.duration`, as well as `processor.compute.duration`.
+`policies.telemetry.size: true`. Completion duration enables only
+`node.completion.duration`. Messages, item counts, and size independently
+enable the corresponding engine-managed node input/output metrics. The
+duration option controls node-implemented metrics such as
+`receiver.processing.duration`, `exporter.attempted.duration`, and
+`processor.compute.duration`.
 
 Node kind determines which side exists:
 
@@ -78,19 +81,18 @@ counts, see [Node and Flow Metrics](../../docs/node-and-flow-metrics.md#flow-met
 | `channel.receiver.messages` | Number of messages successfully dequeued, grouped by `signal` for PData channels. | `runtime_metrics` is `basic` or higher and a data or control message is dequeued. Empty polls and channel closure are not counted. |
 | `channel.receiver.queue.depth` | Current number of messages buffered in the channel. | `runtime_metrics` is `basic` or higher and the channel exists; sampled on the reporting interval. |
 | `channel.receiver.capacity` | Configured channel buffer capacity. | `runtime_metrics` is `basic` or higher and the channel exists; sampled on the reporting interval. |
-| `node.input.duration` | Duration from entry until the corresponding ack or nack is routed, in seconds (histogram). | `runtime_metrics` is `detailed`, a processor or exporter consumes PData, and its terminal ack or nack unwinds. |
+| `node.completion.duration` | Duration from the tracked node boundary until the corresponding ack or nack is routed, in seconds (histogram). | `runtime_metrics` is `detailed` or that node sets `policies.telemetry.completion_duration: true`, and the terminal ack or nack unwinds. The boundary is receiver output or processor/exporter input. |
 | `node.input.messages` | Messages received by the node, grouped by the `signal` and `outcome` datapoint attributes. | `runtime_metrics` is `normal` or `detailed`, a processor or exporter consumes PData, and its terminal ack or nack unwinds. |
-| `node.input.items` | Signal items received by an item-count-enabled node, grouped by the `signal` and `outcome` datapoint attributes. | Input message conditions are met and either the level is `detailed` or that processor/exporter sets `policies.telemetry.item_counts: true`. |
-| `node.input.size` | Logical payload bytes received by a size-enabled node, grouped by the `signal` and `outcome` datapoint attributes. | Input message conditions are met and either the level is `detailed` or that processor/exporter sets `policies.telemetry.size: true`. |
-| `node.output.duration` | Duration from output until the corresponding ack or nack is routed, in seconds (histogram). | `runtime_metrics` is `detailed`, a receiver emits PData, and its terminal ack or nack unwinds. Processor latency is recorded in `node.input.duration`. |
+| `node.input.items` | Signal items received by an item-count-enabled node, grouped by the `signal` and `outcome` datapoint attributes. | The level is `detailed` or that processor/exporter sets `policies.telemetry.item_counts: true`, and the terminal ack or nack unwinds. |
+| `node.input.size` | Logical payload bytes received by a size-enabled node, grouped by the `signal` and `outcome` datapoint attributes. | The level is `detailed` or that processor/exporter sets `policies.telemetry.size: true`, and the terminal ack or nack unwinds. |
 | `node.output.messages` | Messages emitted by the node, grouped by the `signal` and `outcome` datapoint attributes. | `runtime_metrics` is `normal` or `detailed`, a receiver or processor sends PData, and its terminal ack or nack unwinds. A processor that drops a whole message produces no output datapoint for it. |
-| `node.output.items` | Signal items emitted by an item-count-enabled node, grouped by the `signal` and `outcome` datapoint attributes. | Output message conditions are met and either the level is `detailed` or that receiver/processor sets `policies.telemetry.item_counts: true`. |
-| `node.output.size` | Logical payload bytes emitted by a size-enabled node, grouped by the `signal` and `outcome` datapoint attributes. | Output message conditions are met and either the level is `detailed` or that receiver/processor sets `policies.telemetry.size: true`. |
-| `receiver.received.messages` | Classified external messages whose receiver-local handling reached a terminal local outcome, grouped by `signal` and `outcome`. | A receiver implements the shared receiver contract and finishes handling a message. |
+| `node.output.items` | Signal items emitted by an item-count-enabled node, grouped by the `signal` and `outcome` datapoint attributes. | The level is `detailed` or that receiver/processor sets `policies.telemetry.item_counts: true`, and the terminal ack or nack unwinds. |
+| `node.output.size` | Logical payload bytes emitted by a size-enabled node, grouped by the `signal` and `outcome` datapoint attributes. | The level is `detailed` or that receiver/processor sets `policies.telemetry.size: true`, and the terminal ack or nack unwinds. |
+| `receiver.received.messages` | Classified external messages whose receiver-local handling reached a terminal local outcome, grouped by `signal` and `outcome`. | The receiver implements the shared receiver contract, message metrics are enabled, and local handling finishes. |
 | `receiver.received.payload.size` | Encoded application payload bytes observed at the receiver boundary, grouped by `signal` and `outcome`. | A receiver implements the shared receiver contract and finishes handling a message. |
-| `receiver.processing.duration` | Receiver-local processing duration in seconds, grouped by `signal`. | The receiver implements the shared contract and component duration is enabled. The documented boundary ends before downstream handoff or wait. |
-| `exporter.attempted.messages` | Component-local delivery attempts, including preparation failures and each backend retry, grouped by `signal` and `outcome`. This is distinct from PData messages counted by `node.input.messages`. | An exporter implements the shared exporter contract and an attempt reaches a terminal local or backend result. |
-| `exporter.attempted.duration` | Export attempt duration in seconds, grouped by `signal` and `outcome`. | The exporter implements the shared contract and component duration is enabled. Encoding and backend latency are included; Ack/Nack notification delivery is excluded. |
+| `receiver.processing.duration` | Receiver-local processing duration in seconds, grouped by `signal`. | The receiver implements the shared contract and local duration is enabled. The documented boundary ends before downstream handoff or wait. |
+| `exporter.attempted.messages` | Node-local delivery attempts, including preparation failures and each backend retry, grouped by `signal` and `outcome`. This is distinct from PData messages counted by `node.input.messages`. | The exporter implements the shared exporter contract, message metrics are enabled, and an attempt reaches a terminal local or backend result. |
+| `exporter.attempted.duration` | Export attempt duration in seconds, grouped by `signal` and `outcome`. | The exporter implements the shared contract and local duration is enabled. Encoding and backend latency are included; Ack/Nack notification delivery is excluded. |
 | `exporter.attempted.payload.size` | Encoded application payload bytes produced or submitted by exporter attempts, grouped by `signal` and `outcome`. | The exporter implements the shared contract, size measurement is enabled, and encoded size is available. |
 | `exporter.attempted.items` | Signal items handled by exporter attempts, grouped by `signal` and `outcome`. | The exporter implements the shared contract and item counting is enabled. |
 | `flow.input.messages` | PData messages entering an opted-in processor flow, grouped by the `signal` datapoint attribute. | A configured flow enables `input_messages` and a message enters its start processor. |

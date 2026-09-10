@@ -68,7 +68,7 @@ pub struct Context {
     /// active at a time (non-overlapping ranges).
     flow_compute_ns: Option<NonZeroU64>,
     /// Signal type of the payload, captured on the forward path to attribute
-    /// per-signal produced/consumed metrics during ack/nack unwinding.
+    /// per-signal input/output metrics during ack/nack unwinding.
     ///
     /// A pdata batch is homogeneous, so signal is a pdata-level property stored
     /// once here rather than duplicated on every routing frame. It is captured
@@ -109,7 +109,7 @@ impl Context {
             // Different node -> inherit RETURN_DATA from predecessor.
             interests |= top.interests & Interests::RETURN_DATA;
         }
-        let entry_time_ns = if interests.contains(Interests::ENTRY_TIMESTAMP) {
+        let entry_time_ns = if interests.contains(Interests::NODE_COMPLETION_DURATION) {
             nanos_since_birth()
         } else {
             0
@@ -122,10 +122,10 @@ impl Context {
                 entry_time_ns,
                 ..Default::default()
             },
-            produced_items: 0,
-            consumed_items: 0,
-            produced_size: 0,
-            consumed_size: 0,
+            output_items: 0,
+            input_items: 0,
+            output_size: 0,
+            input_size: 0,
         });
     }
 
@@ -173,7 +173,7 @@ impl Context {
         self.stack.iter().any(|frame| {
             frame
                 .interests
-                .intersects(Interests::ACKS_OR_NACKS | Interests::PIPELINE_METRICS)
+                .intersects(Interests::ACKS_OR_NACKS | Interests::NODE_METRICS)
         })
     }
 
@@ -200,7 +200,10 @@ impl Context {
     #[must_use]
     fn has_timing(&self, subscriber_interest: Interests) -> bool {
         for frame in self.stack.iter().rev() {
-            if frame.interests.intersects(Interests::ENTRY_TIMESTAMP) {
+            if frame
+                .interests
+                .intersects(Interests::NODE_COMPLETION_DURATION)
+            {
                 return true;
             }
             if frame.interests.intersects(subscriber_interest) {
@@ -233,10 +236,10 @@ impl Context {
             interests,
             node_id,
             route: RouteData::default(),
-            produced_items: 0,
-            consumed_items: 0,
-            produced_size: 0,
-            consumed_size: 0,
+            output_items: 0,
+            input_items: 0,
+            output_size: 0,
+            input_size: 0,
         });
     }
 
@@ -254,30 +257,30 @@ impl Context {
     /// are merged without touching user calldata.  Otherwise a new frame
     /// is pushed, inheriting `RETURN_DATA` from the predecessor.
     ///
-    /// When `ENTRY_TIMESTAMP` is present in `interests`, the frame's
-    /// entry timestamp is captured automatically.
+    /// When `NODE_COMPLETION_DURATION` is present in `interests`, the frame's
+    /// entry timestamp is captured for terminal Ack/Nack duration measurement.
     fn update_send_context(&mut self, node_id: usize, interests: Interests) {
-        if let Some(top) = self.stack.last_mut()
-            && top.node_id == node_id
-        {
-            top.interests |= interests;
-            if interests.contains(Interests::ENTRY_TIMESTAMP | Interests::PRODUCER_METRICS)
-                && top.route.entry_time_ns == 0
-            {
-                // Note: This update is only for receivers which need
-                // to capture timestamp here in case they did not use
-                // subscribe_to. If they called called subscribe_to,
-                // this will be skipped by a non-zero timestamp.
-                top.route.entry_time_ns = nanos_since_birth();
+        if let Some(top) = self.stack.last_mut() {
+            if top.node_id == node_id {
+                top.interests |= interests;
+                if interests.contains(Interests::NODE_COMPLETION_DURATION)
+                    && top.route.entry_time_ns == 0
+                {
+                    // Note: This update is only for receivers which need
+                    // to capture timestamp here in case they did not use
+                    // subscribe_to. If they called called subscribe_to,
+                    // this will be skipped by a non-zero timestamp.
+                    top.route.entry_time_ns = nanos_since_birth();
+                }
+                return;
             }
-            return;
         }
         // Different node (or empty stack) -> push new frame.
         let mut frame_interests = interests;
         if let Some(last) = self.stack.last() {
             frame_interests |= last.interests & Interests::RETURN_DATA;
         }
-        let time_ns = if interests.contains(Interests::ENTRY_TIMESTAMP) {
+        let time_ns = if interests.contains(Interests::NODE_COMPLETION_DURATION) {
             nanos_since_birth()
         } else {
             0
@@ -290,55 +293,55 @@ impl Context {
                 entry_time_ns: time_ns,
                 ..Default::default()
             },
-            produced_items: 0,
-            consumed_items: 0,
-            produced_size: 0,
-            consumed_size: 0,
+            output_items: 0,
+            input_items: 0,
+            output_size: 0,
+            input_size: 0,
         });
     }
 
     /// Stamp the top frame's output port index.
     /// Called at send time so each clone sent through a different port
-    /// carries the correct producer output port index on the return path.
+    /// carries the correct output port index on the return path.
     pub(crate) fn stamp_output_port_index(&mut self, index: u16) {
         if let Some(top) = self.stack.last_mut() {
             top.route.output_port_index = index;
         }
     }
 
-    /// Record the per-signal item count produced by the current node at send
+    /// Record the per-signal item count emitted by the current node at send
     /// time onto the top frame, and remember the pdata's signal on the context.
-    /// Called only when the node has `PRODUCED_CONSUMED_ITEM_COUNTS` interest.
-    pub(crate) fn stamp_produced_items(&mut self, items: u32, signal: SignalType) {
+    /// Called only when the node has `NODE_ITEM_COUNTS` interest.
+    pub(crate) fn stamp_output_items(&mut self, items: u32, signal: SignalType) {
         self.capture_signal(signal);
         if let Some(top) = self.stack.last_mut() {
-            top.produced_items = items;
+            top.output_items = items;
         }
     }
 
-    /// Record the per-signal item count consumed by the current node at receive
+    /// Record the per-signal item count received by the current node
     /// time onto the top frame, and remember the pdata's signal on the context.
-    /// Called only when the node has `PRODUCED_CONSUMED_ITEM_COUNTS` interest.
-    pub(crate) fn stamp_consumed_items(&mut self, items: u32, signal: SignalType) {
+    /// Called only when the node has `NODE_ITEM_COUNTS` interest.
+    pub(crate) fn stamp_input_items(&mut self, items: u32, signal: SignalType) {
         self.capture_signal(signal);
         if let Some(top) = self.stack.last_mut() {
-            top.consumed_items = items;
+            top.input_items = items;
         }
     }
 
-    /// Record the logical payload size produced by the current node at send
+    /// Record the logical payload size emitted by the current node at send
     /// time onto the top frame.
-    pub(crate) fn stamp_produced_size(&mut self, size: u64) {
+    pub(crate) fn stamp_output_size(&mut self, size: u64) {
         if let Some(top) = self.stack.last_mut() {
-            top.produced_size = size;
+            top.output_size = size;
         }
     }
 
-    /// Record the logical payload size consumed by the current node at receive
+    /// Record the logical payload size received by the current node
     /// time onto the top frame.
-    pub(crate) fn stamp_consumed_size(&mut self, size: u64) {
+    pub(crate) fn stamp_input_size(&mut self, size: u64) {
         if let Some(top) = self.stack.last_mut() {
-            top.consumed_size = size;
+            top.input_size = size;
         }
     }
 
@@ -355,21 +358,29 @@ impl Context {
         self.signal
     }
 
-    /// Push an entry frame for a queue-consumer node (processor/exporter).
+    /// Push an entry frame for a node with a queue input (processor/exporter).
     /// The frame inherits RETURN_DATA from the predecessor.
     pub(crate) fn push_entry_frame(&mut self, node_id: usize, node_interests: Interests) {
-        // No frame needed when the engine has no consumer metrics interest.
-        if !node_interests.intersects(Interests::CONSUMER_METRICS | Interests::ENTRY_TIMESTAMP) {
+        // No frame needed when the engine has no input-side telemetry interest.
+        if !node_interests.intersects(
+            Interests::NODE_INPUT_METRICS
+                | Interests::NODE_COMPLETION_DURATION
+                | Interests::NODE_ITEM_COUNTS
+                | Interests::NODE_SIZE,
+        ) {
             return;
         }
         let mut interests = Interests::empty();
         if let Some(last) = self.stack.last() {
             interests = last.interests & Interests::RETURN_DATA;
         }
-        // Propagate consumer-metrics and entry-timestamp bits from the node.
-        interests |= node_interests & (Interests::CONSUMER_METRICS | Interests::ENTRY_TIMESTAMP);
-        // Timestamp: only when ENTRY_TIMESTAMP is requested.
-        let time_ns = if node_interests.contains(Interests::ENTRY_TIMESTAMP) {
+        interests |= node_interests
+            & (Interests::NODE_INPUT_METRICS
+                | Interests::NODE_COMPLETION_DURATION
+                | Interests::NODE_ITEM_COUNTS
+                | Interests::NODE_SIZE);
+        // Capture a timestamp only when completion duration is requested.
+        let time_ns = if node_interests.contains(Interests::NODE_COMPLETION_DURATION) {
             nanos_since_birth()
         } else {
             0
@@ -382,10 +393,10 @@ impl Context {
                 entry_time_ns: time_ns,
                 ..Default::default()
             },
-            produced_items: 0,
-            consumed_items: 0,
-            produced_size: 0,
-            consumed_size: 0,
+            output_items: 0,
+            input_items: 0,
+            output_size: 0,
+            input_size: 0,
         });
     }
 
@@ -442,7 +453,7 @@ impl Context {
     }
 
     /// Returns a reference to the top frame on the context stack.
-    /// Used by consumer metrics to read the current node's entry frame.
+    /// Used by input metrics to read the current node's entry frame.
     #[must_use]
     pub fn peek_top(&self) -> Option<&Frame> {
         self.stack.last()
@@ -777,38 +788,43 @@ impl OtapPdata {
 
     /// Prepare the context for a message-source send.
     ///
-    /// When `node_interests` includes `SOURCE_TAGGING`, `PRODUCER_METRICS`,
-    /// or `ENTRY_TIMESTAMP`, a source frame is ensured for `node_id` and
-    /// the relevant interests are merged into it.
+    /// When `node_interests` includes source tagging or output-side telemetry,
+    /// a source frame is ensured for `node_id` and the relevant interests are
+    /// merged into it.
     fn prepare_source_send(&mut self, node_interests: Interests, node_id: usize) {
         let trigger = node_interests
             & (Interests::SOURCE_TAGGING
-                | Interests::PRODUCER_METRICS
-                | Interests::ENTRY_TIMESTAMP);
+                | Interests::NODE_OUTPUT_METRICS
+                | Interests::NODE_COMPLETION_DURATION
+                | Interests::NODE_ITEM_COUNTS
+                | Interests::NODE_SIZE);
         if !trigger.is_empty() {
             self.context.update_send_context(
                 node_id,
-                node_interests & (Interests::PRODUCER_METRICS | Interests::ENTRY_TIMESTAMP),
+                node_interests
+                    & (Interests::NODE_OUTPUT_METRICS
+                        | Interests::NODE_COMPLETION_DURATION
+                        | Interests::NODE_ITEM_COUNTS
+                        | Interests::NODE_SIZE),
             );
-            if node_interests.contains(Interests::PRODUCER_METRICS) {
+            if node_interests.intersects(
+                Interests::NODE_OUTPUT_METRICS
+                    | Interests::NODE_COMPLETION_DURATION
+                    | Interests::NODE_ITEM_COUNTS
+                    | Interests::NODE_SIZE,
+            ) {
                 self.context.capture_signal(self.signal_type());
             }
-            // Produced counts are only recorded under PRODUCER_METRICS, so only
-            // pay the num_items() parse when that interest is also present
-            // (e.g. avoid it for a source-tagging-only frame).
-            if node_interests.contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS)
-                && node_interests.contains(Interests::PRODUCER_METRICS)
-            {
+            if node_interests.contains(Interests::NODE_ITEM_COUNTS) {
                 let items = u32::try_from(self.num_items()).unwrap_or(u32::MAX);
                 let signal = self.signal_type();
-                self.context.stamp_produced_items(items, signal);
+                self.context.stamp_output_items(items, signal);
             }
-            if node_interests.contains(Interests::PRODUCED_CONSUMED_SIZE)
-                && node_interests.contains(Interests::PRODUCER_METRICS)
+            if node_interests.contains(Interests::NODE_SIZE)
                 && let Some(size) = self.num_bytes()
             {
                 self.context
-                    .stamp_produced_size(u64::try_from(size).unwrap_or(u64::MAX));
+                    .stamp_output_size(u64::try_from(size).unwrap_or(u64::MAX));
             }
         }
     }
@@ -877,7 +893,10 @@ macro_rules! impl_producer_ext {
         impl ProducerEffectHandlerExtension<OtapPdata> for $handler {
             fn subscribe_to(&self, int: Interests, ctx: CallData, data: &mut OtapPdata) {
                 let engine_int = self.node_interests()
-                    & (Interests::PRODUCER_METRICS | Interests::ENTRY_TIMESTAMP);
+                    & (Interests::NODE_OUTPUT_METRICS
+                        | Interests::NODE_COMPLETION_DURATION
+                        | Interests::NODE_ITEM_COUNTS
+                        | Interests::NODE_SIZE);
                 data.context
                     .subscribe_to(int | engine_int, ctx, self.$id_method().index);
             }
@@ -904,7 +923,7 @@ impl_producer_ext!(
 
 /* -------- Consumer effect handler extensions (shared, local) -------- */
 
-// All metric recording (consumer and producer) is handled by the pipeline
+// All input/output metric recording is handled by the pipeline
 // controller during context unwinding. route_ack/route_nack skip sending
 // when the context stack is empty (nothing to unwind).
 
@@ -1121,25 +1140,24 @@ impl_message_source_ext!(
 impl otel_arrow_dfe_engine::ReceivedAtNode for OtapPdata {
     fn received_at_node(&mut self, node_id: usize, node_interests: Interests) {
         self.context.push_entry_frame(node_id, node_interests);
-        if node_interests.contains(Interests::CONSUMER_METRICS) {
+        if node_interests.intersects(
+            Interests::NODE_INPUT_METRICS
+                | Interests::NODE_COMPLETION_DURATION
+                | Interests::NODE_ITEM_COUNTS
+                | Interests::NODE_SIZE,
+        ) {
             self.context.capture_signal(self.signal_type());
         }
-        // Consumed counts are only recorded under CONSUMER_METRICS, so only pay
-        // the num_items() parse when that interest is also present (e.g. avoid
-        // it for a per-node opt-in below the `normal` metric level).
-        if node_interests.contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS)
-            && node_interests.contains(Interests::CONSUMER_METRICS)
-        {
+        if node_interests.contains(Interests::NODE_ITEM_COUNTS) {
             let items = u32::try_from(self.num_items()).unwrap_or(u32::MAX);
             let signal = self.signal_type();
-            self.context.stamp_consumed_items(items, signal);
+            self.context.stamp_input_items(items, signal);
         }
-        if node_interests.contains(Interests::PRODUCED_CONSUMED_SIZE)
-            && node_interests.contains(Interests::CONSUMER_METRICS)
+        if node_interests.contains(Interests::NODE_SIZE)
             && let Some(size) = self.num_bytes()
         {
             self.context
-                .stamp_consumed_size(u64::try_from(size).unwrap_or(u64::MAX));
+                .stamp_input_size(u64::try_from(size).unwrap_or(u64::MAX));
         }
     }
 }
@@ -1299,7 +1317,7 @@ mod test {
     }
 
     /// Scenario: PData traverses the start and end boundaries of an active flow.
-    /// Guarantees: the hooks record consumed and produced item totals at their boundaries.
+    /// Guarantees: the hooks record input and output item totals at their boundaries.
     #[test]
     fn flow_hooks_record_start_and_end_signal_counts() {
         let mut pdata = create_test_pdata();
@@ -1329,7 +1347,7 @@ mod test {
     }
 
     /// Scenario: a flow start or end boundary receives a zero-item batch.
-    /// Guarantees: the hooks invoke the consumed and produced item recorders
+    /// Guarantees: the hooks invoke the input and output item recorders
     /// with zero while compute-duration accumulation continues for the
     /// traversal. Zero-delta counters are intentionally omitted from exports.
     #[test]
@@ -1348,7 +1366,7 @@ mod test {
         assert_eq!(start_handler.stop_signals_calls.get(), 0);
 
         // Stop node: before_processor_send must record both
-        // compute.duration and produced = 0.
+        // compute.duration and output = 0.
         let end_handler = FakeFlowMetricHandler::end(7);
         pdata.after_processor_receive(&end_handler);
         pdata.before_processor_send(&end_handler);
@@ -1913,43 +1931,43 @@ mod test {
         assert_eq!(frames[0].interests, Interests::empty());
     }
 
-    /// Scenario: a node records normal-level consumed messages without item-count opt-in.
-    /// Guarantees: the real pdata retains its signal for message metric attribution without parsing item counts.
+    /// Scenario: a node records input messages and independently opts into input item counts.
+    /// Guarantees: input item counts work with or without the input message metric interest.
     #[test]
-    fn test_received_at_node_stamps_consumed_items() {
+    fn test_received_at_node_stamps_input_items() {
         use otel_arrow_dfe_engine::{ReceivedAtNode, Unwindable};
 
-        // CONSUMER_METRICS + item counts: entry frame carries consumed count.
+        // Input metrics plus item counts: the entry frame carries the input count.
         let mut pdata = create_test_pdata();
         let n = pdata.num_items() as u32;
         assert!(n > 0);
         pdata.received_at_node(
             42,
-            Interests::CONSUMER_METRICS | Interests::PRODUCED_CONSUMED_ITEM_COUNTS,
+            Interests::NODE_INPUT_METRICS | Interests::NODE_ITEM_COUNTS,
         );
         let frames = pdata.context.frames();
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].node_id, 42);
-        assert_eq!(frames[0].consumed_items, n);
+        assert_eq!(frames[0].input_items, n);
         assert_eq!(pdata.context.signal(), Some(SignalType::Logs));
 
-        // CONSUMER_METRICS without item-count interest: no consumed count stamped,
+        // Input metrics without item-count interest: no input count is stamped,
         // but the signal remains available for normal-level message metrics.
         let mut pdata_cm = create_test_pdata();
-        pdata_cm.received_at_node(43, Interests::CONSUMER_METRICS);
+        pdata_cm.received_at_node(43, Interests::NODE_INPUT_METRICS);
         let f_cm = pdata_cm.context.frames();
         assert_eq!(f_cm.len(), 1);
-        assert_eq!(f_cm[0].consumed_items, 0);
+        assert_eq!(f_cm[0].input_items, 0);
         assert_eq!(pdata_cm.context.signal(), Some(SignalType::Logs));
         assert_eq!(pdata_cm.signal(), Some(SignalType::Logs));
 
-        // ENTRY_TIMESTAMP only (no CONSUMER_METRICS): no consumed count stamped.
+        // Completion duration only: capture the signal without stamping an input count.
         let mut pdata2 = create_test_pdata();
-        pdata2.received_at_node(7, Interests::ENTRY_TIMESTAMP);
+        pdata2.received_at_node(7, Interests::NODE_COMPLETION_DURATION);
         let f2 = pdata2.context.frames();
         assert_eq!(f2.len(), 1);
-        assert_eq!(f2[0].consumed_items, 0);
-        assert_eq!(pdata2.context.signal(), None);
+        assert_eq!(f2[0].input_items, 0);
+        assert_eq!(pdata2.context.signal(), Some(SignalType::Logs));
 
         // Neither interest: no frame pushed at all.
         let mut pdata3 = create_test_pdata();
@@ -1957,128 +1975,156 @@ mod test {
         assert_eq!(pdata3.context.frames().len(), 0);
 
         // Opt-in bit alone (e.g. per-node opt-in below the `normal` level):
-        // no frame, no stamp, and no num_items() parse.
+        // capture the signal and item count without enabling message metrics.
         let mut pdata4 = create_test_pdata();
-        pdata4.received_at_node(11, Interests::PRODUCED_CONSUMED_ITEM_COUNTS);
-        assert_eq!(pdata4.context.frames().len(), 0);
-        assert_eq!(pdata4.context.signal(), None);
+        pdata4.received_at_node(11, Interests::NODE_ITEM_COUNTS);
+        let f4 = pdata4.context.frames();
+        assert_eq!(f4.len(), 1);
+        assert_eq!(f4[0].input_items, n);
+        assert_eq!(pdata4.context.signal(), Some(SignalType::Logs));
     }
 
-    /// Scenario: a node opts into consumed payload size at the normal runtime metric level.
-    /// Guarantees: the receive frame captures size only when both consumer metrics and size measurement are enabled.
+    /// Scenario: a node independently opts into input payload size.
+    /// Guarantees: input size works with or without the input message metric interest.
     #[test]
-    fn test_received_at_node_stamps_consumed_size() {
+    fn test_received_at_node_stamps_input_size() {
         use otel_arrow_dfe_engine::ReceivedAtNode;
 
         let mut pdata = create_test_pdata();
         let size =
             u64::try_from(pdata.num_bytes().expect("test payload size")).expect("size fits u64");
         assert!(size > 0);
-        pdata.received_at_node(
-            42,
-            Interests::CONSUMER_METRICS | Interests::PRODUCED_CONSUMED_SIZE,
-        );
+        pdata.received_at_node(42, Interests::NODE_INPUT_METRICS | Interests::NODE_SIZE);
         let frame = pdata.context.frames().last().expect("consumer frame");
-        assert_eq!(frame.consumed_size, size);
+        assert_eq!(frame.input_size, size);
 
         let mut pdata_no_optin = create_test_pdata();
-        pdata_no_optin.received_at_node(43, Interests::CONSUMER_METRICS);
+        pdata_no_optin.received_at_node(43, Interests::NODE_INPUT_METRICS);
         let frame_no_optin = pdata_no_optin
             .context
             .frames()
             .last()
             .expect("consumer frame");
-        assert_eq!(frame_no_optin.consumed_size, 0);
+        assert_eq!(frame_no_optin.input_size, 0);
 
         let mut pdata_without_metrics = create_test_pdata();
-        pdata_without_metrics.received_at_node(44, Interests::PRODUCED_CONSUMED_SIZE);
-        assert!(pdata_without_metrics.context.frames().is_empty());
-    }
-
-    /// Scenario: a source records normal-level produced messages without item-count opt-in.
-    /// Guarantees: the real pdata retains its signal for message metric attribution without parsing item counts.
-    #[test]
-    fn test_prepare_source_send_stamps_produced_items() {
-        // PRODUCER_METRICS | PRODUCED_CONSUMED_ITEM_COUNTS: source frame carries
-        // the produced count.
-        let mut pdata = create_test_pdata();
-        let n = pdata.num_items() as u32;
-        assert!(n > 0);
-        pdata.prepare_source_send(
-            Interests::PRODUCER_METRICS | Interests::PRODUCED_CONSUMED_ITEM_COUNTS,
-            5,
-        );
-        let frame = pdata.context.frames().last().expect("source frame");
-        assert_eq!(frame.node_id, 5);
-        assert_eq!(frame.produced_items, n);
-        assert_eq!(pdata.context.signal(), Some(SignalType::Logs));
-
-        // PRODUCER_METRICS without the opt-in bit: no produced count stamped.
-        let mut pdata_no_optin = create_test_pdata();
-        pdata_no_optin.prepare_source_send(Interests::PRODUCER_METRICS, 7);
-        let frame_no_optin = pdata_no_optin
-            .context
-            .frames()
-            .last()
-            .expect("source frame");
-        assert_eq!(frame_no_optin.produced_items, 0);
-        assert_eq!(pdata_no_optin.context.signal(), Some(SignalType::Logs));
-
-        // SOURCE_TAGGING only (no PRODUCER_METRICS): no produced count stamped.
-        let mut pdata2 = create_test_pdata();
-        pdata2.prepare_source_send(Interests::SOURCE_TAGGING, 6);
-        let frame2 = pdata2.context.frames().last().expect("source frame");
-        assert_eq!(frame2.produced_items, 0);
-        assert_eq!(pdata2.context.signal(), None);
-
-        // SOURCE_TAGGING | opt-in bit but no PRODUCER_METRICS (e.g. a tagging
-        // receiver opting in below the `normal` level): a frame is pushed for
-        // tagging, but no produced count is stamped and no num_items() parse.
-        let mut pdata3 = create_test_pdata();
-        pdata3.prepare_source_send(
-            Interests::SOURCE_TAGGING | Interests::PRODUCED_CONSUMED_ITEM_COUNTS,
-            8,
-        );
-        let frame3 = pdata3.context.frames().last().expect("source frame");
-        assert_eq!(frame3.produced_items, 0);
-        assert_eq!(pdata3.context.signal(), None);
-    }
-
-    /// Scenario: a source opts into produced payload size at the normal runtime metric level.
-    /// Guarantees: the source frame captures size only when both producer metrics and size measurement are enabled.
-    #[test]
-    fn test_prepare_source_send_stamps_produced_size() {
-        let mut pdata = create_test_pdata();
-        let size =
-            u64::try_from(pdata.num_bytes().expect("test payload size")).expect("size fits u64");
-        assert!(size > 0);
-        pdata.prepare_source_send(
-            Interests::PRODUCER_METRICS | Interests::PRODUCED_CONSUMED_SIZE,
-            5,
-        );
-        let frame = pdata.context.frames().last().expect("source frame");
-        assert_eq!(frame.produced_size, size);
-
-        let mut pdata_no_optin = create_test_pdata();
-        pdata_no_optin.prepare_source_send(Interests::PRODUCER_METRICS, 6);
-        let frame_no_optin = pdata_no_optin
-            .context
-            .frames()
-            .last()
-            .expect("source frame");
-        assert_eq!(frame_no_optin.produced_size, 0);
-
-        let mut pdata_without_metrics = create_test_pdata();
-        pdata_without_metrics.prepare_source_send(
-            Interests::SOURCE_TAGGING | Interests::PRODUCED_CONSUMED_SIZE,
-            7,
-        );
+        pdata_without_metrics.received_at_node(44, Interests::NODE_SIZE);
         let frame_without_metrics = pdata_without_metrics
             .context
             .frames()
             .last()
-            .expect("source tagging frame");
-        assert_eq!(frame_without_metrics.produced_size, 0);
+            .expect("size-only input frame");
+        assert_eq!(frame_without_metrics.input_size, size);
+        assert_eq!(
+            pdata_without_metrics.context.signal(),
+            Some(SignalType::Logs)
+        );
+    }
+
+    /// Scenario: a source records output messages and independently opts into output item counts.
+    /// Guarantees: output item counts work with or without the output message metric interest.
+    #[test]
+    fn test_prepare_source_send_stamps_output_items() {
+        // NODE_OUTPUT_METRICS | NODE_ITEM_COUNTS: source frame carries the output count.
+        let mut pdata = create_test_pdata();
+        let n = pdata.num_items() as u32;
+        assert!(n > 0);
+        pdata.prepare_source_send(
+            Interests::NODE_OUTPUT_METRICS | Interests::NODE_ITEM_COUNTS,
+            5,
+        );
+        let frame = pdata.context.frames().last().expect("source frame");
+        assert_eq!(frame.node_id, 5);
+        assert_eq!(frame.output_items, n);
+        assert_eq!(pdata.context.signal(), Some(SignalType::Logs));
+
+        // Output metrics without the opt-in bit: no output count is stamped.
+        let mut pdata_no_optin = create_test_pdata();
+        pdata_no_optin.prepare_source_send(Interests::NODE_OUTPUT_METRICS, 7);
+        let frame_no_optin = pdata_no_optin
+            .context
+            .frames()
+            .last()
+            .expect("source frame");
+        assert_eq!(frame_no_optin.output_items, 0);
+        assert_eq!(pdata_no_optin.context.signal(), Some(SignalType::Logs));
+
+        // SOURCE_TAGGING only (no output metrics): no output count is stamped.
+        let mut pdata2 = create_test_pdata();
+        pdata2.prepare_source_send(Interests::SOURCE_TAGGING, 6);
+        let frame2 = pdata2.context.frames().last().expect("source frame");
+        assert_eq!(frame2.output_items, 0);
+        assert_eq!(pdata2.context.signal(), None);
+
+        // The opt-in bit alone (e.g. below the `normal` level) records output
+        // items without enabling output message metrics.
+        let mut pdata3 = create_test_pdata();
+        pdata3.prepare_source_send(Interests::NODE_ITEM_COUNTS, 8);
+        let frame3 = pdata3.context.frames().last().expect("source frame");
+        assert_eq!(frame3.output_items, n);
+        assert_eq!(pdata3.context.signal(), Some(SignalType::Logs));
+    }
+
+    /// Scenario: a source independently opts into output payload size.
+    /// Guarantees: output size works with or without the output message metric interest.
+    #[test]
+    fn test_prepare_source_send_stamps_output_size() {
+        let mut pdata = create_test_pdata();
+        let size =
+            u64::try_from(pdata.num_bytes().expect("test payload size")).expect("size fits u64");
+        assert!(size > 0);
+        pdata.prepare_source_send(Interests::NODE_OUTPUT_METRICS | Interests::NODE_SIZE, 5);
+        let frame = pdata.context.frames().last().expect("source frame");
+        assert_eq!(frame.output_size, size);
+
+        let mut pdata_no_optin = create_test_pdata();
+        pdata_no_optin.prepare_source_send(Interests::NODE_OUTPUT_METRICS, 6);
+        let frame_no_optin = pdata_no_optin
+            .context
+            .frames()
+            .last()
+            .expect("source frame");
+        assert_eq!(frame_no_optin.output_size, 0);
+
+        let mut pdata_without_metrics = create_test_pdata();
+        pdata_without_metrics.prepare_source_send(Interests::NODE_SIZE, 7);
+        let frame_without_metrics = pdata_without_metrics
+            .context
+            .frames()
+            .last()
+            .expect("size-only output frame");
+        assert_eq!(frame_without_metrics.output_size, size);
+        assert_eq!(
+            pdata_without_metrics.context.signal(),
+            Some(SignalType::Logs)
+        );
+    }
+
+    /// Scenario: a source send follows a context frame owned by a different node.
+    /// Guarantees: the source gets a new frame and inherits the predecessor's return-data interest.
+    #[test]
+    fn test_prepare_source_send_pushes_frame_for_different_node() {
+        let mut pdata = create_test_pdata().test_subscribe_to(
+            Interests::ACKS | Interests::RETURN_DATA,
+            CallData::default(),
+            1,
+        );
+        let items = pdata.num_items() as u32;
+
+        pdata.prepare_source_send(
+            Interests::NODE_OUTPUT_METRICS | Interests::NODE_ITEM_COUNTS,
+            2,
+        );
+
+        let frames = pdata.context.frames();
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].node_id, 1);
+        assert_eq!(frames[0].output_items, 0);
+        assert_eq!(frames[1].node_id, 2);
+        assert!(frames[1].interests.contains(Interests::RETURN_DATA));
+        assert!(frames[1].interests.contains(Interests::NODE_OUTPUT_METRICS));
+        assert!(frames[1].interests.contains(Interests::NODE_ITEM_COUNTS));
+        assert_eq!(frames[1].output_items, items);
     }
 
     #[test]
@@ -2456,27 +2502,27 @@ mod test {
 
     #[test]
     fn push_entry_frame_pipeline_metrics_auto_subscribes() {
-        // CONSUMER_METRICS sets CONSUMER_METRICS in the entry frame (not ACKS_OR_NACKS).
+        // NODE_INPUT_METRICS is retained in the entry frame, not ACKS_OR_NACKS.
         // The controller handles metrics-only frames during context unwinding.
         let mut ctx = Context::default();
-        ctx.push_entry_frame(1, Interests::CONSUMER_METRICS);
+        ctx.push_entry_frame(1, Interests::NODE_INPUT_METRICS);
         let frames = ctx.frames();
         assert_eq!(frames.len(), 1);
         assert!(
-            frames[0].interests.contains(Interests::CONSUMER_METRICS),
-            "CONSUMER_METRICS should be set in entry frame"
+            frames[0].interests.contains(Interests::NODE_INPUT_METRICS),
+            "NODE_INPUT_METRICS should be set in entry frame"
         );
         assert!(
             !frames[0].interests.contains(Interests::ACKS),
-            "CONSUMER_METRICS should NOT auto-subscribe ACKS"
+            "NODE_INPUT_METRICS should NOT auto-subscribe ACKS"
         );
         assert!(
             !frames[0].interests.contains(Interests::NACKS),
-            "CONSUMER_METRICS should NOT auto-subscribe NACKS"
+            "NODE_INPUT_METRICS should NOT auto-subscribe NACKS"
         );
         assert_eq!(
             frames[0].route.entry_time_ns, 0,
-            "CONSUMER_METRICS alone should not stamp time"
+            "NODE_INPUT_METRICS alone should not stamp time"
         );
     }
 
@@ -2491,7 +2537,7 @@ mod test {
         assert!(!empty.needs_completion_tracking());
 
         let mut metrics = Context::default();
-        metrics.push_entry_frame(1, Interests::CONSUMER_METRICS);
+        metrics.push_entry_frame(1, Interests::NODE_INPUT_METRICS);
         assert!(metrics.needs_completion_tracking());
 
         let mut subscriber = Context::default();
@@ -2501,30 +2547,33 @@ mod test {
 
     #[test]
     fn push_entry_frame_pipeline_metrics_no_timestamp() {
-        // CONSUMER_METRICS without ENTRY_TIMESTAMP should not capture a timestamp.
+        // Input metrics without completion duration should not capture a timestamp.
         let mut ctx = Context::default();
-        ctx.push_entry_frame(1, Interests::CONSUMER_METRICS);
+        ctx.push_entry_frame(1, Interests::NODE_INPUT_METRICS);
         let frames = ctx.frames();
         assert_eq!(frames.len(), 1);
-        assert!(frames[0].interests.contains(Interests::CONSUMER_METRICS));
+        assert!(frames[0].interests.contains(Interests::NODE_INPUT_METRICS));
         assert!(!frames[0].interests.contains(Interests::ACKS_OR_NACKS));
         assert_eq!(
             frames[0].route.entry_time_ns, 0,
-            "Entry frame without ENTRY_TIMESTAMP should not stamp time"
+            "Entry frame without completion duration should not stamp time"
         );
     }
 
     #[test]
-    fn push_entry_frame_entry_timestamp_stamps_time() {
-        // CONSUMER_METRICS | ENTRY_TIMESTAMP stamps a non-zero timestamp.
+    fn push_entry_frame_completion_duration_stamps_time() {
+        // Completion duration stamps a non-zero timestamp.
         let mut ctx = Context::default();
-        ctx.push_entry_frame(1, Interests::CONSUMER_METRICS | Interests::ENTRY_TIMESTAMP);
+        ctx.push_entry_frame(
+            1,
+            Interests::NODE_INPUT_METRICS | Interests::NODE_COMPLETION_DURATION,
+        );
         let frames = ctx.frames();
         assert_eq!(frames.len(), 1);
-        assert!(frames[0].interests.contains(Interests::CONSUMER_METRICS));
+        assert!(frames[0].interests.contains(Interests::NODE_INPUT_METRICS));
         assert!(
             frames[0].route.entry_time_ns > 0,
-            "Entry frame with ENTRY_TIMESTAMP should stamp non-zero time"
+            "Entry frame with completion duration should stamp non-zero time"
         );
     }
 
@@ -2533,8 +2582,8 @@ mod test {
         let mut ctx = Context::default();
         // Source subscribes with RETURN_DATA.
         ctx.subscribe_to(Interests::ACKS | Interests::RETURN_DATA, CallData::new(), 0);
-        // Entry frame with CONSUMER_METRICS inherits RETURN_DATA from predecessor.
-        ctx.push_entry_frame(1, Interests::CONSUMER_METRICS);
+        // An input-metrics frame inherits RETURN_DATA from its predecessor.
+        ctx.push_entry_frame(1, Interests::NODE_INPUT_METRICS);
         let frames = ctx.frames();
         assert_eq!(frames.len(), 2);
         assert!(
@@ -2542,8 +2591,8 @@ mod test {
             "entry frame should inherit RETURN_DATA"
         );
         assert!(
-            frames[1].interests.contains(Interests::CONSUMER_METRICS),
-            "entry frame should have CONSUMER_METRICS"
+            frames[1].interests.contains(Interests::NODE_INPUT_METRICS),
+            "entry frame should have NODE_INPUT_METRICS"
         );
         assert!(
             !frames[1].interests.contains(Interests::ACKS),
@@ -2553,9 +2602,12 @@ mod test {
 
     #[test]
     fn subscribe_to_merges_into_entry_frame() {
-        // CONSUMER_METRICS | ENTRY_TIMESTAMP stamps time, then subscribe merges.
+        // Completion duration stamps time, then subscribe merges.
         let mut ctx = Context::default();
-        ctx.push_entry_frame(1, Interests::CONSUMER_METRICS | Interests::ENTRY_TIMESTAMP);
+        ctx.push_entry_frame(
+            1,
+            Interests::NODE_INPUT_METRICS | Interests::NODE_COMPLETION_DURATION,
+        );
         let original_time = ctx.frames()[0].route.entry_time_ns;
         assert!(original_time > 0);
 
@@ -2579,9 +2631,9 @@ mod test {
 
     #[test]
     fn processor_subscribe_stamps_time() {
-        // For processors without ENTRY_TIMESTAMP, time can still be stamped manually.
+        // For processors without completion duration, time can still be stamped manually.
         let mut ctx = Context::default();
-        ctx.push_entry_frame(1, Interests::CONSUMER_METRICS);
+        ctx.push_entry_frame(1, Interests::NODE_INPUT_METRICS);
         assert_eq!(ctx.frames()[0].route.entry_time_ns, 0, "initially no time");
 
         // Simulate processor subscribe_to stamping time.
@@ -2609,19 +2661,19 @@ mod test {
 
     #[test]
     fn pipeline_metrics_ack_routable() {
-        // CONSUMER_METRICS does NOT auto-subscribe ACKS, so next_ack skips
+        // NODE_INPUT_METRICS does not auto-subscribe ACKS, so next_ack skips
         // the metrics-only entry frame and routes to the real subscriber.
         let (test_data, mut pdata) = create_test();
         pdata = pdata.test_subscribe_to(Interests::ACKS | Interests::NACKS, test_data.into(), 0);
         pdata
             .context
-            .push_entry_frame(1, Interests::CONSUMER_METRICS);
+            .push_entry_frame(1, Interests::NODE_INPUT_METRICS);
 
         let ack = AckMsg::new(pdata);
         let (node_id, _) = next_ack(ack).expect("should find node 0");
         assert_eq!(
             node_id, 0,
-            "CONSUMER_METRICS entry frame is skipped; ack routes to subscriber at node 0"
+            "NODE_INPUT_METRICS entry frame is skipped; ack routes to subscriber at node 0"
         );
     }
 
@@ -2629,19 +2681,19 @@ mod test {
     // notify_ack/nack stamps return_time_ns; raw route_ack/nack does not
     // -----------------------------------------------------------------------
 
-    /// Helper: build an OtapPdata with ENTRY_TIMESTAMP | ACKS so has_timing(ACKS) is true.
+    /// Helper: build an OtapPdata with completion duration and ACKS so has_timing(ACKS) is true.
     fn pdata_with_timed_ack_frame() -> OtapPdata {
         create_test_pdata().test_subscribe_to(
-            Interests::ENTRY_TIMESTAMP | Interests::ACKS,
+            Interests::NODE_COMPLETION_DURATION | Interests::ACKS,
             CallData::default(),
             42,
         )
     }
 
-    /// Helper: build an OtapPdata with ENTRY_TIMESTAMP | NACKS so has_timing(NACKS) is true.
+    /// Helper: build an OtapPdata with completion duration and NACKS so has_timing(NACKS) is true.
     fn pdata_with_timed_nack_frame() -> OtapPdata {
         create_test_pdata().test_subscribe_to(
-            Interests::ENTRY_TIMESTAMP | Interests::NACKS,
+            Interests::NODE_COMPLETION_DURATION | Interests::NACKS,
             CallData::default(),
             42,
         )

@@ -1522,7 +1522,7 @@ mod tests {
                             runtime_ctrl_tx,
                             completion_tx,
                             metrics_reporter,
-                            crate::Interests::COMPONENT_DURATION,
+                            crate::Interests::NODE_LOCAL_DURATION,
                             None,
                             true,
                             true,
@@ -1563,10 +1563,10 @@ mod tests {
                 processor_task.abort();
                 let _ = processor_task.await;
 
-                let [MetricValue::U64(consumed_items)] = snapshot.get_metrics() else {
+                let [MetricValue::U64(input_items)] = snapshot.get_metrics() else {
                     panic!("expected one flow input-item metric");
                 };
-                assert_eq!(*consumed_items, 1);
+                assert_eq!(*input_items, 1);
 
                 let snapshot =
                     tokio::time::timeout(Duration::from_secs(1), metrics_rx.recv_async())
@@ -1590,10 +1590,10 @@ mod tests {
                         .await
                         .expect("flow output-item metric should be reported")
                         .expect("metrics channel should remain open");
-                let [MetricValue::U64(produced_items)] = snapshot.get_metrics() else {
+                let [MetricValue::U64(output_items)] = snapshot.get_metrics() else {
                     panic!("expected flow output-item metric");
                 };
-                assert_eq!(*produced_items, 1);
+                assert_eq!(*output_items, 1);
             })
             .await;
     }

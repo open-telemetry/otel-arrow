@@ -34,26 +34,34 @@ configuration.
 
 ## Node Metrics
 
-With `policies.telemetry.runtime_metrics: normal` or `detailed`, every node
-emits message outcome counters on its `node.input` and `node.output`
-metric sets:
+A **message** is the PData batch that moves between nodes. An **item** is an
+individual log record, metric data point, or span in that batch. One message
+can contain multiple items. **Logical size** is the byte size of the current
+in-memory payload representation. **Payload size** is the encoded application
+payload observed at a receiver or exporter boundary.
 
-### Messages, Items, and Size
+**Completion duration** measures from a node boundary until the terminal ACK
+or NACK: from input for processors and exporters, and from output for
+receivers. **Local duration** measures work performed by the node itself. Use
+`flow.compute.duration` instead for compute time across a processor range.
 
-A message is the PData batch that moves between nodes. An item is an individual
-log record, metric data point, or span in that batch. One message can contain
-multiple items, so message counts measure batch traffic while item counts
-measure the number of telemetry records inside those batches. Size measures the
-logical byte size of the current payload representation.
+**`none`** and **`basic`** enable no node metrics by default. **`normal`** adds
+message measurements, and **`detailed`** adds every optional measurement. A
+**per-node policy** enables its measurement at any runtime metric level.
 
-| Metric | Meaning | Emitted by | Availability |
-| --- | --- | --- | --- |
-| `node.input.messages` | Messages received by a node | `node.input` | `normal` or `detailed` |
-| `node.output.messages` | Messages emitted by a node | `node.output` | `normal` or `detailed` |
-| `node.input.items` | Items a node receives | `node.input` | `detailed`, or `normal` plus item-count opt-in |
-| `node.output.items` | Items a node emits | `node.output` | `detailed`, or `normal` plus item-count opt-in |
-| `node.input.size` | Logical payload bytes a node receives | `node.input` | `detailed`, or `normal` plus size opt-in |
-| `node.output.size` | Logical payload bytes a node emits | `node.output` | `detailed`, or `normal` plus size opt-in |
+| Measurement | Engine-managed metrics | Node-implemented metrics | Default level | Per-node policy |
+| --- | --- | --- | --- | --- |
+| Messages | `node.input.messages`, `node.output.messages` | `receiver.received.messages`, `exporter.attempted.messages` | `normal` | `messages: true` |
+| Items | `node.input.items`, `node.output.items` | `exporter.attempted.items` | `detailed` | `item_counts: true` |
+| Logical size | `node.input.size`, `node.output.size` | - | `detailed` | `size: true` |
+| Payload size | - | `receiver.received.payload.size`, `exporter.attempted.payload.size` | `detailed` | `size: true` |
+| Completion duration | `node.completion.duration` | - | `detailed` | `completion_duration: true` |
+| Local duration | - | `receiver.processing.duration`, `processor.compute.duration`, `exporter.attempted.duration` | `detailed` | `duration: true` |
+
+The `node.input.*` metrics apply to processors and exporters.
+`node.output.*` metrics apply to receivers and processors. Node-implemented
+metrics require the implementation to use the corresponding shared
+instrumentation.
 
 Message, item, and size counters have bounded `signal` and `outcome` data-point
 attributes. `signal` is one of `logs`, `metrics`, or `traces`; `outcome` is
@@ -61,32 +69,13 @@ attributes. `signal` is one of `logs`, `metrics`, or `traces`; `outcome` is
 unwinding. The metric-set entity attributes identify the pipeline and node, so
 group by those attributes when comparing nodes.
 
-At the detailed level, node metrics also report terminal latency in seconds.
-`node.input.duration` measures from node input until the terminal ACK or NACK
-for processors and exporters. Receivers have no input, so
-`node.output.duration` measures from receiver output until that terminal
-outcome. This is downstream completion latency, not processor compute time;
-use `flow.compute.duration` for compute time across a processor range.
-
-Component-owned duration is also detailed by default. A processor that
-supports local compute timing emits `processor.compute.duration`, grouped by
-`outcome`. Enable component duration globally with `runtime_metrics: detailed`
-or for one node with `policies.telemetry.duration: true`. This per-node option
-does not enable the terminal `node.input.duration` or `node.output.duration`
-metrics.
-
-### Enable Item Counts and Size
-
-Item counting and logical payload sizing are disabled at the normal level
-because they can require payload inspection. They require
-`policies.telemetry.runtime_metrics: detailed` or `normal` with a per-node opt
-in.
+### Enable Optional Measurements
 
 > [!WARNING]
-> Item counting and sizing add work to the data path. Their cost depends on the
-> payload representation and structure. Measure the impact on a representative
-> workload before enabling them broadly. Prefer per-node opt-in when only a
-> specific stage needs these measurements.
+> Item counting and sizing may inspect the payload; completion and local
+> duration add timing and bookkeeping. Measure the impact on a representative
+> workload before enabling these measurements broadly. Prefer per-node opt-in
+> when only a specific stage needs them.
 
 To enable it for every node in a pipeline, use `detailed`:
 
@@ -96,13 +85,9 @@ policies:
     runtime_metrics: detailed
 ```
 
-To enable it only for selected nodes, use `normal` at the pipeline and opt in
-the relevant nodes:
+To enable it only for selected nodes, opt in the relevant nodes:
 
 ```yaml
-policies:
-  telemetry:
-    runtime_metrics: normal
 nodes:
   sampler:
     type: processor:log_sampling
@@ -121,15 +106,15 @@ for every node without node-level settings.
 
 For a linear topology, a node's `output.items` normally matches the next
 node's `input.items` for the same signal. A filtering or sampling processor
-can produce fewer items than it consumes; a fan-out processor can produce an
-item on more than one output. Compare counts only along the particular edge or
+can emit fewer items than it receives; a fan-out processor can emit an item on
+more than one output. Compare counts only along the particular edge or
 topology behavior being investigated.
 
 Node metrics are the right choice when operators need to locate where a signal
 count changes, including receiver admission, processors, and exporter output.
 Use the runnable
-[`trafficgen-input-output-metrics.yaml`](../configs/trafficgen-input-output-metrics.yaml)
-example to inspect the metrics on every node, compare component duration with
+[`trafficgen-node-metrics.yaml`](../configs/trafficgen-node-metrics.yaml)
+example to inspect the metrics on every node, compare local duration with
 flow duration, or observe an individually opted-in processor.
 
 ## Flow Metrics
@@ -212,5 +197,5 @@ later decision, so per-node kept counts are not additive. Use the flow's
 `flow.output.items` as the flow-wide surviving count.
 
 See
-[`trafficgen-input-output-metrics.yaml`](../configs/trafficgen-input-output-metrics.yaml)
+[`trafficgen-node-metrics.yaml`](../configs/trafficgen-node-metrics.yaml)
 for a runnable comparison of node and flow metrics around a sampling processor.

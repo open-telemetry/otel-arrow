@@ -435,7 +435,7 @@ mod test {
     fn test_with_metrics_only_context() {
         let mut contexts = new_contexts();
         let pdata = create_test_pdata().test_subscribe_to(
-            otel_arrow_dfe_engine::Interests::PRODUCER_METRICS,
+            otel_arrow_dfe_engine::Interests::NODE_OUTPUT_METRICS,
             smallvec::smallvec![],
             1,
         );
