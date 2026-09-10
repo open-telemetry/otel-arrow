@@ -303,6 +303,28 @@ mod tests {
         );
     }
 
+    /// Scenario: the public admin SDK explicitly enables publication.
+    /// Guarantees: structure validation accepts admin-api as an approved package.
+    #[test]
+    fn publish_policy_accepts_admin_api() {
+        let manifest = package(
+            r#"
+            [package]
+            name = "otel-arrow-dfe-admin-api"
+            publish = true
+            "#,
+        );
+
+        assert!(
+            check_publish_policy(
+                Path::new("Cargo.toml"),
+                "otel-arrow-dfe-admin-api",
+                &manifest
+            )
+            .is_ok()
+        );
+    }
+
     /// Scenario: an unapproved package explicitly enables publication.
     /// Guarantees: structure validation requires every other crate to inherit workspace policy.
     #[test]
