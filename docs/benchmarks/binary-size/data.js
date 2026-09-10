@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788997943638,
+  "lastUpdate": 1789000004307,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -34913,6 +34913,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 102.85,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "drewrelmas@gmail.com",
+            "name": "Drew Relmas",
+            "username": "drewrelmas"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "dcd16196000ba7ea8c5884bcc6c39b37d7120542",
+          "message": "feat(metrics): Align component boundary metrics with telemetry policies (#3983)\n\n# Summary\n\nAlign component boundary metrics with telemetry policies and provide\nshared receiver and exporter instrumentation contracts.\n\n- Add shared lifecycle helpers for `receiver.received`,\n`receiver.processing.duration`, and `exporter.attempted`.\n- Keep signal, terminal result, optional duration, payload size, and\nitem count together in typed completed observations.\n- Start receiver processing before classification; return the signal\nwith successful work and attach it to classified errors inside the\nclosure.\n- Start exporter attempt timing when the attempt is created so\nsynchronous preparation is included.\n- Gate optional measurements through effective node interests supplied\nby `PipelineContext`, evaluating item-count and payload-size closures\nonly when enabled.\n- Allow per-node telemetry flags to enable component-owned optional\nmeasurements at any runtime level without enabling engine-owned node\nmetric sets below `normal`.\n- Keep raw shared metric sets private so component authors record\nthrough the policy-aware lifecycle helpers.\n- Derive `success` and `failure` from the operation result, with\n`refused(error)` for explicit local rejection.\n- Normalize `processor.compute.duration` as an outcome-dimensioned\nhistogram measured in seconds.\n- Adopt the exporter contract in the console exporter as the initial\ncomponent proof.\n- Add configuration examples and contributor guidance for normal,\ndetailed, and per-node telemetry policies.\n\n## Component API\n\nReceivers record one completed local-processing observation before\ndownstream handoff:\n\n```rust\nlet completed = metrics.boundary.processing().run(|processing| {\n    processing.set_payload_size_with(|| request.encoded_len());\n    let decoded = decode(request)?;\n    let signal = decoded.signal_type();\n    match process(decoded) {\n        Ok(value) => Ok((signal, value)), // success\n        Err(error) if error.is_refusal() => {\n            Err(processing.refused(signal, error)) // refused\n        }\n        Err(error) => Err(processing.failed(signal, error)), // failure\n    }\n});\n\nlet result = metrics.boundary.record(completed);\n```\n\nSuccessful results record `success`, ordinary errors record `failure`,\nand\nreceivers return classified errors through `processing.failed(signal,\nerror)`\nor `processing.refused(signal, error)`. Errors returned before signal\nclassification emit no shared receiver metric.\n\nExporters record one completed delivery attempt. Creating the attempt\nstarts optional timing, including synchronous preparation:\n\n```rust\nlet completed = metrics\n    .boundary\n    .attempt(signal)\n    .run(async |attempt| {\n        attempt.set_item_count(|| data.num_items() as u64);\n        let encoded = encode(data).map_err(|error| attempt.failed(error))?;\n        attempt.set_payload_size_with(|| encoded.len());\n        match submit(encoded).await {\n            Ok(response) => Ok(response), // success\n            Err(error) if error.is_refusal() => {\n                Err(attempt.refused(error)) // refused\n            }\n            Err(error) => Err(attempt.failed(error)), // failure\n        }\n    })\n    .await;\n\nlet result = metrics.boundary.record(completed);\n```\n\nPer-node telemetry flags enable these component-owned optional\nmeasurements at\nany runtime level. They do not enable engine-owned `node.input` or\n`node.output` metric sets below `runtime_metrics: normal`.\n\n## Validation\n\nRan `configs/trafficgen-input-output-metrics.yaml`:\n\n| Configuration | Observed |\n| --- | --- |\n| `runtime_metrics: detailed` | `processor.compute.duration` on\n`duration_probe`, plus receiver `node.output.duration` and\nprocessor/exporter `node.input.duration` |\n| `runtime_metrics: normal` with node `duration: true` |\n`processor.compute.duration` on `drop_all`, without\n`node.input.duration` or `node.output.duration` |\n| Explicit flow `compute_duration` |\n`flow.compute.duration{signal=\"logs\"}` with non-zero seconds\nobservations |\n\nRan `configs/trafficgen-component-boundary-metrics.yaml`:\n\n| Configuration | Observed instruments |\n| --- | --- |\n| `normal` | `exporter.attempted.messages` |\n| `detailed` | `exporter.attempted.messages`,\n`exporter.attempted.duration`, `exporter.attempted.items` |\n| `normal` with exporter `duration: true` |\n`exporter.attempted.messages`, `exporter.attempted.duration` |\n\nThe console exporter does not emit `exporter.attempted.payload.size`\nbecause it has no encoded transport payload.\n\n## Related issue\n\nRelated to #3822\n\n## User-facing changes\n\nMigration: Query `processor.compute.duration` by `outcome` and interpret\nvalues as seconds. Enable optional component duration, item counts, and\npayload size with `runtime_metrics: detailed` or the corresponding\nper-node telemetry policy.",
+          "timestamp": "2026-09-09T23:37:10Z",
+          "tree_id": "9587f74f2ed342e94e43cd75d4f04a2ff0a050c7",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/dcd16196000ba7ea8c5884bcc6c39b37d7120542"
+        },
+        "date": 1788999985078,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 83.59,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.71,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.94,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.7,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 70.89,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.78,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 115.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 102.91,
             "unit": "MB"
           }
         ]
