@@ -2,7 +2,7 @@ version: otel_dataflow/v1
 
 policies:
   telemetry:
-    # 'normal' metric level enables processor compute-duration in addition to channel metrics.
+    # 'normal' enables channel metrics; the KQL node opts into compute duration below.
     runtime_metrics: normal
 
 engine:
@@ -28,6 +28,9 @@ groups:
 
           kql:
             type: urn:microsoft:processor:recordset_kql
+            policies:
+              telemetry:
+                duration: true
             config:
               query: |
                 source

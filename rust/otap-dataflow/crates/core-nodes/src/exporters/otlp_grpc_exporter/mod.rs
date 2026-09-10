@@ -2237,6 +2237,7 @@ mod tests {
                     pipeline_completion_msg_tx,
                     metrics_reporter,
                     Interests::empty(),
+                    otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
                 )
                 .await
                 .map(|_| ())
@@ -2837,6 +2838,7 @@ mod tests {
                     pipeline_completion_msg_tx,
                     metrics_reporter,
                     Interests::empty(),
+                    otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
                 )
                 .await
                 .map(|_| ())
@@ -3033,7 +3035,11 @@ mod tests {
     ) -> EffectHandler<OtapPdata> {
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let node_id = test_node("test-exporter");
-        let mut handler = EffectHandler::new(node_id, metrics_reporter);
+        let mut handler = EffectHandler::new(
+            node_id,
+            metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
         handler.set_propagation_policy(policy);
         handler
     }
