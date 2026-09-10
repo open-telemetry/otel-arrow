@@ -79,13 +79,12 @@ pub(crate) enum RecordScope {
     /// The Root OTAP [`RecordBatch`] (Log, Metric, Span)
     Signal,
 
-    /// Some child [`RecordBatch`]
+    /// Some child [`RecordBatch`] representing a nested, repeated field.
     Child(ChildRecordKind),
 }
 
 /// Used to identify the non-signal (non-root) [`RecordBatch`] which was the source of data for
 /// some expression evaluation when it has record scope.
-// TODO decide where this should go b/c it's also used in the pipeline planner.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ChildRecordKind {
     /// The scope of the record data is a record batch containing metric datapoints.
@@ -132,11 +131,9 @@ pub(crate) enum DataScope {
     StaticScalar,
 
     /// A field read from a resource or scope struct column in the root record batch (e.g.,
-    /// resource.schema_url or scope.name). Physically the data lives in the root batch (same
-    /// as Root), but the parent struct records the hierarchy level for cardinality validation.
-    // TODO ^ Cleanup this comment?
+    /// resource.schema_url or scope.name). Physically the data lives in the root batch in
+    /// a struct column and the struct records the hierarchy level for cardinality validation.
     RootParent(RootParentStruct),
-    // TODO - will need a new scope for when the "root" is actually a datapoint batch?
 }
 
 impl DataScope {
@@ -148,17 +145,23 @@ impl DataScope {
     /// - Same scopes can combine (e.g., Root + Root), because the row order is the same.
     /// - Root and RootParent can combine because both live in the root record batch.
     /// - Two `AttributesAll` scopes with the same identifier can combine.
-    // TODO should this method be called "same_source" ?
     pub(crate) fn can_combine(&self, other: &Self) -> bool {
         if self.is_scalar() || other.is_scalar() {
             return true;
         }
 
-        // TODO - validate that we don't also need to check that the record type is the same?
-        // I doubt we do, but _maybe_ worth validating?
-        let self_in_root = matches!(self, Self::Record(_) | Self::RootParent(_));
-        let other_in_root = matches!(other, Self::Record(_) | Self::RootParent(_));
-        (self_in_root && other_in_root) || self == other
+
+        match (self, other) {
+            (
+                Self::Record(RecordScope::Signal) | Self::RootParent(_),
+                Self::Record(RecordScope::Signal) | Self::RootParent(_),
+            ) => true,
+            (
+                Self::Record(RecordScope::Child(self_child)),
+                Self::Record(RecordScope::Child(other_child)),
+            ) => self_child == other_child,
+            _ => self == other,
+        }
     }
 
     /// Returns the [`AttributesIdentifier`] if this is an attribute-related scope
@@ -452,7 +455,6 @@ pub(crate) enum LeafEval {
         /// Whether to keep AnyValue columns as structs rather than splitting them into
         /// concrete typed columns. True when the expression is a simple column reference
         /// (e.g., `col("value")`).
-        // TODO - last sentence of this comment is kind of weird -- consider rephrasing
         eval_anyval_as_struct: bool,
 
         /// Whether attribute key matching should be case-sensitive. Only relevant for
@@ -463,7 +465,6 @@ pub(crate) enum LeafEval {
         /// When true, absent data (missing columns, missing attribute keys) should be
         /// treated as "passes" rather than "fails". This is set to true for `is_null()`
         /// expressions, where a missing field means the field IS null -- which is a match.
-        // TODO cleanup comment - unclear what "passes" means here? I guess it's when this evaluates in context of being a predicate?
         missing_data_passes: bool,
     },
 
