@@ -409,9 +409,11 @@ impl<'a> ResourceMetricsView for OtapResourceMetricsView<'a> {
     fn resource(
         &self,
     ) -> Option<<OtapResourceMetricsView<'a> as ResourceMetricsView>::Resource<'_>> {
+        let first_row_index = self.row_indices.iter().next()?;
         Some(OtapMetricsResourceView {
             view: self.view,
             resource_id: self.resource_id,
+            first_row_index,
         })
     }
 
@@ -447,6 +449,7 @@ impl<'a> ResourceMetricsView for OtapResourceMetricsView<'a> {
 pub struct OtapMetricsResourceView<'a> {
     view: &'a OtapMetricsView<'a>,
     resource_id: u16,
+    first_row_index: usize,
 }
 
 impl<'a> ResourceView for OtapMetricsResourceView<'a> {
@@ -476,32 +479,18 @@ impl<'a> ResourceView for OtapMetricsResourceView<'a> {
 
     #[inline]
     fn dropped_attributes_count(&self) -> u32 {
-        let first_row = self.find_first_row_for_resource().unwrap_or(0);
         self.view
             .resource_columns
             .as_ref()
             .and_then(|cols| cols.dropped_attributes_count.as_ref())
             .map(|col| {
-                if col.is_valid(first_row) {
-                    col.value(first_row)
+                if col.is_valid(self.first_row_index) {
+                    col.value(self.first_row_index)
                 } else {
                     0
                 }
             })
             .unwrap_or(0)
-    }
-}
-
-impl<'a> OtapMetricsResourceView<'a> {
-    /// Find the first row in the metrics batch that belongs to this resource.
-    /// All rows with the same resource_id share the same resource metadata.
-    fn find_first_row_for_resource(&self) -> Option<usize> {
-        for (rid, row_group) in &self.view.resource_groups {
-            if *rid == self.resource_id {
-                return row_group.iter().next();
-            }
-        }
-        None
     }
 }
 
@@ -547,9 +536,11 @@ impl<'a> ScopeMetricsView for OtapScopeMetricsView<'a> {
 
     #[inline]
     fn scope(&self) -> Option<<OtapScopeMetricsView<'a> as ScopeMetricsView>::Scope<'_>> {
+        let first_row_index = self.row_indices.iter().next()?;
         Some(OtapMetricsScopeView {
             view: self.view,
             scope_id: self.scope_id,
+            first_row_index,
         })
     }
 
@@ -583,6 +574,7 @@ impl<'a> ScopeMetricsView for OtapScopeMetricsView<'a> {
 pub struct OtapMetricsScopeView<'a> {
     view: &'a OtapMetricsView<'a>,
     scope_id: u16,
+    first_row_index: usize,
 }
 
 impl<'a> InstrumentationScopeView for OtapMetricsScopeView<'a> {
@@ -597,24 +589,22 @@ impl<'a> InstrumentationScopeView for OtapMetricsScopeView<'a> {
 
     #[inline]
     fn name(&self) -> Option<Str<'_>> {
-        let first_row = self.find_first_row_for_scope()?;
         self.view
             .scope_columns
             .as_ref()?
             .name
             .as_ref()
-            .and_then(|col| col.str_at(first_row).map(|s| s.as_bytes()))
+            .and_then(|col| col.str_at(self.first_row_index).map(|s| s.as_bytes()))
     }
 
     #[inline]
     fn version(&self) -> Option<Str<'_>> {
-        let first_row = self.find_first_row_for_scope()?;
         self.view
             .scope_columns
             .as_ref()?
             .version
             .as_ref()
-            .and_then(|col| col.str_at(first_row).map(|s| s.as_bytes()))
+            .and_then(|col| col.str_at(self.first_row_index).map(|s| s.as_bytes()))
     }
 
     #[inline]
@@ -636,34 +626,18 @@ impl<'a> InstrumentationScopeView for OtapMetricsScopeView<'a> {
 
     #[inline]
     fn dropped_attributes_count(&self) -> u32 {
-        let first_row = self.find_first_row_for_scope().unwrap_or(0);
         self.view
             .scope_columns
             .as_ref()
             .and_then(|cols| cols.dropped_attributes_count.as_ref())
             .map(|col| {
-                if col.is_valid(first_row) {
-                    col.value(first_row)
+                if col.is_valid(self.first_row_index) {
+                    col.value(self.first_row_index)
                 } else {
                     0
                 }
             })
             .unwrap_or(0)
-    }
-}
-
-impl<'a> OtapMetricsScopeView<'a> {
-    /// Find the first row in the metrics batch that belongs to this scope.
-    /// All rows with the same scope_id share the same scope name/version.
-    fn find_first_row_for_scope(&self) -> Option<usize> {
-        for scope_list in self.view.scope_groups_map.values() {
-            for (sid, row_group) in scope_list {
-                if *sid == self.scope_id {
-                    return row_group.iter().next();
-                }
-            }
-        }
-        None
     }
 }
 

@@ -1,5 +1,0 @@
-change_type: enhancement
-component: all
-note: "Publish additional OTAP Dataflow crates to crates.io for use as versioned dependencies."
-issues: [1340]
-subtext:

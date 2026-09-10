@@ -14,6 +14,7 @@ use datafusion::error::DataFusionError;
 use datafusion::functions::core::getfield::GetFieldFunc;
 use datafusion::logical_expr::Expr;
 use datafusion::scalar::ScalarValue;
+use otel_arrow_dfe_pdata::arrays::sanitize::sanitize_column;
 
 use crate::error::Result;
 
@@ -24,6 +25,14 @@ pub struct ProjectionOptions {
     /// Whether or not to downcast dictionary arrays to the native type. Some types of expressions,
     /// arithmetic operations for example, do not work on dictionary encoded columns.
     pub downcast_dicts: bool,
+
+    /// Whether or not to sanitize dictionaries. Often we may filter a record batch containing
+    /// dictionary columns and then evaluate an expression on the result. The filtering operation
+    /// may leave orphaned keys in dictionary column's values array. If there's some kind of
+    /// operation that operates directly on dictionary values indiscriminantly of whether they are
+    /// orphaned and it may fail for the orphaned keys in particular, set this option to remove
+    /// sanitize the columns before evaluation
+    pub sanitize_dicts: bool,
 
     /// Whether to create null placeholders when some column does not exist. A column not being
     /// present means it is optional in the OTAP model, or it represents the value of an attribute
@@ -75,6 +84,10 @@ impl Projection {
 
         if options.downcast_dicts {
             Self::try_downcast_dicts(&mut fields, &mut columns)?;
+        }
+
+        if options.sanitize_dicts {
+            Self::try_sanitize_columns(&mut columns)?;
         }
 
         // safety: `try_new` should not return an error here unless the columns do not match the
@@ -203,6 +216,16 @@ impl Projection {
                 let new_column = cast(&columns[i], v.as_ref())?;
                 fields[i] = new_field;
                 columns[i] = new_column;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn try_sanitize_columns(columns: &mut [ArrayRef]) -> Result<()> {
+        for column in columns.iter_mut() {
+            if let Some(new_column) = sanitize_column(column.as_ref()) {
+                *column = new_column;
             }
         }
 

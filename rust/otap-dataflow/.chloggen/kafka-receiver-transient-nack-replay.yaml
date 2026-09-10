@@ -1,7 +1,0 @@
-change_type: breaking
-component: pipeline
-note: Kafka receivers now replay transient NACKs by default in manual-commit mode and publish lifecycle metrics under receiver.kafka.messages.
-issues: [3505]
-subtext: |
-  Replay is partition-local, uses capped backoff, and may duplicate records.
-  Migration: Set transient_nack.mode: commit_and_skip to keep advancing offsets. Rename receiver.messages.{started,completed,bytes} queries to receiver.kafka.messages.{started,completed,payload_size}.

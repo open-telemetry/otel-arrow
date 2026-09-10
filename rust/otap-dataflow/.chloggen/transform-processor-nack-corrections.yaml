@@ -1,4 +1,0 @@
-change_type: bug_fix
-component: pipeline
-note: Corrects population of Nack permanent flag and payload in transform processor
-issues: [3904]

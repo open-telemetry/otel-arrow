@@ -17,7 +17,7 @@
     "rust-analyzer.linkedProjects": [
         "rust/otap-dataflow/Cargo.toml",
         "rust/parquet-query-examples/Cargo.toml",
-        "rust/experimental/data_engine/Cargo.toml"
+        "rust/contrib/data_engine/Cargo.toml"
     ],
     // Exclude Rust build artifacts from file watching and search
     // to improve performance and reduce noise in search results.

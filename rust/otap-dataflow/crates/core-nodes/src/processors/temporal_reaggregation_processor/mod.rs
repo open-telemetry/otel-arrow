@@ -50,7 +50,7 @@ use otel_arrow_dfe_pdata_views::views::metrics::{
     SummaryDataPointView, SummaryView,
 };
 use otel_arrow_dfe_pdata_views::views::resource::ResourceView;
-use otel_arrow_dfe_telemetry::metrics::MetricSet;
+use otel_arrow_dfe_telemetry::common_attributes::Outcome;
 
 mod builder;
 mod config;
@@ -63,7 +63,7 @@ use self::identity::{
     HashBuffer, MetricId, MetricIdRef, ResourceId, ScopeId, ScopeIdRef, StreamId, StreamIdRef,
     metric_id_of, resource_id_of, scope_id_of, stream_id_of,
 };
-use self::telemetry::TemporalReaggregationMetrics;
+use self::telemetry::{ErrorType, FlushReason, TemporalReaggregationMetrics};
 
 /// Errors that can occur during view processing.
 #[derive(thiserror::Error, Debug)]
@@ -211,7 +211,7 @@ const FLUSH_WAKEUP_SLOT: WakeupSlot = WakeupSlot(0);
 /// [`OtapArrowRecords`] batch.
 pub struct TemporalReaggregationProcessor {
     /// Processor metrics
-    metrics: MetricSet<TemporalReaggregationMetrics>,
+    metrics: TemporalReaggregationMetrics,
 
     /// The collection period for aggregating metrics before emitting a batch
     collection_period: Duration,
@@ -296,19 +296,21 @@ impl local::Processor<OtapPdata> for TemporalReaggregationProcessor {
                 NodeControlMsg::Wakeup { revision, .. } => {
                     if self.wakeup_revision == Some(revision) {
                         self.wakeup_revision = None;
-                        self.metrics.flushes_timer.inc();
-                        self.flush(effect_handler, None).await?;
+                        self.flush(effect_handler, None, FlushReason::Timer).await?;
                     }
 
                     Ok(())
                 }
                 NodeControlMsg::Ack(msg) => self.handle_ack(effect_handler, msg).await,
                 NodeControlMsg::Nack(msg) => self.handle_nack(effect_handler, msg).await,
-                NodeControlMsg::Shutdown { .. } => self.flush(effect_handler, None).await,
+                NodeControlMsg::Shutdown { .. } => {
+                    self.flush(effect_handler, None, FlushReason::Shutdown)
+                        .await
+                }
                 NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
                 } => {
-                    _ = metrics_reporter.report(&mut self.metrics);
+                    _ = self.metrics.report(&mut metrics_reporter);
                     Ok(())
                 }
                 _ => Ok(()),
@@ -349,7 +351,7 @@ impl TemporalReaggregationProcessor {
         pipeline_ctx: PipelineContext,
         config: &serde_json::Value,
     ) -> Result<Self, ConfigError> {
-        let metrics = pipeline_ctx.register_metrics::<TemporalReaggregationMetrics>();
+        let metrics = TemporalReaggregationMetrics::new(&pipeline_ctx);
         let config: Config =
             serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
                 error: e.to_string(),
@@ -628,7 +630,8 @@ impl TemporalReaggregationProcessor {
                 Ok(view) => self.process_view(effect_handler, &view).await,
                 Err(e) => {
                     otel_warn!(telemetry::VIEW_CREATION_FAILED_EVENT, error = %e);
-                    self.metrics.batches_rejected.inc();
+                    // local failure, not a downstream refusal
+                    self.metrics.record_failure(ErrorType::ViewCreation);
                     let msg = format!("Failed to create view: {:#}", e);
                     effect_handler
                         .notify_nack(NackMsg::new_permanent(msg, pdata))
@@ -646,7 +649,8 @@ impl TemporalReaggregationProcessor {
         match result {
             Ok(agg_result) => match agg_result {
                 AggregationResult::NoAggregations => {
-                    Ok(effect_handler.send_message_with_source_node(pdata).await?)
+                    self.try_send_message_with_metrics(effect_handler, pdata)
+                        .await
                 }
                 AggregationResult::SomeAggregations(records) => {
                     // The aggregated portion of this input has been folded into
@@ -657,13 +661,15 @@ impl TemporalReaggregationProcessor {
                     // metrics unwinding depends on the inbound context.
                     let (inbound_ctx, _) = pdata.into_parts();
                     if !inbound_ctx.needs_completion_tracking() {
-                        self.ensure_wakeup_scheduled(effect_handler)?;
+                        if let Err(e) = self.ensure_wakeup_scheduled(effect_handler) {
+                            self.metrics.record_failure(ErrorType::Internal);
+                            return Err(e);
+                        }
                         let pt_pdata = OtapPdata::new(inbound_ctx, OtapPayload::from(records));
 
-                        effect_handler
-                            .send_message_with_source_node(pt_pdata)
-                            .await?;
-                        return Ok(());
+                        return self
+                            .try_send_message_with_metrics(effect_handler, pt_pdata)
+                            .await;
                     }
 
                     // The partial-passthrough output represents exactly one
@@ -678,8 +684,15 @@ impl TemporalReaggregationProcessor {
                         flushed: false,
                     };
 
-                    let inbound_calldata: CallData =
-                        self.record_pending_and_handle_wakeup(effect_handler, tracker)?;
+                    let inbound_calldata_res =
+                        self.record_pending_and_handle_wakeup(effect_handler, tracker);
+                    let inbound_calldata: CallData = match inbound_calldata_res {
+                        Ok(call_data) => call_data,
+                        Err(e) => {
+                            self.metrics.record_failure(ErrorType::Internal);
+                            return Err(e);
+                        }
+                    };
 
                     // safety: See [`TemporalReaggregationProcessor::accept_pdata`].
                     // We always expect one inbound and three outbound slots available
@@ -701,9 +714,8 @@ impl TemporalReaggregationProcessor {
                         &mut pt_pdata,
                     );
 
-                    Ok(effect_handler
-                        .send_message_with_source_node(pt_pdata)
-                        .await?)
+                    self.try_send_message_with_metrics(effect_handler, pt_pdata)
+                        .await
                 }
                 AggregationResult::AllAggregated => {
                     // The full input was folded into the in-progress builder;
@@ -713,7 +725,11 @@ impl TemporalReaggregationProcessor {
                     // the inbound context, only schedule the aggregate flush.
                     let (inbound_ctx, _) = pdata.into_parts();
                     if !inbound_ctx.needs_completion_tracking() {
-                        self.ensure_wakeup_scheduled(effect_handler)?;
+                        if let Err(e) = self.ensure_wakeup_scheduled(effect_handler) {
+                            self.metrics.record_failure(ErrorType::Internal);
+                            return Err(e);
+                        }
+                        self.metrics.record_success();
                         return Ok(());
                     }
 
@@ -725,8 +741,12 @@ impl TemporalReaggregationProcessor {
                         flushed: false,
                     };
 
-                    _ = self.record_pending_and_handle_wakeup(effect_handler, tracker)?;
+                    if let Err(e) = self.record_pending_and_handle_wakeup(effect_handler, tracker) {
+                        self.metrics.record_failure(ErrorType::Internal);
+                        return Err(e);
+                    }
 
+                    self.metrics.record_success();
                     Ok(())
                 }
             },
@@ -734,11 +754,17 @@ impl TemporalReaggregationProcessor {
                 // Engine errors are fatal, we propagate those up the stack
                 ProcessingError::Engine { source } => Err(source),
 
-                // This is our classic "bad data" case where even after flushing
-                // the current batch, it failed on retry due to being oversized
-                // in some way. We can't handle it, so it gets a nack.
+                // Classic "bad data" case: even after flushing the current batch
+                // and retrying, the input is still too large to aggregate.
+                // Record the actionable error cause from source, not the control-flow reason.
                 ProcessingError::AggregationRetryFailed { source } => {
-                    self.metrics.batches_rejected.inc();
+                    let error_type = match source {
+                        AggregationError::IdOverflow => ErrorType::IdOverflow,
+                        AggregationError::StreamCardinalityExceeded => {
+                            ErrorType::StreamCardinalityExceeded
+                        }
+                    };
+                    self.metrics.record_failure(error_type);
                     let msg = format!("Failed to aggregate batch: {:#}", source);
                     effect_handler
                         .notify_nack(NackMsg::new_permanent(msg, pdata))
@@ -756,10 +782,28 @@ impl TemporalReaggregationProcessor {
     /// the data appended before the checkpoint is clean and should be sent
     /// downstream, while the partial data from the failed call is discarded
     /// by slicing the record batches.
+    ///
+    async fn try_send_message_with_metrics(
+        &mut self,
+        effect_handler: &mut local::EffectHandler<OtapPdata>,
+        pdata: OtapPdata,
+    ) -> Result<(), Error> {
+        let send_res = effect_handler.send_message_with_source_node(pdata).await;
+        if send_res.is_ok() {
+            self.metrics.record_success();
+        } else {
+            self.metrics.record_failure(ErrorType::OutputSend);
+        }
+        Ok(send_res?)
+    }
+
+    /// Records a `flushes` metric only when records are actually emitted (non-empty flush).
+    /// The metric is recorded after the send result is known so that outcome is accurate.
     async fn flush(
         &mut self,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
         checkpoint: Option<Checkpoint>,
+        reason: FlushReason,
     ) -> Result<(), Error> {
         let records = self.builder.finish(checkpoint);
         // Snapshot the merged peer_addr from every input that contributed to
@@ -771,6 +815,7 @@ impl TemporalReaggregationProcessor {
         // scheduled whenever we start aggregating a new batch
         self.cancel_current_wakeup(effect_handler);
 
+        // Empty flush - nothing to emit, skip the metric entirely
         if records.is_empty() {
             return Ok(());
         }
@@ -784,8 +829,14 @@ impl TemporalReaggregationProcessor {
             if let Some(addr) = merged_peer {
                 pdata.set_peer_addr(addr);
             }
-            effect_handler.send_message_with_source_node(pdata).await?;
-            return Ok(());
+            let res = effect_handler.send_message_with_source_node(pdata).await;
+            let outcome = if res.is_ok() {
+                Outcome::Success
+            } else {
+                Outcome::Failure
+            };
+            self.metrics.record_flush(outcome, reason);
+            return Ok(res?);
         }
 
         // safety: See [`TemporalReaggregationProcessor::accept_pdata`].
@@ -817,8 +868,14 @@ impl TemporalReaggregationProcessor {
             &mut pdata,
         );
 
-        effect_handler.send_message_with_source_node(pdata).await?;
-        Ok(())
+        let res = effect_handler.send_message_with_source_node(pdata).await;
+        let outcome = if res.is_ok() {
+            Outcome::Success
+        } else {
+            Outcome::Failure
+        };
+        self.metrics.record_flush(outcome, reason);
+        Ok(res?)
     }
 
     async fn process_view<V: MetricsView>(
@@ -839,9 +896,30 @@ impl TemporalReaggregationProcessor {
                 // data back into a fresh one. This prevents complex ack/nack
                 // scenarios where a single input batch has representation in
                 // multiple output batches.
-                AggregationError::IdOverflow | AggregationError::StreamCardinalityExceeded => {
-                    self.metrics.flushes_overflow.inc();
-                    self.flush(effect_handler, Some(checkpoint)).await?;
+                AggregationError::IdOverflow => {
+                    // Flush first with the correct reason, metric is recorded inside flush()
+                    // after the send result is known - not before.
+                    let flush_reason = FlushReason::IdOverflow;
+                    if let Err(e) = self
+                        .flush(effect_handler, Some(checkpoint), flush_reason)
+                        .await
+                    {
+                        self.metrics.record_failure(ErrorType::OutputSend);
+                        return Err(e.into());
+                    }
+                    Ok(self
+                        .aggregate_view(view)
+                        .inspect_err(|_| self.clear_state())?)
+                }
+                AggregationError::StreamCardinalityExceeded => {
+                    let flush_reason = FlushReason::StreamCardinalityExceeded;
+                    if let Err(e) = self
+                        .flush(effect_handler, Some(checkpoint), flush_reason)
+                        .await
+                    {
+                        self.metrics.record_failure(ErrorType::OutputSend);
+                        return Err(e.into());
+                    }
                     Ok(self
                         .aggregate_view(view)
                         .inspect_err(|_| self.clear_state())?)
@@ -2136,6 +2214,23 @@ mod tests {
                 assert_eq!(output.len(), 2, "expected early flush + wakeup flush");
                 assert_output_metric_count(&output[0], max_metrics);
                 assert_output_metric_count(&output[1], 2);
+
+                let snaps = collect_telemetry(&mut ctx).await;
+                assert_eq!(
+                    metric_count(&snaps, "operations", Some("success"), None, None),
+                    2
+                );
+                assert_eq!(metric_count(&snaps, "failures", None, None, None), 0);
+                assert_eq!(
+                    metric_count(
+                        &snaps,
+                        "flushes",
+                        Some("success"),
+                        Some("id_overflow"),
+                        None
+                    ),
+                    1
+                );
             },
         );
     }
@@ -2169,6 +2264,23 @@ mod tests {
                 let output3 = ctx.drain_pdata().await;
                 assert_eq!(output3.len(), 1, "expected wakeup flush of second batch");
                 assert_output_otlp_equivalent(&output3[0], data2);
+
+                let snaps = collect_telemetry(&mut ctx).await;
+                assert_eq!(
+                    metric_count(&snaps, "operations", Some("success"), None, None),
+                    2
+                );
+                assert_eq!(metric_count(&snaps, "failures", None, None, None), 0);
+                assert_eq!(
+                    metric_count(
+                        &snaps,
+                        "flushes",
+                        Some("success"),
+                        Some("stream_cardinality_exceeded"),
+                        None
+                    ),
+                    1
+                );
             },
         );
     }
@@ -2652,6 +2764,13 @@ mod tests {
             let output = ctx.drain_pdata().await;
             assert_eq!(output.len(), 1, "delta sum should pass through immediately");
             assert_output_otlp_equivalent(&output[0], input_data);
+
+            let snaps = collect_telemetry(&mut ctx).await;
+            assert_eq!(
+                metric_count(&snaps, "operations", Some("success"), None, None),
+                1
+            );
+            assert_eq!(metric_count(&snaps, "failures", None, None, None), 0);
         });
     }
 
@@ -2805,6 +2924,13 @@ mod tests {
             assert!(
                 output.is_empty(),
                 "all-aggregatable batch should not emit anything immediately"
+            );
+
+            let _ = ctx.fire_wakeup().await.unwrap();
+            let snaps = collect_telemetry(&mut ctx).await;
+            assert_eq!(
+                metric_count(&snaps, "flushes", Some("success"), Some("timer"), None),
+                1
             );
         });
     }
@@ -3442,6 +3568,54 @@ mod tests {
         run_test(config, actions);
     }
 
+    /// Scenario: A single input batch is too large to aggregate and exceeds the cardinality limit.
+    /// Guarantees: The batch is permanently rejected, recording exactly one failed operation
+    /// and one `stream_cardinality_exceeded` failure diagnostic.
+    #[test]
+    fn test_telemetry_batch_rejected_cardinality_limit() {
+        let too_many = u16::MAX as usize + 1;
+        run_processor_test(json!({}), move |mut ctx| async move {
+            let payload = make_otlp_payload_from_metrics(make_n_gauge_metrics(too_many));
+            let context = Context::with_capacity(1);
+            let pdata = OtapPdata::new(context, payload);
+
+            // This will return Ok(()) but generate a NackMsg internally and record failure metrics
+            ctx.process(Message::PData(pdata)).await.unwrap();
+
+            let snaps = collect_telemetry(&mut ctx).await;
+
+            // Should have 1 failed operation
+            assert_eq!(
+                metric_count(&snaps, "operations", Some("failure"), None, None),
+                1
+            );
+            assert_eq!(
+                metric_count(&snaps, "operations", Some("success"), None, None),
+                0
+            );
+
+            // Should have exactly 1 diagnostic matching the failure
+            assert_eq!(
+                metric_count(
+                    &snaps,
+                    "failures",
+                    None,
+                    None,
+                    Some("stream_cardinality_exceeded")
+                ),
+                1
+            );
+            assert_eq!(
+                metric_count(&snaps, "failures", None, None, Some("id_overflow")),
+                0
+            );
+            assert_eq!(
+                metric_count(&snaps, "failures", None, None, Some("view_creation")),
+                0
+            );
+        });
+    }
+
     /// Sending an ack whose calldata has the wrong number of elements
     /// (0 or 2 instead of exactly 1) should be silently ignored.
     #[test]
@@ -3620,6 +3794,12 @@ mod tests {
                 "fire_wakeup should return false when no data has been sent"
             );
             assert!(ctx.drain_pdata().await.is_empty());
+
+            let snaps = collect_telemetry(&mut ctx).await;
+            assert_eq!(
+                metric_count(&snaps, "flushes", None, Some("timer"), None),
+                0
+            );
         });
     }
 
@@ -3714,5 +3894,97 @@ mod tests {
             },
         ];
         run_test(config, actions);
+    }
+
+    // --- Telemetry Tests ---
+
+    use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+
+    /// Helper to collect current telemetry snapshots from the processor.
+    async fn collect_telemetry(
+        ctx: &mut TestContext<OtapPdata>,
+    ) -> Vec<otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot> {
+        let (metrics_rx, reporter) = MetricsReporter::create_new_and_receiver(10);
+        ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+            metrics_reporter: reporter,
+        }))
+        .await
+        .unwrap();
+
+        let mut snaps = Vec::new();
+        while let Ok(snap) = metrics_rx.try_recv() {
+            snaps.push(snap);
+        }
+        snaps
+    }
+
+    /// Helper to count the occurrences of a metric with specific attribute values.
+    fn metric_count(
+        snaps: &[otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot],
+        metric_name: &str,
+        outcome: Option<&str>,
+        reason: Option<&str>,
+        error_type: Option<&str>,
+    ) -> u64 {
+        let mut total = 0;
+        for s in snaps {
+            if s.descriptor().name != "processor.temporal_reaggregation" {
+                continue;
+            }
+            if let Some(idx) = s
+                .descriptor()
+                .metrics
+                .iter()
+                .position(|f| f.name == metric_name)
+            {
+                let mut match_outcome = true;
+                let mut match_reason = true;
+                let mut match_error = true;
+
+                if let Some(o) = outcome {
+                    if s.measurement_attribute_value("outcome") != Some(o) {
+                        match_outcome = false;
+                    }
+                }
+                if let Some(r) = reason {
+                    if s.measurement_attribute_value("reason") != Some(r) {
+                        match_reason = false;
+                    }
+                }
+                if let Some(e) = error_type {
+                    if s.measurement_attribute_value("error.type") != Some(e) {
+                        match_error = false;
+                    }
+                }
+
+                if match_outcome && match_reason && match_error {
+                    total += s.get_metrics()[idx].to_u64_lossy();
+                }
+            }
+        }
+        total
+    }
+
+    /// Scenario: An aggregatable metrics batch remains buffered when shutdown begins.
+    /// Guarantees: Shutdown emits one non-empty successful flush with the `shutdown` reason.
+    #[test]
+    fn test_shutdown_flush() {
+        run_processor_test(json!({}), |mut ctx| async move {
+            let batch = make_otlp_bytes_pdata(make_n_gauge_metrics(1));
+            ctx.process(Message::PData(batch)).await.unwrap();
+
+            ctx.process(Message::Control(NodeControlMsg::Shutdown {
+                deadline: Instant::now() + Duration::from_secs(5),
+                reason: "test".to_string(),
+            }))
+            .await
+            .unwrap();
+
+            let snaps = collect_telemetry(&mut ctx).await;
+            assert_eq!(
+                metric_count(&snaps, "flushes", Some("success"), Some("shutdown"), None),
+                1
+            );
+        });
     }
 }

@@ -191,6 +191,20 @@ fn build_plan(
         bail!("publish set must be exactly {expected_names:?}, found {names:?}");
     }
 
+    for package in &publishable {
+        if package
+            .dependencies
+            .iter()
+            .any(|dependency| dependency.name == package.name)
+        {
+            bail!(
+                "publishable package {} depends on itself; first publication cannot resolve a \
+                 registry self-dependency",
+                package.name
+            );
+        }
+    }
+
     let package_versions = publishable
         .iter()
         .map(|package| (package.name.as_str(), package.version.as_str()))
@@ -514,7 +528,32 @@ mod tests {
             .iter()
             .map(|name| {
                 let dependencies: &[&str] = match *name {
+                    "otel-arrow-dfe-admin" => &[
+                        "otel-arrow-dfe-admin-types",
+                        "otel-arrow-dfe-config",
+                        "otel-arrow-dfe-engine",
+                        "otel-arrow-dfe-state",
+                        "otel-arrow-dfe-telemetry",
+                    ],
                     "otel-arrow-dfe-admin-types" => &["otel-arrow-dfe-config"],
+                    "otel-arrow-dfe-controller" => &[
+                        "otel-arrow-dfe-admin",
+                        "otel-arrow-dfe-config",
+                        "otel-arrow-dfe-engine",
+                        "otel-arrow-dfe-state",
+                        "otel-arrow-dfe-telemetry",
+                        "otel-arrow-dfe-telemetry-macros",
+                    ],
+                    "otel-arrow-dfe-engine" => &[
+                        "otel-arrow-dfe-channel",
+                        "otel-arrow-dfe-component-inventory-syntax",
+                        "otel-arrow-dfe-config",
+                        "otel-arrow-dfe-engine-macros",
+                        "otel-arrow-dfe-pdata",
+                        "otel-arrow-dfe-state",
+                        "otel-arrow-dfe-telemetry",
+                        "otel-arrow-dfe-telemetry-macros",
+                    ],
                     "otel-arrow-dfe-engine-macros" => {
                         &["otel-arrow-dfe-component-inventory-syntax"]
                     }
@@ -528,6 +567,16 @@ mod tests {
                     "otel-arrow-dfe-query-engine" => {
                         &["otel-arrow-dfe-config", "otel-arrow-dfe-pdata"]
                     }
+                    "otel-arrow-dfe-state" => {
+                        &["otel-arrow-dfe-config", "otel-arrow-dfe-telemetry"]
+                    }
+                    "otel-arrow-dfe-telemetry" => &[
+                        "otel-arrow-dfe-config",
+                        "otel-arrow-dfe-expohisto",
+                        "otel-arrow-dfe-pdata",
+                        "otel-arrow-dfe-pdata-views",
+                        "otel-arrow-dfe-telemetry-macros",
+                    ],
                     _ => &[],
                 };
                 package(name, None, dependencies)
@@ -593,6 +642,28 @@ mod tests {
             .push(dependency("otel-arrow-dfe-engine"));
 
         assert!(build_plan(packages, PathBuf::from("/target")).is_err());
+    }
+
+    /// Scenario: a publishable crate uses a self dev-dependency to enable test features.
+    /// Guarantees: release preparation rejects the first-publication cycle before packaging.
+    #[test]
+    fn plan_rejects_self_dev_dependency() {
+        let mut packages = publishable_packages();
+        packages
+            .iter_mut()
+            .find(|package| package.name == "otel-arrow-dfe-engine")
+            .expect("engine package should exist")
+            .dependencies
+            .push(CargoDependency {
+                name: "otel-arrow-dfe-engine".to_owned(),
+                kind: Some("dev".to_owned()),
+                path: Some("/crates/otel-arrow-dfe-engine".into()),
+                req: "^0.51.0".to_owned(),
+            });
+
+        let error = build_plan(packages, PathBuf::from("/target"))
+            .expect_err("self dependencies must be rejected");
+        assert!(error.to_string().contains("depends on itself"));
     }
 
     /// Scenario: dependency requirements use abbreviated, ranged, exact, and excluding syntax.

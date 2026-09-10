@@ -312,6 +312,28 @@ Do not yank a version merely because a later tag or GitHub release step failed.
 Yanking prevents normal dependency resolution and does not permit republishing
 the same version.
 
+#### Complete a Partial Release Manually
+
+If a newly allowlisted crate cannot be published at the prepared version and
+the successfully published crates are valid, preserve their source provenance
+with a partial release:
+
+1. Stop the Push Release workflow. Do not bypass package verification or
+   publish a missing crate from modified sources.
+2. Confirm every published crate was built from the exact merged Prepare
+   Release commit. Leave valid versions published and unyanked.
+3. From a clean checkout of that commit, create and push the three release tags
+   using step 6 of the emergency release process below.
+4. Create a draft GitHub release using `vX.Y.Z`. List only the Rust crates that
+   were actually published, identify the omitted crates, and link the planned
+   patch release that will complete the set.
+5. Review and publish the draft release.
+6. Fix the blocker on `main`, then use Prepare Release normally for a new patch
+   version. Do not bump only the missing crates or reuse the partial version.
+
+This procedure records the Go module, Rust workspace source, and valid crate
+artifacts without claiming that the complete crates.io plan succeeded.
+
 ### Emergency Release Process
 
 In case the automated workflow cannot be used, you can create a manual
