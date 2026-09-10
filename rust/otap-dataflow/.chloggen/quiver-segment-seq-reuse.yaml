@@ -1,0 +1,6 @@
+change_type: bug_fix
+component: pipeline
+note: Fix Quiver silently skipping new telemetry after a restart reuses a segment sequence number cleaned up by a previous run.
+issues: [4024]
+subtext: |
+  Quiver now durably persists the next segment sequence number as segments are written, so restarts never reallocate a sequence number that stale subscriber progress could mistake for already-delivered data.
