@@ -756,6 +756,23 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
             .min()
     }
 
+    /// Returns the highest segment sequence tracked by any subscriber,
+    /// including inactive ones.
+    ///
+    /// Restored progress is a record of segments that once existed, so this
+    /// acts as a floor for future sequence allocation: reusing one of these
+    /// sequence numbers would collide with stale progress and suppress the
+    /// new data (issue #4024). Inactive subscribers are included because
+    /// their state is retained and can be reactivated.
+    #[must_use]
+    pub fn highest_tracked_segment_any(&self) -> Option<SegmentSeq> {
+        self.subscribers
+            .read()
+            .values()
+            .filter_map(|state_lock| state_lock.read().highest_tracked_segment())
+            .max()
+    }
+
     /// Returns debug info about subscriber segment counts (for debugging).
     #[must_use]
     pub fn debug_subscriber_segment_counts(&self) -> Vec<(String, usize, bool)> {
