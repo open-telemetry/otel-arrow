@@ -809,9 +809,7 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
             );
         }
 
-        if self.telemetry.runtime_metrics >= MetricLevel::Normal {
-            let _ = self.report_node_metrics();
-        }
+        let _ = self.report_node_metrics();
 
         Ok(())
     }
@@ -886,9 +884,7 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                 }
             }
         }
-        if self.telemetry.runtime_metrics >= MetricLevel::Normal
-            && let Err(err) = self.report_node_metrics()
-        {
+        if let Err(err) = self.report_node_metrics() {
             otel_warn!("node.metrics.reporting.fail", error = err.to_string());
         }
 
@@ -4054,6 +4050,43 @@ mod tests {
         // Exporter input contains 7 log records.
         let exp = &snapshots[&MetricLabel::ExpInputItems];
         assert_u64(exp, ITEMS, 7, "Exporter input logs");
+    }
+
+    /// Scenario: per-node metrics are enabled while the runtime metric level is basic.
+    /// Guarantees: periodic reporting exports opted-in node measurements below normal.
+    #[test]
+    fn node_metrics_report_at_basic_runtime_level() {
+        let mut harness = setup_test_manager_with_metrics();
+        harness.manager.telemetry.runtime_metrics = MetricLevel::Basic;
+        let processor_id = harness.nodes[1].index;
+        {
+            let mut handles = harness.node_metric_handles.borrow_mut();
+            let input = handles[processor_id]
+                .as_mut()
+                .and_then(|handles| handles.input.as_mut())
+                .expect("processor input metrics");
+            input
+                .with(SignalOutcomeAttributes {
+                    signal: SignalType::Logs,
+                    outcome: Outcome::Success,
+                })
+                .messages
+                .inc();
+        }
+
+        let mut pipeline_metrics_monitor = None;
+        harness
+            .manager
+            .handle_due_events(Instant::now(), &mut pipeline_metrics_monitor);
+
+        let snapshots = collect_snapshots(&harness.snapshot_rx, &harness.key_labels);
+        let processor_input = &snapshots[&MetricLabel::ProcInput];
+        assert_u64(
+            processor_input,
+            INPUT_MESSAGES,
+            1,
+            "basic-level node opt-in should be reported",
+        );
     }
 
     /// Scenario: nodes opt into payload size without enabling message or item metrics.

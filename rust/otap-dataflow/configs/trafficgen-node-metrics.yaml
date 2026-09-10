@@ -8,7 +8,7 @@
 # Distinguish them by the `pipeline.id` attribute on each metric set.
 #
 # Run with:
-#   .dev/run.sh trafficgen-node-metrics.yaml
+#   cargo run -- --config configs/trafficgen-node-metrics.yaml
 
 version: otel_dataflow/v1
 engine:

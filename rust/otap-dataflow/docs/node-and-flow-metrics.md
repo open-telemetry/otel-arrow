@@ -42,7 +42,8 @@ payload observed at a receiver or exporter boundary.
 
 **Completion duration** measures from a node boundary until the terminal ACK
 or NACK: from input for processors and exporters, and from output for
-receivers. **Local duration** measures work performed by the node itself. Use
+receivers. **Local duration** uses the boundary defined by each node
+instrument, which may include encoding or backend latency. Use
 `flow.compute.duration` instead for compute time across a processor range.
 
 **`none`** and **`basic`** enable no node metrics by default. **`normal`** adds

@@ -795,36 +795,29 @@ impl OtapPdata {
     /// When `node_interests` includes source tagging or output-side telemetry,
     /// a source frame is ensured for `node_id` and the relevant interests are
     /// merged into it.
-    fn prepare_source_send(&mut self, node_interests: Interests, node_id: usize) {
-        let trigger = node_interests
-            & (Interests::SOURCE_TAGGING
-                | Interests::NODE_OUTPUT_METRICS
-                | Interests::NODE_COMPLETION_DURATION
-                | Interests::NODE_ITEM_COUNTS
-                | Interests::NODE_SIZE);
+    fn prepare_source_send(
+        &mut self,
+        node_interests: Interests,
+        node_id: usize,
+        completion_from_output: bool,
+    ) {
+        let mut output_interests = node_interests
+            & (Interests::NODE_OUTPUT_METRICS | Interests::NODE_ITEM_COUNTS | Interests::NODE_SIZE);
+        if completion_from_output {
+            output_interests |= node_interests & Interests::NODE_COMPLETION_DURATION;
+        }
+        let trigger = (node_interests & Interests::SOURCE_TAGGING) | output_interests;
         if !trigger.is_empty() {
-            self.context.update_send_context(
-                node_id,
-                node_interests
-                    & (Interests::NODE_OUTPUT_METRICS
-                        | Interests::NODE_COMPLETION_DURATION
-                        | Interests::NODE_ITEM_COUNTS
-                        | Interests::NODE_SIZE),
-            );
-            if node_interests.intersects(
-                Interests::NODE_OUTPUT_METRICS
-                    | Interests::NODE_COMPLETION_DURATION
-                    | Interests::NODE_ITEM_COUNTS
-                    | Interests::NODE_SIZE,
-            ) {
+            self.context.update_send_context(node_id, output_interests);
+            if !output_interests.is_empty() {
                 self.context.capture_signal(self.signal_type());
             }
-            if node_interests.contains(Interests::NODE_ITEM_COUNTS) {
+            if output_interests.contains(Interests::NODE_ITEM_COUNTS) {
                 let items = u32::try_from(self.num_items()).unwrap_or(u32::MAX);
                 let signal = self.signal_type();
                 self.context.stamp_output_items(items, signal);
             }
-            if node_interests.contains(Interests::NODE_SIZE)
+            if output_interests.contains(Interests::NODE_SIZE)
                 && let Some(size) = self.num_bytes()
             {
                 self.context
@@ -892,15 +885,17 @@ impl OtapPdata {
 /// Implements `ProducerEffectHandlerExtension<OtapPdata>` for an EffectHandler type.
 /// `$id_method` is `processor_id` or `receiver_id`.
 macro_rules! impl_producer_ext {
-    ($handler:ty, $id_method:ident) => {
+    ($handler:ty, $id_method:ident, $completion_from_output:expr) => {
         #[async_trait(?Send)]
         impl ProducerEffectHandlerExtension<OtapPdata> for $handler {
             fn subscribe_to(&self, int: Interests, ctx: CallData, data: &mut OtapPdata) {
-                let engine_int = self.node_interests()
+                let mut engine_int = self.node_interests()
                     & (Interests::NODE_OUTPUT_METRICS
-                        | Interests::NODE_COMPLETION_DURATION
                         | Interests::NODE_ITEM_COUNTS
                         | Interests::NODE_SIZE);
+                if $completion_from_output {
+                    engine_int |= self.node_interests() & Interests::NODE_COMPLETION_DURATION;
+                }
                 data.context
                     .subscribe_to(int | engine_int, ctx, self.$id_method().index);
             }
@@ -910,19 +905,23 @@ macro_rules! impl_producer_ext {
 
 impl_producer_ext!(
     otel_arrow_dfe_engine::local::processor::EffectHandler<OtapPdata>,
-    processor_id
+    processor_id,
+    false
 );
 impl_producer_ext!(
     otel_arrow_dfe_engine::local::receiver::EffectHandler<OtapPdata>,
-    receiver_id
+    receiver_id,
+    true
 );
 impl_producer_ext!(
     otel_arrow_dfe_engine::shared::processor::EffectHandler<OtapPdata>,
-    processor_id
+    processor_id,
+    false
 );
 impl_producer_ext!(
     otel_arrow_dfe_engine::shared::receiver::EffectHandler<OtapPdata>,
-    receiver_id
+    receiver_id,
+    true
 );
 
 /* -------- Consumer effect handler extensions (shared, local) -------- */
@@ -1060,14 +1059,25 @@ macro_rules! maybe_processor_send_hook {
 }
 
 macro_rules! impl_message_source_ext {
-    ($async_attr:meta, $trait_name:ident, $handler:ty, $id_method:ident, $hook:ident) => {
+    (
+        $async_attr:meta,
+        $trait_name:ident,
+        $handler:ty,
+        $id_method:ident,
+        $hook:ident,
+        $completion_from_output:expr
+    ) => {
         #[$async_attr]
         impl $trait_name<OtapPdata> for $handler {
             async fn send_message_with_source_node(
                 &self,
                 mut data: OtapPdata,
             ) -> Result<(), TypedError<OtapPdata>> {
-                data.prepare_source_send(self.node_interests(), self.$id_method().index);
+                data.prepare_source_send(
+                    self.node_interests(),
+                    self.$id_method().index,
+                    $completion_from_output,
+                );
                 maybe_processor_send_hook!($hook, self, &mut data);
                 self.router.send_default_stamped(data).await
             }
@@ -1076,7 +1086,11 @@ macro_rules! impl_message_source_ext {
                 &self,
                 mut data: OtapPdata,
             ) -> Result<(), TypedError<OtapPdata>> {
-                data.prepare_source_send(self.node_interests(), self.$id_method().index);
+                data.prepare_source_send(
+                    self.node_interests(),
+                    self.$id_method().index,
+                    $completion_from_output,
+                );
                 maybe_processor_send_hook!($hook, self, &mut data);
                 self.router.try_send_default_stamped(data)
             }
@@ -1089,7 +1103,11 @@ macro_rules! impl_message_source_ext {
             where
                 P: Into<PortName> + Send + 'static,
             {
-                data.prepare_source_send(self.node_interests(), self.$id_method().index);
+                data.prepare_source_send(
+                    self.node_interests(),
+                    self.$id_method().index,
+                    $completion_from_output,
+                );
                 maybe_processor_send_hook!($hook, self, &mut data);
                 self.router.send_to_stamped(port, data).await
             }
@@ -1102,7 +1120,11 @@ macro_rules! impl_message_source_ext {
             where
                 P: Into<PortName> + Send + 'static,
             {
-                data.prepare_source_send(self.node_interests(), self.$id_method().index);
+                data.prepare_source_send(
+                    self.node_interests(),
+                    self.$id_method().index,
+                    $completion_from_output,
+                );
                 maybe_processor_send_hook!($hook, self, &mut data);
                 self.router.try_send_to_stamped(port, data)
             }
@@ -1115,28 +1137,32 @@ impl_message_source_ext!(
     MessageSourceLocalEffectHandlerExtension,
     otel_arrow_dfe_engine::local::processor::EffectHandler<OtapPdata>,
     processor_id,
-    with_hook
+    with_hook,
+    false
 );
 impl_message_source_ext!(
     async_trait(?Send),
     MessageSourceLocalEffectHandlerExtension,
     otel_arrow_dfe_engine::local::receiver::EffectHandler<OtapPdata>,
     receiver_id,
-    no_hook
+    no_hook,
+    true
 );
 impl_message_source_ext!(
     async_trait,
     MessageSourceSharedEffectHandlerExtension,
     otel_arrow_dfe_engine::shared::processor::EffectHandler<OtapPdata>,
     processor_id,
-    with_hook
+    with_hook,
+    false
 );
 impl_message_source_ext!(
     async_trait,
     MessageSourceSharedEffectHandlerExtension,
     otel_arrow_dfe_engine::shared::receiver::EffectHandler<OtapPdata>,
     receiver_id,
-    no_hook
+    no_hook,
+    true
 );
 
 /* -------- ReceivedAtNode implementation -------- */
@@ -2036,6 +2062,7 @@ mod test {
         pdata.prepare_source_send(
             Interests::NODE_OUTPUT_METRICS | Interests::NODE_ITEM_COUNTS,
             5,
+            true,
         );
         let frame = pdata.context.frames().last().expect("source frame");
         assert_eq!(frame.node_id, 5);
@@ -2044,7 +2071,7 @@ mod test {
 
         // Output metrics without the opt-in bit: no output count is stamped.
         let mut pdata_no_optin = create_test_pdata();
-        pdata_no_optin.prepare_source_send(Interests::NODE_OUTPUT_METRICS, 7);
+        pdata_no_optin.prepare_source_send(Interests::NODE_OUTPUT_METRICS, 7, true);
         let frame_no_optin = pdata_no_optin
             .context
             .frames()
@@ -2055,7 +2082,7 @@ mod test {
 
         // SOURCE_TAGGING only (no output metrics): no output count is stamped.
         let mut pdata2 = create_test_pdata();
-        pdata2.prepare_source_send(Interests::SOURCE_TAGGING, 6);
+        pdata2.prepare_source_send(Interests::SOURCE_TAGGING, 6, true);
         let frame2 = pdata2.context.frames().last().expect("source frame");
         assert_eq!(frame2.output_items, 0);
         assert_eq!(pdata2.context.signal(), None);
@@ -2063,7 +2090,7 @@ mod test {
         // The opt-in bit alone (e.g. below the `normal` level) records output
         // items without enabling output message metrics.
         let mut pdata3 = create_test_pdata();
-        pdata3.prepare_source_send(Interests::NODE_ITEM_COUNTS, 8);
+        pdata3.prepare_source_send(Interests::NODE_ITEM_COUNTS, 8, true);
         let frame3 = pdata3.context.frames().last().expect("source frame");
         assert_eq!(frame3.output_items, n);
         assert_eq!(pdata3.context.signal(), Some(SignalType::Logs));
@@ -2077,12 +2104,16 @@ mod test {
         let size =
             u64::try_from(pdata.num_bytes().expect("test payload size")).expect("size fits u64");
         assert!(size > 0);
-        pdata.prepare_source_send(Interests::NODE_OUTPUT_METRICS | Interests::NODE_SIZE, 5);
+        pdata.prepare_source_send(
+            Interests::NODE_OUTPUT_METRICS | Interests::NODE_SIZE,
+            5,
+            true,
+        );
         let frame = pdata.context.frames().last().expect("source frame");
         assert_eq!(frame.output_size, size);
 
         let mut pdata_no_optin = create_test_pdata();
-        pdata_no_optin.prepare_source_send(Interests::NODE_OUTPUT_METRICS, 6);
+        pdata_no_optin.prepare_source_send(Interests::NODE_OUTPUT_METRICS, 6, true);
         let frame_no_optin = pdata_no_optin
             .context
             .frames()
@@ -2091,7 +2122,7 @@ mod test {
         assert_eq!(frame_no_optin.output_size, 0);
 
         let mut pdata_without_metrics = create_test_pdata();
-        pdata_without_metrics.prepare_source_send(Interests::NODE_SIZE, 7);
+        pdata_without_metrics.prepare_source_send(Interests::NODE_SIZE, 7, true);
         let frame_without_metrics = pdata_without_metrics
             .context
             .frames()
@@ -2118,6 +2149,7 @@ mod test {
         pdata.prepare_source_send(
             Interests::NODE_OUTPUT_METRICS | Interests::NODE_ITEM_COUNTS,
             2,
+            true,
         );
 
         let frames = pdata.context.frames();
@@ -2129,6 +2161,27 @@ mod test {
         assert!(frames[1].interests.contains(Interests::NODE_OUTPUT_METRICS));
         assert!(frames[1].interests.contains(Interests::NODE_ITEM_COUNTS));
         assert_eq!(frames[1].output_items, items);
+    }
+
+    /// Scenario: a processor and receiver create fresh output from completion-enabled nodes.
+    /// Guarantees: only the receiver creates an output-boundary completion frame.
+    #[test]
+    fn test_prepare_source_send_applies_completion_only_at_receiver_output() {
+        let mut processor_output = create_test_pdata();
+        processor_output.prepare_source_send(Interests::NODE_COMPLETION_DURATION, 1, false);
+        assert!(processor_output.context.frames().is_empty());
+
+        let mut receiver_output = create_test_pdata();
+        receiver_output.prepare_source_send(Interests::NODE_COMPLETION_DURATION, 2, true);
+        let frames = receiver_output.context.frames();
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].node_id, 2);
+        assert!(
+            frames[0]
+                .interests
+                .contains(Interests::NODE_COMPLETION_DURATION)
+        );
+        assert!(frames[0].route.entry_time_ns > 0);
     }
 
     #[test]
@@ -2562,6 +2615,8 @@ mod test {
         assert!(subscriber.needs_completion_tracking());
     }
 
+    /// Scenario: an input metric frame is created without completion timing.
+    /// Guarantees: input message accounting does not capture a completion timestamp.
     #[test]
     fn push_entry_frame_pipeline_metrics_no_timestamp() {
         // Input metrics without completion duration should not capture a timestamp.
@@ -2577,6 +2632,8 @@ mod test {
         );
     }
 
+    /// Scenario: an input frame enables node completion duration.
+    /// Guarantees: the frame captures a non-zero entry timestamp for terminal timing.
     #[test]
     fn push_entry_frame_completion_duration_stamps_time() {
         // Completion duration stamps a non-zero timestamp.

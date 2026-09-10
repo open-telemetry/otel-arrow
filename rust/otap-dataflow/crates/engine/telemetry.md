@@ -36,8 +36,8 @@ control-plane metrics. Its default value is `basic`.
 | `normal` | `basic`, plus `node.input.messages` and `node.output.messages`. |
 | `detailed` | `normal`, plus completion duration, local duration, item, and size metrics for every node. |
 
-At any level, enable optional measurements on an individual
-node with
+Runtime levels provide defaults. At any level, override those defaults for an
+individual node with
 `policies.telemetry.messages: true`,
 `policies.telemetry.completion_duration: true`,
 `policies.telemetry.duration: true`,
@@ -82,14 +82,14 @@ counts, see [Node and Flow Metrics](../../docs/node-and-flow-metrics.md#flow-met
 | `channel.receiver.queue.depth` | Current number of messages buffered in the channel. | `runtime_metrics` is `basic` or higher and the channel exists; sampled on the reporting interval. |
 | `channel.receiver.capacity` | Configured channel buffer capacity. | `runtime_metrics` is `basic` or higher and the channel exists; sampled on the reporting interval. |
 | `node.completion.duration` | Duration from the tracked node boundary until the corresponding ack or nack is routed, in seconds (histogram). | `runtime_metrics` is `detailed` or that node sets `policies.telemetry.completion_duration: true`, and the terminal ack or nack unwinds. The boundary is receiver output or processor/exporter input. |
-| `node.input.messages` | Messages received by the node, grouped by the `signal` and `outcome` datapoint attributes. | `runtime_metrics` is `normal` or `detailed`, a processor or exporter consumes PData, and its terminal ack or nack unwinds. |
+| `node.input.messages` | Messages received by the node, grouped by the `signal` and `outcome` datapoint attributes. | `runtime_metrics` is `normal` or `detailed`, or that processor/exporter sets `policies.telemetry.messages: true`; the node consumes PData and its terminal ack or nack unwinds. |
 | `node.input.items` | Signal items received by an item-count-enabled node, grouped by the `signal` and `outcome` datapoint attributes. | The level is `detailed` or that processor/exporter sets `policies.telemetry.item_counts: true`, and the terminal ack or nack unwinds. |
 | `node.input.size` | Logical payload bytes received by a size-enabled node, grouped by the `signal` and `outcome` datapoint attributes. | The level is `detailed` or that processor/exporter sets `policies.telemetry.size: true`, and the terminal ack or nack unwinds. |
-| `node.output.messages` | Messages emitted by the node, grouped by the `signal` and `outcome` datapoint attributes. | `runtime_metrics` is `normal` or `detailed`, a receiver or processor sends PData, and its terminal ack or nack unwinds. A processor that drops a whole message produces no output datapoint for it. |
+| `node.output.messages` | Messages emitted by the node, grouped by the `signal` and `outcome` datapoint attributes. | `runtime_metrics` is `normal` or `detailed`, or that receiver/processor sets `policies.telemetry.messages: true`; the node sends PData and its terminal ack or nack unwinds. A processor that drops a whole message produces no output datapoint for it. |
 | `node.output.items` | Signal items emitted by an item-count-enabled node, grouped by the `signal` and `outcome` datapoint attributes. | The level is `detailed` or that receiver/processor sets `policies.telemetry.item_counts: true`, and the terminal ack or nack unwinds. |
 | `node.output.size` | Logical payload bytes emitted by a size-enabled node, grouped by the `signal` and `outcome` datapoint attributes. | The level is `detailed` or that receiver/processor sets `policies.telemetry.size: true`, and the terminal ack or nack unwinds. |
 | `receiver.received.messages` | Classified external messages whose receiver-local handling reached a terminal local outcome, grouped by `signal` and `outcome`. | The receiver implements the shared receiver contract, message metrics are enabled, and local handling finishes. |
-| `receiver.received.payload.size` | Encoded application payload bytes observed at the receiver boundary, grouped by `signal` and `outcome`. | A receiver implements the shared receiver contract and finishes handling a message. |
+| `receiver.received.payload.size` | Encoded application payload bytes observed at the receiver boundary, grouped by `signal` and `outcome`. | The receiver implements the shared receiver contract, size measurement is enabled, encoded size is available, and local handling finishes. |
 | `receiver.processing.duration` | Receiver-local processing duration in seconds, grouped by `signal`. | The receiver implements the shared contract and local duration is enabled. The documented boundary ends before downstream handoff or wait. |
 | `exporter.attempted.messages` | Node-local delivery attempts, including preparation failures and each backend retry, grouped by `signal` and `outcome`. This is distinct from PData messages counted by `node.input.messages`. | The exporter implements the shared exporter contract, message metrics are enabled, and an attempt reaches a terminal local or backend result. |
 | `exporter.attempted.duration` | Export attempt duration in seconds, grouped by `signal` and `outcome`. | The exporter implements the shared contract and local duration is enabled. Encoding and backend latency are included; Ack/Nack notification delivery is excluded. |
