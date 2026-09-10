@@ -105,10 +105,10 @@ impl HttpClientAuthProvider for ApiKeyAuth {
                 let header_name = match api_key.get_http_header_name_attribute() {
                     Some(header) => match HeaderName::from_str(header) {
                         Ok(header) => header,
-                        Err(_) => {
-                            (events.invalid)(
-                                "API Key configured HTTP header attribute is malformed",
-                            );
+                        Err(e) => {
+                            (events.invalid)(&format!(
+                                "API Key configured HTTP header attribute is malformed: {e}"
+                            ));
                             return;
                         }
                     },
@@ -135,9 +135,9 @@ impl HttpClientAuthProvider for ApiKeyAuth {
                         // an earlier API Key no longer matches and is ignored.
                         self.generation = self.generation.wrapping_add(1);
                     }
-                    Err(_) => {
+                    Err(e) => {
                         // Malformed API Key: keep the previous cached API Key (if any).
-                        (events.invalid)("Malformed API Key");
+                        (events.invalid)(&format!("Malformed API Key: {e}"));
                     }
                 }
             }

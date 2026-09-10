@@ -120,9 +120,9 @@ impl HttpClientAuthProvider for BasicAuth {
                         // an earlier credential no longer matches and is ignored.
                         self.generation = self.generation.wrapping_add(1);
                     }
-                    Err(_) => {
+                    Err(e) => {
                         // Malformed credential: keep the previous cached credential (if any).
-                        (events.invalid)("Malformed credential");
+                        (events.invalid)(&format!("Malformed credential: {e}"));
                     }
                 }
             }
@@ -303,7 +303,7 @@ mod tests {
     // rather than sending a request that could outlive its credential, no refresh
     // timer is armed for an already-lapsed margin, and the reason names expiry.
     #[tokio::test]
-    async fn api_key_inside_the_usability_margin_is_not_usable() {
+    async fn credential_inside_the_usability_margin_is_not_usable() {
         let mut auth = auth_over(vec![
             BasicAuthCredential::new("user", "pass")
                 .expect("valid credential")

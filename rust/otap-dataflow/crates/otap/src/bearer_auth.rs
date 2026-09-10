@@ -125,9 +125,9 @@ impl HttpClientAuthProvider for BearerAuth {
                         // an earlier token no longer matches and is ignored.
                         self.generation = self.generation.wrapping_add(1);
                     }
-                    Err(_) => {
+                    Err(e) => {
                         // Malformed token: keep the previous cached token (if any).
-                        (events.invalid)("Malformed token");
+                        (events.invalid)(&format!("Malformed token: {e}"));
                     }
                 }
             }
