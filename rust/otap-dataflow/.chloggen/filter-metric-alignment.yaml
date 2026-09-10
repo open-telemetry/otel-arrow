@@ -1,0 +1,8 @@
+change_type: breaking
+component: observability
+note: Align filter processor metrics with universal node telemetry
+issues: [3053, 3649]
+subtext: |
+  Migration: Rename `processor.filter.pdata.dropped.items` to
+  `processor.filter.dropped.items`. Use `node.input.messages` for received
+  batches and `node.output.items` for kept items.

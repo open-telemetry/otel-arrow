@@ -160,7 +160,7 @@ impl TraceFilter {
         {
             include_config.create_filters(&traces_payload, false)?
         } else {
-            // both include and exclude is none
+            // Both include and exclude are absent, so every span is kept.
             let num_rows = traces_payload
                 .get(ArrowPayloadType::Spans)
                 // Safety: We check at the top of this function whether the
@@ -168,7 +168,7 @@ impl TraceFilter {
                 // root record batch is present.
                 .expect("Traces payload has a root record")
                 .num_rows() as u64;
-            return Ok((traces_payload, num_rows, num_rows));
+            return Ok((traces_payload, num_rows, 0));
         };
 
         let (span_filter, child_record_batch_filters) = self.sync_up_filters(
@@ -817,6 +817,41 @@ mod test {
             }],
         }));
 
+        assert_equivalent(&[otap_to_otlp(&result)], &[otap_to_otlp(&expected)]);
+    }
+
+    /// Scenario: A trace filter has neither an include nor an exclude rule.
+    /// Guarantees: All spans pass through and the reported filtered count is zero.
+    #[test]
+    fn test_filter_pass_through_reports_no_filtered_spans() {
+        let filter = TraceFilter::new(None, None);
+        let spans = vec![
+            Span::build().name("span_name_1").finish(),
+            Span::build().name("span_name_2").finish(),
+        ];
+        let input = otlp_to_otap(&OtlpProtoMessage::Traces(TracesData {
+            resource_spans: vec![ResourceSpans {
+                scope_spans: vec![ScopeSpans {
+                    spans: spans.clone(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        }));
+
+        let (result, spans_consumed, spans_filtered) = filter.filter(input).unwrap();
+
+        assert_eq!(spans_consumed, 2);
+        assert_eq!(spans_filtered, 0);
+        let expected = otlp_to_otap(&OtlpProtoMessage::Traces(TracesData {
+            resource_spans: vec![ResourceSpans {
+                scope_spans: vec![ScopeSpans {
+                    spans,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        }));
         assert_equivalent(&[otap_to_otlp(&result)], &[otap_to_otlp(&expected)]);
     }
 }
