@@ -430,10 +430,45 @@ impl UnaryService<OtapPdata> for OtapBatchService {
             }
         }
 
+        // Propagate the receiver-observed peer address so downstream processors
+        // (e.g. k8sattributes) can correlate telemetry with the originating socket.
+        if let Some(addr) = peer_addr_from_extensions(&extensions) {
+            otap_batch.set_peer_addr(addr);
+        }
+
         let effect_handler = self
             .effect_handler
             .take()
             .expect("`OtapBatchService` is not reused for multiple calls");
+
+        // Capture transport headers synchronously before moving the effect handler
+        // into the async block, avoiding a clone of the capture policy.
+        if let Some(policy) = effect_handler.capture_policy() {
+            let mut transport_headers = TransportHeaders::new();
+
+            // Decode binary values so downstream gRPC propagation does not
+            // double-encode their base64 wire representation.
+            let pairs: Vec<(&str, Vec<u8>)> = metadata
+                .iter()
+                .filter_map(|kv| match kv {
+                    tonic::metadata::KeyAndValueRef::Ascii(key, value) => {
+                        Some((key.as_str(), value.as_bytes().to_vec()))
+                    }
+                    tonic::metadata::KeyAndValueRef::Binary(key, value) => value
+                        .to_bytes()
+                        .ok()
+                        .map(|decoded| (key.as_str(), decoded.to_vec())),
+                })
+                .collect();
+
+            let _stats = policy.capture_from_pairs(
+                pairs.iter().map(|(k, v)| (*k, v.as_slice())),
+                &mut transport_headers,
+            );
+            if !transport_headers.is_empty() {
+                otap_batch.set_transport_headers(transport_headers);
+            }
+        }
 
         let state = self.state.clone();
         let metrics = self.metrics.clone();
@@ -443,40 +478,6 @@ impl UnaryService<OtapPdata> for OtapBatchService {
             let completed = processing.run(|processing| {
                 if let Some(payload_size) = payload_size {
                     processing.set_payload_size_with(|| payload_size);
-                }
-
-                // Propagate the receiver-observed peer address so downstream processors
-                // (e.g. k8sattributes) can correlate telemetry with the originating socket.
-                if let Some(addr) = peer_addr_from_extensions(&extensions) {
-                    otap_batch.set_peer_addr(addr);
-                }
-
-                // Capture transport headers synchronously before downstream handoff.
-                if let Some(policy) = effect_handler.capture_policy() {
-                    let mut transport_headers = TransportHeaders::new();
-
-                    // Decode binary values so downstream gRPC propagation does not
-                    // double-encode their base64 wire representation.
-                    let pairs: Vec<(&str, Vec<u8>)> = metadata
-                        .iter()
-                        .filter_map(|kv| match kv {
-                            tonic::metadata::KeyAndValueRef::Ascii(key, value) => {
-                                Some((key.as_str(), value.as_bytes().to_vec()))
-                            }
-                            tonic::metadata::KeyAndValueRef::Binary(key, value) => value
-                                .to_bytes()
-                                .ok()
-                                .map(|decoded| (key.as_str(), decoded.to_vec())),
-                        })
-                        .collect();
-
-                    let _stats = policy.capture_from_pairs(
-                        pairs.iter().map(|(k, v)| (*k, v.as_slice())),
-                        &mut transport_headers,
-                    );
-                    if !transport_headers.is_empty() {
-                        otap_batch.set_transport_headers(transport_headers);
-                    }
                 }
 
                 let cancel_rx = if let Some(state) = state {

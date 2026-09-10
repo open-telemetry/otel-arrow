@@ -762,7 +762,6 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                     });
 
                     let max_response_body_len = self.config.max_response_body_length;
-                    let client = client_pool.get_client();
 
                     // Enforce the in-flight cap on the send path too. Normal
                     // intake is gated by `accepting_pdata`, but shutdown
@@ -785,6 +784,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                         }
                     }
 
+                    let client = client_pool.get_client();
                     inflight_exports.push(async move {
                         let attempt = attempt
                             .run(async |attempt| {
@@ -997,12 +997,13 @@ impl ServiceRequestError {
                     )
             }
 
-            Self::BodyTooLarge { .. } | Self::DecodeError(_) | Self::PartialRejection { .. } => {
-                // these errors happen when we've received a 200 response, but for some reason
-                // were unable to deserialize the response body.
-                //
-                // this indicates either a full success, or partial success. In either case, we
-                // shouldn't retry. The spec explicitly states this for partial success
+            Self::BodyTooLarge { .. } | Self::DecodeError(_) => {
+                // The backend returned success, but the response could not be
+                // consumed safely. Retrying may duplicate data already accepted.
+                false
+            }
+            Self::PartialRejection { .. } => {
+                // OTLP explicitly forbids retrying partial-success responses.
                 // https://opentelemetry.io/docs/specs/otlp/#partial-success-1
                 false
             }
@@ -4004,6 +4005,89 @@ mod test {
             snapshot.descriptor().name == "exporter.otlp_http.failures"
                 && snapshot.measurement_attribute_value("signal") == Some("logs")
                 && snapshot.measurement_attribute_value("error.type") == Some("response_too_large")
+                && snapshot.get_metrics()[0].to_u64_lossy() == 1
+        }));
+    }
+
+    /// Scenario: A successful HTTP response rejects part of an OTLP logs request.
+    /// Guarantees: The existing permanent Nack is preserved while shared metrics record one refused attempt and the bounded partial-rejection diagnostic.
+    #[test]
+    fn partial_rejection_preserves_nack_and_records_refused_attempt() {
+        let registry = TelemetryRegistryHandle::new();
+        let controller = ControllerContext::new(registry);
+        let pipeline_ctx =
+            controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let mut metrics = OtlpHttpExporterMetrics::register(&pipeline_ctx);
+
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let mut effect_handler = EffectHandler::new(
+            test_node("test-exporter"),
+            metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
+        let (completion_tx, mut completion_rx) =
+            otel_arrow_dfe_engine::control::pipeline_completion_msg_channel(1);
+        effect_handler.set_pipeline_completion_msg_sender(completion_tx);
+        let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into())
+            .test_subscribe_to(
+                Interests::ACKS | Interests::NACKS,
+                TestCallData::default().into(),
+                123,
+            );
+        let (context, saved_payload) = pdata.into_parts();
+        let runtime = Runtime::new().unwrap();
+        let attempt = runtime.block_on(metrics.boundary.attempt(SignalType::Logs).run(
+            async |attempt| {
+                Err(attempt.refused(ServiceRequestError::PartialRejection {
+                    rejected: 1,
+                    error_message: "partial success error".to_owned(),
+                }))
+            },
+        ));
+        let completed = CompletedExport {
+            attempt,
+            context,
+            saved_payload,
+            signal_type: SignalType::Logs,
+            request_auth: RequestAuth::None,
+        };
+
+        let rejected_auth = runtime.block_on(finalize_completed_export(
+            completed,
+            &effect_handler,
+            &mut metrics,
+        ));
+        assert!(rejected_auth.is_none());
+
+        let completion = runtime
+            .block_on(completion_rx.recv())
+            .expect("partial rejection must route a completion");
+        match completion {
+            PipelineCompletionMsg::DeliverNack { nack } => {
+                assert!(nack.permanent, "partial rejection must remain permanent");
+                assert!(nack.reason.contains("partial success error (1 rejected)"));
+            }
+            PipelineCompletionMsg::DeliverAck { .. } => {
+                panic!("partial rejection must not route an Ack")
+            }
+        }
+
+        let snapshots = metrics.terminal_snapshots();
+        assert!(snapshots.iter().any(|snapshot| {
+            snapshot.descriptor().name == "exporter.attempted"
+                && snapshot.measurement_attribute_value("signal") == Some("logs")
+                && snapshot.measurement_attribute_value("outcome") == Some("refused")
+                && snapshot
+                    .descriptor()
+                    .metrics
+                    .iter()
+                    .position(|metric| metric.name == "messages")
+                    .is_some_and(|index| snapshot.get_metrics()[index].to_u64_lossy() == 1)
+        }));
+        assert!(snapshots.iter().any(|snapshot| {
+            snapshot.descriptor().name == "exporter.otlp_http.failures"
+                && snapshot.measurement_attribute_value("signal") == Some("logs")
+                && snapshot.measurement_attribute_value("error.type") == Some("partial_rejection")
                 && snapshot.get_metrics()[0].to_u64_lossy() == 1
         }));
     }
