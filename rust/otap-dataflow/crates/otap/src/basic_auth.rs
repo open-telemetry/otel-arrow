@@ -2,21 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Consumer-side adapter over a bound `basic_auth_provider` capability.
-//!
-//! Centralizes everything an exporter needs to authenticate outgoing requests
-//! with a credential, so the exporter itself stays auth-agnostic: it drives
-//! [`BearerAuth::poll_refresh`] in its `select!` loop, asks
-//! [`BearerAuth::is_ready`] before admitting data, and stamps
-//! [`BearerAuth::header`] onto each request. The cached credential is an
-//! `http::HeaderValue`, which both transports accept (tonic's `MetadataMap` is
-//! backed by an `http::HeaderMap`), so core and contrib nodes on either
-//! protocol can share this adapter.
-//!
-//! The division of labor mirrors the capability design: the **provider**
-//! (extension) owns credential acquisition, background refresh, and startup
-//! readiness gating; this **adapter** only subscribes to the provider's credential
-//! stream, caches the built `Authorization` header, and tracks whether that
-//! cached credential is still usable. The exporter is the "dumb caller".
 
 use std::time::Instant;
 

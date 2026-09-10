@@ -267,7 +267,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
         // and stamps the header the adapter hands back.
         let mut auth = self.auth_provider.take();
 
-        // Timer that fires when the cached token crosses its usability margin.
+        // Timer that fires when the cached auth crosses its usability margin.
         // Hoisted out of the loop and re-armed only when the deadline actually
         // moves (i.e. when a refresh is cached), so a busy exporter does not pay
         // a timer-wheel registration per message. It starts already elapsed and
@@ -277,7 +277,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
         tokio::pin!(margin_sleep);
         let mut armed_margin_deadline: Option<Instant> = None;
 
-        // Main loop: 1) finish ready completions, 2) biased wait for a token
+        // Main loop: 1) finish ready completions, 2) biased wait for an auth
         // event, a completion, or the next message, 3) dispatch work while
         // respecting the in-flight budget.
         loop {
@@ -302,34 +302,34 @@ impl Exporter<OtapPdata> for OTLPExporter {
                 grpc_clients.release(client);
             }
 
-            // Admit pdata only when auth is ready (a usable token is cached, or no
-            // provider is bound). While a bound provider has no usable token we
+            // Admit pdata only when auth is ready or no
+            // provider is bound. While a bound provider has no usable auth we
             // stop pulling pdata, so it back-pressures upstream instead of being
-            // accepted and NACK'd. A token is guaranteed to eventually arrive --
+            // accepted and NACK'd. A auth is guaranteed to eventually arrive --
             // the extension's readiness probe holds data-path startup until the
             // first publish, and its watch stream stays live while we hold the
             // provider handle -- so waiting (not dropping) is always correct here.
             let accepting_pdata = auth.as_ref().is_none_or(|a| a.is_ready());
 
-            // Instant at which a currently-usable token crosses the usability
+            // Instant at which a currently-usable auth crosses the usability
             // margin. Used to wake the loop so `accepting_pdata` re-evaluates
             // (and gates) before a near-expiry batch is admitted, since the recv
             // arm below may already be parked when the margin is reached.
-            let token_margin_deadline = auth.as_ref().and_then(|a| a.refresh_deadline());
-            if token_margin_deadline != armed_margin_deadline {
-                if let Some(deadline) = token_margin_deadline {
+            let auth_margin_deadline = auth.as_ref().and_then(|a| a.refresh_deadline());
+            if auth_margin_deadline != armed_margin_deadline {
+                if let Some(deadline) = auth_margin_deadline {
                     margin_sleep
                         .as_mut()
                         .reset(tokio::time::Instant::from_std(deadline));
                 }
-                armed_margin_deadline = token_margin_deadline;
+                armed_margin_deadline = auth_margin_deadline;
             }
 
             // A batch parked for in-flight capacity is un-parked only once auth is
             // ready again. Taking it while `accepting_pdata` is false would NACK it
             // below -- exactly the outcome the gate exists to avoid -- so instead it
-            // stays parked and the loop keeps servicing token refreshes and
-            // completions until a usable token arrives. Shutdown is the escape
+            // stays parked and the loop keeps servicing auth refreshes and
+            // completions until a usable auth arrives. Shutdown is the escape
             // hatch: it force-drains, and its arm NACKs whatever is still parked.
             let parked_msg = if accepting_pdata {
                 pending_msg.take()
@@ -337,7 +337,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                 None
             };
 
-            // Prefer token events, then completions, then the next message.
+            // Prefer auth events, then completions, then the next message.
             let mut parked_export_started_at = None;
             let msg = if let Some((pdata, export_started_at)) = parked_msg {
                 parked_export_started_at = Some(export_started_at);
@@ -346,17 +346,17 @@ impl Exporter<OtapPdata> for OTLPExporter {
                 tokio::select! {
                     biased;
 
-                    // Wake when the cached token reaches its usability margin so the
+                    // Wake when the cached auth reaches its usability margin so the
                     // next loop iteration gates intake. Guarded because the timer is
                     // left elapsed whenever nothing is armed; once it fires,
                     // `refresh_deadline` returns `None`, which closes the guard and
                     // keeps the arm from busy-looping.
-                    () = &mut margin_sleep, if token_margin_deadline.is_some() => {
+                    () = &mut margin_sleep, if auth_margin_deadline.is_some() => {
                         continue;
                     }
 
-                    // Pick up token refreshes (initial + subsequent) even while pdata
-                    // intake is gated, so a pending token can arrive and unblock us.
+                    // Pick up auth refreshes (initial + subsequent) even while pdata
+                    // intake is gated, so a pending auth can arrive and unblock us.
                     // The `async` block keeps this lazy: `select!` evaluates a branch
                     // expression even when its `if` guard is false, and `auth` is
                     // `None` when no provider is bound. The `None` arm is unreachable
@@ -383,11 +383,11 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                 &mut self.metrics,
                             )
                             .await;
-                            // Server rejected the token this request used
+                            // Server rejected the auth this request used
                             // (UNAUTHENTICATED); drop exactly that generation so intake
-                            // back-pressures until `token_stream` delivers a fresh one,
-                            // and the retry never reuses the rejected token. A stale
-                            // rejection (a newer token was already cached) is ignored by
+                            // back-pressures until provider delivers a fresh one,
+                            // and the retry never reuses the rejected auth. A stale
+                            // rejection (a newer auth was already cached) is ignored by
                             // the generation guard.
                             apply_auth_rejection(&mut auth, rejected_generation);
                             grpc_clients.release(client);
@@ -413,19 +413,19 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     // gated on `accepting_pdata`, and every other `select!` arm
                     // loops rather than falling through to this match, so reaching
                     // Shutdown with a parked batch implies a provider is bound and
-                    // its token is still unusable. Shutdown cannot wait for a
+                    // its auth is still unusable. Shutdown cannot wait for a
                     // refresh, so NACK it as retryable -- the same policy the
                     // force-drained batches get below. Without this the parked batch
                     // would be dropped silently.
                     if let Some((pdata, export_started_at)) = pending_msg.take() {
                         debug_assert!(
                             auth.as_ref().is_some_and(|a| !a.is_ready()),
-                            "a batch stays parked only while a bound token is unusable"
+                            "a batch stays parked only while a bound auth is unusable"
                         );
                         let reason = auth
                             .as_ref()
-                            .map_or("no usable bearer token", |a| a.not_ready_reason());
-                        nack_without_usable_token(
+                            .map_or("no usable auth", |a| a.not_ready_reason());
+                        nack_without_usable_auth(
                             pdata,
                             reason,
                             export_started_at,
@@ -443,7 +443,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             )
                             .await;
                             // Honor a rejection even while draining, so a later
-                            // force-drained request cannot reuse the rejected token.
+                            // force-drained request cannot reuse the rejected auth.
                             apply_auth_rejection(&mut auth, rejected_generation);
                             grpc_clients.release(client);
                         }
@@ -472,17 +472,17 @@ impl Exporter<OtapPdata> for OTLPExporter {
                         continue;
                     }
 
-                    // We only reach here with a usable token: intake is gated on
+                    // We only reach here with a usable auth: intake is gated on
                     // `accepting_pdata`, and a parked batch is un-parked only while
                     // that gate is open. The exception is shutdown, which
                     // force-drains buffered pdata even while auth is pending: with no
-                    // usable token we cannot send, so NACK it as retryable -- a token
+                    // usable auth we cannot send, so NACK it as retryable -- an auth
                     // may yet arrive, so nothing is dropped.
                     if let Some(a) = auth.as_ref()
                         && !a.is_ready()
                     {
                         let reason = a.not_ready_reason();
-                        nack_without_usable_token(
+                        nack_without_usable_auth(
                             pdata,
                             reason,
                             export_started_at,
@@ -497,10 +497,10 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     let (context, payload) = pdata.into_parts();
 
                     // The cached bearer header, together with the generation of the
-                    // token it was built from. The generation is echoed back on
+                    // auth it was built from. The generation is echoed back on
                     // completion so an UNAUTHENTICATED response can be matched to the
-                    // exact token used and a stale rejection ignored.
-                    let (auth_header, token_generation) = match auth
+                    // exact auth used and a stale rejection ignored.
+                    let (auth_header, auth_generation) = match auth
                         .as_ref()
                         .and_then(|a| a.header())
                     {
@@ -509,8 +509,8 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     };
 
                     // Build gRPC metadata from configured static headers, any
-                    // propagated transport headers, and the refreshed bearer
-                    // token. Computed once before signal dispatch; the static
+                    // propagated transport headers, and the refreshed auth.
+                    // Computed once before signal dispatch; the static
                     // template is cloned only when present so the no-metadata
                     // case stays allocation-free.
                     let metadata = RequestMetadata {
@@ -520,7 +520,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             static_metadata.as_ref(),
                             auth_header,
                         ),
-                        token_generation,
+                        auth_generation,
                     };
 
                     // Dispatch based on signal type and the concrete payload representation.
@@ -637,7 +637,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
 
 /// Helper function to handle export result and send Ack/Nack accordingly.
 ///
-/// `auth_failure` marks a rejection of the bearer token this request carried; it
+/// `auth_failure` marks a rejection of the auth this request carried; it
 /// forces the NACK to be retryable even though `UNAUTHENTICATED` is otherwise a
 /// permanent status.
 ///
@@ -788,19 +788,19 @@ struct EncodedExport {
     saved_payload: OtapPayload,
     signal_type: SignalType,
     export_started_at: Instant,
-    /// Per-request metadata plus the bearer token generation it carries.
+    /// Per-request metadata plus the auth generation it carries.
     metadata: RequestMetadata,
 }
 
-/// Per-request gRPC metadata paired with the bearer token generation stamped
-/// into it, so a later `UNAUTHENTICATED` can be matched to the exact token used.
+/// Per-request gRPC metadata paired with the auth generation stamped
+/// into it, so a later `UNAUTHENTICATED` can be matched to the exact auth used.
 struct RequestMetadata {
     /// gRPC metadata built from static headers, the propagation policy, and the
-    /// bearer token. `None` when there is nothing to send (zero overhead).
+    /// auth. `None` when there is nothing to send (zero overhead).
     metadata: Option<MetadataMap>,
-    /// Generation of the bearer token stamped into `metadata`. `None` when no
-    /// token provider is bound.
-    token_generation: Option<u64>,
+    /// Generation of the auth stamped into `metadata`. `None` when no
+    /// provider is bound.
+    auth_generation: Option<u64>,
 }
 
 /// Encoding failed before the request was sent; we still need to surface a Nack with payload.
@@ -951,13 +951,12 @@ async fn notify_prepare_error(
     Ok(())
 }
 
-/// Whether a completed export failed because the server rejected the bearer
-/// token it carried.
+/// Whether a completed export failed because the server rejected the auth it carried.
 ///
-/// With a bearer token provider bound, `UNAUTHENTICATED` usually means the
-/// cached token lapsed or a refresh raced, so the batch can succeed once the
-/// provider publishes its next token; callers therefore treat it as retryable and
-/// invalidate the token generation that was used. Recovery waits for that
+/// With an auth provider bound, `UNAUTHENTICATED` usually means the
+/// cached auth lapsed or a refresh raced, so the batch can succeed once the
+/// provider publishes its next auth; callers therefore treat it as retryable and
+/// invalidate the auth generation that was used. Recovery waits for that
 /// provider's own refresh schedule - invalidating only drops the exporter's
 /// cached copy, it does not make the provider refresh early. `PERMISSION_DENIED`
 /// is intentionally excluded: it signals a scope or permission problem that a
@@ -975,16 +974,16 @@ fn export_error_type(result: &Result<(), tonic::Status>) -> Option<OtlpGrpcExpor
         .map(OtlpGrpcExporterErrorType::from_status)
 }
 
-/// NACKs `pdata` because no usable bearer token is available, and records the
+/// NACKs `pdata` because no usable auth is available, and records the
 /// failure.
 ///
-/// Only for the paths that cannot wait for a token: shutdown force-draining
+/// Only for the paths that cannot wait for auth: shutdown force-draining
 /// buffered pdata, and a batch left parked for in-flight capacity when the
-/// cached token went unusable. Everywhere else the exporter back-pressures
+/// cached auth went unusable. Everywhere else the exporter back-pressures
 /// instead. The NACK is retryable ([`NackMsg::new`] is non-permanent by default)
-/// because a refreshed token may still arrive, so the batch is deferred rather
+/// because a refreshed auth may still arrive, so the batch is deferred rather
 /// than dropped.
-async fn nack_without_usable_token(
+async fn nack_without_usable_auth(
     pdata: OtapPdata,
     reason: &'static str,
     export_started_at: Instant,
@@ -1004,7 +1003,7 @@ async fn nack_without_usable_token(
 }
 
 /// Applies the Ack/Nack side effects for a completed gRPC export and returns the
-/// reusable client, plus the bearer token generation the server rejected (if any).
+/// reusable client, plus the auth generation the server rejected (if any).
 async fn finalize_completed_export(
     completed: CompletedExport,
     effect_handler: &EffectHandler<OtapPdata>,
@@ -1017,17 +1016,17 @@ async fn finalize_completed_export(
         signal_type,
         export_started_at,
         client,
-        token_generation,
+        auth_generation,
     } = completed;
     let export_duration = export_started_at.elapsed();
 
-    // Record the rejected generation so the caller invalidates exactly the token
+    // Record the rejected generation so the caller invalidates exactly the auth
     // that was used, before the batch is retried. A stamped generation is what
     // "a provider is bound" means for this request: the dispatch path only
-    // reaches a send with a usable token cached, so the generation is `Some`
+    // reaches a send with a usable auth cached, so the generation is `Some`
     // exactly when the request carried a refreshable credential.
-    let auth_failure = is_auth_failure(&result, token_generation.is_some());
-    let rejected_generation = if auth_failure { token_generation } else { None };
+    let auth_failure = is_auth_failure(&result, auth_generation.is_some());
+    let rejected_generation = if auth_failure { auth_generation } else { None };
 
     // The shared outcome describes the backend RPC, independently of whether
     // its Ack/Nack notification can be delivered to the upstream subscriber.
@@ -1066,19 +1065,19 @@ async fn finalize_completed_export(
 
 /// Builds the per-request gRPC metadata by merging the pre-built static
 /// `static_metadata` template with any headers propagated from the incoming
-/// transport context and the refreshed bearer token, if one is cached.
+/// transport context and the refreshed auth, if one is cached.
 ///
 /// Hot path: when there is neither static metadata, nor a propagation source,
-/// nor a bearer token this returns `None` without allocating. The static
+/// nor an auth this returns `None` without allocating. The static
 /// template is cloned only when present (each tonic request needs its own owned
 /// metadata); propagated headers are appended on top so static and propagated
 /// headers coexist.
 ///
-/// Precedence, strongest first: a bound bearer token, then static config, then
+/// Precedence, strongest first: a bound auth, then static config, then
 /// propagated transport headers. So a propagated header whose key matches a
 /// statically configured one is dropped -- a configured backend credential
 /// (e.g. `authorization`) can never be overridden or duplicated by inbound
-/// transport headers -- and a refreshed bearer token in turn replaces any
+/// transport headers -- and a refreshed auth in turn replaces any
 /// `authorization` from either source.
 fn build_grpc_metadata(
     effect_handler: &EffectHandler<OtapPdata>,
@@ -1090,7 +1089,7 @@ fn build_grpc_metadata(
         .propagation_policy()
         .zip(context.transport_headers());
 
-    // Zero-alloc fast path: nothing static configured, nothing to propagate, no token.
+    // Zero-alloc fast path: nothing static configured, nothing to propagate, no auth.
     if static_metadata.is_none() && propagation.is_none() && auth_header.is_none() {
         return None;
     }
@@ -1161,10 +1160,10 @@ fn build_grpc_metadata(
         }
     }
 
-    // The refreshed bearer token replaces any `authorization` from static config
+    // The refreshed auth replaces any `authorization` from static config
     // or propagation. Going through the backing `HeaderMap` keeps the value's
     // `sensitive` flag, which excludes the credential from HPACK indexing, and
-    // avoids re-validating and copying the token bytes on every request.
+    // avoids re-validating and copying the auth bytes on every request.
     if let Some(auth_header) = auth_header {
         let mut headers = metadata.into_headers();
         let _ = headers.insert(auth_header.0, auth_header.1);
@@ -1195,7 +1194,7 @@ fn make_export_future(
         export_started_at,
         metadata: RequestMetadata {
             metadata,
-            token_generation,
+            auth_generation,
         },
     } = prepared;
 
@@ -1216,7 +1215,7 @@ fn make_export_future(
                     signal_type,
                     export_started_at,
                     client: SignalClient::Logs(client),
-                    token_generation,
+                    auth_generation,
                 }
             }
             SignalClient::Metrics(mut client) => {
@@ -1228,7 +1227,7 @@ fn make_export_future(
                     signal_type,
                     export_started_at,
                     client: SignalClient::Metrics(client),
-                    token_generation,
+                    auth_generation,
                 }
             }
             SignalClient::Traces(mut client) => {
@@ -1240,7 +1239,7 @@ fn make_export_future(
                     signal_type,
                     export_started_at,
                     client: SignalClient::Traces(client),
-                    token_generation,
+                    auth_generation,
                 }
             }
         }
@@ -1406,10 +1405,10 @@ struct CompletedExport {
     signal_type: SignalType,
     export_started_at: Instant,
     client: SignalClient,
-    /// Generation of the bearer token this request carried, echoed back so an
-    /// `UNAUTHENTICATED` response invalidates exactly that token and a stale
-    /// rejection is ignored. `None` when no token provider is bound.
-    token_generation: Option<u64>,
+    /// Generation of the auth this request carried, echoed back so an
+    /// `UNAUTHENTICATED` response invalidates exactly that auth and a stale
+    /// rejection is ignored. `None` when no auth provider is bound.
+    auth_generation: Option<u64>,
 }
 
 #[cfg(test)]

@@ -244,11 +244,11 @@ struct CompletedExport {
     saved_payload: OtapPayload,
     signal_type: SignalType,
     export_started_at: Instant,
-    /// Generation of the bearer token stamped on this request (`None` when no
-    /// provider is bound). Echoed back so a 401 invalidates exactly the token
+    /// Generation of the auth stamped on this request (`None` when no
+    /// provider is bound). Echoed back so a 401 invalidates exactly the auth
     /// that was used, not a newer one already cached (see
-    /// [`BearerAuth::invalidate`]).
-    token_generation: Option<u64>,
+    /// [`HttpClientAuthProvider::invalidate`]).
+    auth_generation: Option<u64>,
 }
 
 #[async_trait(?Send)]
@@ -322,7 +322,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
         // and stamps the header the adapter hands back.
         let mut auth = self.auth_provider.take();
 
-        // Timer that fires when the cached token crosses its usability margin.
+        // Timer that fires when the cached auth crosses its usability margin.
         // Hoisted out of the loop and re-armed only when the deadline actually
         // moves (i.e. when a refresh is cached), so a busy exporter does not pay
         // a timer-wheel registration per message. It starts already elapsed and
@@ -333,10 +333,10 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
         let mut armed_margin_deadline: Option<Instant> = None;
 
         loop {
-            // Admit pdata only when auth is ready (a usable token is cached, or no
-            // provider is bound) and we are below the in-flight cap. While a bound
-            // provider has no usable token we stop pulling pdata, so it
-            // back-pressures upstream instead of being accepted and NACK'd. A token
+            // Admit pdata only when auth is ready or no
+            // provider is bound and we are below the in-flight cap. While a bound
+            // provider has no usable auth we stop pulling pdata, so it
+            // back-pressures upstream instead of being accepted and NACK'd. An auth
             // is guaranteed to eventually arrive -- the extension's readiness probe
             // holds data-path startup until the first publish, and its watch stream
             // stays live while we hold the provider handle -- so waiting (not
@@ -344,34 +344,34 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
             let accepting_pdata = auth.as_ref().is_none_or(|a| a.is_ready())
                 && inflight_exports.len() < max_in_flight;
 
-            // Instant at which a currently-usable token crosses the usability
+            // Instant at which a currently-usable auth crosses the usability
             // margin. Used to wake the loop so `accepting_pdata` re-evaluates
             // (and gates) before a near-expiry batch is admitted, since the recv
             // arm below may already be parked when the margin is reached.
-            let token_margin_deadline = auth.as_ref().and_then(|a| a.refresh_deadline());
-            if token_margin_deadline != armed_margin_deadline {
-                if let Some(deadline) = token_margin_deadline {
+            let auth_margin_deadline = auth.as_ref().and_then(|a| a.refresh_deadline());
+            if auth_margin_deadline != armed_margin_deadline {
+                if let Some(deadline) = auth_margin_deadline {
                     margin_sleep
                         .as_mut()
                         .reset(tokio::time::Instant::from_std(deadline));
                 }
-                armed_margin_deadline = token_margin_deadline;
+                armed_margin_deadline = auth_margin_deadline;
             }
 
             let msg = tokio::select! {
                 biased;
 
-                // Wake when the cached token reaches its usability margin so the
+                // Wake when the cached auth reaches its usability margin so the
                 // next loop iteration gates intake. Guarded because the timer is
                 // left elapsed whenever nothing is armed; once it fires,
                 // `refresh_deadline` returns `None`, which closes the guard and
                 // keeps the arm from busy-looping.
-                () = &mut margin_sleep, if token_margin_deadline.is_some() => {
+                () = &mut margin_sleep, if auth_margin_deadline.is_some() => {
                     continue;
                 }
 
-                // Pick up token refreshes (initial + subsequent) even while pdata
-                // intake is gated, so a pending token can arrive and unblock us.
+                // Pick up auth refreshes (initial + subsequent) even while pdata
+                // intake is gated, so a pending auth can arrive and unblock us.
                 // The `async` block keeps this lazy: `select!` evaluates a branch
                 // expression even when its `if` guard is false, and `auth` is
                 // `None` when no provider is bound. The `None` arm is unreachable
@@ -398,10 +398,10 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                             &mut self.metrics,
                         )
                         .await;
-                        // Server rejected the token this request used (401); drop
+                        // Server rejected the auth this request used (401); drop
                         // exactly that generation so intake back-pressures until
-                        // `token_stream` delivers a fresh one, and the retry never
-                        // reuses the rejected token. A stale 401 (a newer token was
+                        // provider delivers a fresh one, and the retry never
+                        // reuses the rejected auth. A stale 401 (a newer auth was
                         // already cached) is ignored by the generation guard.
                         apply_auth_rejection(&mut auth, rejected_generation);
                     }
@@ -429,7 +429,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                             )
                             .await;
                             // Honor a 401 even while draining, so a later
-                            // force-drained request cannot reuse the rejected token.
+                            // force-drained request cannot reuse the rejected auth.
                             apply_auth_rejection(&mut auth, rejected_generation);
                         }
                     }
@@ -446,10 +446,10 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                     let signal_type = pdata.signal_type();
                     let (context, payload) = pdata.into_parts();
 
-                    // We normally only reach here with a usable token, since intake
+                    // We normally only reach here with a usable auth, since intake
                     // is gated on `accepting_pdata`. The exception is shutdown, which
                     // force-drains buffered pdata even while auth was pending: with no
-                    // usable token we cannot send, so NACK it as retryable -- a token
+                    // usable auth we cannot send, so NACK it as retryable -- an auth
                     // may yet arrive, so nothing is dropped.
                     if let Some(a) = auth.as_ref()
                         && !a.is_ready()
@@ -467,12 +467,12 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                         continue;
                     }
 
-                    // The cached bearer header, together with the generation of the
-                    // token it was built from, cloned per request. It takes
+                    // The cached auth header, together with the generation of the
+                    // auth it was built from, cloned per request. It takes
                     // precedence over any statically configured `authorization`; the
                     // generation is echoed back on completion so a 401 can be matched
-                    // to the exact token used and a stale rejection ignored.
-                    let (auth_header, token_generation) = match auth
+                    // to the exact auth used and a stale rejection ignored.
+                    let (auth_header, auth_generation) = match auth
                         .as_ref()
                         .and_then(|a| a.header())
                     {
@@ -600,7 +600,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                                 )
                                 .await;
                                 // Honor a 401 here too, so the next force-drained
-                                // request does not reuse the rejected token.
+                                // request does not reuse the rejected auth.
                                 apply_auth_rejection(&mut auth, rejected_generation);
                             }
                             None => break,
@@ -613,7 +613,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                         if let Some(auth) = auth_header {
                             // A per-request header takes precedence over the
                             // client's default headers, so the refreshed bearer
-                            // token overrides any statically configured
+                            // auth overrides any statically configured
                             // `authorization` credential.
                             req = req.header(auth.0, auth.1);
                         }
@@ -636,7 +636,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                             saved_payload,
                             signal_type,
                             export_started_at,
-                            token_generation,
+                            auth_generation,
                         }
                     })
                 }
@@ -794,14 +794,14 @@ impl ServiceRequestError {
         }
     }
 
-    /// Whether this is an HTTP 401 Unauthorized response. When a bearer token
+    /// Whether this is an HTTP 401 Unauthorized response. When an auth
     /// provider is bound this is treated as retryable, because it usually means
-    /// the cached token lapsed or a refresh raced; the batch can succeed once the
-    /// provider publishes its next token. Recovery waits for that provider's own
-    /// refresh schedule - rejecting a token only drops the exporter's cached
+    /// the cached auth lapsed or a refresh raced; the batch can succeed once the
+    /// provider publishes its next auth. Recovery waits for that provider's own
+    /// refresh schedule - rejecting an auth only drops the exporter's cached
     /// copy, it does not make the provider refresh early. 403 Forbidden is
     /// intentionally excluded: it signals a scope or permission problem that a
-    /// token refresh will not fix.
+    /// auth refresh will not fix.
     fn is_auth_failure(&self) -> bool {
         matches!(
             self,
@@ -951,13 +951,13 @@ async fn finalize_completed_export(
         saved_payload,
         signal_type,
         export_started_at,
-        token_generation,
+        auth_generation,
     } = completed;
     let export_duration = export_started_at.elapsed();
 
     let pdata = OtapPdata::new(context, saved_payload);
 
-    // Set to the rejected token's generation when the server rejected the token
+    // Set to the rejected auth's generation when the server rejected the auth
     // this request used (401), so the caller can invalidate exactly that
     // generation before the batch is retried.
     let mut rejected_generation = None;
@@ -989,16 +989,16 @@ async fn finalize_completed_export(
             }
         }),
         Err(e) => {
-            // With a bearer token provider bound, a 401 usually means the cached
-            // token lapsed or a refresh raced, so retry rather than drop; record
-            // the rejected generation so the caller invalidates exactly the token
+            // With an auth provider bound, a 401 usually means the cached
+            // auth lapsed or a refresh raced, so retry rather than drop; record
+            // the rejected generation so the caller invalidates exactly the auth
             // that was used before the retry. A stamped generation is what "a
             // provider is bound" means for this request: the dispatch path only
-            // reaches a send with a usable token cached, so the generation is
+            // reaches a send with a usable auth cached, so the generation is
             // `Some` exactly when the request carried a refreshable credential.
-            let auth_failure = token_generation.is_some() && e.is_auth_failure();
+            let auth_failure = auth_generation.is_some() && e.is_auth_failure();
             if auth_failure {
-                rejected_generation = token_generation;
+                rejected_generation = auth_generation;
             }
             let retryable = e.is_retryable() || auth_failure;
             let error_type = e.error_type();
@@ -1224,6 +1224,7 @@ mod test {
                 Some(port_name),
                 runtime_ctrl_msg_tx,
                 metrics_reporter,
+                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
             );
 
         let mut server_settings = HttpServerSettings {
@@ -2188,6 +2189,7 @@ mod test {
                 Some(port_name),
                 runtime_ctrl_msg_tx,
                 metrics_reporter,
+                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
             );
 
         let mut server_settings = HttpServerSettings {
@@ -2768,7 +2770,11 @@ mod test {
         let mut metrics = OtlpHttpExporterMetrics::register(&pipeline_ctx);
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let effect_handler = EffectHandler::new(test_node("test-exporter"), metrics_reporter);
+        let effect_handler = EffectHandler::new(
+            test_node("test-exporter"),
+            metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
         let completed = CompletedExport {
             result: Err(ServiceRequestError::BodyTooLarge {
                 body_size: 2,
@@ -2778,7 +2784,7 @@ mod test {
             saved_payload: OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into(),
             signal_type: SignalType::Logs,
             export_started_at: Instant::now(),
-            token_generation: None,
+            auth_generation: None,
         };
 
         let _ = Runtime::new().unwrap().block_on(finalize_completed_export(
@@ -2841,7 +2847,11 @@ mod test {
         let mut metrics = OtlpHttpExporterMetrics::register(&pipeline_ctx);
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let mut effect_handler = EffectHandler::new(test_node("test-exporter"), metrics_reporter);
+        let mut effect_handler = EffectHandler::new(
+            test_node("test-exporter"),
+            metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
         let (completion_tx, completion_rx) =
             otel_arrow_dfe_engine::control::pipeline_completion_msg_channel(1);
         drop(completion_rx);
@@ -2860,7 +2870,7 @@ mod test {
             saved_payload,
             signal_type: SignalType::Logs,
             export_started_at: Instant::now(),
-            token_generation: None,
+            auth_generation: None,
         };
 
         let _ = Runtime::new().unwrap().block_on(finalize_completed_export(
