@@ -6,8 +6,10 @@
 use std::vec;
 
 use ::pest::{Parser as _, iterators::Pair};
-use data_engine_expressions::{PipelineFunction, QueryLocation, ScalarExpression};
-use data_engine_parser_abstractions::{
+use otel_arrow_contrib_data_engine_expressions::{
+    PipelineFunction, QueryLocation, ScalarExpression,
+};
+use otel_arrow_contrib_data_engine_parser_abstractions::{
     Parser, ParserError, ParserOptions, ParserResult, ParserState, to_query_location,
 };
 
@@ -142,14 +144,14 @@ pub(crate) fn invalid_child_rule_error(
 
 #[cfg(test)]
 mod test {
-    use data_engine_expressions::{
+    use otel_arrow_contrib_data_engine_expressions::{
         BooleanScalarExpression, BranchDataExpression, DataExpression, DataExpressionBranch,
         DiscardDataExpression, EqualToLogicalExpression, GetRecordTypeScalarExpression,
         LogicalExpression, MatchesLogicalExpression, NotLogicalExpression, QueryLocation,
         RegexScalarExpression, ScalarExpression, SourceScalarExpression, StaticScalarExpression,
         StringScalarExpression, ValueAccessor,
     };
-    use data_engine_parser_abstractions::Parser;
+    use otel_arrow_contrib_data_engine_parser_abstractions::Parser;
     use regex::Regex;
 
     use super::OplParser;

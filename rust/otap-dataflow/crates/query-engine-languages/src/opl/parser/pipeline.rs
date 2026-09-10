@@ -3,12 +3,12 @@
 
 use std::collections::HashMap;
 
-use data_engine_expressions::{
+use otel_arrow_contrib_data_engine_expressions::{
     BranchDataExpression, DataExpression, DataExpressionBranch, EqualToLogicalExpression,
     GetRecordTypeScalarExpression, LogicalExpression, PipelineFunction, ScalarExpression,
     StaticScalarExpression, StringScalarExpression,
 };
-use data_engine_parser_abstractions::{
+use otel_arrow_contrib_data_engine_parser_abstractions::{
     ParserError, ParserFunction, ParserScope, ParserState, to_query_location,
 };
 use pest::iterators::Pair;

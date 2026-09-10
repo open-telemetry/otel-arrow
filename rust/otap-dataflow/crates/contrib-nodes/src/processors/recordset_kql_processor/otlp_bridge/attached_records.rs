@@ -1,8 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use data_engine_expressions::*;
-use data_engine_recordset::*;
+use otel_arrow_contrib_data_engine_expressions::*;
+use otel_arrow_contrib_data_engine_recordset::*;
 
 use crate::processors::recordset_kql_processor::otlp_bridge::*;
 
@@ -99,15 +99,15 @@ impl MapValue for InstrumentationScope {
     }
 
     fn get_items<'a>(&'a self, item_callback: &mut MapValueIteratorCallback<'a, '_>) -> bool {
-        if let Some(v) = &self.name {
-            if !(item_callback)("Name", Value::String(v)) {
-                return false;
-            }
+        if let Some(v) = &self.name
+            && !(item_callback)("Name", Value::String(v))
+        {
+            return false;
         }
-        if let Some(v) = &self.version {
-            if !(item_callback)("Version", Value::String(v)) {
-                return false;
-            }
+        if let Some(v) = &self.version
+            && !(item_callback)("Version", Value::String(v))
+        {
+            return false;
         }
         (item_callback)("Attributes", Value::Map(&self.attributes))
     }

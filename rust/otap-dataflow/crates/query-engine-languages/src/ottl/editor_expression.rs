@@ -1,11 +1,13 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use data_engine_expressions::{
+use otel_arrow_contrib_data_engine_expressions::{
     DataExpression, MutableValueExpression, ScalarExpression, SetTransformExpression,
     TransformExpression,
 };
-use data_engine_parser_abstractions::{ParserError, ParserState, to_query_location};
+use otel_arrow_contrib_data_engine_parser_abstractions::{
+    ParserError, ParserState, to_query_location,
+};
 use pest::iterators::Pair;
 
 use crate::ottl::{Rule, scalar_expression::parse_scalar_expression};

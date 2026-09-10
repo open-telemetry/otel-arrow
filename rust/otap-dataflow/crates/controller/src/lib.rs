@@ -578,14 +578,13 @@ impl<
         let balanced_capacity = spec.policies.balanced.queue_capacity.max(1);
         let broadcast_capacity = spec.policies.broadcast.queue_capacity.max(1);
         let broadcast_on_lag = spec.policies.broadcast.on_lag;
-        // TODO(#2252 PR3): pass the configured `ack_mode` through instead of
-        // hardcoding `first`, and reject `all` on non-broadcast-only topics.
+        let broadcast_ack_mode = spec.policies.broadcast.ack_mode;
         match inferred_mode {
             InferredTopicMode::Mixed => TopicOptions::Mixed {
                 balanced_capacity,
                 broadcast_capacity,
                 on_lag: broadcast_on_lag,
-                ack_mode: TopicBroadcastAckMode::First,
+                ack_mode: broadcast_ack_mode,
             },
             InferredTopicMode::BalancedOnly => TopicOptions::BalancedOnly {
                 capacity: balanced_capacity,
@@ -593,7 +592,7 @@ impl<
             InferredTopicMode::BroadcastOnly => TopicOptions::BroadcastOnly {
                 capacity: broadcast_capacity,
                 on_lag: broadcast_on_lag,
-                ack_mode: TopicBroadcastAckMode::First,
+                ack_mode: broadcast_ack_mode,
             },
         }
     }
@@ -1061,6 +1060,18 @@ impl<
                 topic: topic.clone(),
                 backend,
                 mode: selected_mode.as_str().to_owned(),
+            });
+        }
+
+        if policies.broadcast.ack_mode == TopicBroadcastAckMode::All
+            && selected_mode != InferredTopicMode::BroadcastOnly
+        {
+            return Err(Error::InvalidTopicPolicyForMode {
+                topic: topic.clone(),
+                policy: "broadcast.ack_mode",
+                value: policies.broadcast.ack_mode.to_string(),
+                required_mode: "broadcast_only",
+                selected_mode: selected_mode.as_str().to_owned(),
             });
         }
 
@@ -4759,6 +4770,206 @@ groups:
                 otel_arrow_dfe_engine::topic::SubscriberOptions::default(),
             ),
             Err(otel_arrow_dfe_engine::error::Error::SubscribeBalancedNotSupported)
+        ));
+    }
+
+    /// Scenario: YAML config enables all-subscriber Ack consensus on a broadcast-only topic.
+    /// Guarantees: controller mapping preserves `ack_mode: all` and waits for every subscriber.
+    #[tokio::test]
+    async fn declare_topics_maps_all_ack_mode_to_broadcast_consensus() {
+        let yaml = r#"
+version: otel_dataflow/v1
+topics:
+  broadcast_topic:
+    policies:
+      broadcast:
+        on_lag: disconnect
+        ack_mode: all
+      ack_propagation:
+        mode: auto
+groups:
+  g1:
+    pipelines:
+      p1:
+        nodes:
+          recv:
+            type: "urn:otel:receiver:topic"
+            config:
+              topic: broadcast_topic
+          sink:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: recv
+            to: sink
+      p2:
+        nodes:
+          recv:
+            type: "urn:otel:receiver:topic"
+            config:
+              topic: broadcast_topic
+          sink:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: recv
+            to: sink
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("test config should parse");
+        let declared = Controller::<()>::declare_topics(&config).expect("topics should declare");
+        let topic = global_topic_handle(&declared, "broadcast_topic");
+        let mut sub1 = topic
+            .subscribe(
+                otel_arrow_dfe_engine::topic::SubscriptionMode::Broadcast,
+                otel_arrow_dfe_engine::topic::SubscriberOptions::default(),
+            )
+            .expect("first broadcast subscriber should be created");
+        let mut sub2 = topic
+            .subscribe(
+                otel_arrow_dfe_engine::topic::SubscriptionMode::Broadcast,
+                otel_arrow_dfe_engine::topic::SubscriberOptions::default(),
+            )
+            .expect("second broadcast subscriber should be created");
+        let receipt = topic
+            .tracked_publisher()
+            .publish(Arc::new(()))
+            .await
+            .expect("tracked publish should succeed");
+        let message_id = match sub1.recv().await.expect("first delivery should arrive") {
+            otel_arrow_dfe_engine::topic::RecvItem::Message(envelope) => envelope.id,
+            otel_arrow_dfe_engine::topic::RecvItem::Lagged { missed } => {
+                panic!("first subscriber unexpectedly lagged by {missed} messages")
+            }
+        };
+        let second_message_id = match sub2.recv().await.expect("second delivery should arrive") {
+            otel_arrow_dfe_engine::topic::RecvItem::Message(envelope) => envelope.id,
+            otel_arrow_dfe_engine::topic::RecvItem::Lagged { missed } => {
+                panic!("second subscriber unexpectedly lagged by {missed} messages")
+            }
+        };
+        assert_eq!(second_message_id, message_id);
+
+        let mut outcome = Box::pin(receipt.wait_for_outcome());
+        sub1.ack(message_id).expect("first Ack should succeed");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), outcome.as_mut())
+                .await
+                .is_err(),
+            "upstream resolved before all configured subscribers Acked"
+        );
+        sub2.ack(message_id).expect("second Ack should succeed");
+        assert_eq!(
+            outcome.await,
+            otel_arrow_dfe_engine::topic::TrackedPublishOutcome::Ack
+        );
+    }
+
+    /// Scenario: `ack_mode: all` is configured for a topic inferred as balanced-only.
+    /// Guarantees: startup rejects the configuration before creating the topic.
+    #[test]
+    fn declare_topics_rejects_all_ack_mode_for_balanced_only_topic() {
+        let yaml = r#"
+version: otel_dataflow/v1
+topics:
+  balanced_topic:
+    policies:
+      broadcast:
+        on_lag: disconnect
+        ack_mode: all
+      ack_propagation:
+        mode: auto
+groups:
+  g1:
+    pipelines:
+      p1:
+        nodes:
+          recv:
+            type: "urn:otel:receiver:topic"
+            config:
+              topic: balanced_topic
+              subscription:
+                mode: balanced
+                group: workers
+          sink:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: recv
+            to: sink
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("test config should parse");
+        let err = match Controller::<()>::declare_topics(&config) {
+            Ok(_) => panic!("balanced-only all Ack mode should be rejected"),
+            Err(err) => err,
+        };
+
+        match err {
+            Error::InvalidTopicPolicyForMode {
+                topic,
+                policy,
+                value,
+                required_mode,
+                selected_mode,
+            } => {
+                assert_eq!(topic.as_str(), "global::balanced_topic");
+                assert_eq!(policy, "broadcast.ack_mode");
+                assert_eq!(value, "all");
+                assert_eq!(required_mode, "broadcast_only");
+                assert_eq!(selected_mode, "balanced_only");
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    /// Scenario: `ack_mode: all` is configured while implementation selection forces mixed mode.
+    /// Guarantees: startup rejects all-subscriber consensus when balanced delivery is also active.
+    #[test]
+    fn declare_topics_rejects_all_ack_mode_for_mixed_topic() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine:
+  topics:
+    impl_selection: force_mixed
+topics:
+  broadcast_topic:
+    policies:
+      broadcast:
+        on_lag: disconnect
+        ack_mode: all
+      ack_propagation:
+        mode: auto
+groups:
+  g1:
+    pipelines:
+      p1:
+        nodes:
+          recv:
+            type: "urn:otel:receiver:topic"
+            config:
+              topic: broadcast_topic
+          sink:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: recv
+            to: sink
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("test config should parse");
+        let err = match Controller::<()>::declare_topics(&config) {
+            Ok(_) => panic!("mixed all Ack mode should be rejected"),
+            Err(err) => err,
+        };
+
+        assert!(matches!(
+            err,
+            Error::InvalidTopicPolicyForMode {
+                policy: "broadcast.ack_mode",
+                required_mode: "broadcast_only",
+                ..
+            }
         ));
     }
 

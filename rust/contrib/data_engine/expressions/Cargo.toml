@@ -1,0 +1,22 @@
+[package]
+name = "otel-arrow-contrib-data-engine-expressions"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+homepage = "https://github.com/open-telemetry/otel-arrow"
+documentation = "https://docs.rs/otel-arrow-contrib-data-engine-expressions"
+license.workspace = true
+readme = "README.md"
+publish = true
+rust-version.workspace = true
+description = "Experimental, pre-1.0 expression and value model for the OpenTelemetry Arrow data engine query pipeline"
+keywords = ["opentelemetry", "query-engine", "expressions", "experimental"]
+categories = ["data-structures", "compilers"]
+
+[dependencies]
+caseless = { workspace = true }
+chrono = { workspace = true }
+regex = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

@@ -20,7 +20,8 @@ use arrow_schema::DataType;
 
 /// Sanitizes a single array column, returning `Some` with the sanitized array if any changes
 /// were made, or `None` if the array was already clean.
-fn sanitize_column(column: &dyn Array) -> Option<Arc<dyn Array>> {
+#[must_use]
+pub fn sanitize_column(column: &dyn Array) -> Option<Arc<dyn Array>> {
     match column.data_type() {
         DataType::Dictionary(k, _) => match k.as_ref() {
             DataType::UInt8 => {

@@ -61,7 +61,7 @@ impl Default for OtelProtoSimulator {
 #[cfg(test)]
 mod test {
     use super::*;
-    use otel_arrow_dfe_core_nodes::receivers::traffic_generator::semconv_signal::{
+    use otel_arrow_dfe_dev_nodes::receivers::traffic_generator::semconv_signal::{
         semconv_otlp_logs, semconv_otlp_metrics, semconv_otlp_traces,
     };
     use otel_arrow_dfe_pdata::testing::equiv::assert_equivalent;

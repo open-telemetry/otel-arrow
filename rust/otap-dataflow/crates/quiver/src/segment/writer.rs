@@ -477,9 +477,15 @@ impl SegmentWriter {
         let has_item_counts = entries
             .iter()
             .all(|entry| entry.exact_item_count().is_some());
+        let has_any_byte_counts = entries
+            .iter()
+            .any(|entry| entry.exact_byte_count().is_some());
         let mut fields = vec![Field::new("bundle_index", DataType::UInt32, false)];
         if has_item_counts {
             fields.push(Field::new("item_count", DataType::UInt64, false));
+        }
+        if has_any_byte_counts {
+            fields.push(Field::new("byte_count", DataType::UInt64, true));
         }
         // Note: The list item field must be nullable to match what ListBuilder produces.
         fields.push(Field::new(
@@ -495,6 +501,8 @@ impl SegmentWriter {
 
         let mut bundle_index_builder = UInt32Builder::with_capacity(entries.len());
         let mut item_count_builder = UInt64Builder::with_capacity(entries.len());
+        let mut byte_count_builder =
+            has_any_byte_counts.then(|| UInt64Builder::with_capacity(entries.len()));
 
         // Create the list builder with a struct builder inside
         let struct_builder = StructBuilder::from_fields(
@@ -507,6 +515,9 @@ impl SegmentWriter {
             bundle_index_builder.append_value(entry.bundle_index);
             if let Some(item_count) = entry.exact_item_count() {
                 item_count_builder.append_value(item_count);
+            }
+            if let Some(byte_count_builder) = &mut byte_count_builder {
+                byte_count_builder.append_option(entry.exact_byte_count());
             }
 
             // Get the struct builder from the list builder
@@ -537,6 +548,9 @@ impl SegmentWriter {
         let mut columns: Vec<ArrayRef> = vec![Arc::new(bundle_index_builder.finish())];
         if has_item_counts {
             columns.push(Arc::new(item_count_builder.finish()));
+        }
+        if let Some(mut byte_count_builder) = byte_count_builder {
+            columns.push(Arc::new(byte_count_builder.finish()));
         }
         columns.push(Arc::new(slot_refs_builder.finish()));
         let batch = RecordBatch::try_new(schema.clone(), columns)

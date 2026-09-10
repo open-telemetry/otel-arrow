@@ -14,3 +14,6 @@
 
 # otap-dataflow builds binaries (df_engine), so its lockfile is committed.
 !/otap-dataflow/Cargo.lock
+
+# contrib/data_engine CI uses a committed resolution for reproducible checks.
+!/contrib/data_engine/Cargo.lock

@@ -4,11 +4,11 @@
 //! Benchmarks for the OTLP bridge extend pipeline.
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use data_engine_recordset::RecordSetEngineDiagnosticLevel;
 use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 use opentelemetry_proto::tonic::common::v1::any_value::Value;
 use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue};
 use opentelemetry_proto::tonic::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
+use otel_arrow_contrib_data_engine_recordset::RecordSetEngineDiagnosticLevel;
 use otel_arrow_dfe_contrib_nodes::processors::recordset_kql_processor::otlp_bridge::*;
 use prost::Message;
 

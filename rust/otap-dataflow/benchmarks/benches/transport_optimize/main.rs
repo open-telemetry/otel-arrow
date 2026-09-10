@@ -13,8 +13,8 @@ use arrow::array::{
 };
 use arrow::datatypes::{DataType, Field, Schema, UInt16Type};
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use otel_arrow_dfe_core_nodes::receivers::traffic_generator::config::{Config, TrafficConfig};
-use otel_arrow_dfe_core_nodes::receivers::traffic_generator::semconv_signal::semconv_otlp_logs;
+use otel_arrow_dfe_dev_nodes::receivers::traffic_generator::config::{Config, TrafficConfig};
+use otel_arrow_dfe_dev_nodes::receivers::traffic_generator::semconv_signal::semconv_otlp_logs;
 use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_pdata::otap::transform::materialize_parent_id_for_attributes;
 use otel_arrow_dfe_pdata::otlp::attributes::AttributeValueType;
