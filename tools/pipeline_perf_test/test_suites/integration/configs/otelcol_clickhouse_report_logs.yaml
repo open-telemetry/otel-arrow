@@ -141,3 +141,7 @@ result_tables:
   - name: clickhouse_throughput
   - name: component_resources
   - name: gh_actions_benchmark
+    finite_columns: [value]
+    required_values:
+      name:
+        - log_rows_written_rate

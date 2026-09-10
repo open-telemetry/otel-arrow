@@ -167,3 +167,4 @@ result_tables:
     description: Summary of idle state performance metrics
   - name: gh_actions_benchmark
     description: The final metrics used with gh_actions_benchmark.
+    finite_columns: [value]

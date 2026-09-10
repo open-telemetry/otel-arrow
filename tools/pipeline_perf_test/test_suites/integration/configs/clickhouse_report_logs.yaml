@@ -220,3 +220,9 @@ result_tables:
     description: Terminal generated and final post-drain ClickHouse-persisted rows.
   - name: gh_actions_benchmark
     description: Metrics formatted for github-action-benchmark.
+    finite_columns: [value]
+    required_values:
+      name:
+        - logs_produced_rate
+        - log_rows_written_rate
+        - test_duration

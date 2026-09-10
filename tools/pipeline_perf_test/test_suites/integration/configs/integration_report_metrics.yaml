@@ -369,4 +369,11 @@ result_tables:
     description: Metric throughput rates (metrics/sec) calculated from total counts and observation window duration
   - name: gh_actions_benchmark
     description: The final metrics used with gh_actions_benchmark.
+    finite_columns: [value]
+    required_values:
+      name:
+        - dropped_signals_percentage
+        - metrics_produced_rate
+        - metrics_received_rate
+        - test_duration
     #display: False

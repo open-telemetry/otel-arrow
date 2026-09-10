@@ -399,4 +399,11 @@ result_tables:
     description: Log throughput rates (logs/sec) calculated from total counts and observation window duration
   - name: gh_actions_benchmark
     description: The final metrics used with gh_actions_benchmark.
+    finite_columns: [value]
+    required_values:
+      name:
+        - dropped_logs_percentage
+        - logs_produced_rate
+        - logs_received_rate
+        - test_duration
     #display: False

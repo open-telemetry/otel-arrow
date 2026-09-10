@@ -369,4 +369,11 @@ result_tables:
     description: Span throughput rates (spans/sec) calculated from total counts and observation window duration
   - name: gh_actions_benchmark
     description: The final metrics used with gh_actions_benchmark.
+    finite_columns: [value]
+    required_values:
+      name:
+        - dropped_signals_percentage
+        - spans_produced_rate
+        - spans_received_rate
+        - test_duration
     #display: False
