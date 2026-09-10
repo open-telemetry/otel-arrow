@@ -66,7 +66,6 @@ impl ScopedExpr {
                 let left_result = left.execute_as_id_mask(otap_batch, eval_ctx, pool)?;
 
                 // short-circuit: if left is None, the AND result is None regardless of right
-                // TODO - might be worth to check Some/NotSome variants as well?
                 if left_result.mask == IdMask::None {
                     return Ok(ScopedIdMask {
                         mask: IdMask::None,
@@ -202,10 +201,6 @@ fn execute_join_and_eval_as_id_mask(
     let (mask, scope) = match value_result {
         None => (IdMask::None, None),
         Some(sv) => {
-            // TODO - double check the correctness of this -- we make an assumption
-            // that scope_value_to_id_mask will return an id_mask with the same scope
-            // as the ScalarValue we passed into it. Not sure based on the impl that it's
-            // a solid assumption ...
             let scope = sv.scope.clone();
             let mask = scoped_value_to_id_mask(sv, otap_batch, pool)?;
             (mask, Some(scope))
@@ -326,9 +321,13 @@ fn scoped_value_to_id_mask(
             }
         }
 
-        DataScope::Record(RecordScope::Child(child)) => {
-            println!("TODO handle record scope child here");
-            todo!("handle record scope child here")
+        DataScope::Record(RecordScope::Child(_child)) => {
+            // we don't yet support expression evaluation that would need to convert
+            // the ID column from record batch representing a repeated child type 
+            // (like metric data points) into an ID bitmap.
+            return Err(Error::NotYetSupportedError {
+                message: "conversion of child record scoped expression values to bitmap".into(),
+            });
         }
         DataScope::Attribute(_, _) | DataScope::AttributesAll(_) => {
             // attribute-scoped: use parent_ids to populate an IdBitmap
