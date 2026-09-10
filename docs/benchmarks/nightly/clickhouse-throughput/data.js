@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788978894488,
+  "lastUpdate": 1789006655541,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -3130,6 +3130,64 @@ window.BENCHMARK_DATA = {
           {
             "name": "log_rows_written_rate",
             "value": 99947.0280751202,
+            "unit": "rows/sec",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - ClickHouse rows written"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Laurent Quérel",
+            "username": "lquerel",
+            "email": "l.querel@f5.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "acb03674161cbfd1811b21bfd45934e0d8929be5",
+          "message": "chore(pdata): establish pluggable PData codec foundations (#3942)\n\n# Change summary\n\nThis PR establishes the codec and runtime foundations for a five-PR\nseries implementing pluggable PData codecs in the OTel Arrow Dataflow\nEngine.\n\nToday, `OtapPdata` supports native OTAP records and an OTLP-specific\nbyte representation. That representation allows transparent processors\nto forward OTLP without decoding and re-encoding it, but the\noptimization cannot be extended to other independently decodable\nformats.\n\nThe series generalizes that mechanism while preserving its performance\nand ownership properties:\n\n1. **Codec and runtime foundations**  \nDefine the codec model, add the built-in OTLP codec, inject\nruntime-owned codec access through effect handlers, and establish the\nperformance baseline. Existing payload storage and node behavior remain\nunchanged.\n\n2. **Encoded payload capabilities and node migration**  \nAdd generalized encoded payload storage and recoverable capability APIs,\nthen migrate core, contrib, and WASM consumers to\nrepresentation-independent inspection, views, native conversion, and\nstartup-resolved output encoding.\n\n3. **Codec-aware batching**  \nAllow codecs to batch compatible encoded payloads without materializing\nOTAP, with an OTAP fallback when native batching is unavailable.\n\n4. **OTLP activation and transitional cleanup**  \nMove OTLP HTTP and gRPC receivers onto the generalized codec path,\npreserve matching-format forwarding, and remove OTLP-specific storage\nand obsolete APIs.\n\n5. **Syslog extensibility proof**  \nAdd a decode-only syslog/CEF codec whose receiver preserves and batches\noriginal messages until native processing is required.\n\nParquet and other representations are left for later work.\n\n### Full-series reference performance\n\nThe table below evaluates the complete five-PR reference implementation,\nnot this foundation PR in isolation. \"Before\" is the series base\n(`9a2b51e7`); \"after\" is the cleaned PR 5 tip (`d8e3125d`). Rates are\nmedian successfully delivered log records per second. Changes are the\ngeometric mean of five paired after/before ratios, with 95% paired t\nintervals.\n\n| Path | 1 CPU before | 1 CPU after | 1 CPU change (95% CI) | 4 CPUs\nbefore | 4 CPUs after | 4 CPU change (95% CI) |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n| OTLP gRPC -> OTLP gRPC | 0.449 M/s | 0.450 M/s | +1.1% (-1.6% to\n+3.8%) | 1.803 M/s | 1.802 M/s | -0.3% (-1.9% to +1.3%) |\n| OTAP gRPC -> OTAP gRPC | 3.525 M/s | 3.560 M/s | +0.8% (-1.0% to\n+2.6%) | 9.338 M/s | 9.252 M/s | -1.0% (-4.5% to +2.7%) |\n| Syslog RFC 3164/TCP -> OTAP gRPC | 0.329 M/s | 0.325 M/s | -2.0%\n(-3.9% to -0.1%) | 1.339 M/s | 1.286 M/s | -4.6% (-7.3% to -1.9%) |\n\nThe controlled logs-only workload uses 1,000-record batches, 1,024-byte\nbodies, loopback transports, no processors, and no transport or Arrow\ncompression. Only the SUT binary changes; senders and backends use the\nbefore binary. The SUT is pinned to CPU 14 for one-core runs and CPUs\n10-13 for four-core runs, with generators and backends on separate\nphysical cores. All runs completed without failed or refused batches.\nThe OTLP and OTAP intervals include zero; the measurements therefore do\nnot establish a throughput change for those paths. The Syslog result\nshows a small measurable cost in the full codec path.\n\n### Design principles\n\n- Native OTAP remains the common mutable processing representation and\nthe intermediate representation for cross-codec conversion.\n- Codecs represent independently decodable byte formats and may support\ndecoding, encoding, or both.\n- Conversion remains lazy. Transparent nodes preserve the original\nrepresentation, while native consumers request OTAP explicitly.\n- Payloads contain codec identity, signal, bytes, counts, and delivery\ncontext, but never mutable codec state.\n- Codec instances and reusable buffers belong to the single-threaded\npipeline runtime, are created lazily, and are accessed through effect\nhandlers.\n- Codec failures preserve the original message and its Ack/Nack\nownership for rejection or retry.\n- Admission and matching-format forwarding must not instantiate codecs,\ncopy the underlying `Bytes`, or allocate a per-message codec wrapper.\n- Reusable buffers have bounded retained capacity, and signal-specific\nstate is allocated only when used.\n- Encoding identity includes incompatible format versions and intrinsic\ncompression. HTTP and gRPC compression remain transport concerns.\n- Output selection is resolved explicitly at startup. Automatic\nrepresentation negotiation and predicate/projection pushdown are outside\nthis series.\n\n### This PR\n\nThis first PR provides the foundations needed by later migrations\nwithout changing `PayloadData`, receiver admission, or node processing\nbehavior.\n\nIt introduces:\n\n- Legacy-path benchmarks for forwarding, conversion, batching,\ncompression, syslog parsing, allocation, and layout.\n- The new `otel-arrow-dfe-pdata-codec` crate, which centralizes codec\nidentity, contracts, registration, plans, and runtime lifecycle without\ndepending on the pipeline engine or delivery context.\n- `PdataEncoding`, validated link-time registration, codec capability\nmetadata, and startup resolution through `ResolvedCodec`.\n- Separate decoder and encoder contracts, prepared output, borrowed\nviews, and stateless item counting, allowing one-sided codecs without\ndummy operations.\n- A codec-level `EncodedPdata` envelope used by codec APIs and tests. It\nis not yet a `PayloadData` variant.\n- A built-in OTLP codec for logs, metrics, and traces, with lazy\nper-signal state and bounded retained buffers.\n- `EncodePolicy` and startup-resolved `EncodingPlan` for explicit output\nselection.\n- One lazy `CodecService` in each `PipelineRuntimeServices`, exposed\nuniformly through the `CodecEffectHandler` interface for receiver,\nprocessor, and exporter effect handlers.\n- Codec conformance tests and Criterion benchmarks comparing direct\ncodec behavior with the existing OTLP implementation.\n\nExisting OTLP receivers continue producing `OtlpBytes`, and\n`PayloadData` still contains only its existing storage variants.\nGeneralized payload storage, recoverable payload capabilities, node\nmigration, codec-aware batching, OTLP activation, and syslog integration\nremain in later PRs.\n\n## Related issue\n\n- Part of #3452\n\n## Validation\n\n- `cargo check -p otel-arrow-dfe-pdata-codec -p otel-arrow-dfe-engine -p\notel-arrow-dfe-otap -p otel-arrow-dfe-core-nodes -p\notel-arrow-dfe-contrib-nodes`\n- `cargo test -p otel-arrow-dfe-pdata-codec`\n- `cargo check -p benchmarks --all-targets`\n\n## User-facing changes\n\nNone. This PR adds internal codec and runtime infrastructure, tests, and\nbenchmarks without changing pipeline configuration or wire behavior.",
+          "timestamp": "2026-09-10T00:07:01Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/acb03674161cbfd1811b21bfd45934e0d8929be5"
+        },
+        "date": 1789006654450,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "log_rows_written_rate",
+            "value": 99133.52990315689,
+            "unit": "rows/sec",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - ClickHouse rows written"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 100550.94418699993,
+            "unit": "rows/sec",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - logs produced"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 100719.64015021261,
+            "unit": "rows/sec",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - logs_produced"
+          },
+          {
+            "name": "log_rows_written_rate",
+            "value": 99938.20487665126,
+            "unit": "rows/sec",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - ClickHouse rows written"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 100418.10524821612,
+            "unit": "rows/sec",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - logs_produced"
+          },
+          {
+            "name": "log_rows_written_rate",
+            "value": 99952.3560436192,
             "unit": "rows/sec",
             "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - ClickHouse rows written"
           }
