@@ -1,0 +1,224 @@
+# Exercises shared OTLP receiver and exporter metrics for gRPC and HTTP in one
+# process. Each traffic generator exports to a loopback OTLP receiver, whose
+# output is discarded by a noop exporter.
+#
+# The observability pipeline prints the affected shared and OTLP-specific
+# instruments plus node output message and item counts. Successful traffic
+# populates the received, processing, accepted, attempted, and output metrics.
+# Rejection and failure instruments remain absent unless an error is introduced.
+#
+# Run with:
+#   cargo run -- --config configs/otlp-component-boundary-metrics.yaml
+
+version: otel_dataflow/v1
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 1
+engine:
+  telemetry:
+    reporting_interval: 1s
+  observability:
+    pipeline:
+      policies:
+        telemetry:
+          pipeline_metrics: false
+          tokio_metrics: false
+          runtime_metrics: none
+      nodes:
+        telemetry:
+          type: receiver:internal_telemetry
+          config:
+            signals: [metrics]
+            metrics:
+              interval: 1s
+              views:
+                - selector:
+                    scope_name: receiver.received
+                    instrument_name: messages
+                  stream:
+                    name: receiver_received_messages
+                - selector:
+                    scope_name: receiver.received
+                    instrument_name: payload.size
+                  stream:
+                    name: receiver_received_payload_size
+                - selector:
+                    scope_name: receiver.processing
+                    instrument_name: duration
+                  stream:
+                    name: receiver_processing_duration
+                - selector:
+                    scope_name: receiver.otlp.requests
+                    instrument_name: accepted
+                  stream:
+                    name: receiver_otlp_requests_accepted
+                - selector:
+                    scope_name: receiver.otlp.requests
+                    instrument_name: rejected
+                  stream:
+                    name: receiver_otlp_requests_rejected
+                - selector:
+                    scope_name: node.output
+                    instrument_name: messages
+                  stream:
+                    name: node_output_messages
+                - selector:
+                    scope_name: node.output
+                    instrument_name: items
+                  stream:
+                    name: node_output_items
+                - selector:
+                    scope_name: exporter.attempted
+                    instrument_name: messages
+                  stream:
+                    name: exporter_attempted_messages
+                - selector:
+                    scope_name: exporter.attempted
+                    instrument_name: duration
+                  stream:
+                    name: exporter_attempted_duration
+                - selector:
+                    scope_name: exporter.attempted
+                    instrument_name: payload.size
+                  stream:
+                    name: exporter_attempted_payload_size
+                - selector:
+                    scope_name: exporter.attempted
+                    instrument_name: items
+                  stream:
+                    name: exporter_attempted_items
+                - selector:
+                    scope_name: exporter.otlp_http.failures
+                    instrument_name: messages
+                  stream:
+                    name: exporter_otlp_http_failures
+                - selector:
+                    scope_name: exporter.otlp_grpc.failures
+                    instrument_name: messages
+                  stream:
+                    name: exporter_otlp_grpc_failures
+        boundary_metrics:
+          type: processor:filter
+          config:
+            metrics:
+              include:
+                match_type: strict
+                metric_names:
+                  - receiver_received_messages
+                  - receiver_received_payload_size
+                  - receiver_processing_duration
+                  - receiver_otlp_requests_accepted
+                  - receiver_otlp_requests_rejected
+                  - node_output_messages
+                  - node_output_items
+                  - exporter_attempted_messages
+                  - exporter_attempted_duration
+                  - exporter_attempted_payload_size
+                  - exporter_attempted_items
+                  - exporter_otlp_http_failures
+                  - exporter_otlp_grpc_failures
+        metrics_debug:
+          type: processor:debug
+          config:
+            verbosity: normal
+            mode: batch
+            signals: [metrics]
+        noop:
+          type: exporter:noop
+          config: {}
+      connections:
+        - from: telemetry
+          to: boundary_metrics
+        - from: boundary_metrics
+          to: metrics_debug
+        - from: metrics_debug
+          to: noop
+
+groups:
+  default:
+    pipelines:
+      grpc_source:
+        policies:
+          telemetry:
+            runtime_metrics: detailed
+        nodes:
+          generator:
+            type: receiver:traffic_generator
+            config:
+              data_source: synthetic
+              traffic_config:
+                max_batch_size: 10
+                signals_per_second: 20
+                log_weight: 100
+                metric_weight: 0
+                trace_weight: 0
+          exporter:
+            type: exporter:otlp_grpc
+            config:
+              grpc_endpoint: "http://127.0.0.1:14317"
+        connections:
+          - from: generator
+            to: exporter
+
+      grpc_sink:
+        policies:
+          telemetry:
+            runtime_metrics: detailed
+        nodes:
+          receiver:
+            type: receiver:otlp
+            config:
+              protocols:
+                grpc:
+                  listening_addr: "127.0.0.1:14317"
+          noop:
+            type: exporter:noop
+            config: {}
+        connections:
+          - from: receiver
+            to: noop
+
+      http_source:
+        policies:
+          telemetry:
+            runtime_metrics: detailed
+        nodes:
+          generator:
+            type: receiver:traffic_generator
+            config:
+              data_source: synthetic
+              traffic_config:
+                max_batch_size: 10
+                signals_per_second: 20
+                log_weight: 100
+                metric_weight: 0
+                trace_weight: 0
+          exporter:
+            type: exporter:otlp_http
+            config:
+              endpoint: "http://127.0.0.1:14318"
+              http: {}
+              client_pool_size: 1
+        connections:
+          - from: generator
+            to: exporter
+
+      http_sink:
+        policies:
+          telemetry:
+            runtime_metrics: detailed
+        nodes:
+          receiver:
+            type: receiver:otlp
+            config:
+              protocols:
+                http:
+                  listening_addr: "127.0.0.1:14318"
+          noop:
+            type: exporter:noop
+            config: {}
+        connections:
+          - from: receiver
+            to: noop
