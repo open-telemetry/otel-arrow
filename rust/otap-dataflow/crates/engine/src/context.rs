@@ -542,28 +542,6 @@ impl PipelineContext {
         }
     }
 
-    /// Compatibility registration for metric sets declared before `#[metric_set]`.
-    ///
-    /// New component metrics use their generated `MyMetrics::register(self)`
-    /// method, which chooses the correct registration shape automatically.
-    #[must_use]
-    #[doc(hidden)]
-    pub fn register_metrics<T: MetricSetHandler + Default + Debug + Send + Sync>(
-        &self,
-    ) -> MetricSet<T> {
-        self.register_scoped_metrics(
-            |handle, entity_key| handle.register_metric_set_for_entity::<T>(entity_key),
-            MetricSet::metric_set_key,
-            |ctx, handle| {
-                if ctx.node_telemetry_attrs.is_empty() {
-                    handle.register_metric_set::<T>(ctx.node_attribute_set())
-                } else {
-                    handle.register_metric_set::<T>(ctx.node_with_custom_attribute_set())
-                }
-            },
-        )
-    }
-
     /// Registers a metric set for the current node entity, scoped by an additional `topic` attribute.
     ///
     /// This is used by topic-aware nodes so their metric series can be filtered by `topic`.
@@ -836,7 +814,17 @@ impl MetricSetRegistrar for PipelineContext {
     fn register_metric_set<M: MetricSetHandler + Default + Debug + Send + Sync>(
         &self,
     ) -> MetricSet<M> {
-        self.register_metrics::<M>()
+        self.register_scoped_metrics(
+            |handle, entity_key| handle.register_metric_set_for_entity::<M>(entity_key),
+            MetricSet::metric_set_key,
+            |ctx, handle| {
+                if ctx.node_telemetry_attrs.is_empty() {
+                    handle.register_metric_set::<M>(ctx.node_attribute_set())
+                } else {
+                    handle.register_metric_set::<M>(ctx.node_with_custom_attribute_set())
+                }
+            },
+        )
     }
 
     fn register_registration_metric_set<M: RegistrationMetricSetHandler + Debug + Send + Sync>(

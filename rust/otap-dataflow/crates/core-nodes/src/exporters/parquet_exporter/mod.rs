@@ -142,7 +142,7 @@ impl ParquetExporter {
         })?;
 
         let pdata_metrics = ExporterExportMetrics::register(&pipeline_ctx);
-        let io_metrics = pipeline_ctx.register_metrics::<metrics::ParquetExporterMetrics>();
+        let io_metrics = metrics::ParquetExporterMetrics::register(&pipeline_ctx);
 
         Ok(ParquetExporter {
             config,

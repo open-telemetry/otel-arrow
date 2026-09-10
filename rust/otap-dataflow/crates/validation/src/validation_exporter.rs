@@ -153,7 +153,7 @@ impl ValidationExporter {
         pipeline_ctx: PipelineContext,
         config: &serde_json::Value,
     ) -> Result<Self, ConfigError> {
-        let metrics = pipeline_ctx.register_metrics::<ValidationExporterMetrics>();
+        let metrics = ValidationExporterMetrics::register(&pipeline_ctx);
         let config: ValidationExporterConfig =
             serde_json::from_value(config.clone()).map_err(|e| {
                 otel_arrow_dfe_config::error::Error::InvalidUserConfig {

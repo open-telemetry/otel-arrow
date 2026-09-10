@@ -146,7 +146,7 @@ impl TrafficGeneratorReceiver {
     /// creates a new TrafficGeneratorReceiver
     #[must_use]
     pub fn new(pipeline_ctx: PipelineContext, config: Config) -> Self {
-        let metrics = pipeline_ctx.register_metrics::<TrafficGeneratorReceiverMetrics>();
+        let metrics = TrafficGeneratorReceiverMetrics::register(&pipeline_ctx);
         Self {
             config,
             metrics,

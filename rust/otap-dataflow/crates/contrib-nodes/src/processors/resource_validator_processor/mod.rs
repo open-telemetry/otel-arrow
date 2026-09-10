@@ -196,7 +196,7 @@ pub static RESOURCE_VALIDATOR_PROCESSOR_FACTORY: otel_arrow_dfe_engine::Processo
 impl ResourceValidatorProcessor {
     /// Creates a new ResourceValidatorProcessor from configuration
     pub fn from_config(pipeline_ctx: PipelineContext, config: &Value) -> Result<Self, ConfigError> {
-        let metrics = pipeline_ctx.register_metrics::<ResourceValidatorMetrics>();
+        let metrics = ResourceValidatorMetrics::register(&pipeline_ctx);
         let config: Config =
             serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
                 error: e.to_string(),
@@ -221,7 +221,7 @@ impl ResourceValidatorProcessor {
         case_sensitive: bool,
         pipeline_ctx: PipelineContext,
     ) -> Self {
-        let metrics = pipeline_ctx.register_metrics::<ResourceValidatorMetrics>();
+        let metrics = ResourceValidatorMetrics::register(&pipeline_ctx);
         Self {
             required_attribute_key,
             allowed_values,

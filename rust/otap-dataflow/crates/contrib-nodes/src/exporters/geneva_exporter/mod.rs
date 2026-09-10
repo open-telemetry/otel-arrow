@@ -1219,7 +1219,7 @@ impl GenevaExporter {
     ) -> Result<Self, ConfigError> {
         let geneva_client = create_geneva_client(&config, node_config, capabilities)?;
         let pdata_metrics = ExporterExportMetrics::register(&pipeline_ctx);
-        let metrics = pipeline_ctx.register_metrics::<ExporterMetrics>();
+        let metrics = ExporterMetrics::register(&pipeline_ctx);
 
         Ok(Self {
             config,
