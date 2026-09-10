@@ -29,7 +29,9 @@ but has not yet recorded a value.
 `policies.telemetry.runtime_metrics` controls channel, node, and shared
 control-plane metrics. Its default value is `basic`.
 
-| Level | Data-path metrics enabled |
+The runtime metric level provides these data-path defaults:
+
+| Level | Data-path metrics enabled by default |
 | --- | --- |
 | `none` | No channel or node input/output metrics. |
 | `basic` | `channel.*` metrics. |

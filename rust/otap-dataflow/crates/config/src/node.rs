@@ -188,8 +188,10 @@ pub struct NodeTelemetryPolicy {
     /// Opt this node into input/output message counters.
     ///
     /// This enables the applicable `node.input.messages` and
-    /// `node.output.messages` metrics. `runtime_metrics: normal` or `detailed`
-    /// enables message counters for every node without this flag.
+    /// `node.output.messages` metrics, plus shared
+    /// `receiver.received.messages` or `exporter.attempted.messages` metrics
+    /// for those node kinds. `runtime_metrics: normal` or `detailed` enables
+    /// message counters for every node without this flag.
     #[serde(default)]
     pub messages: bool,
 
@@ -221,8 +223,8 @@ pub struct NodeTelemetryPolicy {
     #[serde(default)]
     pub item_counts: bool,
 
-    /// Opt this node into node-implemented and per-signal input/output logical
-    /// payload size.
+    /// Opt this node into per-signal input/output logical payload size and
+    /// node-implemented encoded payload size at receiver/exporter boundaries.
     ///
     /// Off by default because measuring OTAP payloads requires walking their
     /// Arrow arrays and buffers. This option applies at any runtime metric
