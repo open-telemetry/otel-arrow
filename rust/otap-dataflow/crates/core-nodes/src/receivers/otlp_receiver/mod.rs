@@ -3536,7 +3536,7 @@ mod tests {
                     assert_eq!(
                         metrics
                             .requests_for(SignalType::Logs, OtlpProtocol::Grpc)
-                            .started
+                            .accepted
                             .get(),
                         0
                     );
@@ -3624,8 +3624,7 @@ mod tests {
                 {
                     let metrics = scenario_metrics.lock();
                     let requests = metrics.requests_for(SignalType::Logs, OtlpProtocol::Grpc);
-                    assert_eq!(requests.started.get(), 1);
-                    assert_eq!(requests.payload_size.get(), request_weight);
+                    assert_eq!(requests.accepted.get(), 1);
                     assert_eq!(
                         metrics
                             .rejections_for(
@@ -3769,8 +3768,7 @@ mod tests {
                 {
                     let metrics = scenario_metrics.lock();
                     let requests = metrics.requests_for(SignalType::Logs, OtlpProtocol::Http);
-                    assert_eq!(requests.started.get(), 1);
-                    assert_eq!(requests.payload_size.get(), request_weight);
+                    assert_eq!(requests.accepted.get(), 1);
                     assert_eq!(
                         metrics
                             .rejections_for(
@@ -3909,7 +3907,7 @@ mod tests {
                     assert_eq!(
                         metrics
                             .requests_for(SignalType::Logs, OtlpProtocol::Http)
-                            .started
+                            .accepted
                             .get(),
                         0
                     );

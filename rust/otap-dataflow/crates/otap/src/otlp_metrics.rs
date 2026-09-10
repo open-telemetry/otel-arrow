@@ -3,6 +3,7 @@
 
 //! Shared OTLP receiver metric definitions.
 
+use crate::metrics::ReceiverMetrics;
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_telemetry::common_attributes::{
@@ -23,16 +24,6 @@ pub enum OtlpProtocol {
     Http,
 }
 
-/// Signal and protocol dimensions for an accepted OTLP request.
-#[attribute_set(item, measurement)]
-#[derive(Debug, Clone, Copy)]
-pub struct OtlpRequestAttributes {
-    /// Signal carried by the request.
-    pub signal: SignalType,
-    /// OTLP transport used by the request.
-    pub protocol: OtlpProtocol,
-}
-
 /// Protocol and bounded error type dimensions for a rejected request.
 #[attribute_set(item, measurement)]
 #[derive(Debug, Clone, Copy)]
@@ -44,41 +35,45 @@ pub struct OtlpRejectionAttributes {
     pub error_type: ReceiverRejectionErrorType,
 }
 
-/// Protocol dimension for a transport-level receiver error.
+/// Signal and protocol dimensions for an accepted OTLP transport request.
 #[attribute_set(item, measurement)]
 #[derive(Debug, Clone, Copy)]
-pub struct OtlpTransportAttributes {
-    /// OTLP transport that surfaced the error.
+pub struct OtlpRequestAttributes {
+    /// Signal carried by the request.
+    pub signal: SignalType,
+    /// OTLP transport used by the request.
     pub protocol: OtlpProtocol,
 }
 
-/// Lifecycle and payload metrics for admitted OTLP requests.
+/// Protocol dimension for a transport-level receiver error.
+#[attribute_set(item, measurement)]
+#[derive(Debug, Clone, Copy)]
+pub struct OtlpTransportErrorAttributes {
+    /// OTLP transport that surfaced the server error.
+    pub protocol: OtlpProtocol,
+}
+
+/// Admitted OTLP requests.
 #[metric_set(
     name = "receiver.otlp.requests",
     measurement_attributes = OtlpRequestAttributes
 )]
 #[derive(Debug, Default, Clone)]
 pub struct OtlpRequestMetrics {
-    /// Number of requests admitted to the pipeline send path.
+    /// Number of OTLP requests admitted to the pipeline send path.
     #[metric(unit = "{request}")]
-    pub started: Counter<u64>,
-    /// Number of admitted requests whose receiver work terminated.
-    #[metric(unit = "{request}")]
-    pub completed: Counter<u64>,
-    /// Decompressed payload bytes for requests admitted to the pipeline send path.
-    #[metric(unit = "By")]
-    pub payload_size: Counter<u64>,
+    pub accepted: Counter<u64>,
 }
 
 /// Requests rejected before pipeline admission.
 #[metric_set(
-    name = "receiver.otlp.rejections",
+    name = "receiver.otlp.requests",
     measurement_attributes = OtlpRejectionAttributes
 )]
 #[derive(Debug, Default, Clone)]
 pub struct OtlpRejectionMetrics {
     /// Number of rejected requests.
-    #[metric(unit = "{request}")]
+    #[metric(name = "rejected", unit = "{request}")]
     pub requests: Counter<u64>,
 }
 
@@ -97,10 +92,10 @@ pub struct OtlpAcknowledgementMetrics {
 /// Transport-level OTLP receiver errors.
 #[metric_set(
     name = "receiver.otlp.transport",
-    measurement_attributes = OtlpTransportAttributes
+    measurement_attributes = OtlpTransportErrorAttributes
 )]
 #[derive(Debug, Default, Clone)]
-pub struct OtlpTransportMetrics {
+pub struct OtlpTransportErrorMetrics {
     /// Number of transport-level server errors.
     #[metric(unit = "{error}")]
     pub errors: Counter<u64>,
@@ -109,10 +104,12 @@ pub struct OtlpTransportMetrics {
 /// Shared bounded-cardinality OTLP receiver metrics tracker.
 #[derive(Debug)]
 pub struct OtlpReceiverMetrics {
+    /// Shared receiver boundary metrics.
+    pub boundary: ReceiverMetrics,
     requests: MeasurementMetricSet<OtlpRequestMetrics>,
     rejections: MeasurementMetricSet<OtlpRejectionMetrics>,
     acknowledgements: MeasurementMetricSet<OtlpAcknowledgementMetrics>,
-    transport: MeasurementMetricSet<OtlpTransportMetrics>,
+    transport_errors: MeasurementMetricSet<OtlpTransportErrorMetrics>,
 }
 
 impl OtlpReceiverMetrics {
@@ -120,34 +117,19 @@ impl OtlpReceiverMetrics {
     #[must_use]
     pub fn register(pipeline_ctx: &PipelineContext) -> Self {
         Self {
+            boundary: ReceiverMetrics::register(pipeline_ctx),
             requests: OtlpRequestMetrics::register(pipeline_ctx),
             rejections: OtlpRejectionMetrics::register(pipeline_ctx),
             acknowledgements: OtlpAcknowledgementMetrics::register(pipeline_ctx),
-            transport: OtlpTransportMetrics::register(pipeline_ctx),
+            transport_errors: OtlpTransportErrorMetrics::register(pipeline_ctx),
         }
     }
 
-    /// Records a request and its decompressed payload bytes after pipeline admission succeeds.
-    pub fn record_request_admitted(
-        &mut self,
-        signal: SignalType,
-        protocol: OtlpProtocol,
-        payload_bytes: Option<u64>,
-    ) {
-        let requests = self
-            .requests
-            .with(OtlpRequestAttributes { signal, protocol });
-        requests.started.inc();
-        if let Some(payload_bytes) = payload_bytes.filter(|bytes| *bytes > 0) {
-            requests.payload_size.add(payload_bytes);
-        }
-    }
-
-    /// Records termination of receiver work for an admitted request.
-    pub fn record_request_completed(&mut self, signal: SignalType, protocol: OtlpProtocol) {
+    /// Records an admitted OTLP request.
+    pub fn record_request_admitted(&mut self, signal: SignalType, protocol: OtlpProtocol) {
         self.requests
             .with(OtlpRequestAttributes { signal, protocol })
-            .completed
+            .accepted
             .inc();
     }
 
@@ -176,13 +158,13 @@ impl OtlpReceiverMetrics {
 
     /// Records a transport-level server error.
     pub fn record_transport_error(&mut self, protocol: OtlpProtocol) {
-        self.transport
-            .with(OtlpTransportAttributes { protocol })
+        self.transport_errors
+            .with(OtlpTransportErrorAttributes { protocol })
             .errors
             .inc();
     }
 
-    /// Returns a request bucket for inspection without marking it for export.
+    /// Returns a transport request bucket without marking it for export.
     #[must_use]
     pub fn requests_for(&self, signal: SignalType, protocol: OtlpProtocol) -> &OtlpRequestMetrics {
         self.requests
@@ -215,24 +197,27 @@ impl OtlpReceiverMetrics {
 
     /// Returns a transport bucket for inspection without marking it for export.
     #[must_use]
-    pub fn transport_for(&self, protocol: OtlpProtocol) -> &OtlpTransportMetrics {
-        self.transport.get(OtlpTransportAttributes { protocol })
+    pub fn transport_errors_for(&self, protocol: OtlpProtocol) -> &OtlpTransportErrorMetrics {
+        self.transport_errors
+            .get(OtlpTransportErrorAttributes { protocol })
     }
 
     /// Reports every touched OTLP receiver metric bucket.
     pub fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), TelemetryError> {
+        self.boundary.report(reporter)?;
         reporter.report_measurement(&mut self.requests)?;
         reporter.report_measurement(&mut self.rejections)?;
         reporter.report_measurement(&mut self.acknowledgements)?;
-        reporter.report_measurement(&mut self.transport)
+        reporter.report_measurement(&mut self.transport_errors)
     }
 
     /// Takes every touched OTLP receiver metric bucket for terminal handoff.
     pub fn terminal_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
-        let mut snapshots = self.requests.terminal_snapshots();
+        let mut snapshots = self.boundary.terminal_snapshots();
+        snapshots.extend(self.requests.terminal_snapshots());
         snapshots.extend(self.rejections.terminal_snapshots());
         snapshots.extend(self.acknowledgements.terminal_snapshots());
-        snapshots.extend(self.transport.terminal_snapshots());
+        snapshots.extend(self.transport_errors.terminal_snapshots());
         snapshots
     }
 }
@@ -256,8 +241,12 @@ mod tests {
     #[test]
     fn receiver_metrics_are_partitioned_by_context() {
         let mut metrics = new_test_metrics();
-        metrics.record_request_admitted(SignalType::Logs, OtlpProtocol::Grpc, Some(42));
-        metrics.record_request_completed(SignalType::Logs, OtlpProtocol::Grpc);
+        let completed = metrics.boundary.processing().run(|processing| {
+            processing.set_payload_size_with(|| 42);
+            Ok::<_, crate::metrics::ErrorWithOutcome<()>>((SignalType::Logs, ()))
+        });
+        metrics.boundary.record(completed).unwrap();
+        metrics.record_request_admitted(SignalType::Logs, OtlpProtocol::Grpc);
         metrics.record_rejection(
             OtlpProtocol::Http,
             ReceiverRejectionErrorType::InvalidRequest,
@@ -265,17 +254,18 @@ mod tests {
         metrics.record_acknowledgement(SignalType::Logs, Outcome::Refused);
         metrics.record_transport_error(OtlpProtocol::Grpc);
 
-        let requests = metrics.requests_for(SignalType::Logs, OtlpProtocol::Grpc);
-        assert_eq!(requests.started.get(), 1);
-        assert_eq!(requests.completed.get(), 1);
-        assert_eq!(requests.payload_size.get(), 42);
-        assert_eq!(
-            metrics
-                .requests_for(SignalType::Logs, OtlpProtocol::Http)
-                .started
-                .get(),
-            0
-        );
+        let snapshots = metrics.boundary.terminal_snapshots();
+        assert!(snapshots.iter().any(|snapshot| {
+            snapshot.descriptor().name == "receiver.received"
+                && snapshot.measurement_attribute_value("signal") == Some("logs")
+                && snapshot.measurement_attribute_value("outcome") == Some("success")
+                && snapshot
+                    .descriptor()
+                    .metrics
+                    .iter()
+                    .position(|metric| metric.name == "messages")
+                    .is_some_and(|index| snapshot.get_metrics()[index].to_u64_lossy() == 1)
+        }));
         assert_eq!(
             metrics
                 .rejections_for(
@@ -293,19 +283,48 @@ mod tests {
                 .get(),
             1
         );
-        assert_eq!(metrics.transport_for(OtlpProtocol::Grpc).errors.get(), 1);
+        let requests = metrics.requests_for(SignalType::Logs, OtlpProtocol::Grpc);
+        assert_eq!(requests.accepted.get(), 1);
+        assert_eq!(
+            metrics
+                .transport_errors_for(OtlpProtocol::Grpc)
+                .errors
+                .get(),
+            1
+        );
     }
 
     /// Scenario: An admitted OTLP request has an empty decompressed payload.
-    /// Guarantees: Admission is counted even though the payload-size counter remains unchanged.
+    /// Guarantees: The shared receiver boundary still records the successful message.
     #[test]
-    fn admitted_empty_request_still_records_started() {
+    fn admitted_empty_request_still_records_received() {
         let mut metrics = new_test_metrics();
-        metrics.record_request_admitted(SignalType::Logs, OtlpProtocol::Http, Some(0));
+        let completed = metrics.boundary.processing().run(|processing| {
+            processing.set_payload_size_with(|| 0);
+            Ok::<_, crate::metrics::ErrorWithOutcome<()>>((SignalType::Logs, ()))
+        });
+        metrics.boundary.record(completed).unwrap();
+        metrics.record_request_admitted(SignalType::Logs, OtlpProtocol::Http);
 
-        let requests = metrics.requests_for(SignalType::Logs, OtlpProtocol::Http);
-        assert_eq!(requests.started.get(), 1);
-        assert_eq!(requests.payload_size.get(), 0);
+        let snapshots = metrics.boundary.terminal_snapshots();
+        assert!(snapshots.iter().any(|snapshot| {
+            snapshot.descriptor().name == "receiver.received"
+                && snapshot.measurement_attribute_value("signal") == Some("logs")
+                && snapshot.measurement_attribute_value("outcome") == Some("success")
+                && snapshot
+                    .descriptor()
+                    .metrics
+                    .iter()
+                    .position(|metric| metric.name == "messages")
+                    .is_some_and(|index| snapshot.get_metrics()[index].to_u64_lossy() == 1)
+        }));
+        assert_eq!(
+            metrics
+                .requests_for(SignalType::Logs, OtlpProtocol::Http)
+                .accepted
+                .get(),
+            1
+        );
     }
 
     /// Scenario: OTLP receiver metrics are transferred into terminal snapshots twice.
@@ -313,21 +332,31 @@ mod tests {
     #[test]
     fn terminal_snapshots_preserve_enum_attribute_values_once() {
         let mut metrics = new_test_metrics();
-        metrics.record_request_admitted(SignalType::Metrics, OtlpProtocol::Http, Some(0));
+        let completed = metrics
+            .boundary
+            .processing()
+            .run(|_| Ok::<_, crate::metrics::ErrorWithOutcome<()>>((SignalType::Metrics, ())));
+        metrics.boundary.record(completed).unwrap();
+        metrics.record_request_admitted(SignalType::Metrics, OtlpProtocol::Http);
         metrics.record_rejection(
             OtlpProtocol::Grpc,
             ReceiverRejectionErrorType::MemoryPressure,
         );
 
         let snapshots = metrics.terminal_snapshots();
-        assert_eq!(snapshots.len(), 2);
+        assert_eq!(snapshots.len(), 3);
+        assert!(snapshots.iter().any(|snapshot| {
+            snapshot.descriptor().name == "receiver.received"
+                && snapshot.measurement_attribute_value("signal") == Some("metrics")
+                && snapshot.measurement_attribute_value("outcome") == Some("success")
+        }));
         assert!(snapshots.iter().any(|snapshot| {
             snapshot.descriptor().name == "receiver.otlp.requests"
                 && snapshot.measurement_attribute_value("signal") == Some("metrics")
                 && snapshot.measurement_attribute_value("protocol") == Some("http")
         }));
         assert!(snapshots.iter().any(|snapshot| {
-            snapshot.descriptor().name == "receiver.otlp.rejections"
+            snapshot.descriptor().name == "receiver.otlp.requests"
                 && snapshot.measurement_attribute_value("protocol") == Some("grpc")
                 && snapshot.measurement_attribute_value("error.type") == Some("memory_pressure")
         }));
