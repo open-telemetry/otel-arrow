@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789006659290,
+  "lastUpdate": 1789066597971,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -5830,6 +5830,112 @@ window.BENCHMARK_DATA = {
             "value": 60.001826,
             "unit": "seconds",
             "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - Test Duration"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Mikel Blanchard",
+            "username": "CodeBlanch",
+            "email": "mblanchard@macrosssoftware.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "4b5d5fec907c2c40edae458c43c96d5f29492dbe",
+          "message": "chore: Refactor TokenProviderExtension (#3979)\n\nRelates to #3901\n\n# Changes\n\n* Refactor reusable bits of `TokenProviderExtension` into\n`BackgroundProviderExtension`\n\n# Details\n\nI'm working on adding `ApiKey` and `BasicAuth` capabilities and there\nwill be flat file extensions implemented initially. There is code in\n`TokenProviderExtension` which handles the background refresh of\n`BearerToken`s. What this PR does is refactor the common things so\nrefresh logic can be reused for any generic struct (`BearerToken`,\n`ApiKey`, `BasicAuthCredentials`, etc.).\n\n---------\n\nCo-authored-by: Copilot Autofix powered by AI <175728472+Copilot@users.noreply.github.com>",
+          "timestamp": "2026-09-10T18:07:20Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/4b5d5fec907c2c40edae458c43c96d5f29492dbe"
+        },
+        "date": 1789066596761,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "clickhouse_cpu_percentage_normalized_avg",
+            "value": 49.21345820658413,
+            "unit": "%",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - clickhouse CPU"
+          },
+          {
+            "name": "go-collector_cpu_percentage_normalized_avg",
+            "value": 89.60417666222995,
+            "unit": "%",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - go-collector CPU"
+          },
+          {
+            "name": "go-collector_ram_mib_max",
+            "value": 180.6015625,
+            "unit": "MiB",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - go-collector RAM"
+          },
+          {
+            "name": "clickhouse_ram_mib_max",
+            "value": 1223.4375,
+            "unit": "MiB",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - clickhouse RAM"
+          },
+          {
+            "name": "df-engine_cpu_percentage_normalized_avg",
+            "value": 24.9971980174013,
+            "unit": "%",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - df-engine CPU"
+          },
+          {
+            "name": "clickhouse_cpu_percentage_normalized_avg",
+            "value": 50.3973500333706,
+            "unit": "%",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - clickhouse CPU"
+          },
+          {
+            "name": "clickhouse_ram_mib_max",
+            "value": 1188.08984375,
+            "unit": "MiB",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - clickhouse RAM"
+          },
+          {
+            "name": "df-engine_ram_mib_max",
+            "value": 52.43359375,
+            "unit": "MiB",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - df-engine RAM"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.001984,
+            "unit": "seconds",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - Test Duration"
+          },
+          {
+            "name": "df-engine_cpu_percentage_normalized_avg",
+            "value": 45.61018042491368,
+            "unit": "%",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - df-engine CPU"
+          },
+          {
+            "name": "clickhouse_cpu_percentage_normalized_avg",
+            "value": 51.179315375550416,
+            "unit": "%",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - clickhouse CPU"
+          },
+          {
+            "name": "clickhouse_ram_mib_max",
+            "value": 1177.4375,
+            "unit": "MiB",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - clickhouse RAM"
+          },
+          {
+            "name": "df-engine_ram_mib_max",
+            "value": 52.9375,
+            "unit": "MiB",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - df-engine RAM"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002926,
+            "unit": "seconds",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - Test Duration"
           }
         ]
       }
