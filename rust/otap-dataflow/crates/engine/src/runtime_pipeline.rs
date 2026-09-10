@@ -34,6 +34,7 @@ use crate::pipeline_ctrl::{
     snapshot_node_metrics_with_handles,
 };
 use crate::processor::FlowMetricHook;
+use crate::runtime_services::PipelineRuntimeServices;
 use crate::terminal_state::{TerminalMetricsDeadline, TerminalState};
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
 use otel_arrow_dfe_config::DeployedPipelineKey;
@@ -446,6 +447,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             .build()
             .expect("Failed to create runtime");
         let local_tasks = LocalSet::new();
+        let runtime_services = PipelineRuntimeServices::new(Default::default())?;
         // ToDo create an optimized version of FuturesUnordered that can be used for !Send, !Sync tasks
         let mut futures = FuturesUnordered::new();
 
@@ -587,6 +589,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             let effect_metrics_reporter = metrics_reporter.clone();
             let final_metrics_reporter = metrics_reporter.clone();
             let exporter_terminal_metrics_deadline = terminal_metrics_deadline.clone();
+            let exporter_runtime_services = runtime_services.clone();
             let fut = async move {
                 match exporter
                     .start_with_completion_metrics(
@@ -595,6 +598,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                         effect_metrics_reporter,
                         node_interests,
                         completion_emission_metrics,
+                        exporter_runtime_services,
                     )
                     .await
                 {
@@ -667,6 +671,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             let metrics_reporter = metrics_reporter.clone();
             let final_metrics_reporter = metrics_reporter.clone();
             let processor_terminal_metrics_deadline = terminal_metrics_deadline.clone();
+            let processor_runtime_services = runtime_services.clone();
             // Extract flow metric roles for this processor node.
             // Compute pipeline-wide flags before moving metric sets into handlers.
             let flow_active = flow_metric_state.is_active();
@@ -746,6 +751,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                         flow_active,
                         flow_needs_timing,
                         processor_terminal_metrics_deadline.clone(),
+                        processor_runtime_services,
                     )
                     .await;
                 flush_metrics_reporter(
@@ -803,6 +809,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             let effect_metrics_reporter = metrics_reporter.clone();
             let final_metrics_reporter = metrics_reporter.clone();
             let receiver_terminal_metrics_deadline = terminal_metrics_deadline.clone();
+            let receiver_runtime_services = runtime_services.clone();
             let fut = async move {
                 match receiver
                     .start(
@@ -810,6 +817,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                         pipeline_completion_msg_tx,
                         effect_metrics_reporter,
                         node_interests,
+                        receiver_runtime_services,
                     )
                     .await
                 {

@@ -22,6 +22,7 @@ use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::receiver as local;
 use crate::message::{Receiver, Sender};
 use crate::node::{Node, NodeId, NodeWithPDataSender};
+use crate::runtime_services::PipelineRuntimeServices;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::shared::receiver as shared;
 use crate::terminal_state::TerminalState;
@@ -314,7 +315,7 @@ impl<PData> ReceiverWrapper<PData> {
         }
     }
 
-    /// Starts the receiver and begins receiver incoming data.
+    /// Starts the receiver using the services owned by its pipeline runtime.
     #[doc(hidden)]
     pub async fn start(
         self,
@@ -322,6 +323,7 @@ impl<PData> ReceiverWrapper<PData> {
         pipeline_completion_msg_tx: PipelineCompletionMsgSender<PData>,
         metrics_reporter: MetricsReporter,
         node_interests: Interests,
+        runtime_services: PipelineRuntimeServices,
     ) -> Result<TerminalState, Error> {
         match (self, metrics_reporter) {
             (
@@ -355,6 +357,7 @@ impl<PData> ReceiverWrapper<PData> {
                     default_port,
                     runtime_ctrl_msg_tx,
                     metrics_reporter,
+                    runtime_services.clone(),
                 );
                 effect_handler.set_source_tagging(source_tag);
                 effect_handler.set_capture_policy(capture_policy);
@@ -395,6 +398,7 @@ impl<PData> ReceiverWrapper<PData> {
                     default_port,
                     runtime_ctrl_msg_tx,
                     metrics_reporter,
+                    runtime_services,
                 );
                 effect_handler.set_source_tagging(source_tag);
                 effect_handler.set_capture_policy(capture_policy);
