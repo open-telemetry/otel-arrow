@@ -1,9 +1,11 @@
 # Compares per-signal node and flow input/output metrics.
 #
 # Three pipelines in the same engine:
-#   - `full`: detailed node metrics and a one-processor flow around `sampler`.
+#   - `full`: detailed node metrics, a one-processor flow around `sampler`,
+#     and a pass-through filter that emits processor compute duration.
 #   - `partial`: only `sampler` opts into node item and size measurements.
-#   - `no_output`: a filter drops every log batch and ACKs without sending.
+#   - `no_output`: a filter opts into component duration and drops every log
+#     batch without sending.
 # Distinguish them by the `pipeline.id` attribute on each metric set.
 #
 # The traffic generator emits a mix of all three signals (logs, metrics,
@@ -18,8 +20,12 @@
 #   - the pipeline sets `telemetry.runtime_metrics: detailed`, or
 #   - the node sets `policies.telemetry.item_counts: true` and/or
 #     `policies.telemetry.size: true`.
-# Per-node opt-ins still require `runtime_metrics: normal` or higher because
-# these measurements extend the input/output metric sets.
+# Component-owned duration has the same global/per-node model:
+#   - `runtime_metrics: detailed` enables it for every component, or
+#   - `policies.telemetry.duration: true` enables it for one node.
+# Per-node item and size opt-ins still require `runtime_metrics: normal` or
+# higher because these measurements extend the input/output metric sets.
+# Component duration can be enabled independently at any runtime metric level.
 #
 # The `full` pipeline lets you compare the sampler's terminal node outcomes
 # against forward-path measurements for the same processor range:
@@ -30,6 +36,7 @@
 #   flow.output.{messages,items,size} {signal}
 #   flow.compute.duration {signal}
 #   flow.dropped.items {signal}
+#   processor.compute.duration {outcome}
 #
 # What to look for:
 #   - In `full`, every node reports per-signal items and size. In `partial`,
@@ -43,10 +50,14 @@
 #     (sampling only targets logs). This shows the per-signal accounting
 #     isolating the affected signal.
 #   - noop `node.input.*` reflects the surviving per-signal volume.
+#   - `duration_probe` emits `processor.compute.duration` because detailed
+#     runtime metrics enable component duration globally.
 #   - In `no_output`, the receiver, filter input, flow input, flow compute, and
 #     flow dropped metrics are present. Filter `node.output.*`,
 #     `flow.output.*`, and noop `node.input.*` are absent because no PData
-#     message is sent.
+#     message is sent. `processor.compute.duration` is present because the
+#     filter opts in, while `node.input.duration` is absent because terminal
+#     node duration still requires `runtime_metrics: detailed`.
 #
 # Run with:
 #   cargo run -- --config configs/trafficgen-input-output-metrics.yaml
@@ -154,6 +165,10 @@ groups:
                   emit: 1
                   out_of: 3
 
+          duration_probe:
+            type: processor:filter
+            config: {}
+
           noop:
             type: exporter:noop
             config:
@@ -162,6 +177,8 @@ groups:
           - from: receiver
             to: sampler
           - from: sampler
+            to: duration_probe
+          - from: duration_probe
             to: noop
 
       # Same topology, but only the sampler opts into items and size. The
@@ -213,8 +230,8 @@ groups:
           - from: sampler
             to: noop
 
-      # Every generated log is dropped. This exercises a processor that ACKs
-      # its input without sending an output message.
+      # Every generated log is dropped. This exercises a processor that opts
+      # into component duration and ACKs without sending an output message.
       no_output:
         policies:
           channel_capacity:
@@ -223,7 +240,7 @@ groups:
               pipeline: 100
             pdata: 128
           telemetry:
-            runtime_metrics: detailed
+            runtime_metrics: normal
             flow_metrics:
               - id: drop_all
                 bounds:
@@ -253,6 +270,11 @@ groups:
 
           drop_all:
             type: processor:filter
+            policies:
+              telemetry:
+                duration: true
+                item_counts: true
+                size: true
             config:
               logs:
                 include:

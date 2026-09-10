@@ -51,9 +51,11 @@ use crate::node::NodeId;
 use crate::output_router::OutputRouter;
 use crate::process_duration::ComputeDuration;
 use crate::processor::ProcessorRuntimeRequirements;
+use crate::runtime_services::{CodecEffectHandler, PipelineRuntimeServices};
 use crate::{WakeupError, WakeupSetOutcome};
 use async_trait::async_trait;
 use otel_arrow_dfe_config::{PortName, SignalType};
+use otel_arrow_dfe_pdata_codec::CodecService;
 use otel_arrow_dfe_telemetry::common_attributes::SignalAttributes;
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
 use otel_arrow_dfe_telemetry::instrument::HistogramNormal;
@@ -140,15 +142,17 @@ pub struct EffectHandler<PData> {
 
 /// Implementation for the `!Send` effect handler.
 impl<PData> EffectHandler<PData> {
-    /// Creates a new local (!Send) `EffectHandler` with the given processor name.
+    /// Creates a new local (!Send) `EffectHandler` with the given processor configuration and
+    /// pipeline runtime services.
     #[must_use]
     pub fn new(
         node_id: NodeId,
         msg_senders: HashMap<PortName, Sender<PData>>,
         default_port: Option<PortName>,
         metrics_reporter: MetricsReporter,
+        runtime_services: PipelineRuntimeServices,
     ) -> Self {
-        let core = EffectHandlerCore::new(node_id.clone(), metrics_reporter);
+        let core = EffectHandlerCore::new(node_id.clone(), metrics_reporter, runtime_services);
         let router = OutputRouter::new(node_id, msg_senders, default_port);
         EffectHandler {
             core,
@@ -631,8 +635,7 @@ impl<PData> EffectHandler<PData> {
     /// precomputed interests. FlowMetric participation is automatic via
     /// the engine's `Instant`-marker timing in `process()` and does not
     /// require `timed()`. This method exists solely to provide the
-    /// success/failed outcome split for the
-    /// `processor.compute.{success,failed}.duration` metric.
+    /// outcome split for the `processor.compute.duration` metric.
     ///
     /// The closure-based API structurally prevents timing from
     /// spanning `.await` points.
@@ -825,6 +828,12 @@ impl<PData> EffectHandler<PData> {
     // More methods will be added in the future as needed.
 }
 
+impl<PData> CodecEffectHandler for EffectHandler<PData> {
+    fn codec_service(&self) -> &CodecService {
+        self.core.runtime_services.codecs()
+    }
+}
+
 impl<PData> crate::processor::FlowMetricEffectHandler for EffectHandler<PData> {
     #[inline]
     fn is_flow_start(&self) -> bool {
@@ -992,7 +1001,13 @@ mod tests {
         let _ = senders.insert("b".into(), Sender::Local(LocalSender::mpsc(b_tx)));
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
+        let eh = EffectHandler::new(
+            test_node("proc"),
+            senders,
+            None,
+            metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
+        );
         eh.send_message_to("b", 42).await.unwrap();
 
         // Ensure only 'b' received
@@ -1011,7 +1026,13 @@ mod tests {
         let _ = senders.insert("only".into(), Sender::Local(LocalSender::mpsc(tx)));
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
+        let eh = EffectHandler::new(
+            test_node("proc"),
+            senders,
+            None,
+            metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
+        );
 
         eh.send_message(7).await.unwrap();
         assert_eq!(rx.recv().await.unwrap(), 7);
@@ -1032,6 +1053,7 @@ mod tests {
             senders,
             Some("a".into()),
             metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
         );
 
         eh.send_message(11).await.unwrap();
@@ -1053,8 +1075,13 @@ mod tests {
     #[test]
     fn effect_handler_set_wakeup_without_runtime_support_returns_unsupported() {
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh =
-            EffectHandler::<u64>::new(test_node("proc"), HashMap::new(), None, metrics_reporter);
+        let eh = EffectHandler::<u64>::new(
+            test_node("proc"),
+            HashMap::new(),
+            None,
+            metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
+        );
 
         assert_eq!(
             eh.set_wakeup(WakeupSlot(0), Instant::now()),
@@ -1073,7 +1100,13 @@ mod tests {
         let _ = senders.insert("b".into(), Sender::Local(LocalSender::mpsc(b_tx)));
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
+        let eh = EffectHandler::new(
+            test_node("proc"),
+            senders,
+            None,
+            metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
+        );
 
         let res = eh.send_message(5).await;
         assert!(res.is_err());
@@ -1101,7 +1134,13 @@ mod tests {
         let _ = senders.insert("b".into(), Sender::Local(LocalSender::mpsc(b_tx)));
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
+        let eh = EffectHandler::new(
+            test_node("proc"),
+            senders,
+            None,
+            metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
+        );
 
         let ports: HashSet<_> = eh.connected_ports().into_iter().collect();
         let expected: HashSet<_> = [Cow::from("a"), Cow::from("b")].into_iter().collect();
@@ -1120,6 +1159,7 @@ mod tests {
             senders,
             Some("out".into()),
             metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
         );
 
         // Should succeed when channel has capacity
@@ -1140,6 +1180,7 @@ mod tests {
             senders,
             Some("out".into()),
             metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
         );
 
         // First send should succeed
@@ -1164,7 +1205,13 @@ mod tests {
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         // No default port specified with multiple ports = ambiguous
-        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
+        let eh = EffectHandler::new(
+            test_node("proc"),
+            senders,
+            None,
+            metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
+        );
 
         // Should return configuration error when no default sender
         let result = eh.try_send_message(99);
@@ -1181,7 +1228,13 @@ mod tests {
         let _ = senders.insert("b".into(), Sender::Local(LocalSender::mpsc(b_tx)));
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
+        let eh = EffectHandler::new(
+            test_node("proc"),
+            senders,
+            None,
+            metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
+        );
 
         // Should succeed when sending to a specific port
         assert!(eh.try_send_message_to("b", 42).is_ok());
@@ -1197,7 +1250,13 @@ mod tests {
         let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx)));
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
+        let eh = EffectHandler::new(
+            test_node("proc"),
+            senders,
+            None,
+            metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
+        );
 
         // First send should succeed
         assert!(eh.try_send_message_to("out", 1).is_ok());
@@ -1216,7 +1275,13 @@ mod tests {
         let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx)));
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
+        let eh = EffectHandler::new(
+            test_node("proc"),
+            senders,
+            None,
+            metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
+        );
 
         // Should return error for unknown port
         let result = eh.try_send_message_to("unknown", 99);
@@ -1236,6 +1301,7 @@ mod tests {
             HashMap::new(),
             None,
             metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
         );
         eh.set_pipeline_completion_msg_sender(completion_tx);
         eh.core
@@ -1269,6 +1335,7 @@ mod tests {
             HashMap::new(),
             None,
             metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
         );
         eh.set_pipeline_completion_msg_sender(completion_tx);
         eh.core
@@ -1302,6 +1369,7 @@ mod tests {
             HashMap::new(),
             None,
             metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
         );
         eh.set_pipeline_completion_msg_sender(completion_tx);
         eh.core
@@ -1360,6 +1428,7 @@ mod tests {
             HashMap::new(),
             None,
             metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
         );
         eh.set_flow_roles(
             true,
@@ -1461,8 +1530,13 @@ mod tests {
     #[test]
     fn flow_metric_marker_accumulates_after_begin_process_timing() {
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let mut eh =
-            EffectHandler::<u64>::new(test_node("proc"), HashMap::new(), None, metrics_reporter);
+        let mut eh = EffectHandler::<u64>::new(
+            test_node("proc"),
+            HashMap::new(),
+            None,
+            metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
+        );
         eh.set_flow_roles(
             true, false, None, None, None, None, None, None, None, None, true, true,
         );
@@ -1498,8 +1572,13 @@ mod tests {
         let output_messages = FlowOutputMessageMetrics::register(&registrar);
         let output_size = FlowOutputSizeMetrics::register(&registrar);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(16);
-        let mut handler =
-            EffectHandler::<u64>::new(test_node("proc"), HashMap::new(), None, metrics_reporter);
+        let mut handler = EffectHandler::<u64>::new(
+            test_node("proc"),
+            HashMap::new(),
+            None,
+            metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
+        );
         handler.set_flow_roles(
             true,
             true,
@@ -1566,8 +1645,13 @@ mod tests {
     #[test]
     fn flow_metric_marker_returns_zero_when_unarmed() {
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let mut eh =
-            EffectHandler::<u64>::new(test_node("proc"), HashMap::new(), None, metrics_reporter);
+        let mut eh = EffectHandler::<u64>::new(
+            test_node("proc"),
+            HashMap::new(),
+            None,
+            metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
+        );
         eh.set_flow_roles(
             true, false, None, None, None, None, None, None, None, None, true, true,
         );
@@ -1579,8 +1663,13 @@ mod tests {
     #[test]
     fn flow_metric_marker_not_armed_when_timing_disabled() {
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let mut eh =
-            EffectHandler::<u64>::new(test_node("proc"), HashMap::new(), None, metrics_reporter);
+        let mut eh = EffectHandler::<u64>::new(
+            test_node("proc"),
+            HashMap::new(),
+            None,
+            metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
+        );
         // active = true, needs_timing = false.
         eh.set_flow_roles(
             true, false, None, None, None, None, None, None, None, None, true, false,
