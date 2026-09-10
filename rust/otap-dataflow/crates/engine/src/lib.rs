@@ -349,35 +349,35 @@ pub struct Interests: u16 {
     /// Return data
     const RETURN_DATA = 1 << 2;
 
-    /// Entry-timestamp should be recorded for detailed metrics.
-    const ENTRY_TIMESTAMP = 1 << 3;
+    /// Collect node completion duration through terminal Ack/Nack unwinding.
+    const NODE_COMPLETION_DURATION = 1 << 3;
 
-    /// Consumer metrics will be instrumented by recording the route
-    /// and optional timing.
-    const CONSUMER_METRICS = 1 << 4;
+    /// Instrument the node input metric family.
+    const NODE_INPUT_METRICS = 1 << 4;
 
-    /// Producer metrics will be instrumented by recording the route
-    /// and optional timing.
-    const PRODUCER_METRICS = 1 << 5;
+    /// Instrument the node output metric family.
+    const NODE_OUTPUT_METRICS = 1 << 5;
 
     /// Source-tagging requested. A frame with no other interests may be inserted.
     const SOURCE_TAGGING = 1 << 6;
 
-    /// Per-signal produced/consumed item counts requested. Opt-in (counting
-    /// items is expensive for OTLP payloads): enabled at the `Detailed` metric
-    /// level, or per node via `policies.telemetry.item_counts`.
-    const PRODUCED_CONSUMED_ITEM_COUNTS = 1 << 8;
+    /// Collect item counts for telemetry associated with this node. This feeds
+    /// engine-owned node input/output metrics and node-implemented metrics that
+    /// report item counts. Opt-in because counting OTLP items is expensive.
+    const NODE_ITEM_COUNTS = 1 << 8;
 
-    /// Per-signal produced/consumed logical payload size requested. Enabled at
-    /// the `Detailed` metric level, or per node via `policies.telemetry.size`.
-    const PRODUCED_CONSUMED_SIZE = 1 << 9;
+    /// Collect size measurements for telemetry associated with this node. This
+    /// feeds engine-owned logical PData size and node-implemented boundary
+    /// payload size metrics, each using the semantics of its metric contract.
+    const NODE_SIZE = 1 << 9;
 
-    /// Component-owned duration timing requested. Enabled at the `Detailed`
-    /// metric level, or per node via `policies.telemetry.duration`.
-    const COMPONENT_DURATION = 1 << 7;
+    /// Collect node-implemented local duration measurements. Engine-owned node
+    /// and flow timing is controlled separately by the pipeline metric
+    /// interests and `NODE_COMPLETION_DURATION`.
+    const NODE_LOCAL_DURATION = 1 << 7;
 
-    /// Pipeline-metrics is either CONSUMER_METRICS or PRODUCER_METRICS.
-    const PIPELINE_METRICS = Self::CONSUMER_METRICS.bits() | Self::PRODUCER_METRICS.bits();
+    /// Node metrics include either the input or output metric family.
+    const NODE_METRICS = Self::NODE_INPUT_METRICS.bits() | Self::NODE_OUTPUT_METRICS.bits();
 }
 }
 
@@ -386,21 +386,21 @@ impl Interests {
     ///
     /// None:     empty()
     /// Basic:    empty() with only channel metrics, no use of Context
-    /// Normal:   CONSUMER_METRICS | PRODUCER_METRICS
-    /// Detailed: CONSUMER_METRICS | PRODUCER_METRICS | ENTRY_TIMESTAMP
-    ///           | PRODUCED_CONSUMED_ITEM_COUNTS
-    ///           | PRODUCED_CONSUMED_SIZE | COMPONENT_DURATION
+    /// Normal:   NODE_INPUT_METRICS | NODE_OUTPUT_METRICS
+    /// Detailed: NODE_INPUT_METRICS | NODE_OUTPUT_METRICS
+    ///           | NODE_COMPLETION_DURATION | NODE_ITEM_COUNTS
+    ///           | NODE_SIZE | NODE_LOCAL_DURATION
     #[must_use]
     pub fn from_metric_level(level: MetricLevel) -> Self {
         match level {
             MetricLevel::None | MetricLevel::Basic => Self::empty(),
-            MetricLevel::Normal => Self::PIPELINE_METRICS,
+            MetricLevel::Normal => Self::NODE_METRICS,
             MetricLevel::Detailed => {
-                Self::PIPELINE_METRICS
-                    | Self::ENTRY_TIMESTAMP
-                    | Self::PRODUCED_CONSUMED_ITEM_COUNTS
-                    | Self::PRODUCED_CONSUMED_SIZE
-                    | Self::COMPONENT_DURATION
+                Self::NODE_METRICS
+                    | Self::NODE_COMPLETION_DURATION
+                    | Self::NODE_ITEM_COUNTS
+                    | Self::NODE_SIZE
+                    | Self::NODE_LOCAL_DURATION
             }
         }
     }
@@ -415,14 +415,20 @@ impl Interests {
             .as_ref()
             .and_then(|policies| policies.telemetry.as_ref())
         {
+            if telemetry.messages {
+                interests |= Self::NODE_METRICS;
+            }
+            if telemetry.completion_duration {
+                interests |= Self::NODE_COMPLETION_DURATION;
+            }
             if telemetry.item_counts {
-                interests |= Self::PRODUCED_CONSUMED_ITEM_COUNTS;
+                interests |= Self::NODE_ITEM_COUNTS;
             }
             if telemetry.size {
-                interests |= Self::PRODUCED_CONSUMED_SIZE;
+                interests |= Self::NODE_SIZE;
             }
             if telemetry.duration {
-                interests |= Self::COMPONENT_DURATION;
+                interests |= Self::NODE_LOCAL_DURATION;
             }
         }
         interests
@@ -499,15 +505,15 @@ impl processor::FlowMetricHook for String {}
 /// Trait for setting exit information in the Context, for PData consumers.
 pub trait StampOutputPort {
     /// Called automatically when a PData message is sent on an output channel.
-    fn stamp_output_port_index(&mut self, index: u16);
+    fn stamp_output_port_index(&mut self, node_id: usize, index: u16);
 }
 
 impl StampOutputPort for () {
-    fn stamp_output_port_index(&mut self, _index: u16) {}
+    fn stamp_output_port_index(&mut self, _node_id: usize, _index: u16) {}
 }
 
 impl StampOutputPort for String {
-    fn stamp_output_port_index(&mut self, _index: u16) {}
+    fn stamp_output_port_index(&mut self, _node_id: usize, _index: u16) {}
 }
 
 /// Trait for forward-path flow_metric compute accumulation on PData.
@@ -2700,18 +2706,22 @@ mod test {
     use std::time::Duration;
 
     /// Scenario: runtime metric levels resolve optional data-path measurements.
-    /// Guarantees: detailed metrics enable component duration, item counts, and size while normal metrics enable none by default.
+    /// Guarantees: detailed metrics enable node duration, item counts, and size while normal metrics enable none by default.
     #[test]
     fn detailed_runtime_metrics_enable_optional_data_path_measurements() {
         let normal = Interests::from_metric_level(MetricLevel::Normal);
-        assert!(!normal.contains(Interests::COMPONENT_DURATION));
-        assert!(!normal.contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS));
-        assert!(!normal.contains(Interests::PRODUCED_CONSUMED_SIZE));
+        assert!(normal.contains(Interests::NODE_METRICS));
+        assert!(!normal.contains(Interests::NODE_COMPLETION_DURATION));
+        assert!(!normal.contains(Interests::NODE_LOCAL_DURATION));
+        assert!(!normal.contains(Interests::NODE_ITEM_COUNTS));
+        assert!(!normal.contains(Interests::NODE_SIZE));
 
         let detailed = Interests::from_metric_level(MetricLevel::Detailed);
-        assert!(detailed.contains(Interests::COMPONENT_DURATION));
-        assert!(detailed.contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS));
-        assert!(detailed.contains(Interests::PRODUCED_CONSUMED_SIZE));
+        assert!(detailed.contains(Interests::NODE_METRICS));
+        assert!(detailed.contains(Interests::NODE_COMPLETION_DURATION));
+        assert!(detailed.contains(Interests::NODE_LOCAL_DURATION));
+        assert!(detailed.contains(Interests::NODE_ITEM_COUNTS));
+        assert!(detailed.contains(Interests::NODE_SIZE));
     }
 
     /// Scenario: One node opts into optional measurements below the detailed metric level.
@@ -2721,6 +2731,8 @@ mod test {
         let mut node_config = NodeUserConfig::new_exporter_config("console");
         node_config.policies = Some(otel_arrow_dfe_config::node::NodePolicies {
             telemetry: Some(otel_arrow_dfe_config::node::NodeTelemetryPolicy {
+                messages: true,
+                completion_duration: true,
                 duration: true,
                 item_counts: true,
                 size: true,
@@ -2728,19 +2740,22 @@ mod test {
         });
 
         let interests = Interests::for_node(MetricLevel::Normal, &node_config);
-        assert!(interests.contains(Interests::PIPELINE_METRICS));
-        assert!(interests.contains(Interests::COMPONENT_DURATION));
-        assert!(interests.contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS));
-        assert!(interests.contains(Interests::PRODUCED_CONSUMED_SIZE));
+        assert!(interests.contains(Interests::NODE_METRICS));
+        assert!(interests.contains(Interests::NODE_COMPLETION_DURATION));
+        assert!(interests.contains(Interests::NODE_LOCAL_DURATION));
+        assert!(interests.contains(Interests::NODE_ITEM_COUNTS));
+        assert!(interests.contains(Interests::NODE_SIZE));
     }
 
-    /// Scenario: One node opts into optional component measurements at the basic metric level.
-    /// Guarantees: Component interests are enabled without enabling engine-owned node input or output metric sets.
+    /// Scenario: One node opts into optional telemetry measurements at the basic metric level.
+    /// Guarantees: all node telemetry interests, including message metrics, can be enabled below their default levels.
     #[test]
-    fn node_telemetry_policy_enables_component_interests_at_basic_level() {
+    fn node_telemetry_policy_enables_interests_at_basic_level() {
         let mut node_config = NodeUserConfig::new_exporter_config("console");
         node_config.policies = Some(otel_arrow_dfe_config::node::NodePolicies {
             telemetry: Some(otel_arrow_dfe_config::node::NodeTelemetryPolicy {
+                messages: true,
+                completion_duration: true,
                 duration: true,
                 item_counts: true,
                 size: true,
@@ -2748,10 +2763,11 @@ mod test {
         });
 
         let interests = Interests::for_node(MetricLevel::Basic, &node_config);
-        assert!(!interests.intersects(Interests::PIPELINE_METRICS));
-        assert!(interests.contains(Interests::COMPONENT_DURATION));
-        assert!(interests.contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS));
-        assert!(interests.contains(Interests::PRODUCED_CONSUMED_SIZE));
+        assert!(interests.contains(Interests::NODE_METRICS));
+        assert!(interests.contains(Interests::NODE_COMPLETION_DURATION));
+        assert!(interests.contains(Interests::NODE_LOCAL_DURATION));
+        assert!(interests.contains(Interests::NODE_ITEM_COUNTS));
+        assert!(interests.contains(Interests::NODE_SIZE));
     }
 
     fn admission_policy(unit: RateLimitUnit) -> RateLimiterPolicy {
@@ -2850,6 +2866,10 @@ mod test {
     #[test]
     fn test_interests() {
         assert_eq!(Interests::ACKS | Interests::NACKS, Interests::ACKS_OR_NACKS);
+        assert_eq!(
+            Interests::NODE_INPUT_METRICS | Interests::NODE_OUTPUT_METRICS,
+            Interests::NODE_METRICS
+        );
     }
 
     // -- resolve_capture_policy tests -----------------------------------------

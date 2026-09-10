@@ -146,9 +146,9 @@ impl ReceiverMetrics {
     #[must_use]
     pub fn processing(&self) -> ReceiverProcessing {
         ReceiverProcessing {
-            measure_duration: self.interests.contains(Interests::COMPONENT_DURATION),
+            measure_duration: self.interests.contains(Interests::NODE_LOCAL_DURATION),
             payload_size: None,
-            accepts_payload_size: self.interests.contains(Interests::PRODUCED_CONSUMED_SIZE),
+            accepts_payload_size: self.interests.contains(Interests::NODE_SIZE),
         }
     }
 
@@ -166,7 +166,9 @@ impl ReceiverMetrics {
             signal,
             outcome: completed.outcome,
         };
-        self.received.with(attributes).record();
+        if self.interests.contains(Interests::NODE_OUTPUT_METRICS) {
+            self.received.with(attributes).record();
+        }
         if let Some(payload_size) = completed.payload_size {
             self.payload.with(attributes).record(payload_size);
         }
@@ -248,14 +250,14 @@ impl ReceiverProcessing {
     }
 }
 
-/// Individual component-local delivery attempts from an exporter.
+/// Individual node-local delivery attempts from an exporter.
 #[metric_set(
     name = "exporter.attempted",
     measurement_attributes = SignalOutcomeAttributes
 )]
 #[derive(Debug, Default, Clone)]
 struct ExporterAttemptedMetrics {
-    /// Number of component-local delivery attempts.
+    /// Number of node-local delivery attempts.
     ///
     /// Retries count again. This differs from `node.input.messages`, which
     /// counts PData messages entering the exporter.
@@ -331,7 +333,7 @@ impl ExporterAttemptedItemsMetrics {
     }
 }
 
-/// Prepared instrumentation for one component-local exporter attempt.
+/// Prepared instrumentation for one node-local exporter attempt.
 #[derive(Debug)]
 pub struct ExporterAttempt {
     signal: SignalType,
@@ -377,21 +379,19 @@ impl ExporterMetrics {
         }
     }
 
-    /// Starts instrumentation for one component-local exporter attempt.
+    /// Starts instrumentation for one node-local exporter attempt.
     #[must_use]
     pub fn attempt(&self, signal: SignalType) -> ExporterAttempt {
         ExporterAttempt {
             signal,
             started_at: self
                 .interests
-                .contains(Interests::COMPONENT_DURATION)
+                .contains(Interests::NODE_LOCAL_DURATION)
                 .then(Instant::now),
             items: None,
-            accepts_item_count: self
-                .interests
-                .contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS),
+            accepts_item_count: self.interests.contains(Interests::NODE_ITEM_COUNTS),
             payload_size: None,
-            accepts_payload_size: self.interests.contains(Interests::PRODUCED_CONSUMED_SIZE),
+            accepts_payload_size: self.interests.contains(Interests::NODE_SIZE),
         }
     }
 
@@ -401,7 +401,9 @@ impl ExporterMetrics {
             signal: completed.signal,
             outcome: completed.outcome,
         };
-        self.attempted.with(attributes).record();
+        if self.interests.contains(Interests::NODE_INPUT_METRICS) {
+            self.attempted.with(attributes).record();
+        }
         if let Some(duration) = completed.duration {
             self.duration.with(attributes).record(duration);
         }
@@ -496,7 +498,7 @@ impl ExporterAttempt {
 /// Completed export operations.
 ///
 /// This set will be deprecated after exporters migrate to
-/// the shared exporter attempt metrics and node-consumer terminal accounting.
+/// the shared exporter attempt metrics and node-input terminal accounting.
 #[metric_set(
     name = "exporter.exports",
     measurement_attributes = SignalOutcomeAttributes
@@ -836,8 +838,8 @@ mod tests {
         );
     }
 
-    /// Scenario: Optional exporter measurements are disabled for one node.
-    /// Guarantees: Item inspection, clock timing, and payload-size snapshots are skipped while the attempt message is recorded.
+    /// Scenario: all exporter measurements are disabled for one node.
+    /// Guarantees: item inspection, message counting, clock timing, and payload-size snapshots are skipped.
     #[tokio::test]
     async fn exporter_helper_skips_disabled_optional_measurements() {
         let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::empty());
@@ -863,25 +865,17 @@ mod tests {
 
         assert!(!item_count_called.get());
         assert!(!payload_size_called.get());
-        let snapshots = metrics.terminal_snapshots();
-        assert_eq!(snapshots.len(), 1);
-        assert_eq!(snapshots[0].descriptor().name, "exporter.attempted");
-        assert!(
-            snapshots[0]
-                .descriptor()
-                .metrics
-                .iter()
-                .any(|metric| metric.name == "messages")
-        );
+        assert!(metrics.terminal_snapshots().is_empty());
     }
 
     /// Scenario: All optional exporter measurements are enabled for one node.
     /// Guarantees: One attempt records duration, encoded payload size, and lazily counted items under the same signal and outcome.
     #[tokio::test]
     async fn exporter_helper_records_enabled_optional_measurements() {
-        let interests = Interests::COMPONENT_DURATION
-            | Interests::PRODUCED_CONSUMED_ITEM_COUNTS
-            | Interests::PRODUCED_CONSUMED_SIZE;
+        let interests = Interests::NODE_INPUT_METRICS
+            | Interests::NODE_LOCAL_DURATION
+            | Interests::NODE_ITEM_COUNTS
+            | Interests::NODE_SIZE;
         let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(interests);
         let mut metrics = ExporterMetrics::register(&pipeline_ctx);
         let item_count_called = Cell::new(false);
@@ -921,8 +915,8 @@ mod tests {
         }
     }
 
-    /// Scenario: Optional receiver measurements are disabled for one node.
-    /// Guarantees: Terminal message accounting emits without a duration or zero-valued payload-size snapshot.
+    /// Scenario: all receiver measurements are disabled for one node.
+    /// Guarantees: message counting, clock timing, and payload-size snapshots are skipped.
     #[test]
     fn receiver_helper_skips_disabled_optional_measurements() {
         let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::empty());
@@ -939,23 +933,15 @@ mod tests {
         metrics.record(completed).expect("processing succeeds");
 
         assert!(!payload_size_called.get());
-        let snapshots = metrics.terminal_snapshots();
-        assert_eq!(snapshots.len(), 1);
-        assert_eq!(snapshots[0].descriptor().name, "receiver.received");
-        assert!(
-            snapshots[0]
-                .descriptor()
-                .metrics
-                .iter()
-                .any(|metric| metric.name == "messages")
-        );
+        assert!(metrics.terminal_snapshots().is_empty());
     }
 
     /// Scenario: Receiver duration and payload-size measurements are enabled for one node.
     /// Guarantees: Processing and terminal received metrics remain separate and preserve their intended attributes.
     #[test]
     fn receiver_helper_records_enabled_optional_measurements() {
-        let interests = Interests::COMPONENT_DURATION | Interests::PRODUCED_CONSUMED_SIZE;
+        let interests =
+            Interests::NODE_OUTPUT_METRICS | Interests::NODE_LOCAL_DURATION | Interests::NODE_SIZE;
         let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(interests);
         let mut metrics = ReceiverMetrics::register(&pipeline_ctx);
         let payload_size_called = Cell::new(false);
@@ -995,7 +981,8 @@ mod tests {
     /// Guarantees: The received message and processing duration are recorded without a synthetic zero-byte payload observation.
     #[test]
     fn receiver_helper_omits_unavailable_payload_size() {
-        let interests = Interests::COMPONENT_DURATION | Interests::PRODUCED_CONSUMED_SIZE;
+        let interests =
+            Interests::NODE_OUTPUT_METRICS | Interests::NODE_LOCAL_DURATION | Interests::NODE_SIZE;
         let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(interests);
         let mut metrics = ReceiverMetrics::register(&pipeline_ctx);
 
@@ -1046,7 +1033,8 @@ mod tests {
     /// Guarantees: The error and optional measurements are recorded with the refused outcome.
     #[test]
     fn receiver_helper_records_explicit_refused_outcome() {
-        let interests = Interests::COMPONENT_DURATION | Interests::PRODUCED_CONSUMED_SIZE;
+        let interests =
+            Interests::NODE_OUTPUT_METRICS | Interests::NODE_LOCAL_DURATION | Interests::NODE_SIZE;
         let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(interests);
         let mut metrics = ReceiverMetrics::register(&pipeline_ctx);
 
@@ -1072,7 +1060,7 @@ mod tests {
     /// Guarantees: The original error is returned and the attempt is recorded as refused.
     #[tokio::test]
     async fn exporter_helper_records_explicit_refused_outcome() {
-        let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::empty());
+        let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::NODE_INPUT_METRICS);
         let mut metrics = ExporterMetrics::register(&pipeline_ctx);
 
         let completed = metrics
@@ -1105,7 +1093,7 @@ mod tests {
     /// Guarantees: The discarded refusal cannot classify the returned fallback error as refused.
     #[tokio::test]
     async fn exporter_helper_keeps_outcome_attached_to_returned_error() {
-        let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::empty());
+        let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::NODE_INPUT_METRICS);
         let mut metrics = ExporterMetrics::register(&pipeline_ctx);
 
         let completed = metrics
