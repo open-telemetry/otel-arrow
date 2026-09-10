@@ -2,4 +2,4 @@ change_type: enhancement
 component: engine
 note: Preserve original transport-header names only when a consumer requires. Use a hash lookup instead of linear scan for transport header capture matches.
 issues: [3919]
-subtext:
+subtext: Reduce allocation overhead for configured transport-header capture and propagation policies.
