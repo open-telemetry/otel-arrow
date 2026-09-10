@@ -175,6 +175,10 @@ impl<T: Sized> From<TypedError<T>> for Error {
 /// All errors that can occur in the pipeline engine infrastructure.
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
+    /// The linked pdata codec registry is invalid.
+    #[error("PData codec initialization failed: {0}")]
+    PdataCodecRegistry(#[from] otel_arrow_dfe_pdata_codec::RegistryError),
+
     /// A wrapper for the config errors.
     #[error("A config error occurred: {0}")]
     ConfigError(#[from] Box<otel_arrow_dfe_config::error::Error>),
@@ -601,6 +605,7 @@ impl Error {
     #[must_use]
     pub fn variant_name(&self) -> String {
         match self {
+            Error::PdataCodecRegistry(_) => "PdataCodecRegistry",
             Error::ChannelRecvError(_) => "ChannelRecvError",
             Error::ChannelSendError { .. } => "ChannelSendError",
             Error::ConfigError(_) => "ConfigError",
