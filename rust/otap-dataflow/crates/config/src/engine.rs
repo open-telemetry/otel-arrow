@@ -928,6 +928,8 @@ groups: {}
         let _config = OtelDataflowSpec::from_yaml(yaml).expect("ITS metrics config should parse");
     }
 
+    /// Scenario: an observability pipeline declares an extension and binds its capability.
+    /// Guarantees: parsing and conversion retain the pipeline-scoped extension.
     #[test]
     fn from_yaml_accepts_observability_pipeline_extensions_and_capability_bindings() {
         let yaml = r#"
@@ -948,7 +950,7 @@ engine:
             grpc_endpoint: "https://example.com:4317"
       extensions:
         auth:
-          type: "extension:azure_identity_auth"
+          type: "urn:microsoft:extension:azure_identity_auth"
           config:
             method: managed_identity
             scope: "https://example.com/.default"
@@ -966,6 +968,8 @@ groups: {}
         assert!(pipeline.extensions().contains_key("auth"));
     }
 
+    /// Scenario: a regular pipeline binds an extension declared by the observability pipeline.
+    /// Guarantees: validation rejects cross-pipeline capability binding.
     #[test]
     fn from_yaml_does_not_expose_observability_extensions_to_regular_pipelines() {
         let yaml = r#"
@@ -975,7 +979,7 @@ engine:
     pipeline:
       extensions:
         auth:
-          type: "extension:azure_identity_auth"
+          type: "urn:microsoft:extension:azure_identity_auth"
           config: {}
 groups:
   default:
