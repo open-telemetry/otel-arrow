@@ -1178,6 +1178,7 @@ mod config_tests {
                 None,
                 runtime_tx,
                 metrics_reporter,
+                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
             ),
             rx,
         )

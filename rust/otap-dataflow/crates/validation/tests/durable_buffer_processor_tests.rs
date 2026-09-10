@@ -883,6 +883,8 @@ where
 /// This makes recovery data-driven and removes the cross-thread race between
 /// detecting NACKs and the retry processor's elapsed-time budget -- see issue
 /// #2720 for the same race observed in core-node liveness tests.
+/// Scenario: the downstream exporter transiently Nacks buffered data before recovering.
+/// Guarantees: the durable buffer retries and eventually delivers all admitted data.
 #[test]
 fn test_durable_buffer_retries_on_nack() {
     let temp_dir = tempdir().expect("failed to create temp dir");
@@ -1028,6 +1030,9 @@ fn test_durable_buffer_retries_on_nack() {
 /// - Data gets persisted to Quiver segments
 /// - Run 2 recovers and delivers all persisted data plus new data
 /// - Exact count verification ensures no data loss or duplication
+///
+/// Scenario: the downstream exporter is unavailable and later resumes accepting data.
+/// Guarantees: buffered data survives the outage and is delivered after recovery.
 #[test]
 fn test_durable_buffer_recovery_after_outage() {
     let temp_dir = tempdir().expect("failed to create temp dir");
@@ -1129,6 +1134,8 @@ fn test_durable_buffer_recovery_after_outage() {
 /// Verifies that the durable buffer correctly handles mixed signal types
 /// in the same pipeline. Uses traces and logs (not metrics, since pdata metrics
 /// view is not yet implemented - see payload.rs:290).
+/// Scenario: logs, metrics, and traces pass through one durable buffer pipeline.
+/// Guarantees: every signal type is preserved and delivered.
 #[test]
 fn test_durable_buffer_mixed_signal_types() {
     let temp_dir = tempdir().expect("failed to create temp dir");
@@ -1185,6 +1192,8 @@ fn test_durable_buffer_mixed_signal_types() {
 /// - Data flows through correctly and is delivered downstream
 ///
 /// This exercises the OtapRecordBundleAdapter code path in bundle_adapter.rs.
+/// Scenario: OTLP input is configured for conversion to the Arrow representation.
+/// Guarantees: converted data is persisted and delivered successfully.
 #[test]
 fn test_durable_buffer_convert_to_arrow_mode() {
     let temp_dir = tempdir().expect("failed to create temp dir");
@@ -1240,6 +1249,8 @@ fn test_durable_buffer_convert_to_arrow_mode() {
 /// Exercises dictionary unification: trace_id and span_id are
 /// dictionary-encoded with unique values per record, producing different
 /// dictionaries across batches within the same segment.
+/// Scenario: trace context accompanies data converted to the Arrow representation.
+/// Guarantees: conversion preserves the associated trace context.
 #[test]
 fn test_durable_buffer_convert_to_arrow_mode_with_trace_context() {
     init_test_tracing();
@@ -1299,6 +1310,8 @@ fn test_durable_buffer_convert_to_arrow_mode_with_trace_context() {
 /// `scope` struct columns with dictionary children. Verifying
 /// `flush_failures == 0` confirms that dictionary unification handles
 /// these trace-specific columns correctly during segment finalization.
+/// Scenario: trace signals are converted to Arrow before durable persistence.
+/// Guarantees: converted traces are recovered and delivered without loss.
 #[test]
 fn test_durable_buffer_convert_to_arrow_mode_traces() {
     init_test_tracing();
@@ -1358,6 +1371,8 @@ fn test_durable_buffer_convert_to_arrow_mode_traces() {
 /// `NumberDataPoints` and attribute record batches. Verifying
 /// `flush_failures == 0` confirms dictionary unification handles these
 /// metric-specific columns correctly during segment finalization.
+/// Scenario: metric signals are converted to Arrow before durable persistence.
+/// Guarantees: converted metrics are recovered and delivered without loss.
 #[test]
 fn test_durable_buffer_convert_to_arrow_mode_metrics() {
     init_test_tracing();
@@ -1418,6 +1433,8 @@ fn test_durable_buffer_convert_to_arrow_mode_metrics() {
 /// Running all three concurrently stresses the segment accumulator's
 /// ability to handle multiple streams with different schemas and
 /// dictionary patterns within the same segment.
+/// Scenario: mixed signal types are converted to Arrow in one durable buffer.
+/// Guarantees: each converted signal type is recovered and delivered.
 #[test]
 fn test_durable_buffer_convert_to_arrow_mode_mixed_signals() {
     init_test_tracing();
@@ -1482,6 +1499,8 @@ fn test_durable_buffer_convert_to_arrow_mode_mixed_signals() {
 /// This test exercises that path by ensuring the pipeline is actively
 /// processing when shutdown is triggered, then verifying clean termination
 /// and that at least the threshold amount of data was delivered.
+/// Scenario: shutdown begins while the durable buffer still contains admitted data.
+/// Guarantees: graceful shutdown drains the buffered data before completion.
 #[test]
 fn test_durable_buffer_graceful_shutdown_drain() {
     let temp_dir = tempdir().expect("failed to create temp dir");
@@ -1553,6 +1572,8 @@ fn test_durable_buffer_graceful_shutdown_drain() {
 ///
 /// This test generates enough data over a long enough duration to trigger
 /// multiple segment rotations and finalizations.
+/// Scenario: the durable buffer processes a sustained high-volume input stream.
+/// Guarantees: all admitted data is delivered within the test's liveness bound.
 #[test]
 fn test_durable_buffer_high_volume_throughput() {
     let temp_dir = tempdir().expect("failed to create temp dir");
@@ -1630,6 +1651,9 @@ fn test_durable_buffer_high_volume_throughput() {
 ///   2. Item counts are persisted in the segment manifest (write -> round-trip)
 ///   3. Per-signal slot classification works correctly for all three signal types
 ///   4. Recovered item counts flow correctly through the drain path to downstream
+///
+/// Scenario: OTLP signals flow through the durable buffer with item metrics enabled.
+/// Guarantees: exported item-count metrics match the buffered signal contents.
 #[test]
 fn test_durable_buffer_otlp_item_count_metrics() {
     // OTLP pass-through slot IDs (mirrors otlp_slots in bundle_adapter.rs)
@@ -1852,6 +1876,8 @@ fn test_durable_buffer_otlp_item_count_metrics() {
 /// Note: Actually triggering the drop behavior requires filling the retention
 /// buffer which is difficult in unit tests (minimum segment size constraints).
 /// This test validates the configuration path is exercised correctly.
+/// Scenario: a capacity-limited durable buffer uses the drop-oldest policy.
+/// Guarantees: older buffered data is evicted while newer data remains deliverable.
 #[test]
 fn test_durable_buffer_drop_oldest_policy() {
     let temp_dir = tempdir().expect("failed to create temp dir");
@@ -1919,6 +1945,8 @@ fn test_durable_buffer_drop_oldest_policy() {
 /// then atomically flips to ACK mode in the same task that processes inbound
 /// PData. This removes the cross-thread race that previously caused this test
 /// to flake on slow CI (see closed issue #2354).
+/// Scenario: the downstream exporter permanently rejects a buffered item.
+/// Guarantees: the item is rejected without an unbounded retry loop.
 #[test]
 fn test_durable_buffer_permanent_nack_rejects_without_retry() {
     let temp_dir = tempdir().expect("failed to create temp dir");
@@ -2119,6 +2147,8 @@ fn test_durable_buffer_permanent_nack_rejects_without_retry() {
 /// 3. Switch to ACK mode (verify pipeline still delivers data)
 ///
 /// Validates both deferred and permanently rejected bundle-resolution outcomes.
+/// Scenario: buffered data receives both transient and permanent Nacks.
+/// Guarantees: transient failures are retried while permanent failures are rejected.
 #[test]
 fn test_durable_buffer_mixed_transient_and_permanent_nacks() {
     let temp_dir = tempdir().expect("failed to create temp dir");

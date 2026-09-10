@@ -1,0 +1,6 @@
+change_type: breaking
+component: pipeline
+note: "Add shared receiver and exporter boundary metrics, make component duration opt-in, and migrate console exports to exporter.attempted."
+issues: [3822]
+subtext: |
+  Migration: Query `processor.compute.duration` by `outcome` in seconds. Enable optional component measurements with detailed metrics or per-node telemetry policies. Adopt `receiver.received`, `receiver.processing`, and `exporter.attempted` for component boundaries.

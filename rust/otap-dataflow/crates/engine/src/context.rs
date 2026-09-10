@@ -3,6 +3,7 @@
 
 //! Context providing general information on the current controller and the current pipeline.
 
+use crate::Interests;
 use crate::attributes::{
     ChannelImplementation, ChannelKind, ChannelMode, ChannelType, CustomAttributeSet,
     EngineAttributeSet, EngineEntityAttributeSet, ExtensionAttributeSet,
@@ -120,6 +121,7 @@ pub struct PipelineContext {
     node_id: ConfigNodeId,
     node_urn: NodeUrn,
     node_kind: NodeKind,
+    node_interests: Interests,
     node_telemetry_attrs: HashMap<String, TelemetryAttribute>,
     admission: crate::admission::AdmissionBinder,
 
@@ -320,6 +322,7 @@ impl PipelineContext {
             node_id: Default::default(),
             node_urn: Default::default(),
             node_kind: Default::default(),
+            node_interests: Interests::empty(),
             node_telemetry_attrs: HashMap::new(),
             admission: crate::admission::AdmissionBinder::none(),
             pipeline_telemetry_attrs: HashMap::new(),
@@ -736,6 +739,17 @@ impl PipelineContext {
         self.controller_context.telemetry_registry_handle.clone()
     }
 
+    /// Returns the effective telemetry interests for this node.
+    #[must_use]
+    pub const fn node_interests(&self) -> Interests {
+        self.node_interests
+    }
+
+    /// Sets the effective telemetry interests for this node.
+    pub(crate) fn set_node_interests(&mut self, interests: Interests) {
+        self.node_interests = interests;
+    }
+
     /// Returns a new pipeline context with the given node identifiers.
     #[must_use]
     pub fn with_node_context(
@@ -753,6 +767,7 @@ impl PipelineContext {
             node_id,
             node_urn,
             node_kind,
+            node_interests: Interests::empty(),
             node_telemetry_attrs,
             admission: crate::admission::AdmissionBinder::none(),
             internal_telemetry: None,

@@ -1294,6 +1294,7 @@ mod tests {
             senders,
             node_cfg.default_output.clone(),
             metrics_system.reporter(),
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
         let (runtime_ctrl_tx, runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
         let (pipeline_completion_tx, pipeline_completion_rx) = pipeline_completion_msg_channel(10);
@@ -2656,6 +2657,7 @@ mod tests {
             senders,
             node_cfg.default_output.clone(),
             metrics_system.reporter(),
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
         let (runtime_ctrl_tx, runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
         let (pipeline_completion_tx, pipeline_completion_rx) = pipeline_completion_msg_channel(10);

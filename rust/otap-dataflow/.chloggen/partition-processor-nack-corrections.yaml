@@ -1,0 +1,4 @@
+change_type: bug_fix
+component: pipeline
+note: Preserve partition processor Nack payloads for interested upstreams and report transient only when all downstream Nacks are transient.
+issues: [4016]

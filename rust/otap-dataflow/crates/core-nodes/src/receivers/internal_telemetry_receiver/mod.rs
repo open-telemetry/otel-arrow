@@ -390,6 +390,7 @@ mod tests {
             None,
             runtime_ctrl_tx,
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
         let (ctrl_tx, ctrl_rx) = create_not_send_channel::<NodeControlMsg<OtapPdata>>(2);
         let ctrl_channel =
@@ -922,6 +923,7 @@ mod tests {
                 None,
                 runtime_ctrl_tx,
                 metrics_reporter,
+                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
             );
 
             let _error = MetricExporter::process_batch(&effect_handler, &registry, Some(&encoder))
@@ -964,6 +966,7 @@ mod tests {
                 None,
                 runtime_ctrl_tx,
                 metrics_reporter,
+                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
             );
 
             MetricExporter::process_batch(&effect_handler, &registry, None)
@@ -1037,6 +1040,7 @@ mod tests {
                 None,
                 runtime_ctrl_tx,
                 metrics_reporter,
+                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
             );
 
             let (ctrl_tx, ctrl_rx) = create_not_send_channel::<NodeControlMsg<OtapPdata>>(1);
@@ -1118,6 +1122,7 @@ mod tests {
                 None,
                 runtime_ctrl_tx,
                 metrics_reporter,
+                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
             );
 
             let deadline = StdInstant::now() + Duration::from_millis(50);
@@ -1165,6 +1170,7 @@ mod tests {
                 None,
                 runtime_ctrl_tx,
                 metrics_reporter,
+                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
             );
 
             let result = logs
@@ -1238,6 +1244,7 @@ mod tests {
                 None,
                 runtime_ctrl_tx,
                 metrics_reporter,
+                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
             );
 
             let (ctrl_tx, ctrl_rx) = create_not_send_channel::<NodeControlMsg<OtapPdata>>(4);

@@ -68,6 +68,13 @@ for processors and exporters. Receivers have no input, so
 outcome. This is downstream completion latency, not processor compute time;
 use `flow.compute.duration` for compute time across a processor range.
 
+Component-owned duration is also detailed by default. A processor that
+supports local compute timing emits `processor.compute.duration`, grouped by
+`outcome`. Enable component duration globally with `runtime_metrics: detailed`
+or for one node with `policies.telemetry.duration: true`. This per-node option
+does not enable the terminal `node.input.duration` or `node.output.duration`
+metrics.
+
 ### Enable Item Counts and Size
 
 Item counting and logical payload sizing are disabled at the normal level
@@ -122,8 +129,8 @@ Node metrics are the right choice when operators need to locate where a signal
 count changes, including receiver admission, processors, and exporter output.
 Use the runnable
 [`trafficgen-input-output-metrics.yaml`](../configs/trafficgen-input-output-metrics.yaml)
-example to inspect the metrics on every node or on an individually opted-in
-processor.
+example to inspect the metrics on every node, compare component duration with
+flow duration, or observe an individually opted-in processor.
 
 ## Flow Metrics
 

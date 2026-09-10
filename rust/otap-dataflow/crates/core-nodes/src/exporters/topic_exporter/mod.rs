@@ -715,6 +715,7 @@ mod tests {
                         pipeline_completion_tx,
                         metrics_reporter,
                         Interests::empty(),
+                        otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
                     )
                     .await
             });
@@ -858,6 +859,7 @@ mod tests {
                         pipeline_completion_tx,
                         metrics_reporter,
                         Interests::empty(),
+                        otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
                     )
                     .await
             });
@@ -1025,6 +1027,7 @@ mod tests {
                         pipeline_completion_tx,
                         metrics_reporter,
                         Interests::empty(),
+                        otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
                     )
                     .await
             });
@@ -1205,6 +1208,7 @@ mod tests {
                         pipeline_completion_tx,
                         metrics_reporter,
                         Interests::empty(),
+                        otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
                     )
                     .await
             });

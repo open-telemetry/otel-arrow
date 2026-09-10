@@ -471,6 +471,7 @@ fn bench_exporter(c: &mut Criterion) {
                                 pipeline_completion_tx,
                                 metrics_reporter,
                                 Interests::empty(),
+                                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
                             )
                             .await
                             .expect("Exporter event loop failed")
@@ -544,6 +545,7 @@ fn bench_exporter(c: &mut Criterion) {
                                 pipeline_completion_tx,
                                 metrics_reporter,
                                 Interests::empty(),
+                                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
                             )
                             .await
                             .expect("Exporter event loop failed")
@@ -622,6 +624,7 @@ fn bench_exporter(c: &mut Criterion) {
                                 pipeline_completion_tx,
                                 metrics_reporter,
                                 Interests::empty(),
+                                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
                             )
                             .await
                             .expect("Exporter event loop failed")

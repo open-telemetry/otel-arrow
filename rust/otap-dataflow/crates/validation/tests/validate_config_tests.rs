@@ -25,6 +25,8 @@ use otel_arrow_dfe_contrib_nodes as _;
 // in `OTAP_PIPELINE_FACTORY` at runtime.
 use otel_arrow_dfe_core_nodes as _;
 
+/// Scenario: every registered receiver validator receives an invalid scalar config.
+/// Guarantees: no receiver silently accepts the invalid configuration.
 #[test]
 fn all_receiver_validators_reject_invalid_config() {
     let factory_map = OTAP_PIPELINE_FACTORY.get_receiver_factory_map();
@@ -42,6 +44,8 @@ fn all_receiver_validators_reject_invalid_config() {
     }
 }
 
+/// Scenario: every registered processor validator receives an invalid scalar config.
+/// Guarantees: no processor silently accepts the invalid configuration.
 #[test]
 fn all_processor_validators_reject_invalid_config() {
     let factory_map = OTAP_PIPELINE_FACTORY.get_processor_factory_map();
@@ -59,6 +63,8 @@ fn all_processor_validators_reject_invalid_config() {
     }
 }
 
+/// Scenario: every registered exporter validator receives an invalid scalar config.
+/// Guarantees: no exporter silently accepts the invalid configuration.
 #[test]
 fn all_exporter_validators_reject_invalid_config() {
     let factory_map = OTAP_PIPELINE_FACTORY.get_exporter_factory_map();

@@ -427,6 +427,11 @@ impl TrafficConfig {
                     .to_string(),
             });
         }
+        if self.max_batch_size == 0 {
+            return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                error: "max_batch_size must be > 0".to_string(),
+            });
+        }
         Ok(())
     }
 }
@@ -808,5 +813,12 @@ mod tests {
 
         let cfg = super::TrafficConfig::new(Some(10), None, 100, 1, 1, 1);
         cfg.validate().expect("all non-zero weights should pass");
+    }
+
+    #[test]
+    fn validate_rejects_zero_max_batch_size() {
+        let cfg = super::TrafficConfig::new(Some(10), None, 0, 0, 1, 0);
+        let result = cfg.validate();
+        assert!(result.is_err(), "zero max_batch_size should be rejected");
     }
 }

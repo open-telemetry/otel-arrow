@@ -220,6 +220,148 @@ The most common units in this project are:
   - `{event}`: individual event records (log with an event name)
   - `{span}`: individual trace spans
 
+## Shared receiver and exporter boundary metrics
+
+Receiver and exporter implementations should use the shared component-boundary
+metric contract in addition to the engine-owned `node.input` and `node.output`
+metrics.
+
+| Metric | Component expectation |
+| --- | --- |
+| `receiver.received.messages` | Record one classified external message when receiver-local handling reaches its terminal local outcome. |
+| `receiver.received.payload.size` | Record the encoded application payload bytes observed at the receiver boundary. |
+| `receiver.processing.duration` | Measure the receiver's documented local processing boundary, ending before downstream handoff or channel wait. |
+| `exporter.attempted.messages` | Record every component-local delivery attempt, including attempts that fail during preparation and each backend retry, grouped by terminal attempt outcome. |
+| `exporter.attempted.duration` | Measure from attempt start through the terminal local or backend result, excluding Ack/Nack notification delivery. |
+| `exporter.attempted.payload.size` | Record the encoded application payload bytes produced or submitted by the attempt when available. |
+| `exporter.attempted.items` | Record the signal items handled by the attempt. |
+
+Each component must document a stable processing or attempt boundary. Receiver
+processing excludes downstream processing, batching wait, channel handoff
+wait, and Ack/Nack completion. An exporter attempt starts when the component
+begins preparing one delivery and ends at its terminal local or backend result.
+It includes encoding and backend latency when those stages are reached, but
+excludes the time needed to notify upstream after the result is known.
+
+Component metrics use bounded `signal` and `outcome` attributes. Components may
+retain additional bounded diagnostic metrics, such as protocol-specific
+rejection or failure categories, but should not redefine the shared message,
+duration, payload-size, or item instruments.
+
+The `failed` and `refused` helpers return an error wrapper carrying its outcome.
+If a component handles that error and continues, discarding the wrapper also
+discards its classification; it cannot affect a later error returned by the
+operation.
+
+Shared metric helpers own optional-measurement policy checks. Component code
+must not independently inspect telemetry interests before reading the clock,
+counting items, or recording payload size. `PipelineContext` provides the
+effective node interests when the helper is registered. Constructing an
+exporter attempt starts its optional duration measurement so synchronous
+preparation before an in-flight request is included.
+
+`runtime_metrics: detailed` enables all shared optional component
+measurements. A node can instead opt into component duration, item counts,
+and/or payload size at any runtime metric level with its
+`policies.telemetry` flags. These per-node flags do not enable the engine-owned
+`node.input` or `node.output` metric sets below `runtime_metrics: normal`;
+therefore, at `none` or `basic`, only the opted-in component measurements are
+emitted.
+
+Components with additional diagnostics should compose the shared helper into
+their component metrics aggregate under a `boundary` field. The aggregate owns
+combined reporting and terminal snapshots, while operation lifecycle calls go
+directly through `boundary`.
+
+### Receiver implementation
+
+Every receiver implementation should follow this shape:
+
+```rust
+let completed = self.metrics.boundary.processing().run(|processing| {
+    // Component-specific: classify, decode, validate, or otherwise process the request.
+    processing.set_payload_size_with(|| request.encoded_len());
+    let decoded = self.decode(request)?;
+    let signal = decoded.signal_type();
+    match self.process(decoded) {
+        Ok(value) => Ok((signal, value)), // success
+        Err(error) if error.is_refusal() => {
+            Err(processing.refused(signal, error)) // refused
+        }
+        Err(error) => Err(processing.failed(signal, error)), // failure
+    }
+});
+
+// Shared instrumentation: records the terminal local outcome before handoff
+// and returns the component result.
+let result = self.metrics.boundary.record(completed);
+
+// Component-specific: propagate the result and hand accepted data downstream.
+let decoded = result?;
+effect_handler.send_message(decoded).await?;
+```
+
+The receiver runs exactly one processing closure and records its completed
+observation before awaiting downstream handoff. The closure receives the
+processing context so it can add payload size when that value becomes
+available. Successful processing returns the classified signal with its value,
+so the signal cannot be omitted. Return classified errors through
+`processing.failed(signal, error)` or `processing.refused(signal, error)`.
+A failure returned before signal classification does not emit shared receiver
+metrics; use a component-specific rejection metric for that condition.
+
+### Exporter implementation
+
+Every exporter implementation should follow this shape:
+
+```rust
+let signal = data.signal_type();
+
+let completed = self
+    .metrics
+    .boundary
+    .attempt(signal)
+    .run(async |attempt| {
+        // Component-specific: encode and submit one attempt.
+        attempt.set_item_count_with(|| data.num_items() as u64);
+        let encoded = self
+            .encode(data.payload_ref())
+            .map_err(|error| attempt.failed(error))?;
+        attempt.set_payload_size_with(|| encoded.len());
+        match self.submit(encoded).await {
+            Ok(response) => Ok(response), // success
+            Err(error) if error.is_refusal() => {
+                Err(attempt.refused(error)) // refused
+            }
+            Err(error) => Err(attempt.failed(error)), // failure
+        }
+    })
+    .await;
+
+// Shared instrumentation: records one terminal attempt and returns its result.
+let result = self.metrics.boundary.record(completed);
+
+// Component-specific: record bounded diagnostics and apply Ack/Nack semantics.
+if let Err(error_type) = result {
+    self.metrics.record_error(signal, error_type);
+}
+effect_handler.notify_ack(AckMsg::new(data)).await?;
+```
+
+The attempt context records encoded application payload size when the exporter
+produces or submits one. Components leave it unset when payload size is not
+meaningful or unavailable. Encoding structure, retries, component-specific
+failure metrics, and Ack/Nack behavior remain owned by the component.
+Return ordinary failures through `attempt.failed(error)`. Use
+`attempt.refused(error)` instead for a validation, policy, admission, or
+capacity rejection.
+
+`exporter.attempted.messages` counts component-local delivery attempts,
+including attempts that fail before a backend call. Each physical retry starts
+a new attempt and records the items and any available encoded payload bytes
+again. Use `node.input.messages` to count PData messages entering the exporter;
+do not use the attempt metric as a duplicate input-message count.
+
 ## Performance considerations
 
 Metric sets are optimized for low overhead:

@@ -18,7 +18,9 @@ use otel_arrow_dfe_engine::local::message::{LocalReceiver, LocalSender};
 use otel_arrow_dfe_engine::message::{Receiver as PDataReceiver, Sender as PDataSender};
 use otel_arrow_dfe_engine::node::{NodeWithPDataReceiver, NodeWithPDataSender};
 use otel_arrow_dfe_engine::testing::exporter::create_test_pipeline_context;
-use otel_arrow_dfe_engine::testing::{create_not_send_channel, setup_test_runtime, test_node};
+use otel_arrow_dfe_engine::testing::{
+    create_not_send_channel, setup_test_runtime, test_node, test_pipeline_runtime_services,
+};
 use otel_arrow_dfe_engine::topic::{
     TopicBroadcastAckMode, TopicBroadcastOnLagPolicy, TopicBroker, TopicOptions, TopicSet,
 };
@@ -37,6 +39,8 @@ fn make_test_pdata() -> OtapPdata {
     OtapPdata::new_todo_context(OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes)).into())
 }
 
+/// Scenario: an OTAP topic exporter sends pdata to a receiver on the same broker topic.
+/// Guarantees: the receiver obtains the original signal payload.
 #[test]
 fn topic_exporter_to_topic_receiver_transfers_pdata() {
     let (rt, local_tasks) = setup_test_runtime();
@@ -129,6 +133,8 @@ fn topic_exporter_to_topic_receiver_transfers_pdata() {
         let receiver_ctrl_tx = runtime_ctrl_tx.clone();
         let exporter_completion_tx = pipeline_completion_tx.clone();
         let receiver_completion_tx = pipeline_completion_tx.clone();
+        let runtime_services = test_pipeline_runtime_services();
+        let exporter_runtime_services = runtime_services.clone();
 
         let exporter_task = tokio::task::spawn_local(async move {
             exporter
@@ -137,6 +143,7 @@ fn topic_exporter_to_topic_receiver_transfers_pdata() {
                     exporter_completion_tx,
                     exporter_metrics,
                     Interests::empty(),
+                    exporter_runtime_services,
                 )
                 .await
         });
@@ -147,6 +154,7 @@ fn topic_exporter_to_topic_receiver_transfers_pdata() {
                     receiver_completion_tx,
                     receiver_metrics,
                     Interests::empty(),
+                    runtime_services,
                 )
                 .await
         });
@@ -190,6 +198,8 @@ fn topic_exporter_to_topic_receiver_transfers_pdata() {
     }));
 }
 
+/// Scenario: a topic receiver is configured to tag incoming pdata with its source.
+/// Guarantees: received pdata contains the configured source tag.
 #[test]
 fn topic_receiver_applies_source_tag_when_enabled() {
     let (rt, local_tasks) = setup_test_runtime();
@@ -282,6 +292,8 @@ fn topic_receiver_applies_source_tag_when_enabled() {
         let receiver_ctrl_tx = runtime_ctrl_tx.clone();
         let exporter_completion_tx = pipeline_completion_tx.clone();
         let receiver_completion_tx = pipeline_completion_tx.clone();
+        let runtime_services = test_pipeline_runtime_services();
+        let exporter_runtime_services = runtime_services.clone();
 
         let exporter_task = tokio::task::spawn_local(async move {
             exporter
@@ -290,6 +302,7 @@ fn topic_receiver_applies_source_tag_when_enabled() {
                     exporter_completion_tx,
                     exporter_metrics,
                     Interests::empty(),
+                    exporter_runtime_services,
                 )
                 .await
         });
@@ -300,6 +313,7 @@ fn topic_receiver_applies_source_tag_when_enabled() {
                     receiver_completion_tx,
                     receiver_metrics,
                     Interests::empty(),
+                    runtime_services,
                 )
                 .await
         });

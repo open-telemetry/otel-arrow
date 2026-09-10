@@ -185,23 +185,35 @@ pub struct NodePolicies {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NodeTelemetryPolicy {
-    /// Opt this node into per-signal input/output item counts on its
-    /// `node.input` / `node.output` metric sets.
+    /// Opt this node into component-owned duration measurements, such as
+    /// `receiver.processing.duration`, `processor.compute.duration`, or
+    /// `exporter.attempted.duration`.
+    ///
+    /// Off by default because duration instrumentation requires clock reads on
+    /// the data path. `runtime_metrics: detailed` enables component duration
+    /// for every node without this flag.
+    #[serde(default)]
+    pub duration: bool,
+
+    /// Opt this node into component-owned item counts and, at `normal` or
+    /// higher, per-signal input/output item counts.
     ///
     /// Off by default because counting items requires inspecting each batch,
-    /// which is expensive for OTLP payloads. Only recorded when the resolved
-    /// `runtime_metrics` is `normal` or higher; `runtime_metrics: detailed`
-    /// enables it for every node without this flag.
+    /// which is expensive for OTLP payloads. Component-owned metrics can honor
+    /// this option at any runtime metric level. `node.input` / `node.output`
+    /// item counts also require `runtime_metrics: normal` or higher.
+    /// `runtime_metrics: detailed` enables it for every node without this flag.
     #[serde(default)]
     pub item_counts: bool,
 
-    /// Opt this node into per-signal input/output logical payload size on its
-    /// `node.input` / `node.output` metric sets.
+    /// Opt this node into component-owned logical payload size and, at `normal`
+    /// or higher, per-signal input/output logical payload size.
     ///
     /// Off by default because measuring OTAP payloads requires walking their
-    /// Arrow arrays and buffers. Only recorded when the resolved
-    /// `runtime_metrics` is `normal` or higher; `runtime_metrics: detailed`
-    /// enables it for every node without this flag.
+    /// Arrow arrays and buffers. Component-owned metrics can honor this option
+    /// at any runtime metric level. `node.input` / `node.output` size metrics
+    /// also require `runtime_metrics: normal` or higher.
+    /// `runtime_metrics: detailed` enables it for every node without this flag.
     #[serde(default)]
     pub size: bool,
 }
@@ -528,7 +540,7 @@ mod tests {
         assert!(cfg.outputs.is_empty());
     }
 
-    /// Scenario: a node config opts into item counts and payload size through its restricted policy block.
+    /// Scenario: a node config opts into duration, item counts, and payload size through its restricted policy block.
     /// Guarantees: node telemetry configuration stays namespaced under `policies` with independent measurement controls.
     #[test]
     fn node_user_config_parses_measurement_policy() {
@@ -536,6 +548,7 @@ mod tests {
 type: "processor:batch"
 policies:
   telemetry:
+    duration: true
     item_counts: true
     size: true
 "#;
@@ -545,8 +558,19 @@ policies:
             .as_ref()
             .and_then(|policies| policies.telemetry.as_ref())
             .expect("node telemetry policy");
+        assert!(telemetry.duration);
         assert!(telemetry.item_counts);
         assert!(telemetry.size);
+    }
+
+    /// Scenario: a node telemetry policy omits every optional measurement.
+    /// Guarantees: component duration, item counts, and size measurements remain disabled by default.
+    #[test]
+    fn node_telemetry_policy_defaults_optional_measurements_off() {
+        let telemetry = NodeTelemetryPolicy::default();
+        assert!(!telemetry.duration);
+        assert!(!telemetry.item_counts);
+        assert!(!telemetry.size);
     }
 
     #[test]

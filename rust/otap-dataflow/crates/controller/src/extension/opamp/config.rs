@@ -6,6 +6,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use otel_arrow_dfe_config::tls::TlsClientConfig;
 use serde::de::{self, Unexpected};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use url::Url;
@@ -70,6 +71,10 @@ pub struct Config {
     /// may omit the key and simply send an empty string.
     #[serde(default)]
     pub remote_config_key: String,
+
+    /// Client-side TLS/mTLS configuration.
+    #[serde(default)]
+    pub tls: Option<TlsClientConfig>,
 }
 
 impl Config {
@@ -86,12 +91,14 @@ impl Config {
             reason: format!("could not parse \"{}\": {e}", self.endpoint),
         })?;
 
-        match parsed_endpoint.scheme() {
-            "ws" => {
-                // this is are acceptable schemes.
+        let scheme = parsed_endpoint.scheme();
+
+        match scheme {
+            "ws" | "wss" => {
+                // acceptable WebSocket schemes (wss:// for TLS)
             }
 
-            "http" => {
+            "http" | "https" => {
                 // return this error temporarily until we actually support OpAMP over HTTP.
                 // Currently only websocket is supported
                 return Err(Error::InvalidEndpoint {
@@ -101,10 +108,34 @@ impl Config {
             other => {
                 return Err(Error::InvalidEndpoint {
                     reason: format!(
-                        "invalid URL scheme {other}. Acceptable schemes \"ws\" or \"http\""
+                        "invalid URL scheme {other}. \
+                        Acceptable schemes: \"ws\" (plain) or \"wss\" (TLS)"
                     ),
                 });
             }
+        }
+
+        // Validate that the endpoint scheme matches the TLS configuration.
+        // When tls.insecure is true, TLS is effectively disabled so ws:// is fine.
+        let tls_effectively_enabled = self
+            .tls
+            .as_ref()
+            .is_some_and(|tls| !tls.insecure.unwrap_or(false));
+
+        if tls_effectively_enabled && scheme != "wss" {
+            return Err(Error::InvalidEndpoint {
+                reason: format!(
+                    "TLS is configured but endpoint uses \"{scheme}://\" scheme. \
+                    Use \"wss://\" when TLS is enabled."
+                ),
+            });
+        }
+        if !tls_effectively_enabled && scheme == "wss" {
+            return Err(Error::InvalidEndpoint {
+                reason: "endpoint uses \"wss://\" scheme but TLS is not enabled. \
+                    Either configure tls or use \"ws://\"."
+                    .into(),
+            });
         }
 
         Ok(())
@@ -325,8 +356,54 @@ mod test {
         assert_eq!(
             error,
             Error::InvalidEndpoint {
-                reason: "invalid URL scheme ftp. Acceptable schemes \"ws\" or \"http\"".into(),
+                reason:
+                    "invalid URL scheme ftp. Acceptable schemes: \"ws\" (plain) or \"wss\" (TLS)"
+                        .into(),
             }
+        );
+    }
+
+    /// Scenario: endpoint uses wss:// and a TLS block is present.
+    /// Guarantees: scheme validation accepts wss:// when TLS is configured.
+    #[test]
+    fn test_validate_accepts_wss_scheme_with_tls() {
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "endpoint": "wss://127.0.0.1:4320/v1/opamp",
+            "tls": { "ca_pem": "some-ca-pem" }
+        }))
+        .unwrap();
+        config.validate().unwrap();
+    }
+
+    /// Scenario: TLS is configured but endpoint uses ws:// instead of wss://.
+    /// Guarantees: validation rejects the mismatch with a clear error.
+    #[test]
+    fn test_validate_rejects_tls_with_ws_scheme() {
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "endpoint": "ws://127.0.0.1:4320/v1/opamp",
+            "tls": { "ca_pem": "some-ca-pem" }
+        }))
+        .unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Use \"wss://\" when TLS is enabled"),
+            "expected scheme mismatch error, got: {err}"
+        );
+    }
+
+    /// Scenario: endpoint uses wss:// but no TLS configuration is provided.
+    /// Guarantees: validation rejects the mismatch with a clear error.
+    #[test]
+    fn test_validate_rejects_wss_without_tls() {
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "endpoint": "wss://127.0.0.1:4320/v1/opamp"
+        }))
+        .unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(
+            err.to_string().contains("TLS is not enabled"),
+            "expected missing TLS error, got: {err}"
         );
     }
 }
