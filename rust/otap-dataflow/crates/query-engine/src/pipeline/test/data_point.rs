@@ -5,7 +5,6 @@
 
 use otel_arrow_contrib_data_engine_kql_parser::Parser;
 use otel_arrow_dfe_pdata::{
-
     proto::{
         OtlpProtoMessage,
         opentelemetry::metrics::v1::{Gauge, Metric, NumberDataPoint},
@@ -14,8 +13,8 @@ use otel_arrow_dfe_pdata::{
 };
 use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
 
-use crate::pipeline::Pipeline;
 use crate::parser::default_parser_options;
+use crate::pipeline::Pipeline;
 
 #[tokio::test]
 async fn test_simple_datapoint_filter() {
@@ -44,7 +43,6 @@ async fn test_simple_datapoint_filter() {
     let input_batch = otlp_to_otap(&OtlpProtoMessage::Metrics(to_metrics_data(metrics)));
 
     let result = pipeline.execute(input_batch).await.unwrap();
-
 
     let OtlpProtoMessage::Metrics(result_metrics) = otap_to_otlp(&result) else {
         panic!("invalid result type")

@@ -20,7 +20,7 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use std::sync::Arc;
 
 use crate::error::{Error, Result};
-use crate::pipeline::planner::PipelinePlanner;
+use crate::pipeline::planner::{PipelinePlanner, RecordType};
 use crate::pipeline::state::ExecutionState;
 use crate::table::RecordBatchPartitionStream;
 
@@ -88,34 +88,37 @@ pub trait PipelineStage {
         });
     }
 
-    /// Returns a flag indicating that this stage of the pipeline on a [`RecordBatch`] containing
-    /// a set of attributes. This will be used during planning to determine if invalid pipeline
-    /// stages have been specified in a pipeline handling attributes record batches.
+    /// Execute this stage on the datapoints of the metric.
     ///
-    /// If a type chooses to implement this method and return true, it should also add an
-    /// implementation for `execute_on_attributes`.
-    fn supports_exec_on_attributes(&self) -> bool {
-        false
-    }
-
-    /// Execute this stage on the datapoints of the metric
-    // TODO finish the comment explaining what this thing does
+    /// When the pipeline stage is executed via this method call, it should perform its operation
+    /// as if the "root" of any expression is the metric datapoints record batch. It may need to
+    /// perform multiple evaluations on each of the various metric datapoint types.
     async fn execute_on_metric_data_points(
         &mut self,
         _otap_batch: OtapArrowRecords,
         _session_context: &SessionContext,
         _config_options: &ConfigOptions,
         _task_context: Arc<TaskContext>,
-        _exec_state: &mut ExecutionState
+        _exec_state: &mut ExecutionState,
     ) -> Result<OtapArrowRecords> {
         return Err(Error::ExecutionError {
             cause: "Unexpected invocation of pipeline stage that does not support execution on metric data points".into()
-         })
+         });
     }
 
-    /// TODO add rustdoc comments for this method
-    fn supports_exec_on_metric_data_points(&self) -> bool {
-        false
+    /// Returns a flag indicating that this stage of the pipeline can execute where the passed
+    /// type of record would be the root of the expression.
+    ///
+    /// This is used by the planner to reject invalid/unsupported operations applied to some type
+    /// of record. For example, if some pipeline stage returns true/false when record type is
+    /// the `Attributes` variant, the planner will either accept/reject this type of pipeline stage
+    /// being used in an operation call like `apply attributes { ... }`
+    ///
+    /// If an implementation overrides this to return `true` for `RecordType::Attributes`,
+    /// should also implement `execute_on_attributes`. Likewise for `RecordType::Child(DataPoint)`
+    /// and `execute_on_metric_data_points`.
+    fn supports_exec_on(&self, record_type: &RecordType) -> bool {
+        matches!(record_type, RecordType::Signal)
     }
 
     /// When pipeline stages execute within the context of a conditional branch, they will only see

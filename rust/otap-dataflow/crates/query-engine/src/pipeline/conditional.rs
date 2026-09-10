@@ -24,6 +24,7 @@ use crate::pipeline::concat::{
 use crate::pipeline::expr::eval::EvalContext;
 use crate::pipeline::expr::{DataScope, RecordScope, ScopedExpr};
 use crate::pipeline::filter::{align_selection_to_record, scoped_value_to_boolean_array};
+use crate::pipeline::planner::RecordType;
 use crate::pipeline::state::ExecutionState;
 use crate::pipeline::{BoxedPipelineStage, PipelineStage};
 
@@ -153,8 +154,10 @@ impl PipelineStage for ConditionalPipelineStage {
             let predicate_selection_vec = match predicate_result {
                 None => BooleanArray::new(BooleanBuffer::new_unset(root_batch.num_rows()), None),
                 Some(scoped_value) => {
-                    if !(matches!(scoped_value.scope, DataScope::Record(_) | DataScope::RootParent(_)))
-                        && scoped_value.scope != DataScope::StaticScalar
+                    if !(matches!(
+                        scoped_value.scope,
+                        DataScope::Record(_) | DataScope::RootParent(_)
+                    )) && scoped_value.scope != DataScope::StaticScalar
                     {
                         align_selection_to_record(Some(scoped_value), &otap_batch)?
                     } else {
@@ -337,8 +340,8 @@ impl PipelineStage for ConditionalPipelineStage {
         Ok(final_result)
     }
 
-    fn supports_exec_on_attributes(&self) -> bool {
-        true
+    fn supports_exec_on(&self, record_type: &RecordType) -> bool {
+        matches!(record_type, RecordType::Attributes | RecordType::Signal)
     }
 }
 

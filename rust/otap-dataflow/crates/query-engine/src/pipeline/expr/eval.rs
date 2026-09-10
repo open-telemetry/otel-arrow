@@ -33,8 +33,8 @@ use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_pdata::arrays::{
     get_optional_array_from_struct_array_from_record_batch, get_required_array,
 };
-use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_dfe_pdata::otlp::metrics::MetricType;
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_dfe_pdata::schema::consts;
 
 use crate::error::{Error, Result};
@@ -42,8 +42,8 @@ use crate::pipeline::expr::bitmap::combine_scope;
 use crate::pipeline::expr::join::{JoinInput, join, multi_join};
 use crate::pipeline::expr::types::MetricDatapointType;
 use crate::pipeline::expr::{
-    ChildRecordKind, DataScope, LeafEval, RecordScope, SCALAR_RECORD_BATCH_INPUT, ScopedExpr, ScopedValue, ShortCircuitStrategy,
-    VALUE_COLUMN_NAME, arg_column_name,
+    ChildRecordKind, DataScope, LeafEval, RecordScope, SCALAR_RECORD_BATCH_INPUT, ScopedExpr,
+    ScopedValue, ShortCircuitStrategy, VALUE_COLUMN_NAME, arg_column_name,
 };
 use crate::pipeline::id_mask::IdMask;
 use crate::pipeline::planner::AttributesIdentifier;

@@ -51,8 +51,9 @@ use crate::pipeline::expr::join::is_one_to_many;
 use crate::pipeline::expr::types::{
     ExprLogicalType, cast_expr, coerce_arithmetic, nested_struct_field_type, root_field_type,
 };
-use crate::pipeline::expr::{ChildRecordKind, DataScope, RecordScope, VALUE_COLUMN_NAME, arg_column_name,
-    LeafEval, RootParentStruct, ScopedExpr, ShortCircuitStrategy, SignalTypePredicate,
+use crate::pipeline::expr::{
+    ChildRecordKind, DataScope, LeafEval, RecordScope, RootParentStruct, ScopedExpr,
+    ShortCircuitStrategy, SignalTypePredicate, VALUE_COLUMN_NAME, arg_column_name,
 };
 use crate::pipeline::functions::compare::CompareFunc;
 use crate::pipeline::functions::expr_fn::contains;
@@ -73,7 +74,7 @@ pub(crate) struct ExprPlanner {
     attr_key_case_sensitive: bool,
 
     /// TODO commentate what this is
-    record_type: RecordType
+    record_type: RecordType,
 }
 
 /// Intermediate planning result that carries type information alongside the `ScopedExpr`
@@ -85,10 +86,7 @@ pub(crate) struct PlannedOp {
 
 impl ExprPlanner {
     /// Creates a new `ExprPlanner`
-    pub fn new(
-        attr_key_case_sensitive: bool,
-        record_type: RecordType,
-    ) -> Self {
+    pub fn new(attr_key_case_sensitive: bool, record_type: RecordType) -> Self {
         Self {
             attr_key_case_sensitive,
             record_type,
@@ -96,15 +94,15 @@ impl ExprPlanner {
     }
 
     /// Return the scope of the record for which the expression is being planned.
-    /// 
+    ///
     /// e.g. if this expression is being planned to evaluate on logs, metrics, spans
     /// this should return Root. If it is being planned to evaluate on datapoints, it
     /// should return the record scope identifying this data.
     fn record_scope(&self) -> RecordScope {
         match &self.record_type {
             RecordType::Child(child) => match child {
-                ChildRecordKind::DataPoint => RecordScope::Child(ChildRecordKind::DataPoint)
-            }
+                ChildRecordKind::DataPoint => RecordScope::Child(ChildRecordKind::DataPoint),
+            },
             _ => RecordScope::Signal,
         }
     }
@@ -2425,8 +2423,8 @@ mod test {
     use otel_arrow_dfe_pdata::testing::round_trip::{otlp_to_otap, to_logs_data};
 
     use crate::pipeline::Pipeline;
-    use crate::pipeline::expr::{DataScope, ScopedExpr, ShortCircuitStrategy};
     use crate::pipeline::expr::eval::EvalContext;
+    use crate::pipeline::expr::{DataScope, ScopedExpr, ShortCircuitStrategy};
     use crate::pipeline::id_mask::IdMask;
     use crate::pipeline::planner::AttributesIdentifier;
 
@@ -2515,7 +2513,10 @@ mod test {
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
         let mut op = planned.expr;
-        let result = op.execute_as_value(&otap, &EvalContext::new(&session_ctx)).unwrap().unwrap();
+        let result = op
+            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
+            .unwrap()
+            .unwrap();
         assert_eq!(result.scope, DataScope::Record(RecordScope::Signal));
 
         // should have 3 string values
@@ -2544,7 +2545,10 @@ mod test {
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
         let mut op = planned.expr;
-        let result = op.execute_as_value(&otap, &EvalContext::new(&session_ctx)).unwrap().unwrap();
+        let result = op
+            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
+            .unwrap()
+            .unwrap();
         assert!(matches!(
             result.scope,
             DataScope::Attribute(AttributesIdentifier::Root, _)
@@ -2574,7 +2578,10 @@ mod test {
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
         let mut op = planned.expr;
-        let result = op.execute_as_value(&otap, &EvalContext::new(&session_ctx)).unwrap().unwrap();
+        let result = op
+            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
+            .unwrap()
+            .unwrap();
         match &result.values {
             ColumnarValue::Scalar(ScalarValue::Int64(Some(42))) => {}
             other => panic!("expected Int64(42), got {other:?}"),
@@ -2608,7 +2615,10 @@ mod test {
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
         let mut op = planned.expr;
-        let result = op.execute_as_value(&otap, &EvalContext::new(&session_ctx)).unwrap().unwrap();
+        let result = op
+            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
+            .unwrap()
+            .unwrap();
         match &result.values {
             ColumnarValue::Array(arr) => {
                 assert_eq!(arr.len(), 3);
@@ -2663,7 +2673,10 @@ mod test {
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
         let mut op = op;
-        let result = op.execute_as_value(&otap, &EvalContext::new(&session_ctx)).unwrap().unwrap();
+        let result = op
+            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
+            .unwrap()
+            .unwrap();
         let bool_arr = as_boolean_array(match &result.values {
             ColumnarValue::Array(arr) => arr,
             other => panic!("expected array, got {other:?}"),
@@ -2775,7 +2788,10 @@ mod test {
         let otap = test_otap();
         let session_ctx = Pipeline::create_session_context();
         let mut op = planned.expr;
-        let result = op.execute_as_value(&otap, &EvalContext::new(&session_ctx)).unwrap().unwrap();
+        let result = op
+            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
+            .unwrap()
+            .unwrap();
 
         // the value should be a boolean array
         let bool_arr = as_boolean_array(match &result.values {

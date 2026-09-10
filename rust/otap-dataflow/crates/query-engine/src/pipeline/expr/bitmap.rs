@@ -329,7 +329,7 @@ fn scoped_value_to_id_mask(
         DataScope::Record(RecordScope::Child(child)) => {
             println!("TODO handle record scope child here");
             todo!("handle record scope child here")
-        },
+        }
         DataScope::Attribute(_, _) | DataScope::AttributesAll(_) => {
             // attribute-scoped: use parent_ids to populate an IdBitmap
             let parent_ids = sv

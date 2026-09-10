@@ -10,12 +10,11 @@ use crate::pipeline::expr::types::MetricDatapointType;
 use crate::pipeline::expr::{ChildRecordKind, RecordScope};
 use crate::pipeline::expr::{DataScope, ScopedExpr, ScopedValue, eval::resolve_attrs_payload_type};
 use crate::pipeline::filter::data_points::filter_metric_data_points;
-use crate::pipeline::planner::AttributesIdentifier;
+use crate::pipeline::planner::{AttributesIdentifier, RecordType};
 use crate::pipeline::state::ExecutionState;
 
 use arrow::array::{
-    Array, ArrayRef, BooleanArray, BooleanBufferBuilder, RecordBatch, UInt16Array,
-    UInt32Array,
+    Array, ArrayRef, BooleanArray, BooleanBufferBuilder, RecordBatch, UInt16Array, UInt32Array,
 };
 use arrow::buffer::BooleanBuffer;
 use arrow::compute::{filter_record_batch, take};
@@ -128,10 +127,6 @@ impl PipelineStage for FilterPipelineStage {
         Ok(new_batch)
     }
 
-    fn supports_exec_on_attributes(&self) -> bool {
-        true
-    }
-
     async fn execute_on_metric_data_points(
         &mut self,
         mut otap_batch: OtapArrowRecords,
@@ -173,28 +168,24 @@ impl PipelineStage for FilterPipelineStage {
                                 // TODO this little segment is copied from below `scoped_Value_to_boolean_array`
                                 // which I don't want ot use anymore b/c it allocates a boolean array when it
                                 // doesn't need to
-                                let selection_vec = as_boolean_array(&arr_aligned).map_err(|_| {
-                                    Error::ExecutionError {
+                                let selection_vec = as_boolean_array(&arr_aligned).map_err(
+                                    |_| Error::ExecutionError {
                                         cause: format!(
                                             "expected boolean array for filter selection, found {}",
                                             arr_aligned.data_type()
                                         ),
-                                    }
-                                })?;
-
+                                    },
+                                )?;
 
                                 let mut id_bitmap = self.id_bitmap_pool.acquire();
                                 let result = filter_metric_data_points(
-                                    &mut otap_batch, 
+                                    &mut otap_batch,
                                     &metric_datapoint_type,
-                                    selection_vec, 
-                                    &mut id_bitmap
+                                    selection_vec,
+                                    &mut id_bitmap,
                                 );
                                 self.id_bitmap_pool.release(id_bitmap);
                                 result?;
-                                
-
-                                
                             }
                         }
                     }
@@ -209,8 +200,12 @@ impl PipelineStage for FilterPipelineStage {
         Ok(otap_batch)
     }
 
-    fn supports_exec_on_metric_data_points(&self) -> bool {
-        true
+    fn supports_exec_on(&self, record_type: &RecordType) -> bool {
+        match record_type {
+            RecordType::Signal => true,
+            RecordType::Attributes => true,
+            RecordType::Child(ChildRecordKind::DataPoint) => true,
+        }
     }
 }
 

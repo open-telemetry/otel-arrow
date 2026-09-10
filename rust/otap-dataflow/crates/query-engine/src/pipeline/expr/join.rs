@@ -1419,9 +1419,8 @@ impl AttributesAllSelectionVecJoin {
                 },
             };
             extract_u16_array(ids, consts::ID)
-        
-        // TODO need to handle root children
 
+        // TODO need to handle root children
         } else {
             // not yet supported
             Err(Error::NotYetSupportedError {

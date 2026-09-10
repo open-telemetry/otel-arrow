@@ -73,9 +73,10 @@ use crate::pipeline::expr::types::{
     ExprLogicalType, nested_struct_field_type, root_field_supports_dict_encoding, root_field_type,
 };
 use crate::pipeline::expr::{
-    DataScope, LeafEval, RecordScope, RootParentStruct, SCALAR_RECORD_BATCH_INPUT, ScopedExpr, ScopedValue, VALUE_COLUMN_NAME
+    DataScope, LeafEval, RecordScope, RootParentStruct, SCALAR_RECORD_BATCH_INPUT, ScopedExpr,
+    ScopedValue, VALUE_COLUMN_NAME,
 };
-use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
+use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor, RecordType};
 use crate::pipeline::project::anyval::{
     attempt_coerce_value_column_from_any_value_struct_column, fill_null_type_as_empty,
     is_any_value_data_type, wrap_as_any_value_struct,
@@ -787,8 +788,13 @@ impl AssignPipelineStage {
                                 .rows_to_take(left_join_input, &eval_result, &otap_batch)?
                         }
                     }
-                    DataScope::Record(RecordScope::Signal) | DataScope::RootParent(_) => RootAttrsToRootJoin::new()
-                        .rows_to_take(left_join_input, &eval_result, &otap_batch)?,
+                    DataScope::Record(RecordScope::Signal) | DataScope::RootParent(_) => {
+                        RootAttrsToRootJoin::new().rows_to_take(
+                            left_join_input,
+                            &eval_result,
+                            &otap_batch,
+                        )?
+                    }
                     DataScope::Record(RecordScope::Child(child)) => {
                         println!("TODO");
                         todo!("TODO")
@@ -946,8 +952,13 @@ impl AssignPipelineStage {
                                 .rows_to_take(left_join_input, &eval_result, &otap_batch)?
                         }
                     }
-                    DataScope::Record(RecordScope::Signal) | DataScope::RootParent(_) => RootAttrsToRootJoin::new()
-                        .rows_to_take(left_join_input, &eval_result, &otap_batch)?,
+                    DataScope::Record(RecordScope::Signal) | DataScope::RootParent(_) => {
+                        RootAttrsToRootJoin::new().rows_to_take(
+                            left_join_input,
+                            &eval_result,
+                            &otap_batch,
+                        )?
+                    }
                     DataScope::Record(RecordScope::Child(child)) => {
                         todo!()
                     }
@@ -1099,7 +1110,8 @@ impl PipelineStage for AssignPipelineStage {
 
             let mut eval_results = Vec::new();
             for source in &mut self.sources {
-                let eval_result = source.execute_as_value(&otap_batch, &EvalContext::new(session_context))?;
+                let eval_result =
+                    source.execute_as_value(&otap_batch, &EvalContext::new(session_context))?;
                 eval_results.push(eval_result);
             }
             let result = self.assign_to_attributes(otap_batch, &mut eval_results, *attrs_id)?;
@@ -1110,7 +1122,8 @@ impl PipelineStage for AssignPipelineStage {
         if let ColumnAccessor::NestedAttribute(attrs_id, _, _) = &self.dest_columns[0] {
             let mut eval_results = Vec::new();
             for source in &mut self.sources {
-                let eval_result = source.execute_as_value(&otap_batch, &EvalContext::new(session_context))?;
+                let eval_result =
+                    source.execute_as_value(&otap_batch, &EvalContext::new(session_context))?;
                 eval_results.push(eval_result);
             }
             let result =
@@ -1123,7 +1136,8 @@ impl PipelineStage for AssignPipelineStage {
         // support bulk assignment so we just evaluate the expressions and update the columns
         // one at a time
         for i in 0..self.sources.len() {
-            let eval_result = self.sources[i].execute_as_value(&otap_batch, &EvalContext::new(session_context))?;
+            let eval_result = self.sources[i]
+                .execute_as_value(&otap_batch, &EvalContext::new(session_context))?;
             let dest_scope = &self.dest_scopes[i];
             match &self.dest_columns[i] {
                 ColumnAccessor::ColumnName(dest_col_name) => {
@@ -1469,8 +1483,8 @@ impl PipelineStage for AssignPipelineStage {
         )?)
     }
 
-    fn supports_exec_on_attributes(&self) -> bool {
-        true
+    fn supports_exec_on(&self, record_type: &RecordType) -> bool {
+        matches!(record_type, RecordType::Attributes | RecordType::Signal)
     }
 
     fn init_state_for_conditional_branch(
@@ -6489,7 +6503,9 @@ mod test {
         let err = pipeline.execute(input.clone()).await.unwrap_err();
         let err_msg = err.to_string();
         assert!(
-            err_msg.contains("cannot assign data scope Record(Signal) to attributes NonRoot(ResourceAttrs)"),
+            err_msg.contains(
+                "cannot assign data scope Record(Signal) to attributes NonRoot(ResourceAttrs)"
+            ),
             "unexpected error message {}",
             err_msg
         );
@@ -6547,7 +6563,9 @@ mod test {
         let err = pipeline.execute(input.clone()).await.unwrap_err();
         let err_msg = err.to_string();
         assert!(
-            err_msg.contains("cannot assign data scope Record(Signal) to attributes NonRoot(ScopeAttrs)"),
+            err_msg.contains(
+                "cannot assign data scope Record(Signal) to attributes NonRoot(ScopeAttrs)"
+            ),
             "unexpected error message {}",
             err_msg
         );

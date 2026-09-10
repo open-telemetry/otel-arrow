@@ -89,7 +89,7 @@ impl ApplyPipelineStage {
         if curr_batch.num_rows() > 0 {
             otap_batch.set(attrs_payload_type, curr_batch)?;
         } else {
-            _ =otap_batch.remove(attrs_payload_type);
+            _ = otap_batch.remove(attrs_payload_type);
         }
 
         Ok(otap_batch)

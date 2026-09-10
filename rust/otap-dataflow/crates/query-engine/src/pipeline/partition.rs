@@ -84,10 +84,7 @@ impl Partitioner {
         scalar_expr: ScalarExpression,
         functions: Vec<PipelineFunction>,
     ) -> Result<Self> {
-        let expr_planner = ExprPlanner::new(
-            false,
-            RecordType::Signal
-        );
+        let expr_planner = ExprPlanner::new(false, RecordType::Signal);
         let planned_expr = expr_planner.plan_scalar(&scalar_expr, &functions)?;
 
         Ok(Self {

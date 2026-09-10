@@ -80,7 +80,7 @@ pub(crate) enum RecordScope {
     Signal,
 
     /// Some child [`RecordBatch`]
-    Child(ChildRecordKind)
+    Child(ChildRecordKind),
 }
 
 /// Used to identify the non-signal (non-root) [`RecordBatch`] which was the source of data for
@@ -136,7 +136,6 @@ pub(crate) enum DataScope {
     /// as Root), but the parent struct records the hierarchy level for cardinality validation.
     // TODO ^ Cleanup this comment?
     RootParent(RootParentStruct),
-
     // TODO - will need a new scope for when the "root" is actually a datapoint batch?
 }
 
@@ -154,7 +153,7 @@ impl DataScope {
         if self.is_scalar() || other.is_scalar() {
             return true;
         }
-        
+
         // TODO - validate that we don't also need to check that the record type is the same?
         // I doubt we do, but _maybe_ worth validating?
         let self_in_root = matches!(self, Self::Record(_) | Self::RootParent(_));
@@ -584,8 +583,8 @@ mod test {
     use crate::pipeline::Pipeline;
     use crate::pipeline::expr::eval::EvalContext;
     use crate::pipeline::expr::{
-        DataScope, RecordScope, VALUE_COLUMN_NAME, arg_column_name,
-        LeafEval, ScopedExpr, ScopedValue, ShortCircuitStrategy, SignalTypePredicate,
+        DataScope, LeafEval, RecordScope, ScopedExpr, ScopedValue, ShortCircuitStrategy,
+        SignalTypePredicate, VALUE_COLUMN_NAME, arg_column_name,
     };
     use crate::pipeline::functions::test::always_panic;
     use crate::pipeline::id_mask::IdMask;
@@ -692,7 +691,10 @@ mod test {
         // severity_number > 14
         let mut op = root_eval(col(consts::SEVERITY_NUMBER).gt(lit(14i32)));
 
-        let result = op.execute_as_value(&otap, &EvalContext::new(&session_ctx)).unwrap().unwrap();
+        let result = op
+            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
+            .unwrap()
+            .unwrap();
         assert_eq!(result.scope, DataScope::Record(RecordScope::Signal));
 
         let bool_arr = as_bool_arr(&result);
@@ -736,7 +738,10 @@ mod test {
         // attributes["code.namespace"] (returns the AnyValue struct as value column)
         let mut op = attrs_eval(AttributesIdentifier::Root, "code.namespace", col("value"));
 
-        let result = op.execute_as_value(&otap, &EvalContext::new(&session_ctx)).unwrap().unwrap();
+        let result = op
+            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
+            .unwrap()
+            .unwrap();
         assert_eq!(
             result.scope,
             DataScope::Attribute(AttributesIdentifier::Root, "code.namespace".to_string())
@@ -761,7 +766,10 @@ mod test {
         let mut op = signal_type_eval(SignalType::Logs);
 
         // execute_as_value: should return true scalar
-        let result = op.execute_as_value(&otap, &EvalContext::new(&session_ctx)).unwrap().unwrap();
+        let result = op
+            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
+            .unwrap()
+            .unwrap();
         match &result.values {
             ColumnarValue::Scalar(ScalarValue::Boolean(Some(true))) => {}
             other => panic!("expected true scalar, got {other:?}"),
@@ -783,7 +791,10 @@ mod test {
         // checking for Traces on a Logs batch -> false
         let mut op = signal_type_eval(SignalType::Traces);
 
-        let result = op.execute_as_value(&otap, &EvalContext::new(&session_ctx)).unwrap().unwrap();
+        let result = op
+            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
+            .unwrap()
+            .unwrap();
         match &result.values {
             ColumnarValue::Scalar(ScalarValue::Boolean(Some(false))) => {}
             other => panic!("expected false scalar, got {other:?}"),
@@ -849,7 +860,10 @@ mod test {
             .unwrap(),
         };
 
-        let result = op.execute_as_value(&otap, &EvalContext::new(&session_ctx)).unwrap().unwrap();
+        let result = op
+            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
+            .unwrap()
+            .unwrap();
 
         let bool_arr = as_bool_arr(&result);
         assert_eq!(bool_arr.len(), 3);
@@ -906,7 +920,10 @@ mod test {
             )),
         );
 
-        let result = op2.execute_as_value(&otap, &EvalContext::new(&session_ctx)).unwrap().unwrap();
+        let result = op2
+            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
+            .unwrap()
+            .unwrap();
         assert_eq!(result.scope, DataScope::Record(RecordScope::Signal));
         let bool_arr = as_bool_arr(&result);
         assert_eq!(bool_arr.len(), 3);
@@ -983,7 +1000,10 @@ mod test {
         let mut op2 = ScopedExpr::BitmapNot(Box::new(root_eval(
             col(consts::SEVERITY_TEXT).eq(lit("WARN")),
         )));
-        let result = op2.execute_as_value(&otap, &EvalContext::new(&session_ctx)).unwrap().unwrap();
+        let result = op2
+            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
+            .unwrap()
+            .unwrap();
         let bool_arr = as_bool_arr(&result);
         assert_eq!(bool_arr.len(), 3);
         assert!(!bool_arr.value(0));
@@ -1070,7 +1090,10 @@ mod test {
             .unwrap(),
         };
 
-        let result = op.execute_as_value(&otap, &EvalContext::new(&session_ctx)).unwrap().unwrap();
+        let result = op
+            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
+            .unwrap()
+            .unwrap();
 
         // Short-circuit should produce a scalar false
         match &result.values {
@@ -1108,7 +1131,10 @@ mod test {
                 .unwrap(),
         };
 
-        let result = op.execute_as_value(&otap, &EvalContext::new(&session_ctx)).unwrap().unwrap();
+        let result = op
+            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
+            .unwrap()
+            .unwrap();
 
         // Short-circuit should produce a scalar true
         match &result.values {
@@ -1148,7 +1174,10 @@ mod test {
             .unwrap(),
         };
 
-        let result = op.execute_as_value(&otap, &EvalContext::new(&session_ctx)).unwrap().unwrap();
+        let result = op
+            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
+            .unwrap()
+            .unwrap();
 
         // Should NOT short-circuit -- should produce a full array result
         let bool_arr = as_bool_arr(&result);
@@ -1185,7 +1214,10 @@ mod test {
                 .unwrap(),
         };
 
-        let result = op.execute_as_value(&otap, &EvalContext::new(&session_ctx)).unwrap().unwrap();
+        let result = op
+            .execute_as_value(&otap, &EvalContext::new(&session_ctx))
+            .unwrap()
+            .unwrap();
 
         // we should be returning a selection vec, not a scalar (which is returned by short-circuit)
         assert!(!matches!(result.values, ColumnarValue::Scalar(_)));

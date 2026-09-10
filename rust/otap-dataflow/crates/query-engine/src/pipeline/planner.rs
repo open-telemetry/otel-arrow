@@ -43,12 +43,12 @@ use crate::pipeline::{BoxedPipelineStage, PipelineStage};
 ///
 /// Carries information such as the type of stream element that is being processed by what is
 /// being planned
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct PlannerContext {
     record_type: RecordType,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum RecordType {
     Signal,
 
@@ -154,26 +154,14 @@ impl PipelinePlanner {
             for stage in &expr_results {
                 // TODO - should we clean this up with some kind of trait method like `supports(record_type)`
 
-                if self.context.record_type.is_attribute() {
-                    if !stage.supports_exec_on_attributes() {
-                        return Err(Error::InvalidPipelineError {
-                            cause: format!(
-                                "Data expression not supported on attributes stream: {data_expr:?}"
-                            ),
-                            query_location: Some(data_expr.get_query_location().clone()),
-                        });
-                    }
-                }
-
-                if self.context.record_type.is_datapoint() {
-                    if !stage.supports_exec_on_metric_data_points() {
-                        return Err(Error::InvalidPipelineError {
-                            cause: format!(
-                                "Data expression not supported on metric data points stream: {data_expr:?}"
-                            ),
-                            query_location: Some(data_expr.get_query_location().clone()),
-                        });
-                    }
+                if !stage.supports_exec_on(&self.context.record_type) {
+                    return Err(Error::InvalidPipelineError {
+                        cause: format!(
+                            "Data expression not supported on {:?} stream: {data_expr:?}",
+                            self.context.record_type
+                        ),
+                        query_location: Some(data_expr.get_query_location().clone()),
+                    });
                 }
             }
             results.append(&mut expr_results);
@@ -635,11 +623,10 @@ impl PipelinePlanner {
 
         // list of combined assignments for the next assignment pipeline stage.
         let mut assignments = Vec::new();
-        let scoped_planner =
-            ExprPlanner::new(
-                self.filter_attribute_keys_case_sensitive,
-                self.context.record_type.clone(),
-            );
+        let scoped_planner = ExprPlanner::new(
+            self.filter_attribute_keys_case_sensitive,
+            self.context.record_type.clone(),
+        );
 
         // TODO - currently the logic for coalescing multiple assignments isn't as intelligent
         // as it could be. The strategy currently employed is just to look at adjacent set
