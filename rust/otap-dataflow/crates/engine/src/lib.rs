@@ -504,15 +504,15 @@ impl processor::FlowMetricHook for String {}
 /// Trait for setting exit information in the Context, for PData consumers.
 pub trait StampOutputPort {
     /// Called automatically when a PData message is sent on an output channel.
-    fn stamp_output_port_index(&mut self, index: u16);
+    fn stamp_output_port_index(&mut self, node_id: usize, index: u16);
 }
 
 impl StampOutputPort for () {
-    fn stamp_output_port_index(&mut self, _index: u16) {}
+    fn stamp_output_port_index(&mut self, _node_id: usize, _index: u16) {}
 }
 
 impl StampOutputPort for String {
-    fn stamp_output_port_index(&mut self, _index: u16) {}
+    fn stamp_output_port_index(&mut self, _node_id: usize, _index: u16) {}
 }
 
 /// Trait for forward-path flow_metric compute accumulation on PData.

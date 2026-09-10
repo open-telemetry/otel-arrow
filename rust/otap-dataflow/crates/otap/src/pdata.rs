@@ -304,11 +304,13 @@ impl Context {
         });
     }
 
-    /// Stamp the top frame's output port index.
+    /// Stamp the sending node's top frame with its output port index.
     /// Called at send time so each clone sent through a different port
     /// carries the correct output port index on the return path.
-    pub(crate) fn stamp_output_port_index(&mut self, index: u16) {
-        if let Some(top) = self.stack.last_mut() {
+    pub(crate) fn stamp_output_port_index(&mut self, node_id: usize, index: u16) {
+        if let Some(top) = self.stack.last_mut()
+            && top.node_id == node_id
+        {
             top.route.output_port_index = index;
         }
     }
@@ -565,8 +567,8 @@ impl otel_arrow_dfe_engine::Unwindable for OtapPdata {
 }
 
 impl otel_arrow_dfe_engine::StampOutputPort for OtapPdata {
-    fn stamp_output_port_index(&mut self, index: u16) {
-        self.context.stamp_output_port_index(index);
+    fn stamp_output_port_index(&mut self, node_id: usize, index: u16) {
+        self.context.stamp_output_port_index(node_id, index);
     }
 }
 
@@ -2182,6 +2184,21 @@ mod test {
                 .contains(Interests::NODE_COMPLETION_DURATION)
         );
         assert!(frames[0].route.entry_time_ns > 0);
+    }
+
+    /// Scenario: an uninstrumented processor forwards data carrying an upstream node frame.
+    /// Guarantees: its output-port stamp cannot overwrite the upstream frame's port index.
+    #[test]
+    fn test_output_port_stamp_requires_frame_owner() {
+        let mut pdata = create_test_pdata();
+        pdata.prepare_source_send(Interests::NODE_OUTPUT_METRICS, 1, true);
+        pdata.context.stamp_output_port_index(1, 1);
+
+        pdata.context.stamp_output_port_index(2, 0);
+
+        let frame = pdata.context.frames().last().expect("upstream frame");
+        assert_eq!(frame.node_id, 1);
+        assert_eq!(frame.route.output_port_index, 1);
     }
 
     #[test]
