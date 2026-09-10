@@ -159,8 +159,7 @@ impl TopicRouter {
         signal_config: &SignalConfig,
         context: &'a Context,
     ) -> Option<&'a TransportHeader> {
-        // `ContextEntryName` normalizes the configured name during deserialization,
-        // matching how transport headers store their logical names.
+        // Configured and captured names are already normalized.
         let header_key = signal_config.topic_from_transport_header()?.as_str();
         context
             .transport_headers()?

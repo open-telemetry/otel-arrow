@@ -72,15 +72,14 @@ pub fn test_pipeline_ctx_with_interests(
     (ctx, registry)
 }
 
-/// Compiles and installs context declarations for a single test pipeline.
+/// Compiles and installs a policy for one test pipeline.
 ///
-/// Resolves pipeline-level policies without engine or group inheritance. Tests
-/// involving multiple pipelines or inherited policies should compile their full
-/// resolved engine configuration instead.
+/// Ignores engine and group policies.
+/// Compile the full engine configuration to test inheritance or multiple pipelines.
 ///
 /// # Errors
 ///
-/// Returns an error when a node configuration or its declarations are invalid.
+/// Returns configuration or declaration errors.
 pub fn install_test_context_policy<PData: 'static + Clone + std::fmt::Debug>(
     pipeline_ctx: &mut PipelineContext,
     factory: &crate::PipelineFactory<PData>,

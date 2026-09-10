@@ -419,7 +419,7 @@ pub(super) struct RuntimeInstanceRecord {
     // The controller drops this sender once shutdown is requested so the
     // pipeline control loop can observe channel closure after node tasks exit.
     pub(super) control_sender: Option<Arc<dyn PipelineAdminSender>>,
-    /// Context policy injected into this runtime instance.
+    /// Policy used by this runtime instance.
     pub(super) context_policy: Arc<CompiledContextPolicy>,
     pub(super) lifecycle: RuntimeInstanceLifecycle,
 }
@@ -465,7 +465,7 @@ pub(super) struct PipelineOperationReservationState {
 pub(super) struct RuntimeRecoveryState {
     /// Generation currently selected to serve this logical core.
     pub(super) serving_generation: u64,
-    /// Context policy injected into the serving runtime generation.
+    /// Policy to reuse when restarting this generation.
     pub(super) context_policy: Arc<CompiledContextPolicy>,
     /// Replacement launches consumed in the current failure streak.
     pub(super) restart_count: usize,
@@ -483,7 +483,7 @@ pub(super) struct RuntimeRecoveryState {
 /// Committed logical pipeline config plus the active deployment generation.
 pub(super) struct LogicalPipelineRecord {
     pub(super) resolved: ResolvedPipelineConfig,
-    /// Policy distributed to this deployment generation.
+    /// Policy for this deployment generation.
     pub(super) context_policy: Arc<CompiledContextPolicy>,
     /// Pipeline-wide config generation; recovered cores may serve newer generations.
     pub(super) active_generation: u64,
@@ -528,7 +528,7 @@ pub(super) struct ControllerRuntimeState {
     pub(super) live_config: OtelDataflowSpec,
     /// Monotonic revision for committed logical config changes.
     pub(super) config_revision: u64,
-    /// Policy compiled for the most recently committed live configuration.
+    /// Policy for the committed live configuration.
     pub(super) context_policy: Arc<CompiledContextPolicy>,
     /// Committed logical pipelines keyed by group/pipeline id.
     pub(super) logical_pipelines: HashMap<PipelineKey, LogicalPipelineRecord>,
@@ -630,7 +630,7 @@ pub(super) struct CandidateRolloutPlan {
     pub(super) action: RolloutAction,
     /// Resolved target pipeline config after applying the request.
     pub(super) resolved_pipeline: ResolvedPipelineConfig,
-    /// Policy distributed to target runtime instances.
+    /// Policy for the target runtime instances.
     pub(super) context_policy: Arc<CompiledContextPolicy>,
     /// Runtime config revision used to build this plan.
     pub(super) base_config_revision: u64,

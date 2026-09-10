@@ -465,8 +465,7 @@ impl UnaryService<OtapPdata> for OtapBatchService {
         if let Some(policy) = effect_handler.capture_policy() {
             let mut transport_headers = TransportHeaders::new();
 
-            // Decode binary metadata to raw bytes so downstream gRPC
-            // propagation does not encode an already encoded value.
+            // Decode binary metadata before capture to prevent double encoding on propagation.
             let pairs = metadata.iter().filter_map(|kv| match kv {
                 tonic::metadata::KeyAndValueRef::Ascii(key, value) => {
                     Some((key.as_str(), Cow::Borrowed(value.as_bytes())))

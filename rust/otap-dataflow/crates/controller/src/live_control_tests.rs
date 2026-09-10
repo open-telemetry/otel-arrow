@@ -3863,9 +3863,8 @@ fn delete_pipeline_removes_stopped_pipeline_from_live_config() {
     );
 }
 
-/// Scenario: a live pipeline with registered context declarations is deleted.
-/// Guarantees: the resolved policy reaches `PipelineContext`, deletion installs
-/// the post-delete policy, and the deleted pipeline's policy is released.
+/// Scenario: a pipeline with context declarations is launched and deleted.
+/// Guarantees: the runtime receives its policy. Deletion updates the policy and releases the old one.
 #[test]
 fn delete_pipeline_recompiles_context_policy_without_removed_declarations() {
     let _capture_guard = CONTEXT_POLICY_TEST_LOCK
@@ -3959,9 +3958,8 @@ fn delete_pipeline_recompiles_context_policy_without_removed_declarations() {
     );
 }
 
-/// Scenario: a pipeline changes its declared context entry during reconfiguration.
-/// Guarantees: the replacement generation receives and commits the policy compiled
-/// from the new configuration instead of retaining the previous snapshot.
+/// Scenario: reconfiguration changes a pipeline's context entry.
+/// Guarantees: the replacement installs and commits the new policy snapshot.
 #[test]
 fn reconfigure_pipeline_installs_new_context_policy_snapshot() {
     let _capture_guard = CONTEXT_POLICY_TEST_LOCK
@@ -4082,9 +4080,8 @@ connections:
         .expect("replacement runtime should accept shutdown");
 }
 
-/// Scenario: runtime recovery restarts a failed pipeline generation.
-/// Guarantees: the recovered runtime receives the same compiled context policy
-/// snapshot that was attached to the failed generation.
+/// Scenario: recovery restarts a failed pipeline generation.
+/// Guarantees: recovery reuses that generation's policy snapshot.
 #[test]
 fn runtime_recovery_reuses_context_policy_snapshot() {
     let _capture_guard = CONTEXT_POLICY_TEST_LOCK

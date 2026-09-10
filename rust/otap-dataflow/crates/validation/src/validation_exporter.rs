@@ -341,8 +341,8 @@ mod tests {
         }
     }
 
-    /// Scenario: Validation config requires context keys and key-values.
-    /// Guarantees: each context-reading validation has a sorted, deduplicated binding.
+    /// Scenario: validation checks header names and values.
+    /// Guarantees: context reads are sorted and deduplicated.
     #[test]
     fn validation_requires_produce_consumer_declarations() {
         let config = serde_json::json!({
@@ -376,8 +376,8 @@ mod tests {
         );
     }
 
-    /// Scenario: Validation config contains only a transport-header deny check.
-    /// Guarantees: absence assertions declare the entries they inspect.
+    /// Scenario: validation only checks for forbidden headers.
+    /// Guarantees: forbidden names are declared as context reads.
     #[test]
     fn validation_deny_only_declares_context_entries() {
         let config = serde_json::json!({
@@ -396,8 +396,8 @@ mod tests {
         );
     }
 
-    /// Scenario: Validation config has no context checks.
-    /// Guarantees: the factory declares no context consumers.
+    /// Scenario: validation does not inspect transport headers.
+    /// Guarantees: no context consumers are declared.
     #[test]
     fn validation_no_header_instructions_empty() {
         let config = serde_json::json!({

@@ -1972,8 +1972,8 @@ mod test {
             .validate(|_ctx| async move {});
     }
 
-    /// Scenario: A partition processor has a configured output header.
-    /// Guarantees: Its factory declares the produced context name.
+    /// Scenario: a partition processor has an output header.
+    /// Guarantees: its factory declares that context entry.
     #[test]
     fn partition_declaration_names_output() {
         let config = serde_json::json!({

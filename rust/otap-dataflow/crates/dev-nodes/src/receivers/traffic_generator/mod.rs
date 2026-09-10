@@ -1901,8 +1901,8 @@ mod tests {
             .run_validation(validation);
     }
 
-    /// Scenario: Traffic generation config contains several context names.
-    /// Guarantees: runtime headers and declarations use the same logical names.
+    /// Scenario: a generator configures several transport headers.
+    /// Guarantees: declarations are sorted and match the emitted names.
     #[test]
     fn traffic_gen_declaration_sorted_headers() {
         let config = serde_json::json!({
@@ -1944,8 +1944,8 @@ mod tests {
         assert_eq!(runtime_names, names);
     }
 
-    /// Scenario: Configured headers use mixed-case wire names.
-    /// Guarantees: their logical names and binary classification are normalized.
+    /// Scenario: generated header names use mixed case.
+    /// Guarantees: names become lowercase. Binary suffixes still select binary values.
     #[test]
     fn traffic_gen_headers_normalize_logical_names() {
         let headers = build_transport_headers(&HashMap::from([
@@ -1968,8 +1968,8 @@ mod tests {
         assert_eq!(trace_header.value.value_kind, ValueKind::Binary);
     }
 
-    /// Scenario: Traffic generation config contains no context.
-    /// Guarantees: the factory declares no producers.
+    /// Scenario: a generator configures no transport headers.
+    /// Guarantees: it declares no context producers.
     #[test]
     fn traffic_gen_declaration_no_headers() {
         let config = serde_json::json!({
@@ -1987,8 +1987,8 @@ mod tests {
         assert!(decls.is_empty());
     }
 
-    /// Scenario: Configured header names differ only by casing.
-    /// Guarantees: declaration compilation rejects the duplicate logical entry.
+    /// Scenario: configured header names differ only by case.
+    /// Guarantees: declaration collection rejects the duplicate during parsing.
     #[test]
     fn traffic_gen_declaration_rejects_duplicate_normalized_headers() {
         let config = serde_json::json!({

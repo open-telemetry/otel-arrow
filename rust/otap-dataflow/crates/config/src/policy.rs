@@ -2107,8 +2107,8 @@ hard_limit: 2 GiB
         assert!(errors[0].contains("'named' list is required"));
     }
 
-    /// Scenario: a pipeline policy repeats a normalized capture match name.
-    /// Guarantees: policy validation rejects the duplicate with its configuration path.
+    /// Scenario: a pipeline's capture policy repeats a normalized match name.
+    /// Guarantees: the duplicate is rejected with its configuration path.
     #[test]
     fn validates_transport_headers_capture_duplicates() {
         let policies: Policies = serde_yaml::from_str(

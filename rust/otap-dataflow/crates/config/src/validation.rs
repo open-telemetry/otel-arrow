@@ -14,7 +14,7 @@
 
 use crate::error::Error;
 
-/// Deserializes a JSON config value into the expected configuration type `T`.
+/// Deserializes configuration into `T`.
 pub fn deserialize_typed_config<T: serde::de::DeserializeOwned>(
     config: &serde_json::Value,
 ) -> Result<T, Error> {

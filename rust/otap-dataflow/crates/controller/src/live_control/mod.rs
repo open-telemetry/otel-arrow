@@ -127,7 +127,7 @@ pub(super) struct LaunchedPipelineThread<PData> {
     pub(super) pipeline_key: DeployedPipelineKey,
     /// Admin sender used by live control to send shutdown to the instance.
     pub(super) control_sender: Arc<dyn PipelineAdminSender>,
-    /// Context policy injected into this runtime instance.
+    /// Policy used by this runtime instance.
     pub(super) context_policy: Arc<CompiledContextPolicy>,
     /// Keeps the launch result tied to the pipeline data type.
     pub(super) _marker: std::marker::PhantomData<PData>,

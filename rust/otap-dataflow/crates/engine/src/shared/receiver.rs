@@ -104,18 +104,14 @@ pub struct EffectHandler<PData> {
     pub(crate) core: EffectHandlerCore<PData>,
     /// Output-port router.
     pub router: OutputRouter<SharedSender<PData>>,
-    /// Capture policy for extracting transport headers from inbound metadata.
-    /// `None` when no capture policy is configured (zero overhead).
-    /// Shared immutably because Send request handlers clone this per request.
+    /// Immutable capture policy shared by request handlers.
+    /// `None` disables capture.
     capture_policy: Option<Arc<CompiledHeaderCapturePolicy>>,
 }
 
 /// Implementation for the `Send` effect handler.
 impl<PData> EffectHandler<PData> {
-    /// Creates a new sendable effect handler with the given receiver name.
-    ///
-    /// Use this constructor when your receiver do need to be sent across threads or
-    /// when it uses components that are `Send`.
+    /// Creates a sendable receiver effect handler.
     #[must_use]
     pub fn new(
         node_id: NodeId,
@@ -164,9 +160,9 @@ impl<PData> EffectHandler<PData> {
         self.core.node_interests()
     }
 
-    /// Returns the capture policy if a header capture policy is configured.
+    /// Returns the capture policy.
     ///
-    /// Returns `None` when no capture policy is active (zero overhead).
+    /// `None` disables capture.
     #[must_use]
     pub fn capture_policy(&self) -> Option<&CompiledHeaderCapturePolicy> {
         self.capture_policy.as_deref()

@@ -9,7 +9,7 @@ use otel_arrow_dfe_admin_api::{
 };
 use otel_arrow_dfe_config::engine::OtelDataflowSpec;
 use otel_arrow_dfe_controller::Controller;
-// The rendered scenarios reference core nodes by URN, not by Rust symbols.
+// Link the core-node factories used by rendered scenarios.
 use otel_arrow_dfe_core_nodes as _;
 use otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY;
 use std::collections::HashMap;
@@ -281,8 +281,8 @@ mod tests {
     use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    /// Scenario: validation scenarios resolve core-node URNs without referencing their Rust types.
-    /// Guarantees: the simulator links the core factories needed for both traffic and observability.
+    /// Scenario: factories are referenced only by literal URNs.
+    /// Guarantees: core factories are linked for traffic and internal telemetry.
     #[test]
     fn simulator_links_core_node_factories() {
         let receivers = OTAP_PIPELINE_FACTORY.get_receiver_factory_map();

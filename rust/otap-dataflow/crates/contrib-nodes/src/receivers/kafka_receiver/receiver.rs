@@ -382,16 +382,11 @@ impl KafkaReceiver {
         }
     }
 
-    /// Process a Kafka message into [`OtapPdata`].
+    /// Decodes a Kafka message into [`OtapPdata`].
     ///
-    /// Offset tracking is handled by the caller, not inside this method. This
-    /// allows the caller to track the offset even when decoding fails (poison
-    /// pill handling).
-    ///
-    /// When a [`CompiledHeaderCapturePolicy`] is provided, matching Kafka message
-    /// headers are captured into [`TransportHeaders`] and attached to the
-    /// returned [`OtapPdata`] context. This is independent of the
-    /// `resource_attrs_from_headers` config which injects headers into resource attributes.
+    /// The caller tracks offsets, including decode failures.
+    /// A capture policy attaches matching headers to the returned context.
+    /// `resource_attrs_from_headers` separately controls resource attributes.
     fn process_kafka(
         &mut self,
         kafka_message: BorrowedMessage<'_>,

@@ -820,7 +820,6 @@ impl PipelineConfig {
     ) -> Result<(), Error> {
         let mut errors = Vec::new();
 
-        // Validate node-level transport header policies.
         for (node_name, node_config) in self.nodes.iter() {
             node_config.validate_transport_header_policies(node_name, &mut errors);
         }

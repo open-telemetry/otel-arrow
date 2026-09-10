@@ -19,7 +19,7 @@ use std::hash::Hash;
 pub mod byte_units;
 /// Config URI providers for resolving configuration from file:, env:, or bare paths.
 pub mod config_provider;
-/// Pipeline context entry reference configuration.
+/// Context entry names.
 pub mod context;
 pub mod conversion;
 pub mod engine;

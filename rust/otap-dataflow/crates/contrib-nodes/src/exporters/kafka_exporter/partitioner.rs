@@ -1,13 +1,10 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Partition key generation for Kafka messages.
+//! Kafka partition keys derived from transport headers.
 //!
-//! This module provides functions to generate deterministic partition keys for
-//! Kafka messages based on transport headers. The transport headers are hashed
-//! into a fixed-size, hex-encoded key that librdkafka's partitioner algorithm
-//! (configured via [`PartitionerStrategy`]) then maps to a concrete partition
-//! number.
+//! Headers are hashed into a fixed-size hexadecimal key.
+//! The configured [`PartitionerStrategy`] selects the partition.
 //!
 //! [`PartitionerStrategy`]: super::config::PartitionerStrategy
 
@@ -15,35 +12,17 @@ use otel_arrow_dfe_config::transport_headers::TransportHeaders;
 use std::hash::{Hash, Hasher};
 use xxhash_rust::xxh64::Xxh64;
 
-/// Build a deterministic partition key from transport headers.
+/// Builds a deterministic key from normalized header names and values.
 ///
-/// Mirrors how the rotel / OpenTelemetry Collector Kafka exporters derive their
-/// partition key: the headers are sorted, a single hasher is initialized, and
-/// each sorted header is folded into that one hasher; the resulting `u64` is
-/// then hex-encoded into the Kafka record key. This ensures that requests
-/// carrying the same set of transport headers (e.g., same tenant ID, same auth
-/// token) produce the same key and are therefore routed to the same Kafka
-/// partition by librdkafka's partitioner.
-///
-/// Using the transport header name means that headers differing only in casing
-/// or formatting (e.g. `X-Tenant-Id` vs `x-tenant-id`) produce the same key.
-///
-/// # Arguments
-/// * `headers` - Transport headers captured from the inbound request.
-///
-/// # Returns
-/// A hex-encoded 16-character key, or `None` when there are no transport headers
+/// Header order and original wire-name casing do not affect the key.
+/// Returns a 16-character hexadecimal key, or `None` for empty headers.
 #[must_use]
 pub fn partition_key_from_transport_headers(headers: &TransportHeaders) -> Option<String> {
     if headers.is_empty() {
         return None;
     }
 
-    // Sort the headers by (name, value) to make the key order-independent.
-    // TransportHeaders is backed by a Vec, so iteration order depends on
-    // insertion order; sorting removes that dependency. We sort on the
-    // normalized name (not the original wire name) so headers differing only
-    // in original casing produce the same partition key.
+    // Sort by normalized name, then value. Ignore wire-name casing and input order.
     let mut sorted: Vec<&_> = headers.iter().collect();
     sorted.sort_unstable_by(|a, b| {
         a.name
@@ -51,8 +30,6 @@ pub fn partition_key_from_transport_headers(headers: &TransportHeaders) -> Optio
             .then_with(|| a.value.bytes.cmp(&b.value.bytes))
     });
 
-    // Initialize a single hasher and fold each sorted header into it. For each
-    // header we hash its name and value
     let mut hasher = Xxh64::new(0);
     for header in sorted {
         header.name.hash(&mut hasher);
@@ -60,7 +37,6 @@ pub fn partition_key_from_transport_headers(headers: &TransportHeaders) -> Optio
     }
     let hash = hasher.finish();
 
-    // Hex-encode the hash bytes
     Some(hex::encode(hash.to_be_bytes()))
 }
 

@@ -99,15 +99,13 @@ pub trait Exporter<PData> {
 pub struct EffectHandler<PData> {
     pub(crate) core: EffectHandlerCore<PData>,
     _pd: PhantomData<PData>,
-    /// Propagation policy for filtering captured headers on egress.
-    /// `None` when no propagation policy is configured (zero overhead).
-    /// Shared immutably across Send handler clones instead of copying policy rules.
+    /// Immutable propagation policy shared by handler clones.
+    /// `None` disables propagation.
     propagation_policy: Option<Arc<HeaderPropagationPolicy>>,
 }
 
 impl<PData> EffectHandler<PData> {
-    /// Creates a new shared (Send) `EffectHandler` with the given exporter node id and the metrics
-    /// exporter.
+    /// Creates a sendable exporter effect handler.
     #[must_use]
     pub fn new(node_id: NodeId, metrics_reporter: MetricsReporter) -> Self {
         EffectHandler {
@@ -129,9 +127,9 @@ impl<PData> EffectHandler<PData> {
         self.core.node_interests()
     }
 
-    /// Returns the propagation policy if a header propagation policy is configured.
+    /// Returns the propagation policy.
     ///
-    /// Returns `None` when no propagation policy is active (zero overhead).
+    /// `None` disables propagation.
     #[must_use]
     pub fn propagation_policy(&self) -> Option<&HeaderPropagationPolicy> {
         self.propagation_policy.as_deref()

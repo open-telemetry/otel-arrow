@@ -337,10 +337,10 @@ impl NodeUserConfig {
             .unwrap_or_default()
     }
 
-    /// Validates transport header policy placement and contents on this node.
+    /// Validates this node's transport-header policies.
     ///
-    /// Receivers may only declare `header_capture`; exporters may only declare
-    /// `header_propagation`; processors may declare neither.
+    /// Only receivers may declare `header_capture`.
+    /// Only exporters may declare `header_propagation`.
     pub fn validate_transport_header_policies(&self, node_name: &str, errors: &mut Vec<Error>) {
         let kind = self.kind();
 
@@ -743,8 +743,8 @@ config:
         assert_eq!(capture.headers[0].store_as.as_deref(), Some("request_id"));
     }
 
-    /// Scenario: a receiver override repeats a normalized capture match name.
-    /// Guarantees: node validation delegates capture-policy errors with the node path.
+    /// Scenario: a receiver's capture policy repeats a normalized match name.
+    /// Guarantees: the duplicate is rejected with the node's configuration path.
     #[test]
     fn receiver_rejects_duplicate_capture_match_names() {
         let yaml = r#"

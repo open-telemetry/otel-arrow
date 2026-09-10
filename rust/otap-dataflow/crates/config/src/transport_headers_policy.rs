@@ -22,8 +22,8 @@ use std::hash::{Hash, Hasher};
 
 // -- Stats types --------------------------------------------------------------
 
-/// Statistics returned by [`CompiledHeaderCapturePolicy::capture_from_pairs`] when
-/// one or more matching headers could not be captured due to policy limits.
+/// Counts headers skipped by capture limits.
+/// Reported by [`CompiledHeaderCapturePolicy::capture_from_pairs`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CaptureStats {
     /// Matching headers skipped because `max_entries` was already reached.
@@ -88,7 +88,7 @@ pub struct HeaderCapturePolicy {
     pub(crate) headers: Vec<CaptureRule>,
 }
 
-/// Runtime header capture policy indexed by normalized wire name.
+/// Capture rules indexed by normalized wire name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompiledHeaderCapturePolicy {
     defaults: CaptureDefaults,
@@ -146,7 +146,7 @@ impl HeaderCapturePolicy {
         self.headers.is_empty()
     }
 
-    /// Validates that each normalized wire name is matched only once.
+    /// Rejects duplicate normalized match names.
     pub fn validate(&self) -> Result<(), String> {
         let mut seen = HashMap::new();
         for (rule_index, rule) in self.headers.iter().enumerate() {
@@ -164,7 +164,7 @@ impl HeaderCapturePolicy {
         Ok(())
     }
 
-    /// Compiles per-match original-name requirements into this capture policy.
+    /// Indexes capture rules and resolves original-name retention.
     #[must_use]
     pub fn compile(
         self,
@@ -338,11 +338,9 @@ const fn default_max_value_bytes() -> usize {
 )]
 #[serde(deny_unknown_fields)]
 pub struct CaptureRule {
-    /// Wire header names to match, normalized.
+    /// Normalized wire names to match.
     pub match_names: Vec<ContextEntryName>,
-    /// Normalized logical name to store the header under, also known
-    /// as the context entry name. If omitted, defaults to the matched
-    /// name, normalized.
+    /// Stored context entry name. Defaults to the normalized matched name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub store_as: Option<ContextEntryName>,
     /// Whether this header contains sensitive data (e.g. auth tokens).
@@ -404,21 +402,16 @@ impl HeaderPropagationPolicy {
         self.default.selector.validate()
     }
 
-    /// Returns whether this policy propagates one entry using its original wire name.
+    /// Returns whether this entry is propagated with its original name.
     #[must_use]
     pub fn propagates_original_name(&self, name: &ContextEntryName) -> bool {
         let (action, name_strategy) = self.resolve_action_for_name(name);
         action == PropagationAction::Propagate && name_strategy == NameStrategy::Preserve
     }
 
-    /// Returns an iterator over headers that should be propagated on
-    /// egress. Each [`PropagatedHeader`] borrows from the captured
-    /// headers
-    ///
-    /// Headers whose policy action is [`PropagationAction::Drop`] are
-    /// silently skipped. The [`PropagatedHeader::header_name`] field
-    /// points to either the original wire name or the stored name,
-    /// depending on the resolved [`NameStrategy`].
+    /// Returns borrowed headers selected for propagation.
+    /// [`NameStrategy`] selects each header's original or stored name.
+    /// Headers with [`PropagationAction::Drop`] are omitted.
     pub fn propagate<'a>(
         &'a self,
         headers: &'a TransportHeaders,
@@ -523,8 +516,8 @@ pub struct PropagationSelector {
     #[serde(rename = "type", default)]
     pub selector_type: PropagationSelectorType,
 
-    /// List of header names to propagate. Required when `type` is `named`.
-    /// Note: can be Vec<_>.
+    /// Required names for `named` selectors.
+    /// Must be absent for other selector types.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub named: Option<Vec<ContextEntryName>>,
 }
@@ -656,7 +649,7 @@ pub struct PropagationOverride {
 )]
 #[serde(deny_unknown_fields)]
 pub struct PropagationMatch {
-    /// Match headers whose stored normalized name appears in this list.
+    /// Normalized stored names to match.
     pub stored_names: Vec<ContextEntryName>,
 }
 
@@ -668,8 +661,8 @@ mod tests {
         ContextEntryName::try_from(raw).expect("valid test context entry name")
     }
 
-    /// Scenario: the capture policy is constructed with defaults.
-    /// Guarantees: it captures no headers and retains the documented limits and drop behavior.
+    /// Scenario: a capture policy uses defaults.
+    /// Guarantees: no rules are set. Default limits and drop-on-error behavior are preserved.
     #[test]
     fn default_capture_policy_captures_nothing() {
         let policy = HeaderCapturePolicy::default();
@@ -681,8 +674,8 @@ mod tests {
         assert_eq!(policy.defaults.on_error, ErrorAction::Drop);
     }
 
-    /// Scenario: capture rules repeat a normalized wire name.
-    /// Guarantees: validation reports both conflicting match locations.
+    /// Scenario: capture rules repeat a normalized match name.
+    /// Guarantees: the error identifies both conflicting locations.
     #[test]
     fn capture_policy_rejects_duplicate_match_names() {
         let policy = HeaderCapturePolicy::new(
@@ -711,8 +704,8 @@ mod tests {
         );
     }
 
-    /// Scenario: the propagation policy is constructed with defaults.
-    /// Guarantees: it selects no headers, preserves selected wire names, and has no overrides.
+    /// Scenario: a propagation policy uses defaults.
+    /// Guarantees: no headers are selected. Overrides are empty. The name strategy is `Preserve`.
     #[test]
     fn default_propagation_policy() {
         let policy = HeaderPropagationPolicy::default();
@@ -726,8 +719,8 @@ mod tests {
         assert!(policy.overrides.is_empty());
     }
 
-    /// Scenario: propagation overrides change name handling for selected entries.
-    /// Guarantees: original-name consumption is resolved exactly for each normalized entry.
+    /// Scenario: overrides change naming or drop selected headers.
+    /// Guarantees: only propagated headers using `Preserve` require original names.
     #[test]
     fn propagation_policy_resolves_original_name_per_entry() {
         let policy = HeaderPropagationPolicy::new(
@@ -764,8 +757,8 @@ mod tests {
         assert!(!policy.propagates_original_name(&context_name("dropped")));
     }
 
-    /// Scenario: a compiled capture policy has no downstream original-name consumer.
-    /// Guarantees: renamed headers retain only their normalized stored name.
+    /// Scenario: no consumer needs original names.
+    /// Guarantees: renamed headers retain only their stored names.
     #[test]
     fn capture_policy_can_discard_original_names() {
         let policy = HeaderCapturePolicy::new(
@@ -787,8 +780,8 @@ mod tests {
         assert_eq!(headers.as_slice()[0].wire_name(), "tenant");
     }
 
-    /// Scenario: YAML configures capture limits, renaming, and sensitive-header rules.
-    /// Guarantees: parsing and JSON round-tripping preserve the complete capture policy.
+    /// Scenario: YAML sets capture limits, renaming, and sensitive headers.
+    /// Guarantees: parsing and a JSON round trip preserve the policy.
     #[test]
     fn capture_policy_serde_roundtrip() {
         let yaml = r#"
@@ -821,8 +814,8 @@ headers:
         assert_eq!(back, policy);
     }
 
-    /// Scenario: YAML configures an all-captured propagation policy with an authorization-drop override.
-    /// Guarantees: parsing and JSON round-tripping preserve the selector and override.
+    /// Scenario: YAML selects all headers and drops authorization.
+    /// Guarantees: parsing and a JSON round trip preserve both rules.
     #[test]
     fn propagation_policy_serde_roundtrip() {
         let yaml = r#"
@@ -850,8 +843,8 @@ overrides:
         assert_eq!(back, policy);
     }
 
-    /// Scenario: one YAML document configures both capture and propagation.
-    /// Guarantees: both policy sections and their rules are deserialized.
+    /// Scenario: YAML configures capture and propagation together.
+    /// Guarantees: both policy sections parse.
     #[test]
     fn full_transport_headers_policy_serde() {
         let yaml = r#"
@@ -875,8 +868,8 @@ header_propagation:
         assert_eq!(policy.header_propagation.overrides.len(), 1);
     }
 
-    /// Scenario: a YAML named selector lists two logical header entries.
-    /// Guarantees: the selector kind and ordered entry names are preserved.
+    /// Scenario: a YAML `named` selector lists two entries.
+    /// Guarantees: parsing preserves the selector type and name order.
     #[test]
     fn selector_named_variant() {
         let yaml = r#"!
@@ -898,8 +891,8 @@ named:
         );
     }
 
-    /// Scenario: an all-captured selector has no named-entry list.
-    /// Guarantees: validation accepts the selector without requiring individual names.
+    /// Scenario: an `all_captured` selector has no name list.
+    /// Guarantees: validation accepts it without individual names.
     #[test]
     fn selector_validate_all_captured_valid() {
         let selector = PropagationSelector {
@@ -909,8 +902,8 @@ named:
         assert!(selector.validate().is_ok());
     }
 
-    /// Scenario: a none selector has no named-entry list.
-    /// Guarantees: validation accepts explicitly disabled propagation.
+    /// Scenario: a `none` selector has no name list.
+    /// Guarantees: an empty selection is valid.
     #[test]
     fn selector_validate_none_valid() {
         let selector = PropagationSelector {
@@ -920,8 +913,8 @@ named:
         assert!(selector.validate().is_ok());
     }
 
-    /// Scenario: a named selector supplies a nonempty entry list.
-    /// Guarantees: validation accepts a well-formed named selection.
+    /// Scenario: a `named` selector has a nonempty name list.
+    /// Guarantees: validation accepts the names.
     #[test]
     fn selector_validate_named_valid() {
         let selector = PropagationSelector {
@@ -931,8 +924,8 @@ named:
         assert!(selector.validate().is_ok());
     }
 
-    /// Scenario: a named selector omits its entry list.
-    /// Guarantees: validation reports that the named list is required.
+    /// Scenario: a `named` selector omits its name list.
+    /// Guarantees: validation reports the missing list.
     #[test]
     fn selector_validate_named_missing_list() {
         let selector = PropagationSelector {
@@ -943,8 +936,8 @@ named:
         assert!(err.contains("'named' list is required"));
     }
 
-    /// Scenario: a named selector supplies an empty entry list.
-    /// Guarantees: validation rejects the empty list instead of silently selecting nothing.
+    /// Scenario: a `named` selector has an empty name list.
+    /// Guarantees: validation rejects the empty list.
     #[test]
     fn selector_validate_named_empty_list() {
         let selector = PropagationSelector {
@@ -955,8 +948,8 @@ named:
         assert!(err.contains("must not be empty"));
     }
 
-    /// Scenario: an all-captured selector also supplies named entries.
-    /// Guarantees: validation rejects the contradictory named field.
+    /// Scenario: an `all_captured` selector also has a name list.
+    /// Guarantees: validation rejects the conflicting list.
     #[test]
     fn selector_validate_all_captured_with_named_field() {
         let selector = PropagationSelector {
@@ -967,8 +960,8 @@ named:
         assert!(err.contains("'named' must not be set"));
     }
 
-    /// Scenario: a none selector also supplies named entries.
-    /// Guarantees: validation rejects the contradictory named field.
+    /// Scenario: a `none` selector also has a name list.
+    /// Guarantees: validation rejects the conflicting list.
     #[test]
     fn selector_validate_none_with_named_field() {
         let selector = PropagationSelector {
@@ -979,8 +972,8 @@ named:
         assert!(err.contains("'named' must not be set"));
     }
 
-    /// Scenario: a propagation policy embeds a named selector without an entry list.
-    /// Guarantees: policy validation surfaces the selector's missing-list error.
+    /// Scenario: a propagation policy's `named` selector omits its list.
+    /// Guarantees: policy validation reports the selector error.
     #[test]
     fn propagation_policy_validate_delegates_to_selector() {
         let policy = HeaderPropagationPolicy::new(
@@ -997,8 +990,8 @@ named:
         assert!(err.contains("'named' list is required"));
     }
 
-    /// Scenario: a propagation policy embeds a valid all-captured selector.
-    /// Guarantees: policy validation accepts the complete configuration.
+    /// Scenario: a propagation policy selects all captured headers.
+    /// Guarantees: the complete policy accepts the selector.
     #[test]
     fn propagation_policy_validate_valid() {
         let policy = HeaderPropagationPolicy::new(

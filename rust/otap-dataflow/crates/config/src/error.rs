@@ -295,7 +295,7 @@ pub enum Error {
         path: String,
     },
 
-    /// An undeclared context declaration.
+    /// A node's declarations do not match the compiled policy.
     #[error("Context declaration is unrecognized")]
     #[diagnostic(code(data_plane::unrecognized_context_declaration), url(docsrs))]
     UnrecognizedContextDeclaration {},

@@ -272,8 +272,7 @@ fn capture_policy(header_count: usize, producer: ProducerCase) -> HeaderCaptureP
         .map(|index| {
             let wire_name = format!("x-context-{index}");
             let store_as = match producer {
-                // An absent store_as and one equal to the wire name compile to
-                // the same stored-name representation.
+                // Omitted and same-name store_as values compile identically.
                 ProducerCase::Unrenamed => None,
                 ProducerCase::Renamed => Some(context_name(format!("context_{index}"))),
             };

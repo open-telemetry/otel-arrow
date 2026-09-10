@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Component context declarations collected before runtime construction.
+//! Collects and compiles context declarations before runtime construction.
 
 use crate::PipelineFactory;
 use crate::error::Error as EngineError;
@@ -17,59 +17,59 @@ use otel_arrow_dfe_config::{ContextEntryName, NodeId as ConfigNodeId, PipelineKe
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
-/// Context entry selector.
+/// A context entry and its requested representation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ContextEntrySelector {
-    /// The name
+    /// Normalized entry name.
     pub name: ContextEntryName,
-    /// The form
+    /// Requested representation.
     pub form: ContextEntrySelectorForm,
 }
 
-/// Format of context entry being selected
+/// Context entry representation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ContextEntrySelectorForm {
-    /// Consumers use only the value.
+    /// Value only.
     Value,
-    /// Consumers use normalized field names.
+    /// Normalized name and value.
     NormalizedKeyValue,
-    /// Consumers use original field names.
+    /// Original name and value.
     OriginalKeyValue,
 }
 
-/// Generic context registers selected by one consumer binding.
+/// Context entries read by a consumer.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ContextConsumerSelector {
     /// Selects named context entries in order.
     Entries {
-        /// Logical context entry references.
+        /// Entries to read.
         entries: Box<[ContextEntrySelector]>,
     },
     /// Selects every context entry using normalized names.
     AllNormalized,
 }
 
-/// One context declaration.
+/// A node's context access or transport-header policy.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ContextDeclaration {
-    /// Adds one named value to outgoing context.
+    /// Declares a context entry produced by the node.
     Produces {
-        /// The logical context entry that will be produced.
+        /// Produced entry name.
         entry: ContextEntryName,
     },
-    /// Reads context through one compiled access.
+    /// Declares context reads.
     Consumes {
-        /// Generic register selection.
+        /// Entries to read.
         selector: ContextConsumerSelector,
     },
-    /// Captures transport headers into context at an engine receiver wrapper.
+    /// Declares the receiver's header capture policy.
     HeaderCapture {
-        /// Effective capture policy after node/pipeline precedence is resolved.
+        /// Resolved capture policy.
         policy: HeaderCapturePolicy,
     },
-    /// Propagates context as transport headers at an engine exporter wrapper.
+    /// Declares the exporter's header propagation policy.
     HeaderPropagation {
-        /// Effective propagation policy after node/pipeline precedence is resolved.
+        /// Resolved propagation policy.
         policy: HeaderPropagationPolicy,
     },
 }
@@ -100,24 +100,24 @@ impl ContextDeclaration {
     }
 }
 
-/// A configuration-dependent declaration provider registered by a component.
+/// Derives context declarations from component configuration.
 #[derive(Clone, Copy)]
 pub struct ContextDeclarationProvider {
-    /// The registered component's URN.
+    /// Component URN.
     pub urn: &'static str,
-    /// Produces declarations using a component configuration.
+    /// Declaration callback.
     pub declarations: ContextDeclarationFn,
 }
 
-/// Deterministically describes a node factory's context access.
+/// Derives deterministic context declarations from node configuration.
 pub type ContextDeclarationFn = fn(&serde_json::Value) -> Result<NodeContextDeclarations, Error>;
 
-/// How Config structs declare node context bindings.
+/// Context declarations derived from typed node configuration.
 pub trait ConfigNodeContextDeclaration: serde::de::DeserializeOwned {
-    /// Returns the context accesses required by this configuration.
+    /// Declares the context reads and writes for this configuration.
     fn context_declarations(&self) -> NodeContextDeclarations;
 
-    /// Verifies this parsed configuration against the engine-compiled declarations.
+    /// Checks these declarations against the compiled policy.
     fn validate_context_declarations(
         &self,
         pipeline_ctx: &crate::context::PipelineContext,
@@ -132,15 +132,13 @@ pub trait ConfigNodeContextDeclaration: serde::de::DeserializeOwned {
     }
 }
 
-// `#[allow(unsafe_code)]` is required because `linkme::distributed_slice`
-// emits a static with `#[link_section = "..."]`, which the engine crate's
-// `-D unsafe-code` lint would otherwise reject.
+// linkme's generated #[link_section] requires an unsafe-code allowance.
 /// Context declaration providers registered by nodes.
 #[allow(unsafe_code)]
 #[distributed_slice]
 pub static CONTEXT_DECLARATION_PROVIDERS: [ContextDeclarationProvider];
 
-/// A deterministic set of context declarations.
+/// Sorted, unique context declarations.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NodeContextDeclarations {
     /// Sorted and deduplicated declarations.
@@ -171,18 +169,18 @@ impl IntoIterator for NodeContextDeclarations {
 }
 
 impl NodeContextDeclarations {
-    /// Iterates over declarations in access ID order.
+    /// Iterates over declarations in sorted order.
     pub fn iter(&self) -> impl Iterator<Item = &ContextDeclaration> {
         self.byid.iter()
     }
 
-    /// Is this empty?
+    /// Returns whether the declaration set is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.byid.is_empty()
     }
 
-    /// Return the number of declarations
+    /// Returns the declaration count.
     #[must_use]
     pub fn len(&self) -> usize {
         self.byid.len()
@@ -190,7 +188,7 @@ impl NodeContextDeclarations {
 }
 
 impl ContextDeclarationProvider {
-    /// Creates a provider that derives declarations from a typed component configuration.
+    /// Creates a declaration provider for a configuration type.
     #[must_use]
     pub const fn from_typed_config<T>(urn: &'static str) -> Self
     where
@@ -203,7 +201,6 @@ impl ContextDeclarationProvider {
     }
 }
 
-/// Generic function used in from_typed_config.
 fn typed_context_declarations<T>(
     config: &serde_json::Value,
 ) -> Result<NodeContextDeclarations, Error>
@@ -216,7 +213,7 @@ where
     )
 }
 
-/// Context policy compiled from resolved configuration.
+/// Context policy compiled from all pipelines.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompiledContextPolicy {
     nodes: HashMap<PipelineKey, HashMap<ConfigNodeId, CompiledNodeContext>>,
@@ -277,7 +274,7 @@ impl CompiledNodeContext {
 }
 
 impl CompiledContextPolicy {
-    /// The empty state has no declarations, bind always fails.
+    /// Creates a policy with no registered nodes. Node validation always fails.
     #[must_use]
     pub fn empty() -> Self {
         Self {
@@ -313,7 +310,7 @@ impl CompiledContextPolicy {
         Self { nodes }
     }
 
-    /// Returns all compiled context bindings declared for one node.
+    /// Returns the node's compiled bindings.
     pub(crate) fn node_bindings(
         &self,
         pipeline: &PipelineKey,
@@ -322,8 +319,8 @@ impl CompiledContextPolicy {
         Some(&self.nodes.get(pipeline)?.get(node)?.bindings)
     }
 
-    /// Validates that a node's declarations appear correctly. This should be
-    /// called by nodes after parsing their configuration.
+    /// Checks component declarations against this node's compiled bindings.
+    /// Call after parsing the node configuration.
     pub fn validate_node_declarations(
         &self,
         pipeline: &PipelineKey,
@@ -347,7 +344,7 @@ impl CompiledContextPolicy {
 }
 
 impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
-    /// Compiles context policy from the complete resolved configuration.
+    /// Compiles context policies for the full resolved engine configuration.
     pub fn compile_context_policy(
         &self,
         resolved: &ResolvedOtelDataflowSpec,
@@ -361,13 +358,11 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
             );
             let mut declarations_by_node = HashMap::new();
             for (node_id, node_config) in pipeline.pipeline.node_iter() {
-                // Get the node's own declarations
                 let component_declarations = self.node_context_declarations(
                     node_config.kind(),
                     node_config.r#type.as_ref(),
                     &node_config.config,
                 )?;
-                // Get declarations from the node's policy
                 let wrapper_declaration = Self::wrapper_context_declaration(
                     node_config,
                     &pipeline.policies.transport_headers,
@@ -384,7 +379,6 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
         Ok(Arc::new(CompiledContextPolicy::compile(declarations)))
     }
 
-    // Extract policies related to context for a node.
     fn wrapper_context_declaration(
         node: &NodeUserConfig,
         pipeline_policy: &Option<TransportHeadersPolicy>,
@@ -414,7 +408,6 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
         }
     }
 
-    /// Returns context declarations for a node's configuration.
     fn node_context_declarations(
         &self,
         kind: NodeKind,
@@ -446,9 +439,7 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
                     .validate_config
             }
         };
-        // Make sure we are reading from valid configuration, since
-        // this step happens before the node validates its own
-        // configuration.
+        // Validate before collecting declarations. Nodes are not constructed yet.
         validate_config(config).map_err(|error| EngineError::ConfigError(Box::new(error)))?;
 
         let declarations = context_declaration_provider(urn)
@@ -458,7 +449,7 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
             })
             .transpose()?
             .unwrap_or_default();
-        // Make sure nodes don't return policy declarations.
+        // Capture and propagation declarations belong to the engine.
         if let Some(declaration) = declarations
             .iter()
             .find(|declaration| !declaration.is_component_declaration())
@@ -540,8 +531,8 @@ mod preserve_original_name_tests {
         )]))
     }
 
-    /// Scenario: capture rules contain distinct names and aliases sharing one stored name.
-    /// Guarantees: engine-wide retention follows each logical stored context name.
+    /// Scenario: capture aliases share a stored name.
+    /// Guarantees: each stored name determines original-name retention.
     #[test]
     fn compiled_capture_policy_tracks_each_match_name() {
         let capture = HeaderCapturePolicy::new(
@@ -606,8 +597,8 @@ mod preserve_original_name_tests {
         assert_eq!(headers.as_slice()[3].wire_name(), "X-Alias-B");
     }
 
-    /// Scenario: declarations consume values with different key-name forms.
-    /// Guarantees: only OriginalKeyValue declarations request original-name retention.
+    /// Scenario: consumers request different name representations.
+    /// Guarantees: only `OriginalKeyValue` requires original names.
     #[test]
     fn declarations_require_only_the_requested_name_form() {
         let declarations: NodeContextDeclarations = [
@@ -644,8 +635,8 @@ mod preserve_original_name_tests {
         );
     }
 
-    /// Scenario: a node declares that it reads according to header propagation policy.
-    /// Guarantees: the effective policy is interpreted through the context declaration.
+    /// Scenario: a propagation declaration selects one original header name.
+    /// Guarantees: compilation keeps the policy and requires only that original name.
     #[test]
     fn header_propagation_policy_is_a_context_declaration() {
         let policy: HeaderPropagationPolicy = serde_json::from_value(serde_json::json!({
@@ -691,8 +682,8 @@ mod preserve_original_name_tests {
         );
     }
 
-    /// Scenario: node-level and pipeline-level transport-header policies are both configured.
-    /// Guarantees: declaration compilation selects the node policy and otherwise uses the pipeline policy.
+    /// Scenario: node and pipeline header policies are configured.
+    /// Guarantees: node policies take precedence. Pipeline policies provide the fallback.
     #[test]
     fn wrapper_declarations_resolve_policy_precedence() {
         let node_capture = HeaderCapturePolicy::new(
@@ -765,8 +756,8 @@ mod preserve_original_name_tests {
         );
     }
 
-    /// Scenario: a node has component declarations plus an engine-owned propagation declaration.
-    /// Guarantees: bindings retain wrapper declarations and reject changed declarations or missing nodes.
+    /// Scenario: a node declares a context read and a propagation policy.
+    /// Guarantees: undeclared reads and nodes fail. The propagation declaration is retained.
     #[test]
     fn parsed_config_declarations_are_validated_against_compiled_policy() {
         let pipeline = pipeline("group", "pipeline");
@@ -826,8 +817,8 @@ mod preserve_original_name_tests {
         );
     }
 
-    /// Scenario: a node with no context declarations is absent from the compiled policy.
-    /// Guarantees: it should be present with empty declarations, not bypass validation.
+    /// Scenario: a node with no declarations is missing from the compiled policy.
+    /// Guarantees: empty declarations still require a registered node in the correct pipeline.
     #[test]
     fn empty_declarations_require_a_compiled_node() {
         let key = pipeline("group", "pipeline");

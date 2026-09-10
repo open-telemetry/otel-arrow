@@ -154,7 +154,7 @@ impl SignalConfig {
         self
     }
 
-    /// Try to set the transport header name for dynamic topic routing.
+    /// Validates and normalizes the dynamic topic header name.
     pub fn try_with_topic_from_transport_header<K>(self, key: K) -> Result<Self, K::Error>
     where
         K: TryInto<ContextEntryName>,
@@ -2162,8 +2162,8 @@ mod tests {
         assert!(logs.topic_from_transport_header().is_none());
     }
 
-    /// Scenario: a programmatic caller supplies an unvalidated topic header name.
-    /// Guarantees: the fallible builder validates and stores the normalized name.
+    /// Scenario: a builder receives a mixed-case topic header name.
+    /// Guarantees: the stored name is lowercase.
     #[test]
     fn test_signal_config_builder_with_topic_from_transport_header() {
         let signal = SignalConfig::new("otlp_logs".into(), MessageFormat::OtlpProto)
@@ -2179,8 +2179,8 @@ mod tests {
         assert_eq!(signal.topic(), "otlp_logs");
     }
 
-    /// Scenario: a programmatic caller supplies an invalid topic header name.
-    /// Guarantees: the fallible builder returns an error instead of panicking.
+    /// Scenario: a builder receives an invalid topic header name.
+    /// Guarantees: invalid names return an error.
     #[test]
     fn test_signal_config_builder_rejects_invalid_topic_header() {
         assert!(

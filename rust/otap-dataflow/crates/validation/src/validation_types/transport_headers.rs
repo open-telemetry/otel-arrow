@@ -36,7 +36,7 @@ impl TransportHeaderKeyValue {
         }
     }
 
-    /// Try to create a transport header key/value pair from an unvalidated key.
+    /// Validates the header name before creating the pair.
     pub fn try_new<K>(key: K, value: impl Into<String>) -> Result<Self, K::Error>
     where
         K: TryInto<ContextEntryName>,
@@ -362,8 +362,8 @@ mod tests {
         ));
     }
 
-    /// Scenario: a caller constructs a key/value assertion from an invalid raw key.
-    /// Guarantees: construction returns the context-name validation error without panicking.
+    /// Scenario: a header/value assertion has an invalid name.
+    /// Guarantees: construction returns a validation error.
     #[test]
     fn key_value_construction_is_fallible() {
         assert!(TransportHeaderKeyValue::try_new("not valid", "value").is_err());

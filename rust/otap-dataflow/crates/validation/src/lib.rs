@@ -1391,11 +1391,10 @@ mod tests {
             .expect("traces otap-to-otap validation failed");
     }
 
-    /// Scenario: a generator injects headers into an OTLP pipeline with capture and propagation enabled.
-    /// Guarantees: required names and values survive every hop, and forbidden headers remain absent.
+    /// Scenario: transport headers cross an OTLP pipeline.
+    /// Guarantees: required names and values survive. Forbidden headers stay absent.
     ///
-    /// Only OTLP receivers and exporters support transport header
-    /// capture/propagation, so every hop in the chain uses OTLP gRPC.
+    /// This scenario uses OTLP gRPC for every hop.
     #[test]
     fn validation_transport_headers() {
         use crate::validation_types::transport_headers::TransportHeaderKeyValue;

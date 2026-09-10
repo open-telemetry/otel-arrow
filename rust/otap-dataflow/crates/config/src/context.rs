@@ -1,14 +1,13 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Context entry references and compiler primitives for global context registers.
+//! Validated, normalized names for context entries.
 
 use crate::error::Error;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// A context entry reference is a string that is resolved to a
-/// context register name. Always normalized.
+/// A validated context entry name in ASCII lowercase.
 #[derive(
     Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord, Hash,
 )]
@@ -16,8 +15,7 @@ use serde::{Deserialize, Serialize};
 pub struct ContextEntryName(Box<str>);
 
 impl ContextEntryName {
-    /// Returns the name of the context entry, e.g., the value
-    /// in the `store_as` field of a transport header capture.
+    /// Returns the normalized name.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
@@ -73,7 +71,7 @@ impl From<ContextEntryName> for String {
     }
 }
 
-/// Tests are allowed to compare against bare strings.
+/// Allows string comparisons in tests.
 #[cfg(test)]
 impl PartialEq<str> for ContextEntryName {
     fn eq(&self, other: &str) -> bool {
@@ -81,7 +79,7 @@ impl PartialEq<str> for ContextEntryName {
     }
 }
 
-/// Tests are allowed to compare against bare strings.
+/// Allows string comparisons in tests.
 #[cfg(test)]
 impl PartialEq<&str> for ContextEntryName {
     fn eq(&self, other: &&str) -> bool {
@@ -93,8 +91,8 @@ impl PartialEq<&str> for ContextEntryName {
 mod tests {
     use super::*;
 
-    /// Scenario: a context entry name contains supported mixed-case ASCII characters.
-    /// Guarantees: construction normalizes the name and preserves its string representation.
+    /// Scenario: a context name contains mixed-case ASCII.
+    /// Guarantees: construction and string conversion return the lowercase name.
     #[test]
     fn context_entry_name_normalizes_and_converts() {
         let name = ContextEntryName::try_from("X-Tenant_Id.1".to_owned()).expect("valid name");
@@ -107,8 +105,8 @@ mod tests {
         assert_eq!(owned, "x-tenant_id.1");
     }
 
-    /// Scenario: a context entry name is empty, contains whitespace, or contains non-ASCII text.
-    /// Guarantees: construction rejects invalid names with a user configuration error.
+    /// Scenario: a name is empty or contains whitespace or non-ASCII text.
+    /// Guarantees: invalid names return a configuration error.
     #[test]
     fn context_entry_name_rejects_invalid_input() {
         for invalid in ["", "two words", "line\nbreak", "caf\u{e9}"] {
@@ -117,8 +115,8 @@ mod tests {
         }
     }
 
-    /// Scenario: a mixed-case context entry name is deserialized and serialized.
-    /// Guarantees: serde validates and emits the normalized name.
+    /// Scenario: a mixed-case name passes through serde.
+    /// Guarantees: serde reads and writes the lowercase name.
     #[test]
     fn context_entry_name_serde_uses_normalized_string() {
         let name: ContextEntryName = serde_json::from_str("\"X-Tenant\"").expect("deserialize");

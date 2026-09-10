@@ -1647,8 +1647,8 @@ pub mod test_support {
             let _ = result;
         }
 
-        /// Scenario: Two signals configure different context reads.
-        /// Guarantees: declarations include the named topic and all-header partition reads.
+        /// Scenario: signals route topics by one header and partition by all headers.
+        /// Guarantees: both context reads are declared.
         #[test]
         fn declarations_use_generic_bindings() {
             let config = serde_json::json!({
@@ -1687,8 +1687,8 @@ pub mod test_support {
             assert_eq!(decls, expected);
         }
 
-        /// Scenario: Kafka config has no component-owned context reads.
-        /// Guarantees: engine-owned propagation policy is not reported by component config.
+        /// Scenario: Kafka config has no topic-header or header-partition reads.
+        /// Guarantees: the component declares no context reads.
         #[test]
         fn declarations_are_empty_without_kafka_context_reads() {
             let config = serde_json::json!({

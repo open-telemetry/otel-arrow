@@ -1,17 +1,14 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Protocol-neutral transport header abstraction for end-to-end header
-//! propagation through the pipeline.
+//! Transport headers carried through the pipeline context.
 //!
-//! Transport headers represent request-scoped metadata captured from inbound
-//! transport protocols (gRPC metadata, HTTP headers) and carried through the
-//! pipeline context.
+//! Headers can come from gRPC metadata, HTTP headers, or other transports.
 //!
-//! The abstraction preserves:
-//! - Duplicate header names (multiple entries with the same logical name)
-//! - Binary values (e.g. gRPC binary metadata with `-bin` suffix)
-//! - Optional original wire names for lossless round-tripping
+//! Preserves:
+//! - Duplicate header names
+//! - Text and binary values
+//! - Original wire names when required
 //! - Normalized context entry names for policy matching
 
 use crate::context::ContextEntryName;
@@ -36,10 +33,10 @@ impl fmt::Display for ValueKind {
     }
 }
 
-/// The value associated with one normalized transport-header context entry.
+/// A header value and its optional original name.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TransportHeaderValue {
-    /// Original wire name when it differs and a consumer requires it.
+    /// Original wire name when required and different from the stored name.
     pub original_name: Option<Box<str>>,
     /// Whether the value is text or binary.
     pub value_kind: ValueKind,
@@ -47,17 +44,17 @@ pub struct TransportHeaderValue {
     pub bytes: Box<[u8]>,
 }
 
-/// A single captured transport header.
+/// A transport header stored in context.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TransportHeader {
-    /// Normalized logical context entry name.
+    /// Normalized context entry name.
     pub name: ContextEntryName,
-    /// Header value and optional original wire-name metadata.
+    /// Value and optional original wire name.
     pub value: TransportHeaderValue,
 }
 
 impl TransportHeader {
-    /// Create a new header with given value kind.
+    /// Creates a header without an original wire name.
     #[must_use]
     pub fn new<V: Into<Box<[u8]>>>(
         name: ContextEntryName,
@@ -74,7 +71,7 @@ impl TransportHeader {
         }
     }
 
-    /// Create a captured header, retaining a distinct original wire name when requested.
+    /// Creates a captured header. Keeps a distinct original name when requested.
     #[must_use]
     pub fn captured<V: Into<Box<[u8]>>>(
         name: ContextEntryName,
@@ -95,19 +92,19 @@ impl TransportHeader {
         }
     }
 
-    /// Create a new text transport header.
+    /// Creates a text header.
     #[must_use]
     pub fn text(name: ContextEntryName, value: impl Into<Vec<u8>>) -> Self {
         Self::new(name, ValueKind::Text, value.into())
     }
 
-    /// Create a new binary transport header.
+    /// Creates a binary header.
     #[must_use]
     pub fn binary(name: ContextEntryName, value: impl Into<Vec<u8>>) -> Self {
         Self::new(name, ValueKind::Binary, value.into())
     }
 
-    /// Returns the outbound wire name, using the normalized name as the default.
+    /// Returns the original wire name or the normalized stored name.
     #[must_use]
     pub fn wire_name(&self) -> &str {
         self.value.original_name.as_deref().unwrap_or(&self.name)
@@ -157,7 +154,7 @@ impl TransportHeaders {
         Arc::make_mut(&mut self.headers).push(header);
     }
 
-    /// Clears the collection and reserves capacity while returning mutable storage.
+    /// Clears the headers and reserves space for `capacity` entries.
     pub(crate) fn clear_and_reserve(&mut self, capacity: usize) -> &mut Vec<TransportHeader> {
         if Arc::strong_count(&self.headers) != 1 {
             self.headers = Arc::new(Vec::with_capacity(capacity));
@@ -185,9 +182,8 @@ impl TransportHeaders {
         self.headers.iter()
     }
 
-    /// Find all headers matching a normalized name (case-sensitive
-    /// match on the logical name). Note this is NOT an efficient
-    /// lookup, used for validation.
+    /// Finds headers by exact normalized name.
+    /// Uses a linear scan for validation.
     pub fn find_by_name<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a TransportHeader> {
         self.headers.iter().filter(move |h| h.name.as_str() == name)
     }
@@ -222,8 +218,8 @@ mod tests {
         )
     }
 
-    /// Scenario: several headers share a logical name among unrelated entries.
-    /// Guarantees: lookup returns every matching value in insertion order.
+    /// Scenario: matching and nonmatching headers are interleaved.
+    /// Guarantees: lookup preserves all matching values in order.
     #[test]
     fn find_by_name_returns_matching_headers() {
         let mut headers = TransportHeaders::new();
@@ -237,8 +233,8 @@ mod tests {
         assert_eq!(&*tenants[1].value.bytes, b"c");
     }
 
-    /// Scenario: two captured headers have the same logical and wire names.
-    /// Guarantees: inserting the second header does not overwrite the first.
+    /// Scenario: two headers have the same name.
+    /// Guarantees: neither header replaces the other.
     #[test]
     fn duplicate_names_preserved() {
         let mut headers = TransportHeaders::new();
@@ -247,16 +243,16 @@ mod tests {
         assert_eq!(headers.len(), 2);
     }
 
-    /// Scenario: a captured text header contains valid UTF-8 bytes.
-    /// Guarantees: its string view exposes the original text.
+    /// Scenario: a text header contains valid UTF-8.
+    /// Guarantees: the string view preserves the text.
     #[test]
     fn value_as_str_for_text() {
         let h = header("name", "Name", b"hello");
         assert_eq!(h.value_as_str(), Some("hello"));
     }
 
-    /// Scenario: a binary header contains invalid UTF-8 bytes.
-    /// Guarantees: string conversion returns None instead of panicking or replacing bytes.
+    /// Scenario: a binary header contains invalid UTF-8.
+    /// Guarantees: the string view returns `None`.
     #[test]
     fn value_as_str_for_invalid_utf8() {
         let h = TransportHeader::binary(context_name("name-bin"), vec![0xFF, 0xFE]);
@@ -278,8 +274,8 @@ mod tests {
         }
     }
 
-    /// Scenario: input headers are processed with an empty compiled capture policy.
-    /// Guarantees: no headers are retained and no limit violations are reported.
+    /// Scenario: headers arrive with no capture rules.
+    /// Guarantees: capture returns no headers or limit errors.
     #[test]
     fn capture_empty_policy_captures_nothing() {
         let policy = HeaderCapturePolicy::default().compile(|_| true);
@@ -290,8 +286,8 @@ mod tests {
         assert!(stats.is_none());
     }
 
-    /// Scenario: capture rules select some incoming headers and rename one logical entry.
-    /// Guarantees: unmatched headers are excluded while selected values and original names are retained.
+    /// Scenario: capture rules select and rename incoming headers.
+    /// Guarantees: only matches are stored. Values and original names are retained.
     #[test]
     fn capture_matching_headers() {
         let policy = make_capture_policy(vec![
@@ -315,8 +311,8 @@ mod tests {
         assert_eq!(result.as_slice()[1].name, "x-request-id");
     }
 
-    /// Scenario: an incoming wire name differs in casing from its capture rule.
-    /// Guarantees: matching is case-insensitive and the original wire spelling is retained.
+    /// Scenario: a wire name uses different casing from its capture rule.
+    /// Guarantees: it matches the rule and retains its wire spelling.
     #[test]
     fn capture_case_insensitive_matching() {
         let policy = make_capture_policy(vec![rule(&["x-tenant-id"], None)]).compile(|_| true);
@@ -330,8 +326,8 @@ mod tests {
         assert_eq!(result.as_slice()[0].wire_name(), "X-TENANT-ID");
     }
 
-    /// Scenario: one capture rule selects more than one wire name.
-    /// Guarantees: every configured match name maps to the rule's compiled capture.
+    /// Scenario: one capture rule matches several wire names.
+    /// Guarantees: every alias is captured under the same stored name.
     #[test]
     fn capture_rule_supports_multiple_match_names() {
         let policy = make_capture_policy(vec![rule(&["x-first", "x-second"], Some("combined"))])
@@ -352,8 +348,8 @@ mod tests {
         assert!(result.iter().all(|header| header.name == "combined"));
     }
 
-    /// Scenario: matching incoming headers exceed the configured entry limit.
-    /// Guarantees: only the allowed entries are captured and each excess entry is counted.
+    /// Scenario: matching headers exceed the entry limit.
+    /// Guarantees: capture respects the limit and counts excess matches.
     #[test]
     fn capture_respects_max_entries() {
         let mut policy = make_capture_policy(vec![rule(&["x-key"], None)]);
@@ -370,8 +366,8 @@ mod tests {
         assert_eq!(stats.skipped_value_too_long, 0);
     }
 
-    /// Scenario: an oversized header value precedes a value within the configured limit.
-    /// Guarantees: the oversized value is counted and dropped without discarding the later valid value.
+    /// Scenario: an oversized value precedes a valid value.
+    /// Guarantees: the oversized value is counted and dropped. The valid value is captured.
     #[test]
     fn capture_drops_oversized_value() {
         let mut policy = make_capture_policy(vec![rule(&["x-key"], None)]);
@@ -389,8 +385,8 @@ mod tests {
         assert_eq!(stats.skipped_name_too_long, 0);
     }
 
-    /// Scenario: a captured header name ends in the binary suffix.
-    /// Guarantees: its value is classified as binary without requiring valid text.
+    /// Scenario: a `-bin` header contains non-text bytes.
+    /// Guarantees: capture accepts the bytes and marks the value as binary.
     #[test]
     fn capture_binary_detection() {
         let policy = make_capture_policy(vec![rule(&["auth-token-bin"], None)]).compile(|_| true);
@@ -405,8 +401,8 @@ mod tests {
 
     // -- Propagation policy tests --------------------------------------------
 
-    /// Scenario: propagation selects every captured header using the default name strategy.
-    /// Guarantees: all selected entries retain their original wire names.
+    /// Scenario: propagation selects all captured headers.
+    /// Guarantees: every header keeps its original wire name.
     #[test]
     fn propagate_all_captured_default() {
         let policy = HeaderPropagationPolicy::new(
@@ -429,8 +425,8 @@ mod tests {
         assert_eq!(propagated[1].header_name, "X-Request-Id");
     }
 
-    /// Scenario: an authorization-drop override accompanies an all-captured default.
-    /// Guarantees: the authorization header is excluded while unrelated headers are propagated.
+    /// Scenario: a drop override excludes authorization.
+    /// Guarantees: other headers still propagate with their original names.
     #[test]
     fn propagate_override_drops_auth() {
         let policy = HeaderPropagationPolicy::new(
@@ -460,8 +456,8 @@ mod tests {
         assert_eq!(propagated[0].header_name, "X-Tenant-Id");
     }
 
-    /// Scenario: the default selector selects nothing but an override explicitly propagates one entry.
-    /// Guarantees: only the overridden entry is emitted with its original wire name.
+    /// Scenario: a `none` selector has one propagation override.
+    /// Guarantees: only the overridden header is propagated.
     #[test]
     fn propagate_selector_none_drops_all_unless_override() {
         let policy = HeaderPropagationPolicy {
@@ -491,8 +487,8 @@ mod tests {
         assert_eq!(propagated[0].header_name, "X-Tenant-Id");
     }
 
-    /// Scenario: propagation requests stored names for a renamed captured entry.
-    /// Guarantees: the emitted header uses the logical name rather than the original wire name.
+    /// Scenario: propagation uses `StoredName` for a renamed header.
+    /// Guarantees: the stored name replaces the original wire name.
     #[test]
     fn propagate_stored_name_strategy() {
         let policy = HeaderPropagationPolicy::new(
@@ -515,8 +511,8 @@ mod tests {
         assert_eq!(propagated[0].header_name, "tenant_id");
     }
 
-    /// Scenario: a named selector selects one of several captured logical entries.
-    /// Guarantees: only that entry is propagated, retaining its original wire name.
+    /// Scenario: a named selector lists one captured entry.
+    /// Guarantees: only that entry is propagated.
     #[test]
     fn propagate_named_selector() {
         let policy = HeaderPropagationPolicy {

@@ -143,7 +143,7 @@ pub struct PipelineContext {
     // Consumers should cache any needed listener plan during setup rather than cloning
     // or searching this snapshot from the per-record data path.
     listener_group_snapshot: Arc<ListenerGroupSnapshot>,
-    /// Compiled context policy shared by every node in this runtime.
+    /// Compiled policy shared by this runtime's nodes.
     compiled_context_policy: Arc<CompiledContextPolicy>,
 }
 
@@ -457,12 +457,12 @@ impl PipelineContext {
         Arc::clone(&self.listener_group_snapshot)
     }
 
-    /// Sets the compiled context policy.
+    /// Sets this context's compiled policy.
     pub fn set_compiled_context_policy(&mut self, policy: Arc<CompiledContextPolicy>) {
         self.compiled_context_policy = policy;
     }
 
-    /// Returns the compiled context policy, if present.
+    /// Returns this context's compiled policy.
     #[must_use]
     pub fn compiled_context_policy(&self) -> &Arc<CompiledContextPolicy> {
         &self.compiled_context_policy
@@ -1189,8 +1189,8 @@ mod tests {
         );
     }
 
-    /// Scenario: a node context is derived after declaration injection.
-    /// Guarantees: it retains the same declaration Arc.
+    /// Scenario: a node context is created from a pipeline context.
+    /// Guarantees: both contexts share the same compiled policy snapshot.
     #[test]
     fn pipeline_context_preserves_compiled_policy_across_node_context() {
         let resolved = otel_arrow_dfe_config::engine::ResolvedOtelDataflowSpec {

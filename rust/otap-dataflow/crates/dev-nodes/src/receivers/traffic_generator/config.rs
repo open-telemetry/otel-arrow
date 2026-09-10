@@ -145,9 +145,9 @@ pub struct Config {
 
     /// Optional transport headers to attach to each generated pdata message.
     ///
-    /// Keys are case-insensitive header names; duplicate normalized names are
-    /// rejected. Values are optional fixed strings; when left
-    /// empty, a random value is generated once at startup.
+    /// Names are case-insensitive. Normalized duplicates are rejected.
+    /// Values are fixed strings or `null`.
+    /// A `null` value generates one random value at startup.
     ///
     /// ```yaml
     /// transport_headers:
@@ -792,8 +792,8 @@ mod tests {
 
     // -- transport_headers config tests ----------------------------------------
 
-    /// Scenario: transport_headers is omitted from the traffic-generator configuration.
-    /// Guarantees: the configuration retains an empty header map by default.
+    /// Scenario: `transport_headers` is omitted.
+    /// Guarantees: no headers are configured.
     #[test]
     fn parse_config_transport_headers_default_empty() {
         let cfg: Config = serde_json::from_value(json!({
@@ -809,8 +809,8 @@ mod tests {
         );
     }
 
-    /// Scenario: distinct mixed-case header names have fixed and null values.
-    /// Guarantees: names are normalized while fixed strings and random-value requests are preserved.
+    /// Scenario: mixed-case headers have fixed or null values.
+    /// Guarantees: names normalize without changing fixed or null values.
     #[test]
     fn parse_config_transport_headers_with_values() {
         let cfg: Config = serde_json::from_value(json!({
@@ -838,8 +838,8 @@ mod tests {
         );
     }
 
-    /// Scenario: traffic-generator header names collide after normalization.
-    /// Guarantees: deserialization rejects collisions even for equal or null values without leaking values.
+    /// Scenario: header names differ only by case.
+    /// Guarantees: all duplicates fail. Errors omit header values.
     #[test]
     fn parse_config_transport_headers_rejects_duplicate_normalized_names() {
         for headers in [
@@ -861,8 +861,8 @@ mod tests {
         }
     }
 
-    /// Scenario: a raw JSON header map repeats an identical key.
-    /// Guarantees: the map visitor rejects the duplicate rather than overwriting the first value.
+    /// Scenario: a JSON header map repeats a key.
+    /// Guarantees: the duplicate key is rejected.
     #[test]
     fn parse_config_transport_headers_rejects_duplicate_raw_names() {
         let config = format!(
@@ -876,8 +876,8 @@ mod tests {
         assert!(error.contains("duplicate normalized transport header name 'x-id'"));
     }
 
-    /// Scenario: an explicit header map is empty or contains an invalid name.
-    /// Guarantees: empty maps remain valid and names still use ContextEntryName validation.
+    /// Scenario: a header map is empty or contains an invalid name.
+    /// Guarantees: empty maps parse. Invalid names fail.
     #[test]
     fn parse_config_transport_headers_validates_names_and_accepts_empty_maps() {
         let config: Config = serde_json::from_value(json!({
