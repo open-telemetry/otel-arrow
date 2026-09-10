@@ -153,13 +153,12 @@ impl FlowDurationMeasurement {
                 metrics,
                 accumulator,
             } => {
-                for (duration, signal) in std::mem::take(accumulator).into_iter().zip(FLOW_SIGNALS)
-                {
+                for (duration, signal) in accumulator.iter_mut().zip(FLOW_SIGNALS) {
                     if !duration.is_empty() {
                         metrics
                             .with(SignalAttributes { signal })
                             .duration
-                            .merge(duration);
+                            .merge(std::mem::take(duration));
                     }
                 }
             }
@@ -167,13 +166,12 @@ impl FlowDurationMeasurement {
                 metrics,
                 accumulator,
             } => {
-                for (duration, signal) in std::mem::take(accumulator).into_iter().zip(FLOW_SIGNALS)
-                {
+                for (duration, signal) in accumulator.iter_mut().zip(FLOW_SIGNALS) {
                     if !duration.is_empty() {
                         metrics
                             .with(SignalAttributes { signal })
                             .duration
-                            .merge(duration);
+                            .merge(std::mem::take(duration));
                     }
                 }
             }
@@ -181,13 +179,12 @@ impl FlowDurationMeasurement {
                 metrics,
                 accumulator,
             } => {
-                for (duration, signal) in std::mem::take(accumulator).into_iter().zip(FLOW_SIGNALS)
-                {
+                for (duration, signal) in accumulator.iter_mut().zip(FLOW_SIGNALS) {
                     if !duration.is_empty() {
                         metrics
                             .with(SignalAttributes { signal })
                             .duration
-                            .merge(duration);
+                            .merge(std::mem::take(duration));
                     }
                 }
             }
@@ -952,6 +949,14 @@ impl FlowDurationMeasurement {
     pub(crate) fn is_empty(&self, signal: SignalType) -> bool {
         self.pending_summary(signal).0 == 0
     }
+
+    pub(crate) fn accumulator_address(&self) -> *const () {
+        match self {
+            Self::Basic { accumulator, .. } => accumulator.as_ptr().cast(),
+            Self::Normal { accumulator, .. } => accumulator.as_ptr().cast(),
+            Self::Detailed { accumulator, .. } => accumulator.as_ptr().cast(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1103,6 +1108,38 @@ mod tests {
             };
             assert_eq!(value.tier_name(), expected_tier);
             assert_eq!(value.summary(), (2, 4.0, 1.25, 2.75));
+        }
+    }
+
+    /// Scenario: Duration measurements are collected repeatedly at each supported tier.
+    /// Guarantees: Collection resets entries in place and retains the boxed accumulator allocation.
+    #[test]
+    fn duration_tiers_reuse_accumulator_allocation() {
+        for tier in [
+            DistributionTier::Basic,
+            DistributionTier::Normal,
+            DistributionTier::Detailed,
+        ] {
+            let mut state = one_flow_metric_state(tier);
+            let metrics = state.duration_metrics[0].take().unwrap();
+            let mut measurement = metrics.into_measurement();
+            let accumulator_address = measurement.accumulator_address();
+            let (_snapshot_rx, mut reporter) = MetricsReporter::create_new_and_receiver(2);
+
+            measurement.record(SignalType::Logs, 1.0);
+            measurement.report(&mut reporter);
+            assert_eq!(
+                measurement.accumulator_address(),
+                accumulator_address,
+                "tier: {tier:?}"
+            );
+
+            measurement.report(&mut reporter);
+            assert_eq!(
+                measurement.accumulator_address(),
+                accumulator_address,
+                "tier: {tier:?}"
+            );
         }
     }
 
