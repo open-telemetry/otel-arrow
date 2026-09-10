@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789075913165,
+  "lastUpdate": 1789080708208,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -35919,6 +35919,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 103.29,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "drewrelmas@gmail.com",
+            "name": "Drew Relmas",
+            "username": "drewrelmas"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3a86565b37d10db630f5e60ec71f27682e9673b4",
+          "message": "feat(metrics): Unify telemetry interest bits and clarify `node.completion.duration` (#4039)\n\n# Change summary\n\nAlign telemetry interest bits with the engine's `node` terminology.\n\nThis unifies the metric story across nodes, receivers, processors, and\nexporters. Runtime metric levels continue to provide convenient\ndefaults, while per-node policies can independently enable `messages`,\n`item_counts`, `size`, `completion_duration`, or `duration` at any\nlevel.\n\nTelemetry interests now use a consistent `NODE_*` input/output\nvocabulary. Node completion timing is unified as\n`node.completion.duration` and remains distinct from node-local\nduration. Existing interest bit values and runtime-level defaults are\nunchanged.\n\n## Related issue\n\n* Closes #3881\n* Follow-up from\nhttps://github.com/open-telemetry/otel-arrow/pull/3983#discussion_r3972107259\n\n## Validation\n\nRunning the file `trafficgen-node-metrics.yaml`:\n\n| Scenario | Configuration | What it demonstrates |\n| --- | --- | --- |\n| Detailed defaults | A full receiver, processor, and exporter pipeline\nat `detailed` | The metric level enables every applicable standard\nmeasurement without per-node configuration. |\n| Independent opt-ins | Separate nodes at `basic` opt into `messages`,\n`item_counts`, `size`, `completion_duration`, or `duration` | Each\nmeasurement family can be enabled independently of the runtime metric\nlevel and of the other families. |\n| No output | A processor receives and drops every message | Input and\ncompletion measurements are recorded, while output and downstream input\nmeasurements are absent. |\n\n## User-facing changes\n\nMigration: Query `node.completion.duration` instead of\n`node.input.duration` and `node.output.duration`. Per-node message,\ncompletion, duration, item, and size opt-ins now work at every runtime\nmetric level.",
+          "timestamp": "2026-09-10T22:00:51Z",
+          "tree_id": "4bb347fb8fe5584e6ebfb370c4d32ec5b01e3dc2",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/3a86565b37d10db630f5e60ec71f27682e9673b4"
+        },
+        "date": 1789080691870,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 83.93,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.91,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.71,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 71.23,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.81,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 116.08,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 103.41,
             "unit": "MB"
           }
         ]
