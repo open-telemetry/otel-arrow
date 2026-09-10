@@ -100,11 +100,9 @@ async fn draining_receiver_does_not_reacquire_partitions_after_new_member_joins(
 /// Scenario (drain under rebalance): a manual-commit receiver A owning every
 /// partition is put into ingress drain with a short deadline while a sequence
 /// of joining-and-leaving group members churns the consumer group, forcing
-/// repeated rebalances during the drain.
-/// Guarantees: the receiver task reaches its terminal state well before the
-/// drain deadline (drain completes on its own, not by hitting the forced
-/// deadline), proving repeated rebalance churn during drain cannot wedge the
-/// receive loop.
+/// repeated rebalances that are still in flight *concurrently* with A's drain.
+/// Guarantees: A's receive loop reaches its terminal state strictly before the
+/// drain deadline elapses
 #[tokio::test]
 async fn draining_receiver_task_completes_before_deadline_under_rebalance_churn() {
     const TOPIC: &str = "drain-rebalance-churn-traces";
@@ -135,43 +133,49 @@ async fn draining_receiver_task_completes_before_deadline_under_rebalance_churn(
                     .await;
             }
 
-            // Drain with a short deadline: the drain should complete on its own
-            // well before this deadline even under churn.
+            // Drain with a short deadline: the drain must complete on its own
+            // strictly before this deadline even while rebalances churn.
             let drain_deadline = Duration::from_secs(5);
             let started = tokio::time::Instant::now();
             receiver_a.drain(drain_deadline);
 
-            // Churn the group during the drain: repeatedly start and gracefully
-            // stop a second receiver in the same group so the group rebalances
-            // several times while A drains. A receiver harness makes no
-            // "must be assigned" assumption (unlike `RebalanceTrigger`), so the
-            // churn cannot panic on A's drain timing while still forcing real
-            // join+leave rebalances. Each iteration yields to the current-thread
-            // executor so A's task keeps making progress.
-            for _ in 0..3 {
-                let churn_cfg =
-                    manual_traces_config(cluster.bootstrap_servers(), group, TOPIC, 500, None);
-                let churn = KafkaReceiverHarness::start(&cluster, churn_cfg);
-                tokio::time::sleep(Duration::from_millis(200)).await;
-                churn.shutdown(Duration::from_secs(1));
-                let _ = churn.await_terminal_state().await;
-                tokio::time::sleep(Duration::from_millis(200)).await;
-            }
+            // Churn the group *concurrently* with A's drain: repeatedly start
+            // and gracefully stop a second receiver in the same group so the
+            // group rebalances several times while A is draining. A receiver
+            // harness makes no "must be assigned" assumption (unlike
+            // `RebalanceTrigger`), so the churn cannot panic on A's drain timing
+            // while still forcing real join+leave rebalances. This future is
+            // polled alongside A's terminal-state await below (not before it),
+            // so the rebalances overlap the window in which A's receive loop
+            // must finish its drain and bounded close.
+            let churn = async {
+                for _ in 0..3 {
+                    let churn_cfg =
+                        manual_traces_config(cluster.bootstrap_servers(), group, TOPIC, 500, None);
+                    let churn = KafkaReceiverHarness::start(&cluster, churn_cfg);
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    churn.shutdown(Duration::from_secs(1));
+                    let _ = churn.await_terminal_state().await;
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+            };
 
-            // The receiver task must reach its terminal state well before the
-            // drain deadline plus a small margin; a wedged loop would only
-            // return at the forced deadline (or time out here).
-            let terminal = tokio::time::timeout(
-                drain_deadline + Duration::from_secs(2),
-                receiver_a.await_terminal_state(),
-            )
-            .await
-            .expect("draining receiver task did not complete under rebalance churn");
+            // Await A's terminal state concurrently with the churn.
+            let terminal = tokio::join!(churn, async {
+                tokio::time::timeout(
+                    drain_deadline + Duration::from_secs(5),
+                    receiver_a.await_terminal_state(),
+                )
+                .await
+                .expect("draining receiver task did not complete under rebalance churn")
+            })
+            .1;
             let elapsed = started.elapsed();
             assert!(
-                elapsed < drain_deadline + Duration::from_secs(2),
-                "draining receiver task took {elapsed:?}, at or past the drain deadline; the \
-                 receive loop wedged under rebalance churn",
+                elapsed < drain_deadline,
+                "draining receiver task took {elapsed:?}, at or past the {drain_deadline:?} drain \
+                 deadline; the drain did not complete on its own -- a commit-before-revoke or close \
+                 wedged on the pipeline thread would only unblock at the forced deadline",
             );
 
             // Terminal state is produced only on a clean drain-to-completion.

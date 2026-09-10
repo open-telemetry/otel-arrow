@@ -27,13 +27,29 @@ The single most important design fact is a **concurrency boundary**:
 - The receiver's main loop runs on the df-engine **single-threaded, per-core
   `LocalSet` runtime**. All hot-path bookkeeping (offset tracking, replay
   state, topic registry) lives here and needs no locks.
-- Kafka **consumer-group rebalances and commit results are delivered by
-  librdkafka on its own poll thread** through `ConsumerContext` callbacks. That
-  thread cannot touch the `LocalSet`-owned state directly.
+- Kafka **consumer-group rebalance and commit callbacks are served inline by
+  `consumer.recv()`** through `ConsumerContext`, so they run **on the same
+  single-threaded pipeline thread** as the loop, interleaved between records.
+  They still may not mutate the `LocalSet`-owned state directly: they only
+  record facts into the shared state below, which the loop reconciles on its
+  next turn. (The AWS MSK IAM OAUTHBEARER token refresh is the one path that
+  may still run on a librdkafka-internal thread.)
 
 These two worlds are bridged by exactly one small shared object
 (`RebalanceState`), whose fields are individually guarded by per-field locks and
 atomics. Understanding that bridge is the key to understanding the receiver.
+
+> **Note (execution context / blocking risk).** In rdkafka 0.38.0, polling
+> `consumer.recv()` invokes the rebalance and commit callbacks inline
+> (`MessageStream::poll_next` -> `BaseConsumer::poll_queue` runs any queued
+> rebalance/commit event on the calling thread). Because the receive loop is the
+> only caller of `recv()`, these callbacks execute on the pipeline thread during
+> normal consumption -- not on a separate librdkafka poll thread. As a result,
+> the **synchronous** commit in `handle_revoke` (`pre_rebalance(Revoke)`, a
+> `CommitMode::Sync` broker round-trip) runs on the pipeline thread and **can
+> block the receive loop** during a rebalance, contradicting the non-blocking
+> guarantee described below. This is documented as a known risk for now; moving
+> the commit off the pipeline thread is future work.
 
 ### Kafka-native framing
 
@@ -57,10 +73,15 @@ The receiver maps onto standard librdkafka consumer behavior as follows:
   `cooperative_sticky`), read isolation (`isolation.level`), and start position
   (`auto.offset.reset`) are surfaced directly as config.
 
-The receiver never blocks the single-threaded runtime on a broker round-trip:
-commits are asynchronous (the broker result arrives later on the commit
-callback), and any potentially blocking librdkafka call (consumer-lag lookups,
-final consumer close) is bounded and off-loaded.
+The receiver avoids blocking the single-threaded runtime on a broker round-trip
+in steady state: commits are asynchronous (the broker result arrives later on
+the commit callback), and any potentially blocking librdkafka call
+(consumer-lag lookups, final consumer close) is bounded and off-loaded. The one
+exception is the synchronous commit-before-revoke in `pre_rebalance(Revoke)`:
+because rebalance callbacks are served inline by `recv()` (see the note above),
+that `CommitMode::Sync` commit runs on the pipeline thread and can block it
+during a rebalance. It is bounded by librdkafka's internal commit timeout;
+moving it off the pipeline thread is future work.
 
 ## Architecture Overview
 
