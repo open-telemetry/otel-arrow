@@ -35,11 +35,10 @@ pub enum ApplySource {
 /// attribute record batches. It contains a set of inner pipeline stages that have the capability
 /// to transform attributes record batches directly by calling `execute_on_attributes` method.
 pub struct ApplyPipelineStage {
-    // /// Identifier of which attributes record batch to apply the inner pipeline
-    // attributes_id: AttributesIdentifier,
+    /// Identifier of the source data on which to evaluate the pipeline
     source: ApplySource,
 
-    /// Pipeline stages that will be applied to each attributes record batch
+    /// Pipeline stages that will be applied to each element of the source data
     pipeline_stages: Vec<Box<dyn PipelineStage>>,
 }
 
