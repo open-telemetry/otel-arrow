@@ -40,6 +40,11 @@ mod tests {
     use crate::scenario::Scenario;
     use crate::traffic::{Capture, Generator};
     use crate::validation_types::attributes::{AnyValue, AttributeDomain, KeyValue};
+    use otel_arrow_dfe_config::ContextEntryName;
+
+    fn context_name(raw: &str) -> ContextEntryName {
+        ContextEntryName::try_from(raw).expect("valid test context entry name")
+    }
 
     #[test]
     fn validation_logs_otlp_to_otlp() {
@@ -1386,9 +1391,8 @@ mod tests {
             .expect("traces otap-to-otap validation failed");
     }
 
-    /// End-to-end validation: transport headers injected by the fake data
-    /// generator survive the full pipeline chain (generator -> SUV -> capture)
-    /// and can be asserted via transport header validation instructions.
+    /// Scenario: a generator injects headers into an OTLP pipeline with capture and propagation enabled.
+    /// Guarantees: required names and values survive every hop, and forbidden headers remain absent.
     ///
     /// Only OTLP receivers and exporters support transport header
     /// capture/propagation, so every hop in the chain uses OTLP gRPC.
@@ -1433,7 +1437,7 @@ header_propagation:
                     .with_capture_header_keys([header_key])
                     .validate(vec![
                         ValidationInstructions::TransportHeaderRequireKey {
-                            keys: vec![header_key.into()],
+                            keys: vec![context_name(header_key)],
                         },
                         ValidationInstructions::TransportHeaderRequireKeyValue {
                             pairs: vec![
@@ -1442,7 +1446,7 @@ header_propagation:
                             ],
                         },
                         ValidationInstructions::TransportHeaderDeny {
-                            keys: vec!["x-should-not-exist".into()],
+                            keys: vec![context_name("x-should-not-exist")],
                         },
                     ])
                     .control_streams(["traffic_gen"])

@@ -9,6 +9,8 @@ use otel_arrow_dfe_admin_api::{
 };
 use otel_arrow_dfe_config::engine::OtelDataflowSpec;
 use otel_arrow_dfe_controller::Controller;
+// The rendered scenarios reference core nodes by URN, not by Rust symbols.
+use otel_arrow_dfe_core_nodes as _;
 use otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY;
 use std::collections::HashMap;
 use tokio::time::{Duration, sleep};
@@ -278,6 +280,20 @@ mod tests {
     use std::collections::HashMap;
     use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// Scenario: validation scenarios resolve core-node URNs without referencing their Rust types.
+    /// Guarantees: the simulator links the core factories needed for both traffic and observability.
+    #[test]
+    fn simulator_links_core_node_factories() {
+        let receivers = OTAP_PIPELINE_FACTORY.get_receiver_factory_map();
+        assert!(receivers.contains_key("urn:otel:receiver:otlp"));
+        assert!(receivers.contains_key("urn:otel:receiver:internal_telemetry"));
+        assert!(
+            OTAP_PIPELINE_FACTORY
+                .get_exporter_factory_map()
+                .contains_key("urn:otel:exporter:noop")
+        );
+    }
 
     fn set_with_node(set_name: &str, metric: &str, value: u64, node_id: &str) -> MetricSetSnapshot {
         MetricSetSnapshot {

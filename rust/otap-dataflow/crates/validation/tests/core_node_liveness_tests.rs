@@ -24,6 +24,7 @@ use otel_arrow_dfe_engine::control::{
     RuntimeControlMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
 };
 use otel_arrow_dfe_engine::entity_context::set_pipeline_entity_key;
+use otel_arrow_dfe_engine::testing::install_test_context_policy;
 use otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY;
 use otel_arrow_dfe_state::store::ObservedStateStore;
 use otel_arrow_dfe_telemetry::InternalTelemetrySystem;
@@ -198,13 +199,15 @@ fn run_pipeline_with_condition<F>(
     let telemetry_system = InternalTelemetrySystem::default();
     let registry = telemetry_system.registry();
     let controller_ctx = ControllerContext::new(registry.clone());
-    let pipeline_ctx = controller_ctx.pipeline_context_with(
+    let mut pipeline_ctx = controller_ctx.pipeline_context_with(
         pipeline_group_id.clone(),
         pipeline_id.clone(),
         0,
         1,
         0,
     );
+    install_test_context_policy(&mut pipeline_ctx, &OTAP_PIPELINE_FACTORY, config.clone())
+        .expect("test context policy should compile");
     let pipeline_entity_key = pipeline_ctx.register_pipeline_entity();
     let channel_capacity_policy = ChannelCapacityPolicy::default();
     let runtime_pipeline = OTAP_PIPELINE_FACTORY
@@ -346,13 +349,15 @@ where
     let registry = telemetry_system.registry();
     let collector = telemetry_system.collector();
     let controller_ctx = ControllerContext::new(registry.clone());
-    let pipeline_ctx = controller_ctx.pipeline_context_with(
+    let mut pipeline_ctx = controller_ctx.pipeline_context_with(
         pipeline_group_id.clone(),
         pipeline_id.clone(),
         0,
         1,
         0,
     );
+    install_test_context_policy(&mut pipeline_ctx, &OTAP_PIPELINE_FACTORY, config.clone())
+        .expect("test context policy should compile");
     let pipeline_entity_key = pipeline_ctx.register_pipeline_entity();
     let channel_capacity_policy = ChannelCapacityPolicy::default();
     let runtime_pipeline = OTAP_PIPELINE_FACTORY
