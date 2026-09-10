@@ -8,13 +8,15 @@
 
 use super::config::{HeaderExtraction, KafkaReceiverConfig};
 use super::error::KafkaReceiverError;
-use super::headers::HeaderExtractions;
+use super::headers::{HeaderExtractions, decode_syslog_logs};
+use super::identity::{DeliveryGeneration, OwnershipGeneration};
 use super::metrics::{KafkaReceiverMetrics, KafkaReceiverRejectionReason};
 use super::offset_tracker::OffsetTracker;
 use super::rebalance::{RebalanceState, RebalancingConsumerContext};
+use super::retry::RetryManager;
 #[cfg(feature = "aws")]
 use crate::common::kafka::security::build_aws_msk_context;
-use crate::common::kafka::{MSG_FORMAT_OTAP, MSG_FORMAT_OTLP, MessageFormat};
+use crate::common::kafka::{MSG_FORMAT_OTAP, MSG_FORMAT_OTLP, MSG_FORMAT_SYSLOG, MessageFormat};
 use async_trait::async_trait;
 use bytes::Bytes;
 use linkme::distributed_slice;
@@ -27,6 +29,7 @@ use otel_arrow_dfe_config::validation::validate_typed_config;
 use otel_arrow_dfe_engine::config::ReceiverConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_engine::control::{CallData, Context8u8, NodeControlMsg};
+use otel_arrow_dfe_engine::effect_handler::TelemetryTimerCancelHandle;
 use otel_arrow_dfe_engine::error::{Error as EngineError, ReceiverErrorKind, format_error_sources};
 use otel_arrow_dfe_engine::local::receiver as local;
 use otel_arrow_dfe_engine::node::NodeId;
@@ -55,6 +58,8 @@ use std::time::{Duration, Instant};
 use tokio::time::MissedTickBehavior;
 use tokio_util::sync::CancellationToken;
 
+mod replay;
+
 /// URN for the Kafka Receiver
 pub const KAFKA_RECEIVER_URN: &str = "urn:otel:receiver:kafka";
 
@@ -67,6 +72,34 @@ const LAG_FETCH_PARTITION_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Total deadline for a single off-loop consumer-lag refresh.
 const LAG_REFRESH_TOTAL_DEADLINE: Duration = Duration::from_secs(15);
+
+type LagRefreshTask = (
+    tokio::task::JoinHandle<Option<f64>>,
+    tokio::time::Instant,
+    CancellationToken,
+);
+
+/// Stops receiver-owned background work and closes the Kafka consumer without
+/// blocking the single-threaded pipeline runtime past `deadline`.
+async fn close_consumer_bounded<C: ConsumerContext + 'static>(
+    consumer: Arc<StreamConsumer<C>>,
+    lag_refresh_in_flight: &mut Option<LagRefreshTask>,
+    telemetry_cancel_handle: TelemetryTimerCancelHandle<OtapPdata>,
+    deadline: Instant,
+) {
+    if let Some((handle, lag_deadline, lag_cancel)) = lag_refresh_in_flight.take() {
+        lag_cancel.cancel();
+        let bound = lag_deadline.min(tokio::time::Instant::from_std(deadline));
+        let _ = tokio::time::timeout_at(bound, handle).await;
+    }
+
+    let _ = telemetry_cancel_handle.cancel().await;
+    let close_handle = tokio::task::spawn_blocking(move || {
+        consumer.unsubscribe();
+        drop(consumer);
+    });
+    let _ = tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), close_handle).await;
+}
 
 /// Compile a slice of topic config strings into a parallel [`Vec`] of
 /// optional [`Regex`] values. Entries starting with `^` are treated as
@@ -136,6 +169,7 @@ fn detect_message_format(
     {
         value if value == Some(MSG_FORMAT_OTLP) => MessageFormat::OtlpProto,
         value if value == Some(MSG_FORMAT_OTAP) => MessageFormat::OtapProto,
+        value if value == Some(MSG_FORMAT_SYSLOG) => MessageFormat::Syslog,
         _ => default,
     }
 }
@@ -195,6 +229,8 @@ pub struct KafkaReceiver {
     metrics: KafkaReceiverMetrics,
     /// Per-offset tracker. Only active when auto-commit is disabled.
     offset_tracker: OffsetTracker,
+    /// Partition-local delivery generations and transient-NACK replay state.
+    retry_manager: RetryManager,
     /// Shared consumer-group rebalance state. Updated by the consumer
     /// context's rebalance callbacks (on the librdkafka thread) and reconciled
     /// by the receive loop. Only active when auto-commit is disabled.
@@ -255,11 +291,11 @@ impl KafkaReceiver {
         // unique group.instance.id. On a multi-core pipeline every core would
         // otherwise share the configured ID and fence one another, so suffix it
         // with the pipeline core ID.
-        if pipeline_ctx.num_cores() > 1 {
-            if let Some(base_id) = config.group_instance_id() {
-                let resolved = format!("{base_id}-{}", pipeline_ctx.core_id());
-                config.set_group_instance_id(resolved);
-            }
+        if pipeline_ctx.num_cores() > 1
+            && let Some(base_id) = config.group_instance_id()
+        {
+            let resolved = format!("{base_id}-{}", pipeline_ctx.core_id());
+            config.set_group_instance_id(resolved);
         }
 
         // Warn about consumer_config keys that may be overwritten by first-class fields.
@@ -291,6 +327,7 @@ impl KafkaReceiver {
             config,
             metrics,
             offset_tracker: OffsetTracker::new(),
+            retry_manager: RetryManager::new(),
             rebalance_state,
             topic_registry: TopicRegistry::new(),
             traces_topic_regexes,
@@ -385,6 +422,7 @@ impl KafkaReceiver {
                     message_format,
                     HeaderExtractions::apply_otlp_traces,
                     HeaderExtractions::apply_otap_traces,
+                    reject_syslog_for_non_log_signal,
                     decode_traces_payload,
                 )
                 .map_err(KafkaReceiverError::TracesDecode)
@@ -402,6 +440,7 @@ impl KafkaReceiver {
                     message_format,
                     HeaderExtractions::apply_otlp_metrics,
                     HeaderExtractions::apply_otap_metrics,
+                    reject_syslog_for_non_log_signal,
                     decode_metrics_payload,
                 )
                 .map_err(KafkaReceiverError::MetricsDecode)
@@ -419,6 +458,7 @@ impl KafkaReceiver {
                     message_format,
                     HeaderExtractions::apply_otlp_logs,
                     HeaderExtractions::apply_otap_logs,
+                    HeaderExtractions::apply_syslog_logs,
                     decode_logs_payload,
                 )
                 .map_err(KafkaReceiverError::LogsDecode)
@@ -513,6 +553,11 @@ impl KafkaReceiver {
                 let _ = self
                     .offset_tracker
                     .revoke_if_older(&r.topic, r.partition, r.generation);
+                self.retry_manager.revoke_if_older(
+                    &r.topic,
+                    r.partition,
+                    OwnershipGeneration::from_raw(r.generation),
+                );
             }
             // Owned set changed; refresh the snapshot used by pre_rebalance.
             self.refresh_committable_snapshot();
@@ -540,6 +585,10 @@ impl KafkaReceiver {
             .consumer
             .records_in_flight
             .observe(self.offset_tracker.total_pending() as u64);
+        self.metrics
+            .consumer
+            .retry_partitions_paused
+            .observe(self.retry_manager.paused_count() as u64);
 
         let delta = self.rebalance_state.drain_metrics();
         if !delta.is_empty() {
@@ -556,6 +605,10 @@ impl KafkaReceiver {
                 .consumer
                 .rebalance_commit_failures
                 .add(delta.rebalance_commit_errors);
+            self.metrics
+                .consumer
+                .rebalance_resume_failures
+                .add(delta.rebalance_resume_errors);
             // `receiver.kafka.consumer.group.partitions` is an observed up/down
             // counter: observe the current owned count snapshot rather than
             // accumulating. Folded only when a rebalance actually occurred
@@ -616,13 +669,13 @@ impl KafkaReceiver {
         }))
     }
 
-    /// Advance the offset tracker for a processed message and, if the
+    /// Advance the offset tracker for a terminally processed message and, if the
     /// committable watermark moved, commit and refresh the rebalance snapshot.
     ///
     /// This is the single place that persists forward progress past a message
-    /// (whether it was acked, nacked, or a poison pill). Commit failures are
-    /// recoverable: the offset stays tracked and is retried on the next
-    /// ack/nack/timer-tick.
+    /// (whether it was acked, permanently nacked, or a poison pill). Commit
+    /// failures are recoverable: the offset stays tracked and is retried on the
+    /// next terminal feedback or timer tick.
     ///
     /// Caller must ensure manual-commit mode.
     fn advance_offset_and_commit<C: ConsumerContext>(
@@ -646,27 +699,27 @@ impl KafkaReceiver {
         }
     }
 
-    /// Handle an Ack/Nack carrying Kafka offset identity in its `CallData`.
+    /// Resolve feedback carrying Kafka offset identity in its `CallData`.
     ///
-    /// Decodes the topic/partition/offset, applies a **late-ack guard** -- if
-    /// the partition is no longer assigned to this consumer (revoked during a
-    /// rebalance), the ack is dropped without committing, since the new owner
-    /// is now responsible for that partition -- and otherwise advances the
-    /// offset tracker, committing when the watermark advances.
+    /// Feedback is accepted only when both its delivery generation and Kafka
+    /// ownership generation are current. This protects replay from feedback
+    /// already in flight when the partition was paused and protects rebalances
+    /// from feedback produced by a previous owner.
     ///
     /// Caller must ensure manual-commit mode and a non-empty `calldata`.
-    fn handle_offset_feedback<C: ConsumerContext>(
-        &mut self,
-        calldata: &CallData,
-        consumer: &StreamConsumer<C>,
-        receiver_id: &NodeId,
-    ) {
-        let (topic_id, partition, offset, ack_generation) = decode_calldata(calldata);
+    fn resolve_offset_feedback(&mut self, calldata: &CallData) -> Option<ResolvedOffsetFeedback> {
+        let (topic_id, partition, offset, delivery_generation) = decode_calldata(calldata);
         // Resolve the dynamic topic ID back to the actual topic name. The
         // `Arc<str>` is an owned handle, so it does not borrow `self` and can
         // coexist with the `&mut self` calls below.
-        let Some(name) = self.topic_registry.name_for(topic_id) else {
-            return;
+        let name = self.topic_registry.name_for(topic_id)?;
+
+        let Some(ownership_generation) =
+            self.retry_manager
+                .feedback_ownership_generation(&name, partition, delivery_generation)
+        else {
+            self.metrics.consumer.stale_retry_feedback.inc();
+            return None;
         };
 
         // Read the partition's tracked generation, its currently-assigned
@@ -685,24 +738,58 @@ impl KafkaReceiver {
         let is_assigned = self.rebalance_state.is_assigned(&name, partition);
 
         match classify_offset_feedback(
-            ack_generation,
+            ownership_generation.raw(),
             tracked_generation,
             assigned_generation,
             is_assigned,
         ) {
-            OffsetFeedbackAction::Commit => {
-                self.advance_offset_and_commit(&name, partition, offset, consumer, receiver_id);
-            }
+            OffsetFeedbackAction::Commit => Some(ResolvedOffsetFeedback {
+                topic: name,
+                partition,
+                offset,
+                ownership_generation,
+                delivery_generation,
+            }),
             OffsetFeedbackAction::DropStale => {
                 self.metrics.consumer.feedback_after_revocation.inc();
+                None
             }
             OffsetFeedbackAction::DropLateAck { purge } => {
                 self.metrics.consumer.feedback_after_revocation.inc();
                 if purge {
                     self.offset_tracker.revoke(&name, partition);
+                    self.retry_manager
+                        .revoke_if_older(&name, partition, ownership_generation);
+                    self.refresh_committable_snapshot();
                 }
+                None
             }
         }
+    }
+
+    /// Apply terminal feedback (ACK, permanent NACK, or commit-and-skip NACK).
+    fn handle_terminal_offset_feedback<C: ConsumerContext>(
+        &mut self,
+        calldata: &CallData,
+        consumer: &StreamConsumer<C>,
+        receiver_id: &NodeId,
+    ) {
+        let Some(feedback) = self.resolve_offset_feedback(calldata) else {
+            return;
+        };
+        self.advance_offset_and_commit(
+            &feedback.topic,
+            feedback.partition,
+            feedback.offset,
+            consumer,
+            receiver_id,
+        );
+        self.retry_manager.complete_if_rewind(
+            &feedback.topic,
+            feedback.partition,
+            feedback.delivery_generation,
+            feedback.offset,
+        );
     }
 
     async fn run_receive_loop<C: ConsumerContext + 'static>(
@@ -741,15 +828,14 @@ impl KafkaReceiver {
         // Safety-net timer: periodically commit offsets even if no acks
         // arrive for a while. Only started when manual commit is active
         // *and* an explicit interval was configured. When no interval is
-        // set in manual mode, offsets are committed purely via ack/nack.
+        // set in manual mode, offsets are committed via terminal feedback.
+        // A transient NACK configured for replay never advances the offset.
         // The timer delivers `NodeControlMsg::TimerTick` on the control
         // channel, which is handled in the main loop below.
-        if manual_commit {
-            if let Some(ms) = self.config.commit_interval_ms() {
-                let _commit_timer_handle = effect_handler
-                    .start_periodic_timer(Duration::from_millis(ms))
-                    .await?;
-            }
+        if manual_commit && let Some(ms) = self.config.commit_interval_ms() {
+            let _commit_timer_handle = effect_handler
+                .start_periodic_timer(Duration::from_millis(ms))
+                .await?;
         }
 
         // Opt-in consumer-lag refresh timer, derived from the configured
@@ -771,22 +857,22 @@ impl KafkaReceiver {
 
         // Keeps track of the current in flight consumer_lag worker: its join
         // handle, its absolute deadline, and a cancellation token used to stop
-        // it cooperatively on shutdown so it cannot outlive the receiver.
-        let mut lag_refresh_in_flight: Option<(
-            tokio::task::JoinHandle<Option<f64>>,
-            tokio::time::Instant,
-            CancellationToken,
-        )> = None;
-
-        // Set once the receiver-first drain protocol begins. After this the
-        // receiver stops polling Kafka (see the `consumer.recv()` branch guard)
-        // but stays responsive to control messages until `Shutdown` arrives.
-        let mut draining_deadline: Option<Instant> = None;
+        // it cooperatively on shutdown or ingress drain so it cannot outlive
+        // the receiver.
+        let mut lag_refresh_in_flight: Option<LagRefreshTask> = None;
 
         loop {
             // Reconcile any partition revocations / metrics produced by the
             // rebalance callbacks since the last iteration. Cheap when idle.
             self.reconcile_rebalance_state();
+            let retry_deadline = match (
+                self.retry_manager.next_deadline(),
+                self.rebalance_state.next_assignment_resume_deadline(),
+            ) {
+                (Some(replay), Some(resume)) => Some(replay.min(resume)),
+                (Some(deadline), None) | (None, Some(deadline)) => Some(deadline),
+                (None, None) => None,
+            };
 
             tokio::select! {
                 biased;
@@ -821,49 +907,11 @@ impl KafkaReceiver {
                             // expires the wait returns while the worker (and its
                             // `Arc` clone of the consumer) is still alive. See the
                             // `Arc`-count note on the close below.
-                            if let Some((handle, lag_deadline, lag_cancel)) =
-                                lag_refresh_in_flight.take()
-                            {
-                                lag_cancel.cancel();
-                                let bound =
-                                    lag_deadline.min(tokio::time::Instant::from_std(deadline));
-                                let _ = tokio::time::timeout_at(bound, handle).await;
-                            }
-                            // Close the consumer off the loop thread, bounded by
-                            // the shutdown deadline. Both `unsubscribe()` and the
-                            // consumer's `Drop` (leave-group/close) are synchronous
-                            // librdkafka FFI calls that can block indefinitely when
-                            // the broker is unreachable; running them inline on this
-                            // single-threaded runtime would stall it and hang the
-                            // pipeline past its deadline. We take the snapshot
-                            // first, then move the loop's `consumer` handle into a
-                            // blocking task and wait only until the deadline.
-                            //
-                            // The drop below is NOT guaranteed to be the last
-                            // `Arc`: the lag-worker drain above is bounded and
-                            // best-effort, so a worker still mid-FFI can outlive it
-                            // and keep its own clone. When that happens this drop
-                            // just decrements the count, and the actual
-                            // leave-group/close runs later, on the lag worker's own
-                            // blocking thread, when it finally releases its clone.
-                            // Either way the close never runs on the loop thread, so
-                            // the runtime is never blocked, and if it outruns the
-                            // deadline the task is left to finish on its own thread
-                            // while the receiver returns its terminal state. This
-                            // refcount behavior is covered by the unit tests
-                            // `shutdown_bounded_drain_lets_cooperative_lag_worker_release_clone_before_close`
-                            // and
-                            // `shutdown_bounded_drain_can_leave_lag_worker_clone_alive_refcount_two`,
-                            // and the bounded-termination guarantee by
-                            // `shutdown_with_lag_refresh_in_flight_still_terminates_within_deadline`.
-                            _ = telemetry_cancel_handle.cancel().await;
-                            let close_handle = tokio::task::spawn_blocking(move || {
-                                consumer.unsubscribe();
-                                drop(consumer);
-                            });
-                            let _ = tokio::time::timeout_at(
-                                tokio::time::Instant::from_std(deadline),
-                                close_handle,
+                            close_consumer_bounded(
+                                consumer,
+                                &mut lag_refresh_in_flight,
+                                telemetry_cancel_handle,
+                                deadline,
                             )
                             .await;
                             return Ok(TerminalState::new(
@@ -875,35 +923,33 @@ impl KafkaReceiver {
                             // Receiver-first shutdown: the engine sends
                             // DrainIngress and waits for notify_receiver_drained()
                             // before shutting down downstream nodes.
-                            if draining_deadline.is_none() {
-                                otel_info!("kafka.receiver.drain_ingress");
-                                // Stop admitting new Kafka records immediately.
-                                // Unsubscribing halts the subscription so the
-                                // `consumer.recv()` branch (now gated on
-                                // `draining_deadline.is_none()`) yields no more
-                                // messages.
-                                consumer.unsubscribe();
-                                draining_deadline = Some(deadline);
-                                // Bounded receiver-local drain: one final
-                                // synchronous commit of everything acked so far.
-                                // Un-acked offsets are safely re-delivered on
-                                // restart (at-least-once), so there is nothing
-                                // else to wait on.
-                                if manual_commit {
-                                    if let Err(e) = self.commit_offsets(consumer.as_ref(), &receiver_id) {
-                                        otel_error!(
-                                            "kafka.drain.commit_failed",
-                                            error = %e,
-                                        );
-                                    }
-                                    self.refresh_committable_snapshot();
+                            otel_info!("kafka.receiver.drain_ingress");
+                            // Stop admitting new Kafka records by returning from
+                            // this receive loop after the receiver-local drain.
+                            // Un-acked offsets are safely re-delivered on restart.
+                            if manual_commit {
+                                if let Err(e) = self.commit_offsets(consumer.as_ref(), &receiver_id) {
+                                    otel_error!(
+                                        "kafka.drain.commit_failed",
+                                        error = %e,
+                                    );
                                 }
-                                // Signal the runtime that receiver-local drain is
-                                // complete so it can proceed to shut down
-                                // downstream nodes. The loop stays alive and
-                                // responsive to the eventual Shutdown message.
-                                effect_handler.notify_receiver_drained().await?;
+                                self.refresh_committable_snapshot();
                             }
+                            // Signal before the bounded broker close so the
+                            // downstream pipeline can begin draining promptly.
+                            effect_handler.notify_receiver_drained().await?;
+                            close_consumer_bounded(
+                                consumer,
+                                &mut lag_refresh_in_flight,
+                                telemetry_cancel_handle,
+                                deadline,
+                            )
+                            .await;
+                            return Ok(TerminalState::new(
+                                deadline,
+                                self.metrics.terminal_snapshots(),
+                            ));
                         },
                         Ok(NodeControlMsg::Ack(ack_msg)) => {
                             self.metrics.record_acknowledgement(
@@ -911,7 +957,7 @@ impl KafkaReceiver {
                                 Outcome::Success,
                             );
                             if manual_commit && !ack_msg.unwind.route.calldata.is_empty() {
-                                self.handle_offset_feedback(
+                                self.handle_terminal_offset_feedback(
                                     &ack_msg.unwind.route.calldata,
                                     consumer.as_ref(),
                                     &receiver_id,
@@ -919,18 +965,31 @@ impl KafkaReceiver {
                             }
                         },
                         Ok(NodeControlMsg::Nack(nack_msg)) => {
+                            let outcome = if nack_msg.permanent {
+                                Outcome::Refused
+                            } else {
+                                Outcome::Failure
+                            };
                             self.metrics.record_acknowledgement(
                                 nack_msg.refused.signal_type(),
-                                Outcome::Refused,
+                                outcome,
                             );
-                            // Treat nack as ack (advance past failed message).
-                            // TODO: future work -- retry logic, DLQ
+                            if !nack_msg.permanent {
+                                self.metrics.consumer.transient_nacks.inc();
+                            }
                             if manual_commit && !nack_msg.unwind.route.calldata.is_empty() {
-                                self.handle_offset_feedback(
-                                    &nack_msg.unwind.route.calldata,
-                                    consumer.as_ref(),
-                                    &receiver_id,
-                                );
+                                if !nack_msg.permanent && self.config.replays_transient_nacks() {
+                                    self.handle_transient_nack(
+                                        &nack_msg.unwind.route.calldata,
+                                        consumer.as_ref(),
+                                    );
+                                } else {
+                                    self.handle_terminal_offset_feedback(
+                                        &nack_msg.unwind.route.calldata,
+                                        consumer.as_ref(),
+                                        &receiver_id,
+                                    );
+                                }
                             }
                         },
                         Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
@@ -940,7 +999,7 @@ impl KafkaReceiver {
                         },
                         Ok(NodeControlMsg::TimerTick { .. }) => {
                             // Periodic safety-net commit: flush any committable
-                            // offsets that haven't been committed via ack/nack yet.
+                            // offsets that terminal feedback has not committed yet.
                             // Commit failures are recoverable: offsets stay
                             // tracked and are retried on the next tick.
                             if let Err(e) = self.commit_offsets(consumer.as_ref(), &receiver_id) {
@@ -998,9 +1057,22 @@ impl KafkaReceiver {
                     }
                 }
 
-                // 3. Consume Kafka messages. Stops once draining begins so no
-                // new records are admitted during receiver-first shutdown.
-                result = consumer.recv(), if draining_deadline.is_none() => {
+                // 3. Replay a transiently NACKed partition after its backoff.
+                _ = async {
+                    match retry_deadline {
+                        Some(deadline) => {
+                            tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await
+                        }
+                        None => std::future::pending().await,
+                    }
+                }, if retry_deadline.is_some() => {
+                    self.rebalance_state
+                        .process_due_assignment_resumes(consumer.as_ref());
+                    self.process_due_replays(consumer.as_ref());
+                }
+
+                // 4. Consume Kafka messages.
+                result = consumer.recv() => {
                     match result {
                         Ok(data) => {
                             // Extract metadata before processing so we can
@@ -1011,6 +1083,15 @@ impl KafkaReceiver {
 
                             let payload_bytes = data.payload().map_or(0, |payload| payload.len() as u64);
                             self.metrics.record_consumed_record(payload_bytes);
+
+                            // A pause can race with records already queued inside
+                            // librdkafka. Discard those buffered deliveries while
+                            // backoff is active; the pending seek will replay them.
+                            if manual_commit
+                                && self.retry_manager.blocks_delivery(&topic, partition)
+                            {
+                                continue;
+                            }
 
                             // Assign a compact u32 ID for this actual topic name.
                             // The registry remembers the mapping for Ack/Nack lookup.
@@ -1038,9 +1119,28 @@ impl KafkaReceiver {
                                 }
                             };
 
-                            // This partition's current ownership generation.
-                            let generation =
+                            // Keep Kafka ownership and replay delivery generations
+                            // independent. The ownership generation scopes tracker
+                            // state across rebalances; the delivery generation
+                            // invalidates pre-replay feedback within one ownership.
+                            let ownership_generation_raw =
                                 self.rebalance_state.current_generation(&topic, partition);
+                            let ownership_generation =
+                                OwnershipGeneration::from_raw(ownership_generation_raw);
+                            let delivery_generation = manual_commit.then(|| {
+                                self.retry_manager.delivery_generation(
+                                    &topic,
+                                    partition,
+                                    ownership_generation,
+                                )
+                            });
+                            let deliberate_replay = delivery_generation.is_some_and(|generation| {
+                                self.retry_manager.is_replay_delivery(
+                                    &topic,
+                                    partition,
+                                    generation,
+                                )
+                            });
 
                             // Idempotency: skip duplicate messages when enabled.
                             // The check is generation-aware: a message redelivered
@@ -1050,8 +1150,12 @@ impl KafkaReceiver {
                             // reprocessed, and tracking it below resets this
                             // partition's stale old-generation state.
                             if idempotent
+                                && !deliberate_replay
                                 && self.offset_tracker.is_known_offset_for_generation(
-                                    &topic, partition, offset, generation,
+                                    &topic,
+                                    partition,
+                                    offset,
+                                    ownership_generation_raw,
                                 )
                             {
                                 self.metrics.consumer.duplicate_records.inc();
@@ -1063,19 +1167,25 @@ impl KafkaReceiver {
                                     let signal = otap_data.signal_type();
                                     self.metrics
                                         .record_message_admitted(signal, payload_bytes);
-                                    if manual_commit {
-                                        // Stamp the record with this partition's
-                                        // ownership generation so a stale revocation
-                                        // of an older ownership period can't purge
-                                        // it, and its Ack/Nack can be recognized
-                                        // as belonging to the current ownership.
-                                        // Track offset as in-flight
+                                    if let Some(delivery_generation) = delivery_generation {
+                                        // Track under this partition's Kafka
+                                        // ownership generation so a stale revoke
+                                        // cannot purge newer state. Feedback uses
+                                        // the independent delivery generation below.
                                         self.offset_tracker
-                                            .track(&topic, partition, offset, generation);
+                                            .track(
+                                                &topic,
+                                                partition,
+                                                offset,
+                                                ownership_generation_raw,
+                                            );
                                         // Subscribe so Ack/Nack carries
                                         // offset identity (and generation) back to us
                                         let calldata = encode_calldata(
-                                            topic_id, partition, offset, generation,
+                                            topic_id,
+                                            partition,
+                                            offset,
+                                            delivery_generation,
                                         );
                                         effect_handler.subscribe_to(
                                             Interests::ACKS_OR_NACKS,
@@ -1191,7 +1301,7 @@ impl KafkaReceiver {
                                         }
                                     }
 
-                                    if manual_commit {
+                                    if let Some(delivery_generation) = delivery_generation {
                                         // Poison pill: track then immediately
                                         // advance past it so it does not block
                                         // the partition. This path intentionally
@@ -1202,13 +1312,24 @@ impl KafkaReceiver {
                                         // (read once above) for consistency with
                                         // the revoke/purge path.
                                         self.offset_tracker
-                                            .track(&topic, partition, offset, generation);
+                                            .track(
+                                                &topic,
+                                                partition,
+                                                offset,
+                                                ownership_generation_raw,
+                                            );
                                         self.advance_offset_and_commit(
                                             &topic,
                                             partition,
                                             offset,
                                             consumer.as_ref(),
                                             &receiver_id,
+                                        );
+                                        self.retry_manager.complete_if_rewind(
+                                            &topic,
+                                            partition,
+                                            delivery_generation,
+                                            offset,
                                         );
                                     }
                                 }
@@ -1236,7 +1357,7 @@ impl KafkaReceiver {
                     }
                 }
 
-                // 4. Periodic consumer-lag refresh trigger (opt-in). Fires only
+                // 5. Periodic consumer-lag refresh trigger (opt-in). Fires only
                 // when the timer is armed, no refresh is already in flight, and
                 // the receiver is not draining, so no broker calls are issued
                 // during shutdown.
@@ -1249,7 +1370,7 @@ impl KafkaReceiver {
                     }
                 }, if lag_ticker.is_some()
                     && lag_refresh_in_flight.is_none()
-                    && draining_deadline.is_none() => {
+                    => {
                     // pass the instant deadline to the worker so it can
                     // monitor itself during the consumer_lag calculation
                     // if deadline exceeds, it returns None
@@ -1400,10 +1521,19 @@ fn compute_consumer_lag<C: ConsumerContext>(
     Some(sum as f64 / elements.len() as f64)
 }
 
-/// Decision for an incoming Ack/Nack carrying Kafka offset identity, derived
+/// Feedback identity resolved from receiver calldata and retry state.
+struct ResolvedOffsetFeedback {
+    topic: Arc<str>,
+    partition: i32,
+    offset: i64,
+    ownership_generation: OwnershipGeneration,
+    delivery_generation: DeliveryGeneration,
+}
+
+/// Decision for incoming feedback carrying Kafka offset identity, derived
 /// purely from generation/ownership state.
 ///
-/// Extracted from [`KafkaReceiver::handle_offset_feedback`] so the stale/late-ack
+/// Extracted from [`KafkaReceiver::resolve_offset_feedback`] so the stale/late-ack
 /// policy is self-contained and exhaustively unit-testable without a live
 /// consumer.
 #[derive(Debug, PartialEq, Eq)]
@@ -1421,7 +1551,7 @@ enum OffsetFeedbackAction {
     DropLateAck { purge: bool },
 }
 
-/// Classify an Ack/Nack given the ack's ownership `generation` and the
+/// Classify feedback given its ownership `generation` and the
 /// partition's current tracker/assignment state.
 ///
 /// The stale-generation check compares the ack against the **maximum** of the
@@ -1435,17 +1565,17 @@ enum OffsetFeedbackAction {
 /// `1`, a `0` assigned/tracked generation means "not owned / untracked" and is
 /// treated as no lower bound.
 fn classify_offset_feedback(
-    ack_generation: u64,
+    feedback_generation: u64,
     tracked_generation: Option<u64>,
     assigned_generation: u64,
     is_assigned: bool,
 ) -> OffsetFeedbackAction {
     let current = tracked_generation.unwrap_or(0).max(assigned_generation);
-    if current > 0 && ack_generation < current {
+    if current > 0 && feedback_generation < current {
         return OffsetFeedbackAction::DropStale;
     }
     if !is_assigned {
-        let purge = tracked_generation.is_some_and(|tracked| tracked <= ack_generation);
+        let purge = tracked_generation.is_some_and(|tracked| tracked <= feedback_generation);
         return OffsetFeedbackAction::DropLateAck { purge };
     }
     OffsetFeedbackAction::Commit
@@ -1455,30 +1585,40 @@ fn classify_offset_feedback(
 ///
 /// Slot 0: `(topic_id << 32) | (partition as u32)` packed into a `u64`.
 /// Slot 1: `offset` cast to `u64`.
-/// Slot 2: assignment `generation`.
+/// Slot 2: receiver-local delivery `generation`.
 ///
 /// [`CallData`] inlines three slots, so carrying the generation adds no
 /// heap allocation.
-fn encode_calldata(topic_id: u32, partition: i32, offset: i64, generation: u64) -> CallData {
+fn encode_calldata(
+    topic_id: u32,
+    partition: i32,
+    offset: i64,
+    delivery_generation: DeliveryGeneration,
+) -> CallData {
     let topic_partition = ((topic_id as u64) << 32) | (partition as u32 as u64);
     smallvec![
         Context8u8::from(topic_partition),
         Context8u8::from(offset as u64),
-        Context8u8::from(generation),
+        Context8u8::from(delivery_generation.raw()),
     ]
 }
 
 /// Decode Kafka message identity from [`CallData`] returned in Ack/Nack.
 ///
-/// A calldata without the generation slot (legacy 2-slot form) decodes as
-/// generation `0`.
-fn decode_calldata(calldata: &CallData) -> (u32, i32, i64, u64) {
+/// A calldata without the delivery-generation slot (legacy 2-slot form)
+/// decodes as generation `0`.
+fn decode_calldata(calldata: &CallData) -> (u32, i32, i64, DeliveryGeneration) {
     let topic_partition: u64 = calldata[0].into();
     let topic_id = (topic_partition >> 32) as u32;
     let partition = (topic_partition & 0xFFFF_FFFF) as i32;
     let offset: u64 = calldata[1].into();
-    let generation: u64 = calldata.get(2).copied().map(Into::into).unwrap_or(0);
-    (topic_id, partition, offset as i64, generation)
+    let delivery_generation: u64 = calldata.get(2).copied().map(Into::into).unwrap_or(0);
+    (
+        topic_id,
+        partition,
+        offset as i64,
+        DeliveryGeneration::from_raw(delivery_generation),
+    )
 }
 
 /// Decode a traces payload into `OtapPdata`.
@@ -1508,6 +1648,9 @@ fn decode_traces_payload(
                 .into(),
             ))
         }
+        MessageFormat::Syslog => Err(EngineError::PdataConversionError {
+            error: "syslog encoding is only supported for logs".to_string(),
+        }),
     }
 }
 
@@ -1538,6 +1681,9 @@ fn decode_metrics_payload(
                 .into(),
             ))
         }
+        MessageFormat::Syslog => Err(EngineError::PdataConversionError {
+            error: "syslog encoding is only supported for logs".to_string(),
+        }),
     }
 }
 
@@ -1568,7 +1714,21 @@ fn decode_logs_payload(
                 .into(),
             ))
         }
+        MessageFormat::Syslog => Ok(OtapPdata::new(
+            Context::default(),
+            decode_syslog_logs(data)?.into(),
+        )),
     }
+}
+
+/// Reject Syslog decoding for signal types other than logs.
+fn reject_syslog_for_non_log_signal(
+    _extractions: &HeaderExtractions,
+    _data: &[u8],
+) -> Result<OtapPdata, EngineError> {
+    Err(EngineError::PdataConversionError {
+        error: "syslog encoding is only supported for logs".to_string(),
+    })
 }
 
 /// Decode a Kafka payload with optional header extraction applied to resource
@@ -1586,17 +1746,20 @@ fn decode_with_extractions(
     message_format: MessageFormat,
     apply_otlp: fn(&HeaderExtractions, &[u8]) -> Result<OtapPdata, EngineError>,
     apply_otap: fn(&HeaderExtractions, &[u8]) -> Result<OtapPdata, EngineError>,
+    apply_syslog: fn(&HeaderExtractions, &[u8]) -> Result<OtapPdata, EngineError>,
     decode: fn(&[u8], MessageFormat) -> Result<OtapPdata, EngineError>,
 ) -> Result<OtapPdata, EngineError> {
     if !extractors.is_empty() {
         let extractions = match message_format {
             MessageFormat::OtlpProto => HeaderExtractions::otlp(kafka_message, extractors),
             MessageFormat::OtapProto => HeaderExtractions::otap(kafka_message, extractors),
+            MessageFormat::Syslog => HeaderExtractions::otap(kafka_message, extractors),
         };
         if extractions.has_any() {
             return match message_format {
                 MessageFormat::OtlpProto => apply_otlp(&extractions, data),
                 MessageFormat::OtapProto => apply_otap(&extractions, data),
+                MessageFormat::Syslog => apply_syslog(&extractions, data),
             };
         }
     }
@@ -1613,20 +1776,20 @@ fn capture_transport_headers(
     capture_policy: Option<&HeaderCapturePolicy>,
     pdata: &mut OtapPdata,
 ) {
-    if let Some(policy) = capture_policy {
-        if let Some(headers) = kafka_message.headers() {
-            let pairs = headers.iter().filter_map(|h| h.value.map(|v| (h.key, v)));
-            let mut transport_headers = TransportHeaders::new();
-            let stats = policy.capture_from_pairs(pairs, &mut transport_headers);
-            if let Some(stats) = stats {
-                otel_error!(
-                    "kafka.capture_policy.limits_exceeded",
-                    stats = %stats,
-                );
-            }
-            if !transport_headers.is_empty() {
-                pdata.set_transport_headers(transport_headers);
-            }
+    if let Some(policy) = capture_policy
+        && let Some(headers) = kafka_message.headers()
+    {
+        let pairs = headers.iter().filter_map(|h| h.value.map(|v| (h.key, v)));
+        let mut transport_headers = TransportHeaders::new();
+        let stats = policy.capture_from_pairs(pairs, &mut transport_headers);
+        if let Some(stats) = stats {
+            otel_error!(
+                "kafka.capture_policy.limits_exceeded",
+                stats = %stats,
+            );
+        }
+        if !transport_headers.is_empty() {
+            pdata.set_transport_headers(transport_headers);
         }
     }
 }
@@ -1683,7 +1846,7 @@ mod tests {
     use crate::receivers::kafka_receiver::config::{
         AttributeValueType, AutoOffsetReset, CommitConfig, CommitMode as ConfigCommitMode,
         HeaderExtraction, IsolationLevel, KafkaReceiverConfigBuilder, RebalanceStrategy,
-        SignalConfig,
+        SignalConfig, TransientNackConfig, TransientNackMode,
     };
 
     use crate::common::kafka::MessageFormat;
@@ -1721,6 +1884,9 @@ mod tests {
     use rdkafka::types::RDKafkaRespErr;
     use std::collections::HashMap;
     use std::time::Duration;
+
+    #[path = "replay.rs"]
+    mod replay;
 
     /// Number of partitions provisioned for the rebalance integration tests.
     const REBALANCE_TEST_PARTITIONS: i32 = 2;
@@ -2997,15 +3163,13 @@ mod tests {
 
     /// Scenario (offset guarantees): a manual-commit receiver consumes a record
     /// and holds it in-flight (un-acked) while a downstream retry would be in
-    /// progress, then the record receives a terminal permanent Nack (the outcome
-    /// a `processor:retry` node forwards once its retries are exhausted or the
-    /// failure is permanent).
+    /// progress, then the record receives a permanent NACK from downstream.
     /// Guarantees: the offset stays uncommitted while the record is in-flight
     /// (the committed watermark does not advance past it), and advances to the
     /// full count only once the terminal permanent Nack arrives -- proving the
     /// receiver holds the offset during retries and advances only on a
-    /// terminal/permanent outcome. Transient-retry logic itself lives in and is
-    /// tested by the `processor:retry` node (see `retry_processor` tests
+    /// permanent outcome. Local transient retry is tested by the
+    /// `processor:retry` node (see `retry_processor` tests
     /// `test_retry_processor_permanent_error_not_retried`,
     /// `test_retry_processor_nacks_then_timeout`,
     /// `test_retry_processor_nacks_then_limit`).
@@ -3046,9 +3210,10 @@ mod tests {
                      (retries in progress), got {committed_in_flight:?}",
                 );
 
-                // The retry node exhausts/permanently-fails and forwards a
-                // terminal permanent Nack to the receiver.
-                receiver.nack_permanent("retries exhausted", pdata);
+                // A downstream component classifies the failure as permanent.
+                // The retry processor forwards this terminal outcome without
+                // retrying it.
+                receiver.nack_permanent("permanent downstream failure", pdata);
 
                 // The terminal Nack advances the offset past the message.
                 let advanced =
@@ -3062,85 +3227,6 @@ mod tests {
                     advanced,
                     "a terminal permanent Nack must advance the committed offset \
                      past the message, got {:?}",
-                    committed_offset(&brokers, group, TOPIC, 0)
-                        .expect("kafka-test: committed-offset probe failed"),
-                );
-
-                receiver.shutdown(Duration::from_secs(5));
-                receiver.await_stopped().await;
-            },
-        )
-        .await;
-    }
-
-    /// Scenario (offset guarantees): two records are consumed from one partition;
-    /// the first is terminated with a transient (non-permanent) Nack and the
-    /// second with a permanent Nack.
-    /// Guarantees: the receiver treats every Nack as terminal regardless of the
-    /// `permanent` flag -- both advance the committed offset identically -- which
-    /// confirms transient-retry is delegated out-of-process to `processor:retry`
-    /// and the receiver never itself retries a nacked record.
-    #[tokio::test]
-    async fn transient_and_permanent_nack_both_advance_offset() {
-        const TOPIC: &str = "offset-nack-parity-traces";
-        const RECORDS: usize = 2;
-        let group = "offset-nack-parity-group";
-        with_cluster(
-            KafkaTestCluster::builder().topic(TOPIC),
-            |cluster| async move {
-                let producer = cluster.producer().build();
-                let req = create_traces_with_spans();
-                let mut bytes = vec![];
-                req.encode(&mut bytes).expect("encode");
-
-                for i in 0..RECORDS {
-                    let key = format!("rec-{i}");
-                    producer
-                        .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
-                        .await
-                        .expect("send record");
-                }
-
-                let cfg = manual_traces_config_no_timer(cluster.bootstrap_servers(), group, TOPIC);
-                let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
-
-                // Correlate each delivered record to its offset so the nacks are
-                // issued lowest-offset-first (the watermark only advances on the
-                // contiguous lowest offset).
-                let mut by_offset: HashMap<i64, OtapPdata> = HashMap::new();
-                for _ in 0..RECORDS {
-                    let pdata = receiver.recv_pdata().await;
-                    let route = pdata
-                        .source_route()
-                        .expect("delivered pdata carries source calldata");
-                    let (_topic_id, _partition, offset, _generation) =
-                        decode_calldata(&route.calldata);
-                    let _ = by_offset.insert(offset, pdata);
-                }
-
-                // Offset 0 gets a transient Nack; offset 1 gets a permanent Nack.
-                // Both must advance the watermark identically.
-                receiver.nack_transient(
-                    "transient failure",
-                    by_offset.remove(&0).expect("offset 0 delivered"),
-                );
-                receiver.nack_permanent(
-                    "permanent failure",
-                    by_offset.remove(&1).expect("offset 1 delivered"),
-                );
-
-                let brokers = cluster.bootstrap_servers().to_string();
-                let advanced =
-                    poll_until(Duration::from_secs(5), Duration::from_millis(250), || {
-                        committed_offset(&brokers, group, TOPIC, 0)
-                            .expect("kafka-test: committed-offset probe failed")
-                            .is_some_and(|o| o >= RECORDS as i64)
-                    })
-                    .await;
-                assert!(
-                    advanced,
-                    "both a transient and a permanent Nack must advance the \
-                     committed offset to the full count {RECORDS}, got {:?}",
                     committed_offset(&brokers, group, TOPIC, 0)
                         .expect("kafka-test: committed-offset probe failed"),
                 );
@@ -3438,7 +3524,7 @@ mod tests {
     /// generation 1 in its calldata.
     /// Guarantees: the stale feedback is classified `DropStale` -- the receiver's
     /// exact classifier decision on an Ack/Nack (both funnel through
-    /// `handle_offset_feedback`, which calls `classify_offset_feedback`) -- so it
+    /// `resolve_offset_feedback`, which calls `classify_offset_feedback`) -- so it
     /// is ignored: acknowledging the old offset is a no-op (returns false) and the
     /// committable offset continues to reflect only the generation-2 record, never
     /// regressing to or advancing on the generation-1 offset. An old-generation
@@ -3485,7 +3571,7 @@ mod tests {
             .copied();
 
         // A stale Ack/Nack for the old generation-1 record arrives. The receiver
-        // reads the same state `handle_offset_feedback` reads and classifies it.
+        // reads the same state `resolve_offset_feedback` reads and classifies it.
         let tracked_generation = receiver.offset_tracker.partition_generation("traces", 0);
         let assigned_generation = receiver.rebalance_state.current_generation("traces", 0);
         let is_assigned = receiver.rebalance_state.is_assigned("traces", 0);
@@ -3881,11 +3967,11 @@ mod tests {
                 // Poll B until it is assigned a partition (drives the rebalance).
                 let mut b_partition = None;
                 for _ in 0..40 {
-                    if let Ok(a) = consumer_b.assignment() {
-                        if let Some(elem) = a.elements().first() {
-                            b_partition = Some(elem.partition());
-                            break;
-                        }
+                    if let Ok(a) = consumer_b.assignment()
+                        && let Some(elem) = a.elements().first()
+                    {
+                        b_partition = Some(elem.partition());
+                        break;
                     }
                     let _ =
                         tokio::time::timeout(Duration::from_millis(500), consumer_b.recv()).await;
@@ -4601,7 +4687,7 @@ mod tests {
     /// that is then stolen by a second group member (a `RebalanceTrigger`), after
     /// which the test permanently nacks the now-stale record.
     /// Guarantees: the late Nack for the revoked partition is subject to the same
-    /// stale/late guard as an Ack (both funnel through `handle_offset_feedback`)
+    /// stale/late guard as an Ack (both funnel through terminal feedback handling)
     /// -- it increments `receiver.kafka.consumer.group.feedback.after_revocation`
     /// and is not committed -- so a Nack that arrives after a partition is
     /// revoked can never advance a partition this consumer no longer owns.
@@ -4944,7 +5030,7 @@ mod tests {
                 let max_total_deliveries = (total * max_deliveries) as u64;
                 let admitted_messages = measurement_counter(
                     terminal.metrics(),
-                    "receiver.messages",
+                    "receiver.kafka.messages",
                     &[("signal", "traces")],
                     "started",
                 );
@@ -4987,8 +5073,8 @@ mod tests {
     /// then receives `DrainIngress`; more records are produced after the drain.
     /// Guarantees: the receiver emits `RuntimeControlMsg::ReceiverDrained`, stops
     /// forwarding new records (no pdata arrives post-drain), commits the
-    /// pre-drain offsets (committed offset >= INITIAL), and still terminates when
-    /// later sent `Shutdown` (via `await_stopped` returning).
+    /// pre-drain offsets (committed offset >= INITIAL), and terminates as part
+    /// of the receiver-first drain (via `await_stopped` returning).
     #[tokio::test]
     async fn drain_ingress_stops_polling_and_notifies_drained() {
         const TOPIC: &str = "drain-ingress-traces";
@@ -5081,10 +5167,8 @@ mod tests {
                         .expect("kafka-test: committed-offset probe failed"),
                 );
 
-                // The receiver must still terminate cleanly on Shutdown; awaiting the
-                // spawned task returning (without hanging) preserves the
-                // clean-termination guarantee.
-                receiver.shutdown(Duration::from_secs(5));
+                // The receiver terminates after reporting its ingress drain,
+                // matching the runtime's receiver-first lifecycle contract.
                 receiver.await_stopped().await;
             },
         )
@@ -5339,12 +5423,12 @@ mod tests {
 
     /// Scenario (lifecycle: drain and shutdown): a manual-commit receiver
     /// consumes and acks records while a producer keeps sending throughout; the
-    /// receiver is then drained and later shut down, with more records produced
-    /// after the drain begins.
+    /// receiver is then drained, with more records produced after the drain
+    /// begins.
     /// Guarantees: under sustained traffic the receiver still emits
     /// `ReceiverDrained`, stops forwarding new records once drained, commits the
     /// offsets acked before the drain (committed offset >= the pre-drain acked
-    /// count), and terminates cleanly on the subsequent `Shutdown`.
+    /// count), and terminates cleanly as part of ingress drain.
     #[tokio::test]
     async fn drain_under_sustained_traffic_commits_and_stops_cleanly() {
         const TOPIC: &str = "drain-sustained-traces";
@@ -5436,7 +5520,6 @@ mod tests {
                         .expect("kafka-test: committed-offset probe failed"),
                 );
 
-                receiver.shutdown(Duration::from_secs(5));
                 receiver.await_stopped().await;
             },
         )
@@ -5512,9 +5595,9 @@ mod tests {
                 );
 
                 // The held records are still un-acked; drop them to release the
-                // in-flight set, then terminate cleanly.
+                // in-flight set; the receiver has already terminated cleanly
+                // as part of ingress drain.
                 drop(in_flight);
-                receiver.shutdown(Duration::from_secs(5));
                 receiver.await_stopped().await;
             },
         )
@@ -6124,6 +6207,70 @@ mod tests {
             ),
             "expected OtapArrowRecords::Logs"
         );
+    }
+
+    /// Scenario (routing and payload correctness): one RFC 5424 message is received in a
+    /// Kafka record configured for Syslog.
+    /// Guarantees: the shared Syslog parser produces exactly one OpenTelemetry log record.
+    #[test]
+    fn decode_logs_payload_syslog_rfc5424() {
+        let input = b"<34>1 2003-10-11T22:14:15.003Z host app - ID47 - Test message";
+        let mut pdata = decode_logs_payload(input, MessageFormat::Syslog).expect("decode Syslog");
+        let proto: OtlpProtoBytes = pdata
+            .take_payload()
+            .try_into_with_default()
+            .expect("convert Syslog Arrow logs to OTLP");
+        let request = ExportLogsServiceRequest::decode(proto.as_bytes()).expect("decode OTLP logs");
+
+        assert_eq!(request.resource_logs.len(), 1);
+        assert_eq!(request.resource_logs[0].scope_logs.len(), 1);
+        assert_eq!(request.resource_logs[0].scope_logs[0].log_records.len(), 1);
+    }
+
+    /// Scenario (routing and payload correctness): an RFC 3164 message contains a CEF body.
+    /// Guarantees: Kafka Syslog decoding reuses the existing CEF mapping and emits CEF
+    /// attributes on the OpenTelemetry log record.
+    #[test]
+    fn decode_logs_payload_syslog_with_embedded_cef() {
+        let input = b"<34>Oct 11 22:14:15 firewall CEF:0|Vendor|Product|2.0|signature-123|Intrusion detected|7|act=blocked";
+        let mut pdata =
+            decode_logs_payload(input, MessageFormat::Syslog).expect("decode Syslog CEF");
+        let proto: OtlpProtoBytes = pdata
+            .take_payload()
+            .try_into_with_default()
+            .expect("convert Syslog Arrow logs to OTLP");
+        let request = ExportLogsServiceRequest::decode(proto.as_bytes()).expect("decode OTLP logs");
+        let attributes = &request.resource_logs[0].scope_logs[0].log_records[0].attributes;
+
+        assert!(attributes.iter().any(|attribute| {
+            attribute.key == "cef.device_vendor"
+                && attribute
+                    .value
+                    .as_ref()
+                    .and_then(|value| value.value.as_ref())
+                    .is_some_and(|value| {
+                        matches!(value, any_value::Value::StringValue(value) if value == "Vendor")
+                    })
+        }));
+    }
+
+    /// Scenario (routing and payload correctness): an empty Kafka record is decoded as
+    /// Syslog.
+    /// Guarantees: malformed Syslog returns a recoverable per-message error instead of
+    /// panicking or stalling the consumer loop.
+    #[test]
+    fn decode_logs_payload_empty_syslog_returns_error() {
+        let result = decode_logs_payload(b"", MessageFormat::Syslog);
+        assert!(result.is_err());
+    }
+
+    /// Scenario (routing and payload correctness): a traces or metrics message-format
+    /// header requests Syslog.
+    /// Guarantees: runtime header overrides cannot route Syslog bytes into non-log signals.
+    #[test]
+    fn decode_non_logs_payload_syslog_returns_error() {
+        assert!(decode_traces_payload(b"message", MessageFormat::Syslog).is_err());
+        assert!(decode_metrics_payload(b"message", MessageFormat::Syslog).is_err());
     }
 
     /// Scenario (routing and payload correctness): undecodable bytes are passed to the OTAP
@@ -6738,6 +6885,91 @@ mod tests {
         .await;
     }
 
+    /// Scenario (routing and payload correctness): a raw Syslog Kafka record carries an
+    /// `x-tenant-id` header configured for resource-attribute extraction.
+    /// Guarantees: Syslog uses the shared extraction orchestration and emits the header
+    /// value as the `tenant.id` resource attribute on the decoded log.
+    #[tokio::test]
+    async fn test_kafka_receiver_logs_header_extraction_syslog() {
+        const TOPIC: &str = "test-logs-headers-syslog";
+        with_cluster(
+            KafkaTestCluster::builder().topic(TOPIC),
+            |cluster| async move {
+                let producer = cluster.producer().build();
+                let tenant_value = "acme-corp";
+                let syslog = b"<34>1 2003-10-11T22:14:15.003Z host app - ID47 - Test message";
+
+                producer
+                    .send_full(
+                        SendRecord::new(TOPIC, syslog)
+                            .header("x-tenant-id", tenant_value.as_bytes())
+                            .header("MessageFormat", MSG_FORMAT_SYSLOG),
+                    )
+                    .await
+                    .expect("send Syslog message");
+
+                let mut resource_attrs_from_headers = HashMap::new();
+                let _ = resource_attrs_from_headers.insert(
+                    "x-tenant-id".to_string(),
+                    HeaderExtraction {
+                        key: "tenant.id".to_string(),
+                        value_type: AttributeValueType::String,
+                    },
+                );
+
+                let cfg = KafkaReceiverConfig::try_from(
+                    KafkaReceiverConfigBuilder::new(
+                        cluster.bootstrap_servers(),
+                        "test-group",
+                        "test-client",
+                    )
+                    .with_logs(
+                        SignalConfig::new(vec![TOPIC.to_string()])
+                            .with_encoding(MessageFormat::Syslog),
+                    )
+                    .with_commit(CommitConfig {
+                        mode: ConfigCommitMode::Auto,
+                        interval_ms: Some(1000),
+                    })
+                    .with_auto_offset_reset(AutoOffsetReset::Earliest)
+                    .with_isolation_level(IsolationLevel::ReadUncommitted)
+                    .with_resource_attrs_from_headers(resource_attrs_from_headers),
+                )
+                .expect("test config valid");
+                let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+
+                let mut pdata = receiver.recv_pdata().await;
+                let otlp: OtlpProtoBytes = pdata
+                    .take_payload()
+                    .try_into_with_default()
+                    .expect("convert Syslog Arrow logs to OTLP");
+                let result =
+                    ExportLogsServiceRequest::decode(otlp.as_bytes()).expect("decode OTLP logs");
+                let resource = result.resource_logs[0]
+                    .resource
+                    .as_ref()
+                    .expect("log should have a resource");
+                let tenant_attr = resource
+                    .attributes
+                    .iter()
+                    .find(|attribute| attribute.key == "tenant.id")
+                    .expect("resource should contain tenant.id");
+
+                assert!(matches!(
+                    tenant_attr
+                        .value
+                        .as_ref()
+                        .and_then(|value| value.value.as_ref()),
+                    Some(any_value::Value::StringValue(value)) if value == tenant_value
+                ));
+
+                receiver.shutdown(Duration::from_secs(5));
+                receiver.await_stopped().await;
+            },
+        )
+        .await;
+    }
+
     /// Scenario (routing and payload correctness): a capture policy captures `X-Tenant-Id` (stored as `tenant_id`)
     /// and `X-Request-Id` (default lowercased name) but not `X-Unrelated`.
     /// Guarantees: exactly the two matching Kafka headers are captured into the
@@ -7300,6 +7532,7 @@ mod tests {
         ];
 
         for (topic_id, partition, offset, generation) in cases {
+            let generation = DeliveryGeneration::from_raw(generation);
             let calldata = encode_calldata(topic_id, partition, offset, generation);
             let (dec_tid, dec_part, dec_off, dec_gen) = decode_calldata(&calldata);
             assert_eq!(dec_tid, topic_id, "topic_id mismatch");
@@ -7315,7 +7548,7 @@ mod tests {
     /// layout.
     #[test]
     fn encode_calldata_produces_three_slots() {
-        let calldata = encode_calldata(1, 5, 42, 3);
+        let calldata = encode_calldata(1, 5, 42, DeliveryGeneration::from_raw(3));
         assert_eq!(calldata.len(), 3);
     }
 
@@ -7334,7 +7567,7 @@ mod tests {
         assert_eq!(topic_id, 7);
         assert_eq!(partition, 5);
         assert_eq!(offset, 42);
-        assert_eq!(generation, 0);
+        assert_eq!(generation, DeliveryGeneration::from_raw(0));
     }
 
     /// Scenario (routing and payload correctness): a single receiver subscribes
@@ -7667,16 +7900,15 @@ mod tests {
                 let mut found_tenant = false;
                 for rs in &result.resource_spans {
                     let resource = rs.resource.as_ref().expect("resource present");
-                    if let Some(kv) = resource.attributes.iter().find(|kv| kv.key == "tenant.id") {
-                        if let Some(any_value::Value::StringValue(s)) =
+                    if let Some(kv) = resource.attributes.iter().find(|kv| kv.key == "tenant.id")
+                        && let Some(any_value::Value::StringValue(s)) =
                             kv.value.as_ref().and_then(|v| v.value.as_ref())
-                        {
-                            assert_eq!(
-                                s, &adversarial_value,
-                                "adversarial header value is extracted verbatim",
-                            );
-                            found_tenant = true;
-                        }
+                    {
+                        assert_eq!(
+                            s, &adversarial_value,
+                            "adversarial header value is extracted verbatim",
+                        );
+                        found_tenant = true;
                     }
                 }
                 assert!(found_tenant, "the tenant.id attribute should be extracted");

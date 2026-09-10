@@ -1,5 +1,0 @@
-change_type: enhancement
-component: pdata
-note: "Publish the zero-dependency `otel-arrow-dfe-pdata-views` crate through the guarded release workflow."
-issues: [2691]
-subtext:

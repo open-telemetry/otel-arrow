@@ -12,7 +12,8 @@ rust-version.workspace = true
 arrow.workspace = true
 tokio.workspace = true
 serde_json.workspace = true
-otel-arrow-dfe-core-nodes = { workspace = true, features = ["dev-tools", "bench"] }
+otel-arrow-dfe-core-nodes = { workspace = true, features = ["bench"] }
+otel-arrow-dfe-dev-nodes = { workspace = true }
 otel-arrow-dfe-otap = { workspace = true }
 
 [dev-dependencies]
@@ -23,10 +24,11 @@ prost = { workspace = true }
 otel-arrow-dfe-control-channel = { workspace = true }
 otel-arrow-dfe-config = { workspace = true }
 otel-arrow-dfe-channel = { workspace = true }
-otel-arrow-dfe-engine = { workspace = true }
+otel-arrow-dfe-engine = { workspace = true, features = ["test-utils"] }
 otel-arrow-dfe-telemetry = { workspace = true }
 otel-arrow-dfe-telemetry-macros = { workspace = true }
 otel-arrow-dfe-pdata = { workspace = true, features = ["bench", "testing"] }
+otel-arrow-dfe-pdata-codec = { workspace = true, features = ["testing"] }
 otel-arrow-dfe-pdata-views = { workspace = true }
 
 tracing.workspace = true

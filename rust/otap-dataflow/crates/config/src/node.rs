@@ -185,23 +185,51 @@ pub struct NodePolicies {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NodeTelemetryPolicy {
-    /// Opt this node into per-signal input/output item counts on its
-    /// `node.input` / `node.output` metric sets.
+    /// Opt this node into input/output message counters.
+    ///
+    /// This enables the applicable `node.input.messages` and
+    /// `node.output.messages` metrics, plus shared
+    /// `receiver.received.messages` or `exporter.attempted.messages` metrics
+    /// for those node kinds. `runtime_metrics: normal` or `detailed` enables
+    /// message counters for every node without this flag.
+    #[serde(default)]
+    pub messages: bool,
+
+    /// Opt this node into terminal Ack/Nack completion duration.
+    ///
+    /// This enables `node.completion.duration` without enabling node input or
+    /// output message counters. `runtime_metrics: detailed` enables completion
+    /// duration for every node without this flag.
+    #[serde(default)]
+    pub completion_duration: bool,
+
+    /// Opt this node into node-implemented local duration measurements, such as
+    /// `receiver.processing.duration`, `processor.compute.duration`, or
+    /// `exporter.attempted.duration`.
+    ///
+    /// Off by default because duration instrumentation requires clock reads on
+    /// the data path. `runtime_metrics: detailed` enables local duration
+    /// for every node without this flag.
+    #[serde(default)]
+    pub duration: bool,
+
+    /// Opt this node into node-implemented and per-signal input/output item
+    /// counts.
     ///
     /// Off by default because counting items requires inspecting each batch,
-    /// which is expensive for OTLP payloads. Only recorded when the resolved
-    /// `runtime_metrics` is `normal` or higher; `runtime_metrics: detailed`
-    /// enables it for every node without this flag.
+    /// which is expensive for OTLP payloads. This option applies at any runtime
+    /// metric level. `runtime_metrics: detailed` enables it for every node
+    /// without this flag.
     #[serde(default)]
     pub item_counts: bool,
 
-    /// Opt this node into per-signal input/output logical payload size on its
-    /// `node.input` / `node.output` metric sets.
+    /// Opt this node into per-signal input/output logical payload size and
+    /// node-implemented encoded payload size at receiver/exporter boundaries.
     ///
     /// Off by default because measuring OTAP payloads requires walking their
-    /// Arrow arrays and buffers. Only recorded when the resolved
-    /// `runtime_metrics` is `normal` or higher; `runtime_metrics: detailed`
-    /// enables it for every node without this flag.
+    /// Arrow arrays and buffers. This option applies at any runtime metric
+    /// level. `runtime_metrics: detailed` enables it for every node without
+    /// this flag.
     #[serde(default)]
     pub size: bool,
 }
@@ -362,12 +390,12 @@ impl NodeUserConfig {
 
         // Validate the selector shape inside node-level header_propagation so
         // that invalid selectors are rejected uniformly.
-        if let Some(propagation) = &self.header_propagation {
-            if let Err(e) = propagation.validate() {
-                errors.push(Error::InvalidUserConfig {
-                    error: format!("node `{node_name}`: header_propagation.default.selector: {e}"),
-                });
-            }
+        if let Some(propagation) = &self.header_propagation
+            && let Err(e) = propagation.validate()
+        {
+            errors.push(Error::InvalidUserConfig {
+                error: format!("node `{node_name}`: header_propagation.default.selector: {e}"),
+            });
         }
     }
 
@@ -446,11 +474,10 @@ pub(crate) fn redact_secret_headers(value: &mut Value) {
                         }
                         Value::Array(entries) => {
                             for entry in entries.iter_mut() {
-                                if let Value::Object(fields) = entry {
-                                    if let Some(static_value) = fields.get_mut("value") {
-                                        *static_value =
-                                            Value::String(REDACTED_HEADER_VALUE.to_owned());
-                                    }
+                                if let Value::Object(fields) = entry
+                                    && let Some(static_value) = fields.get_mut("value")
+                                {
+                                    *static_value = Value::String(REDACTED_HEADER_VALUE.to_owned());
                                 }
                             }
                             continue;
@@ -529,7 +556,7 @@ mod tests {
         assert!(cfg.outputs.is_empty());
     }
 
-    /// Scenario: a node config opts into item counts and payload size through its restricted policy block.
+    /// Scenario: a node config opts into every optional node measurement.
     /// Guarantees: node telemetry configuration stays namespaced under `policies` with independent measurement controls.
     #[test]
     fn node_user_config_parses_measurement_policy() {
@@ -537,6 +564,9 @@ mod tests {
 type: "processor:batch"
 policies:
   telemetry:
+    messages: true
+    completion_duration: true
+    duration: true
     item_counts: true
     size: true
 "#;
@@ -546,8 +576,23 @@ policies:
             .as_ref()
             .and_then(|policies| policies.telemetry.as_ref())
             .expect("node telemetry policy");
+        assert!(telemetry.messages);
+        assert!(telemetry.completion_duration);
+        assert!(telemetry.duration);
         assert!(telemetry.item_counts);
         assert!(telemetry.size);
+    }
+
+    /// Scenario: a node telemetry policy omits every optional measurement.
+    /// Guarantees: messages, completion duration, local duration, item counts, and size remain disabled by default.
+    #[test]
+    fn node_telemetry_policy_defaults_optional_measurements_off() {
+        let telemetry = NodeTelemetryPolicy::default();
+        assert!(!telemetry.messages);
+        assert!(!telemetry.completion_duration);
+        assert!(!telemetry.duration);
+        assert!(!telemetry.item_counts);
+        assert!(!telemetry.size);
     }
 
     #[test]

@@ -48,6 +48,13 @@ Arrow](https://arrow.apache.org/), and our Parquet exporter for OTAP
 makes OpenTelemetry data directly accessible to a wide range of tools,
 thanks to the [Apache Parquet](https://parquet.apache.org/) ecosystem.
 
+The transform and query primitives are developed in the contrib
+[Data Engine](./rust/contrib/data_engine/README.md) workspace. Although
+the OTAP Dataflow Engine consumes these crates, the Data Engine is
+general-purpose and has no architectural dependency on OTAP or OpenTelemetry
+data. Its published crates use the `otel-arrow-contrib-data-engine-*` prefix
+while the workspace is hosted and maintained in this repository.
+
 We're [self-instrumenting
 ourselves](./rust/otap-dataflow/crates/telemetry/README.md) with an
 experimental OpenTelemetry SDK that emits OTAP directly, meaning we
@@ -220,6 +227,7 @@ repository](https://github.com/open-telemetry/community/blob/main/guides/contrib
 
 ### Approvers
 
+- [Aaron Marten](https://github.com/AaronRM), Microsoft
 - [Cijo Thomas](https://github.com/cijothomas), Microsoft
 
 For more information about the approver role, see the [community
@@ -227,10 +235,9 @@ repository](https://github.com/open-telemetry/community/blob/main/guides/contrib
 
 ### Triagers
 
-- [Aaron Marten](https://github.com/AaronRM), Microsoft
 - [Tom Tan](https://github.com/ThomsonTan), Microsoft
 
-For more information about the approver role, see the [community
+For more information about the triager role, see the [community
 repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#triager).
 
 ### Emeritus

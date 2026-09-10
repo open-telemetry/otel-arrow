@@ -1,10 +1,14 @@
 [package]
 name = "otel-arrow-dfe-query-engine"
+description = "Query engine for transforming OpenTelemetry data in OTAP pipelines"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true
 license.workspace = true
-publish.workspace = true
+readme = "README.md"
+publish = true
+keywords = ["opentelemetry", "otlp", "otap", "query", "datafusion"]
+categories = ["data-structures"]
 edition.workspace = true
 rust-version.workspace = true
 
@@ -24,8 +28,8 @@ xxhash-rust = { workspace = true }
 parking_lot = { workspace = true }
 smallvec = { workspace = true }
 thiserror = { workspace = true }
-data_engine_expressions = { workspace = true }
-data_engine_parser_abstractions = { workspace = true }
+otel-arrow-contrib-data-engine-expressions = { workspace = true }
+otel-arrow-contrib-data-engine-parser-abstractions = { workspace = true }
 uuid = { workspace = true }
 
 otel-arrow-dfe-config = { workspace = true }
@@ -36,8 +40,8 @@ sha1-hash = ["dep:sha1"]
 
 [dev-dependencies]
 criterion = { workspace = true, features = ["async_tokio"] }
-data_engine_kql_parser = { workspace = true }
-data_engine_parser_abstractions = { workspace = true }
+otel-arrow-contrib-data-engine-kql-parser = { workspace = true }
+otel-arrow-contrib-data-engine-parser-abstractions = { workspace = true }
 pretty_assertions = { workspace = true }
 prost = { workspace = true }
 tokio = { workspace = true }

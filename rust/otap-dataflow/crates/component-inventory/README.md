@@ -4,7 +4,7 @@ Test host crate for the component-inventory reliability oracle (RFC 0001).
 
 This crate ships no library code. It exists only to host the link-time oracle
 test in `tests/oracle.rs`, which links the component-bearing node crates
-(`core-nodes`, `contrib-nodes`, `otap`) and cross-checks the
+(`core-nodes`, `dev-nodes`, `contrib-nodes`, `otap`) and cross-checks the
 compiler-resolved
 `otel_arrow_dfe_engine::inventory::COMPONENT_INVENTORY` slice against the
 committed `components-baseline.json`.

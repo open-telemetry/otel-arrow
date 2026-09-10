@@ -5,7 +5,7 @@
 
 use ::pest::Parser as _;
 use ::pest::iterators::Pair;
-use data_engine_parser_abstractions::{
+use otel_arrow_contrib_data_engine_parser_abstractions::{
     Parser, ParserError, ParserOptions, ParserResult, ParserState, to_query_location,
 };
 

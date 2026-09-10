@@ -47,7 +47,7 @@ groups:
               cache_ttl: 5m
               cache_max_entries: 1024
               # Bound each TokenReview and SubjectAccessReview request.
-              review_timeout: 10s
+              review_timeout: 5s
 
         nodes:
           otlp-receiver:

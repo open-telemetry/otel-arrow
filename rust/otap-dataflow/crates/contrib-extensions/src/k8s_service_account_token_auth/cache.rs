@@ -125,20 +125,20 @@ impl SharedDecisionCache {
         cleanup.armed = false;
         match result {
             Ok(decision) => {
-                if lease.complete_on_success {
-                    if let Ok(mut entries) = self.entries.lock() {
-                        entries.complete(&key, lease.handle(), Instant::now());
-                    }
+                if lease.complete_on_success
+                    && let Ok(mut entries) = self.entries.lock()
+                {
+                    entries.complete(&key, lease.handle(), Instant::now());
                 }
                 // Cloned after the guard is released; a deep clone under it
                 // would stall requests for unrelated tokens.
                 Ok(decision.clone())
             }
             Err(error) => {
-                if lease.tracked {
-                    if let Ok(mut entries) = self.entries.lock() {
-                        entries.remove(&key, lease.handle());
-                    }
+                if lease.tracked
+                    && let Ok(mut entries) = self.entries.lock()
+                {
+                    entries.remove(&key, lease.handle());
                 }
                 Err(error.clone())
             }

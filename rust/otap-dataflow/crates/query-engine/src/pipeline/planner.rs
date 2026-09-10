@@ -5,7 +5,10 @@
 
 use std::collections::HashSet;
 
-use data_engine_expressions::{
+use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
+use datafusion::logical_expr::Expr;
+use datafusion::prelude::SessionContext;
+use otel_arrow_contrib_data_engine_expressions::{
     BooleanScalarExpression, BooleanValue, DataExpression, Expression, IntegerValue,
     LogicalExpression, MapSelector, MoveTransformExpression, MutableValueExpression,
     OutputExpression, PipelineExpression, PipelineFunction, PipelineFunctionExpression,
@@ -13,9 +16,6 @@ use data_engine_expressions::{
     ScalarExpression, SetTransformExpression, SourceScalarExpression, StaticScalarExpression,
     StringValue, TransformExpression, ValueAccessor,
 };
-use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
-use datafusion::logical_expr::Expr;
-use datafusion::prelude::SessionContext;
 use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_pdata::otap::transform::{
     AttributesTransform, DeleteTransform, RenameTransform,
@@ -1133,7 +1133,7 @@ pub enum AttributesIdentifier {
 
 #[cfg(test)]
 mod test {
-    use data_engine_kql_parser::Parser;
+    use otel_arrow_contrib_data_engine_kql_parser::Parser;
     use otel_arrow_dfe_pdata::{OtapArrowRecords, otap::Logs};
     use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
 

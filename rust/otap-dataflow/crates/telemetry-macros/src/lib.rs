@@ -204,18 +204,16 @@ pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
         // Collect doc comments for brief (concatenate all lines)
         let mut brief_lines: Vec<String> = Vec::new();
         for attr in &field.attrs {
-            if attr.meta.path().is_ident("doc") {
-                if let syn::Meta::NameValue(nv) = &attr.meta {
-                    if let syn::Expr::Lit(syn::ExprLit {
-                        lit: syn::Lit::Str(ls),
-                        ..
-                    }) = &nv.value
-                    {
-                        let line = ls.value().trim().to_string();
-                        if !line.is_empty() {
-                            brief_lines.push(line);
-                        }
-                    }
+            if attr.meta.path().is_ident("doc")
+                && let syn::Meta::NameValue(nv) = &attr.meta
+                && let syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(ls),
+                    ..
+                }) = &nv.value
+            {
+                let line = ls.value().trim().to_string();
+                if !line.is_empty() {
+                    brief_lines.push(line);
                 }
             }
         }
@@ -562,18 +560,16 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
         // Collect doc comments for description (concatenate all lines)
         let mut desc_lines: Vec<String> = Vec::new();
         for attr in &field.attrs {
-            if attr.meta.path().is_ident("doc") {
-                if let syn::Meta::NameValue(nv) = &attr.meta {
-                    if let syn::Expr::Lit(syn::ExprLit {
-                        lit: syn::Lit::Str(ls),
-                        ..
-                    }) = &nv.value
-                    {
-                        let line = ls.value().trim().to_string();
-                        if !line.is_empty() {
-                            desc_lines.push(line);
-                        }
-                    }
+            if attr.meta.path().is_ident("doc")
+                && let syn::Meta::NameValue(nv) = &attr.meta
+                && let syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(ls),
+                    ..
+                }) = &nv.value
+            {
+                let line = ls.value().trim().to_string();
+                if !line.is_empty() {
+                    desc_lines.push(line);
                 }
             }
         }
@@ -906,16 +902,14 @@ pub fn derive_attribute_enum(input: TokenStream) -> TokenStream {
         // Optional `#[attribute_value = "..."]` override for the variant string.
         let mut override_val: Option<String> = None;
         for attr in &variant.attrs {
-            if attr.path().is_ident("attribute_value") {
-                if let syn::Meta::NameValue(nv) = &attr.meta {
-                    if let syn::Expr::Lit(syn::ExprLit {
-                        lit: syn::Lit::Str(s),
-                        ..
-                    }) = &nv.value
-                    {
-                        override_val = Some(s.value());
-                    }
-                }
+            if attr.path().is_ident("attribute_value")
+                && let syn::Meta::NameValue(nv) = &attr.meta
+                && let syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(s),
+                    ..
+                }) = &nv.value
+            {
+                override_val = Some(s.value());
             }
         }
 

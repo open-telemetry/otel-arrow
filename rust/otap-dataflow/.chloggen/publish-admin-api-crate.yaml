@@ -1,0 +1,5 @@
+change_type: enhancement
+component: engine
+note: "Publish the public admin API SDK as the `otel-arrow-dfe-admin-api` crate on crates.io."
+issues: [4038]
+subtext:

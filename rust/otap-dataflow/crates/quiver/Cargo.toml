@@ -6,10 +6,11 @@ edition.workspace = true
 authors.workspace = true
 repository.workspace = true
 license.workspace = true
-publish.workspace = true
+readme = "README.md"
+publish = true
 rust-version.workspace = true
-keywords = ["opentelemetry", "arrow", "persistence", "quiver"]
-categories = ["database", "data-structures"]
+keywords = ["telemetry", "opentelemetry", "otlp", "otap", "arrow"]
+categories = ["database-implementations"]
 
 [lib]
 name = "otel_arrow_dfe_quiver"

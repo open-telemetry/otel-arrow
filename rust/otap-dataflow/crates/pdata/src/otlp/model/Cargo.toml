@@ -1,11 +1,15 @@
 [package]
 name = "otel-arrow-dfe-pdata-otlp-model"
+description = "Build-time OTLP model generation for OTAP pdata"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
-publish.workspace = true
+readme = "README.md"
+publish = true
+keywords = ["telemetry", "opentelemetry", "otlp", "otap", "codegen"]
+categories = ["development-tools::build-utils"]
 rust-version.workspace = true
 
 [lib]
