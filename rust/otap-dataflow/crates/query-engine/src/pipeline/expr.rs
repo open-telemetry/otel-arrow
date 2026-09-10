@@ -150,7 +150,6 @@ impl DataScope {
             return true;
         }
 
-
         match (self, other) {
             (
                 Self::Record(RecordScope::Signal) | Self::RootParent(_),

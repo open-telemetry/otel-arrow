@@ -323,7 +323,7 @@ fn scoped_value_to_id_mask(
 
         DataScope::Record(RecordScope::Child(_child)) => {
             // we don't yet support expression evaluation that would need to convert
-            // the ID column from record batch representing a repeated child type 
+            // the ID column from record batch representing a repeated child type
             // (like metric data points) into an ID bitmap.
             return Err(Error::NotYetSupportedError {
                 message: "conversion of child record scoped expression values to bitmap".into(),
