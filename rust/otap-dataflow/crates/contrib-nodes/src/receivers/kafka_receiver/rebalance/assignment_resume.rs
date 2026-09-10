@@ -27,8 +27,10 @@ type PartitionKey = (String, i32);
 /// Consumer operation used by rebalance-time resume handling and its tests.
 pub(crate) trait PartitionResumeOperations {
     /// Resume every partition in `tpl`.
-    fn resume_partitions(&self, tpl: &TopicPartitionList)
-    -> Result<(), rdkafka::error::KafkaError>;
+     fn resume_partitions(
+         &self,
+         tpl: &TopicPartitionList,
+     ) -> Result<(), rdkafka::error::KafkaError>;
 }
 
 impl<C: ConsumerContext> PartitionResumeOperations for BaseConsumer<C> {

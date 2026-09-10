@@ -230,7 +230,7 @@ fn arrow_records_to_bytes(arrow_records: &mut OtapArrowRecords) -> Vec<u8> {
     let mut producer = Producer::new();
     let bar = producer
         .produce_bar(arrow_records)
-        .expect("failed to get batch arrow reocrds");
+        .expect("failed to get batch arrow records");
     let mut bytes = vec![];
     bar.encode(&mut bytes).expect("failed to encode");
     bytes

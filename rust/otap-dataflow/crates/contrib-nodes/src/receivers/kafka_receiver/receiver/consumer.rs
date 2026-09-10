@@ -57,7 +57,9 @@ pub(super) async fn close_consumer_bounded<C: ConsumerContext + 'static>(
 
 /// Compute the mean consumer-group lag across all owned partitions, bounded by
 /// an absolute `deadline`. The `deadline` is checked before each partition
-///
+/// and before each blocking broker call, and `cancel` is honored throughout
+/// the refresh.
+/// 
 /// Return contract (see [`KafkaReceiver::spawn_consumer_lag_refresh`]):
 /// - `Some(mean)` -- every owned partition was measured; the mean covers the
 ///   whole assignment.

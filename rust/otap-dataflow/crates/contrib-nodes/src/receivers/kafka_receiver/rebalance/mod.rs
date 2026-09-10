@@ -6,11 +6,24 @@
 //! The receiver tracks pending offsets in memory via the
 //! [`OffsetTracker`](super::offset_tracker::OffsetTracker), which lives on the
 //! single-threaded `LocalSet` runtime and is owned by the receive loop. Kafka
-//! consumer-group rebalances, however, are delivered by librdkafka on its own
-//! poll thread via the [`ConsumerContext`] callbacks. That thread cannot touch
-//! the `LocalSet`-owned tracker directly.
+//! consumer-group rebalances are delivered through the [`ConsumerContext`]
+//! callbacks. In rdkafka 0.38.0 these callbacks are served inline by
+//! `consumer.recv()` (`MessageStream::poll_next` -> `BaseConsumer::poll_queue`
+//! runs any queued rebalance/commit event on the calling thread), and the
+//! receive loop is the only caller of `recv()`, so they run on the same
+//! single-threaded pipeline thread as the loop rather than on a separate
+//! librdkafka poll thread. They still may not mutate the `LocalSet`-owned
+//! tracker directly: they only record facts into the shared state below, which
+//! the loop reconciles on its next turn.
 //!
-//! This module bridges the two worlds with a small amount of shared,
+//! NOTE: because the callbacks run on the pipeline thread, the synchronous
+//! commit-before-revoke in `RebalanceState::handle_revoke` (a
+//! `CommitMode::Sync` broker round-trip) executes on the single-threaded runtime
+//! and can block it while a rebalance is processed inside `recv()`. It is
+//! bounded by librdkafka's internal commit timeout; moving this commit off the
+//! pipeline thread is future work.
+//!
+//! This module bridges the two concerns with a small amount of shared,
 //! synchronized state ([`RebalanceState`]):
 //!
 //! - **`assigned`** -- the set of topic-partitions currently owned by this
@@ -396,8 +409,9 @@ impl RebalanceState {
     }
 
     /// Record the outcome of an offset commit reported by librdkafka on the
-    /// commit callback. Called on the poll thread for both the receiver's async
-    /// commits and the synchronous pre-rebalance commit.
+    /// commit callback. The commit callback is served inline by
+    /// `consumer.recv()`, so this runs on the pipeline thread for both the
+    /// receiver's async commits and the synchronous pre-rebalance commit.
     pub(super) fn record_commit_result(&self, result: &rdkafka::error::KafkaResult<()>) {
         match result {
             Ok(()) => {
@@ -470,6 +484,14 @@ impl RebalanceState {
     /// Handle a `pre_rebalance` revoke: commit the committable offsets for the
     /// revoked partitions, queue them for tracker purge, and drop them from the
     /// assigned set.
+    ///
+    /// The commit below is synchronous (`CommitMode::Sync`) so owned partitions
+    /// are persisted before they leave the member. Because `pre_rebalance` is
+    /// served inline by `consumer.recv()` (see the module docs), this runs on
+    /// the single-threaded pipeline thread and can block the receive loop for
+    /// the duration of the broker round-trip during a rebalance. It is bounded
+    /// by librdkafka's internal commit timeout; moving it off the pipeline
+    /// thread is future work.
     pub(super) fn handle_revoke<C: ConsumerContext>(
         &self,
         consumer: &BaseConsumer<C>,

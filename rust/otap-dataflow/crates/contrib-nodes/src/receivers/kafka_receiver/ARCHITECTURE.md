@@ -96,13 +96,13 @@ flowchart LR
         SC["StreamConsumer<br/>subscription, fetch, commit, pause/seek/resume"]
     end
 
-    subgraph POLL["librdkafka poll thread"]
+    subgraph POLL["Callbacks served inline by recv() on the pipeline thread<br/>(except AWS MSK OAuth refresh, which may run on a librdkafka thread)"]
         CTX["RebalancingConsumerContext (rebalance/context.rs)<br/>ConsumerContext: pre/post-rebalance, commit result<br/>ClientContext: OAuth refresh (AWS MSK only)"]
     end
 
     subgraph SHARED["RebalanceState (per-field locks + atomics, rebalance/mod.rs)"]
         SHF["Cross-thread facts<br/>assigned set (per-partition generation) | committable snapshot | revoked queue | generation allocator"]
-        SHC["Counters + retries<br/>rebalance/assign/revoke + commit/resume-error counters | assignment-resume retry schedule (rebalance/assignment_resume.rs)"]
+        SHC["Counters + retries<br/>rebalance/assign/revoke + commit/resume-error counters | assignment-resume retry schedule (rebalance/assignment_resume.rs, shared DeadlineIndex from scheduling.rs)"]
     end
 
     subgraph LOOP["Receive loop (single-threaded LocalSet task)"]
@@ -121,9 +121,9 @@ flowchart LR
     DOWN["Downstream pipeline<br/>processors / exporters"]
 
     BR <--> SC
-    SC -. "rebalance + commit callbacks" .-> CTX
-    CTX -- "writes (poll thread)" --> SHF
-    CTX -- "writes (poll thread)" --> SHC
+    SC -. "rebalance + commit callbacks<br/>served inline by recv() on the pipeline thread" .-> CTX
+    CTX -- "writes (pipeline thread, in recv())" --> SHF
+    CTX -- "writes (pipeline thread, in recv())" --> SHC
     SHF -- "reads/reconciles (loop)" --> LP
     SHC -- "drains counters + due retries (loop)" --> AR
     SC -- "recv() / commit / pause-seek-resume" --- LP
@@ -140,8 +140,9 @@ flowchart LR
 Highlights:
 
 - The **only** state shared across the thread boundary is `RebalanceState`. The
-  poll thread writes assignment/revocation/commit-result facts into it; the loop
-  reconciles them at the top of each turn. It is not one struct-wide lock: each
+  rebalance/commit callbacks (served inline by `recv()`) write
+  assignment/revocation/commit-result facts into it; the loop reconciles them at
+  the top of each turn. It is not one struct-wide lock: each
   field carries its own `Mutex` and the metric counters are plain atomics, so the
   (rare) callback path and the (hot) loop reconcile path contend as little as
   possible. It is split for clarity into cross-thread facts (assigned set with
@@ -167,7 +168,14 @@ The per-record path taken by each `consumer.recv()` result.
 The flowchart follows the real order in `run_receive_loop`: the paused-for-replay
 and topic-id checks and the idempotency check run *before* the topic is routed to
 a signal decoder (routing, format detection, decode, and header extraction all
-happen inside `process_kafka`).
+happen inside `process_kafka`). Once a topic resolves to a signal, all decode
+behavior funnels through a single stateless `SignalDecoder` (receiver/decode.rs):
+`decode_signal_with_extractions` selects the per-signal format via
+`config.encoding_for(signal)`, applies any header extractions, and defers to the
+one `decode_signal_payload` path. That decoder is the single source of truth for
+message formats, the Syslog-logs-only restriction, and decode-error mapping (a
+failure becomes one `SignalDecode { signal }` error, tagged with the routed
+signal for metrics and events).
 
 ```mermaid
 flowchart TD
@@ -177,7 +185,7 @@ flowchart TD
     TID -->|id space exhausted| REJX["reject: topic-id exhausted"]
     TID -->|ok| DUP{"duplicate? (idempotency,<br/>generation-aware)"}
     DUP -->|yes| SKIP["skip"]
-    DUP -->|no| PROC["process_kafka:<br/>route topic -> signal,<br/>detect format (OTLP / OTAP / Syslog),<br/>decode + optional header extraction,<br/>capture transport headers"]
+    DUP -->|no| PROC["process_kafka:<br/>route topic -> signal,<br/>SignalDecoder: detect format (OTLP / OTAP / Syslog),<br/>decode_signal_payload + optional header extraction,<br/>capture transport headers"]
     PROC -->|empty payload| REJE["reject: empty payload"]
     PROC -->|unknown topic| REJU["reject: unknown topic"]
     PROC -->|decode ok| SEND["track offset, subscribe Ack/Nack<br/>send downstream (awaits = backpressure)"]
@@ -244,7 +252,9 @@ Highlights:
 The rebalance and commit callbacks are delivered on `RebalancingConsumerContext`,
 which implements two librdkafka traits: `ConsumerContext` (pre/post-rebalance and
 the commit callback) and `ClientContext` (OAUTHBEARER token refresh, functional
-only for the AWS MSK IAM variant).
+only for the AWS MSK IAM variant). The `ConsumerContext` callbacks are served
+inline by `consumer.recv()` and therefore run on the pipeline thread; only the
+`ClientContext` token refresh may run on a librdkafka-internal thread.
 
 ```mermaid
 sequenceDiagram
@@ -264,9 +274,11 @@ sequenceDiagram
 
 Highlights:
 
-- The poll-thread callbacks only record facts (owned set, revoked queue, metric
-  counters) into `RebalanceState`; the loop reconciles them and purges the tracker
-  on its next turn, generation-aware.
+- The callbacks (run on the pipeline thread inside `recv()`) only record facts
+  (owned set, revoked queue, metric counters) into `RebalanceState`; the loop
+  reconciles them and purges the tracker on its next turn, generation-aware. The
+  one exception is `pre_rebalance(Revoke)`, which additionally issues a
+  synchronous commit-before-revoke (see below).
 - `pre_rebalance(Revoke)` commits the committable snapshot (synchronously) so
   owned partitions are committed before they leave the member (commit-before-revoke).
 - `post_rebalance(Assign)` allocates a **single** fresh ownership generation
@@ -276,7 +288,13 @@ Highlights:
   via config; cooperative-sticky minimizes partition movement across rebalances.
 - If a partition's resume fails at assign time, it is scheduled for retry and
   re-resumed by the receive loop's deadline branch until it succeeds or the
-  ownership generation changes.
+  ownership generation changes. The assignment-resume schedule and the
+  transient-NACK replay schedule are built on the same shared
+  `DeadlineIndex<K, Token>` (an ordered deadline index with a staleness token)
+  plus `capped_exponential_backoff` / `checked_deadline` helpers in
+  `scheduling.rs`; the two state machines stay separate. Assignment-resume
+  deadlines are computed with the overflow-safe `checked_deadline`, matching the
+  replay scheduler.
 
 ## Transient-NACK replay
 
@@ -360,18 +378,32 @@ retry/replay, and transport errors.
   mutex is poison-tolerant (a panic elsewhere recovers the guard rather than
   killing the receiver) because it protects plain bookkeeping.
 - **Callbacks cannot mutate loop state.** librdkafka rebalance/commit callbacks
-  run on the poll thread and only write facts into `RebalanceState`; the loop
-  applies them (tracker purge, metric folding) at the top of each turn.
-- **Never block the runtime.** Steady-state commits are asynchronous;
+  are served inline by `consumer.recv()` and so run on the pipeline thread; they
+  only write facts into `RebalanceState`, and the loop applies them (tracker
+  purge, metric folding) at the top of each turn. The lone exception is the
+  synchronous commit-before-revoke in `pre_rebalance(Revoke)` (see below).
+- **Mostly non-blocking runtime.** Steady-state commits are asynchronous;
   consumer-lag lookups run on a `spawn_blocking` worker bounded by a deadline
   and a cancellation token; the final consumer close on shutdown/drain is
   bounded by the shutdown deadline; assignment-resume retries are scheduled with
   capped backoff and re-driven from the loop's deadline branch rather than
-  blocking a callback.
+  blocking a callback. The **known exception** is the synchronous
+  commit-before-revoke in `pre_rebalance(Revoke)`: because that callback is
+  served inline by `recv()`, its `CommitMode::Sync` round-trip runs on the
+  pipeline thread and can block the loop during a rebalance (bounded by
+  librdkafka's internal commit timeout; moving it off-thread is future work).
 - **Generations guard correctness.** A *per-partition ownership* generation
   scopes tracker state across rebalances (generations start at 1, with 0 as the
   unowned sentinel; a stale revoke cannot purge freshly reassigned state; a stale
   ack cannot advance/roll back offsets). An independent *delivery* generation
   invalidates feedback from before a transient-NACK replay.
+- **Shared scheduling primitive.** The two retry subsystems -- transient-NACK
+  replay (`retry.rs`) and assignment-resume (`rebalance/assignment_resume.rs`) --
+  share only the mechanical scheduling pieces via `scheduling.rs`: a generic
+  `DeadlineIndex<K, Token>` (ordered, one-entry-per-key deadline index with a
+  staleness token) and the `capped_exponential_backoff` / `checked_deadline`
+  helpers. Each subsystem keeps its own state machine and payload; the index
+  owns only deadline ordering and hands back due keys for the caller to
+  re-validate against its own state.
 - **Auto-commit inertness.** In auto-commit mode librdkafka owns offsets, so the
   offset tracker, rebalance handling, and retry subsystem are all no-ops.

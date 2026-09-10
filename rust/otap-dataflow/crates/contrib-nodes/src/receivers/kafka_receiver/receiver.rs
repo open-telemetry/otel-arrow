@@ -79,8 +79,9 @@ pub struct KafkaReceiver {
     /// Partition-local delivery generations and transient-NACK replay state.
     retry_manager: RetryManager,
     /// Shared consumer-group rebalance state. Updated by the consumer
-    /// context's rebalance callbacks (on the librdkafka thread) and reconciled
-    /// by the receive loop. Only active when auto-commit is disabled.
+    /// context's rebalance callbacks (served inline by `consumer.recv()`, so on
+    /// the pipeline thread) and reconciled by the receive loop. Only active when
+    /// auto-commit is disabled.
     rebalance_state: Arc<RebalanceState>,
     /// Dynamically assigns `u32` IDs to actual topic names for CallData encoding.
     topic_registry: TopicRegistry,
