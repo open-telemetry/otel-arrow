@@ -1292,7 +1292,7 @@ pub fn create_otap_batch_processor(
     node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
-    let metrics = BatchProcessorMetrics::register(pipeline_ctx);
+    let metrics = BatchProcessorMetrics::register(&pipeline_ctx);
     let proc = BatchProcessor::build_from_json(&node_config.config, metrics)?;
     Ok(ProcessorWrapper::local(
         proc,
