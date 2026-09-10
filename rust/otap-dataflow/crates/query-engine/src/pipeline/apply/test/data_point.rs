@@ -105,3 +105,51 @@ async fn test_apply_to_metric_data_points() {
 
     // TODO assert the result
 }
+
+// TODO - shouldn't allow this ...
+#[tokio::test]
+async fn test_apply_to_metric_set() {
+    // this is currently a planning error!
+    let query = "metrics | apply data_points {
+        set resource.attributes[\"x\"] = flags as String
+    }";
+
+    let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
+        .unwrap()
+        .pipeline;
+    let mut pipeline = Pipeline::new(pipeline_expr);
+
+    let metrics = vec![
+        Metric::build()
+            .data_gauge(Gauge {
+                data_points: vec![
+                    // flags are not valid flag values but, just need to set some primitive field
+                    // for testing engine behaviour
+                    NumberDataPoint::build()
+                        .flags(5u32)
+                        .attributes(vec![KeyValue::new("x", AnyValue::new_int(3))])
+                        .finish(),
+                    NumberDataPoint::build()
+                        .flags(6u32)
+                        .attributes(vec![KeyValue::new("x", AnyValue::new_int(3))])
+                        .finish(),
+                    NumberDataPoint::build()
+                        .flags(6u32)
+                        .attributes(vec![KeyValue::new("x", AnyValue::new_int(3))])
+                        .finish(),
+                ],
+            })
+            .finish(),
+    ];
+    let input_batch = otlp_to_otap(&OtlpProtoMessage::Metrics(to_metrics_data(metrics)));
+
+    let result = pipeline.execute(input_batch).await.unwrap();
+
+    let OtlpProtoMessage::Metrics(result_metrics) = otap_to_otlp(&result) else {
+        panic!("invalid result type")
+    };
+
+    println!("{:#?}", result_metrics)
+
+    // TODO assert the result
+}

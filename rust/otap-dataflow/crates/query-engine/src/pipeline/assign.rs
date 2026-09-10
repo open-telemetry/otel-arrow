@@ -795,9 +795,17 @@ impl AssignPipelineStage {
                             &otap_batch,
                         )?
                     }
-                    DataScope::Record(RecordScope::Child(child)) => {
-                        println!("TODO");
-                        todo!("TODO")
+                    DataScope::Record(RecordScope::Child(_child)) => {
+                        // In the current implementation, we shouldn't end up here. The planner
+                        // should not allow us to create an expression that would evaluate on some
+                        // child record (like metric datapoints), and assign the result to an
+                        // attribute. Returning this error to be defensive
+                        return Err(Error::ExecutionError {
+                            cause: format!(
+                                "unexpected DataScope for attribute assignment `{:?}`",
+                                eval_result.data_scope
+                            ),
+                        });
                     }
                     DataScope::StaticScalar => {
                         // safety: if the data scope was scalar, the result would have also been a
@@ -959,8 +967,17 @@ impl AssignPipelineStage {
                             &otap_batch,
                         )?
                     }
-                    DataScope::Record(RecordScope::Child(child)) => {
-                        todo!()
+                    DataScope::Record(RecordScope::Child(_child)) => {
+                        // In the current implementation, we shouldn't end up here. The planner
+                        // should not allow us to create an expression that would evaluate on some
+                        // child record (like metric datapoints), and assign the result to an
+                        // attribute. Returning this error to be defensive
+                        return Err(Error::ExecutionError {
+                            cause: format!(
+                                "unexpected DataScope for attribute assignment `{:?}`",
+                                eval_result.data_scope
+                            ),
+                        });
                     }
                     DataScope::StaticScalar => unreachable!("unexpected array for scalar scope"),
                 };
@@ -2048,8 +2065,14 @@ fn validate_expr_cardinality(
                 // resource or scope
                 DataScope::Record(RecordScope::Signal) | DataScope::RootParent(_) => false,
                 DataScope::Record(RecordScope::Child(_child)) => {
-                    println!("TODO");
-                    todo!()
+                    // If we end up here, it would mean we're trying to assign to something like
+                    // a resource attribute or scope attribute from the value of some nested child
+                    // record like a metric datapoint. The planner shouldn't be creating plans like
+                    // this, but we'll reject it here if that's what has been passed as an argument
+                    return Err(Error::InvalidPipelineError {
+                        cause: format!("Cannot assign non-record attribute from non-signal record"),
+                        query_location: dest_query_location.cloned(),
+                    });
                 }
 
                 DataScope::Attribute(source_attrs_id, _)
@@ -2133,9 +2156,15 @@ fn validate_struct_col_assign_cardinality(
                 DataScope::StaticScalar => true,
                 // root (log/span/metric level) is always lower than resource or scope
                 DataScope::Record(RecordScope::Signal) => false,
-                DataScope::Record(RecordScope::Child(child)) => {
-                    println!("TODO");
-                    todo!() // pretty sure this is legit if we do what we do above, but need to think deeper before comitting it
+                DataScope::Record(RecordScope::Child(_child)) => {
+                    // If we end up here, it would mean we're trying to assign to something like
+                    // a resource or scope field from the value of some nested child record like
+                    // a metric datapoint. The planner shouldn't be creating plans like this, but
+                    // we'll reject it here if that's what has been passed as an argument
+                    return Err(Error::InvalidPipelineError {
+                        cause: format!("Cannot assign struct column from non-signal record"),
+                        query_location: dest_query_location.cloned(),
+                    });
                 }
                 DataScope::RootParent(source_parent) => match dest_struct_name {
                     consts::RESOURCE => {
