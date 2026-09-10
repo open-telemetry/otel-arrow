@@ -8,6 +8,7 @@ use crate::common::kafka::{
     DebugContext, LogLevel, MessageFormat, TlsConfig, debug_list_to_string,
     default_message_format_header, validate_kafka_topic,
 };
+use otel_arrow_dfe_config::SignalType;
 use rdkafka::ClientConfig;
 use regex::Regex;
 use serde::Deserialize;
@@ -1222,6 +1223,19 @@ impl KafkaReceiverConfig {
     #[must_use]
     pub fn logs_encoding(&self) -> MessageFormat {
         self.inner.logs.encoding
+    }
+
+    /// Get the configured wire encoding for `signal`.
+    ///
+    /// Single signal-keyed accessor so callers (e.g. `detect_message_format`)
+    /// need not select among the per-signal `*_encoding()` accessors.
+    #[must_use]
+    pub fn encoding_for(&self, signal: SignalType) -> MessageFormat {
+        match signal {
+            SignalType::Traces => self.inner.traces.encoding,
+            SignalType::Metrics => self.inner.metrics.encoding,
+            SignalType::Logs => self.inner.logs.encoding,
+        }
     }
 
     /// Returns `true` if auto-commit mode is enabled.

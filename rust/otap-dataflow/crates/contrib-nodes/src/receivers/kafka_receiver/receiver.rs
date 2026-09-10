@@ -8,7 +8,6 @@
 
 use super::config::KafkaReceiverConfig;
 use super::error::KafkaReceiverError;
-use super::headers::HeaderExtractions;
 use super::identity::OwnershipGeneration;
 use super::metrics::{KafkaReceiverMetrics, KafkaReceiverRejectionReason};
 use super::offset_tracker::OffsetTracker;
@@ -48,17 +47,14 @@ use tokio::time::MissedTickBehavior;
 use tokio_util::sync::CancellationToken;
 
 mod consumer;
-mod decode;
+pub(crate) mod decode;
 mod offset_feedback;
 mod replay;
 mod topics;
 mod transport_headers;
 
 use consumer::{LAG_REFRESH_TOTAL_DEADLINE, LagRefreshTask, close_consumer_bounded};
-use decode::{
-    decode_logs_payload, decode_metrics_payload, decode_traces_payload, decode_with_extractions,
-    encode_calldata, reject_syslog_for_non_log_signal,
-};
+use decode::{SignalDecoder, encode_calldata};
 use topics::{
     TopicRegistry, compile_exclude_regexes, compile_topic_regexes, detect_message_format,
     matches_any_exclude, matches_any_topic,
@@ -258,61 +254,24 @@ impl KafkaReceiver {
 
         // Route the topic to the correct signal decoder. Supports both literal
         // topic names and regex patterns (prefixed with `^`), exclude patterns,
-        // per-signal encoding, and multiple topics per signal type.
+        // per-signal encoding, and multiple topics per signal type. All
+        // per-signal decode behavior (format selection, Syslog restriction,
+        // extraction dispatch) is centralized in `SignalDecoder`.
         let mut pdata = match self.signal_type_for_topic(topic) {
-            Some(SignalType::Traces) => {
+            Some(signal) => {
                 let message_format = detect_message_format(
                     &kafka_message,
                     self.config.message_format_header(),
-                    self.config.traces_encoding(),
+                    self.config.encoding_for(signal),
                 );
-                decode_with_extractions(
+                SignalDecoder::decode_signal_with_extractions(
+                    signal,
                     &kafka_message,
                     extractors,
                     data,
                     message_format,
-                    HeaderExtractions::apply_otlp_traces,
-                    HeaderExtractions::apply_otap_traces,
-                    reject_syslog_for_non_log_signal,
-                    decode_traces_payload,
                 )
-                .map_err(KafkaReceiverError::TracesDecode)
-            }
-            Some(SignalType::Metrics) => {
-                let message_format = detect_message_format(
-                    &kafka_message,
-                    self.config.message_format_header(),
-                    self.config.metrics_encoding(),
-                );
-                decode_with_extractions(
-                    &kafka_message,
-                    extractors,
-                    data,
-                    message_format,
-                    HeaderExtractions::apply_otlp_metrics,
-                    HeaderExtractions::apply_otap_metrics,
-                    reject_syslog_for_non_log_signal,
-                    decode_metrics_payload,
-                )
-                .map_err(KafkaReceiverError::MetricsDecode)
-            }
-            Some(SignalType::Logs) => {
-                let message_format = detect_message_format(
-                    &kafka_message,
-                    self.config.message_format_header(),
-                    self.config.logs_encoding(),
-                );
-                decode_with_extractions(
-                    &kafka_message,
-                    extractors,
-                    data,
-                    message_format,
-                    HeaderExtractions::apply_otlp_logs,
-                    HeaderExtractions::apply_otap_logs,
-                    HeaderExtractions::apply_syslog_logs,
-                    decode_logs_payload,
-                )
-                .map_err(KafkaReceiverError::LogsDecode)
+                .map_err(|source| KafkaReceiverError::SignalDecode { signal, source })
             }
             None => Err(KafkaReceiverError::UnknownTopicDecode(
                 EngineError::PdataConversionError {
@@ -854,18 +813,8 @@ impl KafkaReceiver {
                                             ReceiverRejectionErrorType::InvalidRequest,
                                             KafkaReceiverRejectionReason::UnknownTopic,
                                         ),
-                                        KafkaReceiverError::TracesDecode(_) => (
-                                            Some(SignalType::Traces),
-                                            ReceiverRejectionErrorType::InvalidRequest,
-                                            KafkaReceiverRejectionReason::Decode,
-                                        ),
-                                        KafkaReceiverError::MetricsDecode(_) => (
-                                            Some(SignalType::Metrics),
-                                            ReceiverRejectionErrorType::InvalidRequest,
-                                            KafkaReceiverRejectionReason::Decode,
-                                        ),
-                                        KafkaReceiverError::LogsDecode(_) => (
-                                            Some(SignalType::Logs),
+                                        KafkaReceiverError::SignalDecode { signal, .. } => (
+                                            Some(*signal),
                                             ReceiverRejectionErrorType::InvalidRequest,
                                             KafkaReceiverRejectionReason::Decode,
                                         ),
@@ -902,31 +851,11 @@ impl KafkaReceiver {
                                                 offset = offset,
                                             );
                                         }
-                                        KafkaReceiverError::TracesDecode(e) => {
+                                        KafkaReceiverError::SignalDecode { signal, source } => {
                                             otel_error!(
                                                 "kafka.message.unmarshal_failed",
-                                                signal = "traces",
-                                                error = %e,
-                                                topic = %topic,
-                                                partition = partition,
-                                                offset = offset,
-                                            );
-                                        }
-                                        KafkaReceiverError::MetricsDecode(e) => {
-                                            otel_error!(
-                                                "kafka.message.unmarshal_failed",
-                                                signal = "metrics",
-                                                error = %e,
-                                                topic = %topic,
-                                                partition = partition,
-                                                offset = offset,
-                                            );
-                                        }
-                                        KafkaReceiverError::LogsDecode(e) => {
-                                            otel_error!(
-                                                "kafka.message.unmarshal_failed",
-                                                signal = "logs",
-                                                error = %e,
+                                                signal = SignalDecoder::label(*signal),
+                                                error = %source,
                                                 topic = %topic,
                                                 partition = partition,
                                                 offset = offset,

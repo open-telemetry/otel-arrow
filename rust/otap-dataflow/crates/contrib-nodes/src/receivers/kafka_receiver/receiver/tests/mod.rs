@@ -50,8 +50,9 @@ use std::time::Duration;
 // Test-only re-exports of receiver internals that moved into concern
 // submodules, so each `use super::*` test file can reach them by name.
 use super::consumer::compute_consumer_lag;
-use super::decode::decode_calldata;
+use super::decode::{SignalDecoder, decode_calldata};
 use super::offset_feedback::{OffsetFeedbackAction, classify_offset_feedback};
+use otel_arrow_dfe_config::SignalType;
 
 // Test-only imports for symbols the split test files reference but the
 // receiver implementation no longer imports directly.
