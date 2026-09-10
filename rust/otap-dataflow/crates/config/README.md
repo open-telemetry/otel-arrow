@@ -328,9 +328,12 @@ Topic declaration precedence (for a pipeline in a given group):
 The dedicated engine internal telemetry pipeline is configured at:
 
 - `engine.observability.pipeline.nodes`
+- `engine.observability.pipeline.extensions`
 - `engine.observability.pipeline.connections`
 
-It is represented in resolved output as a role-tagged internal pipeline.
+Extensions are scoped to the observability pipeline and may provide capabilities
+to its nodes. The pipeline is represented in resolved output as a role-tagged
+internal pipeline.
 
 ## Node Type (`NodeUrn`)
 

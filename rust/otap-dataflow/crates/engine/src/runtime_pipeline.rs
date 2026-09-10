@@ -23,7 +23,7 @@ use crate::entity_context::{
 };
 use crate::error::{Error, TypedError};
 use crate::flow_metrics::{
-    FlowDroppedItemsMetrics, FlowDurationMetrics, FlowInputItemsMetrics, FlowInputMessageMetrics,
+    FlowDroppedItemsMetrics, FlowDurationMetricSet, FlowInputItemsMetrics, FlowInputMessageMetrics,
     FlowInputSizeMetrics, FlowOutputItemsMetrics, FlowOutputMessageMetrics, FlowOutputSizeMetrics,
     build_flow_metric_state,
 };
@@ -34,6 +34,7 @@ use crate::pipeline_ctrl::{
     snapshot_node_metrics_with_handles,
 };
 use crate::processor::FlowMetricHook;
+use crate::runtime_services::PipelineRuntimeServices;
 use crate::terminal_state::{TerminalMetricsDeadline, TerminalState};
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
 use otel_arrow_dfe_config::DeployedPipelineKey;
@@ -440,36 +441,13 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         } = self;
 
         let metric_level = telemetry_policy.runtime_metrics;
-        let base_node_interests = Interests::from_metric_level(metric_level);
-        // Per-node measurement opt-ins enable the corresponding detailed-level
-        // measurement without enabling every detailed runtime metric.
-        let item_count_optin: HashSet<&str> = pipeline_config
-            .node_iter()
-            .filter(|(_, cfg)| {
-                cfg.policies
-                    .as_ref()
-                    .and_then(|policies| policies.telemetry.as_ref())
-                    .is_some_and(|telemetry| telemetry.item_counts)
-            })
-            .map(|(node_id, _)| node_id.as_ref())
-            .collect();
-        let size_optin: HashSet<&str> = pipeline_config
-            .node_iter()
-            .filter(|(_, cfg)| {
-                cfg.policies
-                    .as_ref()
-                    .and_then(|policies| policies.telemetry.as_ref())
-                    .is_some_and(|telemetry| telemetry.size)
-            })
-            .map(|(node_id, _)| node_id.as_ref())
-            .collect();
-
         // Single-threaded runtime so we can drive !Send node tasks on the core thread.
         let rt = Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("Failed to create runtime");
         let local_tasks = LocalSet::new();
+        let runtime_services = PipelineRuntimeServices::new(Default::default())?;
         // ToDo create an optimized version of FuturesUnordered that can be used for !Send, !Sync tasks
         let mut futures = FuturesUnordered::new();
 
@@ -578,13 +556,11 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         for exporter in exporters {
             let mut exporter = exporter;
             let node_id = exporter.node_id();
-            let mut node_interests = base_node_interests;
-            if item_count_optin.contains(node_id.name.as_ref()) {
-                node_interests |= Interests::PRODUCED_CONSUMED_ITEM_COUNTS;
-            }
-            if size_optin.contains(node_id.name.as_ref()) {
-                node_interests |= Interests::PRODUCED_CONSUMED_SIZE;
-            }
+            let node_config = pipeline_config
+                .nodes()
+                .get(node_id.name.as_ref())
+                .expect("runtime exporter has pipeline configuration");
+            let node_interests = Interests::for_node(metric_level, node_config);
             control_senders.register(
                 node_id.clone(),
                 NodeType::Exporter,
@@ -613,6 +589,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             let effect_metrics_reporter = metrics_reporter.clone();
             let final_metrics_reporter = metrics_reporter.clone();
             let exporter_terminal_metrics_deadline = terminal_metrics_deadline.clone();
+            let exporter_runtime_services = runtime_services.clone();
             let fut = async move {
                 match exporter
                     .start_with_completion_metrics(
@@ -621,6 +598,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                         effect_metrics_reporter,
                         node_interests,
                         completion_emission_metrics,
+                        exporter_runtime_services,
                     )
                     .await
                 {
@@ -660,13 +638,11 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         for processor in processors {
             let mut processor = processor;
             let node_id = processor.node_id();
-            let mut node_interests = base_node_interests;
-            if item_count_optin.contains(node_id.name.as_ref()) {
-                node_interests |= Interests::PRODUCED_CONSUMED_ITEM_COUNTS;
-            }
-            if size_optin.contains(node_id.name.as_ref()) {
-                node_interests |= Interests::PRODUCED_CONSUMED_SIZE;
-            }
+            let node_config = pipeline_config
+                .nodes()
+                .get(node_id.name.as_ref())
+                .expect("runtime processor has pipeline configuration");
+            let node_interests = Interests::for_node(metric_level, node_config);
             control_senders.register(
                 node_id.clone(),
                 NodeType::Processor,
@@ -695,6 +671,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             let metrics_reporter = metrics_reporter.clone();
             let final_metrics_reporter = metrics_reporter.clone();
             let processor_terminal_metrics_deadline = terminal_metrics_deadline.clone();
+            let processor_runtime_services = runtime_services.clone();
             // Extract flow metric roles for this processor node.
             // Compute pipeline-wide flags before moving metric sets into handlers.
             let flow_active = flow_metric_state.is_active();
@@ -716,11 +693,10 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                     .start_nodes
                     .get(&node_id.index)
                     .and_then(|&id| flow_metric_state.input_size_metrics[id].take());
-            let flow_duration_metric: Option<MeasurementMetricSet<FlowDurationMetrics>> =
-                flow_metric_state
-                    .end_nodes
-                    .get(&node_id.index)
-                    .and_then(|&id| flow_metric_state.duration_metrics[id].take());
+            let flow_duration_metric: Option<FlowDurationMetricSet> = flow_metric_state
+                .end_nodes
+                .get(&node_id.index)
+                .and_then(|&id| flow_metric_state.duration_metrics[id].take());
             let flow_output_items_metric: Option<MeasurementMetricSet<FlowOutputItemsMetrics>> =
                 flow_metric_state
                     .end_nodes
@@ -774,6 +750,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                         flow_active,
                         flow_needs_timing,
                         processor_terminal_metrics_deadline.clone(),
+                        processor_runtime_services,
                     )
                     .await;
                 flush_metrics_reporter(
@@ -800,13 +777,11 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         for receiver in receivers {
             let mut receiver = receiver;
             let node_id = receiver.node_id();
-            let mut node_interests = base_node_interests;
-            if item_count_optin.contains(node_id.name.as_ref()) {
-                node_interests |= Interests::PRODUCED_CONSUMED_ITEM_COUNTS;
-            }
-            if size_optin.contains(node_id.name.as_ref()) {
-                node_interests |= Interests::PRODUCED_CONSUMED_SIZE;
-            }
+            let node_config = pipeline_config
+                .nodes()
+                .get(node_id.name.as_ref())
+                .expect("runtime receiver has pipeline configuration");
+            let node_interests = Interests::for_node(metric_level, node_config);
             control_senders.register(
                 node_id.clone(),
                 NodeType::Receiver,
@@ -833,6 +808,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             let effect_metrics_reporter = metrics_reporter.clone();
             let final_metrics_reporter = metrics_reporter.clone();
             let receiver_terminal_metrics_deadline = terminal_metrics_deadline.clone();
+            let receiver_runtime_services = runtime_services.clone();
             let fut = async move {
                 match receiver
                     .start(
@@ -840,6 +816,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                         pipeline_completion_msg_tx,
                         effect_metrics_reporter,
                         node_interests,
+                        receiver_runtime_services,
                     )
                     .await
                 {

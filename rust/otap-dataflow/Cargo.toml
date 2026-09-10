@@ -54,7 +54,7 @@ cfg-if.workspace = true
 tikv-jemallocator = { workspace = true, optional = true }
 
 [workspace.dependencies]
-otel-arrow-dfe-admin-api = { path = "crates/admin-api" }
+otel-arrow-dfe-admin-api = { version = "0.55.0", path = "crates/admin-api" }
 otel-arrow-dfe-admin-types = { version = "0.55.0", path = "crates/admin-types" }
 otel-arrow-dfe-pdata-otlp-macros = { version = "0.55.0", path = "./crates/pdata/src/otlp/macros"}
 otel-arrow-dfe-pdata-otlp-model = { version = "0.55.0", path = "./crates/pdata/src/otlp/model"}
@@ -72,6 +72,7 @@ otel-arrow-dfe-wasm-host = { path = "crates/wasm-host" }
 otel-arrow-dfe-test-tls-certs = { path = "crates/otap-test-tls-certs" }
 otel-arrow-dfe-test-net = { path = "crates/otap-test-net" }
 otel-arrow-dfe-pdata = { version = "0.55.0", path = "crates/pdata" }
+otel-arrow-dfe-pdata-codec = { version = "0.55.0", path = "crates/pdata-codec" }
 otel-arrow-dfe-pdata-views = { version = "0.54.1", path = "crates/pdata-views" }
 otel-arrow-dfe-telemetry = { version = "0.55.0", path = "crates/telemetry" }
 otel-arrow-dfe-quiver = { version = "0.55.0", path = "crates/quiver" }
