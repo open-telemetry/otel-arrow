@@ -171,9 +171,13 @@ impl Context {
     #[must_use]
     pub fn needs_completion_tracking(&self) -> bool {
         self.stack.iter().any(|frame| {
-            frame
-                .interests
-                .intersects(Interests::ACKS_OR_NACKS | Interests::NODE_METRICS)
+            frame.interests.intersects(
+                Interests::ACKS_OR_NACKS
+                    | Interests::NODE_METRICS
+                    | Interests::NODE_COMPLETION_DURATION
+                    | Interests::NODE_ITEM_COUNTS
+                    | Interests::NODE_SIZE,
+            )
         })
     }
 
@@ -260,20 +264,20 @@ impl Context {
     /// When `NODE_COMPLETION_DURATION` is present in `interests`, the frame's
     /// entry timestamp is captured for terminal Ack/Nack duration measurement.
     fn update_send_context(&mut self, node_id: usize, interests: Interests) {
-        if let Some(top) = self.stack.last_mut() {
-            if top.node_id == node_id {
-                top.interests |= interests;
-                if interests.contains(Interests::NODE_COMPLETION_DURATION)
-                    && top.route.entry_time_ns == 0
-                {
-                    // Note: This update is only for receivers which need
-                    // to capture timestamp here in case they did not use
-                    // subscribe_to. If they called called subscribe_to,
-                    // this will be skipped by a non-zero timestamp.
-                    top.route.entry_time_ns = nanos_since_birth();
-                }
-                return;
+        if let Some(top) = self.stack.last_mut()
+            && top.node_id == node_id
+        {
+            top.interests |= interests;
+            if interests.contains(Interests::NODE_COMPLETION_DURATION)
+                && top.route.entry_time_ns == 0
+            {
+                // Note: This update is only for receivers which need
+                // to capture timestamp here in case they did not use
+                // subscribe_to. If they called called subscribe_to,
+                // this will be skipped by a non-zero timestamp.
+                top.route.entry_time_ns = nanos_since_birth();
             }
+            return;
         }
         // Different node (or empty stack) -> push new frame.
         let mut frame_interests = interests;
@@ -2526,8 +2530,8 @@ mod test {
         );
     }
 
-    /// Scenario: Contexts contain no frames, source-tagging only, pipeline metrics, or Ack interests.
-    /// Guarantees: Completion tracking is required only for pipeline metrics and Ack/Nack routing.
+    /// Scenario: Contexts contain no frames, source tagging, node measurements, or Ack interests.
+    /// Guarantees: Every frame-dependent node measurement and Ack/Nack routing retains the context.
     #[test]
     fn needs_completion_tracking_matches_completion_interests() {
         let mut empty = Context::default();
@@ -2539,6 +2543,19 @@ mod test {
         let mut metrics = Context::default();
         metrics.push_entry_frame(1, Interests::NODE_INPUT_METRICS);
         assert!(metrics.needs_completion_tracking());
+
+        for interest in [
+            Interests::NODE_COMPLETION_DURATION,
+            Interests::NODE_ITEM_COUNTS,
+            Interests::NODE_SIZE,
+        ] {
+            let mut optional_only = Context::default();
+            optional_only.push_entry_frame(1, interest);
+            assert!(
+                optional_only.needs_completion_tracking(),
+                "{interest:?} must retain its context for metrics unwinding"
+            );
+        }
 
         let mut subscriber = Context::default();
         subscriber.subscribe_to(Interests::ACKS, CallData::new(), 1);
