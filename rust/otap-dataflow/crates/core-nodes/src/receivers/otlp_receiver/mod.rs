@@ -272,18 +272,18 @@ impl OTLPReceiver {
         // - Same port with either IP being unspecified (0.0.0.0 or ::), since unspecified binds all interfaces
         // - Same port with identical specific IPs
         // Different specific IPs on the same port are allowed (different network interfaces).
-        if let (Some(grpc), Some(http)) = (&config.protocols.grpc, &config.protocols.http) {
-            if grpc.listening_addr.port() == http.listening_addr.port() {
-                let g_ip = grpc.listening_addr.ip();
-                let h_ip = http.listening_addr.ip();
-                if g_ip.is_unspecified() || h_ip.is_unspecified() || g_ip == h_ip {
-                    return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
-                        error: format!(
-                            "gRPC and HTTP protocols have conflicting listening addresses ({} and {})",
-                            grpc.listening_addr, http.listening_addr
-                        ),
-                    });
-                }
+        if let (Some(grpc), Some(http)) = (&config.protocols.grpc, &config.protocols.http)
+            && grpc.listening_addr.port() == http.listening_addr.port()
+        {
+            let g_ip = grpc.listening_addr.ip();
+            let h_ip = http.listening_addr.ip();
+            if g_ip.is_unspecified() || h_ip.is_unspecified() || g_ip == h_ip {
+                return Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                    error: format!(
+                        "gRPC and HTTP protocols have conflicting listening addresses ({} and {})",
+                        grpc.listening_addr, http.listening_addr
+                    ),
+                });
             }
         }
 
@@ -857,22 +857,24 @@ impl OTLPReceiver {
         // Ensure HTTP shutdown is triggered and wait for it to complete.
         http_shutdown.cancel();
 
-        if grpc_enabled && !grpc_task_done {
-            if let Err(error) = grpc_fut.await {
-                self.metrics
-                    .lock()
-                    .record_transport_error(OtlpProtocol::Grpc);
-                return Err(self.map_transport_error(effect_handler, error));
-            }
+        if grpc_enabled
+            && !grpc_task_done
+            && let Err(error) = grpc_fut.await
+        {
+            self.metrics
+                .lock()
+                .record_transport_error(OtlpProtocol::Grpc);
+            return Err(self.map_transport_error(effect_handler, error));
         }
 
-        if http_enabled && !http_task_done {
-            if let Err(error) = http_fut.await {
-                self.metrics
-                    .lock()
-                    .record_transport_error(OtlpProtocol::Http);
-                return Err(self.map_transport_error(effect_handler, error));
-            }
+        if http_enabled
+            && !http_task_done
+            && let Err(error) = http_fut.await
+        {
+            self.metrics
+                .lock()
+                .record_transport_error(OtlpProtocol::Http);
+            return Err(self.map_transport_error(effect_handler, error));
         }
 
         Ok(TerminalState::new(
@@ -1234,6 +1236,7 @@ mod tests {
                 Some("out".into()),
                 runtime_ctrl_tx,
                 metrics_reporter,
+                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
             );
             let request_effect_handler = effect_handler.clone();
 

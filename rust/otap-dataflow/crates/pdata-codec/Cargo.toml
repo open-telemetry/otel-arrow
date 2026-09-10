@@ -1,0 +1,31 @@
+[package]
+name = "otel-arrow-dfe-pdata-codec"
+description = "Pluggable encoded telemetry formats for the OTAP Dataflow Engine"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+readme = "README.md"
+publish = true
+keywords = ["telemetry", "opentelemetry", "otlp", "otap", "codec"]
+categories = ["encoding"]
+rust-version.workspace = true
+
+[dependencies]
+bytes.workspace = true
+linkme.workspace = true
+otel-arrow-dfe-config.workspace = true
+otel-arrow-dfe-pdata.workspace = true
+otel-arrow-dfe-pdata-views.workspace = true
+prost.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
+
+[features]
+testing = []
+
+[lints]
+workspace = true

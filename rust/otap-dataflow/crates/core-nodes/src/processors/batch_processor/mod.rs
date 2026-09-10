@@ -427,15 +427,15 @@ impl FormatConfig {
         }
 
         // If both sizes are set, check max_size is >= the min_size.
-        if let (Some(max_size), Some(min_size)) = (self.max_size, self.min_size) {
-            if max_size < min_size {
-                return Err(ConfigError::InvalidUserConfig {
-                    error: format!(
-                        "max_size ({}) must be >= min_size ({}) or unset",
-                        max_size, min_size,
-                    ),
-                });
-            }
+        if let (Some(max_size), Some(min_size)) = (self.max_size, self.min_size)
+            && max_size < min_size
+        {
+            return Err(ConfigError::InvalidUserConfig {
+                error: format!(
+                    "max_size ({}) must be >= min_size ({}) or unset",
+                    max_size, min_size,
+                ),
+            });
         }
 
         // immediate_flush indicates there is not a time-based flush criteria, which

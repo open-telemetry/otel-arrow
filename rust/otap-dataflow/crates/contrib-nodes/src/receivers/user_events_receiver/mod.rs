@@ -539,12 +539,12 @@ async fn process_drained_records(
             &subscription.format,
         );
         builder.append(decoded);
-        if builder.len() >= batch_cfg.max_size {
-            if let Err(error) = flush_batch(effect_handler, metrics, builder).await {
-                let remaining = u64::try_from(drained.count()).unwrap_or(u64::MAX);
-                add_dropped_send_error(metrics, remaining);
-                return Err(error);
-            }
+        if builder.len() >= batch_cfg.max_size
+            && let Err(error) = flush_batch(effect_handler, metrics, builder).await
+        {
+            let remaining = u64::try_from(drained.count()).unwrap_or(u64::MAX);
+            add_dropped_send_error(metrics, remaining);
+            return Err(error);
         }
     }
 
@@ -649,8 +649,9 @@ impl local::Receiver<OtapPdata> for UserEventsReceiver {
                         }
                         Ok(NodeControlMsg::DrainIngress { deadline, .. }) => {
                             let _ = telemetry_timer_handle.cancel().await;
-                            if let Some(session) = session.as_mut() {
-                                if Instant::now() < deadline {
+                            if let Some(session) = session.as_mut()
+                                && Instant::now() < deadline
+                            {
                                     let drain_stats = session
                                         .drain_once(&drain_cfg, &mut drained_records)
                                         .map_err(|error| Error::ReceiverError {
@@ -672,7 +673,6 @@ impl local::Receiver<OtapPdata> for UserEventsReceiver {
                                     )
                                     .await?;
                                 }
-                            }
                             if self.admission_state.should_shed_ingress() {
                                 drop_batch(&self.metrics, &mut builder);
                             } else {
@@ -1178,6 +1178,7 @@ mod config_tests {
                 None,
                 runtime_tx,
                 metrics_reporter,
+                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
             ),
             rx,
         )

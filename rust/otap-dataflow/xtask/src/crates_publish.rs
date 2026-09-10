@@ -4,7 +4,7 @@
 //! Publication policy and release commands for OTAP Dataflow crates.
 
 use std::collections::{HashMap, HashSet};
-use std::fs::File;
+use std::fs::{File, write};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -16,7 +16,7 @@ use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::publish_policy::PUBLISH_PACKAGES;
+use crate::publish_policy::{INDEPENDENT_VERSION_PACKAGES, PUBLISH_PACKAGES};
 
 const CRATES_IO_API: &str = "https://crates.io/api/v1";
 const VISIBILITY_DELAYS: [u64; 8] = [0, 5, 10, 20, 40, 80, 160, 300];
@@ -58,6 +58,19 @@ struct PublishPackage {
     has_publish_dependencies: bool,
 }
 
+#[derive(Debug, Eq, PartialEq, Serialize)]
+struct PublishForecast {
+    packages: Vec<ForecastPackage>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct ForecastPackage {
+    name: String,
+    version: String,
+    registry_state: &'static str,
+    expected_action: &'static str,
+}
+
 #[derive(Debug, Deserialize)]
 struct CratesIoResponse {
     version: CratesIoVersion,
@@ -81,12 +94,17 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
             Ok(())
         }
         [command, version] if command == "preflight" => {
-            preflight(version)?;
+            preflight(version, None)?;
+            Ok(())
+        }
+        [command, version, forecast_path] if command == "preflight" => {
+            preflight(version, Some(Path::new(forecast_path)))?;
             Ok(())
         }
         [command, version] if command == "publish" => publish(version),
         _ => bail!(
-            "Usage: cargo xtask crates-publish <plan|check|preflight VERSION|publish VERSION>"
+            "Usage: cargo xtask crates-publish \
+             <plan|check|preflight VERSION [FORECAST_PATH]|publish VERSION>"
         ),
     }
 }
@@ -94,6 +112,59 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
 fn print_plan() -> anyhow::Result<()> {
     println!("{}", serde_json::to_string_pretty(&load_plan()?)?);
     Ok(())
+}
+
+fn forecast_package(
+    package: &PublishPackage,
+    expected_version: &str,
+    version: Option<&CratesIoVersion>,
+    crate_exists: bool,
+) -> ForecastPackage {
+    let (registry_state, expected_action) = if version.is_some_and(|version| version.yanked) {
+        ("Version yanked", "Blocked")
+    } else if version.is_some() {
+        if package.version == expected_version {
+            ("Version present", "Skip after preflight verification")
+        } else {
+            ("Version present", "Skip independent version")
+        }
+    } else if !crate_exists {
+        ("Crate not yet created", "Bootstrap required")
+    } else if package.version == expected_version {
+        ("Version missing", "Publish")
+    } else {
+        ("Independent version missing", "Blocked")
+    };
+
+    ForecastPackage {
+        name: package.name.clone(),
+        version: package.version.clone(),
+        registry_state,
+        expected_action,
+    }
+}
+
+fn write_forecast(path: &Path, packages: &[ForecastPackage]) -> anyhow::Result<()> {
+    let json = serde_json::to_string_pretty(&PublishForecast {
+        packages: packages.to_vec(),
+    })?;
+    write(path, format!("{json}\n"))
+        .with_context(|| format!("failed to write forecast to {}", path.display()))
+}
+
+fn record_lookup_failure(
+    path: &Path,
+    forecast: &mut Vec<ForecastPackage>,
+    package: &PublishPackage,
+    registry_state: &'static str,
+) -> anyhow::Result<()> {
+    forecast.push(ForecastPackage {
+        name: package.name.clone(),
+        version: package.version.clone(),
+        registry_state,
+        expected_action: "Blocked",
+    });
+    write_forecast(path, forecast)
 }
 
 fn load_plan() -> anyhow::Result<PublishPlan> {
@@ -134,7 +205,6 @@ fn publish_order(packages: &[CargoPackage]) -> anyhow::Result<Vec<&CargoPackage>
         let mut dependencies = package
             .dependencies
             .iter()
-            .filter(|dependency| dependency.kind.as_deref() != Some("dev"))
             .filter_map(|dependency| packages.get_key_value(dependency.name.as_str()))
             .map(|(name, _)| *name)
             .collect::<Vec<_>>();
@@ -210,11 +280,12 @@ fn build_plan(
         .map(|package| (package.name.as_str(), package.version.as_str()))
         .collect::<HashMap<_, _>>();
     for package in &publishable {
-        for dependency in package
-            .dependencies
-            .iter()
-            .filter(|dependency| dependency.kind.as_deref() != Some("dev"))
-        {
+        for dependency in &package.dependencies {
+            if dependency.kind.as_deref() == Some("dev")
+                && !package_versions.contains_key(dependency.name.as_str())
+            {
+                continue;
+            }
             let Some(dependency_version) = package_versions.get(dependency.name.as_str()) else {
                 if dependency.path.is_some() {
                     bail!(
@@ -244,10 +315,10 @@ fn build_plan(
             .map(|package| PublishPackage {
                 name: package.name.clone(),
                 version: package.version.clone(),
-                has_publish_dependencies: package.dependencies.iter().any(|dependency| {
-                    dependency.kind.as_deref() != Some("dev")
-                        && package_versions.contains_key(dependency.name.as_str())
-                }),
+                has_publish_dependencies: package
+                    .dependencies
+                    .iter()
+                    .any(|dependency| package_versions.contains_key(dependency.name.as_str())),
             })
             .collect(),
         target_directory,
@@ -255,11 +326,10 @@ fn build_plan(
 }
 
 fn ensure_plan_version(plan: &PublishPlan, expected_version: &str) -> anyhow::Result<()> {
-    if let Some(package) = plan
-        .packages
-        .iter()
-        .find(|package| package.version != expected_version)
-    {
+    if let Some(package) = plan.packages.iter().find(|package| {
+        package.version != expected_version
+            && !INDEPENDENT_VERSION_PACKAGES.contains(&package.name.as_str())
+    }) {
         bail!(
             "publish plan version {} for {} does not match requested version {expected_version}",
             package.version,
@@ -281,37 +351,117 @@ fn check_package(package: &PublishPackage, allow_dirty: bool) -> anyhow::Result<
     run_cargo(&args)
 }
 
-fn preflight(expected_version: &str) -> anyhow::Result<PublishPlan> {
+fn preflight_package(
+    package: &PublishPackage,
+    expected_version: &str,
+    target_directory: &Path,
+    version: Option<&CratesIoVersion>,
+) -> anyhow::Result<()> {
+    if package.version != expected_version {
+        let Some(version) = version else {
+            bail!(
+                "independently versioned package {} {} is not published; include it in \
+                 release {expected_version} or publish it separately",
+                package.name,
+                package.version
+            );
+        };
+        ensure_not_yanked(&package.name, &package.version, version.yanked)?;
+        return Ok(());
+    }
+
+    match version {
+        Some(version) => {
+            ensure_not_yanked(&package.name, &package.version, version.yanked)?;
+            let expected_checksum = package_checksum(package, target_directory)?;
+            verify_checksum(
+                &package.name,
+                &package.version,
+                &expected_checksum,
+                &version.checksum,
+            )
+        }
+        None => check_package(package, false),
+    }
+}
+
+fn preflight(expected_version: &str, forecast_path: Option<&Path>) -> anyhow::Result<PublishPlan> {
     let plan = load_plan()?;
     ensure_plan_version(&plan, expected_version)?;
+    let mut forecast = Vec::with_capacity(plan.packages.len());
+    if let Some(path) = forecast_path {
+        write_forecast(path, &forecast)?;
+    }
 
     for package in &plan.packages {
-        match crates_io_version(&package.name, &package.version)? {
-            Some(version) => {
-                ensure_not_yanked(&package.name, &package.version, version.yanked)?;
-                let expected_checksum = package_checksum(package, &plan.target_directory)?;
-                verify_checksum(
-                    &package.name,
-                    &package.version,
-                    &expected_checksum,
-                    &version.checksum,
-                )?;
+        let version = match crates_io_version(&package.name, &package.version) {
+            Ok(version) => version,
+            Err(error) => {
+                if let Some(path) = forecast_path {
+                    record_lookup_failure(path, &mut forecast, package, "Version lookup failed")?;
+                }
+                return Err(error);
             }
-            None => check_package(package, false)?,
+        };
+        if let Some(path) = forecast_path {
+            let crate_exists = if version.is_some() {
+                true
+            } else {
+                match crates_io_crate_exists(&package.name) {
+                    Ok(crate_exists) => crate_exists,
+                    Err(error) => {
+                        record_lookup_failure(path, &mut forecast, package, "Crate lookup failed")?;
+                        return Err(error);
+                    }
+                }
+            };
+            forecast.push(forecast_package(
+                package,
+                expected_version,
+                version.as_ref(),
+                crate_exists,
+            ));
+            write_forecast(path, &forecast)?;
+        }
+
+        if let Err(error) = preflight_package(
+            package,
+            expected_version,
+            &plan.target_directory,
+            version.as_ref(),
+        ) {
+            if let Some(path) = forecast_path {
+                forecast
+                    .last_mut()
+                    .expect("the current package was added to the forecast")
+                    .expected_action = "Blocked";
+                write_forecast(path, &forecast)?;
+            }
+            return Err(error);
         }
     }
 
-    println!(
-        "preflight passed for {} crates at version {expected_version}",
-        plan.packages.len()
-    );
+    let release_package_count = plan
+        .packages
+        .iter()
+        .filter(|package| package.version == expected_version)
+        .count();
+    println!("preflight passed for {release_package_count} crates at version {expected_version}");
     Ok(plan)
 }
 
 fn publish(expected_version: &str) -> anyhow::Result<()> {
-    let plan = preflight(expected_version)?;
+    let plan = preflight(expected_version, None)?;
 
     for package in &plan.packages {
+        if package.version != expected_version {
+            println!(
+                "{} {} is independently versioned and excluded from release {}; skipping",
+                package.name, package.version, expected_version
+            );
+            continue;
+        }
+
         let expected_checksum = package_checksum(package, &plan.target_directory)?;
         if let Some(version) = crates_io_version(&package.name, &package.version)? {
             ensure_not_yanked(&package.name, &package.version, version.yanked)?;
@@ -386,6 +536,52 @@ fn crates_io_version(name: &str, version: &str) -> anyhow::Result<Option<CratesI
         .output()
         .context("failed to query crates.io")?;
     parse_crates_io_response(&output)
+}
+
+fn crates_io_crate_exists(name: &str) -> anyhow::Result<bool> {
+    let url = format!("{CRATES_IO_API}/crates/{name}");
+    let output = Command::new("curl")
+        .args([
+            "--silent",
+            "--show-error",
+            "--location",
+            "--connect-timeout",
+            "10",
+            "--max-time",
+            "30",
+            "--user-agent",
+            "otel-arrow-release-publisher",
+            "--write-out",
+            "\n%{http_code}",
+            &url,
+        ])
+        .output()
+        .context("failed to query crates.io")?;
+    parse_crates_io_existence(&output)
+}
+
+fn parse_crates_io_existence(output: &Output) -> anyhow::Result<bool> {
+    if !output.status.success() {
+        bail!(
+            "crates.io request failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+
+    let stdout = String::from_utf8(output.stdout.clone())
+        .context("crates.io returned a non-UTF-8 response")?;
+    let (body, status) = stdout
+        .rsplit_once('\n')
+        .context("crates.io response did not include an HTTP status")?;
+    parse_crates_io_existence_response(body, status)
+}
+
+fn parse_crates_io_existence_response(body: &str, status: &str) -> anyhow::Result<bool> {
+    match status {
+        "200" => Ok(true),
+        "404" => Ok(false),
+        _ => bail!("crates.io returned HTTP {status}: {}", body.trim()),
+    }
 }
 
 fn parse_crates_io_response(output: &Output) -> anyhow::Result<Option<CratesIoVersion>> {
@@ -514,6 +710,13 @@ mod tests {
         }
     }
 
+    fn dev_dependency(name: &str) -> CargoDependency {
+        CargoDependency {
+            kind: Some("dev".to_owned()),
+            ..dependency(name)
+        }
+    }
+
     fn package(name: &str, publish: Option<Vec<String>>, dependencies: &[&str]) -> CargoPackage {
         CargoPackage {
             name: name.to_owned(),
@@ -524,7 +727,7 @@ mod tests {
     }
 
     fn publishable_packages() -> Vec<CargoPackage> {
-        PUBLISH_PACKAGES
+        let mut packages = PUBLISH_PACKAGES
             .iter()
             .map(|name| {
                 let dependencies: &[&str] = match *name {
@@ -581,7 +784,14 @@ mod tests {
                 };
                 package(name, None, dependencies)
             })
-            .collect()
+            .collect::<Vec<_>>();
+        packages
+            .iter_mut()
+            .find(|package| package.name == "otel-arrow-dfe-query-engine")
+            .expect("query engine package should exist")
+            .dependencies
+            .push(dev_dependency("otel-arrow-dfe-query-engine-languages"));
+        packages
     }
 
     /// Scenario: the approved packages and dependency edges are publishable.
@@ -644,6 +854,50 @@ mod tests {
         assert!(build_plan(packages, PathBuf::from("/target")).is_err());
     }
 
+    /// Scenario: a publishable crate has a dev-dependency on an unpublished test helper.
+    /// Guarantees: test-only workspace crates do not have to join the publication set.
+    #[test]
+    fn plan_allows_unpublished_dev_dependency() {
+        let mut packages = publishable_packages();
+        packages
+            .iter_mut()
+            .find(|package| package.name == "otel-arrow-dfe-config")
+            .expect("config package should exist")
+            .dependencies
+            .push(dev_dependency("otel-arrow-dfe-test-support"));
+
+        assert!(build_plan(packages, PathBuf::from("/target")).is_ok());
+    }
+
+    /// Scenario: a crate has only a dev-dependency on another publishable crate.
+    /// Guarantees: preflight defers full packaging and orders the dependency first.
+    #[test]
+    fn plan_orders_publishable_dev_dependency() {
+        let mut packages = publishable_packages();
+        packages
+            .iter_mut()
+            .find(|package| package.name == "otel-arrow-dfe-quiver")
+            .expect("quiver package should exist")
+            .dependencies
+            .push(dev_dependency("otel-arrow-dfe-query-engine-languages"));
+
+        let plan = build_plan(packages, PathBuf::from("/target"))
+            .expect("publishable dev-dependency should be accepted");
+        let languages = plan
+            .packages
+            .iter()
+            .position(|package| package.name == "otel-arrow-dfe-query-engine-languages")
+            .expect("languages package should be planned");
+        let quiver = plan
+            .packages
+            .iter()
+            .position(|package| package.name == "otel-arrow-dfe-quiver")
+            .expect("quiver package should be planned");
+
+        assert!(languages < quiver);
+        assert!(plan.packages[quiver].has_publish_dependencies);
+    }
+
     /// Scenario: a publishable crate uses a self dev-dependency to enable test features.
     /// Guarantees: release preparation rejects the first-publication cycle before packaging.
     #[test]
@@ -654,16 +908,234 @@ mod tests {
             .find(|package| package.name == "otel-arrow-dfe-engine")
             .expect("engine package should exist")
             .dependencies
-            .push(CargoDependency {
-                name: "otel-arrow-dfe-engine".to_owned(),
-                kind: Some("dev".to_owned()),
-                path: Some("/crates/otel-arrow-dfe-engine".into()),
-                req: "^0.51.0".to_owned(),
-            });
+            .push(dev_dependency("otel-arrow-dfe-engine"));
 
         let error = build_plan(packages, PathBuf::from("/target"))
             .expect_err("self dependencies must be rejected");
         assert!(error.to_string().contains("depends on itself"));
+    }
+
+    /// Scenario: a stable boundary crate keeps an independent version.
+    /// Guarantees: release preflight accepts pdata-views outside the workspace release version.
+    #[test]
+    fn plan_version_allows_independent_pdata_views_version() {
+        let plan = PublishPlan {
+            packages: vec![
+                PublishPackage {
+                    name: "otel-arrow-dfe-pdata-views".to_owned(),
+                    version: "0.54.1".to_owned(),
+                    has_publish_dependencies: false,
+                },
+                PublishPackage {
+                    name: "otel-arrow-dfe-pdata".to_owned(),
+                    version: "0.55.0".to_owned(),
+                    has_publish_dependencies: true,
+                },
+            ],
+            target_directory: PathBuf::from("/target"),
+        };
+
+        assert!(ensure_plan_version(&plan, "0.55.0").is_ok());
+    }
+
+    /// Scenario: a regular publishable crate differs from the requested release version.
+    /// Guarantees: only explicitly independent crates may opt out of a release bump.
+    #[test]
+    fn plan_version_rejects_other_mismatched_versions() {
+        let plan = PublishPlan {
+            packages: vec![PublishPackage {
+                name: "otel-arrow-dfe-pdata".to_owned(),
+                version: "0.54.1".to_owned(),
+                has_publish_dependencies: true,
+            }],
+            target_directory: PathBuf::from("/target"),
+        };
+
+        assert!(ensure_plan_version(&plan, "0.55.0").is_err());
+    }
+
+    /// Scenario: a release version already exists on crates.io.
+    /// Guarantees: the forecast reports that publishing will skip it after preflight verification.
+    #[test]
+    fn forecast_skips_existing_release_version() {
+        let package = PublishPackage {
+            name: "otel-arrow-dfe-config".to_owned(),
+            version: "0.55.0".to_owned(),
+            has_publish_dependencies: false,
+        };
+
+        let version = CratesIoVersion {
+            checksum: String::new(),
+            yanked: false,
+        };
+        let forecast = forecast_package(&package, "0.55.0", Some(&version), true);
+
+        assert_eq!(forecast.registry_state, "Version present");
+        assert_eq!(
+            forecast.expected_action,
+            "Skip after preflight verification"
+        );
+    }
+
+    /// Scenario: an existing crate does not have the requested release version.
+    /// Guarantees: the forecast reports that the workflow will publish the missing version.
+    #[test]
+    fn forecast_publishes_missing_release_version() {
+        let package = PublishPackage {
+            name: "otel-arrow-dfe-config".to_owned(),
+            version: "0.55.0".to_owned(),
+            has_publish_dependencies: false,
+        };
+
+        let forecast = forecast_package(&package, "0.55.0", None, true);
+
+        assert_eq!(forecast.registry_state, "Version missing");
+        assert_eq!(forecast.expected_action, "Publish");
+    }
+
+    /// Scenario: a newly allowlisted crate does not exist on crates.io.
+    /// Guarantees: the forecast identifies the required first-publication bootstrap.
+    #[test]
+    fn forecast_identifies_bootstrap_requirement() {
+        let package = PublishPackage {
+            name: "otel-arrow-dfe-otap".to_owned(),
+            version: "0.55.0".to_owned(),
+            has_publish_dependencies: true,
+        };
+
+        let forecast = forecast_package(&package, "0.55.0", None, false);
+
+        assert_eq!(forecast.registry_state, "Crate not yet created");
+        assert_eq!(forecast.expected_action, "Bootstrap required");
+    }
+
+    /// Scenario: an independently versioned crate already exists on crates.io.
+    /// Guarantees: the forecast reports that the release will skip the independent version.
+    #[test]
+    fn forecast_skips_existing_independent_version() {
+        let package = PublishPackage {
+            name: "otel-arrow-dfe-pdata-views".to_owned(),
+            version: "0.54.1".to_owned(),
+            has_publish_dependencies: false,
+        };
+        let version = CratesIoVersion {
+            checksum: String::new(),
+            yanked: false,
+        };
+
+        let forecast = forecast_package(&package, "0.55.0", Some(&version), true);
+
+        assert_eq!(forecast.registry_state, "Version present");
+        assert_eq!(forecast.expected_action, "Skip independent version");
+    }
+
+    /// Scenario: an independently versioned crate is missing from an existing crates.io package.
+    /// Guarantees: the forecast reports that the release is blocked until the version is published.
+    #[test]
+    fn forecast_blocks_missing_independent_version() {
+        let package = PublishPackage {
+            name: "otel-arrow-dfe-pdata-views".to_owned(),
+            version: "0.54.1".to_owned(),
+            has_publish_dependencies: false,
+        };
+
+        let forecast = forecast_package(&package, "0.55.0", None, true);
+
+        assert_eq!(forecast.registry_state, "Independent version missing");
+        assert_eq!(forecast.expected_action, "Blocked");
+    }
+
+    /// Scenario: crates.io reports an independently versioned crate as yanked.
+    /// Guarantees: the forecast matches preflight by reporting the yanked version as blocked.
+    #[test]
+    fn forecast_blocks_yanked_version() {
+        let package = PublishPackage {
+            name: "otel-arrow-dfe-pdata-views".to_owned(),
+            version: "0.54.1".to_owned(),
+            has_publish_dependencies: false,
+        };
+        let version = CratesIoVersion {
+            checksum: String::new(),
+            yanked: true,
+        };
+
+        let forecast = forecast_package(&package, "0.55.0", Some(&version), true);
+
+        assert_eq!(forecast.registry_state, "Version yanked");
+        assert_eq!(forecast.expected_action, "Blocked");
+    }
+
+    /// Scenario: a registry lookup fails after earlier packages were forecast successfully.
+    /// Guarantees: the report retains earlier rows and adds the failed package as blocked.
+    #[test]
+    fn forecast_preserves_report_on_lookup_failure() {
+        let path = std::env::temp_dir().join(format!(
+            "otel-arrow-crates-publish-forecast-{}.json",
+            std::process::id()
+        ));
+        let mut forecast = vec![ForecastPackage {
+            name: "otel-arrow-dfe-config".to_owned(),
+            version: "0.55.0".to_owned(),
+            registry_state: "Version present",
+            expected_action: "Skip after preflight verification",
+        }];
+        let failed_package = PublishPackage {
+            name: "otel-arrow-dfe-otap".to_owned(),
+            version: "0.55.0".to_owned(),
+            has_publish_dependencies: true,
+        };
+
+        record_lookup_failure(
+            &path,
+            &mut forecast,
+            &failed_package,
+            "Version lookup failed",
+        )
+        .expect("lookup failure should be written to the forecast");
+
+        let report = std::fs::read_to_string(&path).expect("forecast should be readable");
+        let report: serde_json::Value =
+            serde_json::from_str(&report).expect("forecast should contain valid JSON");
+        let packages = report["packages"]
+            .as_array()
+            .expect("forecast should contain packages");
+        assert_eq!(packages.len(), 2);
+        assert_eq!(packages[0]["name"], "otel-arrow-dfe-config");
+        assert_eq!(packages[1]["name"], "otel-arrow-dfe-otap");
+        assert_eq!(packages[1]["registry_state"], "Version lookup failed");
+        assert_eq!(packages[1]["expected_action"], "Blocked");
+
+        std::fs::remove_file(path).expect("forecast should be removable");
+    }
+
+    /// Scenario: crates.io returns success for a crate lookup.
+    /// Guarantees: the existence parser reports that the crate is present.
+    #[test]
+    fn crate_existence_accepts_http_200() {
+        assert!(
+            parse_crates_io_existence_response("{}", "200")
+                .expect("HTTP 200 should indicate existence")
+        );
+    }
+
+    /// Scenario: crates.io returns not found for a crate lookup.
+    /// Guarantees: the existence parser reports that the crate is absent.
+    #[test]
+    fn crate_existence_accepts_http_404() {
+        assert!(
+            !parse_crates_io_existence_response("{}", "404")
+                .expect("HTTP 404 should indicate absence")
+        );
+    }
+
+    /// Scenario: crates.io returns an unexpected HTTP status for a crate lookup.
+    /// Guarantees: the existence parser surfaces the response instead of guessing crate state.
+    #[test]
+    fn crate_existence_rejects_unexpected_http_status() {
+        let error = parse_crates_io_existence_response("rate limited", "429")
+            .expect_err("unexpected HTTP status should fail the lookup");
+
+        assert!(error.to_string().contains("HTTP 429: rate limited"));
     }
 
     /// Scenario: dependency requirements use abbreviated, ranged, exact, and excluding syntax.

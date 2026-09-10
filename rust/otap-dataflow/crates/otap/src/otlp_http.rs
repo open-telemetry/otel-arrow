@@ -758,18 +758,18 @@ impl HttpHandler {
 
             // Collect request body.
             let size_hint = body.size_hint();
-            if let Some(upper) = size_hint.upper() {
-                if (upper as usize) > max_len {
-                    otel_arrow_dfe_telemetry::otel_debug!(
-                        "otlp_http_receiver.request_rejected",
-                        reason = "body_too_large_hint",
-                        max_len = max_len,
-                        size_hint = upper,
-                        path = parts.uri.path().to_string()
-                    );
-                    self.record_rejection(ReceiverRejectionErrorType::PayloadTooLarge);
-                    return Err(limited_body_too_large());
-                }
+            if let Some(upper) = size_hint.upper()
+                && (upper as usize) > max_len
+            {
+                otel_arrow_dfe_telemetry::otel_debug!(
+                    "otlp_http_receiver.request_rejected",
+                    reason = "body_too_large_hint",
+                    max_len = max_len,
+                    size_hint = upper,
+                    path = parts.uri.path().to_string()
+                );
+                self.record_rejection(ReceiverRejectionErrorType::PayloadTooLarge);
+                return Err(limited_body_too_large());
             }
 
             let collected = Limited::new(body, max_len).collect().await.map_err(|e| {
@@ -1374,6 +1374,7 @@ mod tests {
             None,
             ctrl_tx,
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
 
         // Deliberately tiny, so the body below is unambiguously oversized.
@@ -1505,6 +1506,7 @@ mod tests {
             None,
             ctrl_tx,
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
 
         let settings = HttpServerSettings {
@@ -1617,8 +1619,14 @@ mod tests {
         let _ = senders.insert("default".into(), SharedSender::mpsc(msg_tx));
         let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let effect_handler =
-            EffectHandler::new(test_node("http"), senders, None, ctrl_tx, metrics_reporter);
+        let effect_handler = EffectHandler::new(
+            test_node("http"),
+            senders,
+            None,
+            ctrl_tx,
+            metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
 
         let settings = HttpServerSettings {
             listening_addr: addr,
@@ -1752,6 +1760,7 @@ mod tests {
             None,
             ctrl_tx,
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
 
         let settings = HttpServerSettings {
@@ -1882,6 +1891,7 @@ mod tests {
             None,
             ctrl_tx,
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
 
         let settings = HttpServerSettings {
@@ -2024,8 +2034,14 @@ mod tests {
         let _ = senders.insert("default".into(), SharedSender::mpsc(msg_tx));
         let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let effect_handler =
-            EffectHandler::new(test_node("http"), senders, None, ctrl_tx, metrics_reporter);
+        let effect_handler = EffectHandler::new(
+            test_node("http"),
+            senders,
+            None,
+            ctrl_tx,
+            metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
 
         let settings = HttpServerSettings {
             listening_addr: addr,
@@ -2178,6 +2194,7 @@ mod tests {
             None,
             ctrl_tx,
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
 
         let settings = HttpServerSettings {
@@ -2335,6 +2352,7 @@ mod tests {
             None,
             ctrl_tx,
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
 
         let settings = HttpServerSettings {

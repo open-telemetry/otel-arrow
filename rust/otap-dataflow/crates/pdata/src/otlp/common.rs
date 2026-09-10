@@ -62,23 +62,23 @@ pub(crate) fn proto_encode_resource(
     result_buf: &mut ProtoBuffer,
 ) -> Result<()> {
     // add attributes
-    if let Some(attrs_arrays) = resource_attrs_arrays {
-        if let Some(res_id) = resource_arrays.id.value_at(index) {
-            for attr_index in
-                ChildIndexIter::new(res_id, &attrs_arrays.parent_id, resource_attrs_cursor)
-            {
-                result_buf.encode_len_delimited(RESOURCE_ATTRIBUTES, |result_buf| {
-                    encode_key_value(attrs_arrays, attr_index, result_buf)
-                })?;
-            }
+    if let Some(attrs_arrays) = resource_attrs_arrays
+        && let Some(res_id) = resource_arrays.id.value_at(index)
+    {
+        for attr_index in
+            ChildIndexIter::new(res_id, &attrs_arrays.parent_id, resource_attrs_cursor)
+        {
+            result_buf.encode_len_delimited(RESOURCE_ATTRIBUTES, |result_buf| {
+                encode_key_value(attrs_arrays, attr_index, result_buf)
+            })?;
         }
     }
 
-    if let Some(col) = resource_arrays.dropped_attributes_count {
-        if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(RESOURCE_DROPPED_ATTRIBUTES_COUNT, wire_types::VARINT)?;
-            result_buf.encode_varint(val as u64)?;
-        }
+    if let Some(col) = resource_arrays.dropped_attributes_count
+        && let Some(val) = col.value_at(index)
+    {
+        result_buf.encode_field_tag(RESOURCE_DROPPED_ATTRIBUTES_COUNT, wire_types::VARINT)?;
+        result_buf.encode_varint(val as u64)?;
     }
 
     Ok(())
@@ -192,37 +192,35 @@ pub(crate) fn proto_encode_instrumentation_scope(
     scope_attrs_cursor: &mut SortedBatchCursor,
     result_buf: &mut ProtoBuffer,
 ) -> Result<()> {
-    if let Some(col) = &scope_arrays.name {
-        if let Some(val) = col.str_at(index) {
-            result_buf.encode_string(INSTRUMENTATION_SCOPE_NAME, val)?;
+    if let Some(col) = &scope_arrays.name
+        && let Some(val) = col.str_at(index)
+    {
+        result_buf.encode_string(INSTRUMENTATION_SCOPE_NAME, val)?;
+    }
+
+    if let Some(col) = &scope_arrays.version
+        && let Some(val) = col.str_at(index)
+    {
+        result_buf.encode_string(INSTRUMENTATION_SCOPE_VERSION, val)?;
+    }
+
+    if let Some(attr_arrays) = scope_attrs_arrays
+        && let Some(scope_id) = scope_arrays.id.value_at(index)
+    {
+        for attr_index in ChildIndexIter::new(scope_id, &attr_arrays.parent_id, scope_attrs_cursor)
+        {
+            result_buf.encode_len_delimited(INSTRUMENTATION_SCOPE_ATTRIBUTES, |result_buf| {
+                encode_key_value(attr_arrays, attr_index, result_buf)
+            })?;
         }
     }
 
-    if let Some(col) = &scope_arrays.version {
-        if let Some(val) = col.str_at(index) {
-            result_buf.encode_string(INSTRUMENTATION_SCOPE_VERSION, val)?;
-        }
-    }
-
-    if let Some(attr_arrays) = scope_attrs_arrays {
-        if let Some(scope_id) = scope_arrays.id.value_at(index) {
-            for attr_index in
-                ChildIndexIter::new(scope_id, &attr_arrays.parent_id, scope_attrs_cursor)
-            {
-                result_buf
-                    .encode_len_delimited(INSTRUMENTATION_SCOPE_ATTRIBUTES, |result_buf| {
-                        encode_key_value(attr_arrays, attr_index, result_buf)
-                    })?;
-            }
-        }
-    }
-
-    if let Some(col) = scope_arrays.dropped_attributes_count {
-        if let Some(val) = col.value_at(index) {
-            result_buf
-                .encode_field_tag(INSTRUMENTATION_DROPPED_ATTRIBUTES_COUNT, wire_types::VARINT)?;
-            result_buf.encode_varint(val as u64)?;
-        }
+    if let Some(col) = scope_arrays.dropped_attributes_count
+        && let Some(val) = col.value_at(index)
+    {
+        result_buf
+            .encode_field_tag(INSTRUMENTATION_DROPPED_ATTRIBUTES_COUNT, wire_types::VARINT)?;
+        result_buf.encode_varint(val as u64)?;
     }
 
     Ok(())
@@ -832,6 +830,14 @@ impl ProtoBuffer {
             self.buffer.reserve(capacity - self.buffer.capacity());
         }
     }
+
+    /// Clears the buffer and bounds the allocation retained for later encodes.
+    pub fn retain_capacity(&mut self, maximum: usize) {
+        self.buffer.clear();
+        if self.buffer.capacity() > maximum {
+            self.buffer = Vec::with_capacity(maximum.min(self.limit));
+        }
+    }
 }
 
 impl BoundedBuf for ProtoBuffer {
@@ -1088,16 +1094,16 @@ impl SortedBatchCursor {
         // If the most recently consumed row's parent id is `<= target`, then `target`'s rows (if
         // any) are at or after `curr_index`, so a forward scan suffices -- no search needed. Nulls
         // (value_at == None) fall through to the search, as does the very first seek of a batch.
-        if self.curr_index > 0 {
-            if let Some(prev) = parent_id_col.value_at(self.sorted_indices[self.curr_index - 1]) {
-                // `target >= prev`: forward scan suffices. Incomparable values (partial_cmp ==
-                // None) fall through to the search as a safe default.
-                if matches!(
-                    target.partial_cmp(&prev),
-                    Some(Ordering::Greater | Ordering::Equal)
-                ) {
-                    return;
-                }
+        if self.curr_index > 0
+            && let Some(prev) = parent_id_col.value_at(self.sorted_indices[self.curr_index - 1])
+        {
+            // `target >= prev`: forward scan suffices. Incomparable values (partial_cmp ==
+            // None) fall through to the search as a safe default.
+            if matches!(
+                target.partial_cmp(&prev),
+                Some(Ordering::Greater | Ordering::Equal)
+            ) {
+                return;
             }
         }
 
