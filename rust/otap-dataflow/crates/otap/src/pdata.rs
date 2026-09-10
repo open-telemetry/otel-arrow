@@ -1172,7 +1172,16 @@ mod test {
     use pretty_assertions::assert_eq;
     use std::cell::Cell;
     use std::collections::HashMap;
+    use std::mem::size_of;
     use tokio::sync::mpsc;
+
+    /// Scenario: Queued OTAP pdata is built for a 64-bit target before codec integration.
+    /// Guarantees: The baseline queued-message layout remains fixed for later comparisons.
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn legacy_otap_pdata_layout_is_stable() {
+        assert_eq!(size_of::<OtapPdata>(), 152);
+    }
 
     fn create_test() -> (TestCallData, OtapPdata) {
         (TestCallData::default(), create_test_pdata())
@@ -1420,6 +1429,7 @@ mod test {
             Some("out".into()),
             ctrl_tx,
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
         handler.set_source_tagging(SourceTagging::Enabled);
 
@@ -1448,6 +1458,7 @@ mod test {
             senders,
             Some("out".into()),
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
         handler.set_source_tagging(SourceTagging::Enabled);
 
@@ -1478,6 +1489,7 @@ mod test {
             senders,
             None,
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
         handler.set_source_tagging(SourceTagging::Enabled);
 
@@ -1511,6 +1523,7 @@ mod test {
             None,
             ctrl_tx,
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
         handler.set_source_tagging(SourceTagging::Enabled);
 
@@ -1540,6 +1553,7 @@ mod test {
             senders,
             Some("out".into()),
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
         handler.set_source_tagging(SourceTagging::Enabled);
 
@@ -1569,6 +1583,7 @@ mod test {
             senders,
             None,
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
         handler.set_source_tagging(SourceTagging::Enabled);
 
@@ -1601,6 +1616,7 @@ mod test {
             None,
             ctrl_tx,
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
         handler.set_source_tagging(SourceTagging::Enabled);
 
@@ -1629,6 +1645,7 @@ mod test {
             senders,
             Some("out".into()),
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
         handler.set_source_tagging(SourceTagging::Enabled);
 
@@ -1659,6 +1676,7 @@ mod test {
             senders,
             None,
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
         handler.set_source_tagging(SourceTagging::Enabled);
 
@@ -1688,6 +1706,7 @@ mod test {
             senders,
             Some("out".into()),
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
         handler.set_source_tagging(SourceTagging::Enabled);
 
@@ -1717,6 +1736,7 @@ mod test {
             senders,
             None,
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
         handler.set_source_tagging(SourceTagging::Enabled);
 
@@ -1749,6 +1769,7 @@ mod test {
             None,
             ctrl_tx,
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
         handler.set_source_tagging(SourceTagging::Enabled);
 
@@ -1779,6 +1800,7 @@ mod test {
             Some("out".into()),
             ctrl_tx,
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
         handler.set_source_tagging(SourceTagging::Enabled);
 
@@ -1811,6 +1833,7 @@ mod test {
             None,
             ctrl_tx,
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
         handler.set_source_tagging(SourceTagging::Enabled);
 
@@ -1842,6 +1865,7 @@ mod test {
             Some("out".into()),
             ctrl_tx,
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
         handler.set_source_tagging(SourceTagging::Enabled);
 
@@ -1860,6 +1884,7 @@ mod test {
         let (tx_on, mut rx_on) = mpsc::channel::<OtapPdata>(4);
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let runtime_services = otel_arrow_dfe_engine::testing::test_pipeline_runtime_services();
         let handler_off = SharedProcessorEffectHandler::new(
             NodeId {
                 index: 7,
@@ -1868,6 +1893,7 @@ mod test {
             HashMap::from([("out".into(), SharedSender::mpsc(tx_off))]),
             Some("out".into()),
             metrics_reporter,
+            runtime_services.clone(),
         );
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
@@ -1879,6 +1905,7 @@ mod test {
             HashMap::from([("out".into(), SharedSender::mpsc(tx_on))]),
             Some("out".into()),
             metrics_reporter,
+            runtime_services,
         );
 
         // Default is false
@@ -2661,6 +2688,7 @@ mod test {
             HashMap::new(),
             None,
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
         let (completion_tx, completion_rx) = pipeline_completion_msg_channel(4);
         eh.set_pipeline_completion_msg_sender(completion_tx);
@@ -2679,6 +2707,7 @@ mod test {
                 name: "test_local_exp".into(),
             },
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
         let (completion_tx, completion_rx) = pipeline_completion_msg_channel(4);
         eh.set_pipeline_completion_msg_sender(completion_tx);
@@ -2699,6 +2728,7 @@ mod test {
             HashMap::new(),
             None,
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
         let (completion_tx, completion_rx) = pipeline_completion_msg_channel(4);
         eh.set_pipeline_completion_msg_sender(completion_tx);
@@ -2717,6 +2747,7 @@ mod test {
                 name: "test_shared_exp".into(),
             },
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
         let (completion_tx, completion_rx) = pipeline_completion_msg_channel(4);
         eh.set_pipeline_completion_msg_sender(completion_tx);

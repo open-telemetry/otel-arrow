@@ -776,6 +776,7 @@ mod tests {
                 name: "test_exporter".to_string().into(),
             },
             reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         )
     }
 
@@ -784,8 +785,11 @@ mod tests {
         otel_arrow_dfe_engine::control::PipelineCompletionMsgReceiver<OtapPdata>,
     ) {
         let (_, reporter) = MetricsReporter::create_new_and_receiver(10);
-        let mut effect_handler =
-            EffectHandler::new(test_node("azure-monitor-completion-test"), reporter);
+        let mut effect_handler = EffectHandler::new(
+            test_node("azure-monitor-completion-test"),
+            reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
         let (completion_tx, completion_rx) = pipeline_completion_msg_channel(1);
         effect_handler.set_pipeline_completion_msg_sender(completion_tx);
         (effect_handler, completion_rx)
@@ -833,7 +837,11 @@ mod tests {
             index: 0,
             name: "test_exporter".to_string().into(),
         };
-        let effect_handler = EffectHandler::new(node_id, reporter);
+        let effect_handler = EffectHandler::new(
+            node_id,
+            reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
 
         let batch_id = 1;
         let msg_id = 100;
@@ -878,7 +886,11 @@ mod tests {
             index: 0,
             name: "test_exporter".to_string().into(),
         };
-        let effect_handler = EffectHandler::new(node_id, reporter);
+        let effect_handler = EffectHandler::new(
+            node_id,
+            reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
 
         let batch_id = 1;
         let msg_id = 100;
@@ -938,6 +950,7 @@ mod tests {
                 name: "test_exporter".to_string().into(),
             },
             reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
         let client = super::super::client::LogsIngestionClient::from_parts(
             reqwest::Client::new(),

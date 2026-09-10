@@ -29,6 +29,7 @@ use crate::local::processor as local;
 use crate::message::{Message, ProcessorInbox, Receiver, Sender};
 use crate::node::{Node, NodeId, NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::node_local_scheduler::NodeLocalSchedulerHandle;
+use crate::runtime_services::PipelineRuntimeServices;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::shared::processor as shared;
 use crate::terminal_state::TerminalMetricsDeadline;
@@ -476,11 +477,13 @@ impl<PData> ProcessorWrapper<PData> {
     }
 
     /// Prepare the processor runtime components without starting the processing loop.
-    /// This allows external control over the message processing loop.
+    /// This allows external control over the message processing loop while preserving the
+    /// pipeline-owned runtime-service lifecycle.
     pub async fn prepare_runtime(
         self,
         metrics_reporter: MetricsReporter,
         node_interests: Interests,
+        runtime_services: PipelineRuntimeServices,
     ) -> Result<ProcessorWrapperRuntime<PData>, Error> {
         match self {
             ProcessorWrapper::Local {
@@ -522,6 +525,7 @@ impl<PData> ProcessorWrapper<PData> {
                     pdata_senders,
                     default_port,
                     metrics_reporter,
+                    runtime_services.clone(),
                 );
                 effect_handler.set_source_tagging(source_tag);
                 effect_handler.core.set_local_scheduler(local_scheduler);
@@ -571,6 +575,7 @@ impl<PData> ProcessorWrapper<PData> {
                     pdata_senders,
                     default_port,
                     metrics_reporter,
+                    runtime_services,
                 );
                 effect_handler.set_source_tagging(source_tag);
                 effect_handler.core.set_local_scheduler(local_scheduler);
@@ -583,13 +588,14 @@ impl<PData> ProcessorWrapper<PData> {
         }
     }
 
-    /// Start the processor and run the message processing loop.
+    /// Start the processor using the services owned by its pipeline runtime.
     pub async fn start(
         self,
         runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<PData>,
         pipeline_completion_msg_tx: PipelineCompletionMsgSender<PData>,
         metrics_reporter: MetricsReporter,
         node_interests: Interests,
+        runtime_services: PipelineRuntimeServices,
     ) -> Result<(), Error>
     where
         PData: ReceivedAtNode + FlowMetricHook,
@@ -613,6 +619,7 @@ impl<PData> ProcessorWrapper<PData> {
             false,
             false,
             TerminalMetricsDeadline::default(),
+            runtime_services,
         )
         .await
     }
@@ -637,12 +644,13 @@ impl<PData> ProcessorWrapper<PData> {
         flow_metrics_active: bool,
         flow_needs_timing: bool,
         terminal_metrics_deadline: TerminalMetricsDeadline,
+        runtime_services: PipelineRuntimeServices,
     ) -> Result<(), Error>
     where
         PData: ReceivedAtNode + FlowMetricHook,
     {
         let runtime = self
-            .prepare_runtime(metrics_reporter.clone(), node_interests)
+            .prepare_runtime(metrics_reporter.clone(), node_interests, runtime_services)
             .await?;
 
         match runtime {
@@ -1324,6 +1332,7 @@ mod tests {
             std::collections::HashMap::new(),
             None,
             metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
         );
         handler.set_flow_roles(
             true,
@@ -1373,6 +1382,7 @@ mod tests {
             std::collections::HashMap::new(),
             None,
             metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
         );
         handler.set_flow_roles(
             false,
@@ -1427,6 +1437,7 @@ mod tests {
             std::collections::HashMap::new(),
             None,
             metrics_reporter,
+            crate::testing::test_pipeline_runtime_services(),
         );
         // A decision node that is neither start nor end of the flow range.
         // Drop-only: needs no per-message timing.
@@ -1537,6 +1548,7 @@ mod tests {
                             true,
                             true,
                             crate::terminal_state::TerminalMetricsDeadline::default(),
+                            crate::testing::test_pipeline_runtime_services(),
                         )
                         .await
                 });
@@ -1754,6 +1766,7 @@ mod tests {
                 true, // flow_metrics_active
                 false,
                 crate::terminal_state::TerminalMetricsDeadline::default(),
+                crate::testing::test_pipeline_runtime_services(),
             )
             .await;
 
@@ -1995,6 +2008,7 @@ mod tests {
                 true,
                 false,
                 crate::terminal_state::TerminalMetricsDeadline::default(),
+                crate::testing::test_pipeline_runtime_services(),
             )
             .await;
 

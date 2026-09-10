@@ -1374,6 +1374,7 @@ mod tests {
             None,
             ctrl_tx,
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
 
         // Deliberately tiny, so the body below is unambiguously oversized.
@@ -1505,6 +1506,7 @@ mod tests {
             None,
             ctrl_tx,
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
 
         let settings = HttpServerSettings {
@@ -1617,8 +1619,14 @@ mod tests {
         let _ = senders.insert("default".into(), SharedSender::mpsc(msg_tx));
         let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let effect_handler =
-            EffectHandler::new(test_node("http"), senders, None, ctrl_tx, metrics_reporter);
+        let effect_handler = EffectHandler::new(
+            test_node("http"),
+            senders,
+            None,
+            ctrl_tx,
+            metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
 
         let settings = HttpServerSettings {
             listening_addr: addr,
@@ -1752,6 +1760,7 @@ mod tests {
             None,
             ctrl_tx,
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
 
         let settings = HttpServerSettings {
@@ -1882,6 +1891,7 @@ mod tests {
             None,
             ctrl_tx,
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
 
         let settings = HttpServerSettings {
@@ -2024,8 +2034,14 @@ mod tests {
         let _ = senders.insert("default".into(), SharedSender::mpsc(msg_tx));
         let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let effect_handler =
-            EffectHandler::new(test_node("http"), senders, None, ctrl_tx, metrics_reporter);
+        let effect_handler = EffectHandler::new(
+            test_node("http"),
+            senders,
+            None,
+            ctrl_tx,
+            metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
 
         let settings = HttpServerSettings {
             listening_addr: addr,
@@ -2178,6 +2194,7 @@ mod tests {
             None,
             ctrl_tx,
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
 
         let settings = HttpServerSettings {
@@ -2335,6 +2352,7 @@ mod tests {
             None,
             ctrl_tx,
             metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
 
         let settings = HttpServerSettings {
