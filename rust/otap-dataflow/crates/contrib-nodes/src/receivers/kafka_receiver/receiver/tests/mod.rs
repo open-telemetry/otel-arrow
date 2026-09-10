@@ -69,6 +69,7 @@ const REBALANCE_RECORDS_PER_PARTITION: i32 = 5;
 
 mod construction;
 mod decode;
+mod dlq;
 mod lifecycle;
 mod offsets;
 mod operational;
@@ -332,6 +333,38 @@ fn manual_traces_config_no_timer(
         .with_auto_offset_reset(AutoOffsetReset::Earliest)
         .with_isolation_level(IsolationLevel::ReadUncommitted);
     KafkaReceiverConfig::try_from(builder).expect("test config valid")
+}
+
+/// Builds a manual-commit traces [`KafkaReceiverConfig`] with a DLQ enabled for
+/// the given DLQ `topic` and `capture` categories, and no safety-net commit
+/// timer (so offset advances are driven purely by acks/nacks and DLQ
+/// completions). The DLQ reuses the source cluster connection.
+fn manual_traces_config_with_dlq(
+    brokers: &str,
+    group_id: &str,
+    traces_topic: &str,
+    dlq_topic: &str,
+    capture: Vec<crate::receivers::kafka_receiver::config::DlqCapture>,
+) -> KafkaReceiverConfig {
+    use crate::receivers::kafka_receiver::config::DlqConfig;
+    let builder = KafkaReceiverConfigBuilder::new(brokers, group_id, "test-client")
+        .with_traces(
+            SignalConfig::new(vec![traces_topic.to_string()])
+                .with_encoding(MessageFormat::OtlpProto),
+        )
+        .with_commit(CommitConfig {
+            mode: ConfigCommitMode::Manual,
+            interval_ms: None,
+        })
+        .with_auto_offset_reset(AutoOffsetReset::Earliest)
+        .with_isolation_level(IsolationLevel::ReadUncommitted)
+        .with_dlq(DlqConfig {
+            topic: Some(dlq_topic.to_string()),
+            per_signal: None,
+            capture,
+            connection: None,
+        });
+    KafkaReceiverConfig::try_from(builder).expect("test DLQ config valid")
 }
 
 /// Like [`manual_traces_config_no_timer`] but arms the opt-in consumer-lag

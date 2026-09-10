@@ -49,6 +49,7 @@ use tokio_util::sync::CancellationToken;
 
 mod consumer;
 mod decode;
+mod dlq;
 mod offset_feedback;
 mod replay;
 mod topics;
@@ -59,6 +60,7 @@ use decode::{
     decode_logs_payload, decode_metrics_payload, decode_traces_payload, decode_with_extractions,
     encode_calldata, reject_syslog_for_non_log_signal,
 };
+use dlq::{DlqCompletion, DlqManager, DlqReason, DlqSource};
 use topics::{
     TopicRegistry, compile_exclude_regexes, compile_topic_regexes, detect_message_format,
     matches_any_exclude, matches_any_topic,
@@ -98,6 +100,9 @@ pub struct KafkaReceiver {
     traces_exclude_regexes: Vec<Regex>,
     metrics_exclude_regexes: Vec<Regex>,
     logs_exclude_regexes: Vec<Regex>,
+    /// Dead-letter-queue egress. `None` when the DLQ is disabled. Constructed
+    /// in `start` so an unreachable DLQ connection fails receiver startup.
+    dlq: Option<DlqManager>,
     // TODO: add this back once we can reset it without re-creation: https://github.com/open-telemetry/otel-arrow/issues/1669
     // used to decode otap bytes
     // pdata_consumer: PdataConsumer,
@@ -107,6 +112,9 @@ pub struct KafkaReceiver {
 ///
 /// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
 /// This macro is part of the `linkme` crate which is considered safe and well maintained.
+// DLQ-PHASE-2 (Add): declare outputs ["default", "dlq"] and default_output
+// "default" so dead-lettered messages can leave via the "dlq" port
+// (WiringContract::UNRESTRICTED already permits the extra port).
 #[allow(unsafe_code)]
 #[otel_arrow_dfe_engine::component_inventory(category = Receiver)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
@@ -187,6 +195,7 @@ impl KafkaReceiver {
             traces_exclude_regexes,
             metrics_exclude_regexes,
             logs_exclude_regexes,
+            dlq: None,
         })
     }
 
@@ -462,6 +471,10 @@ impl KafkaReceiver {
         })?;
 
         let receiver_id = effect_handler.receiver_id();
+        // Move the DLQ manager into a loop-local so the completion-drain branch
+        // can borrow it disjointly from `self` inside `select!`. It is placed
+        // back on `self` when the loop returns (shutdown/drain).
+        let mut dlq = self.dlq.take();
         let manual_commit = !self.config.is_auto_commit();
         let idempotent = manual_commit && self.config.is_idempotent();
 
@@ -509,6 +522,18 @@ impl KafkaReceiver {
             // Reconcile any partition revocations / metrics produced by the
             // rebalance callbacks since the last iteration. Cheap when idle.
             self.reconcile_rebalance_state();
+            // Observe DLQ backpressure depths and service the idle re-read
+            // consumer keep-warm so its broker connection stays live.
+            // DLQ-PHASE-2 (Remove): no in-flight/pending depths or re-read
+            // keep-warm in port mode; backpressure lives in the port channel
+            // and the downstream exporter.
+            if let Some(manager) = dlq.as_ref() {
+                self.metrics.observe_dlq_depths(
+                    manager.in_flight_len() as u64,
+                    manager.pending_len() as u64,
+                );
+                manager.keep_warm();
+            }
             let retry_deadline = match (
                 self.retry_manager.next_deadline(),
                 self.rebalance_state.next_assignment_resume_deadline(),
@@ -526,6 +551,18 @@ impl KafkaReceiver {
                     match ctrl_msg {
                         Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
                             effect_handler.info("Shutting down Kafka receiver").await;
+                            // Best-effort drain of outstanding DLQ deliveries so
+                            // their offsets can be committed. Bounded by the
+                            // shutdown deadline; anything unfinished stays
+                            // uncommitted and is re-delivered (and re-dead-
+                            // lettered) on restart.
+                            self.drain_dlq_bounded(
+                                &mut dlq,
+                                consumer.as_ref(),
+                                &receiver_id,
+                                deadline,
+                            )
+                            .await;
                             // Commit all tracked offsets before shutdown
                             if manual_commit {
                                 if let Err(e) = self.commit_offsets(consumer.as_ref(), &receiver_id) {
@@ -571,6 +608,13 @@ impl KafkaReceiver {
                             // Stop admitting new Kafka records by returning from
                             // this receive loop after the receiver-local drain.
                             // Un-acked offsets are safely re-delivered on restart.
+                            self.drain_dlq_bounded(
+                                &mut dlq,
+                                consumer.as_ref(),
+                                &receiver_id,
+                                deadline,
+                            )
+                            .await;
                             if manual_commit {
                                 if let Err(e) = self.commit_offsets(consumer.as_ref(), &receiver_id) {
                                     otel_error!(
@@ -600,6 +644,10 @@ impl KafkaReceiver {
                                 ack_msg.accepted.signal_type(),
                                 Outcome::Success,
                             );
+                            // DLQ-PHASE-2 (Add): if the calldata carries the DLQ
+                            // discriminant (4th slot), treat this ack as a
+                            // successful dead-letter (advance the source offset)
+                            // instead of normal offset feedback.
                             if manual_commit && !ack_msg.unwind.route.calldata.is_empty() {
                                 self.handle_terminal_offset_feedback(
                                     &ack_msg.unwind.route.calldata,
@@ -621,12 +669,24 @@ impl KafkaReceiver {
                             if !nack_msg.permanent {
                                 self.metrics.consumer.transient_nacks.inc();
                             }
+                            // DLQ-PHASE-2 (Add): if the calldata carries the DLQ
+                            // discriminant (4th slot), treat this nack as a DLQ
+                            // egress failure (record dlq.loss and advance the
+                            // source offset) instead of normal offset feedback.
                             if manual_commit && !nack_msg.unwind.route.calldata.is_empty() {
                                 if !nack_msg.permanent && self.config.replays_transient_nacks() {
                                     self.handle_transient_nack(
                                         &nack_msg.unwind.route.calldata,
                                         consumer.as_ref(),
                                     );
+                                } else if nack_msg.permanent
+                                    && self.try_dlq_permanent_nack(
+                                        &mut dlq,
+                                        &nack_msg.unwind.route.calldata,
+                                    )
+                                {
+                                    // Deferred: the DLQ workflow will advance the
+                                    // source offset once the delivery completes.
                                 } else {
                                     self.handle_terminal_offset_feedback(
                                         &nack_msg.unwind.route.calldata,
@@ -806,6 +866,15 @@ impl KafkaReceiver {
                                 continue;
                             }
 
+                            // When the DLQ may dead-letter this message on a
+                            // decode / unknown-topic failure, capture the raw
+                            // bytes and source headers before `process_kafka`
+                            // consumes the borrowed message. Cheap no-op when the
+                            // DLQ is disabled or does not capture these
+                            // categories.
+                            let dlq_capture =
+                                Self::dlq_inline_capture_snapshot(dlq.as_ref(), &data);
+
                             match self.process_kafka(data, capture_policy) {
                                 Ok(mut otap_data) => {
                                     let signal = otap_data.signal_type();
@@ -946,11 +1015,11 @@ impl KafkaReceiver {
                                     }
 
                                     if let Some(delivery_generation) = delivery_generation {
-                                        // Poison pill: track then immediately
-                                        // advance past it so it does not block
-                                        // the partition. This path intentionally
-                                        // skips the late-ack guard -- a poison
-                                        // message must be advanced past
+                                        // Poison pill: track it so the committable
+                                        // watermark cannot advance past it while
+                                        // the DLQ (if any) processes it. This path
+                                        // intentionally skips the late-ack guard --
+                                        // a poison message must be advanced past
                                         // regardless of assignment. Stamped with
                                         // this partition's ownership generation
                                         // (read once above) for consistency with
@@ -962,13 +1031,29 @@ impl KafkaReceiver {
                                                 offset,
                                                 ownership_generation_raw,
                                             );
-                                        self.advance_offset_and_commit(
+                                        // Try to dead-letter the raw bytes. When
+                                        // the DLQ accepts the message the offset
+                                        // advance is deferred until the delivery
+                                        // completes (handled in the completion
+                                        // branch); otherwise advance now.
+                                        let deferred = self.try_dlq_inline(
+                                            &mut dlq,
+                                            &decode_err,
+                                            rejection_signal,
                                             &topic,
                                             partition,
                                             offset,
-                                            consumer.as_ref(),
-                                            &receiver_id,
+                                            dlq_capture,
                                         );
+                                        if !deferred {
+                                            self.advance_offset_and_commit(
+                                                &topic,
+                                                partition,
+                                                offset,
+                                                consumer.as_ref(),
+                                                &receiver_id,
+                                            );
+                                        }
                                         self.retry_manager.complete_if_rewind(
                                             &topic,
                                             partition,
@@ -1031,6 +1116,30 @@ impl KafkaReceiver {
                         ));
                     }
                 }
+
+                // 6. Drain completed DLQ deliveries. Each completion advances
+                // the source offset past the dead-lettered message (whether it
+                // was produced or lost) and refills an in-flight slot from the
+                // pending queue. The future borrows only the DLQ manager, so it
+                // never blocks the other branches; work is bounded and runs off
+                // the hot path (background producer thread / spawn_blocking
+                // re-read).
+                // DLQ-PHASE-2 (Remove): whole branch; DLQ completions arrive on
+                // the Ack/Nack control handlers, not from a completion future.
+                completion = async {
+                    match dlq.as_mut() {
+                        Some(manager) => manager.next_completion().await,
+                        None => std::future::pending().await,
+                    }
+                }, if dlq.as_ref().is_some_and(DlqManager::has_work) => {
+                    if let Some(completion) = completion {
+                        self.handle_dlq_completion(
+                            completion,
+                            consumer.as_ref(),
+                            &receiver_id,
+                        );
+                    }
+                }
             }
         }
     }
@@ -1076,9 +1185,245 @@ impl local::Receiver<OtapPdata> for KafkaReceiver {
         let consumer = client_config
             .create_with_context(context)
             .map_err(map_kafka_client_err)?;
+
+        // Build the DLQ egress eagerly so a misconfigured or unreachable DLQ
+        // connection fails receiver startup rather than losing data at runtime.
+        // DLQ-PHASE-2 (Change): pass the effect handler so the DLQ can send out
+        // the "dlq" port; drop this eager producer build and instead require the
+        // "dlq" output port to be connected at wiring time.
+        self.dlq = DlqManager::new(&self.config).map_err(map_kafka_client_err)?;
+
         self.as_mut()
             .run_receive_loop(ctrl_msg_recv, effect_handler, consumer)
             .await
+    }
+}
+
+impl KafkaReceiver {
+    /// Capture the raw payload bytes and source headers of a message that may
+    /// need to be dead-lettered on a decode / unknown-topic failure.
+    ///
+    /// Returns `None` (skipping the copy) when the DLQ is disabled or does not
+    /// capture inline (decode / unknown-topic) failures. This keeps the steady
+    /// state -- successful decodes -- free of any extra allocation.
+    fn dlq_inline_capture_snapshot(
+        dlq: Option<&DlqManager>,
+        message: &BorrowedMessage<'_>,
+    ) -> Option<(Vec<u8>, Option<rdkafka::message::OwnedHeaders>)> {
+        let dlq = dlq?;
+        if !dlq.captures_decode() && !dlq.captures_unknown_topic() {
+            return None;
+        }
+        let payload = message.payload().map(<[u8]>::to_vec).unwrap_or_default();
+        let headers = message
+            .headers()
+            .map(rdkafka::message::BorrowedHeaders::detach);
+        Some((payload, headers))
+    }
+
+    /// Attempt to dead-letter an inline (decode / unknown-topic) failure.
+    ///
+    /// Returns `true` when the DLQ accepted the message and the caller must
+    /// defer the offset advance until the delivery completes; returns `false`
+    /// when there is no DLQ handling for this failure (the caller advances now).
+    ///
+    /// An immediate loss (no topic resolved or the pending queue is full) is
+    /// recorded here and returns `false` so the caller advances immediately.
+    fn try_dlq_inline(
+        &mut self,
+        dlq: &mut Option<DlqManager>,
+        decode_err: &KafkaReceiverError,
+        signal: Option<SignalType>,
+        topic: &str,
+        partition: i32,
+        offset: i64,
+        capture: Option<(Vec<u8>, Option<rdkafka::message::OwnedHeaders>)>,
+    ) -> bool {
+        let reason = match decode_err {
+            KafkaReceiverError::UnknownTopicDecode(_) => DlqReason::UnknownTopic,
+            KafkaReceiverError::TracesDecode(_)
+            | KafkaReceiverError::MetricsDecode(_)
+            | KafkaReceiverError::LogsDecode(_)
+            | KafkaReceiverError::EmptyPayloadDecode(_) => DlqReason::Decode,
+            // Config variants never occur on the per-message decode path.
+            _ => return false,
+        };
+
+        let Some(manager) = dlq.as_mut() else {
+            return false;
+        };
+        let captured = match reason {
+            DlqReason::Decode if manager.captures_decode() => true,
+            DlqReason::UnknownTopic if manager.captures_unknown_topic() => true,
+            _ => false,
+        };
+        if !captured {
+            return false;
+        }
+
+        let (payload, original_headers) = capture.unwrap_or_default();
+        let source = DlqSource {
+            topic: Arc::from(topic),
+            partition,
+            offset,
+        };
+        let error = decode_err.to_string();
+        let immediate =
+            manager.submit_inline(reason, source, signal, error, payload, original_headers);
+        match immediate {
+            // Enqueued or started: defer the offset advance.
+            None => true,
+            // Could not enqueue (loss): record and let the caller advance now.
+            Some(completion) => {
+                self.record_dlq_completion(&completion, /* advance */ false);
+                false
+            }
+        }
+    }
+
+    /// Attempt to dead-letter a permanently-nacked message via the re-read
+    /// consumer. Returns `true` when the offset advance is deferred to the DLQ
+    /// completion, `false` when the caller must apply terminal feedback now.
+    fn try_dlq_permanent_nack(
+        &mut self,
+        dlq: &mut Option<DlqManager>,
+        calldata: &otel_arrow_dfe_engine::control::CallData,
+    ) -> bool {
+        if !dlq
+            .as_ref()
+            .is_some_and(DlqManager::captures_permanent_nack)
+        {
+            return false;
+        }
+        // Resolve identity through the same generation/ownership guard used by
+        // terminal feedback, so a nack for a revoked partition is dropped and
+        // never dead-lettered.
+        let Some(feedback) = self.resolve_offset_feedback(calldata) else {
+            return false;
+        };
+        let signal = None;
+        let source = DlqSource {
+            topic: Arc::clone(&feedback.topic),
+            partition: feedback.partition,
+            offset: feedback.offset,
+        };
+        // The replay (if this offset was a rewind record) is done regardless of
+        // the DLQ outcome, so clear replay state now.
+        self.retry_manager.complete_if_rewind(
+            &feedback.topic,
+            feedback.partition,
+            feedback.delivery_generation,
+            feedback.offset,
+        );
+
+        let manager = dlq.as_mut().expect("dlq presence checked above");
+        let immediate = manager.submit_reread(source, signal, "permanent nack".to_string());
+        match immediate {
+            None => true,
+            Some(completion) => {
+                self.record_dlq_completion(&completion, false);
+                false
+            }
+        }
+    }
+
+    /// Apply a completed DLQ workflow: record telemetry and, when `advance` is
+    /// set, advance the source offset (past the dead-lettered message).
+    fn record_dlq_completion(&mut self, completion: &DlqCompletion, _advance: bool) {
+        use super::metrics::{KafkaReceiverDlqOutcome, KafkaReceiverDlqReason};
+        let reason = match completion.reason {
+            DlqReason::Decode => KafkaReceiverDlqReason::Decode,
+            DlqReason::UnknownTopic => KafkaReceiverDlqReason::UnknownTopic,
+            DlqReason::PermanentNack => KafkaReceiverDlqReason::PermanentNack,
+        };
+        if completion.produced {
+            self.metrics.record_dlq_attempt(
+                completion.signal,
+                reason,
+                KafkaReceiverDlqOutcome::Produced,
+            );
+        } else {
+            self.metrics.record_dlq_attempt(
+                completion.signal,
+                reason,
+                KafkaReceiverDlqOutcome::Failed,
+            );
+            self.metrics.record_dlq_produce_failure();
+            // A message that could not be dead-lettered is permanent data loss.
+            self.metrics.record_dlq_loss(completion.signal, reason);
+        }
+    }
+
+    /// Drain outstanding DLQ deliveries until the manager has no more work or
+    /// the deadline elapses, advancing each completed message's source offset.
+    ///
+    /// Best-effort: on the deadline, remaining deliveries are abandoned and
+    /// their offsets stay uncommitted, so they are re-delivered (and re-dead-
+    /// lettered) on restart. Never blocks past the deadline.
+    // DLQ-PHASE-2 (Remove): no in-receiver deliveries to drain; outstanding DLQ
+    // messages are handled by the downstream exporter's own shutdown.
+    async fn drain_dlq_bounded<C: ConsumerContext>(
+        &mut self,
+        dlq: &mut Option<DlqManager>,
+        consumer: &StreamConsumer<C>,
+        receiver_id: &NodeId,
+        deadline: Instant,
+    ) {
+        let Some(manager) = dlq.as_mut() else {
+            return;
+        };
+        while manager.has_work() {
+            let now = Instant::now();
+            if now >= deadline {
+                break;
+            }
+            let remaining = deadline.saturating_duration_since(now);
+            match tokio::time::timeout(remaining, manager.next_completion()).await {
+                Ok(Some(completion)) => {
+                    self.handle_dlq_completion(completion, consumer, receiver_id);
+                }
+                // No more completions or the bound elapsed.
+                Ok(None) | Err(_) => break,
+            }
+        }
+    }
+
+    /// Handle a completed DLQ delivery from the completion branch: record
+    /// telemetry and advance the source offset regardless of outcome (produced
+    /// or loss), so the pipeline is never blocked.
+    fn handle_dlq_completion<C: ConsumerContext>(
+        &mut self,
+        completion: DlqCompletion,
+        consumer: &StreamConsumer<C>,
+        receiver_id: &NodeId,
+    ) {
+        self.record_dlq_completion(&completion, true);
+        if completion.produced {
+            otel_debug!(
+                "kafka.dlq.produced",
+                topic = %completion.source.topic,
+                partition = completion.source.partition,
+                offset = completion.source.offset,
+                reason = completion.reason_str(),
+            );
+        } else {
+            otel_error!(
+                "kafka.dlq.loss",
+                topic = %completion.source.topic,
+                partition = completion.source.partition,
+                offset = completion.source.offset,
+                reason = completion.reason_str(),
+                permanent = completion.permanent_failure,
+            );
+        }
+        // Advance the source offset past the dead-lettered message.
+        self.advance_offset_and_commit(
+            &completion.source.topic,
+            completion.source.partition,
+            completion.source.offset,
+            consumer,
+            receiver_id,
+        );
     }
 }
 
