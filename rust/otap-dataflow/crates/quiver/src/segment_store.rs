@@ -65,6 +65,37 @@ const SEQ_SIDECAR_MIN_LEN: usize = 12;
 /// v1-compatible prefix and ignores unknown trailing bytes.
 const SEQ_SIDECAR_V1_LEN: usize = 24;
 
+/// Upper bound on bytes read from the sequence sidecar.
+///
+/// The format's `size` field is a `u16`, so no valid sidecar exceeds 65535
+/// bytes; this cap is generous headroom above that for future growth while
+/// still preventing an oversized or corrupt file at this path from forcing
+/// an unbounded read on every segment finalization.
+const SEQ_SIDECAR_MAX_READ_LEN: u64 = 4096;
+
+/// Reads the sidecar file synchronously, capped at
+/// [`SEQ_SIDECAR_MAX_READ_LEN`] bytes.
+fn read_seq_sidecar_bounded(path: &Path) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let file = std::fs::File::open(path)?;
+    let mut buf = Vec::new();
+    let _ = file.take(SEQ_SIDECAR_MAX_READ_LEN).read_to_end(&mut buf)?;
+    Ok(buf)
+}
+
+/// Reads the sidecar file asynchronously, capped at
+/// [`SEQ_SIDECAR_MAX_READ_LEN`] bytes.
+async fn read_seq_sidecar_bounded_async(path: &Path) -> std::io::Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+    let file = tokio::fs::File::open(path).await?;
+    let mut buf = Vec::new();
+    let _ = file
+        .take(SEQ_SIDECAR_MAX_READ_LEN)
+        .read_to_end(&mut buf)
+        .await?;
+    Ok(buf)
+}
+
 /// Encodes a `next_seq` value into the sidecar's on-disk representation.
 fn encode_seq_sidecar(next_seq: u64) -> [u8; SEQ_SIDECAR_V1_LEN] {
     let mut buf = [0u8; SEQ_SIDECAR_V1_LEN];
@@ -801,7 +832,7 @@ impl SegmentStore {
     /// the pipeline is processing data.
     pub(crate) fn load_seq_sidecar(&self) -> std::io::Result<Option<u64>> {
         let path = self.seq_sidecar_path();
-        let read_result = std::fs::read(&path);
+        let read_result = read_seq_sidecar_bounded(&path);
         Self::interpret_seq_sidecar(&path, read_result)
     }
 
@@ -834,7 +865,7 @@ impl SegmentStore {
 
         // An unreadable sidecar must not be treated as absent: doing so would
         // bypass the monotonic check and could overwrite a higher floor.
-        let read_result = tokio::fs::read(&path).await;
+        let read_result = read_seq_sidecar_bounded_async(&path).await;
         if Self::interpret_seq_sidecar(&path, read_result)
             .map_err(|e| SubscriberError::segment_io(path.clone(), e))?
             .is_some_and(|persisted| persisted >= next_seq)
@@ -1301,6 +1332,49 @@ mod tests {
 
         store.persist_next_seq(5).await.expect("persist");
         assert_eq!(store.read_persisted_next_seq(), Some(5));
+    }
+
+    /// Scenario: a large amount of unrelated data occupies the sidecar path
+    /// (e.g. another process wrote to it, or the file is corrupt in a way
+    /// that inflates its size), well beyond any valid sidecar encoding.
+    /// Guarantees: reading it is capped at `SEQ_SIDECAR_MAX_READ_LEN`, so a
+    /// finalize's sidecar read cannot be turned into an unbounded allocation
+    /// by an oversized file at this path.
+    #[test]
+    fn read_seq_sidecar_bounded_caps_oversized_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(SEQ_SIDECAR_FILENAME);
+        let oversized = vec![0u8; (SEQ_SIDECAR_MAX_READ_LEN as usize) * 4];
+        std::fs::write(&path, &oversized).unwrap();
+
+        let buf = read_seq_sidecar_bounded(&path).expect("bounded read");
+        assert_eq!(
+            buf.len(),
+            SEQ_SIDECAR_MAX_READ_LEN as usize,
+            "read must be capped rather than consuming the whole file"
+        );
+    }
+
+    /// Scenario: the same oversized-file condition as
+    /// `read_seq_sidecar_bounded_caps_oversized_file`, exercised through the
+    /// async path used by `persist_next_seq` on the finalize hot path.
+    /// Guarantees: the async reader is capped identically, so repeated
+    /// finalizations cannot be turned into unbounded per-call reads.
+    #[tokio::test]
+    async fn read_seq_sidecar_bounded_async_caps_oversized_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(SEQ_SIDECAR_FILENAME);
+        let oversized = vec![0u8; (SEQ_SIDECAR_MAX_READ_LEN as usize) * 4];
+        std::fs::write(&path, &oversized).unwrap();
+
+        let buf = read_seq_sidecar_bounded_async(&path)
+            .await
+            .expect("bounded read");
+        assert_eq!(
+            buf.len(),
+            SEQ_SIDECAR_MAX_READ_LEN as usize,
+            "read must be capped rather than consuming the whole file"
+        );
     }
 
     /// Scenario: a sidecar written by a hypothetical future version carries
