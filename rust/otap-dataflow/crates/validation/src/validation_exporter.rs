@@ -120,17 +120,14 @@ pub static VALIDATION_EXPORTER_FACTORY: ExporterFactory<OtapPdata> = ExporterFac
                 exporter_config,
             ))
         },
+    context_declarations: Some(ContextDeclarationProvider::from_typed_config::<
+        ValidationExporterConfig,
+    >()),
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
         ValidationExporterConfig,
     >,
 };
-
-#[distributed_slice(otel_arrow_dfe_engine::context_declaration::CONTEXT_DECLARATION_PROVIDERS)]
-static VALIDATION_EXPORTER_CONTEXT_DECLARATIONS: ContextDeclarationProvider =
-    ContextDeclarationProvider::from_typed_config::<ValidationExporterConfig>(
-        VALIDATION_EXPORTER_URN,
-    );
 
 impl ConfigNodeContextDeclaration for ValidationExporterConfig {
     fn context_declarations(&self) -> NodeContextDeclarations {
@@ -363,7 +360,11 @@ mod tests {
             ]
         });
 
-        let decls = (VALIDATION_EXPORTER_CONTEXT_DECLARATIONS.declarations)(&config).unwrap();
+        let decls = (VALIDATION_EXPORTER_FACTORY
+            .context_declarations
+            .expect("validation exporter should declare context")
+            .declarations)(&config)
+        .unwrap();
         assert_eq!(
             decls,
             [
@@ -391,7 +392,11 @@ mod tests {
         });
 
         assert_eq!(
-            (VALIDATION_EXPORTER_CONTEXT_DECLARATIONS.declarations)(&config).unwrap(),
+            (VALIDATION_EXPORTER_FACTORY
+                .context_declarations
+                .expect("validation exporter should declare context")
+                .declarations)(&config)
+            .unwrap(),
             [consumes(&["X-Secret"])].into_iter().collect()
         );
     }
@@ -407,7 +412,11 @@ mod tests {
             ]
         });
 
-        let decls = (VALIDATION_EXPORTER_CONTEXT_DECLARATIONS.declarations)(&config).unwrap();
+        let decls = (VALIDATION_EXPORTER_FACTORY
+            .context_declarations
+            .expect("validation exporter should declare context")
+            .declarations)(&config)
+        .unwrap();
         assert!(decls.is_empty());
     }
 }

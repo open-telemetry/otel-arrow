@@ -1023,6 +1023,7 @@ pub fn create_content_router(
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static CONTENT_ROUTER_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: CONTENT_ROUTER_URN,
+    context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<ContentRouterConfig>,
     create:

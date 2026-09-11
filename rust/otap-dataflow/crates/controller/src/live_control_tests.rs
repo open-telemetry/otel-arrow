@@ -3,7 +3,6 @@
 
 use super::*;
 use async_trait::async_trait;
-use linkme::distributed_slice;
 use otel_arrow_dfe_config::ContextEntryName;
 use otel_arrow_dfe_config::engine::ResolvedPipelineRole;
 use otel_arrow_dfe_config::observed_state::ObservedStateSettings;
@@ -71,6 +70,9 @@ const CONTEXT_POLICY_TEST_RECEIVER_URN: &str = "urn:test:receiver:context-policy
 static CONTEXT_POLICY_TEST_LOCK: Mutex<()> = Mutex::new(());
 static CONTEXT_POLICY_TEST_CAPTURE: Mutex<Option<std::sync::Weak<CompiledContextPolicy>>> =
     Mutex::new(None);
+static CONTEXT_POLICY_TEST_RUNTIME: Mutex<Option<std::sync::Weak<ControllerRuntime<()>>>> =
+    Mutex::new(None);
+static CONTEXT_POLICY_TEST_DECLARATION_CALLS: AtomicUsize = AtomicUsize::new(0);
 
 fn reset_context_policy_test_capture() {
     *CONTEXT_POLICY_TEST_CAPTURE
@@ -99,6 +101,8 @@ fn wait_for_context_policy_test_capture() -> std::sync::Weak<CompiledContextPoli
 #[derive(Deserialize)]
 struct ContextPolicyTestConfig {
     produces: ContextEntryName,
+    #[serde(default)]
+    probe_controller_lock: bool,
 }
 
 impl ConfigNodeContextDeclaration for ContextPolicyTestConfig {
@@ -111,12 +115,33 @@ impl ConfigNodeContextDeclaration for ContextPolicyTestConfig {
     }
 }
 
-#[allow(unsafe_code)]
-#[distributed_slice(otel_arrow_dfe_engine::context_declaration::CONTEXT_DECLARATION_PROVIDERS)]
-static CONTEXT_POLICY_TEST_DECLARATIONS: ContextDeclarationProvider =
-    ContextDeclarationProvider::from_typed_config::<ContextPolicyTestConfig>(
-        CONTEXT_POLICY_TEST_RECEIVER_URN,
-    );
+fn context_policy_test_declarations(
+    value: &serde_json::Value,
+) -> Result<NodeContextDeclarations, otel_arrow_dfe_config::error::Error> {
+    let config: ContextPolicyTestConfig =
+        serde_json::from_value(value.clone()).map_err(|error| {
+            otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                error: error.to_string(),
+            }
+        })?;
+    if config.probe_controller_lock {
+        let runtime = CONTEXT_POLICY_TEST_RUNTIME
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade);
+        if let Some(runtime) = runtime {
+            let _state = runtime.state.try_lock().map_err(|_| {
+                otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                    error: "context declarations compiled while controller state was locked"
+                        .to_owned(),
+                }
+            })?;
+            let _ = CONTEXT_POLICY_TEST_DECLARATION_CALLS.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    Ok(config.context_declarations())
+}
 
 fn context_policy_test_receiver_create(
     pipeline_ctx: PipelineContext,
@@ -251,24 +276,28 @@ static TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
     ReceiverFactory {
         name: "urn:test:receiver:example",
         create: test_receiver_create,
+        context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
     ReceiverFactory {
         name: "urn:otel:receiver:topic",
         create: test_receiver_create,
+        context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
     ReceiverFactory {
         name: "urn:otel:receiver:otlp",
         create: test_receiver_create,
+        context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
     ReceiverFactory {
         name: "urn:otel:receiver:internal_telemetry",
         create: test_receiver_create,
+        context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
@@ -277,6 +306,7 @@ static TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
 static TEST_PROCESSOR_FACTORIES: &[ProcessorFactory<()>] = &[ProcessorFactory {
     name: "urn:otel:processor:type_router",
     create: test_processor_create,
+    context_declarations: None,
     wiring_contract: WiringContract::UNRESTRICTED,
     validate_config: test_validate_config,
 }];
@@ -285,24 +315,28 @@ static TEST_EXPORTER_FACTORIES: &[ExporterFactory<()>] = &[
     ExporterFactory {
         name: "urn:test:exporter:example",
         create: test_exporter_create,
+        context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
     ExporterFactory {
         name: "urn:otel:exporter:topic",
         create: test_exporter_create,
+        context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
     ExporterFactory {
         name: "urn:otel:exporter:console",
         create: test_exporter_create,
+        context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
     ExporterFactory {
         name: "urn:otel:exporter:noop",
         create: test_exporter_create,
+        context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
@@ -319,6 +353,9 @@ static CONTEXT_POLICY_TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
     ReceiverFactory {
         name: CONTEXT_POLICY_TEST_RECEIVER_URN,
         create: context_policy_test_receiver_create,
+        context_declarations: Some(ContextDeclarationProvider {
+            declarations: context_policy_test_declarations,
+        }),
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
             ContextPolicyTestConfig,
@@ -327,6 +364,7 @@ static CONTEXT_POLICY_TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
     ReceiverFactory {
         name: "urn:otel:receiver:internal_telemetry",
         create: test_receiver_create,
+        context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
@@ -336,18 +374,21 @@ static CONTEXT_POLICY_TEST_EXPORTER_FACTORIES: &[ExporterFactory<()>] = &[
     ExporterFactory {
         name: "urn:test:exporter:example",
         create: recovery_test_exporter_create,
+        context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
     ExporterFactory {
         name: "urn:otel:exporter:console",
         create: test_exporter_create,
+        context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
     ExporterFactory {
         name: "urn:otel:exporter:noop",
         create: test_exporter_create,
+        context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
@@ -364,12 +405,14 @@ static RECOVERY_TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
     ReceiverFactory {
         name: "urn:test:receiver:example",
         create: recovery_test_receiver_create,
+        context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
     ReceiverFactory {
         name: "urn:otel:receiver:internal_telemetry",
         create: recovery_test_receiver_create,
+        context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
@@ -379,18 +422,21 @@ static RECOVERY_TEST_EXPORTER_FACTORIES: &[ExporterFactory<()>] = &[
     ExporterFactory {
         name: "urn:test:exporter:example",
         create: recovery_test_exporter_create,
+        context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
     ExporterFactory {
         name: "urn:otel:exporter:console",
         create: recovery_test_exporter_create,
+        context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
     ExporterFactory {
         name: "urn:otel:exporter:noop",
         create: recovery_test_exporter_create,
+        context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
@@ -3955,6 +4001,67 @@ fn delete_pipeline_recompiles_context_policy_without_removed_declarations() {
     assert!(
         installed_policy.upgrade().is_none(),
         "deleted pipeline policy should be released"
+    );
+}
+
+/// Scenario: deleting a pipeline recompiles declarations for a remaining pipeline.
+/// Guarantees: declaration callbacks run without holding the controller state lock.
+#[test]
+fn delete_pipeline_compiles_context_policy_outside_controller_lock() {
+    let _capture_guard = CONTEXT_POLICY_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let config = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+groups:
+  g1:
+    pipelines:
+      delete:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:context-policy"
+            config:
+              produces: delete-marker
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+      remain:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:context-policy"
+            config:
+              produces: remain-marker
+              probe_controller_lock: true
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    )
+    .expect("engine config should parse");
+    let runtime = test_runtime_with_factory(&config, &CONTEXT_POLICY_TEST_PIPELINE_FACTORY);
+    CONTEXT_POLICY_TEST_DECLARATION_CALLS.store(0, Ordering::Relaxed);
+    *CONTEXT_POLICY_TEST_RUNTIME
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::downgrade(&runtime));
+
+    let status = runtime
+        .request_delete_pipeline("g1", "delete", 5)
+        .expect("deletion should compile declarations without the state lock");
+
+    *CONTEXT_POLICY_TEST_RUNTIME
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    assert_eq!(status.state, "succeeded");
+    assert_eq!(
+        CONTEXT_POLICY_TEST_DECLARATION_CALLS.load(Ordering::Relaxed),
+        1
     );
 }
 

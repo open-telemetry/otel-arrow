@@ -3283,12 +3283,14 @@ connections:
         ReceiverFactory {
             name: "urn:otel:receiver:internal_telemetry",
             create: create_test_observability_receiver,
+            context_declarations: None,
             wiring_contract: WiringContract::UNRESTRICTED,
             validate_config: accept_any_test_config,
         },
         ReceiverFactory {
             name: "urn:test:receiver:example",
             create: create_test_observability_receiver,
+            context_declarations: None,
             wiring_contract: WiringContract::UNRESTRICTED,
             validate_config: accept_any_test_config,
         },
@@ -3297,6 +3299,7 @@ connections:
     static TEST_OBSERVABILITY_PROCESSORS: &[ProcessorFactory<()>] = &[ProcessorFactory {
         name: "urn:otel:processor:type_router",
         create: create_test_observability_processor,
+        context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: accept_any_test_config,
     }];
@@ -3305,18 +3308,21 @@ connections:
         ExporterFactory {
             name: "urn:otel:exporter:console",
             create: create_test_observability_exporter,
+            context_declarations: None,
             wiring_contract: WiringContract::UNRESTRICTED,
             validate_config: accept_any_test_config,
         },
         ExporterFactory {
             name: "urn:otel:exporter:noop",
             create: create_test_observability_exporter,
+            context_declarations: None,
             wiring_contract: WiringContract::UNRESTRICTED,
             validate_config: accept_any_test_config,
         },
         ExporterFactory {
             name: "urn:test:exporter:example",
             create: create_test_observability_exporter,
+            context_declarations: None,
             wiring_contract: WiringContract::UNRESTRICTED,
             validate_config: accept_any_test_config,
         },

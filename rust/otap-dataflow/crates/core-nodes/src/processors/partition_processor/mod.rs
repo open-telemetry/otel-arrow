@@ -78,6 +78,7 @@ fn create_partition_processor(
 pub static PARTITION_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: PARTITION_PROCESSOR_URN,
     create: create_partition_processor,
+    context_declarations: Some(ContextDeclarationProvider::from_typed_config::<Config>()),
     wiring_contract: WiringContract::UNRESTRICTED,
     validate_config: |value| {
         let config: Config = serde_json::from_value(value.clone()).map_err(|e| {
@@ -103,13 +104,6 @@ pub static PARTITION_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorF
                 })?;
             }
         };
-
-        #[distributed_slice(
-            otel_arrow_dfe_engine::context_declaration::CONTEXT_DECLARATION_PROVIDERS
-        )]
-        static PARTITION_PROCESSOR_CONTEXT_DECLARATIONS: ContextDeclarationProvider =
-            ContextDeclarationProvider::from_typed_config::<Config>(PARTITION_PROCESSOR_URN);
-
         Ok(())
     },
 };

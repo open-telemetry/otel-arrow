@@ -5,7 +5,6 @@
 
 use crate::PipelineFactory;
 use crate::error::Error as EngineError;
-use linkme::distributed_slice;
 use otel_arrow_dfe_config::engine::ResolvedOtelDataflowSpec;
 use otel_arrow_dfe_config::error::Error;
 use otel_arrow_dfe_config::node::{NodeKind, NodeUserConfig};
@@ -15,7 +14,7 @@ use otel_arrow_dfe_config::transport_headers_policy::{
 };
 use otel_arrow_dfe_config::{ContextEntryName, NodeId as ConfigNodeId, PipelineKey};
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 /// A context entry and its requested representation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -105,8 +104,6 @@ impl ContextDeclaration {
 /// Derives context declarations from component configuration.
 #[derive(Clone, Copy)]
 pub struct ContextDeclarationProvider {
-    /// Component URN.
-    pub urn: &'static str,
     /// Declaration callback.
     pub declarations: ContextDeclarationFn,
 }
@@ -133,12 +130,6 @@ pub trait ConfigNodeContextDeclaration: serde::de::DeserializeOwned {
             )
     }
 }
-
-// linkme's generated #[link_section] requires an unsafe-code allowance.
-/// Context declaration providers registered by nodes.
-#[allow(unsafe_code)]
-#[distributed_slice]
-pub static CONTEXT_DECLARATION_PROVIDERS: [ContextDeclarationProvider];
 
 /// Sorted, unique context declarations.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -192,12 +183,11 @@ impl NodeContextDeclarations {
 impl ContextDeclarationProvider {
     /// Creates a declaration provider for a configuration type.
     #[must_use]
-    pub const fn from_typed_config<T>(urn: &'static str) -> Self
+    pub const fn from_typed_config<T>() -> Self
     where
         T: ConfigNodeContextDeclaration,
     {
         Self {
-            urn,
             declarations: typed_context_declarations::<T>,
         }
     }
@@ -452,30 +442,33 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
                 error: format!("node factory `{urn}` is not registered"),
             }))
         };
-        let validate_config = match kind {
+        let (validate_config, context_declarations) = match kind {
             NodeKind::Receiver => {
-                self.get_receiver_factory_map()
+                let factory = self
+                    .get_receiver_factory_map()
                     .get(urn)
-                    .ok_or_else(&missing_factory)?
-                    .validate_config
+                    .ok_or_else(&missing_factory)?;
+                (factory.validate_config, factory.context_declarations)
             }
             NodeKind::Processor => {
-                self.get_processor_factory_map()
+                let factory = self
+                    .get_processor_factory_map()
                     .get(urn)
-                    .ok_or_else(&missing_factory)?
-                    .validate_config
+                    .ok_or_else(&missing_factory)?;
+                (factory.validate_config, factory.context_declarations)
             }
             NodeKind::Exporter => {
-                self.get_exporter_factory_map()
+                let factory = self
+                    .get_exporter_factory_map()
                     .get(urn)
-                    .ok_or_else(&missing_factory)?
-                    .validate_config
+                    .ok_or_else(&missing_factory)?;
+                (factory.validate_config, factory.context_declarations)
             }
         };
         // Validate before collecting declarations. Nodes are not constructed yet.
         validate_config(config).map_err(|error| EngineError::ConfigError(Box::new(error)))?;
 
-        let declarations = context_declaration_provider(urn)
+        let declarations = context_declarations
             .map(|provider| {
                 (provider.declarations)(config)
                     .map_err(|error| EngineError::ConfigError(Box::new(error)))
@@ -500,26 +493,11 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
     }
 }
 
-fn context_declaration_provider(urn: &str) -> Option<ContextDeclarationProvider> {
-    static PROVIDERS: OnceLock<HashMap<&'static str, ContextDeclarationProvider>> = OnceLock::new();
-    PROVIDERS
-        .get_or_init(|| {
-            CONTEXT_DECLARATION_PROVIDERS
-                .iter()
-                .map(|provider| (provider.urn, *provider))
-                .collect()
-        })
-        .get(urn)
-        .copied()
-}
-
 #[cfg(test)]
 mod preserve_original_name_tests {
     use super::*;
     use otel_arrow_dfe_config::transport_headers::TransportHeaders;
     use otel_arrow_dfe_config::transport_headers_policy::{CaptureDefaults, CaptureRule};
-
-    const TEST_DECLARATION_URN: &str = "urn:test:processor:context_declaration";
 
     #[derive(serde::Deserialize)]
     struct TestDeclarationConfig {
@@ -541,13 +519,6 @@ mod preserve_original_name_tests {
             .collect()
         }
     }
-
-    #[allow(unsafe_code)]
-    #[distributed_slice(CONTEXT_DECLARATION_PROVIDERS)]
-    static TEST_CONTEXT_DECLARATIONS: ContextDeclarationProvider =
-        ContextDeclarationProvider::from_typed_config::<TestDeclarationConfig>(
-            TEST_DECLARATION_URN,
-        );
 
     fn pipeline(group: &str, name: &str) -> PipelineKey {
         PipelineKey::new(group.to_owned().into(), name.to_owned().into())

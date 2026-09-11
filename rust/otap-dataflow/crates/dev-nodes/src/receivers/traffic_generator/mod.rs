@@ -122,13 +122,10 @@ pub static TRAFFIC_GENERATOR_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFact
                 receiver_config,
             ))
         },
+    context_declarations: Some(ContextDeclarationProvider::from_typed_config::<Config>()),
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config,
 };
-
-#[distributed_slice(otel_arrow_dfe_engine::context_declaration::CONTEXT_DECLARATION_PROVIDERS)]
-static TRAFFIC_GENERATOR_CONTEXT_DECLARATIONS: ContextDeclarationProvider =
-    ContextDeclarationProvider::from_typed_config::<Config>(TRAFFIC_GENERATOR_RECEIVER_URN);
 
 /// Validates the Traffic Generator receiver configuration at config load time.
 ///
@@ -1921,7 +1918,11 @@ mod tests {
                 "a-first": "val"
             }
         });
-        let decls = (TRAFFIC_GENERATOR_CONTEXT_DECLARATIONS.declarations)(&config).unwrap();
+        let decls = (TRAFFIC_GENERATOR_RECEIVER
+            .context_declarations
+            .expect("traffic generator should declare context")
+            .declarations)(&config)
+        .unwrap();
         assert_eq!(decls.len(), 3);
 
         let names: Vec<&str> = decls
@@ -1983,7 +1984,11 @@ mod tests {
             "data_source": "synthetic",
             "generation_strategy": "fresh"
         });
-        let decls = (TRAFFIC_GENERATOR_CONTEXT_DECLARATIONS.declarations)(&config).unwrap();
+        let decls = (TRAFFIC_GENERATOR_RECEIVER
+            .context_declarations
+            .expect("traffic generator should declare context")
+            .declarations)(&config)
+        .unwrap();
         assert!(decls.is_empty());
     }
 
@@ -2007,8 +2012,11 @@ mod tests {
             }
         });
 
-        let declarations = (TRAFFIC_GENERATOR_CONTEXT_DECLARATIONS.declarations)(&config)
-            .expect("case-distinct names should remain valid");
+        let declarations = (TRAFFIC_GENERATOR_RECEIVER
+            .context_declarations
+            .expect("traffic generator should declare context")
+            .declarations)(&config)
+        .expect("case-distinct names should remain valid");
         let names = declarations
             .iter()
             .map(|declaration| match declaration {

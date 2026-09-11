@@ -1705,6 +1705,7 @@ impl<
         &self,
         pipeline_key: &PipelineKey,
         engine_operation_id: Option<&str>,
+        expected_config_revision: u64,
         candidate_context_policy: Arc<CompiledContextPolicy>,
     ) -> Result<(), ControlPlaneError> {
         {
@@ -1713,6 +1714,9 @@ impl<
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             if !Self::engine_operation_allows(&state, engine_operation_id) {
+                return Err(ControlPlaneError::RolloutConflict);
+            }
+            if state.config_revision != expected_config_revision {
                 return Err(ControlPlaneError::RolloutConflict);
             }
             if state.active_rollouts.contains_key(pipeline_key)
@@ -1858,7 +1862,7 @@ impl<
         let pipeline_group_id: PipelineGroupId = pipeline_group_id.to_owned().into();
         let pipeline_id: PipelineId = pipeline_id.to_owned().into();
         let pipeline_key = PipelineKey::new(pipeline_group_id.clone(), pipeline_id.clone());
-        let (has_active_runtime, candidate_context_policy) = {
+        let (candidate_config, base_config_revision) = {
             let state = self
                 .state
                 .lock()
@@ -1884,12 +1888,29 @@ impl<
             if let Some(group) = candidate_config.groups.get_mut(&pipeline_group_id) {
                 let _ = group.pipelines.remove(&pipeline_id);
             }
-            let candidate_context_policy = self
-                .pipeline_factory
-                .compile_context_policy(&candidate_config.resolve())
-                .map_err(|error| ControlPlaneError::InvalidRequest {
-                    message: error.to_string(),
-                })?;
+            (candidate_config, state.config_revision)
+        };
+        let candidate_context_policy = self
+            .pipeline_factory
+            .compile_context_policy(&candidate_config.resolve())
+            .map_err(|error| ControlPlaneError::InvalidRequest {
+                message: error.to_string(),
+            })?;
+        let (has_active_runtime, candidate_context_policy) = {
+            let state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !Self::engine_operation_allows(&state, engine_operation_id)
+                || state.config_revision != base_config_revision
+            {
+                return Err(ControlPlaneError::RolloutConflict);
+            }
+            if state.active_rollouts.contains_key(&pipeline_key)
+                || state.active_shutdowns.contains_key(&pipeline_key)
+            {
+                return Err(ControlPlaneError::RolloutConflict);
+            }
             Self::validate_deployed_pipeline_context_bindings_unchanged_in_state(
                 &state,
                 Some(&pipeline_key),
@@ -1958,6 +1979,7 @@ impl<
         self.remove_pipeline_record_for_engine_operation(
             &pipeline_key,
             engine_operation_id,
+            base_config_revision,
             candidate_context_policy,
         )?;
         Ok(PipelineDeleteStatus {

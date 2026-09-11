@@ -158,6 +158,8 @@ pub struct ReceiverFactory<PData> {
         receiver_config: &ReceiverConfig,
         capabilities: &capability::registry::Capabilities,
     ) -> Result<ReceiverWrapper<PData>, otel_arrow_dfe_config::error::Error>,
+    /// Optional context declarations derived from the node configuration.
+    pub context_declarations: Option<context_declaration::ContextDeclarationProvider>,
     /// Optional wiring constraints enforced during pipeline build.
     pub wiring_contract: wiring_contract::WiringContract,
     /// Validates the node-specific config statically, without creating the component.
@@ -175,6 +177,7 @@ impl<PData> Clone for ReceiverFactory<PData> {
         ReceiverFactory {
             name: self.name,
             create: self.create,
+            context_declarations: self.context_declarations,
             wiring_contract: self.wiring_contract,
             validate_config: self.validate_config,
         }
@@ -203,6 +206,8 @@ pub struct ProcessorFactory<PData> {
         processor_config: &ProcessorConfig,
         capabilities: &capability::registry::Capabilities,
     ) -> Result<ProcessorWrapper<PData>, otel_arrow_dfe_config::error::Error>,
+    /// Optional context declarations derived from the node configuration.
+    pub context_declarations: Option<context_declaration::ContextDeclarationProvider>,
     /// Optional wiring constraints enforced during pipeline build.
     pub wiring_contract: wiring_contract::WiringContract,
     /// Validates the node-specific config statically, without creating the component.
@@ -220,6 +225,7 @@ impl<PData> Clone for ProcessorFactory<PData> {
         ProcessorFactory {
             name: self.name,
             create: self.create,
+            context_declarations: self.context_declarations,
             wiring_contract: self.wiring_contract,
             validate_config: self.validate_config,
         }
@@ -248,6 +254,8 @@ pub struct ExporterFactory<PData> {
         exporter_config: &ExporterConfig,
         capabilities: &capability::registry::Capabilities,
     ) -> Result<ExporterWrapper<PData>, otel_arrow_dfe_config::error::Error>,
+    /// Optional context declarations derived from the node configuration.
+    pub context_declarations: Option<context_declaration::ContextDeclarationProvider>,
     /// Optional wiring constraints enforced during pipeline build.
     pub wiring_contract: wiring_contract::WiringContract,
     /// Validates the node-specific config statically, without creating the component.
@@ -265,6 +273,7 @@ impl<PData> Clone for ExporterFactory<PData> {
         ExporterFactory {
             name: self.name,
             create: self.create,
+            context_declarations: self.context_declarations,
             wiring_contract: self.wiring_contract,
             validate_config: self.validate_config,
         }

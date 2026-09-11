@@ -339,12 +339,11 @@ pub static KAFKA_EXPORTER_FACTORY: ExporterFactory<OtapPdata> = ExporterFactory 
             ))
         },
     validate_config: validate_typed_config::<KafkaExporterConfig>,
+    context_declarations: Some(ContextDeclarationProvider::from_typed_config::<
+        KafkaExporterConfig,
+    >()),
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
 };
-
-#[distributed_slice(otel_arrow_dfe_engine::context_declaration::CONTEXT_DECLARATION_PROVIDERS)]
-static KAFKA_EXPORTER_CONTEXT_DECLARATIONS: ContextDeclarationProvider =
-    ContextDeclarationProvider::from_typed_config::<KafkaExporterConfig>(KAFKA_EXPORTER_URN);
 
 impl ConfigNodeContextDeclaration for KafkaExporterConfig {
     fn context_declarations(&self) -> NodeContextDeclarations {
@@ -1667,7 +1666,11 @@ pub mod test_support {
                 }
             });
 
-            let decls = (KAFKA_EXPORTER_CONTEXT_DECLARATIONS.declarations)(&config).unwrap();
+            let decls = (KAFKA_EXPORTER_FACTORY
+                .context_declarations
+                .expect("Kafka exporter should declare context")
+                .declarations)(&config)
+            .unwrap();
             let expected: NodeContextDeclarations = [
                 ContextDeclaration::Consumes {
                     selector: ContextConsumerSelector::Entries {
@@ -1700,7 +1703,11 @@ pub mod test_support {
                 }
             });
 
-            let decls = (KAFKA_EXPORTER_CONTEXT_DECLARATIONS.declarations)(&config).unwrap();
+            let decls = (KAFKA_EXPORTER_FACTORY
+                .context_declarations
+                .expect("Kafka exporter should declare context")
+                .declarations)(&config)
+            .unwrap();
             assert!(decls.is_empty());
         }
 
