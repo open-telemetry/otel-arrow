@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789086433686,
+  "lastUpdate": 1789141239656,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -36205,6 +36205,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 103.41,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "289780372+otelbot-arrow[bot]@users.noreply.github.com",
+            "name": "otelbot-arrow[bot]",
+            "username": "otelbot-arrow[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "f7d3913ce77ffe216426f9267e7075cd20d746dd",
+          "message": "chore(release) Prepare Release v0.56.0 (#4053)\n\n## Release v0.56.0\n\nThis PR prepares the repository for release v0.56.0.\n\n### Changes included:\n- Rendered pending chloggen entries into `go/CHANGELOG.md` and\n`rust/otap-dataflow/CHANGELOG.md`\n- Bumped Rust workspace crates to 0.56.0\n- Include `otel-arrow-dfe-pdata-views` in this release: true\n\n## What's Changed (Go :hamster:)\n\nNo changes. This release maintains version parity across the repository.\n\n## What's Changed (Rust :crab:)\n\n### :stop_sign: Breaking changes :stop_sign:\n\n- `engine`: Rename node completion duration and make node telemetry\nmeasurements independently selectable.\n([#3881](https://github.com/open-telemetry/otel-arrow/issues/3881))\n\n- `pipeline`: Add shared receiver and exporter boundary metrics, make\ncomponent duration opt-in, and migrate console exports to\nexporter.attempted.\n([#3822](https://github.com/open-telemetry/otel-arrow/issues/3822))\n\n### :bulb: Enhancements :bulb:\n\n- `engine`: Allow extensions to be declared in the engine observability\npipeline.\n([#4035](https://github.com/open-telemetry/otel-arrow/issues/4035))\n- `engine`: Publish the public admin API SDK as the\n`otel-arrow-dfe-admin-api` crate on crates.io.\n([#4038](https://github.com/open-telemetry/otel-arrow/issues/4038))\n- `observability`: Allow flow compute duration metrics to select basic,\nnormal, or detailed distribution aggregation.\n([#3670](https://github.com/open-telemetry/otel-arrow/issues/3670))\n- `pipeline`: Add event_ids filtering to the ETW receiver for\nmanifest-based providers\n([#3895](https://github.com/open-telemetry/otel-arrow/issues/3895))\n\n- `pipeline`: Add agent-fed bearer-token authentication to the OTLP/HTTP\nexporter.\n([#3275](https://github.com/open-telemetry/otel-arrow/issues/3275))\n\n### :toolbox: Bug fixes :toolbox:\n\n- `pipeline`: Preserve partition processor Nack payloads for interested\nupstreams and report transient only when all downstream Nacks are\ntransient.\n([#4016](https://github.com/open-telemetry/otel-arrow/issues/4016))\n\n### Checklist:\n- [x] Verify both CHANGELOG.md files render the expected entries\n- [x] Verify Rust crate versions updated\n- [x] Confirm all tests pass\n- [x] Ready to merge and tag release\n\nAfter merging this PR, run the **Push Release** workflow to create git\ntags and publish the GitHub release.\n\n---------\n\nCo-authored-by: otelbot-arrow[bot] <289780372+otelbot-arrow[bot]@users.noreply.github.com>\nCo-authored-by: albertlockett <a.lockett@f5.com>",
+          "timestamp": "2026-09-11T14:29:59Z",
+          "tree_id": "3ead826ca34c309e2c740a93e6597eead8365221",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/f7d3913ce77ffe216426f9267e7075cd20d746dd"
+        },
+        "date": 1789141222507,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 83.93,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.88,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.71,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 71.22,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.81,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 116.08,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 103.35,
             "unit": "MB"
           }
         ]
