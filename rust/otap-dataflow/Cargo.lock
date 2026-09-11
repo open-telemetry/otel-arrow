@@ -7375,6 +7375,7 @@ dependencies = [
  "clickhouse",
  "clickhouse-ext-arrow",
  "core_affinity",
+ "crc32fast",
  "criterion",
  "eventheader_dynamic",
  "flate2",

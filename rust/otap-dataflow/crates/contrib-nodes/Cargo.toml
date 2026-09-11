@@ -35,6 +35,7 @@ prost.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+crc32fast = { workspace = true, optional = true }
 linkme.workspace = true
 tokio.workspace = true
 tracing.workspace = true
@@ -135,6 +136,7 @@ contrib-exporters = [
     "kafka-exporter",
     "clickhouse-exporter",
 ]
+geneva-metrics-exporter = ["dep:crc32fast"]
 clickhouse-exporter = [
     "dep:clickhouse",
     "dep:clickhouse-ext-arrow",
