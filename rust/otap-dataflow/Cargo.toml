@@ -73,7 +73,7 @@ otel-arrow-dfe-test-tls-certs = { path = "crates/otap-test-tls-certs" }
 otel-arrow-dfe-test-net = { path = "crates/otap-test-net" }
 otel-arrow-dfe-pdata = { version = "0.56.0", path = "crates/pdata" }
 otel-arrow-dfe-pdata-codec = { version = "0.56.0", path = "crates/pdata-codec" }
-otel-arrow-dfe-pdata-views = { version = "0.56.0", path = "crates/pdata-views" }
+otel-arrow-dfe-pdata-views = { version = "0.54.1", path = "crates/pdata-views" }
 otel-arrow-dfe-telemetry = { version = "0.56.0", path = "crates/telemetry" }
 otel-arrow-dfe-quiver = { version = "0.56.0", path = "crates/quiver" }
 otel-arrow-contrib-data-engine-expressions = "0.1.0"
