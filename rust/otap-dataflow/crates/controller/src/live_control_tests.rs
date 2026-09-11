@@ -5907,6 +5907,113 @@ fn runtime_thread_panic_populates_error_source_in_observed_status() {
     assert!(source.contains("backtrace:"));
 }
 
+static LAUNCH_STARTED: AtomicUsize = AtomicUsize::new(0);
+static LAUNCH_PROCEED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+fn blocking_create(
+    _pipeline_ctx: PipelineContext,
+    node: otel_arrow_dfe_engine::node::NodeId,
+    node_config: Arc<NodeUserConfig>,
+    receiver_config: &ReceiverConfig,
+    _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+) -> Result<ReceiverWrapper<()>, otel_arrow_dfe_config::error::Error> {
+    if !LAUNCH_PROCEED.load(Ordering::SeqCst) {
+        let _ = LAUNCH_STARTED.fetch_add(1, Ordering::SeqCst);
+        while !LAUNCH_PROCEED.load(Ordering::SeqCst) {
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+    Ok(ReceiverWrapper::local(
+        RecoveryTestReceiver,
+        node,
+        node_config,
+        receiver_config,
+    ))
+}
+
+/// Scenario: shutdown is requested while a pipeline instance is still starting
+/// and has not yet been registered in the controller's runtime instances map.
+/// Guarantees: shutdown completion waits for the launch to finish and register,
+/// so it doesn't incorrectly return early with a 200 OK before the instance
+/// is even tracked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn has_active_instances_checks_multiple_state_fields() {
+    LAUNCH_STARTED.store(0, Ordering::SeqCst);
+    LAUNCH_PROCEED.store(false, Ordering::SeqCst);
+
+    let receiver_factories: &'static [ReceiverFactory<()>] = Box::leak(Box::new(vec![
+        ReceiverFactory {
+            name: "urn:test:receiver:example",
+            create: blocking_create,
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: test_validate_config,
+        },
+        ReceiverFactory {
+            name: "urn:otel:receiver:internal_telemetry",
+            create: test_receiver_create,
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: test_validate_config,
+        },
+    ]));
+    let test_factory = Box::leak(Box::new(PipelineFactory::new(
+        receiver_factories,
+        TEST_PROCESSOR_FACTORIES,
+        RECOVERY_TEST_EXPORTER_FACTORIES,
+        &[],
+    )));
+
+    let config = engine_config_with_pipeline(simple_pipeline_yaml());
+    let runtime = test_runtime_with_factory(&config, test_factory);
+
+    let control_plane = runtime.control_plane();
+    let control_plane_clone = control_plane.clone();
+    let config_clone = config.clone();
+
+    let _reconcile_task = tokio::spawn(async move {
+        let req = reconcile_request(config_clone, false);
+        let _ = control_plane_clone.reconcile_engine_config(req).unwrap();
+    });
+
+    // Wait for the pipeline creation to begin and block
+    let start_wait = Instant::now();
+    while LAUNCH_STARTED.load(Ordering::SeqCst) == 0 {
+        if start_wait.elapsed() > Duration::from_secs(5) {
+            panic!("timeout waiting for launch to start");
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    // At this point, the instance is launching but NOT yet registered.
+    // The "pending lifecycle work" predicate keeps has_active_instances() true.
+    assert!(control_plane.has_active_instances());
+
+    // Request shutdown concurrently while launch is paused
+    control_plane.shutdown_all(1).unwrap();
+
+    // Verify it does not complete early
+    assert!(control_plane.has_active_instances());
+
+    // Allow the launch to finish, which will now register the instance *after* global_shutdown_requested is true.
+    LAUNCH_PROCEED.store(true, Ordering::SeqCst);
+
+    // The newly registered instance should immediately receive the shutdown message and exit.
+    // We poll has_active_instances until it becomes false (or we timeout).
+    let start = Instant::now();
+    let mut completed = false;
+    while start.elapsed() < Duration::from_secs(5) {
+        if !control_plane.has_active_instances() {
+            completed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    assert!(
+        completed,
+        "Shutdown did not eventually complete after registration race"
+    );
+}
+
 /// Scenario: one core in a two-core regular pipeline exits with a runtime error
 /// while its sibling remains healthy, then a later rollout is planned.
 /// Guarantees: the controller promotes a ready replacement generation only for
