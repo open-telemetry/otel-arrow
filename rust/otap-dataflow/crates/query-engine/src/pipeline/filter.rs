@@ -149,7 +149,12 @@ impl PipelineStage for FilterPipelineStage {
                         )?;
                     }
                     None => {
-                        todo!("remove OTAP batch")
+                        // the expression evaluated to None, which we will treat as false.
+                        // this may happen in the case of a predicate involving a field that
+                        // does not exist, in which case the predicate should fail (unless the
+                        // planner specifically planned for to pass, in which case null wouldn't
+                        // have been returned here).
+                        remove_all_metric_data_points(&mut otap_batch, &metric_datapoint_type);
                     }
                 }
             }
@@ -202,13 +207,19 @@ impl FilterPipelineStage {
                 }
             }
             ColumnarValue::Array(arr) => {
-                // get a selection vector (boolean array of rows passing
-                // predicate) that is aligned with the row order of the
-                // data point record batch
+                // get a selection vector (boolean array of rows passing predicate) that is aligned
+                // with the row order of the data point record batch
                 let arr_aligned = if is_aligned {
                     arr
                 } else {
-                    todo!("align to datapoint batch and use it as selection vec")
+                    // the normal course of action here would be to align this to the row order of
+                    // the datapoint batch via a join, but currently we don't support this. the
+                    // planner actually should have returned an Error::NotYetSupported for exprs
+                    // that would end up here, so this error is just here for being defensive.
+                    return Err(Error::ExecutionError {
+                        cause: "misaligned expression predicate result when filtering datapoints"
+                            .into(),
+                    });
                 };
 
                 let selection_vec =
@@ -372,7 +383,6 @@ fn align_selection_vec_from_attrs(
             // no ID column means no attributes exist -- return all-null for the root
             return Ok(ScopedValue::new(
                 null_columnar_value_for_rows(&value.values, num_rows)?,
-                // TODO - do we somehow need to like, not have this hard-coded?
                 DataScope::Record(RecordScope::Signal),
                 root_rb,
             ));
@@ -403,7 +413,6 @@ fn align_selection_vec_from_attrs(
             let all_false = BooleanArray::new(BooleanBuffer::new_unset(num_rows), None);
             return Ok(ScopedValue::new(
                 ColumnarValue::Array(Arc::new(all_false)),
-                // TODO - somehow have this not hard-coded?
                 DataScope::Record(RecordScope::Signal),
                 root_rb,
             ));
@@ -456,7 +465,6 @@ fn align_selection_vec_from_attrs(
 
         return Ok(ScopedValue::new(
             ColumnarValue::Array(aligned_values),
-            // TODO - somehow have this not hard-coded?
             DataScope::Record(RecordScope::Signal),
             root_rb,
         ));
@@ -488,7 +496,6 @@ fn align_selection_vec_from_attrs(
 
     Ok(ScopedValue::new(
         ColumnarValue::Array(aligned_values),
-        // TODO - not had coded?
         DataScope::Record(RecordScope::Signal),
         root_rb,
     ))
