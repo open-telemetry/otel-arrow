@@ -141,3 +141,12 @@ result_tables:
   - name: clickhouse_throughput
   - name: component_resources
   - name: gh_actions_benchmark
+    finite_columns: [value]
+    required_values:
+      name:
+        - log_rows_written_rate
+        - logs_produced_rate
+        - go-collector_cpu_percentage_normalized_avg
+        - clickhouse_cpu_percentage_normalized_avg
+        - go-collector_ram_mib_max
+        - clickhouse_ram_mib_max

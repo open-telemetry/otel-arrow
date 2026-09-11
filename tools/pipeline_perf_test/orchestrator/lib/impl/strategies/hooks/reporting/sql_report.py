@@ -51,6 +51,7 @@ hooks:
                 console: {}
 """
 
+import math
 import os
 from typing import ClassVar, Optional, List, Dict, Any, Literal
 from pathlib import Path
@@ -118,6 +119,8 @@ class ResultTable(BaseModel):
     name: str
     description: Optional[str] = None
     display: bool = True
+    finite_columns: List[str] = Field(default_factory=list)
+    required_values: Dict[str, List[str]] = Field(default_factory=dict)
 
 
 class SQLReportDetails(BaseModel):
@@ -339,10 +342,50 @@ hooks:
         """Loop through the result_tables config and convert them to result dataframes"""
         results = {}
         for table in self.config.report_config.result_tables:
-            results[table.name] = self.conn.execute(
+            dataframe = self.conn.execute(
                 f"SELECT * FROM {table.name}"
             ).fetchdf()
+            self._assert_required_values(table, dataframe)
+            self._assert_finite_columns(table, dataframe)
+            results[table.name] = dataframe
         return results
+
+    @staticmethod
+    def _assert_required_values(table: ResultTable, dataframe: pd.DataFrame):
+        """Reject result tables that omit configured values from a column."""
+        for column, required_values in table.required_values.items():
+            if column not in dataframe.columns:
+                raise ValueError(
+                    f"Result table '{table.name}' is missing required column '{column}'"
+                )
+
+            observed_values = set(dataframe[column].dropna().astype(str))
+            missing_values = sorted(set(required_values) - observed_values)
+            if missing_values:
+                raise ValueError(
+                    f"Result table '{table.name}' column '{column}' is missing "
+                    f"required values {missing_values}"
+                )
+
+    @staticmethod
+    def _assert_finite_columns(table: ResultTable, dataframe: pd.DataFrame):
+        """Reject configured result columns containing null, NaN, or infinite values."""
+        for column in table.finite_columns:
+            if column not in dataframe.columns:
+                raise ValueError(
+                    f"Result table '{table.name}' is missing finite column '{column}'"
+                )
+
+            numeric_values = pd.to_numeric(dataframe[column], errors="coerce")
+            finite_values = numeric_values.map(
+                lambda value: pd.notna(value) and math.isfinite(value)
+            )
+            if not finite_values.all():
+                invalid_rows = dataframe.index[~finite_values].tolist()
+                raise ValueError(
+                    f"Result table '{table.name}' column '{column}' contains "
+                    f"non-finite values at rows {invalid_rows}"
+                )
 
     def _build_metadata_table(self, metadata):
         """Register duckdb tables containing context metadata."""
@@ -436,6 +479,8 @@ hooks:
 
         self._run_sql_queries(logger)
 
+        results = self._build_result_dataframes()
+
         if self.config.report_config.write_tables:
             try:
                 self._write_tables(logger, report)
@@ -443,7 +488,6 @@ hooks:
                 logger.error("SQL Report failed to write tables %s", e)
                 raise
 
-        results = self._build_result_dataframes()
         report.set_results(results)
         return report
 
