@@ -101,6 +101,7 @@ tempfile.workspace = true
 otel-arrow-dfe-test-net.workspace = true
 otel-arrow-dfe-test-tls-certs.workspace = true
 criterion.workspace = true
+dhat.workspace = true
 weaver_common.workspace = true
 weaver_forge.workspace = true
 weaver_resolver.workspace = true
@@ -116,3 +117,8 @@ name = "journald_decode"
 harness = false
 path = "benches/journald_decode/main.rs"
 required-features = ["bench"]
+
+[[bench]]
+name = "filelog_decode"
+harness = false
+path = "benches/filelog_decode/main.rs"
