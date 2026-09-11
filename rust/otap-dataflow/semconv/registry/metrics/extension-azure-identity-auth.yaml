@@ -1,0 +1,54 @@
+file_format: definition/2
+metrics:
+- name: extension.azure_identity_auth.auth.failures
+  brief: Number of failed credential acquisitions.
+  instrument: counter
+  unit: '{acquisition}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.extension
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: extension.azure_identity_auth
+- name: extension.azure_identity_auth.auth.success.latency
+  brief: Latency of successful acquisitions in milliseconds (min/max/sum/count).
+  instrument: histogram
+  unit: ms
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.extension
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: extension.azure_identity_auth
+- name: extension.azure_identity_auth.auth.successes
+  brief: Number of successful credential acquisitions.
+  instrument: counter
+  unit: '{acquisition}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.extension
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: extension.azure_identity_auth
+- name: extension.azure_identity_auth.auth.token.publish
+  brief: Number of tokens published to consumers via the watch channel.
+  instrument: counter
+  unit: '{token}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.extension
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: extension.azure_identity_auth

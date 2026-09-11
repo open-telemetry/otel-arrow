@@ -1,0 +1,79 @@
+file_format: definition/2
+metrics:
+- name: exporter.azure_monitor.batch.size
+  brief: Compressed batch size in bytes (min/max/sum/count). Recorded once per batch; HTTP retries do
+    not produce additional observations.
+  instrument: histogram
+  unit: By
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: exporter.azure_monitor
+- name: exporter.azure_monitor.batch.uncompressed.size
+  brief: Uncompressed batch size in bytes (min/max/sum/count). Recorded once per batch, before compression.
+  instrument: histogram
+  unit: By
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: exporter.azure_monitor
+- name: exporter.azure_monitor.in.flight.exports
+  brief: Current number of in-flight export requests.
+  instrument: gauge
+  unit: '{export}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: exporter.azure_monitor
+- name: exporter.azure_monitor.in.flight.log.records
+  brief: Current number of log records in-flight at the exporter (enqueued export requests awaiting completion,
+    including records being retried).
+  instrument: gauge
+  unit: '{log}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: exporter.azure_monitor
+- name: exporter.azure_monitor.log.entries.too.large
+  brief: Number of log entries rejected for exceeding the batch size limit.
+  instrument: counter
+  unit: '{entry}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: exporter.azure_monitor

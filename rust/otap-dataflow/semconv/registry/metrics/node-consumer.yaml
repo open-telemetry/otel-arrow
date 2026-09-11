@@ -1,0 +1,59 @@
+file_format: definition/2
+metrics:
+- name: node.consumer.consumed.duration
+  brief: 'Duration from entry until the corresponding ack or nack is routed, in nanoseconds. This is reported
+    at the detailed level. TODO: make this Option<Box<Mmsc or Histogram>>.'
+  instrument: histogram
+  unit: ns
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: outcome
+    requirement_level: recommended
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - otap.node.channel
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: node.consumer
+      rust:
+        field: consumed_duration_ns
+- name: node.consumer.consumed.items
+  brief: Consumed signal items, grouped by the `signal` datapoint attribute.
+  instrument: counter
+  unit: '{item}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: outcome
+    requirement_level: recommended
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - otap.node.channel
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: node.consumer
+- name: node.consumer.consumed.messages
+  brief: Consumed messages, grouped by `signal` and `outcome` datapoint attributes.
+  instrument: counter
+  unit: '{message}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: outcome
+    requirement_level: recommended
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - otap.node.channel
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: node.consumer

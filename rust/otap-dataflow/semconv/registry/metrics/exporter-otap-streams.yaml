@@ -1,0 +1,146 @@
+file_format: definition/2
+metrics:
+- name: exporter.otap.streams.correlation.depth
+  brief: Occupancy of the response correlation queue before enqueueing a yielded batch.
+  instrument: histogram
+  unit: '{batch}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: exporter.otap.streams
+      rust:
+        instrument: HistogramNormal
+- name: exporter.otap.streams.correlation.enqueue.duration
+  brief: Time spent enqueueing a yielded batch into the response correlation queue.
+  instrument: histogram
+  unit: s
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: exporter.otap.streams
+      rust:
+        field: correlation_enqueue_duration_seconds
+        instrument: HistogramNormal
+- name: exporter.otap.streams.encode.duration
+  brief: Time spent encoding an OTAP batch into outbound Arrow batch records.
+  instrument: histogram
+  unit: s
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: exporter.otap.streams
+      rust:
+        field: encode_duration_seconds
+        instrument: HistogramNormal
+- name: exporter.otap.streams.enqueue.depth
+  brief: Occupancy of the per-signal stream task queue before enqueueing a batch.
+  instrument: histogram
+  unit: '{batch}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: exporter.otap.streams
+      rust:
+        instrument: HistogramNormal
+- name: exporter.otap.streams.enqueue.duration
+  brief: Time spent waiting to enqueue a batch into the per-signal stream task.
+  instrument: histogram
+  unit: s
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: exporter.otap.streams
+      rust:
+        field: enqueue_duration_seconds
+        instrument: HistogramNormal
+- name: exporter.otap.streams.response.active
+  brief: Number of yielded batches actively awaiting a matching server response.
+  instrument: histogram
+  unit: '{batch}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: exporter.otap.streams
+      rust:
+        instrument: HistogramNormal
+- name: exporter.otap.streams.response.wait.duration
+  brief: Time spent waiting for the next server response on an OTAP stream.
+  instrument: histogram
+  unit: s
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: exporter.otap.streams
+      rust:
+        field: response_wait_duration_seconds
+        instrument: HistogramNormal

@@ -1,0 +1,38 @@
+file_format: definition/2
+metrics:
+- name: exporter.azure_monitor.http.latency
+  brief: HTTP export attempt latency in milliseconds (min/max/sum/count).
+  instrument: histogram
+  unit: ms
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: response
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: exporter.azure_monitor.http
+- name: exporter.azure_monitor.http.responses
+  brief: Number of HTTP export attempts by response category.
+  instrument: counter
+  unit: '{response}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: response
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: exporter.azure_monitor.http

@@ -1,0 +1,107 @@
+file_format: definition/2
+metrics:
+- name: processor.resource_validator.batches.accepted
+  brief: Number of batches that passed validation
+  instrument: counter
+  unit: '{batch}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: processor.resource_validator
+- name: processor.resource_validator.batches.rejected.conversion.error
+  brief: Number of batches rejected due to internal conversion error
+  instrument: counter
+  unit: '{batch}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: processor.resource_validator
+- name: processor.resource_validator.batches.rejected.invalid.type
+  brief: Number of batches rejected due to invalid attribute type (not a string)
+  instrument: counter
+  unit: '{batch}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: processor.resource_validator
+- name: processor.resource_validator.batches.rejected.missing
+  brief: Number of batches rejected due to missing required attribute
+  instrument: counter
+  unit: '{batch}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: processor.resource_validator
+- name: processor.resource_validator.batches.rejected.not.allowed
+  brief: Number of batches rejected due to value not in allowed list
+  instrument: counter
+  unit: '{batch}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: processor.resource_validator
+- name: processor.resource_validator.items.accepted
+  brief: Number of telemetry items accepted
+  instrument: counter
+  unit: '{item}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: processor.resource_validator
+- name: processor.resource_validator.items.rejected
+  brief: Number of telemetry items rejected
+  instrument: counter
+  unit: '{item}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: processor.resource_validator

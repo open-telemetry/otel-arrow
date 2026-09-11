@@ -1,0 +1,36 @@
+file_format: definition/2
+metrics:
+- name: processor.compute.compute.failed.duration
+  brief: Wall-clock duration of failed compute sections, in nanoseconds.
+  instrument: histogram
+  unit: ns
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: processor.compute
+      rust:
+        field: compute_duration_failed
+- name: processor.compute.compute.success.duration
+  brief: Wall-clock duration of successful compute sections, in nanoseconds.
+  instrument: histogram
+  unit: ns
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: processor.compute
+      rust:
+        field: compute_duration_success

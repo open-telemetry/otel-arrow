@@ -1,0 +1,67 @@
+file_format: definition/2
+metrics:
+- name: controller.monitor.observed_pipelines.live
+  brief: Observed logical pipelines currently considered live.
+  instrument: gauge
+  unit: '{pipeline}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.controller.monitor
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: controller.monitor
+- name: controller.monitor.observed_pipelines.ready
+  brief: Observed logical pipelines currently considered ready.
+  instrument: gauge
+  unit: '{pipeline}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.controller.monitor
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: controller.monitor
+- name: controller.monitor.observed_pipelines.total
+  brief: Observed logical pipelines currently tracked by the controller.
+  instrument: gauge
+  unit: '{pipeline}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.controller.monitor
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: controller.monitor
+- name: controller.monitor.telemetry.entities
+  brief: Registered telemetry entities visible to the controller monitor.
+  instrument: gauge
+  unit: '{entity}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.controller.monitor
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: controller.monitor
+- name: controller.monitor.telemetry.metric_sets
+  brief: Registered telemetry metric sets visible to the controller monitor.
+  instrument: gauge
+  unit: '{metric_set}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.controller.monitor
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: controller.monitor

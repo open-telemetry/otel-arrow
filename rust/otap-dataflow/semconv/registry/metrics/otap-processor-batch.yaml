@@ -1,0 +1,198 @@
+file_format: definition/2
+metrics:
+- name: otap.processor.batch.batching.errors
+  brief: Number of batches for which errors encountered
+  instrument: counter
+  unit: '{error}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: otap.processor.batch
+- name: otap.processor.batch.dropped.conversion
+  brief: Number of messages dropped due to conversion failures
+  instrument: counter
+  unit: '{msg}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: otap.processor.batch
+- name: otap.processor.batch.flush.age.duration
+  brief: Time from first pending input arrival to actual flush start
+  instrument: histogram
+  unit: ns
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: otap.processor.batch
+- name: otap.processor.batch.flush.output.batches
+  brief: Number of output batches emitted by each flush
+  instrument: histogram
+  unit: '{batch}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: otap.processor.batch
+- name: otap.processor.batch.flush.output.bytes
+  brief: Number of bytes emitted by each flush when byte size is known
+  instrument: histogram
+  unit: By
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: otap.processor.batch
+- name: otap.processor.batch.flush.pending.bytes
+  brief: Number of bytes pending at flush time when byte size is known
+  instrument: histogram
+  unit: By
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: otap.processor.batch
+- name: otap.processor.batch.flush.pending.requests
+  brief: Number of input requests pending at flush time
+  instrument: histogram
+  unit: '{request}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: otap.processor.batch
+- name: otap.processor.batch.flush.timer.lateness.duration
+  brief: Delay between scheduled timer wakeup and actual timer flush start
+  instrument: histogram
+  unit: ns
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: otap.processor.batch
+- name: otap.processor.batch.flushes.size
+  brief: Number of flushes triggered by size threshold (all signals)
+  instrument: counter
+  unit: '{flush}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: otap.processor.batch
+- name: otap.processor.batch.flushes.timer
+  brief: Number of flushes triggered by timer (all signals)
+  instrument: counter
+  unit: '{flush}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: otap.processor.batch
+- name: otap.processor.batch.nacked.inbound.slots
+  brief: Number of requests nacked due to inbound slot exhaustion
+  instrument: counter
+  unit: '{msg}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: otap.processor.batch
+- name: otap.processor.batch.nacked.outbound.slots
+  brief: Number of requests nacked due to inbound slot exhaustion
+  instrument: counter
+  unit: '{msg}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: otap.processor.batch
+- name: otap.processor.batch.split.budget.fallbacks
+  brief: Number of oversize resource entries emitted whole (best-effort) because splitting them would
+    have exceeded the configured fragment budget.
+  instrument: counter
+  unit: '{entry}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: otap.processor.batch

@@ -1,0 +1,56 @@
+file_format: definition/2
+metrics:
+- name: receiver.otap.batches.completed
+  brief: Number of admitted batches whose receiver work terminated.
+  instrument: counter
+  unit: '{batch}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.otap.batches
+- name: receiver.otap.batches.payload.size
+  brief: Protobuf-encoded batch bytes after gRPC transport decompression.
+  instrument: counter
+  unit: By
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.otap.batches
+- name: receiver.otap.batches.started
+  brief: Number of batches admitted to the pipeline send path.
+  instrument: counter
+  unit: '{batch}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.otap.batches

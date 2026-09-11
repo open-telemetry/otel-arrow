@@ -1,0 +1,332 @@
+file_format: definition/2
+metrics:
+- name: pipeline.runtime_control.cancel_telemetry_timer.received
+  brief: 'Count of telemetry timer cancel requests received by the runtime manager. This is mainly useful
+    for checking that telemetry scheduling remains bounded and does not accumulate stale per-node timers.
+    Level: `normal`.'
+  instrument: counter
+  unit: '{message}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: pipeline.runtime_control
+- name: pipeline.runtime_control.cancel_timer.received
+  brief: 'Count of `CancelTimer` control messages received by the runtime manager. Comparing this with
+    timer starts helps diagnose timer churn, leaks, or mismatches between node scheduling and node cleanup
+    behavior. Level: `normal`.'
+  instrument: counter
+  unit: '{message}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: pipeline.runtime_control
+- name: pipeline.runtime_control.collect_telemetry.sent
+  brief: 'Count of `CollectTelemetry` control messages sent to nodes. This helps confirm telemetry timers
+    are progressing under load and that observability work is not being starved by other runtime-control
+    traffic. Level: `normal`.'
+  instrument: counter
+  unit: '{message}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: pipeline.runtime_control
+- name: pipeline.runtime_control.delay_data.received
+  brief: 'Count of `DelayData` requests received by the runtime manager. This measures how much work is
+    being converted into deferred wakeups, a common cause of control-plane load for retry and batching
+    patterns. Level: `normal`.'
+  instrument: counter
+  unit: '{message}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: pipeline.runtime_control
+- name: pipeline.runtime_control.delay_data.returned_during_drain
+  brief: 'Count of delayed-data items returned immediately because drain is active. This is important
+    for shutdown liveness: it shows the runtime is flushing scheduled work back to origin nodes instead
+    of leaving it stranded behind future wakeup times. Level: `normal`.'
+  instrument: counter
+  unit: '{message}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: pipeline.runtime_control
+- name: pipeline.runtime_control.delayed_data.queued
+  brief: 'Number of delayed-data wakeups currently queued in the runtime manager. This is a key liveness
+    signal for processors that depend on delayed retries or one-shot wakeups: rising backlog means more
+    admitted work is waiting on the shared runtime control path. Level: `basic`.'
+  instrument: gauge
+  unit: '{message}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: pipeline.runtime_control
+- name: pipeline.runtime_control.delayed_data.sent
+  brief: 'Count of delayed-data wakeups sent back to origin nodes. This is the completion-side counterpart
+    to `delay_data.received` and is a direct indicator that deferred work is resuming rather than stalling.
+    Level: `normal`.'
+  instrument: counter
+  unit: '{message}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: pipeline.runtime_control
+- name: pipeline.runtime_control.downstream_shutdown.sent
+  brief: 'Count of downstream `Shutdown` fan-out operations to non-receivers. This marks the handoff from
+    receiver draining to downstream convergence, which is useful when debugging where shutdown latency
+    is spent. Level: `normal`.'
+  instrument: counter
+  unit: '{message}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: pipeline.runtime_control
+- name: pipeline.runtime_control.drain.active
+  brief: 'Whether the runtime is currently in graceful drain mode. This is the top-level liveness phase
+    signal for shutdown analysis: `1` means ingress has been stopped and the runtime is trying to converge
+    to quiescence, `0` means normal operation. Level: `basic`.'
+  instrument: gauge
+  unit: '{1}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: pipeline.runtime_control
+- name: pipeline.runtime_control.drain.pending_receivers
+  brief: 'Number of receivers that still need to report `ReceiverDrained`. This shows whether shutdown
+    is still blocked in the receiver-first drain phase and helps identify a stuck or slow receiver delaying
+    downstream shutdown. Level: `basic`.'
+  instrument: gauge
+  unit: '{node}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: pipeline.runtime_control
+- name: pipeline.runtime_control.drain.receiver_phase_duration_ns
+  brief: 'Distribution of time spent waiting for receivers to finish draining. This isolates the receiver-gated
+    phase of shutdown and is useful for determining whether slow graceful shutdown is ingress-bound or
+    further downstream in the pipeline. Level: `detailed`.'
+  instrument: histogram
+  unit: ns
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: pipeline.runtime_control
+- name: pipeline.runtime_control.drain.total_duration_ns
+  brief: 'Distribution of total graceful shutdown duration for the runtime. This is the top-level latency
+    metric for shutdown liveness and shows how long the runtime took to move from shutdown acceptance
+    to completion or forced deadline exit. Level: `detailed`.'
+  instrument: histogram
+  unit: ns
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: pipeline.runtime_control
+- name: pipeline.runtime_control.drain_ingress.sent
+  brief: 'Count of `DrainIngress` fan-out operations sent to receivers. This confirms that shutdown moved
+    from "requested" to "stop admitting new ingress", which is the first active liveness step of graceful
+    drain. Level: `normal`.'
+  instrument: counter
+  unit: '{message}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: pipeline.runtime_control
+- name: pipeline.runtime_control.pending_sends.buffered
+  brief: 'Number of node-control deliveries currently buffered for later retry. A sustained non-zero value
+    indicates the runtime manager is no longer delivering control work immediately and is absorbing backpressure
+    from full node-control inboxes instead of blocking the runtime. Level: `basic`.'
+  instrument: gauge
+  unit: '{message}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: pipeline.runtime_control
+- name: pipeline.runtime_control.receiver_drained.received
+  brief: 'Count of `ReceiverDrained` notifications received from receivers. This shows actual receiver-side
+    drain progress and helps distinguish "no work admitted anymore" from "receivers have really finished
+    draining". Level: `normal`.'
+  instrument: counter
+  unit: '{message}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: pipeline.runtime_control
+- name: pipeline.runtime_control.shutdown.deadline_forced
+  brief: 'Count of shutdowns that reached the deadline before natural completion. Any non-zero value here
+    is a direct signal that graceful drain did not complete in time and that liveness relied on the shutdown
+    deadline. Level: `normal`.'
+  instrument: counter
+  unit: '{message}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: pipeline.runtime_control
+- name: pipeline.runtime_control.shutdown.received
+  brief: 'Count of `RuntimeControlMsg::Shutdown` requests accepted by this runtime. This marks the start
+    of the runtime-managed drain sequence and is the main counter used to correlate later drain-phase
+    transitions. Level: `normal`.'
+  instrument: counter
+  unit: '{message}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: pipeline.runtime_control
+- name: pipeline.runtime_control.start_telemetry_timer.received
+  brief: 'Count of telemetry timer start requests received by the runtime manager. This shows how much
+    of the runtime-control stream is driven by metrics collection scheduling rather than ordinary data-plane
+    coordination. Level: `normal`.'
+  instrument: counter
+  unit: '{message}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: pipeline.runtime_control
+- name: pipeline.runtime_control.start_timer.received
+  brief: 'Count of `StartTimer` control messages received by the runtime manager. This helps quantify
+    timer creation pressure and can explain growth in `timers.active` or bursts of later `timer_tick.sent`
+    activity. Level: `normal`.'
+  instrument: counter
+  unit: '{message}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: pipeline.runtime_control
+- name: pipeline.runtime_control.telemetry_timers.active
+  brief: 'Number of telemetry collection timers currently registered. This distinguishes telemetry scheduling
+    pressure from normal timer traffic and helps explain unexpected `CollectTelemetry` activity. Level:
+    `basic`.'
+  instrument: gauge
+  unit: '{timer}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: pipeline.runtime_control
+- name: pipeline.runtime_control.timer_tick.sent
+  brief: 'Count of `TimerTick` control messages sent to nodes. This confirms that due timers are actually
+    being delivered and helps detect starvation where timers accumulate but ticks do not make progress.
+    Level: `normal`.'
+  instrument: counter
+  unit: '{message}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: pipeline.runtime_control
+- name: pipeline.runtime_control.timers.active
+  brief: 'Number of ordinary per-node timers currently registered. This is useful for understanding timer
+    pressure and for spotting leaks where timers are started but not canceled or consumed as expected.
+    Level: `basic`.'
+  instrument: gauge
+  unit: '{timer}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: pipeline.runtime_control
