@@ -196,10 +196,11 @@ impl KafkaReceiver {
         // old generation because no record of the new period has been tracked
         // yet. The `is_assigned` membership check remains explicit for clarity.
         //
-        // The late-ack path is safe because librdkafka runs
-        // `post_rebalance(Assign)` on the poll thread *before* `consumer.recv()`
-        // yields messages for the newly assigned partitions, so `assigned` is
-        // always populated before any ack for those partitions can return.
+        // The late-ack path is safe because `post_rebalance(Assign)` is served
+        // inline by `consumer.recv()` (so on the pipeline thread) and completes
+        // *before* that same `recv()` call yields messages for the newly
+        // assigned partitions, so `assigned` is always populated before any ack
+        // for those partitions can return.
         let tracked_generation = self.offset_tracker.partition_generation(&name, partition);
         let assigned_generation = self.rebalance_state.current_generation(&name, partition);
         let is_assigned = self.rebalance_state.is_assigned(&name, partition);

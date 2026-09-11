@@ -16,7 +16,9 @@ fn decode_traces_payload_otlp_proto() {
     let mut bytes = vec![];
     req.encode(&mut bytes).expect("encode");
 
-    let mut pdata = decode_traces_payload(&bytes, MessageFormat::OtlpProto).expect("should decode");
+    let mut pdata =
+        SignalDecoder::decode_signal_payload(SignalType::Traces, &bytes, MessageFormat::OtlpProto)
+            .expect("should decode");
     let proto: OtlpProtoBytes = pdata
         .take_payload()
         .try_into_with_default()
@@ -34,7 +36,8 @@ fn decode_metrics_payload_otlp_proto() {
     req.encode(&mut bytes).expect("encode");
 
     let mut pdata =
-        decode_metrics_payload(&bytes, MessageFormat::OtlpProto).expect("should decode");
+        SignalDecoder::decode_signal_payload(SignalType::Metrics, &bytes, MessageFormat::OtlpProto)
+            .expect("should decode");
     let proto: OtlpProtoBytes = pdata
         .take_payload()
         .try_into_with_default()
@@ -51,7 +54,9 @@ fn decode_logs_payload_otlp_proto() {
     let mut bytes = vec![];
     req.encode(&mut bytes).expect("encode");
 
-    let mut pdata = decode_logs_payload(&bytes, MessageFormat::OtlpProto).expect("should decode");
+    let mut pdata =
+        SignalDecoder::decode_signal_payload(SignalType::Logs, &bytes, MessageFormat::OtlpProto)
+            .expect("should decode");
     let proto: OtlpProtoBytes = pdata
         .take_payload()
         .try_into_with_default()
@@ -66,7 +71,9 @@ fn decode_logs_payload_otlp_proto() {
 fn decode_traces_payload_otap_proto() {
     let bytes = create_traces_with_spans_otap_bytes();
 
-    let mut pdata = decode_traces_payload(&bytes, MessageFormat::OtapProto).expect("should decode");
+    let mut pdata =
+        SignalDecoder::decode_signal_payload(SignalType::Traces, &bytes, MessageFormat::OtapProto)
+            .expect("should decode");
     let payload: OtapPayload = pdata.take_payload();
     assert!(
         matches!(
@@ -85,7 +92,8 @@ fn decode_metrics_payload_otap_proto() {
     let bytes = create_metrics_otap_arrow_records_bytes();
 
     let mut pdata =
-        decode_metrics_payload(&bytes, MessageFormat::OtapProto).expect("should decode");
+        SignalDecoder::decode_signal_payload(SignalType::Metrics, &bytes, MessageFormat::OtapProto)
+            .expect("should decode");
     let payload: OtapPayload = pdata.take_payload();
     assert!(
         matches!(
@@ -103,7 +111,9 @@ fn decode_metrics_payload_otap_proto() {
 fn decode_logs_payload_otap_proto() {
     let bytes = create_logs_otap_arrow_records_bytes();
 
-    let mut pdata = decode_logs_payload(&bytes, MessageFormat::OtapProto).expect("should decode");
+    let mut pdata =
+        SignalDecoder::decode_signal_payload(SignalType::Logs, &bytes, MessageFormat::OtapProto)
+            .expect("should decode");
     let payload: OtapPayload = pdata.take_payload();
     assert!(
         matches!(
@@ -120,7 +130,9 @@ fn decode_logs_payload_otap_proto() {
 #[test]
 fn decode_logs_payload_syslog_rfc5424() {
     let input = b"<34>1 2003-10-11T22:14:15.003Z host app - ID47 - Test message";
-    let mut pdata = decode_logs_payload(input, MessageFormat::Syslog).expect("decode Syslog");
+    let mut pdata =
+        SignalDecoder::decode_signal_payload(SignalType::Logs, input, MessageFormat::Syslog)
+            .expect("decode Syslog");
     let proto: OtlpProtoBytes = pdata
         .take_payload()
         .try_into_with_default()
@@ -138,7 +150,9 @@ fn decode_logs_payload_syslog_rfc5424() {
 #[test]
 fn decode_logs_payload_syslog_with_embedded_cef() {
     let input = b"<34>Oct 11 22:14:15 firewall CEF:0|Vendor|Product|2.0|signature-123|Intrusion detected|7|act=blocked";
-    let mut pdata = decode_logs_payload(input, MessageFormat::Syslog).expect("decode Syslog CEF");
+    let mut pdata =
+        SignalDecoder::decode_signal_payload(SignalType::Logs, input, MessageFormat::Syslog)
+            .expect("decode Syslog CEF");
     let proto: OtlpProtoBytes = pdata
         .take_payload()
         .try_into_with_default()
@@ -164,7 +178,7 @@ fn decode_logs_payload_syslog_with_embedded_cef() {
 /// panicking or stalling the consumer loop.
 #[test]
 fn decode_logs_payload_empty_syslog_returns_error() {
-    let result = decode_logs_payload(b"", MessageFormat::Syslog);
+    let result = SignalDecoder::decode_signal_payload(SignalType::Logs, b"", MessageFormat::Syslog);
     assert!(result.is_err());
 }
 
@@ -173,8 +187,18 @@ fn decode_logs_payload_empty_syslog_returns_error() {
 /// Guarantees: runtime header overrides cannot route Syslog bytes into non-log signals.
 #[test]
 fn decode_non_logs_payload_syslog_returns_error() {
-    assert!(decode_traces_payload(b"message", MessageFormat::Syslog).is_err());
-    assert!(decode_metrics_payload(b"message", MessageFormat::Syslog).is_err());
+    assert!(
+        SignalDecoder::decode_signal_payload(SignalType::Traces, b"message", MessageFormat::Syslog)
+            .is_err()
+    );
+    assert!(
+        SignalDecoder::decode_signal_payload(
+            SignalType::Metrics,
+            b"message",
+            MessageFormat::Syslog
+        )
+        .is_err()
+    );
 }
 
 /// Scenario (routing and payload correctness): undecodable bytes are passed to the OTAP
@@ -183,7 +207,11 @@ fn decode_non_logs_payload_syslog_returns_error() {
 /// payload is a recoverable per-message error.
 #[test]
 fn decode_traces_payload_invalid_otap_bytes_returns_error() {
-    let result = decode_traces_payload(b"not valid protobuf", MessageFormat::OtapProto);
+    let result = SignalDecoder::decode_signal_payload(
+        SignalType::Traces,
+        b"not valid protobuf",
+        MessageFormat::OtapProto,
+    );
     assert!(result.is_err());
 }
 
@@ -197,7 +225,9 @@ fn decode_traces_payload_otlp_preserves_bytes() {
     let mut bytes = vec![];
     req.encode(&mut bytes).expect("encode");
 
-    let mut pdata = decode_traces_payload(&bytes, MessageFormat::OtlpProto).expect("decode");
+    let mut pdata =
+        SignalDecoder::decode_signal_payload(SignalType::Traces, &bytes, MessageFormat::OtlpProto)
+            .expect("decode");
     let proto: OtlpProtoBytes = pdata
         .take_payload()
         .try_into_with_default()

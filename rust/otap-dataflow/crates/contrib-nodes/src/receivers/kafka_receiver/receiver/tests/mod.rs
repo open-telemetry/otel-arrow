@@ -50,8 +50,9 @@ use std::time::Duration;
 // Test-only re-exports of receiver internals that moved into concern
 // submodules, so each `use super::*` test file can reach them by name.
 use super::consumer::compute_consumer_lag;
-use super::decode::decode_calldata;
+use super::decode::{SignalDecoder, decode_calldata};
 use super::offset_feedback::{OffsetFeedbackAction, classify_offset_feedback};
+use otel_arrow_dfe_config::SignalType;
 
 // Test-only imports for symbols the split test files reference but the
 // receiver implementation no longer imports directly.
@@ -230,7 +231,7 @@ fn arrow_records_to_bytes(arrow_records: &mut OtapArrowRecords) -> Vec<u8> {
     let mut producer = Producer::new();
     let bar = producer
         .produce_bar(arrow_records)
-        .expect("failed to get batch arrow reocrds");
+        .expect("failed to get batch arrow records");
     let mut bytes = vec![];
     bar.encode(&mut bytes).expect("failed to encode");
     bytes

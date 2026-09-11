@@ -1,13 +1,29 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Poll-thread consumer callbacks.
+//! Consumer callbacks served inline by `recv()`.
 //!
-//! [`RebalancingConsumerContext`] runs on librdkafka's poll thread. It records
-//! partition assignments/revocations and folds commit results into the shared
-//! [`RebalanceState`], commits owned partitions before they are revoked
-//! (commit-before-revoke), and, for the AWS MSK IAM variant, refreshes the
-//! OAUTHBEARER token. It never touches the receive loop's state directly.
+//! `RebalancingConsumerContext`'s `ConsumerContext` callbacks
+//! (pre/post-rebalance and the commit callback) are served inline by
+//! `consumer.recv()` (rdkafka 0.38.0: `MessageStream::poll_next` ->
+//! `BaseConsumer::poll_queue` runs any queued rebalance/commit event on the
+//! calling thread). Because the receive loop is the only caller of `recv()`,
+//! they run on the loop's single-threaded pipeline thread, interleaved between
+//! records -- not on a separate librdkafka poll thread. Only the
+//! `ClientContext` OAUTHBEARER token refresh (AWS MSK IAM variant) may run on
+//! a librdkafka-internal thread.
+//!
+//! The context records partition assignments/revocations and folds commit
+//! results into the shared [`RebalanceState`], commits owned partitions before
+//! they are revoked (commit-before-revoke), and, for the AWS MSK IAM variant,
+//! refreshes the OAUTHBEARER token. It never touches the receive loop's state
+//! directly.
+//!
+//! NOTE: because these callbacks run on the pipeline thread, the synchronous
+//! commit-before-revoke in `RebalanceState::handle_revoke` (a `CommitMode::Sync`
+//! broker round-trip) can block the receive loop during a rebalance. It is
+//! bounded by librdkafka's internal commit timeout; moving it off the pipeline
+//! thread is future work.
 
 use super::RebalanceState;
 #[cfg(feature = "aws")]
@@ -79,6 +95,11 @@ impl ClientContext for RebalancingConsumerContext {
 }
 
 impl ConsumerContext for RebalancingConsumerContext {
+    // Served inline by `consumer.recv()`, so this runs on the pipeline thread.
+    // The `Revoke` arm calls `handle_revoke`, which issues a synchronous
+    // (`CommitMode::Sync`) commit-before-revoke and can therefore block the
+    // receive loop for the broker round-trip during a rebalance. Bounded by
+    // librdkafka's internal commit timeout; off-thread commit is future work.
     fn pre_rebalance(&self, base_consumer: &BaseConsumer<Self>, rebalance: &Rebalance<'_>) {
         let state = self.state();
         if state.is_auto_commit() {

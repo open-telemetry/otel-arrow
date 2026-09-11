@@ -143,19 +143,19 @@ pub struct Frame {
     /// The caller's node_id for routing.
     pub node_id: usize,
     /// Number of signal items produced (emitted) by the node at send time.
-    /// Stamped only when the node has `PRODUCER_METRICS` interest. Saturates
+    /// Stamped only when the node has `NODE_ITEM_COUNTS` interest. Saturates
     /// at `u32::MAX`.
-    pub produced_items: u32,
+    pub output_items: u32,
     /// Number of signal items consumed (received) by the node at receive time.
-    /// Stamped only when the node has `CONSUMER_METRICS` interest. Saturates
+    /// Stamped only when the node has `NODE_ITEM_COUNTS` interest. Saturates
     /// at `u32::MAX`.
-    pub consumed_items: u32,
+    pub input_items: u32,
     /// Logical payload size produced by the node at send time, in bytes.
     /// Zero means the measurement was disabled, unavailable, or empty.
-    pub produced_size: u64,
+    pub output_size: u64,
     /// Logical payload size consumed by the node at receive time, in bytes.
     /// Zero means the measurement was disabled, unavailable, or empty.
-    pub consumed_size: u64,
+    pub input_size: u64,
 }
 
 /// The ACK message.

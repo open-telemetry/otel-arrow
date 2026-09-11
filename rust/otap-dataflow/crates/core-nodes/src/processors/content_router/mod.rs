@@ -2281,8 +2281,13 @@ mod tests {
                 let (tx, rx) = mpsc::Channel::new(4);
                 let mut senders = HashMap::new();
                 let _ = senders.insert("tenant_a".into(), Sender::Local(LocalSender::mpsc(tx)));
-                let mut eh =
-                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                let mut eh = LocalEffectHandler::new(
+                    node_id.clone(),
+                    senders,
+                    None,
+                    reporter.clone(),
+                    otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+                );
 
                 let bytes = create_logs_with_resource_attr("service.namespace", "/sub/a");
                 let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
@@ -2347,8 +2352,13 @@ mod tests {
                 let mut router = ContentRouter::with_pipeline_ctx(pipeline, config);
 
                 let senders = HashMap::new();
-                let mut eh =
-                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                let mut eh = LocalEffectHandler::new(
+                    node_id.clone(),
+                    senders,
+                    None,
+                    reporter.clone(),
+                    otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+                );
 
                 let bytes = create_logs_with_resource_attr("service.namespace", "/sub/unknown");
                 let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
@@ -2412,8 +2422,13 @@ mod tests {
                 let (tx, rx) = mpsc::Channel::new(4);
                 let mut senders = HashMap::new();
                 let _ = senders.insert("fallback".into(), Sender::Local(LocalSender::mpsc(tx)));
-                let mut eh =
-                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                let mut eh = LocalEffectHandler::new(
+                    node_id.clone(),
+                    senders,
+                    None,
+                    reporter.clone(),
+                    otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+                );
 
                 // Send with non-matching route - should go to default
                 let bytes = create_logs_with_resource_attr("service.namespace", "/sub/unknown");
@@ -2486,8 +2501,13 @@ mod tests {
                     .expect("prefill should occupy the downstream route");
                 let mut senders = HashMap::new();
                 let _ = senders.insert("tenant_c".into(), Sender::Local(LocalSender::mpsc(tx)));
-                let mut eh =
-                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                let mut eh = LocalEffectHandler::new(
+                    node_id.clone(),
+                    senders,
+                    None,
+                    reporter.clone(),
+                    otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+                );
                 let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(4);
                 eh.set_pipeline_completion_msg_sender(completion_tx);
 
@@ -2569,8 +2589,13 @@ mod tests {
                 drop(rx);
                 let mut senders = HashMap::new();
                 let _ = senders.insert("tenant_c".into(), Sender::Local(LocalSender::mpsc(tx)));
-                let mut eh =
-                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                let mut eh = LocalEffectHandler::new(
+                    node_id.clone(),
+                    senders,
+                    None,
+                    reporter.clone(),
+                    otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+                );
                 let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(4);
                 eh.set_pipeline_completion_msg_sender(completion_tx);
 
@@ -2653,8 +2678,13 @@ mod tests {
                     .expect("prefill should occupy the default route");
                 let mut senders = HashMap::new();
                 let _ = senders.insert("fallback".into(), Sender::Local(LocalSender::mpsc(tx)));
-                let mut eh =
-                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                let mut eh = LocalEffectHandler::new(
+                    node_id.clone(),
+                    senders,
+                    None,
+                    reporter.clone(),
+                    otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+                );
                 let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(4);
                 eh.set_pipeline_completion_msg_sender(completion_tx);
 
@@ -2735,8 +2765,13 @@ mod tests {
                 drop(rx);
                 let mut senders = HashMap::new();
                 let _ = senders.insert("fallback".into(), Sender::Local(LocalSender::mpsc(tx)));
-                let mut eh =
-                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                let mut eh = LocalEffectHandler::new(
+                    node_id.clone(),
+                    senders,
+                    None,
+                    reporter.clone(),
+                    otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+                );
                 let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(4);
                 eh.set_pipeline_completion_msg_sender(completion_tx);
 
@@ -2832,8 +2867,13 @@ mod tests {
                     "tenant_a".into(),
                     Sender::Local(LocalSender::mpsc(tx_healthy)),
                 );
-                let mut eh =
-                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
+                let mut eh = LocalEffectHandler::new(
+                    node_id.clone(),
+                    senders,
+                    None,
+                    reporter.clone(),
+                    otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+                );
                 let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(4);
                 eh.set_pipeline_completion_msg_sender(completion_tx);
 

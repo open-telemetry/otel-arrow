@@ -1564,6 +1564,19 @@ impl KafkaReceiverConfig {
         self.inner.logs.encoding
     }
 
+    /// Get the configured wire encoding for `signal`.
+    ///
+    /// Single signal-keyed accessor so callers (e.g. `detect_message_format`)
+    /// need not select among the per-signal `*_encoding()` accessors.
+    #[must_use]
+    pub fn encoding_for(&self, signal: SignalType) -> MessageFormat {
+        match signal {
+            SignalType::Traces => self.inner.traces.encoding,
+            SignalType::Metrics => self.inner.metrics.encoding,
+            SignalType::Logs => self.inner.logs.encoding,
+        }
+    }
+
     /// Returns `true` if auto-commit mode is enabled.
     #[must_use]
     pub fn is_auto_commit(&self) -> bool {

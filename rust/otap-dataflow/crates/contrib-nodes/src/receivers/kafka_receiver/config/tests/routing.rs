@@ -4,6 +4,7 @@
 //! Topic routing and payload/topic configuration tests.
 
 use super::*;
+use otel_arrow_dfe_config::SignalType;
 
 // ---- Routing and payload correctness ----
 
@@ -619,7 +620,8 @@ fn per_signal_encoding_defaults_to_otlp_proto() {
 /// Scenario (routing and payload correctness): signals are configured with different
 /// encodings.
 /// Guarantees: each signal keeps its own encoding, so per-signal encoding is
-/// independent.
+/// independent, and the signal-keyed `encoding_for(signal)` accessor returns the
+/// same value as the corresponding `*_encoding()` accessor for every signal.
 #[test]
 fn per_signal_encoding_can_differ() {
     let json = json!({
@@ -634,4 +636,15 @@ fn per_signal_encoding_can_differ() {
     assert_eq!(cfg.traces_encoding(), MessageFormat::OtlpProto);
     assert_eq!(cfg.metrics_encoding(), MessageFormat::OtapProto);
     assert_eq!(cfg.logs_encoding(), MessageFormat::OtapProto);
+
+    // The signal-keyed accessor agrees with the per-signal accessors.
+    assert_eq!(
+        cfg.encoding_for(SignalType::Traces),
+        MessageFormat::OtlpProto
+    );
+    assert_eq!(
+        cfg.encoding_for(SignalType::Metrics),
+        MessageFormat::OtapProto
+    );
+    assert_eq!(cfg.encoding_for(SignalType::Logs), MessageFormat::OtapProto);
 }

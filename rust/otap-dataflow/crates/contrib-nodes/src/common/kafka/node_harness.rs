@@ -299,6 +299,7 @@ mod exporter_harness {
                         completion_tx,
                         metrics_reporter,
                         Interests::empty(),
+                        otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
                     )
                     .await
             });
@@ -549,6 +550,7 @@ mod receiver_harness {
                 node_config.default_output.clone(),
                 pipeline_ctrl_msg_tx,
                 metrics_reporter,
+                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
             );
             effect_handler.set_capture_policy(capture_policy);
 
