@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use parking_lot::{Mutex, RwLock};
@@ -148,6 +148,24 @@ pub struct QuiverEngine {
     /// which is an allocation floor that can advance past sequence numbers
     /// with no corresponding segment file (see issue #4024).
     segments_finalized: AtomicU64,
+    /// Set once a segment has been durably written but its sequence floor
+    /// could not be persisted (e.g. a transient I/O failure on the sidecar).
+    ///
+    /// That segment is deliberately left unregistered so no subscriber can
+    /// observe it and cleanup cannot reclaim it before the floor is known.
+    /// Once set, all further finalizations are refused: allowing a later
+    /// finalize to succeed would advance subscriber progress past the
+    /// withheld segment's sequence, which makes `SubscriberRegistry::open`
+    /// classify it as already completed on restart and permanently skip it
+    /// (issue #4024). A restart is required to recover: the directory scan
+    /// unconditionally registers the withheld segment's file since it is a
+    /// valid, complete `.qseg` on disk. In `DurabilityMode::Wal`, the WAL
+    /// cursor was never advanced past this segment's records either (Step 5
+    /// below is skipped on this failure path), so replay will also re-ingest
+    /// them into a new segment. This produces duplicate delivery rather than
+    /// data loss, the same crash-window trade-off already accepted for a
+    /// `persist_cursor` failure a few lines below.
+    sequence_persist_poisoned: AtomicBool,
     /// Cumulative bytes written to WAL (never decreases, even after rotation/purge).
     cumulative_wal_bytes: AtomicU64,
     /// Cumulative bytes written to segments (never decreases, even after cleanup).
@@ -573,6 +591,7 @@ impl QuiverEngine {
             segment_cursor: Mutex::new(WalConsumerCursor::default()),
             next_segment_seq: AtomicU64::new(next_segment_seq),
             segments_finalized: AtomicU64::new(recovered_segments),
+            sequence_persist_poisoned: AtomicBool::new(false),
             cumulative_wal_bytes: AtomicU64::new(0),
             cumulative_segment_bytes: AtomicU64::new(0),
             force_dropped_segments: AtomicU64::new(0),
@@ -1375,6 +1394,22 @@ impl QuiverEngine {
     /// guarantees that even if `used` was at the soft cap before finalization,
     /// the resulting `used` won't exceed `hard_cap`.
     async fn finalize_segment_impl(&self) -> Result<()> {
+        // A prior finalize left a segment durably written but unregistered
+        // because its sequence floor could not be persisted. Refuse further
+        // finalization until restart: letting a later segment register and
+        // advance subscriber progress past the withheld one would make it
+        // appear already completed on recovery, permanently losing it
+        // (issue #4024). The accumulated open segment is left untouched so
+        // it is not lost either; it will be recovered via WAL replay
+        // (`DurabilityMode::Wal`) or written fresh after restart.
+        if self.sequence_persist_poisoned.load(Ordering::Acquire) {
+            return Err(SegmentError::io_no_path(std::io::Error::other(
+                "segment sequence floor could not be persisted for a prior segment; \
+                 finalization is disabled until restart",
+            ))
+            .into());
+        }
+
         // Check if there's anything to finalize
         {
             let segment_guard = self.open_segment.lock();
@@ -1486,6 +1521,12 @@ impl QuiverEngine {
             .await
             .map_err(|e| {
                 self.metrics.record_flush_failure();
+                // Poison the engine before returning: the segment file is
+                // already durable and left unregistered, so no further
+                // finalization may succeed until restart (see the field
+                // doc comment on `sequence_persist_poisoned`).
+                self.sequence_persist_poisoned
+                    .store(true, Ordering::Release);
                 let sidecar_path = self.segment_store.seq_sidecar_path();
                 otel_error!(
                     "quiver.segment.flush",
@@ -1494,7 +1535,8 @@ impl QuiverEngine {
                     error = %e,
                     error_type = "io",
                     message = "failed to persist segment sequence floor, \
-                               segment withheld until restart",
+                               segment withheld until restart, \
+                               finalization disabled until restart",
                 );
                 segment_error_from_subscriber(e)
             })?;
@@ -6493,6 +6535,65 @@ mod tests {
             0,
             "no segment was ever written, so the count must be 0 \
              regardless of the allocation floor"
+        );
+    }
+
+    /// Scenario: a segment is durably written to disk, but persisting its
+    /// sequence floor to the sidecar fails (e.g. a transient I/O error),
+    /// leaving that segment unregistered. This is injected by pre-creating a
+    /// directory at the sidecar's temp-file path, so `persist_next_seq`'s
+    /// `OpenOptions::open` fails without disturbing segment writes.
+    /// Guarantees: the engine refuses all further finalization after the
+    /// failure, even once the fault is cleared and nothing new needs
+    /// finalizing. Without this, a later finalize could succeed and advance
+    /// subscriber progress past the withheld segment, causing
+    /// `SubscriberRegistry::open` to classify it as already completed and
+    /// permanently skip it on restart (issue #4024).
+    #[tokio::test]
+    async fn finalize_disables_further_finalization_after_sequence_persist_failure() {
+        let dir = tempdir().expect("tempdir");
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .durability(DurabilityMode::SegmentOnly)
+            .build()
+            .expect("config");
+
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine");
+
+        // Block the sidecar's temp-file path with a directory so the
+        // subsequent `persist_next_seq` fails at `OpenOptions::open` without
+        // touching the segment file write, which happens first.
+        let mut blocked_tmp_path = engine.segment_store().seq_sidecar_path().into_os_string();
+        blocked_tmp_path.push(".tmp");
+        let blocked_tmp_path = PathBuf::from(blocked_tmp_path);
+        fs::create_dir_all(&blocked_tmp_path).expect("block sidecar tmp path with a directory");
+
+        let bundle = DummyBundle::new();
+        engine.ingest(&bundle).await.expect("ingest succeeds");
+
+        let first_flush = engine.flush().await;
+        assert!(
+            first_flush.is_err(),
+            "flush must fail when the sequence floor cannot be persisted"
+        );
+        assert_eq!(
+            engine.total_segments_written(),
+            1,
+            "the segment must still be counted as durably written even though \
+             its floor persist failed and it was left unregistered"
+        );
+
+        // Clear the fault: a real transient I/O error would also eventually
+        // clear, but the engine must not attempt finalization again anyway.
+        fs::remove_dir_all(&blocked_tmp_path).expect("clear fault");
+
+        let second_flush = engine.flush().await;
+        assert!(
+            second_flush.is_err(),
+            "finalization must remain disabled after a sequence persist failure, \
+             even with nothing new to finalize and the fault cleared, until restart"
         );
     }
 
