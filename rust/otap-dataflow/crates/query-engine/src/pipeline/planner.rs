@@ -39,22 +39,20 @@ use crate::pipeline::fork::{ForkPipelineStage, ForkPipelineStageBranch};
 use crate::pipeline::routing::RouteToPipelineStage;
 use crate::pipeline::{BoxedPipelineStage, PipelineStage};
 
-/// Context for planning pipelines and expressions.
-///
-/// Carries information such as the type of stream element that is being processed by what is
-/// being planned
-#[derive(Clone, Debug)]
-pub(crate) struct PlannerContext {
-    record_type: RecordType,
-}
-
+/// Identifier for what will be treated as a record in the pipeline that is being planned.
+/// 
+/// Typically this is used in cases where we plan an nested pipeline on some child element
+/// via an expression like `apply attributes { ... }` or `apply data_points { ... }`
 #[derive(Clone, Debug)]
 pub enum RecordType {
+    /// Logs, Metrics, Traces
     Signal,
 
-    Attributes,
-
+    /// A repeated, child field such as metric datapoints
     Child(ChildRecordKind),
+
+    /// Attributes treated as elements of the stream
+    Attributes,
 }
 
 impl RecordType {
@@ -74,26 +72,23 @@ impl RecordType {
 /// - Which operations need custom stages (e.g., cross-table filters)
 /// - Optimizing by group operations into efficient stages
 pub struct PipelinePlanner {
-    // TODO - do we really need a new context object here? or can record_type (it's one field
-    // just be a property of the planner?)
-    context: PlannerContext,
-
     /// Whether to consider  attribute keys case sensitive in filtering pipeline stages
     filter_attribute_keys_case_sensitive: bool,
+
+    /// Which type will be treated as the root record for the pipeline that is being planned.
+    record_type: RecordType,
 }
 
 impl PipelinePlanner {
     /// creates a new instance of `PipelinePlanner`
     pub const fn new() -> Self {
-        Self::new_with_context(PlannerContext {
-            record_type: RecordType::Signal,
-        })
+        Self::new_with_record_type(RecordType::Signal)
     }
 
-    pub const fn new_with_context(context: PlannerContext) -> Self {
+    pub const fn new_with_record_type(record_type: RecordType) -> Self {
         Self {
-            context,
             filter_attribute_keys_case_sensitive: true,
+            record_type,
         }
     }
 
@@ -152,13 +147,11 @@ impl PipelinePlanner {
             // validate the pipeline stages are valid for attributes if planning pipeline to apply
             // to some child type
             for stage in &expr_results {
-                // TODO - should we clean this up with some kind of trait method like `supports(record_type)`
-
-                if !stage.supports_exec_on(&self.context.record_type) {
+                if !stage.supports_exec_on(&self.record_type) {
                     return Err(Error::InvalidPipelineError {
                         cause: format!(
                             "Data expression not supported on {:?} stream: {data_expr:?}",
-                            self.context.record_type
+                            self.record_type
                         ),
                         query_location: Some(data_expr.get_query_location().clone()),
                     });
@@ -305,7 +298,7 @@ impl PipelinePlanner {
 
                     let expr_planner = ExprPlanner::new(
                         self.filter_attribute_keys_case_sensitive,
-                        self.context.record_type.clone(),
+                        self.record_type.clone(),
                     );
                     let mut default_branch = None;
                     let mut pipeline_branches = vec![];
@@ -366,7 +359,7 @@ impl PipelinePlanner {
     ) -> Result<Vec<Box<dyn PipelineStage>>> {
         let planner = ExprPlanner::new(
             self.filter_attribute_keys_case_sensitive,
-            self.context.record_type.clone(),
+            self.record_type.clone(),
         );
 
         let scoped_op = planner.plan_logical(logical_expr, functions)?;
@@ -625,7 +618,7 @@ impl PipelinePlanner {
         let mut assignments = Vec::new();
         let scoped_planner = ExprPlanner::new(
             self.filter_attribute_keys_case_sensitive,
-            self.context.record_type.clone(),
+            self.record_type.clone(),
         );
 
         // TODO - currently the logic for coalescing multiple assignments isn't as intelligent
@@ -881,9 +874,7 @@ impl PipelinePlanner {
                         ApplySource::DataPoints => RecordType::Child(ChildRecordKind::DataPoint),
                     };
 
-                    let planner = Self::new_with_context(PlannerContext {
-                        record_type: nested_pipeline_record_type,
-                    });
+                    let planner = Self::new_with_record_type(nested_pipeline_record_type);
 
                     let child_pipeline = planner.plan_data_exprs(
                         &inner_pipeline_data_exprs,
@@ -891,10 +882,6 @@ impl PipelinePlanner {
                         session_ctx,
                         otap_batch,
                     )?;
-
-                    // TODO - we should maybe have tests that we plan/identify data_points as a source ...?
-
-                    println!("here {:?}", apply_source);
 
                     results.push(Box::new(ApplyPipelineStage::new(
                         apply_source,
@@ -942,7 +929,9 @@ impl PipelinePlanner {
     }
 }
 
-// TODO rustdocs for this funciton
+/// derives the source for which to apply some nested pipeline from the expression that identifies
+/// the source. E.g. in an operator invocation like `apply <source> { ... }`, supported may be
+/// some attributes or metric datapoints.
 fn source_expr_to_apply_source(source_expr: &SourceScalarExpression) -> Option<ApplySource> {
     let values_accessor = source_expr.get_value_accessor();
     let selectors = values_accessor.get_selectors();

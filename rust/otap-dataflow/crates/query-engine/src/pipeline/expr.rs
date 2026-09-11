@@ -86,7 +86,7 @@ pub(crate) enum RecordScope {
 /// Used to identify the non-signal (non-root) [`RecordBatch`] which was the source of data for
 /// some expression evaluation when it has record scope.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum ChildRecordKind {
+pub enum ChildRecordKind {
     /// The scope of the record data is a record batch containing metric datapoints.
     DataPoint,
 }
