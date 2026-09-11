@@ -16,10 +16,6 @@
 //!   bounded delivery future;
 //! - the permanent-nack re-read runs on `spawn_blocking` with a fetch timeout.
 //!
-//! The receive loop only ever polls the manager's completion future and drains
-//! the pending queue, so a stalled broker or slow re-read never blocks
-//! ingestion. On any failure (produce error, timeout, or unrecoverable bytes)
-//! the message is counted as `dlq.loss` and the source offset is advanced.
 //!
 //! # Swap seam
 //!
@@ -37,14 +33,12 @@ use self::headers::{DlqHeaderContext, build_dlq_headers};
 use self::producer::{DlqProducer, DlqRecord, DlqSendOutcome};
 use self::reread::{RereadConsumer, RereadOutcome, reread_blocking};
 use super::super::config::{
-    DLQ_MAX_IN_FLIGHT, DLQ_OP_TIMEOUT_MS, DLQ_PENDING_QUEUE_CAP, EffectiveDlqConfig,
-    KafkaReceiverConfig,
+    DLQ_MAX_IN_FLIGHT, DLQ_OP_TIMEOUT_MS, KafkaReceiverConfig, ResolvedDlqConfig,
 };
 use futures::stream::{FuturesUnordered, StreamExt};
 use otel_arrow_dfe_config::SignalType;
 use rdkafka::error::KafkaError;
 use rdkafka::message::OwnedHeaders;
-use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -170,20 +164,20 @@ impl PendingJob {
 type DlqFuture = Pin<Box<dyn Future<Output = DlqCompletion>>>;
 
 /// Owns the DLQ producer and (optionally) the re-read consumer, and bounds the
-/// number of outstanding deliveries with an overflow pending queue.
+/// number of outstanding deliveries with [`DLQ_MAX_IN_FLIGHT`].
 ///
 // DLQ-PHASE-2 (Change): `DlqCompletion` stays as the outcome type, but it is
 // filled from the downstream "dlq"-port ack/nack instead of from the producer.
 pub(crate) struct DlqManager {
-    config: EffectiveDlqConfig,
-    // DLQ-PHASE-2 (Remove): producer, re-read consumer, and the in-flight /
-    // pending bounding all go away; the port channel plus the downstream
-    // exporter's max_in_flight provide backpressure.
+    config: ResolvedDlqConfig,
+    // DLQ-PHASE-2 (Remove): the producer and the in-flight bounding go away; the
+    // port channel plus the downstream exporter's max_in_flight provide
+    // backpressure. The re-read consumer below is retained.
     producer: Arc<DlqProducer>,
-    /// Present only when permanent-nack capture is enabled.
+    /// Retained to recover original Kafka bytes for permanent nacks. Present
+    /// only when permanent-nack capture is enabled.
     reread: Option<Arc<RereadConsumer>>,
     in_flight: FuturesUnordered<DlqFuture>,
-    pending: VecDeque<PendingJob>,
 }
 
 impl DlqManager {
@@ -193,8 +187,8 @@ impl DlqManager {
     /// enabled, the dedicated re-read consumer, so an unreachable or
     /// misconfigured DLQ connection fails fast at startup.
     // DLQ-PHASE-2 (Change): take the effect handler for port send/subscribe and
-    // drop the eager producer/re-read build; validity becomes "the dlq port is
-    // connected" checked at wiring time, not a broker connect here.
+    // drop the eager producer build; the re-read consumer build is retained.
+    // Validity becomes "the dlq port is connected" checked at wiring time.
     pub(crate) fn new(config: &KafkaReceiverConfig) -> Result<Option<Self>, KafkaError> {
         let Some(dlq) = config.dlq() else {
             return Ok(None);
@@ -224,7 +218,6 @@ impl DlqManager {
             producer: Arc::new(producer),
             reread,
             in_flight: FuturesUnordered::new(),
-            pending: VecDeque::new(),
         }))
     }
 
@@ -243,16 +236,6 @@ impl DlqManager {
         self.config.capture_permanent_nack
     }
 
-    /// Current number of outstanding (in-flight) deliveries.
-    pub(crate) fn in_flight_len(&self) -> usize {
-        self.in_flight.len()
-    }
-
-    /// Current pending-queue depth.
-    pub(crate) fn pending_len(&self) -> usize {
-        self.pending.len()
-    }
-
     /// Resolve the DLQ topic for a signal. `None` when the message's signal has
     /// no configured DLQ topic (should not happen for captured signals given
     /// validation, but callers treat `None` as an immediate loss).
@@ -269,9 +252,9 @@ impl DlqManager {
 
     /// Submit a decode / unknown_topic failure whose bytes are already in hand.
     ///
-    /// Returns `Some(DlqCompletion)` immediately when the message cannot even be
-    /// enqueued (no topic resolved, or the pending queue is at capacity); in
-    /// that case the caller records the loss and advances the source offset.
+    /// Returns `Some(DlqCompletion)` immediately when the message cannot be
+    /// admitted (no topic resolved, or the in-flight bound is reached); in that
+    /// case the caller records the loss and advances the source offset.
     pub(crate) fn submit_inline(
         &mut self,
         reason: DlqReason,
@@ -304,8 +287,8 @@ impl DlqManager {
 
     /// Submit a permanent-nack failure whose bytes must be recovered by the
     /// dedicated re-read consumer.
-    // DLQ-PHASE-2 (Remove): a permanent nack reuses the refused pdata in hand;
-    // it is sent out the "dlq" port directly with no byte re-read.
+    // DLQ-PHASE-2 (Change): still recovers the original bytes via the re-read
+    // consumer, then sends them out the "dlq" port instead of producing.
     pub(crate) fn submit_reread(
         &mut self,
         source: DlqSource,
@@ -332,17 +315,15 @@ impl DlqManager {
         self.admit(job)
     }
 
-    /// Admit a job: start it if a slot is free, else enqueue it. Returns a loss
-    /// completion when the pending queue is full (overflow -> drop incoming).
+    /// Admit a job: start it when an in-flight slot is free, otherwise return a
+    /// loss completion so the caller records `dlq.loss` and advances the source
+    /// offset.
     fn admit(&mut self, job: PendingJob) -> Option<DlqCompletion> {
         if self.in_flight.len() < DLQ_MAX_IN_FLIGHT {
             self.start(job);
             None
-        } else if self.pending.len() < DLQ_PENDING_QUEUE_CAP {
-            self.pending.push_back(job);
-            None
         } else {
-            // Overflow: drop the incoming message so ingestion never stalls.
+            // In-flight full: drop the incoming message so ingestion never stalls.
             Some(DlqCompletion {
                 source: job.source().clone(),
                 signal: job.signal(),
@@ -372,18 +353,13 @@ impl DlqManager {
         }
     }
 
-    /// Await the next completed DLQ delivery, refilling an in-flight slot from
-    /// the pending queue. Resolves to `None` only when there is no outstanding
-    /// work (so callers must guard with [`has_work`](Self::has_work)).
+    /// Await the next completed DLQ delivery. Resolves to `None` only when there
+    /// is no outstanding work (so callers must guard with
+    /// [`has_work`](Self::has_work)).
     // DLQ-PHASE-2 (Remove): there is no completion future in port mode;
     // completions arrive on the receiver's Ack/Nack control handlers.
     pub(crate) async fn next_completion(&mut self) -> Option<DlqCompletion> {
-        let completion = self.in_flight.next().await?;
-        // A slot just freed: promote the oldest pending job.
-        if let Some(job) = self.pending.pop_front() {
-            self.start(job);
-        }
-        Some(completion)
+        self.in_flight.next().await
     }
 
     /// Whether the manager has any outstanding or queued work.
@@ -394,7 +370,8 @@ impl DlqManager {
 
     /// Service a keep-warm poll on the idle re-read consumer so its broker
     /// connection stays serviced between jobs.
-    // DLQ-PHASE-2 (Remove): no re-read consumer to keep warm in port mode.
+    // DLQ-PHASE-2 (Keep): the re-read consumer is retained in port mode and
+    // still needs keep-warm polling between terminal-nack recoveries.
     pub(crate) fn keep_warm(&self) {
         if let Some(reread) = &self.reread {
             reread.keep_warm();

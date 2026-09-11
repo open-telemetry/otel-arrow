@@ -1,8 +1,9 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// DLQ-PHASE-2 (Remove): entire file; a permanent nack reuses the refused pdata
-// already in hand, so no re-read consumer is needed under the output-port model.
+// DLQ-PHASE-2 (Change): the re-read consumer is retained in port mode; it still
+// recovers the original Kafka bytes for a terminal nack, but the recovered bytes
+// are sent out the "dlq" port (as pdata) instead of to the in-receiver producer.
 
 //! Dedicated idle Kafka consumer that recovers the original bytes of a
 //! permanently-nacked message.

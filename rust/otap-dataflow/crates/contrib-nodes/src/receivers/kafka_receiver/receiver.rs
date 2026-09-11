@@ -52,7 +52,9 @@ mod decode;
 mod dlq;
 mod offset_feedback;
 mod replay;
-mod topics;
+// pub(crate) so config-time DLQ loop-prevention can reuse the same topic
+// include/exclude matching as the runtime router (single source of truth).
+pub(crate) mod topics;
 mod transport_headers;
 
 use consumer::{LAG_REFRESH_TOTAL_DEADLINE, LagRefreshTask, close_consumer_bounded};
@@ -522,16 +524,12 @@ impl KafkaReceiver {
             // Reconcile any partition revocations / metrics produced by the
             // rebalance callbacks since the last iteration. Cheap when idle.
             self.reconcile_rebalance_state();
-            // Observe DLQ backpressure depths and service the idle re-read
-            // consumer keep-warm so its broker connection stays live.
-            // DLQ-PHASE-2 (Remove): no in-flight/pending depths or re-read
-            // keep-warm in port mode; backpressure lives in the port channel
-            // and the downstream exporter.
+            // Service the idle re-read consumer keep-warm so its broker
+            // connection stays live between terminal-nack recoveries.
+            // DLQ-PHASE-2 (Keep): the re-read keep-warm is retained in port mode
+            // (the re-read consumer stays); only the removed in-flight/pending
+            // depth observation lived here before.
             if let Some(manager) = dlq.as_ref() {
-                self.metrics.observe_dlq_depths(
-                    manager.in_flight_len() as u64,
-                    manager.pending_len() as u64,
-                );
                 manager.keep_warm();
             }
             let retry_deadline = match (
@@ -1348,7 +1346,6 @@ impl KafkaReceiver {
                 reason,
                 KafkaReceiverDlqOutcome::Failed,
             );
-            self.metrics.record_dlq_produce_failure();
             // A message that could not be dead-lettered is permanent data loss.
             self.metrics.record_dlq_loss(completion.signal, reason);
         }

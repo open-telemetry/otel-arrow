@@ -295,8 +295,7 @@ work runs off the receive loop and is timeout-bounded, so a stalled broker or
 slow re-read never blocks ingestion. If a delivery fails, times out, or the
 original bytes cannot be recovered, the message is counted as a DLQ loss
 (`receiver.kafka.dlq.loss`) and the offset advances so the pipeline is never
-wedged. Outstanding deliveries are bounded (max 5 in flight) with a small
-overflow queue; overflow is dropped as loss.
+wedged. Outstanding deliveries are bounded at 5 in flight.
 
 Because delivery-then-commit is at-least-once, a crash between a DLQ produce and
 the source-offset commit re-delivers and re-dead-letters the message on restart;

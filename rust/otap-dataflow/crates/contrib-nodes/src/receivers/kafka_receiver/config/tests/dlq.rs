@@ -135,6 +135,51 @@ fn dlq_topic_overlap_on_different_cluster_ok() {
     assert!(cfg.dlq().is_some());
 }
 
+/// Scenario: a DLQ topic is matched by an ingest regex but is explicitly
+/// excluded from that signal via `exclude_topics`, so the consumer never
+/// subscribes to it.
+/// Guarantees: validation succeeds -- an excluded topic is not a loop-prevention
+/// overlap, mirroring the runtime include/exclude router.
+#[test]
+fn dlq_topic_excluded_from_ingest_regex_ok() {
+    let cfg = parse(json!({
+        "brokers": "b:9092",
+        "group_id": "g",
+        "client_id": "c",
+        "commit": {"mode": "manual"},
+        "traces": {"topics": ["^otlp_.*$"], "exclude_topics": ["^otlp_dlq$"]},
+        "dlq": {"topic": "otlp_dlq"},
+    }))
+    .expect("an excluded ingest topic may be reused as the DLQ topic");
+    assert_eq!(
+        cfg.dlq()
+            .expect("dlq enabled")
+            .topic_for(SignalType::Traces),
+        Some("otlp_dlq")
+    );
+}
+
+/// Scenario: the DLQ connection names the same brokers as the source but in a
+/// different order and with extra whitespace.
+/// Guarantees: it is treated as the same cluster, so an overlapping topic is
+/// still rejected (broker strings are compared as sets).
+#[test]
+fn dlq_same_cluster_reordered_brokers_overlap_fails() {
+    let json = json!({
+        "brokers": "b1:9092,b2:9092",
+        "group_id": "g",
+        "client_id": "c",
+        "commit": {"mode": "manual"},
+        "traces": {"topics": ["otlp_spans"]},
+        "dlq": {
+            "topic": "otlp_spans",
+            "connection": {"brokers": " b2:9092 , b1:9092 "},
+        },
+    });
+    let msg = expect_dlq_error(json);
+    assert!(msg.contains("overlaps"), "unexpected: {msg}");
+}
+
 /// Scenario: an explicit empty capture list is provided.
 /// Guarantees: validation fails, since at least one category must be captured.
 #[test]

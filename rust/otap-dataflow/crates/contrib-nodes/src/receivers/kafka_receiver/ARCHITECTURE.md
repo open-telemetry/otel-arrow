@@ -313,7 +313,7 @@ Highlights:
 Optional and manual-commit only. When enabled, messages that cannot be handled
 are forwarded to a Kafka topic instead of being dropped. The DLQ is a single
 module (`receiver/dlq`) that owns a producer, an optional dedicated re-read
-consumer, a bounded in-flight set, and an overflow pending queue.
+consumer, and a bounded in-flight set.
 
 The dataflow: two entry points feed byte recovery, recovery feeds the bounded
 `DlqManager`, and every terminal outcome advances the source offset (produced or
@@ -334,14 +334,13 @@ flowchart TD
     subgraph MGR["DlqManager (off the receive loop)"]
         ADMIT{"admit"}
         INFLT["in-flight set (&lt;= 5)"]
-        QUEUE["pending queue (fixed cap)"]
         HDR["build dlq.* headers"]
         PROD["producer<br/>background poll thread<br/>bounded delivery future"]
     end
 
     subgraph DONE["Completion (select! branch 6)"]
         OK["produced"]
-        LOSS["failed / timeout / not-found / overflow"]
+        LOSS["failed / timeout / not-found / in-flight full"]
     end
 
     ADVANCE["advance source offset<br/>(advance_offset_and_commit)"]
@@ -352,9 +351,7 @@ flowchart TD
     INLINE --> ADMIT
     RR -->|"bytes recovered"| ADMIT
     ADMIT -->|"slot free"| INFLT
-    ADMIT -->|"5 in flight"| QUEUE
-    ADMIT -->|"queue full"| LOSS
-    QUEUE -->|"slot frees"| INFLT
+    ADMIT -->|"5 in flight"| LOSS
     INFLT --> HDR --> PROD
     PROD --> OK
     PROD --> LOSS
@@ -370,9 +367,7 @@ exist; both advance the source offset. `Recovering` applies only to the
 stateDiagram-v2
     [*] --> Admitted
     Admitted --> InFlight: slot free
-    Admitted --> Queued: 5 in flight
-    Queued --> InFlight: slot frees
-    Queued --> Loss: queue full (drop incoming)
+    Admitted --> Loss: 5 in flight (drop incoming)
     InFlight --> Recovering: permanent_nack re-read
     InFlight --> Producing: inline bytes
     Recovering --> Producing: bytes recovered
@@ -401,42 +396,21 @@ Highlights:
 - **Non-stall contract.** All DLQ broker I/O runs off the receive loop and is
   timeout-bounded: the producer polls on its own background thread and awaits a
   bounded delivery future; the re-read runs on `spawn_blocking`. The receive loop
-  only polls the manager's completion future (`select!` branch 6) and drains the
-  pending queue. A stalled broker or slow re-read cannot block ingestion. The
-  producer itself runs on librdkafka defaults (no tuning); the producer
-  send-await and the re-read fetch are bounded by a fixed internal timeout
-  (`DLQ_OP_TIMEOUT_MS`) that is independent of librdkafka's `message.timeout.ms`.
+  only polls the manager's completion future (`select!` branch 6). A stalled
+  broker or slow re-read cannot block ingestion. The producer itself runs on
+  librdkafka defaults (no tuning); the producer send-await and the re-read fetch
+  are bounded by a fixed internal timeout (`DLQ_OP_TIMEOUT_MS`) that is
+  independent of librdkafka's `message.timeout.ms`.
 - **Offset gating.** A dead-lettered message's source offset stays tracked
   (uncommittable) until its delivery completes, then advances through the same
   `advance_offset_and_commit` path (and generation guard) as terminal feedback.
   On any failure -- produce error, timeout, or unrecoverable bytes -- the message
   is counted as `receiver.kafka.dlq.loss` and the offset advances so the pipeline
   is never wedged.
-- **Bounding.** At most 5 deliveries are in flight; overflow enters a fixed-cap
-  pending queue, and further overflow is dropped as loss. Both depths are
-  observable via `receiver.kafka.dlq.in_flight` and `receiver.kafka.dlq.queued`.
 - **Swap seam.** The manager is the single boundary a future output-port
   implementation would replace: its completion carries exactly the offset
   identity needed to advance the source offset, the same contract an engine
   ack/nack would satisfy when the producer is replaced by a named output port.
-
-### Future: output-port mode (phase 2)
-
-A later phase replaces the in-receiver producer with a `dlq` output port. The
-code carries `DLQ-PHASE-2 (Remove|Change|Add)` markers at each swap site.
-
-- **Removed:** the producer and re-read consumer (`receiver/dlq/producer.rs`,
-  `receiver/dlq/reread.rs`), the in-flight and pending-queue bounding, the
-  completion-drain `select!` branch, and the producer-only config and metrics
-  (`receiver.kafka.dlq.produce_failures` / `.in_flight` / `.queued`).
-- **Changed:** dead-lettering builds an `OtapPdata` (raw bytes plus `dlq.*`
-  transport headers) and sends it out the `dlq` port with an ack/nack
-  subscription; backpressure moves to the port channel and the downstream
-  exporter.
-- **Added:** the `dlq` output port on the node, a calldata discriminant that
-  marks DLQ egress, and handling of that ack/nack on the receiver's control
-  handlers (an ack advances the offset; a nack records `receiver.kafka.dlq.loss`
-  and advances). `receiver.kafka.dlq.messages` and `.loss` are retained.
 
 ---
 

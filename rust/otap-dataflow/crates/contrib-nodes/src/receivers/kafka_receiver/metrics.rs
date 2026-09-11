@@ -159,24 +159,6 @@ pub struct KafkaReceiverDlqLossMetrics {
     pub messages: Counter<u64>,
 }
 
-// DLQ-PHASE-2 (Remove): producer-only health metrics; in port mode produce
-// failures and backpressure are observed on the downstream exporter.
-// `receiver.kafka.dlq.messages` and `receiver.kafka.dlq.loss` stay.
-/// Fixed DLQ health metrics (no measurement attributes).
-#[metric_set(name = "receiver.kafka.dlq")]
-#[derive(Debug, Default, Clone)]
-pub struct KafkaReceiverDlqHealthMetrics {
-    /// DLQ produce errors reported by the producer.
-    #[metric(name = "produce_failures", unit = "{error}")]
-    pub produce_failures: Counter<u64>,
-    /// Current number of outstanding (in-flight) DLQ deliveries.
-    #[metric(name = "in_flight", unit = "{delivery}")]
-    pub in_flight: ObserveUpDownCounter<u64>,
-    /// Current depth of the DLQ pending queue (ready to produce, awaiting a slot).
-    #[metric(name = "queued", unit = "{message}")]
-    pub queued: ObserveUpDownCounter<u64>,
-}
-
 /// Bounded category for a Kafka consumer transport error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
 pub enum KafkaReceiverTransportErrorType {
@@ -410,8 +392,6 @@ pub struct KafkaReceiverMetrics {
     pub dlq_messages: MeasurementMetricSet<KafkaReceiverDlqMessageMetrics>,
     /// Dead-letter loss metrics.
     pub dlq_loss: MeasurementMetricSet<KafkaReceiverDlqLossMetrics>,
-    /// Fixed DLQ health metrics.
-    pub dlq_health: MetricSet<KafkaReceiverDlqHealthMetrics>,
 }
 
 impl KafkaReceiverMetrics {
@@ -427,7 +407,6 @@ impl KafkaReceiverMetrics {
             transport: KafkaReceiverTransportMetrics::register(pipeline_ctx),
             dlq_messages: KafkaReceiverDlqMessageMetrics::register(pipeline_ctx),
             dlq_loss: KafkaReceiverDlqLossMetrics::register(pipeline_ctx),
-            dlq_health: pipeline_ctx.register_metrics::<KafkaReceiverDlqHealthMetrics>(),
         }
     }
 
@@ -457,17 +436,6 @@ impl KafkaReceiverMetrics {
             })
             .messages
             .inc();
-    }
-
-    /// Records a DLQ producer error.
-    pub fn record_dlq_produce_failure(&mut self) {
-        self.dlq_health.produce_failures.inc();
-    }
-
-    /// Observes the current DLQ in-flight and pending-queue depths.
-    pub fn observe_dlq_depths(&mut self, in_flight: u64, queued: u64) {
-        self.dlq_health.in_flight.observe(in_flight);
-        self.dlq_health.queued.observe(queued);
     }
 
     /// Records one Kafka consumer delivery before filtering or decoding.
@@ -555,8 +523,7 @@ impl KafkaReceiverMetrics {
         reporter.report(&mut self.consumer)?;
         reporter.report_measurement(&mut self.transport)?;
         reporter.report_measurement(&mut self.dlq_messages)?;
-        reporter.report_measurement(&mut self.dlq_loss)?;
-        reporter.report(&mut self.dlq_health)
+        reporter.report_measurement(&mut self.dlq_loss)
     }
 
     /// Takes every touched Kafka receiver metric bucket for terminal handoff.
@@ -571,9 +538,6 @@ impl KafkaReceiverMetrics {
         snapshots.extend(self.transport.terminal_snapshots());
         snapshots.extend(self.dlq_messages.terminal_snapshots());
         snapshots.extend(self.dlq_loss.terminal_snapshots());
-        if !self.dlq_health.is_empty() {
-            snapshots.extend(self.dlq_health.terminal_snapshots());
-        }
         snapshots
     }
 }
@@ -787,10 +751,9 @@ mod tests {
 
         let snapshots = metrics.terminal_snapshots();
         // Three touched measurement sets (messages, acknowledgements,
-        // rejections) plus the two always-present fixed sets
-        // (`receiver.kafka.consumer` and `receiver.kafka.dlq`). The untouched
-        // DLQ measurement sets emit nothing.
-        assert_eq!(snapshots.len(), 5);
+        // rejections) plus the always-present fixed `receiver.kafka.consumer`
+        // set. The untouched DLQ measurement sets emit nothing.
+        assert_eq!(snapshots.len(), 4);
         assert!(snapshots.iter().any(|snapshot| {
             snapshot.descriptor().name == "receiver.kafka.messages"
                 && snapshot.measurement_attribute_value("signal") == Some("traces")
@@ -807,10 +770,11 @@ mod tests {
                 && snapshot.measurement_attribute_value("reason") == Some("topic_id_exhausted")
         }));
         let second = metrics.terminal_snapshots();
-        // Only the two always-present fixed sets repeat on a second collection.
-        assert!(second.iter().all(|snapshot| {
-            let name = snapshot.descriptor().name;
-            name == "receiver.kafka.consumer" || name == "receiver.kafka.dlq"
-        }));
+        // Only the always-present fixed consumer set repeats on a second collection.
+        assert!(
+            second
+                .iter()
+                .all(|snapshot| snapshot.descriptor().name == "receiver.kafka.consumer")
+        );
     }
 }
