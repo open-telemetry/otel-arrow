@@ -31,7 +31,7 @@ pub struct HttpClientAuthProviderEvents {
     pub error: fn(&str, &str),
 
     /// A credential retrieval will be retried.
-    pub retry: fn(&str, &str),
+    pub retry: fn(&str, &str, u32),
 
     /// The provider closed its stream; no further refreshes will arrive.
     pub stream_closed: fn(&str),

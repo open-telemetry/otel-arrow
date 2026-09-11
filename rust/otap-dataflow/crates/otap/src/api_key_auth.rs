@@ -178,7 +178,7 @@ mod tests {
     const TEST_EVENTS: HttpClientAuthProviderEvents = HttpClientAuthProviderEvents {
         invalid: |_, _| INVALID.set(INVALID.get() + 1),
         error: |_, _| {},
-        retry: |_, _| {},
+        retry: |_, _, _| {},
         stream_closed: |_| STREAM_CLOSURES.set(STREAM_CLOSURES.get() + 1),
     };
 

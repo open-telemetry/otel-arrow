@@ -178,10 +178,11 @@ impl HttpClientAuthProvider for AgentFedAuth {
                         (events.retry)(
                             "AgentFedAuth",
                             "A previously rejected credential was retrieved; operation will be retried",
+                            consecutive_failures
                         );
 
                         let backoff =
-                            jittered_backoff(negative_cache_window_secs(consecutive_failures));
+                            jittered_backoff(retry_backoff_secs(consecutive_failures));
 
                         tokio::time::sleep(backoff).await;
 
@@ -213,20 +214,6 @@ fn retry_backoff_secs(consecutive_failures: u32) -> u64 {
     TOKEN_REFRESH_RETRY_SECS
         .saturating_mul(1u64 << shift)
         .min(MAX_TOKEN_REFRESH_RETRY_SECS)
-}
-
-/// Cooldown window during which the slow path refuses to retry, given the
-/// number of consecutive failures recorded so far.
-///
-/// This is the same (un-jittered) delay the refresh loop is waiting out for the
-/// same streak, so a sustained outage throttles both paths identically instead
-/// of leaving cache-miss callers probing a token endpoint the loop has already
-/// backed off from.
-///
-/// The loop's own sleep is jittered down to as little as half this window, so
-/// the loop always gets to retry before the slow path reopens.
-fn negative_cache_window_secs(consecutive_failures: u32) -> u64 {
-    retry_backoff_secs(consecutive_failures)
 }
 
 /// Applies "equal jitter" to a backoff: half the delay is a fixed floor and the
