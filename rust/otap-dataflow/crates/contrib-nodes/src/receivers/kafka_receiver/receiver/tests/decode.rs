@@ -12,9 +12,7 @@ use super::*;
 /// route to the traces decoder.
 #[test]
 fn decode_traces_payload_otlp_proto() {
-    let req = create_traces_with_spans();
-    let mut bytes = vec![];
-    req.encode(&mut bytes).expect("encode");
+    let bytes = encoded_trace_fixture();
 
     let mut pdata =
         SignalDecoder::decode_signal_payload(SignalType::Traces, &bytes, MessageFormat::OtlpProto)
@@ -221,9 +219,7 @@ fn decode_traces_payload_invalid_otap_bytes_returns_error() {
 /// mutate the payload.
 #[test]
 fn decode_traces_payload_otlp_preserves_bytes() {
-    let req = create_traces_with_spans();
-    let mut bytes = vec![];
-    req.encode(&mut bytes).expect("encode");
+    let bytes = encoded_trace_fixture();
 
     let mut pdata =
         SignalDecoder::decode_signal_payload(SignalType::Traces, &bytes, MessageFormat::OtlpProto)

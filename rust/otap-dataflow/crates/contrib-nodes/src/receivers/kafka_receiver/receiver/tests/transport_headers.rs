@@ -19,9 +19,7 @@ async fn test_kafka_receiver_traces_header_extraction() {
             let producer = cluster.producer().build();
 
             // Build a trace request with real spans.
-            let req = create_traces_with_spans();
-            let mut payload_bytes = vec![];
-            req.encode(&mut payload_bytes).expect("encode");
+            let payload_bytes = encoded_trace_fixture();
 
             // Configure extraction: map Kafka header "x-tenant-id" to a resource
             // attribute "tenant.id".
@@ -106,8 +104,7 @@ async fn test_kafka_receiver_traces_header_extraction() {
                 }
             }
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;
@@ -212,8 +209,7 @@ async fn test_kafka_receiver_traces_header_extraction_otap() {
                 }
             }
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;
@@ -296,8 +292,7 @@ async fn test_kafka_receiver_logs_header_extraction_syslog() {
                 Some(any_value::Value::StringValue(value)) if value == tenant_value
             ));
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;
@@ -316,9 +311,7 @@ async fn test_kafka_receiver_capture_policy_captures_headers() {
         |cluster| async move {
             let producer = cluster.producer().build();
 
-            let req = create_traces_with_spans();
-            let mut payload_bytes = vec![];
-            req.encode(&mut payload_bytes).expect("encode");
+            let payload_bytes = encoded_trace_fixture();
 
             // Send a message with Kafka headers.
             producer
@@ -404,8 +397,7 @@ async fn test_kafka_receiver_capture_policy_captures_headers() {
             let unrelated: Vec<_> = transport_headers.find_by_name("x-unrelated").collect();
             assert!(unrelated.is_empty(), "X-Unrelated should not be captured");
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;
@@ -423,9 +415,7 @@ async fn test_kafka_receiver_no_capture_policy_no_transport_headers() {
         |cluster| async move {
             let producer = cluster.producer().build();
 
-            let req = create_traces_with_spans();
-            let mut payload_bytes = vec![];
-            req.encode(&mut payload_bytes).expect("encode");
+            let payload_bytes = encoded_trace_fixture();
 
             // Send a message with headers, but without a capture policy.
             producer
@@ -456,8 +446,7 @@ async fn test_kafka_receiver_no_capture_policy_no_transport_headers() {
                 "transport_headers should be None when no capture policy is configured"
             );
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;
@@ -476,9 +465,7 @@ async fn test_kafka_receiver_capture_policy_coexists_with_resource_attrs_from_he
         |cluster| async move {
             let producer = cluster.producer().build();
 
-            let req = create_traces_with_spans();
-            let mut payload_bytes = vec![];
-            req.encode(&mut payload_bytes).expect("encode");
+            let payload_bytes = encoded_trace_fixture();
 
             // Send a message with headers for both mechanisms.
             producer
@@ -563,8 +550,7 @@ async fn test_kafka_receiver_capture_policy_coexists_with_resource_attrs_from_he
                 );
             }
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;
@@ -633,8 +619,7 @@ async fn test_kafka_receiver_capture_policy_otap_format() {
                 "MessageFormat header should not be captured"
             );
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;

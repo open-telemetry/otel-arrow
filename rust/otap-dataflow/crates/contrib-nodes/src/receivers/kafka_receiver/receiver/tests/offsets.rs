@@ -446,9 +446,7 @@ async fn out_of_order_acks_commit_only_lowest_contiguous() {
         KafkaTestCluster::builder().topic(TOPIC),
         |cluster| async move {
             let producer = cluster.producer().build();
-            let req = create_traces_with_spans();
-            let mut bytes = vec![];
-            req.encode(&mut bytes).expect("encode");
+            let bytes = encoded_trace_fixture();
 
             // Produce three records to the single partition; they receive
             // offsets 0, 1, 2 in order.
@@ -462,8 +460,7 @@ async fn out_of_order_acks_commit_only_lowest_contiguous() {
 
             // No safety-net timer: commits are driven purely by acks so the
             // watermark assertions are deterministic.
-            let cfg = manual_traces_config_no_timer(cluster.bootstrap_servers(), group, TOPIC);
-            let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+            let mut receiver = start_manual_traces_receiver(&cluster, group, TOPIC);
 
             // Consume all three records, correlating each delivered pdata
             // back to its Kafka offset via the stamped calldata so acks can
@@ -491,8 +488,7 @@ async fn out_of_order_acks_commit_only_lowest_contiguous() {
             // Give the loop time to process the acks, then assert the
             // watermark is still below 1 (either uncommitted or 0).
             tokio::time::sleep(Duration::from_millis(500)).await;
-            let committed_before = committed_offset(&brokers, group, TOPIC, 0)
-                .expect("kafka-test: committed-offset probe failed");
+            let committed_before = probe_committed_offset(&brokers, group, TOPIC);
             assert!(
                 committed_before.is_none_or(|o| o < 1),
                 "committed offset must not advance past the un-acked lowest \
@@ -503,22 +499,23 @@ async fn out_of_order_acks_commit_only_lowest_contiguous() {
             // 0,1,2 is complete, so the watermark jumps to the full count.
             receiver.ack(by_offset.remove(&0).expect("offset 0 delivered"));
 
-            let advanced = poll_until(Duration::from_secs(5), Duration::from_millis(250), || {
-                committed_offset(&brokers, group, TOPIC, 0)
-                    .expect("kafka-test: committed-offset probe failed")
-                    .is_some_and(|o| o >= RECORDS as i64)
-            })
+            let advanced = poll_committed_offset(
+                &brokers,
+                group,
+                TOPIC,
+                RECORDS as i64,
+                Duration::from_secs(5),
+                Duration::from_millis(250),
+            )
             .await;
             assert!(
                 advanced,
                 "once the lowest offset is acked the watermark should jump to \
                      the full count {RECORDS}, got {:?}",
-                committed_offset(&brokers, group, TOPIC, 0)
-                    .expect("kafka-test: committed-offset probe failed"),
+                probe_committed_offset(&brokers, group, TOPIC),
             );
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;
@@ -596,18 +593,20 @@ async fn poison_message_advances_without_stalling_partition() {
             );
 
             let brokers = cluster.bootstrap_servers().to_string();
-            let advanced = poll_until(Duration::from_secs(5), Duration::from_millis(250), || {
-                committed_offset(&brokers, group, TOPIC, 0)
-                    .expect("kafka-test: committed-offset probe failed")
-                    .is_some_and(|o| o >= 3)
-            })
+            let advanced = poll_committed_offset(
+                &brokers,
+                group,
+                TOPIC,
+                3,
+                Duration::from_secs(5),
+                Duration::from_millis(250),
+            )
             .await;
             assert!(
                 advanced,
                 "committed offset must advance past the poison record to the \
                      full count 3, got {:?}",
-                committed_offset(&brokers, group, TOPIC, 0)
-                    .expect("kafka-test: committed-offset probe failed"),
+                probe_committed_offset(&brokers, group, TOPIC),
             );
 
             receiver.shutdown(Duration::from_secs(5));
@@ -649,9 +648,7 @@ async fn auto_commit_mode_lets_librdkafka_own_offsets() {
         KafkaTestCluster::builder().topic(TOPIC),
         |cluster| async move {
             let producer = cluster.producer().build();
-            let req = create_traces_with_spans();
-            let mut bytes = vec![];
-            req.encode(&mut bytes).expect("encode");
+            let bytes = encoded_trace_fixture();
 
             for i in 0..RECORDS {
                 let key = format!("rec-{i}");
@@ -681,18 +678,20 @@ async fn auto_commit_mode_lets_librdkafka_own_offsets() {
             // Wait long enough for at least one auto-commit interval (1000ms)
             // to elapse and be flushed.
             let brokers = cluster.bootstrap_servers().to_string();
-            let advanced = poll_until(Duration::from_secs(10), Duration::from_millis(250), || {
-                committed_offset(&brokers, group, TOPIC, 0)
-                    .expect("kafka-test: committed-offset probe failed")
-                    .is_some_and(|o| o >= RECORDS as i64)
-            })
+            let advanced = poll_committed_offset(
+                &brokers,
+                group,
+                TOPIC,
+                RECORDS as i64,
+                Duration::from_secs(10),
+                Duration::from_millis(250),
+            )
             .await;
             assert!(
                 advanced,
                 "librdkafka auto-commit should advance the committed offset to \
                      the full count {RECORDS} without any acks, got {:?}",
-                committed_offset(&brokers, group, TOPIC, 0)
-                    .expect("kafka-test: committed-offset probe failed"),
+                probe_committed_offset(&brokers, group, TOPIC),
             );
 
             receiver.shutdown(Duration::from_secs(5));
@@ -743,9 +742,7 @@ async fn terminal_nack_advances_offset_past_message() {
         KafkaTestCluster::builder().topic(TOPIC),
         |cluster| async move {
             let producer = cluster.producer().build();
-            let req = create_traces_with_spans();
-            let mut bytes = vec![];
-            req.encode(&mut bytes).expect("encode");
+            let bytes = encoded_trace_fixture();
 
             // A single record on the single partition.
             producer
@@ -753,8 +750,7 @@ async fn terminal_nack_advances_offset_past_message() {
                 .await
                 .expect("send record");
 
-            let cfg = manual_traces_config_no_timer(cluster.bootstrap_servers(), group, TOPIC);
-            let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+            let mut receiver = start_manual_traces_receiver(&cluster, group, TOPIC);
 
             // Consume the record but hold it un-acked: this models the window
             // where a downstream `processor:retry` is still retrying, so no
@@ -764,8 +760,7 @@ async fn terminal_nack_advances_offset_past_message() {
             // While the record is in-flight the offset must NOT be committed.
             let brokers = cluster.bootstrap_servers().to_string();
             tokio::time::sleep(Duration::from_millis(500)).await;
-            let committed_in_flight = committed_offset(&brokers, group, TOPIC, 0)
-                .expect("kafka-test: committed-offset probe failed");
+            let committed_in_flight = probe_committed_offset(&brokers, group, TOPIC);
             assert!(
                 committed_in_flight.is_none_or(|o| o < 1),
                 "offset must stay uncommitted while the record is in-flight \
@@ -778,22 +773,23 @@ async fn terminal_nack_advances_offset_past_message() {
             receiver.nack_permanent("permanent downstream failure", pdata);
 
             // The terminal Nack advances the offset past the message.
-            let advanced = poll_until(Duration::from_secs(5), Duration::from_millis(250), || {
-                committed_offset(&brokers, group, TOPIC, 0)
-                    .expect("kafka-test: committed-offset probe failed")
-                    .is_some_and(|o| o >= 1)
-            })
+            let advanced = poll_committed_offset(
+                &brokers,
+                group,
+                TOPIC,
+                1,
+                Duration::from_secs(5),
+                Duration::from_millis(250),
+            )
             .await;
             assert!(
                 advanced,
                 "a terminal permanent Nack must advance the committed offset \
                      past the message, got {:?}",
-                committed_offset(&brokers, group, TOPIC, 0)
-                    .expect("kafka-test: committed-offset probe failed"),
+                probe_committed_offset(&brokers, group, TOPIC),
             );
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;
@@ -816,17 +812,9 @@ async fn restart_redelivers_uncommitted_offsets() {
         KafkaTestCluster::builder().topic(TOPIC),
         |cluster| async move {
             let producer = cluster.producer().build();
-            let req = create_traces_with_spans();
-            let mut bytes = vec![];
-            req.encode(&mut bytes).expect("encode");
+            let bytes = encoded_trace_fixture();
 
-            for i in 0..RECORDS {
-                let key = format!("rec-{i}");
-                producer
-                    .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
-                    .await
-                    .expect("send record");
-            }
+            produce_traces(&producer, TOPIC, RECORDS, &bytes).await;
 
             // First receiver: consume every record but NEVER ack, so no
             // offset is ever committed.
@@ -839,8 +827,7 @@ async fn restart_redelivers_uncommitted_offsets() {
             // Nothing was acked, so the broker must hold no committed offset.
             let brokers = cluster.bootstrap_servers().to_string();
             tokio::time::sleep(Duration::from_millis(500)).await;
-            let committed_before = committed_offset(&brokers, group, TOPIC, 0)
-                .expect("kafka-test: committed-offset probe failed");
+            let committed_before = probe_committed_offset(&brokers, group, TOPIC);
             assert!(
                 committed_before.is_none_or(|o| o < RECORDS as i64),
                 "no offset should be committed before restart (records were \
@@ -848,8 +835,7 @@ async fn restart_redelivers_uncommitted_offsets() {
             );
 
             // Fully stop the first receiver (a restart).
-            receiver_a.shutdown(Duration::from_secs(5));
-            receiver_a.await_stopped().await;
+            shutdown_receiver(receiver_a).await;
 
             // Second receiver in the SAME group: it must re-receive the
             // uncommitted records (at-least-once redelivery, no loss).
@@ -871,8 +857,7 @@ async fn restart_redelivers_uncommitted_offsets() {
                      records, got {redelivered}",
             );
 
-            receiver_b.shutdown(Duration::from_secs(5));
-            receiver_b.await_stopped().await;
+            shutdown_receiver(receiver_b).await;
         },
     )
     .await;
@@ -895,16 +880,8 @@ async fn safety_net_timer_commits_without_acks_drain_or_shutdown() {
         KafkaTestCluster::builder().topic(TOPIC),
         |cluster| async move {
             let producer = cluster.producer().build();
-            let req = create_traces_with_spans();
-            let mut bytes = vec![];
-            req.encode(&mut bytes).expect("encode");
-            for i in 0..RECORDS {
-                let key = format!("rec-{i}");
-                producer
-                    .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
-                    .await
-                    .expect("send record");
-            }
+            let bytes = encoded_trace_fixture();
+            produce_traces(&producer, TOPIC, RECORDS, &bytes).await;
 
             // Short safety-net timer so the periodic commit fires well within
             // the assertion window; acks alone would also commit, but the
@@ -922,22 +899,23 @@ async fn safety_net_timer_commits_without_acks_drain_or_shutdown() {
             // offsets. No drain, no shutdown yet: the commit must come from
             // the safety-net TimerTick path alone.
             let brokers = cluster.bootstrap_servers().to_string();
-            let committed = poll_until(Duration::from_secs(5), Duration::from_millis(100), || {
-                committed_offset(&brokers, group, TOPIC, 0)
-                    .expect("kafka-test: committed-offset probe failed")
-                    .is_some_and(|o| o >= RECORDS)
-            })
+            let committed = poll_committed_offset(
+                &brokers,
+                group,
+                TOPIC,
+                RECORDS,
+                Duration::from_secs(5),
+                Duration::from_millis(100),
+            )
             .await;
             assert!(
                 committed,
                 "the safety-net commit timer must advance the committed offset \
                      to the full acked count {RECORDS} without a drain/shutdown, got {:?}",
-                committed_offset(&brokers, group, TOPIC, 0)
-                    .expect("kafka-test: committed-offset probe failed"),
+                probe_committed_offset(&brokers, group, TOPIC),
             );
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;

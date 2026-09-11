@@ -369,9 +369,7 @@ async fn rebalance_single_consumer_assigns_and_commits() {
             |cluster| async move {
                 let producer = cluster.producer().build();
 
-                let req = create_traces_with_spans();
-                let mut bytes = vec![];
-                req.encode(&mut bytes).expect("encode");
+                let bytes = encoded_trace_fixture();
 
                 // Produce `REBALANCE_RECORDS_PER_PARTITION` records to each partition.
                 producer
@@ -401,8 +399,7 @@ async fn rebalance_single_consumer_assigns_and_commits() {
                 tokio::time::sleep(Duration::from_millis(800)).await;
 
                 // Shutdown also commits all tracked offsets before exit.
-                receiver.shutdown(Duration::from_secs(5));
-                receiver.await_stopped().await;
+                shutdown_receiver(receiver).await;
 
                 // Each partition should have a committed offset accounting for
                 // its records (committed offset is "next to read", so >= count).
@@ -447,9 +444,7 @@ async fn rebalance_revoke_commits_before_reassign() {
             |cluster| async move {
                 let producer = cluster.producer().build();
 
-                let req = create_traces_with_spans();
-                let mut bytes = vec![];
-                req.encode(&mut bytes).expect("encode");
+                let bytes = encoded_trace_fixture();
 
                 // Produce records to both partitions.
                 producer
@@ -493,8 +488,7 @@ async fn rebalance_revoke_commits_before_reassign() {
                     Duration::from_secs(5),
                     Duration::from_millis(250),
                     || {
-                        let c0 = committed_offset(&brokers, group, TOPIC, 0)
-                            .expect("kafka-test: committed-offset probe failed");
+                        let c0 = probe_committed_offset(&brokers, group, TOPIC);
                         let c1 = committed_offset(&brokers, group, TOPIC, 1)
                             .expect("kafka-test: committed-offset probe failed");
                         c0.is_some_and(|o| o >= REBALANCE_RECORDS_PER_PARTITION as i64)
@@ -509,8 +503,7 @@ async fn rebalance_revoke_commits_before_reassign() {
                 );
 
                 // Clean up: shut down receiver A.
-                receiver.shutdown(Duration::from_secs(5));
-                receiver.await_stopped().await;
+                shutdown_receiver(receiver).await;
             },
         )
         .await;
@@ -533,9 +526,7 @@ async fn rebalance_cooperative_sticky_retains_owned_partitions() {
         |cluster| async move {
             let producer = cluster.producer().build();
 
-            let req = create_traces_with_spans();
-            let mut bytes = vec![];
-            req.encode(&mut bytes).expect("encode");
+            let bytes = encoded_trace_fixture();
 
             // Produce an initial record to each partition.
             for partition in 0..REBALANCE_TEST_PARTITIONS {
@@ -640,8 +631,7 @@ async fn rebalance_cooperative_sticky_retains_owned_partitions() {
                      cooperative-sticky rebalance (ACKs must not be dropped)",
             );
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
             drop(consumer_b);
         },
     )
@@ -666,9 +656,7 @@ async fn rebalance_revoke_then_reassign_preserves_new_records() {
         |cluster| async move {
             let producer = cluster.producer().build();
 
-            let req = create_traces_with_spans();
-            let mut bytes = vec![];
-            req.encode(&mut bytes).expect("encode");
+            let bytes = encoded_trace_fixture();
 
             // One initial record per partition.
             for partition in 0..REBALANCE_TEST_PARTITIONS {
@@ -722,8 +710,7 @@ async fn rebalance_revoke_then_reassign_preserves_new_records() {
                 }
                 // Both partitions should end up with a committed offset that
                 // accounts for the initial + post-reassignment records.
-                let c0 = committed_offset(&brokers, group, TOPIC, 0)
-                    .expect("kafka-test: committed-offset probe failed");
+                let c0 = probe_committed_offset(&brokers, group, TOPIC);
                 let c1 = committed_offset(&brokers, group, TOPIC, 1)
                     .expect("kafka-test: committed-offset probe failed");
                 if c0.is_some_and(|o| o >= 2) && c1.is_some_and(|o| o >= 2) {
@@ -736,8 +723,7 @@ async fn rebalance_revoke_then_reassign_preserves_new_records() {
             // committed (offset >= 2). If the generation guard were broken,
             // the reassigned partition's fresh state would be purged and its
             // ack dropped, leaving the offset stuck at 1.
-            let c0 = committed_offset(&brokers, group, TOPIC, 0)
-                .expect("kafka-test: committed-offset probe failed");
+            let c0 = probe_committed_offset(&brokers, group, TOPIC);
             let c1 = committed_offset(&brokers, group, TOPIC, 1)
                 .expect("kafka-test: committed-offset probe failed");
             assert!(
@@ -746,8 +732,7 @@ async fn rebalance_revoke_then_reassign_preserves_new_records() {
                      got c0={c0:?} c1={c1:?}",
             );
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;
@@ -812,9 +797,7 @@ async fn rebalance_two_receivers_scale_up_down_distribute_without_loss_or_double
         KafkaTestCluster::builder().topic_with(TOPIC, REBALANCE_TEST_PARTITIONS, 1),
         |cluster| async move {
             let producer = cluster.producer().build();
-            let req = create_traces_with_spans();
-            let mut bytes = vec![];
-            req.encode(&mut bytes).expect("encode");
+            let bytes = encoded_trace_fixture();
             let brokers = cluster.bootstrap_servers().to_string();
 
             // Manual commit so the receiver's rebalance-aware commit path is
@@ -1050,9 +1033,7 @@ async fn run_two_member_strategy_rebalance(topic: &'static str, strategy: Rebala
         KafkaTestCluster::builder().topic_with(topic, REBALANCE_TEST_PARTITIONS, 1),
         |cluster| async move {
             let producer = cluster.producer().build();
-            let req = create_traces_with_spans();
-            let mut bytes = vec![];
-            req.encode(&mut bytes).expect("encode");
+            let bytes = encoded_trace_fixture();
             let brokers = cluster.bootstrap_servers().to_string();
 
             producer
@@ -1212,9 +1193,7 @@ async fn stale_ack_after_revoke_counts_feedback_after_revocation() {
         KafkaTestCluster::builder().topic_with(TOPIC, REBALANCE_TEST_PARTITIONS, 1),
         |cluster| async move {
             let producer = cluster.producer().build();
-            let req = create_traces_with_spans();
-            let mut bytes = vec![];
-            req.encode(&mut bytes).expect("encode");
+            let bytes = encoded_trace_fixture();
 
             // One record per partition so the receiver has in-flight work on
             // every partition it owns.
@@ -1298,9 +1277,7 @@ async fn stale_nack_after_revoke_counts_feedback_after_revocation() {
         KafkaTestCluster::builder().topic_with(TOPIC, REBALANCE_TEST_PARTITIONS, 1),
         |cluster| async move {
             let producer = cluster.producer().build();
-            let req = create_traces_with_spans();
-            let mut bytes = vec![];
-            req.encode(&mut bytes).expect("encode");
+            let bytes = encoded_trace_fixture();
 
             // One record per partition so the receiver has in-flight work on
             // every partition it owns.
@@ -1386,9 +1363,7 @@ async fn idempotent_redelivery_under_new_generation_is_reprocessed_not_skipped()
         KafkaTestCluster::builder().topic_with(TOPIC, REBALANCE_TEST_PARTITIONS, 1),
         |cluster| async move {
             let producer = cluster.producer().build();
-            let req = create_traces_with_spans();
-            let mut bytes = vec![];
-            req.encode(&mut bytes).expect("encode");
+            let bytes = encoded_trace_fixture();
 
             let records_per_partition = 3;
             producer
@@ -1495,9 +1470,7 @@ async fn inflight_records_on_revoke_are_redelivered_with_bounded_duplication() {
         KafkaTestCluster::builder().topic_with(TOPIC, REBALANCE_TEST_PARTITIONS, 1),
         |cluster| async move {
             let producer = cluster.producer().build();
-            let req = create_traces_with_spans();
-            let mut bytes = vec![];
-            req.encode(&mut bytes).expect("encode");
+            let bytes = encoded_trace_fixture();
 
             producer
                 .produce_per_partition(

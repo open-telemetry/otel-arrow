@@ -26,17 +26,9 @@ async fn transport_error_is_non_fatal_and_recovers() {
         KafkaTestCluster::builder().topic(TOPIC),
         |cluster| async move {
             let producer = cluster.producer().build();
-            let req = create_traces_with_spans();
-            let mut bytes = vec![];
-            req.encode(&mut bytes).expect("encode");
+            let bytes = encoded_trace_fixture();
 
-            for i in 0..RECORDS {
-                let key = format!("rec-{i}");
-                producer
-                    .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
-                    .await
-                    .expect("send record");
-            }
+            produce_traces(&producer, TOPIC, RECORDS, &bytes).await;
 
             // Inject a LONG run of fetch errors (consumed one-per-request in
             // order) so the fault stays active across the whole observation
@@ -80,8 +72,7 @@ async fn transport_error_is_non_fatal_and_recovers() {
                 receiver.ack(pdata);
             }
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;
@@ -104,9 +95,7 @@ async fn broker_outage_then_recovery_resumes_without_loss() {
         KafkaTestCluster::builder().topic(TOPIC),
         |cluster| async move {
             let producer = cluster.producer().build();
-            let req = create_traces_with_spans();
-            let mut bytes = vec![];
-            req.encode(&mut bytes).expect("encode");
+            let bytes = encoded_trace_fixture();
 
             for i in 0..PRE {
                 let key = format!("pre-{i}");
@@ -153,8 +142,7 @@ async fn broker_outage_then_recovery_resumes_without_loss() {
                 receiver.ack(pdata);
             }
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;
@@ -181,9 +169,7 @@ async fn intermittent_network_interruption_recovers_without_loss() {
         KafkaTestCluster::builder().topic(TOPIC),
         |cluster| async move {
             let producer = cluster.producer().build();
-            let req = create_traces_with_spans();
-            let mut bytes = vec![];
-            req.encode(&mut bytes).expect("encode");
+            let bytes = encoded_trace_fixture();
 
             for i in 0..PRE {
                 let key = format!("pre-{i}");
@@ -238,8 +224,7 @@ async fn intermittent_network_interruption_recovers_without_loss() {
             // No loss: the committed offset reaches the full produced count.
             let brokers = cluster.bootstrap_servers().to_string();
             let committed = poll_until(Duration::from_secs(5), Duration::from_millis(250), || {
-                committed_offset(&brokers, group, TOPIC, 0)
-                    .expect("kafka-test: committed-offset probe failed")
+                probe_committed_offset(&brokers, group, TOPIC)
                     .is_some_and(|o| o >= (PRE + POST) as i64)
             })
             .await;
@@ -248,12 +233,10 @@ async fn intermittent_network_interruption_recovers_without_loss() {
                 "after recovery the committed offset should reach the full \
                      produced count {}, got {:?}",
                 PRE + POST,
-                committed_offset(&brokers, group, TOPIC, 0)
-                    .expect("kafka-test: committed-offset probe failed"),
+                probe_committed_offset(&brokers, group, TOPIC),
             );
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;
@@ -276,16 +259,8 @@ async fn broker_latency_does_not_corrupt_offset_accounting() {
         KafkaTestCluster::builder().topic(TOPIC),
         |cluster| async move {
             let producer = cluster.producer().build();
-            let req = create_traces_with_spans();
-            let mut bytes = vec![];
-            req.encode(&mut bytes).expect("encode");
-            for i in 0..RECORDS {
-                let key = format!("rec-{i}");
-                producer
-                    .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
-                    .await
-                    .expect("send record");
-            }
+            let bytes = encoded_trace_fixture();
+            produce_traces(&producer, TOPIC, RECORDS, &bytes).await;
 
             // Inject a bounded per-request latency on all brokers. The broker
             // stays reachable; requests merely take longer.
@@ -293,8 +268,7 @@ async fn broker_latency_does_not_corrupt_offset_accounting() {
                 .faults()
                 .round_trip_time(-1, Duration::from_millis(50));
 
-            let cfg = manual_traces_config_no_timer(cluster.bootstrap_servers(), group, TOPIC);
-            let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+            let mut receiver = start_manual_traces_receiver(&cluster, group, TOPIC);
 
             // A larger per-record timeout absorbs the injected latency; every
             // record must still arrive.
@@ -307,18 +281,20 @@ async fn broker_latency_does_not_corrupt_offset_accounting() {
             }
 
             let brokers = cluster.bootstrap_servers().to_string();
-            let committed = poll_until(Duration::from_secs(8), Duration::from_millis(200), || {
-                committed_offset(&brokers, group, TOPIC, 0)
-                    .expect("kafka-test: committed-offset probe failed")
-                    .is_some_and(|o| o >= RECORDS)
-            })
+            let committed = poll_committed_offset(
+                &brokers,
+                group,
+                TOPIC,
+                RECORDS,
+                Duration::from_secs(8),
+                Duration::from_millis(200),
+            )
             .await;
             assert!(
                 committed,
                 "under bounded broker latency the committed offset must reach \
                      the full produced count {RECORDS} with no loss, got {:?}",
-                committed_offset(&brokers, group, TOPIC, 0)
-                    .expect("kafka-test: committed-offset probe failed"),
+                probe_committed_offset(&brokers, group, TOPIC),
             );
 
             receiver.shutdown(Duration::from_secs(5));

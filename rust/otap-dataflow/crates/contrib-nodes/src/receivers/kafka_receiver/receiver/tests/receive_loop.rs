@@ -17,9 +17,7 @@ async fn test_kafka_receiver_traces() {
         |cluster| async move {
             let producer = cluster.producer().build();
 
-            let req = create_traces_with_spans();
-            let mut bytes = vec![];
-            req.encode(&mut bytes).expect("encode");
+            let bytes = encoded_trace_fixture();
 
             for i in 0..3 {
                 let key = format!("test-key-{i}");
@@ -49,8 +47,7 @@ async fn test_kafka_receiver_traces() {
                 assert_eq!(proto.as_bytes(), &bytes);
             }
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;
@@ -100,8 +97,7 @@ async fn test_kafka_receiver_logs() {
                 assert_eq!(proto.as_bytes(), &bytes);
             }
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;
@@ -151,8 +147,7 @@ async fn test_kafka_receiver_metrics() {
                 assert_eq!(proto.as_bytes(), &bytes);
             }
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;
@@ -201,8 +196,7 @@ async fn test_kafka_receiver_traces_otap() {
                 );
             }
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;
@@ -251,8 +245,7 @@ async fn test_kafka_receiver_metrics_otap() {
                 }
             }
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;
@@ -301,8 +294,7 @@ async fn test_kafka_receiver_logs_otap() {
                 }
             }
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;
@@ -368,8 +360,7 @@ async fn test_kafka_receiver_message_format_header_overrides_signal_default() {
                 );
             }
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;
@@ -463,8 +454,7 @@ async fn multi_signal_topics_route_to_correct_decoders() {
                      (traces={saw_traces}, metrics={saw_metrics}, logs={saw_logs})",
             );
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;
@@ -489,9 +479,7 @@ async fn regex_topic_subscription_consumes_all_matching_topics() {
             .topic(TOPIC_C),
         |cluster| async move {
             let producer = cluster.producer().build();
-            let req = create_traces_with_spans();
-            let mut bytes = vec![];
-            req.encode(&mut bytes).expect("encode");
+            let bytes = encoded_trace_fixture();
             for topic in [TOPIC_A, TOPIC_B, TOPIC_C] {
                 producer
                     .send_full(SendRecord::new(topic, &bytes).key(topic.as_bytes()))
@@ -539,8 +527,7 @@ async fn regex_topic_subscription_consumes_all_matching_topics() {
                 "no extra records beyond the three matching topics",
             );
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;
@@ -561,16 +548,8 @@ async fn read_committed_isolation_delivers_and_commits() {
         KafkaTestCluster::builder().topic(TOPIC),
         |cluster| async move {
             let producer = cluster.producer().build();
-            let req = create_traces_with_spans();
-            let mut bytes = vec![];
-            req.encode(&mut bytes).expect("encode");
-            for i in 0..RECORDS {
-                let key = format!("rec-{i}");
-                producer
-                    .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
-                    .await
-                    .expect("send record");
-            }
+            let bytes = encoded_trace_fixture();
+            produce_traces(&producer, TOPIC, RECORDS, &bytes).await;
 
             let builder =
                 KafkaReceiverConfigBuilder::new(cluster.bootstrap_servers(), group, "test-client")
@@ -593,22 +572,23 @@ async fn read_committed_isolation_delivers_and_commits() {
             }
 
             let brokers = cluster.bootstrap_servers().to_string();
-            let committed = poll_until(Duration::from_secs(5), Duration::from_millis(150), || {
-                committed_offset(&brokers, group, TOPIC, 0)
-                    .expect("kafka-test: committed-offset probe failed")
-                    .is_some_and(|o| o >= RECORDS)
-            })
+            let committed = poll_committed_offset(
+                &brokers,
+                group,
+                TOPIC,
+                RECORDS,
+                Duration::from_secs(5),
+                Duration::from_millis(150),
+            )
             .await;
             assert!(
                 committed,
                 "read_committed receiver must deliver and commit all {RECORDS} \
                      non-transactional records, got {:?}",
-                committed_offset(&brokers, group, TOPIC, 0)
-                    .expect("kafka-test: committed-offset probe failed"),
+                probe_committed_offset(&brokers, group, TOPIC),
             );
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;

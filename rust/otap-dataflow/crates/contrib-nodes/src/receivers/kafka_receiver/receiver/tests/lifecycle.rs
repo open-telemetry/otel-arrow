@@ -34,9 +34,7 @@ async fn draining_receiver_does_not_reacquire_partitions_after_new_member_joins(
         KafkaTestCluster::builder().topic_with(TOPIC, REBALANCE_TEST_PARTITIONS, 1),
         |cluster| async move {
             let producer = cluster.producer().build();
-            let req = create_traces_with_spans();
-            let mut bytes = vec![];
-            req.encode(&mut bytes).expect("encode");
+            let bytes = encoded_trace_fixture();
 
             // Produce to every partition so A has work on each partition it owns.
             producer
@@ -111,9 +109,7 @@ async fn draining_receiver_task_completes_before_deadline_under_rebalance_churn(
         KafkaTestCluster::builder().topic_with(TOPIC, REBALANCE_TEST_PARTITIONS, 1),
         |cluster| async move {
             let producer = cluster.producer().build();
-            let req = create_traces_with_spans();
-            let mut bytes = vec![];
-            req.encode(&mut bytes).expect("encode");
+            let bytes = encoded_trace_fixture();
 
             producer
                 .produce_per_partition(
@@ -202,9 +198,7 @@ async fn draining_receiver_leaves_group_so_peer_gains_partitions() {
         KafkaTestCluster::builder().topic_with(TOPIC, REBALANCE_TEST_PARTITIONS, 1),
         |cluster| async move {
             let producer = cluster.producer().build();
-            let req = create_traces_with_spans();
-            let mut bytes = vec![];
-            req.encode(&mut bytes).expect("encode");
+            let bytes = encoded_trace_fixture();
 
             // Wave 1: produce to every partition and let A (alone) drain it in
             // full, establishing that A owned the whole topic before B mattered.
@@ -297,9 +291,7 @@ async fn drain_ingress_stops_polling_and_notifies_drained() {
         |cluster| async move {
             let producer = cluster.producer().build();
 
-            let req = create_traces_with_spans();
-            let mut bytes = vec![];
-            req.encode(&mut bytes).expect("encode");
+            let bytes = encoded_trace_fixture();
 
             // Produce an initial batch that the receiver will consume before drain.
             for i in 0..INITIAL {
@@ -364,17 +356,19 @@ async fn drain_ingress_stops_polling_and_notifies_drained() {
             // The commit is asynchronous, so poll until the broker reports
             // it rather than asserting once.
             let brokers = cluster.bootstrap_servers().to_string();
-            let committed = poll_until(Duration::from_secs(5), Duration::from_millis(250), || {
-                committed_offset(&brokers, group, TOPIC, 0)
-                    .expect("kafka-test: committed-offset probe failed")
-                    .is_some_and(|o| o >= INITIAL as i64)
-            })
+            let committed = poll_committed_offset(
+                &brokers,
+                group,
+                TOPIC,
+                INITIAL as i64,
+                Duration::from_secs(5),
+                Duration::from_millis(250),
+            )
             .await;
             assert!(
                 committed,
                 "pre-drain offsets should be committed at drain time, got {:?}",
-                committed_offset(&brokers, group, TOPIC, 0)
-                    .expect("kafka-test: committed-offset probe failed"),
+                probe_committed_offset(&brokers, group, TOPIC),
             );
 
             // The receiver terminates after reporting its ingress drain,
@@ -649,9 +643,7 @@ async fn drain_under_sustained_traffic_commits_and_stops_cleanly() {
         KafkaTestCluster::builder().topic(TOPIC),
         |cluster| async move {
             let producer = cluster.producer().build();
-            let req = create_traces_with_spans();
-            let mut bytes = vec![];
-            req.encode(&mut bytes).expect("encode");
+            let bytes = encoded_trace_fixture();
 
             // Produce a first burst the receiver will consume and ack.
             for i in 0..PRE_DRAIN {
@@ -715,17 +707,19 @@ async fn drain_under_sustained_traffic_commits_and_stops_cleanly() {
 
             // The pre-drain acked offsets must be committed.
             let brokers = cluster.bootstrap_servers().to_string();
-            let committed = poll_until(Duration::from_secs(5), Duration::from_millis(250), || {
-                committed_offset(&brokers, group, TOPIC, 0)
-                    .expect("kafka-test: committed-offset probe failed")
-                    .is_some_and(|o| o >= PRE_DRAIN as i64)
-            })
+            let committed = poll_committed_offset(
+                &brokers,
+                group,
+                TOPIC,
+                PRE_DRAIN as i64,
+                Duration::from_secs(5),
+                Duration::from_millis(250),
+            )
             .await;
             assert!(
                 committed,
                 "pre-drain offsets should be committed, got {:?}",
-                committed_offset(&brokers, group, TOPIC, 0)
-                    .expect("kafka-test: committed-offset probe failed"),
+                probe_committed_offset(&brokers, group, TOPIC),
             );
 
             receiver.await_stopped().await;
@@ -750,20 +744,11 @@ async fn drain_does_not_wait_for_inflight_downstream_acks() {
         KafkaTestCluster::builder().topic(TOPIC),
         |cluster| async move {
             let producer = cluster.producer().build();
-            let req = create_traces_with_spans();
-            let mut bytes = vec![];
-            req.encode(&mut bytes).expect("encode");
+            let bytes = encoded_trace_fixture();
 
-            for i in 0..RECORDS {
-                let key = format!("rec-{i}");
-                producer
-                    .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
-                    .await
-                    .expect("send record");
-            }
+            produce_traces(&producer, TOPIC, RECORDS, &bytes).await;
 
-            let cfg = manual_traces_config_no_timer(cluster.bootstrap_servers(), group, TOPIC);
-            let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+            let mut receiver = start_manual_traces_receiver(&cluster, group, TOPIC);
 
             // Consume every record but hold them un-acked: their downstream
             // acks are deliberately never delivered, so they stay in-flight.
@@ -829,20 +814,11 @@ async fn shutdown_with_broker_unavailable_does_not_hang() {
         KafkaTestCluster::builder().topic(TOPIC),
         |cluster| async move {
             let producer = cluster.producer().build();
-            let req = create_traces_with_spans();
-            let mut bytes = vec![];
-            req.encode(&mut bytes).expect("encode");
+            let bytes = encoded_trace_fixture();
 
-            for i in 0..RECORDS {
-                let key = format!("rec-{i}");
-                producer
-                    .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
-                    .await
-                    .expect("send record");
-            }
+            produce_traces(&producer, TOPIC, RECORDS, &bytes).await;
 
-            let cfg = manual_traces_config_no_timer(cluster.bootstrap_servers(), group, TOPIC);
-            let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+            let mut receiver = start_manual_traces_receiver(&cluster, group, TOPIC);
 
             // Consume and ack every record so there are tracked offsets to
             // commit at shutdown.
@@ -914,16 +890,8 @@ async fn shutdown_with_lag_refresh_in_flight_still_terminates_within_deadline() 
         KafkaTestCluster::builder().topic(TOPIC),
         |cluster| async move {
             let producer = cluster.producer().build();
-            let req = create_traces_with_spans();
-            let mut bytes = vec![];
-            req.encode(&mut bytes).expect("encode");
-            for i in 0..RECORDS {
-                let key = format!("rec-{i}");
-                producer
-                    .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
-                    .await
-                    .expect("send record");
-            }
+            let bytes = encoded_trace_fixture();
+            produce_traces(&producer, TOPIC, RECORDS, &bytes).await;
 
             // Arm the lag refresh timer at a short interval so a lag-refresh
             // worker is repeatedly spawned.

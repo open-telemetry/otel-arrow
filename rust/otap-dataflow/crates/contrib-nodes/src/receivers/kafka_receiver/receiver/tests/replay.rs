@@ -517,21 +517,12 @@ fn manual_traces_config_with_commit_and_skip(
     group_id: &str,
     traces_topic: &str,
 ) -> KafkaReceiverConfig {
-    let builder = KafkaReceiverConfigBuilder::new(brokers, group_id, "test-client")
-        .with_traces(
-            SignalConfig::new(vec![traces_topic.to_string()])
-                .with_encoding(MessageFormat::OtlpProto),
-        )
-        .with_commit(CommitConfig {
-            mode: ConfigCommitMode::Manual,
-            interval_ms: None,
-        })
-        .with_transient_nack(TransientNackConfig {
+    let builder = manual_traces_builder(brokers, group_id, traces_topic).with_transient_nack(
+        TransientNackConfig {
             mode: TransientNackMode::CommitAndSkip,
             ..Default::default()
-        })
-        .with_auto_offset_reset(AutoOffsetReset::Earliest)
-        .with_isolation_level(IsolationLevel::ReadUncommitted);
+        },
+    );
     KafkaReceiverConfig::try_from(builder).expect("test commit-and-skip config valid")
 }
 
@@ -550,23 +541,13 @@ fn manual_traces_config_with_replay_backoff(
     initial_backoff_ms: u64,
     max_backoff_ms: u64,
 ) -> KafkaReceiverConfig {
-    let builder = KafkaReceiverConfigBuilder::new(brokers, group_id, "test-client")
-        .with_traces(
-            SignalConfig::new(vec![traces_topic.to_string()])
-                .with_encoding(MessageFormat::OtlpProto),
-        )
-        .with_commit(CommitConfig {
-            mode: ConfigCommitMode::Manual,
-            interval_ms: None,
-        })
+    let builder = manual_traces_builder(brokers, group_id, traces_topic)
         .with_transient_nack(TransientNackConfig {
             mode: TransientNackMode::Replay,
             initial_backoff_ms,
             max_backoff_ms,
         })
-        .with_enable_idempotency(true)
-        .with_auto_offset_reset(AutoOffsetReset::Earliest)
-        .with_isolation_level(IsolationLevel::ReadUncommitted);
+        .with_enable_idempotency(true);
     KafkaReceiverConfig::try_from(builder).expect("test replay config valid")
 }
 
@@ -774,17 +755,9 @@ async fn explicit_commit_and_skip_advances_transient_and_permanent_nacks() {
         KafkaTestCluster::builder().topic(TOPIC),
         |cluster| async move {
             let producer = cluster.producer().build();
-            let req = create_traces_with_spans();
-            let mut bytes = vec![];
-            req.encode(&mut bytes).expect("encode");
+            let bytes = encoded_trace_fixture();
 
-            for i in 0..RECORDS {
-                let key = format!("rec-{i}");
-                producer
-                    .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
-                    .await
-                    .expect("send record");
-            }
+            produce_traces(&producer, TOPIC, RECORDS, &bytes).await;
 
             let cfg = manual_traces_config_with_commit_and_skip(
                 cluster.bootstrap_servers(),
@@ -812,16 +785,18 @@ async fn explicit_commit_and_skip_advances_transient_and_permanent_nacks() {
             );
 
             let brokers = cluster.bootstrap_servers().to_string();
-            let advanced = poll_until(Duration::from_secs(5), Duration::from_millis(250), || {
-                committed_offset(&brokers, group, TOPIC, 0)
-                    .expect("kafka-test: committed-offset probe failed")
-                    .is_some_and(|offset| offset >= RECORDS as i64)
-            })
+            let advanced = poll_committed_offset(
+                &brokers,
+                group,
+                TOPIC,
+                RECORDS as i64,
+                Duration::from_secs(5),
+                Duration::from_millis(250),
+            )
             .await;
             assert!(advanced, "both terminal outcomes must advance the offset");
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;
@@ -838,16 +813,8 @@ async fn transient_nack_replays_without_committing_past_failure() {
         KafkaTestCluster::builder().topic(TOPIC),
         |cluster| async move {
             let producer = cluster.producer().build();
-            let req = create_traces_with_spans();
-            let mut bytes = vec![];
-            req.encode(&mut bytes).expect("encode");
-            for i in 0..RECORDS {
-                let key = format!("rec-{i}");
-                producer
-                    .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
-                    .await
-                    .expect("send record");
-            }
+            let bytes = encoded_trace_fixture();
+            produce_traces(&producer, TOPIC, RECORDS, &bytes).await;
 
             let cfg = manual_traces_config_with_replay(cluster.bootstrap_servers(), group, TOPIC);
             let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
@@ -908,8 +875,7 @@ async fn transient_nack_replays_without_committing_past_failure() {
             .await;
             assert!(advanced, "ACKing the rewind record must release progress");
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;
@@ -925,9 +891,7 @@ async fn transient_nack_pause_is_partition_local_and_shutdown_safe() {
         KafkaTestCluster::builder().topic_with(TOPIC, 2, 1),
         |cluster| async move {
             let producer = cluster.producer().build();
-            let req = create_traces_with_spans();
-            let mut bytes = vec![];
-            req.encode(&mut bytes).expect("encode");
+            let bytes = encoded_trace_fixture();
             producer.produce_per_partition(TOPIC, 2, 1, &bytes).await;
 
             let cfg = manual_traces_config_with_replay_backoff(
@@ -991,8 +955,7 @@ async fn transient_nack_pause_is_partition_local_and_shutdown_safe() {
                 "failed partition must remain at offset 0",
             );
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
             assert!(
                 committed_offset(&brokers, group, TOPIC, 0)
                     .expect("committed-offset probe")
@@ -1014,9 +977,7 @@ async fn transient_nack_rebalance_replays_failed_offset_on_new_owner() {
         KafkaTestCluster::builder().topic_with(TOPIC, 2, 1),
         |cluster| async move {
             let producer = cluster.producer().build();
-            let req = create_traces_with_spans();
-            let mut bytes = vec![];
-            req.encode(&mut bytes).expect("encode");
+            let bytes = encoded_trace_fixture();
             producer.produce_per_partition(TOPIC, 2, 1, &bytes).await;
 
             let cfg = manual_traces_config_with_replay_backoff(
@@ -1069,8 +1030,7 @@ async fn transient_nack_rebalance_replays_failed_offset_on_new_owner() {
                 "rebalance must not commit past the failed offset",
             );
 
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
             drop(new_owner);
         },
     )
@@ -1087,9 +1047,7 @@ async fn transient_nack_reassignment_to_same_consumer_redelivers_failed_offset()
         KafkaTestCluster::builder().topic_with(TOPIC, 2, 1),
         |cluster| async move {
             let producer = cluster.producer().build();
-            let req = create_traces_with_spans();
-            let mut bytes = vec![];
-            req.encode(&mut bytes).expect("encode");
+            let bytes = encoded_trace_fixture();
             producer.produce_per_partition(TOPIC, 2, 1, &bytes).await;
 
             let cfg = manual_traces_config_with_replay_backoff(
@@ -1136,8 +1094,7 @@ async fn transient_nack_reassignment_to_same_consumer_redelivers_failed_offset()
             assert_eq!(offset, 0);
 
             receiver.ack(replayed);
-            receiver.shutdown(Duration::from_secs(5));
-            receiver.await_stopped().await;
+            shutdown_receiver(receiver).await;
         },
     )
     .await;

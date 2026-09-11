@@ -451,9 +451,7 @@ async fn unknown_topic_rejections_are_categorized_separately_from_decode_errors(
         KafkaTestCluster::builder().topic(INCLUDED).topic(EXCLUDED),
         |cluster| async move {
             let producer = cluster.producer().build();
-            let req = create_traces_with_spans();
-            let mut bytes = vec![];
-            req.encode(&mut bytes).expect("encode");
+            let bytes = encoded_trace_fixture();
 
             // One record on each topic. Both are well-formed, so any counted
             // error is a filtering decision, not a decode failure.
