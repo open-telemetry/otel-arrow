@@ -36,9 +36,20 @@ async fn test_simple_datapoint_filter() {
                 data_points: vec![
                     // flags are not valid flag values but, just need to set some primitive field
                     // for testing engine behaviour
-                    NumberDataPoint::build().flags(5u32).finish(),
-                    NumberDataPoint::build().flags(6u32).finish(),
-                    NumberDataPoint::build().flags(6u32).finish(),
+
+                    // TODO - set some exemplars, etc?
+                    NumberDataPoint::build()
+                        .flags(5u32)
+                        .attributes(vec![KeyValue::new("x", AnyValue::new_int(3))])
+                        .finish(),
+                    NumberDataPoint::build()
+                        .flags(6u32)
+                        .attributes(vec![KeyValue::new("x", AnyValue::new_int(3))])
+                        .finish(),
+                    NumberDataPoint::build()
+                        .flags(6u32)
+                        .attributes(vec![KeyValue::new("x", AnyValue::new_int(3))])
+                        .finish(),
                 ],
             })
             .finish(),
@@ -147,6 +158,7 @@ async fn test_filter_datapoints_by_propagated_nulls() {
     println!("{:#?}", result_metrics);
 }
 
+// shouldn't allow this?
 #[tokio::test]
 async fn test_apply_to_metric_data_points() {
     // this is currently a planning error!
