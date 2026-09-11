@@ -90,7 +90,6 @@ impl ScopedExpr {
     ///
     /// Primarily used when the consumer needs actual values -- e.g., for assignment to a column,
     /// as input to arithmetic, or as an argument to a function call.
-    // TODO - comment is out of date wrt to null propagation?
     pub(crate) fn execute_as_value(
         &mut self,
         otap_batch: &OtapArrowRecords,
@@ -522,7 +521,6 @@ fn execute_bitmap_and_as_value(
     let left_result = left.execute_as_id_mask(otap_batch, eval_ctx, &mut pool)?;
 
     // short-circuit: if left is all-false, skip right
-    // TODO - should we also be checking if it's weirdly IdMask::Some(x) where x.true_count() == 0 ? or w/e? (same for NotSome)
     if left_result.mask == IdMask::None {
         return materialize_id_mask_to_value(IdMask::None, None, otap_batch);
     }
@@ -756,9 +754,6 @@ fn materialize_id_mask_to_value(
                     let mut segment_val = false;
                     let mut segment_len = 0usize;
 
-                    // TODO - should we be like, checking if the row is !valid
-                    // if the IdMask variant was NotSome? e.g. is there a bug here?
-
                     for idx in 0..id_col.len() {
                         let row_val = if id_col.is_valid(idx) {
                             mask.contains(id_col.value(idx) as u32)
@@ -796,7 +791,6 @@ fn materialize_id_mask_to_value(
 
     Ok(Some(ScopedValue::new(
         ColumnarValue::Array(Arc::new(boolean_arr)),
-        // TODO - need to put the actual RecordScope here
         DataScope::Record(RecordScope::Signal),
         root_rb,
     )))
@@ -886,7 +880,6 @@ fn build_case_insensitive_mask(key_col: &dyn Array, key_lower: &str) -> Result<B
                 .as_any()
                 .downcast_ref::<StringArray>()
                 .expect("data type is Utf8, downcast to StringArray must succeed");
-            // TODO - we should use case insensitive eq kernel rather than converting to lower case
             Ok(BooleanArray::from_iter(key_arr.iter().map(|opt_val| {
                 opt_val.map(|v| v.to_lowercase() == *key_lower)
             })))
@@ -908,8 +901,6 @@ fn build_case_insensitive_mask(key_col: &dyn Array, key_lower: &str) -> Result<B
             Ok(BooleanArray::from_iter((0..dict_arr.len()).map(|i| {
                 if dict_arr.is_valid(i) {
                     let key_idx = keys.value(i) as usize;
-                    // TODO - we should use case insensitive eq kernel rather than converting to lower case
-                    // Also - this dereferences and compares the values multiple times - poor perf.
                     Some(values.value(key_idx).to_lowercase() == *key_lower)
                 } else {
                     Some(false)
@@ -1006,7 +997,6 @@ pub(crate) fn align_value_to_root(
 
     let left_input = JoinInput::new(
         ColumnarValue::Array(Arc::new(NullArray::new(root_batch.num_rows()))),
-        // TODO - shouldn't be assuming this ...
         Rc::new(DataScope::Record(RecordScope::Signal)),
         root_batch,
     );
@@ -1024,7 +1014,6 @@ pub(crate) fn align_value_to_root(
         })?
         .clone();
 
-    // TODO - this will fail when executing on chilren
     debug_assert!(matches!(
         result_scope.as_ref(),
         DataScope::Record(RecordScope::Signal)
