@@ -143,6 +143,11 @@ pub struct QuiverEngine {
     segment_cursor: Mutex<WalConsumerCursor>,
     /// Next segment sequence number to assign.
     next_segment_seq: AtomicU64,
+    /// Count of segments this process has actually written to disk (recovered
+    /// at startup plus finalized since). Distinct from `next_segment_seq`,
+    /// which is an allocation floor that can advance past sequence numbers
+    /// with no corresponding segment file (see issue #4024).
+    segments_finalized: AtomicU64,
     /// Cumulative bytes written to WAL (never decreases, even after rotation/purge).
     cumulative_wal_bytes: AtomicU64,
     /// Cumulative bytes written to segments (never decreases, even after cleanup).
@@ -452,6 +457,7 @@ impl QuiverEngine {
         let mut deleted_during_scan = Vec::new();
         let mut startup_expired = RetentionLossCounts::default();
         let startup_expired_items_by_shape = HashMap::new();
+        let recovered_segments;
         match segment_store.scan_existing_with_max_age(config.retention.max_age) {
             Ok(scan_result) => {
                 // An unreadable sidecar may hold a higher floor than any other
@@ -499,6 +505,12 @@ impl QuiverEngine {
                         next_segment_seq,
                     );
                 }
+                // Both groups were actually written to disk by a previous
+                // run: `found` are still present, `deleted` were removed by
+                // this scan's age-based expiry. Counted before `deleted` is
+                // consumed below.
+                recovered_segments =
+                    scan_result.found.len() as u64 + scan_result.deleted.len() as u64;
                 for (seq, bytes) in scan_result.deleted {
                     startup_expired.segments += 1;
                     startup_expired.reclaimed_bytes += bytes;
@@ -506,12 +518,19 @@ impl QuiverEngine {
                 }
             }
             Err(e) => {
+                // A scan failure means neither the filename-derived floor nor
+                // the sidecar floor is known. Continuing with an empty store
+                // would use next_segment_seq = 0, which could reallocate a
+                // sequence number already in use and silently suppress new
+                // data (issue #4024), so refuse to open instead.
                 otel_error!(
                     "quiver.segment.scan",
                     error = %e,
                     error_type = "io",
-                    message = "continuing with empty store, previously finalized data may be inaccessible",
+                    message = "cannot verify the segment sequence floor, \
+                               refusing to open",
                 );
+                return Err(segment_error_from_subscriber(e).into());
             }
         }
 
@@ -553,6 +572,7 @@ impl QuiverEngine {
             open_segment: Mutex::new(OpenSegment::new()),
             segment_cursor: Mutex::new(WalConsumerCursor::default()),
             next_segment_seq: AtomicU64::new(next_segment_seq),
+            segments_finalized: AtomicU64::new(recovered_segments),
             cumulative_wal_bytes: AtomicU64::new(0),
             cumulative_segment_bytes: AtomicU64::new(0),
             force_dropped_segments: AtomicU64::new(0),
@@ -637,8 +657,13 @@ impl QuiverEngine {
     /// This is a monotonically increasing counter, unlike `segment_store().segment_count()`
     /// which only shows currently-loaded segments (after cleanup, count decreases).
     /// Useful for tracking total segments written during a test run.
+    ///
+    /// Counts only segments that were actually written to disk; it is
+    /// distinct from the internal sequence allocation floor, which may
+    /// advance past sequence numbers that were reserved but never written
+    /// (see issue #4024).
     pub fn total_segments_written(&self) -> u64 {
-        self.next_segment_seq.load(Ordering::Relaxed)
+        self.segments_finalized.load(Ordering::Relaxed)
     }
 
     /// Returns the total number of segments that have been force-dropped
@@ -1430,6 +1455,11 @@ impl QuiverEngine {
             })?;
 
         otel_debug!("quiver.segment.flush", segment = seq.raw(), bytes_written,);
+
+        // Counts the file as written now that it is durably on disk,
+        // independent of whether the sequence floor persists successfully
+        // below (see `total_segments_written`).
+        let _ = self.segments_finalized.fetch_add(1, Ordering::Relaxed);
 
         // Track cumulative bytes (never decreases, for accurate throughput measurement)
         let _ = self
@@ -6075,6 +6105,8 @@ mod tests {
         );
     }
 
+    /// Scenario: the engine opens against a data directory whose sequence
+    /// sidecar exists but cannot be read (a directory occupies its path).
     /// Guarantees: `open` fails instead of falling back to a lower floor,
     /// which could reallocate an in-use sequence number and silently suppress
     /// newly ingested data (issue #4024).
@@ -6098,6 +6130,79 @@ mod tests {
             result.is_err(),
             "open must fail closed when the sequence floor cannot be verified"
         );
+    }
+
+    /// Returns whether the current process ignores Unix permission bits (e.g.
+    /// running as root), by checking whether a mode-000 file remains
+    /// readable. Used to skip permission-based fault injection instead of
+    /// silently passing for the wrong reason under such a process.
+    #[cfg(unix)]
+    fn permissions_are_enforced(dir: &Path) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        let probe = dir.join("perm_probe");
+        fs::write(&probe, b"x").expect("write probe file");
+        fs::set_permissions(&probe, fs::Permissions::from_mode(0o000)).expect("chmod probe file");
+        let enforced = fs::read(&probe).is_err();
+        fs::set_permissions(&probe, fs::Permissions::from_mode(0o644))
+            .expect("restore probe permissions");
+        let _ = fs::remove_file(&probe);
+        enforced
+    }
+
+    /// Scenario: the segments directory cannot be listed at startup (e.g. its
+    /// permissions were removed), so neither the filename-derived floor nor
+    /// the sidecar floor can be determined.
+    /// Guarantees: `open` fails instead of falling back to `next_segment_seq
+    /// = 0`, which could reallocate an in-use sequence number and silently
+    /// suppress newly ingested data (issue #4024).
+    #[tokio::test]
+    async fn open_fails_when_segment_directory_scan_errors() {
+        #[cfg(not(unix))]
+        {
+            // Directory permission enforcement is exercised on Unix only.
+            return;
+        }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let dir = tempdir().expect("tempdir");
+            if !permissions_are_enforced(dir.path()) {
+                // Running with elevated privileges (e.g. root in CI) that
+                // ignore permission bits; the fault cannot be injected here.
+                return;
+            }
+
+            let segment_dir = dir.path().join("segments");
+            fs::create_dir_all(&segment_dir).expect("create segments dir");
+
+            let config = QuiverConfig::builder()
+                .data_dir(dir.path())
+                .build()
+                .expect("config");
+            // Establish the directory (and its sidecar) via a normal open
+            // first, so the failure below is isolated to listing it.
+            drop(
+                QuiverEngine::open(config.clone(), test_budget())
+                    .await
+                    .expect("initial engine open"),
+            );
+
+            fs::set_permissions(&segment_dir, fs::Permissions::from_mode(0o000))
+                .expect("remove segment directory permissions");
+
+            let result = QuiverEngine::open(config, test_budget()).await;
+
+            // Restore permissions so the tempdir can be cleaned up.
+            fs::set_permissions(&segment_dir, fs::Permissions::from_mode(0o755))
+                .expect("restore segment directory permissions");
+
+            assert!(
+                result.is_err(),
+                "open must fail closed when the segment directory cannot be scanned"
+            );
+        }
     }
 
     /// Scenario: the sequence sidecar is unavailable after all segments were
@@ -6155,10 +6260,6 @@ mod tests {
         let engine = QuiverEngine::open(config, test_budget())
             .await
             .expect("engine");
-        assert!(
-            engine.total_segments_written() > 0,
-            "subscriber progress must still supply a non-zero floor"
-        );
         engine.activate_subscriber(&sub_id).expect("activate");
 
         engine
@@ -6166,6 +6267,15 @@ mod tests {
             .await
             .expect("ingest");
         engine.flush().await.expect("flush");
+
+        for seq in engine.segment_store().segment_sequences() {
+            assert!(
+                seq.raw() > 0,
+                "the new segment's seq {} must not reuse sequence 0, which \
+                 subscriber progress already recorded as delivered",
+                seq.raw()
+            );
+        }
 
         let mut delivered = 0;
         while let Some(h) = engine.poll_next_bundle(&sub_id).expect("poll") {
@@ -6334,6 +6444,55 @@ mod tests {
         assert!(
             delivered > 0,
             "data written after a sequence gap must still be delivered"
+        );
+    }
+
+    /// Scenario: the sequence allocation floor jumps ahead of any file on
+    /// disk (as in `sequence_gap_above_segment_files_is_safe`), leaving a gap
+    /// of sequence numbers that were reserved but never written, and the
+    /// store then restarts so the floor is loaded from the sidecar.
+    /// Guarantees: `total_segments_written` reports only segments actually
+    /// written to disk; it does not count the skipped sequence numbers, since
+    /// it is used as a literal segment count by callers (issue #4024).
+    #[tokio::test]
+    async fn total_segments_written_excludes_gap_in_allocation_floor() {
+        let dir = tempdir().expect("tempdir");
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes: NonZeroU64::new(100).unwrap(),
+                ..Default::default()
+            })
+            .build()
+            .expect("config");
+
+        {
+            let engine = QuiverEngine::open(config.clone(), test_budget())
+                .await
+                .expect("engine");
+
+            // Advance the persisted floor far past anything ever written, as
+            // a crash between reserving a sequence and writing its segment
+            // would.
+            engine
+                .segment_store()
+                .persist_next_seq(500)
+                .await
+                .expect("persist gap");
+        }
+
+        // Reopen so the floor is loaded from the sidecar into
+        // `next_segment_seq`, which must not be conflated with the count of
+        // segments actually written.
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("reopen");
+
+        assert_eq!(
+            engine.total_segments_written(),
+            0,
+            "no segment was ever written, so the count must be 0 \
+             regardless of the allocation floor"
         );
     }
 
