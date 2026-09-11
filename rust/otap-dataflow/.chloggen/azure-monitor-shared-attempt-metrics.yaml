@@ -1,0 +1,6 @@
+change_type: breaking
+component: observability
+note: Replace Azure Monitor export item, message, and byte metrics with shared exporter attempt metrics.
+issues: [3822]
+subtext: |
+  Migration: Update queries from `exporter.azure_monitor.exports.{items,messages,bytes}` to `exporter.attempted.{items,messages,payload.size}`. Internal HTTP retries now produce separate shared attempts.

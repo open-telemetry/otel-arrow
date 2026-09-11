@@ -148,7 +148,6 @@ impl AzureMonitorExporter {
             client,
             result,
             row_count,
-            body_size_bytes,
             token_generation,
         } = completed_export;
 
@@ -161,17 +160,11 @@ impl AzureMonitorExporter {
 
         match result {
             Ok(duration) => {
-                self.handle_export_success(
-                    effect_handler,
-                    batch_id,
-                    row_count,
-                    body_size_bytes,
-                    duration,
-                )
-                .await
+                self.handle_export_success(effect_handler, batch_id, row_count, duration)
+                    .await
             }
             Err(e) => {
-                self.handle_export_failure(effect_handler, batch_id, row_count, body_size_bytes, e)
+                self.handle_export_failure(effect_handler, batch_id, e)
                     .await
             }
         }
@@ -182,20 +175,13 @@ impl AzureMonitorExporter {
         effect_handler: &EffectHandler<OtapPdata>,
         batch_id: u64,
         row_count: u64,
-        body_size_bytes: u64,
         duration: std::time::Duration,
     ) -> Result<(), EngineError> {
         // Export succeeded - Ack only fully-completed messages
         let completed_messages = self.state.remove_batch_success(batch_id);
-        {
-            let mut m = self.metrics.borrow_mut();
-            m.record_export(
-                Outcome::Success,
-                row_count,
-                completed_messages.len() as u64,
-                body_size_bytes,
-            );
-        }
+        self.metrics
+            .borrow_mut()
+            .record_completed_batch(Outcome::Success);
 
         otel_debug!(
             "azure_monitor_exporter.export.success",
@@ -216,21 +202,13 @@ impl AzureMonitorExporter {
         &mut self,
         effect_handler: &EffectHandler<OtapPdata>,
         batch_id: u64,
-        row_count: u64,
-        body_size_bytes: u64,
         error: Error,
     ) -> Result<(), EngineError> {
         // Export failed - Nack ALL messages in this batch, remove entirely
         let failed_messages = self.state.remove_batch_failure(batch_id);
-        {
-            let mut m = self.metrics.borrow_mut();
-            m.record_export(
-                Outcome::Failure,
-                row_count,
-                failed_messages.len() as u64,
-                body_size_bytes,
-            );
-        }
+        self.metrics
+            .borrow_mut()
+            .record_completed_batch(Outcome::Failure);
 
         otel_warn!("azure_monitor_exporter.export.failed", batch_id = batch_id, error = %error);
 
@@ -275,13 +253,7 @@ impl AzureMonitorExporter {
                 reason: auth.not_ready_reason(),
             };
             return self
-                .handle_export_failure(
-                    effect_handler,
-                    pending_batch.batch_id,
-                    pending_batch.row_count,
-                    pending_batch.compressed_data.len() as u64,
-                    error,
-                )
+                .handle_export_failure(effect_handler, pending_batch.batch_id, error)
                 .await;
         };
 
@@ -630,12 +602,8 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                                 let bs = m.batch_size();
                                 otel_debug!(
                                     "azure_monitor_exporter.metrics.collect",
-                                    successful_items = m.export_for(Outcome::Success).items.get(),
                                     successful_batches = m.export_for(Outcome::Success).batches.get(),
-                                    successful_messages = m.export_for(Outcome::Success).messages.get(),
-                                    failed_items = m.export_for(Outcome::Failure).items.get(),
                                     failed_batches = m.export_for(Outcome::Failure).batches.get(),
-                                    failed_messages = m.export_for(Outcome::Failure).messages.get(),
                                     client_success_latency_avg_ms = if cl.count > 0 { cl.sum / cl.count as f64 } else { 0.0 },
                                     client_success_latency_min_ms = if cl.count > 0 { cl.min } else { 0.0 },
                                     client_success_latency_max_ms = if cl.count > 0 { cl.max } else { 0.0 },
@@ -823,8 +791,8 @@ mod tests {
         auth
     }
 
-    /// Scenario: A completed export succeeds with a known compressed request-body size.
-    /// Guarantees: The successful outcome records the resolved request-body bytes.
+    /// Scenario: A completed export succeeds.
+    /// Guarantees: The successful outcome records one completed compressed batch.
     #[tokio::test]
     async fn test_handle_export_success() {
         let config = create_test_config();
@@ -855,16 +823,13 @@ mod tests {
 
         // This might fail due to missing sender in effect_handler, but state should be updated
         let _ = exporter
-            .handle_export_success(&effect_handler, batch_id, 10, 1_024, Duration::from_secs(1))
+            .handle_export_success(&effect_handler, batch_id, 10, Duration::from_secs(1))
             .await;
 
         // Verify stats
         let m = exporter.metrics.borrow();
         let success = m.export_for(Outcome::Success);
         assert_eq!(success.batches.get(), 1);
-        assert_eq!(success.messages.get(), 1);
-        assert_eq!(success.items.get(), 10);
-        assert_eq!(success.bytes.get(), 1_024);
         drop(m);
 
         // Verify state cleared
@@ -872,8 +837,8 @@ mod tests {
         assert!(exporter.state.msg_to_data.is_empty());
     }
 
-    /// Scenario: A completed export fails with a known compressed request-body size.
-    /// Guarantees: The failed outcome records the resolved request-body bytes.
+    /// Scenario: A completed export fails.
+    /// Guarantees: The failed outcome records one completed compressed batch.
     #[tokio::test]
     async fn test_handle_export_failure() {
         let config = create_test_config();
@@ -909,16 +874,13 @@ mod tests {
         };
 
         let _ = exporter
-            .handle_export_failure(&effect_handler, batch_id, 10, 512, error)
+            .handle_export_failure(&effect_handler, batch_id, error)
             .await;
 
         // Verify stats
         let m = exporter.metrics.borrow();
         let failure = m.export_for(Outcome::Failure);
         assert_eq!(failure.batches.get(), 1);
-        assert_eq!(failure.messages.get(), 1);
-        assert_eq!(failure.items.get(), 10);
-        assert_eq!(failure.bytes.get(), 512);
         drop(m);
 
         // Verify state cleared
@@ -962,7 +924,6 @@ mod tests {
             client,
             result: Err(Error::unauthorized("rejected".to_string())),
             row_count: 1,
-            body_size_bytes: 1,
             token_generation,
         };
 
