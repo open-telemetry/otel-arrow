@@ -12,6 +12,37 @@ changes. See [`RELEASING.md`](../../RELEASING.md) for the versioning policy.
 
 <!-- next version -->
 
+## v0.56.0
+
+### :stop_sign: Breaking changes :stop_sign:
+
+- `engine`: Rename node completion duration and make node telemetry measurements independently selectable. ([#3881](https://github.com/open-telemetry/otel-arrow/issues/3881))
+  Migration: Query `node.completion.duration` instead of `node.input.duration` and `node.output.duration`. Per-node message, completion, duration, item, and size opt-ins now work at every runtime metric level.
+
+- `pipeline`: Add shared receiver and exporter boundary metrics, make component duration opt-in, and migrate console exports to exporter.attempted. ([#3822](https://github.com/open-telemetry/otel-arrow/issues/3822))
+  Migration: Query `processor.compute.duration` by `outcome` in seconds. Enable optional component measurements with detailed metrics or per-node telemetry policies. Adopt `receiver.received`, `receiver.processing`, and `exporter.attempted` for component boundaries.
+
+### :bulb: Enhancements :bulb:
+
+- `engine`: Allow extensions to be declared in the engine observability pipeline. ([#4035](https://github.com/open-telemetry/otel-arrow/issues/4035))
+- `engine`: Publish the public admin API SDK as the `otel-arrow-dfe-admin-api` crate on crates.io. ([#4038](https://github.com/open-telemetry/otel-arrow/issues/4038))
+- `observability`: Allow flow compute duration metrics to select basic, normal, or detailed distribution aggregation. ([#3670](https://github.com/open-telemetry/otel-arrow/issues/3670))
+  Basic exports a bucketless histogram for compatibility and lower cost. Normal remains the default, while detailed provides higher-resolution exponential histogram buckets.
+- `pipeline`: Add event_ids filtering to the ETW receiver for manifest-based providers ([#3895](https://github.com/open-telemetry/otel-arrow/issues/3895))
+  Named providers that resolve to a registered ETW manifest accept an
+  event_ids allow-list (up to 64 unique IDs) filtered server-side by ETW.
+  Rejected for name-hash (TraceLogging/EventSource), classic MOF/WMI, and
+  literal GUID providers, where ETW cannot guarantee the filter is applied.
+
+- `pipeline`: Add agent-fed bearer-token authentication to the OTLP/HTTP exporter. ([#3275](https://github.com/open-telemetry/otel-arrow/issues/3275))
+  Bind `agent_fed_credential_provider` to use host-managed rotating credentials. Existing bearer-provider and unauthenticated configurations are unchanged.
+
+### :toolbox: Bug fixes :toolbox:
+
+- `pipeline`: Preserve partition processor Nack payloads for interested upstreams and report transient only when all downstream Nacks are transient. ([#4016](https://github.com/open-telemetry/otel-arrow/issues/4016))
+
+<!-- previous-version -->
+
 ## v0.55.0
 
 ### :stop_sign: Breaking changes :stop_sign:
