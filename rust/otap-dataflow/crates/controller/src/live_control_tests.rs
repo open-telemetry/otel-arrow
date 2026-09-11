@@ -4080,6 +4080,179 @@ connections:
         .expect("replacement runtime should accept shutdown");
 }
 
+/// Scenario: one pipeline starts preserving names that another pipeline currently discards.
+/// Guarantees: the live update is rejected because it would change the other pipeline's bindings.
+#[test]
+fn reconfigure_rejects_context_policy_changes_to_other_pipelines() {
+    let config = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+groups:
+  g1:
+    pipelines:
+      capture:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:context-policy"
+            header_capture:
+              headers:
+                - match_names: ["x-tenant-id"]
+                  store_as: tenant
+            config:
+              produces: capture-marker
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+      propagate:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:context-policy"
+            config:
+              produces: source-marker
+          exporter:
+            type: "urn:test:exporter:example"
+            header_propagation:
+              default:
+                selector:
+                  type: all_captured
+                name: stored_name
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    )
+    .expect("engine config should parse");
+    let runtime = test_runtime_with_factory(&config, &CONTEXT_POLICY_TEST_PIPELINE_FACTORY);
+    register_pipeline(&runtime, &config, "g1", "capture");
+    register_pipeline(&runtime, &config, "g1", "propagate");
+
+    let replacement = PipelineConfig::from_yaml(
+        "g1".into(),
+        "propagate".into(),
+        r#"
+nodes:
+  receiver:
+    type: "urn:test:receiver:context-policy"
+    config:
+      produces: source-marker
+  exporter:
+    type: "urn:test:exporter:example"
+    header_propagation:
+      default:
+        selector:
+          type: all_captured
+        name: preserve
+    config: null
+connections:
+  - from: receiver
+    to: exporter
+"#,
+    )
+    .expect("replacement should parse");
+
+    let error = runtime
+        .prepare_rollout_plan(
+            "g1",
+            "propagate",
+            &ReconfigureRequest {
+                pipeline: replacement,
+                step_timeout_secs: 5,
+                drain_timeout_secs: 5,
+            },
+        )
+        .expect_err("cross-pipeline context binding changes should be rejected");
+
+    match error {
+        ControlPlaneError::InvalidRequest { message } => {
+            assert!(message.contains("g1:capture"), "{message}");
+            assert!(message.contains("restart the engine"), "{message}");
+        }
+        other => panic!("expected invalid request, got {other:?}"),
+    }
+}
+
+/// Scenario: deleting one pipeline would change another pipeline's compiled context bindings.
+/// Guarantees: deletion is rejected and the committed configuration remains unchanged.
+#[test]
+fn delete_rejects_context_policy_changes_to_other_pipelines() {
+    let config = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+groups:
+  g1:
+    pipelines:
+      capture:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:context-policy"
+            header_capture:
+              headers:
+                - match_names: ["x-tenant-id"]
+                  store_as: tenant
+            config:
+              produces: capture-marker
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+      propagate:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:context-policy"
+            config:
+              produces: source-marker
+          exporter:
+            type: "urn:test:exporter:example"
+            header_propagation:
+              default:
+                selector:
+                  type: all_captured
+                name: preserve
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    )
+    .expect("engine config should parse");
+    let runtime = test_runtime_with_factory(&config, &CONTEXT_POLICY_TEST_PIPELINE_FACTORY);
+    register_pipeline(&runtime, &config, "g1", "capture");
+    register_pipeline(&runtime, &config, "g1", "propagate");
+
+    let error = runtime
+        .request_delete_pipeline("g1", "propagate", 5)
+        .expect_err("cross-pipeline context binding changes should prevent deletion");
+
+    match error {
+        ControlPlaneError::InvalidRequest { message } => {
+            assert!(message.contains("g1:capture"), "{message}");
+            assert!(message.contains("restart the engine"), "{message}");
+        }
+        other => panic!("expected invalid request, got {other:?}"),
+    }
+
+    let state = runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(
+        state.live_config.groups[&PipelineGroupId::from("g1")]
+            .pipelines
+            .contains_key(&PipelineId::from("propagate"))
+    );
+    assert!(
+        state
+            .logical_pipelines
+            .contains_key(&PipelineKey::new("g1".into(), "propagate".into()))
+    );
+}
+
 /// Scenario: recovery restarts a failed pipeline generation.
 /// Guarantees: recovery reuses that generation's policy snapshot.
 #[test]

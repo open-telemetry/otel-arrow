@@ -672,6 +672,68 @@ impl<
         Ok(candidate_context_policy)
     }
 
+    fn validate_other_pipeline_context_bindings_unchanged(
+        &self,
+        target_pipeline: &PipelineKey,
+        candidate_context_policy: &CompiledContextPolicy,
+    ) -> Result<(), ControlPlaneError> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Self::validate_other_pipeline_context_bindings_unchanged_in_state(
+            &state,
+            target_pipeline,
+            candidate_context_policy,
+        )
+    }
+
+    fn validate_other_pipeline_context_bindings_unchanged_in_state(
+        state: &ControllerRuntimeState,
+        target_pipeline: &PipelineKey,
+        candidate_context_policy: &CompiledContextPolicy,
+    ) -> Result<(), ControlPlaneError> {
+        // The policy is compiled engine-wide, but a pipeline runtime only reads
+        // the bindings selected by its own pipeline and node IDs. The target
+        // pipeline will receive the candidate snapshot; every other deployed
+        // pipeline keeps its installed snapshot. Different snapshots are safe
+        // only when they compile identical bindings for those other pipelines.
+        //
+        // Compare against each pipeline's installed snapshot rather than the
+        // controller's latest global snapshot, since prior rollouts may have
+        // installed different snapshots in different generations.
+        let mut affected_pipelines: Vec<_> = state
+            .logical_pipelines
+            .iter()
+            .filter(|(pipeline_key, record)| {
+                *pipeline_key != target_pipeline
+                    && !record
+                        .context_policy
+                        .pipeline_bindings_match(candidate_context_policy, pipeline_key)
+            })
+            .map(|(pipeline_key, _)| {
+                format!(
+                    "{}:{}",
+                    pipeline_key.pipeline_group_id().as_ref(),
+                    pipeline_key.pipeline_id().as_ref()
+                )
+            })
+            .collect();
+        affected_pipelines.sort();
+
+        if affected_pipelines.is_empty() {
+            Ok(())
+        } else {
+            Err(ControlPlaneError::InvalidRequest {
+                message: format!(
+                    "live update changes compiled context bindings for other deployed pipelines \
+                     ({}); restart the engine to apply this configuration",
+                    affected_pipelines.join(", ")
+                ),
+            })
+        }
+    }
+
     fn prepare_rollout_plan_for_engine_operation(
         &self,
         pipeline_group_id: &str,
@@ -758,6 +820,7 @@ impl<
             Some(policy) => policy,
             None => self.compile_context_policy(&resolved_candidate_config)?,
         };
+        self.validate_other_pipeline_context_bindings_unchanged(&pipeline_key, &context_policy)?;
         let resolved_pipeline = resolved_candidate_config
             .pipelines
             .into_iter()
@@ -1693,6 +1756,14 @@ impl<
                     });
                 }
             };
+            if let Err(error) = Self::validate_other_pipeline_context_bindings_unchanged_in_state(
+                &state,
+                pipeline_key,
+                &candidate_context_policy,
+            ) {
+                state.live_config = previous_live_config;
+                return Err(error);
+            }
             let context_policy = if state.context_policy.eq(&candidate_context_policy) {
                 Arc::clone(&state.context_policy)
             } else {

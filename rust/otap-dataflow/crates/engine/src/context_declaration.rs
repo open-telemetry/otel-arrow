@@ -321,6 +321,12 @@ impl CompiledContextPolicy {
         Some(&self.nodes.get(pipeline)?.get(node)?.bindings)
     }
 
+    /// Returns whether two policies compile identical bindings for one pipeline.
+    #[must_use]
+    pub fn pipeline_bindings_match(&self, other: &Self, pipeline: &PipelineKey) -> bool {
+        self.nodes.get(pipeline) == other.nodes.get(pipeline)
+    }
+
     /// Checks component declarations against this node's compiled bindings.
     /// Call after parsing the node configuration.
     pub fn validate_node_declarations(
