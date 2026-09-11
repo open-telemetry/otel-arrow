@@ -68,6 +68,108 @@ pub struct KafkaReceiverRejectionAttributes {
     pub reason: KafkaReceiverRejectionReason,
 }
 
+/// The failure category that caused a message to be dead-lettered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
+pub enum KafkaReceiverDlqReason {
+    /// The payload could not be decoded using the configured signal encoding.
+    Decode,
+    /// The topic did not map to a configured signal.
+    UnknownTopic,
+    /// The message was permanently rejected downstream.
+    PermanentNack,
+}
+
+impl From<super::receiver::dlq::DlqReason> for KafkaReceiverDlqReason {
+    fn from(reason: super::receiver::dlq::DlqReason) -> Self {
+        use super::receiver::dlq::DlqReason;
+        match reason {
+            DlqReason::Decode => Self::Decode,
+            DlqReason::UnknownTopic => Self::UnknownTopic,
+            DlqReason::PermanentNack => Self::PermanentNack,
+        }
+    }
+}
+
+/// Signal context for a dead-lettered message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
+pub enum KafkaReceiverDlqSignal {
+    /// Traces.
+    Traces,
+    /// Metrics.
+    Metrics,
+    /// Logs.
+    Logs,
+    /// Signal could not be established.
+    Unknown,
+}
+
+impl From<SignalType> for KafkaReceiverDlqSignal {
+    fn from(signal: SignalType) -> Self {
+        match signal {
+            SignalType::Traces => Self::Traces,
+            SignalType::Metrics => Self::Metrics,
+            SignalType::Logs => Self::Logs,
+        }
+    }
+}
+
+/// Outcome of an attempt to dead-letter a message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
+pub enum KafkaReceiverDlqOutcome {
+    /// The message was successfully produced to the DLQ topic.
+    Produced,
+    /// The message could not be produced to the DLQ topic.
+    Failed,
+}
+
+/// Signal, reason, and outcome for a dead-letter attempt.
+#[attribute_set(item, measurement)]
+#[derive(Debug, Clone, Copy)]
+pub struct KafkaReceiverDlqAttributes {
+    /// Signal of the dead-lettered message.
+    pub signal: KafkaReceiverDlqSignal,
+    /// Failure category that triggered the dead-letter.
+    pub reason: KafkaReceiverDlqReason,
+    /// Whether the message was produced to the DLQ or the attempt failed.
+    pub outcome: KafkaReceiverDlqOutcome,
+}
+
+/// Signal and reason for a message that could not be dead-lettered and was
+/// dropped (permanent data loss).
+#[attribute_set(item, measurement)]
+#[derive(Debug, Clone, Copy)]
+pub struct KafkaReceiverDlqLossAttributes {
+    /// Signal of the lost message.
+    pub signal: KafkaReceiverDlqSignal,
+    /// Failure category that triggered the dead-letter attempt.
+    pub reason: KafkaReceiverDlqReason,
+}
+
+/// Dead-letter attempt outcomes, keyed by signal, reason, and outcome.
+#[metric_set(
+    name = "receiver.kafka.dlq.messages",
+    measurement_attributes = KafkaReceiverDlqAttributes
+)]
+#[derive(Debug, Default, Clone)]
+pub struct KafkaReceiverDlqMessageMetrics {
+    /// Number of dead-letter attempts.
+    #[metric(unit = "{message}")]
+    pub messages: Counter<u64>,
+}
+
+/// Messages that could not be dead-lettered and were dropped (data loss).
+#[metric_set(
+    name = "receiver.kafka.dlq.loss",
+    measurement_attributes = KafkaReceiverDlqLossAttributes
+)]
+#[derive(Debug, Default, Clone)]
+pub struct KafkaReceiverDlqLossMetrics {
+    /// Number of messages dropped because the DLQ produce failed permanently
+    /// (or timed out, or the original bytes could not be recovered).
+    #[metric(unit = "{message}")]
+    pub messages: Counter<u64>,
+}
+
 /// Bounded category for a Kafka consumer transport error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
 pub enum KafkaReceiverTransportErrorType {
@@ -297,6 +399,10 @@ pub struct KafkaReceiverMetrics {
     pub consumer: MetricSet<KafkaReceiverConsumerMetrics>,
     /// Fixed transport metrics.
     pub transport: MeasurementMetricSet<KafkaReceiverTransportMetrics>,
+    /// Dead-letter attempt outcome metrics.
+    pub dlq_messages: MeasurementMetricSet<KafkaReceiverDlqMessageMetrics>,
+    /// Dead-letter loss metrics.
+    pub dlq_loss: MeasurementMetricSet<KafkaReceiverDlqLossMetrics>,
 }
 
 impl KafkaReceiverMetrics {
@@ -310,7 +416,37 @@ impl KafkaReceiverMetrics {
             offset_commits: KafkaReceiverOffsetCommitMetrics::register(pipeline_ctx),
             consumer: pipeline_ctx.register_metrics::<KafkaReceiverConsumerMetrics>(),
             transport: KafkaReceiverTransportMetrics::register(pipeline_ctx),
+            dlq_messages: KafkaReceiverDlqMessageMetrics::register(pipeline_ctx),
+            dlq_loss: KafkaReceiverDlqLossMetrics::register(pipeline_ctx),
         }
+    }
+
+    /// Records a dead-letter attempt outcome.
+    pub fn record_dlq_attempt(
+        &mut self,
+        signal: Option<SignalType>,
+        reason: KafkaReceiverDlqReason,
+        outcome: KafkaReceiverDlqOutcome,
+    ) {
+        self.dlq_messages
+            .with(KafkaReceiverDlqAttributes {
+                signal: signal.map_or(KafkaReceiverDlqSignal::Unknown, Into::into),
+                reason,
+                outcome,
+            })
+            .messages
+            .inc();
+    }
+
+    /// Records a message that could not be dead-lettered and was dropped.
+    pub fn record_dlq_loss(&mut self, signal: Option<SignalType>, reason: KafkaReceiverDlqReason) {
+        self.dlq_loss
+            .with(KafkaReceiverDlqLossAttributes {
+                signal: signal.map_or(KafkaReceiverDlqSignal::Unknown, Into::into),
+                reason,
+            })
+            .messages
+            .inc();
     }
 
     /// Records one Kafka consumer delivery before filtering or decoding.
@@ -396,7 +532,9 @@ impl KafkaReceiverMetrics {
         reporter.report_measurement(&mut self.rejections)?;
         reporter.report_measurement(&mut self.offset_commits)?;
         reporter.report(&mut self.consumer)?;
-        reporter.report_measurement(&mut self.transport)
+        reporter.report_measurement(&mut self.transport)?;
+        reporter.report_measurement(&mut self.dlq_messages)?;
+        reporter.report_measurement(&mut self.dlq_loss)
     }
 
     /// Takes every touched Kafka receiver metric bucket for terminal handoff.
@@ -409,6 +547,8 @@ impl KafkaReceiverMetrics {
             snapshots.extend(self.consumer.terminal_snapshots());
         }
         snapshots.extend(self.transport.terminal_snapshots());
+        snapshots.extend(self.dlq_messages.terminal_snapshots());
+        snapshots.extend(self.dlq_loss.terminal_snapshots());
         snapshots
     }
 }
@@ -416,8 +556,28 @@ impl KafkaReceiverMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::receivers::kafka_receiver::receiver::dlq::DlqReason;
     use otel_arrow_dfe_engine::context::ControllerContext;
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+
+    /// Scenario: the domain `DlqReason` maps to the bounded metric attribute enum.
+    /// Guarantees: every reason has a stable, distinct attribute value so the
+    /// mapping is centralized (no duplicated match at call sites).
+    #[test]
+    fn dlq_reason_maps_to_metric_attribute() {
+        assert_eq!(
+            KafkaReceiverDlqReason::from(DlqReason::Decode),
+            KafkaReceiverDlqReason::Decode
+        );
+        assert_eq!(
+            KafkaReceiverDlqReason::from(DlqReason::UnknownTopic),
+            KafkaReceiverDlqReason::UnknownTopic
+        );
+        assert_eq!(
+            KafkaReceiverDlqReason::from(DlqReason::PermanentNack),
+            KafkaReceiverDlqReason::PermanentNack
+        );
+    }
 
     fn new_test_metrics() -> KafkaReceiverMetrics {
         let registry = TelemetryRegistryHandle::new();
@@ -621,6 +781,9 @@ mod tests {
         );
 
         let snapshots = metrics.terminal_snapshots();
+        // Three touched measurement sets (messages, acknowledgements,
+        // rejections) plus the always-present fixed `receiver.kafka.consumer`
+        // set. The untouched DLQ measurement sets emit nothing.
         assert_eq!(snapshots.len(), 4);
         assert!(snapshots.iter().any(|snapshot| {
             snapshot.descriptor().name == "receiver.kafka.messages"
@@ -638,6 +801,7 @@ mod tests {
                 && snapshot.measurement_attribute_value("reason") == Some("topic_id_exhausted")
         }));
         let second = metrics.terminal_snapshots();
+        // Only the always-present fixed consumer set repeats on a second collection.
         assert!(
             second
                 .iter()

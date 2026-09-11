@@ -51,6 +51,7 @@ config:
 | `auto_offset_reset` | string | `latest` | Where to start consuming when no committed offset exists. |
 | `commit` | object | `{mode: manual}` | Commit configuration (see [Commit Configuration](#commit-configuration)). |
 | `transient_nack` | object | Manual: `{mode: replay, initial_backoff_ms: 1000, max_backoff_ms: 30000}`; auto: inactive | Policy for non-permanent downstream NACKs (see [Transient NACK Configuration](#transient-nack-configuration)). |
+| `dlq` | object | *none* (disabled) | Optional dead-letter-queue configuration. Presence enables it; manual commit only (see [Dead Letter Queue](#dead-letter-queue)). |
 | `lag_refresh_interval_ms` | integer | *none* | Interval between consumer-lag refreshes, in milliseconds. Enables `receiver.kafka.consumer.group.lag` (consumer-group lag against broker-committed offsets; see [Metric Sets](#metric-sets)). Manual commit mode only; runs off the receive loop so it never blocks processing. Off by default; recommended `60000` (60s), higher under large partition fan-out; must be > 0 when set. |
 | `session_timeout_ms` | integer | `10000` | Session timeout in milliseconds. Must be > 0. |
 | `heartbeat_interval_ms` | integer | `3000` | Heartbeat interval in milliseconds. Must be > 0 and strictly less than `session_timeout_ms`. |
@@ -209,7 +210,7 @@ Manual-mode completion behavior is:
 | Completion | Offset behavior |
 | --- | --- |
 | ACK | Marks the record complete and advances the partition watermark when contiguous progress permits. |
-| Permanent NACK | Remains terminal and marks the record complete. Built-in DLQ support is planned but not yet available. |
+| Permanent NACK | Remains terminal and marks the record complete. When the [DLQ](#dead-letter-queue) captures `permanent_nack`, the original bytes are dead-lettered first and the offset advances only after delivery. |
 | Non-permanent NACK with `mode: commit_and_skip` | Explicitly opts out of recovery, marks the record complete, and permits the offset to advance. |
 | Non-permanent NACK with `mode: replay` | Leaves the record unresolved, pauses only its partition, waits for backoff, seeks to the earliest unresolved offset, and resumes. |
 | Feedback from an obsolete assignment or replay generation | Ignored without changing offsets. |
@@ -261,6 +262,84 @@ Kafka receiver -> internal processors -> retry processor -> exporter
 
 See [At-Least-Once with the Retry Processor](#at-least-once-with-the-retry-processor)
 for a complete pipeline example.
+
+### Dead Letter Queue
+
+The optional `dlq` block forwards messages the pipeline cannot handle to a
+user-configured Kafka topic instead of silently dropping them, giving operators
+a durable, inspectable, replayable record of every failure. Presence of the
+block enables the feature; omit it entirely to disable it.
+
+The DLQ requires manual commit mode (`commit.mode: manual`). DLQ delivery
+guarantees depend on the receiver controlling offset commits, so it is rejected
+under auto commit.
+
+#### Captured categories
+
+`capture` selects which failure categories are dead-lettered (default: all
+three):
+
+- `decode` -- the payload failed to decode ("poison pill").
+- `unknown_topic` -- the message targeted a topic with no configured signal.
+- `permanent_nack` -- the message was permanently rejected downstream.
+
+For `decode` and `unknown_topic` the original raw bytes are still in hand and are
+dead-lettered directly. For `permanent_nack` the receiver recovers the original
+bytes with a dedicated, idle re-read consumer that seeks to the failed offset.
+In all cases the DLQ record payload is byte-identical to the source message.
+
+#### Offset and failure behavior
+
+The source offset advances only after the DLQ delivery is confirmed. All DLQ
+work runs off the receive loop and is timeout-bounded, so a stalled broker or
+slow re-read never blocks ingestion. If a delivery fails, times out, or the
+original bytes cannot be recovered, the message is counted as a DLQ loss
+(`receiver.kafka.dlq.loss`) and the offset advances so the pipeline is never
+wedged. Outstanding deliveries are bounded at 5 in flight.
+
+Because delivery-then-commit is at-least-once, a crash between a DLQ produce and
+the source-offset commit re-delivers and re-dead-letters the message on restart;
+DLQ consumers must tolerate duplicates.
+
+#### Fields
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `topic` | string | *none* | Global DLQ topic applied to all captured signals unless overridden. |
+| `per_signal` | object | *none* | Per-signal topic overrides (`traces`, `metrics`, `logs`). |
+| `capture` | list | all three | Subset of `decode`, `unknown_topic`, `permanent_nack`. Must be non-empty. |
+| `connection` | object | source connection | Optional `brokers`/`auth`/`tls` overrides for the DLQ producer; defaults to the source consumer's connection. The re-read consumer always uses the source connection. |
+
+Every DLQ topic must be a valid Kafka topic name and, when the DLQ reuses the
+source cluster, disjoint from all configured ingest topics (and ingest regex
+patterns) so the receiver cannot consume its own output. The producer
+`client.id` is auto-derived as `{client_id}-dlq`. The DLQ producer is not
+tunable: it runs on librdkafka's defaults (compression `none`, `acks=all`,
+`message.timeout.ms` 300000), and each DLQ operation is separately bounded by a
+fixed internal timeout so a stalled broker never wedges ingestion. In-flight
+bounding is fixed and not user-configurable.
+
+Each dead-lettered record carries error-context headers: `dlq.error`,
+`dlq.reason`, `dlq.source.topic`, `dlq.source.partition`, `dlq.source.offset`,
+`dlq.signal`, and `dlq.timestamp`, plus a passthrough of the original source
+headers.
+
+```yaml
+receivers:
+  kafka:
+    brokers: "broker1:9092"
+    group_id: "otel-collector"
+    client_id: "otel-collector"
+    commit:
+      mode: manual
+    traces:
+      topics: ["otlp_spans"]
+    dlq:
+      topic: "otel_dlq"
+      per_signal:
+        traces: "otel_dlq_traces"
+      capture: ["decode", "unknown_topic", "permanent_nack"]
+```
 
 #### Comparison with the Go Kafka receiver
 
@@ -1122,6 +1201,7 @@ an empty assignment resets it to zero.
 
 ## Related Docs
 
+- [Kafka receiver architecture](ARCHITECTURE.md)
 - [Configuration model](../../../../../docs/configuration-model.md)
 - [Transport headers](../../../../../docs/transport-headers.md)
 - [Contrib node catalog](../../../README.md)

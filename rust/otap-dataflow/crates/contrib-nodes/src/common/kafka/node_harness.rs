@@ -658,6 +658,13 @@ mod receiver_harness {
             );
         }
 
+        /// Returns whether the receiver's rebalance callback currently owns
+        /// `topic`/`partition`. Lets a test assert a draining receiver has
+        /// released a partition and does not re-acquire it.
+        pub(crate) fn is_assigned(&self, topic: &str, partition: i32) -> bool {
+            self.rebalance_state.is_assigned(topic, partition)
+        }
+
         /// Waits until the receiver's rebalance callback has assigned a partition.
         ///
         /// # Panics
