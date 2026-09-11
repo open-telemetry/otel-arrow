@@ -322,6 +322,19 @@ pub struct KafkaReceiverConfigBuilder {
     client_id: String,
 
     /// Static group instance ID for Kafka static membership.
+    ///
+    /// At receiver construction the configured value is automatically suffixed
+    /// with the pipeline deployment generation (`-g{generation}`), and on a
+    /// multi-core pipeline also with the core ID (`-{core_id}`), so each
+    /// generation and core is a distinct static member (e.g. `instance-1`
+    /// becomes `instance-1-g0`, or `instance-1-g0-1` on multiple cores). The
+    /// generation suffix keeps a new pipeline instance from being fenced as a
+    /// duplicate static member of the old instance during a live-reconfiguration
+    /// cutover.
+    ///
+    /// Kafka limits `group.instance.id` to 249 characters, and the limit applies
+    /// to the resolved value (configured value plus suffixes); receiver
+    /// construction fails if the resolved id exceeds it.
     #[serde(default)]
     group_instance_id: Option<String>,
 
