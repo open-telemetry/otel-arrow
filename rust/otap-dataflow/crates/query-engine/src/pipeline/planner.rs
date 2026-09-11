@@ -48,7 +48,7 @@ pub enum RecordType {
     /// Logs, Metrics, Traces
     Signal,
 
-    /// A repeated, child field such as metric datapoints
+    /// A repeated, child field such as metric data points
     Child(ChildRecordKind),
 
     /// Attributes treated as elements of the stream
@@ -60,7 +60,7 @@ impl RecordType {
         matches!(self, Self::Attributes)
     }
 
-    pub fn is_datapoint(&self) -> bool {
+    pub fn is_data_point(&self) -> bool {
         matches!(self, Self::Child(ChildRecordKind::DataPoint))
     }
 }
@@ -930,7 +930,7 @@ impl PipelinePlanner {
 
 /// derives the source for which to apply some nested pipeline from the expression that identifies
 /// the source. E.g. in an operator invocation like `apply <source> { ... }`, supported may be
-/// some attributes or metric datapoints.
+/// some attributes or metric data points.
 fn source_expr_to_apply_source(source_expr: &SourceScalarExpression) -> Option<ApplySource> {
     let values_accessor = source_expr.get_value_accessor();
     let selectors = values_accessor.get_selectors();

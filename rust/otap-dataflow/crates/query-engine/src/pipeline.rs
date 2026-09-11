@@ -88,11 +88,11 @@ pub trait PipelineStage {
         });
     }
 
-    /// Execute this stage on the datapoints of the metric.
+    /// Execute this stage on the data points of the metric.
     ///
     /// When the pipeline stage is executed via this method call, it should perform its operation
-    /// as if the "root" of any expression is the metric datapoints record batch. It may need to
-    /// perform multiple evaluations on each of the various metric datapoint types.
+    /// as if the "root" of any expression is the metric data points record batch. It may need to
+    /// perform multiple evaluations on each of the various metric data point types.
     async fn execute_on_metric_data_points(
         &mut self,
         _otap_batch: OtapArrowRecords,

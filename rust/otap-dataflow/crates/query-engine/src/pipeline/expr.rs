@@ -87,7 +87,7 @@ pub(crate) enum RecordScope {
 /// some expression evaluation when it has record scope.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ChildRecordKind {
-    /// The scope of the record data is a record batch containing metric datapoints.
+    /// The scope of the record data is a record batch containing metric data points.
     DataPoint,
 }
 

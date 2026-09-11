@@ -20,7 +20,7 @@ use crate::parser::default_parser_options;
 use crate::pipeline::Pipeline;
 
 #[tokio::test]
-async fn test_simple_datapoint_filter() {
+async fn test_simple_data_point_filter() {
     let query = "metrics | apply data_points {
         where flags > 5
     }";
@@ -68,7 +68,7 @@ async fn test_simple_datapoint_filter() {
 }
 
 #[tokio::test]
-async fn test_filter_datapoints_by_scalar() {
+async fn test_filter_data_points_by_scalar() {
     let query = "metrics | apply data_points {
         where contains(\"foo\", \"f\") // should evaluate to scalar True
     }";
@@ -123,9 +123,9 @@ async fn test_filter_datapoints_by_scalar() {
 }
 
 #[tokio::test]
-async fn test_filter_datapoints_by_propagated_nulls() {
+async fn test_filter_data_points_by_propagated_nulls() {
     let query = "metrics | apply data_points {
-        // should resolve to null, which we'll treat as false and we drop all the datapoints
+        // should resolve to null, which we'll treat as false and we drop all the data points
         where flags as Boolean
     }";
 

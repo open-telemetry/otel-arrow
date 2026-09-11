@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::error::{Error, Result};
 use crate::pipeline::PipelineStage;
 use crate::pipeline::expr::eval::EvalContext;
-use crate::pipeline::expr::types::MetricDatapointType;
+use crate::pipeline::expr::types::MetricDataPointType;
 use crate::pipeline::expr::{ChildRecordKind, RecordScope};
 use crate::pipeline::expr::{DataScope, ScopedExpr, ScopedValue, eval::resolve_attrs_payload_type};
 use crate::pipeline::filter::data_points::{
@@ -133,18 +133,18 @@ impl PipelineStage for FilterPipelineStage {
         _task_context: Arc<TaskContext>,
         _exec_options: &mut ExecutionState,
     ) -> Result<OtapArrowRecords> {
-        for metric_datapoint_type in MetricDatapointType::all() {
-            let datapoint_payload_type = metric_datapoint_type.payload_type();
-            if otap_batch.get(datapoint_payload_type).is_some() {
+        for metric_data_point_type in MetricDataPointType::all() {
+            let dp_payload_type = metric_data_point_type.payload_type();
+            if otap_batch.get(dp_payload_type).is_some() {
                 let predicate_eval_value = self.predicate.execute_as_value(
                     &otap_batch,
-                    &EvalContext::new_for_metrics_data_points(metric_datapoint_type, session_ctx),
+                    &EvalContext::new_for_metrics_data_points(metric_data_point_type, session_ctx),
                 )?;
                 match predicate_eval_value {
                     Some(value) => {
                         self.filter_metric_data_points(
                             value,
-                            &metric_datapoint_type,
+                            &metric_data_point_type,
                             &mut otap_batch,
                         )?;
                     }
@@ -154,7 +154,7 @@ impl PipelineStage for FilterPipelineStage {
                         // does not exist, in which case the predicate should fail (unless the
                         // planner specifically planned for to pass, in which case null wouldn't
                         // have been returned here).
-                        remove_all_metric_data_points(&mut otap_batch, &metric_datapoint_type);
+                        remove_all_metric_data_points(&mut otap_batch, &metric_data_point_type);
                     }
                 }
             }
@@ -176,7 +176,7 @@ impl FilterPipelineStage {
     fn filter_metric_data_points(
         &mut self,
         predicate_eval_value: ScopedValue,
-        metric_data_point_type: &MetricDatapointType,
+        metric_data_point_type: &MetricDataPointType,
         otap_batch: &mut OtapArrowRecords,
     ) -> Result<()> {
         let is_aligned = matches!(
@@ -192,13 +192,13 @@ impl FilterPipelineStage {
                         Ok(())
                     }
                     ScalarValue::Boolean(_) => {
-                        // no rows pass, datapoints must be removed
+                        // no rows pass, data points must be removed
                         remove_all_metric_data_points(otap_batch, metric_data_point_type);
                         Ok(())
                     }
                     _ => Err(Error::ExecutionError {
                         cause: format!(
-                            "Received scalar of type {:?} when filtering metric datapoints. expected boolean",
+                            "Received scalar of type {:?} when filtering metric data points. expected boolean",
                             scalar.data_type(),
                         ),
                     }),
@@ -211,11 +211,11 @@ impl FilterPipelineStage {
                     arr
                 } else {
                     // the normal course of action here would be to align this to the row order of
-                    // the datapoint batch via a join, but currently we don't support this. the
+                    // the data point batch via a join, but currently we don't support this. the
                     // planner actually should have returned an Error::NotYetSupported for exprs
                     // that would end up here, so this error is just here for being defensive.
                     return Err(Error::ExecutionError {
-                        cause: "misaligned expression predicate result when filtering datapoints"
+                        cause: "misaligned expression predicate result when filtering data points"
                             .into(),
                     });
                 };

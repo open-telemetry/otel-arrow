@@ -39,7 +39,7 @@ use otel_arrow_dfe_pdata::schema::consts;
 use crate::error::{Error, Result};
 use crate::pipeline::expr::bitmap::combine_scope;
 use crate::pipeline::expr::join::{JoinInput, join, multi_join};
-use crate::pipeline::expr::types::MetricDatapointType;
+use crate::pipeline::expr::types::MetricDataPointType;
 use crate::pipeline::expr::{
     ChildRecordKind, DataScope, LeafEval, RecordScope, SCALAR_RECORD_BATCH_INPUT, ScopedExpr,
     ScopedValue, ShortCircuitStrategy, VALUE_COLUMN_NAME, arg_column_name,
@@ -55,9 +55,9 @@ use otel_arrow_dfe_pdata::otap::filter::IdBitmapPool;
 /// Context for evaluating [`ScopedExpr`]
 pub(crate) struct EvalContext<'a> {
     /// When evaluating a [`ScopedExpr`] and encountering a data scope identifying
-    /// the source as a metric datapoint, this will be used to determine which record batch
+    /// the source as a metric data point, this will be used to determine which record batch
     /// record batch is that which should be used.
-    datapoint_type: Option<MetricDatapointType>,
+    data_point_type: Option<MetricDataPointType>,
 
     /// DataFusion Session context. Used for planning physical expression from logical exprs
     session_context: &'a SessionContext,
@@ -66,17 +66,17 @@ pub(crate) struct EvalContext<'a> {
 impl<'a> EvalContext<'a> {
     pub fn new(session_ctx: &'a SessionContext) -> Self {
         Self {
-            datapoint_type: None,
+            data_point_type: None,
             session_context: session_ctx,
         }
     }
 
     pub fn new_for_metrics_data_points(
-        datapoint_type: MetricDatapointType,
+        data_point_type: MetricDataPointType,
         session_ctx: &'a SessionContext,
     ) -> Self {
         Self {
-            datapoint_type: Some(datapoint_type),
+            data_point_type: Some(data_point_type),
             session_context: session_ctx,
         }
     }
@@ -177,21 +177,14 @@ pub(super) fn eval_datafusion_expr_value(
                 DataScope::Record(RecordScope::Signal) | DataScope::RootParent(_) => {
                     otap_batch.root_record_batch().map(Cow::Borrowed)
                 }
-                DataScope::Record(RecordScope::Child(child)) => {
-                    match child {
-                        ChildRecordKind::DataPoint => {
-                            // TODO - this could probably be a helper method on eval_ctx
-                            match &eval_ctx.datapoint_type {
-                                Some(metric_datapoint_type) => otap_batch
-                                    .get(metric_datapoint_type.payload_type())
-                                    .map(Cow::Borrowed),
-                                None => {
-                                    todo!("return error - invalid context for planned expr")
-                                }
-                            }
+                DataScope::Record(RecordScope::Child(child)) => match child {
+                    ChildRecordKind::DataPoint => match &eval_ctx.data_point_type {
+                        Some(dp_type) => otap_batch.get(dp_type.payload_type()).map(Cow::Borrowed),
+                        None => {
+                            todo!("return error - invalid context for planned expr")
                         }
-                    }
-                }
+                    },
+                },
                 DataScope::Attribute(attrs_id, key) => {
                     let attrs_payload_type = resolve_attrs_payload_type(attrs_id, otap_batch);
                     otap_batch

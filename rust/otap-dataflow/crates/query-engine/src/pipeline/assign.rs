@@ -798,7 +798,7 @@ impl AssignPipelineStage {
                     DataScope::Record(RecordScope::Child(_child)) => {
                         // In the current implementation, we shouldn't end up here. The planner
                         // should not allow us to create an expression that would evaluate on some
-                        // child record (like metric datapoints), and assign the result to an
+                        // child record (like metric data points), and assign the result to an
                         // attribute. Returning this error to be defensive
                         return Err(Error::ExecutionError {
                             cause: format!(
@@ -970,7 +970,7 @@ impl AssignPipelineStage {
                     DataScope::Record(RecordScope::Child(_child)) => {
                         // In the current implementation, we shouldn't end up here. The planner
                         // should not allow us to create an expression that would evaluate on some
-                        // child record (like metric datapoints), and assign the result to an
+                        // child record (like metric data points), and assign the result to an
                         // attribute. Returning this error to be defensive
                         return Err(Error::ExecutionError {
                             cause: format!(
@@ -2067,7 +2067,7 @@ fn validate_expr_cardinality(
                 DataScope::Record(RecordScope::Child(_child)) => {
                     // If we end up here, it would mean we're trying to assign to something like
                     // a resource attribute or scope attribute from the value of some nested child
-                    // record like a metric datapoint. The planner shouldn't be creating plans like
+                    // record like a metric data point. The planner shouldn't be creating plans like
                     // this, but we'll reject it here if that's what has been passed as an argument
                     return Err(Error::InvalidPipelineError {
                         cause: "Cannot assign non-record attribute from non-signal record".into(),
@@ -2159,7 +2159,7 @@ fn validate_struct_col_assign_cardinality(
                 DataScope::Record(RecordScope::Child(_child)) => {
                     // If we end up here, it would mean we're trying to assign to something like
                     // a resource or scope field from the value of some nested child record like
-                    // a metric datapoint. The planner shouldn't be creating plans like this, but
+                    // a metric data point. The planner shouldn't be creating plans like this, but
                     // we'll reject it here if that's what has been passed as an argument
                     return Err(Error::InvalidPipelineError {
                         cause: "Cannot assign struct column from non-signal record".into(),

@@ -411,18 +411,18 @@ pub fn coerce_arithmetic(
     }
 }
 
-/// identifier of metric datapoint type
+/// identifier of metric data point type
 #[derive(Clone, Copy)]
 #[allow(clippy::enum_variant_names)]
-pub enum MetricDatapointType {
+pub enum MetricDataPointType {
     NumberDataPoint,
     HistogramDataPoint,
     ExponentialHistogramDataPoint,
     SummaryDataPoint,
 }
 
-impl MetricDatapointType {
-    /// Get the OTAP payload type containing datapoints of this metric type
+impl MetricDataPointType {
+    /// Get the OTAP payload type containing data points of this metric type
     pub fn payload_type(&self) -> ArrowPayloadType {
         match self {
             Self::SummaryDataPoint => ArrowPayloadType::SummaryDataPoints,
@@ -432,7 +432,7 @@ impl MetricDatapointType {
         }
     }
 
-    /// return the [`ArrowPayloadType`] associated with datapoints of this datapoint type
+    /// return the [`ArrowPayloadType`] associated with data points of this data point type
     pub fn dp_attrs_payload_type(&self) -> ArrowPayloadType {
         match self {
             Self::SummaryDataPoint => ArrowPayloadType::SummaryDpAttrs,
@@ -442,7 +442,7 @@ impl MetricDatapointType {
         }
     }
 
-    /// return the [`ArrowPayloadType`] associated with exemplars of this datapoint type
+    /// return the [`ArrowPayloadType`] associated with exemplars of this data point type
     pub fn exemplar_payload_type(&self) -> Option<ArrowPayloadType> {
         match self {
             Self::ExponentialHistogramDataPoint => Some(ArrowPayloadType::ExpHistogramDpExemplars),
@@ -453,7 +453,7 @@ impl MetricDatapointType {
     }
 
     /// return the [`ArrowPayloadType`] associated with attributes of exemplars of this of this
-    /// datapoint type
+    /// data point type
     pub fn exemplar_attr_payload_type(&self) -> Option<ArrowPayloadType> {
         match self {
             Self::ExponentialHistogramDataPoint => {
@@ -465,13 +465,13 @@ impl MetricDatapointType {
         }
     }
 
-    /// returns an iterator of all the types of metric datapoints
+    /// returns an iterator of all the types of metric data points
     pub fn all() -> impl Iterator<Item = Self> {
         [
-            MetricDatapointType::NumberDataPoint,
-            MetricDatapointType::HistogramDataPoint,
-            MetricDatapointType::ExponentialHistogramDataPoint,
-            MetricDatapointType::SummaryDataPoint,
+            MetricDataPointType::NumberDataPoint,
+            MetricDataPointType::HistogramDataPoint,
+            MetricDataPointType::ExponentialHistogramDataPoint,
+            MetricDataPointType::SummaryDataPoint,
         ]
         .into_iter()
     }

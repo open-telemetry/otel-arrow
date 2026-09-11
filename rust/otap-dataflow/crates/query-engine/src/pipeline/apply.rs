@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! This module contains a [`PipelineStage`] implementation that can apply transformation pipeline
-//! to some nested, repeated field in the OTAP model (e.g. attributes or metric datapoints).
+//! to some nested, repeated field in the OTAP model (e.g. attributes or metric data points).
 //!
-//! This allows us to treat attributes/datapoints individually as members of a stream, as opposed
+//! This allows us to treat attributes/data points individually as members of a stream, as opposed
 //! to properties on a stream of logs/traces/metrics.
 
 use std::sync::Arc;

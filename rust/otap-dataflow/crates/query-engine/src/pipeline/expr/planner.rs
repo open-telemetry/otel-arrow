@@ -96,7 +96,7 @@ impl ExprPlanner {
     /// Return the scope of the record for which the expression is being planned.
     ///
     /// e.g. if this expression is being planned to evaluate on logs, metrics, spans
-    /// this should return Root. If it is being planned to evaluate on datapoints, it
+    /// this should return Root. If it is being planned to evaluate on data points, it
     /// should return the record scope identifying this data.
     fn record_scope(&self) -> RecordScope {
         match &self.record_type {
