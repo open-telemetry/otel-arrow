@@ -100,7 +100,7 @@ queries:
             COALESCE("metric_attributes.otel_scope_core_id", 'N/A') AS core_id,
             FROM metrics
             WHERE metric_name IN (
-              'logs_produced',
+              'logs_produced_ci_validation_probe',
               'logs_bytes_produced',
               'failed',
               'bytes_sent',
