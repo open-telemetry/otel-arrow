@@ -2205,7 +2205,7 @@ hard_limit: 2 GiB
         assert!(errors[0].contains("'named' list is required"));
     }
 
-    /// Scenario: a pipeline's capture policy repeats a normalized match name.
+    /// Scenario: a pipeline's capture policy repeats a wire name with different casing.
     /// Guarantees: the duplicate is rejected with its configuration path.
     #[test]
     fn validates_transport_headers_capture_duplicates() {

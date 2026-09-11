@@ -126,9 +126,10 @@ when its wire name matches any entry in `match_names`
 (case-insensitive).
 
 - `match_names` (required): wire header names to match
-  (case-insensitive)
-- `store_as` (optional): normalized name used for policy matching
-  and storage. Default: first matched name lowercased.
+  (case-insensitive). Their configured spelling is preserved.
+- `store_as` (optional): stored context name used for policy matching.
+  Its configured spelling is preserved. When omitted, the matched
+  configured wire name is lowercased during policy compilation.
 - `sensitive` (optional): marks the header as containing sensitive
   data (e.g., auth tokens). Default: `false`.
 - `value_kind` (optional): override auto-detected value kind
@@ -198,7 +199,7 @@ header_propagation:
 | --- | --- |
 | `all_captured` | Propagate all captured headers. |
 | `none` | Propagate nothing by default (default). |
-| `named` | Propagate only headers whose stored names appear in the `named` list. |
+| `named` | Propagate headers named in the `named` list. |
 
 When `none` is used, only headers explicitly matched by an override
 with `action: propagate` are included on egress.
@@ -220,7 +221,7 @@ header_propagation:
 | Value | Behavior |
 | --- | --- |
 | `preserve` | Use original wire name (default). |
-| `stored_name` | Use the normalized stored name. |
+| `stored_name` | Use the stored name with its configured spelling. |
 
 For example, if a header was captured from `X-Tenant-Id` and stored
 as `tenant_id`, then `preserve` emits `X-Tenant-Id` on egress while
@@ -228,12 +229,12 @@ as `tenant_id`, then `preserve` emits `X-Tenant-Id` on egress while
 
 ### Overrides
 
-Each override targets specific headers by their stored (normalized)
-name and can force a different action or name strategy than the
-default.
+Each override targets specific headers by their stored name and can
+force a different action or name strategy than the default.
 
 - `match.stored_names` (required): match headers whose stored name
-  appears in this list (case-insensitive).
+  appears in this list (case-insensitive). Their configured spelling
+  is preserved.
 - `action` (optional): action for matched headers. Default:
   `propagate`.
 - `name` (optional): override name strategy for matched headers.

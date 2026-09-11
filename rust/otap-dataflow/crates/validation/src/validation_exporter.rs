@@ -392,7 +392,7 @@ mod tests {
 
         assert_eq!(
             (VALIDATION_EXPORTER_CONTEXT_DECLARATIONS.declarations)(&config).unwrap(),
-            [consumes(&["x-secret"])].into_iter().collect()
+            [consumes(&["X-Secret"])].into_iter().collect()
         );
     }
 

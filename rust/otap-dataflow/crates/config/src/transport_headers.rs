@@ -9,7 +9,7 @@
 //! - Duplicate header names
 //! - Text and binary values
 //! - Original wire names when required
-//! - Normalized context entry names for policy matching
+//! - Stored context entry names for policy matching
 
 use crate::context::ContextEntryName;
 use std::fmt;
@@ -47,7 +47,7 @@ pub struct TransportHeaderValue {
 /// A transport header stored in context.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TransportHeader {
-    /// Normalized context entry name.
+    /// Stored context entry name.
     pub name: ContextEntryName,
     /// Value and optional original wire name.
     pub value: TransportHeaderValue,
@@ -104,7 +104,7 @@ impl TransportHeader {
         Self::new(name, ValueKind::Binary, value.into())
     }
 
-    /// Returns the original wire name or the normalized stored name.
+    /// Returns the original wire name or the stored name.
     #[must_use]
     pub fn wire_name(&self) -> &str {
         self.value.original_name.as_deref().unwrap_or(&self.name)
@@ -182,7 +182,7 @@ impl TransportHeaders {
         self.headers.iter()
     }
 
-    /// Finds headers by exact normalized name.
+    /// Finds headers by exact stored name.
     /// Uses a linear scan for validation.
     pub fn find_by_name<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a TransportHeader> {
         self.headers.iter().filter(move |h| h.name.as_str() == name)

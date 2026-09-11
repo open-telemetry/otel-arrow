@@ -743,7 +743,7 @@ config:
         assert_eq!(capture.headers[0].store_as.as_deref(), Some("request_id"));
     }
 
-    /// Scenario: a receiver's capture policy repeats a normalized match name.
+    /// Scenario: a receiver's capture policy repeats a wire name with different casing.
     /// Guarantees: the duplicate is rejected with the node's configuration path.
     #[test]
     fn receiver_rejects_duplicate_capture_match_names() {

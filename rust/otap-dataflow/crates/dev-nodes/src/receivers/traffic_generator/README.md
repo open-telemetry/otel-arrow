@@ -70,8 +70,8 @@ config:
     log_body_size_bytes: 1024
 ```
 
-Transport-header names are normalized to ASCII lowercase, and
-duplicate normalized header names are not permitted.
+Transport-header names preserve their configured spelling. Names that differ
+only by case remain distinct stored context entries.
 
 ## Purpose
 

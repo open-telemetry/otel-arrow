@@ -1931,7 +1931,7 @@ mod tests {
                 other => panic!("unexpected declaration: {other:?}"),
             })
             .collect();
-        assert_eq!(names, vec!["a-first", "x-request-id", "x-tenant-id"]);
+        assert_eq!(names, vec!["X-Request-Id", "a-first", "x-tenant-id"]);
 
         let config: Config = serde_json::from_value(config).unwrap();
         let headers = build_transport_headers(config.transport_headers())
@@ -1945,9 +1945,9 @@ mod tests {
     }
 
     /// Scenario: generated header names use mixed case.
-    /// Guarantees: names become lowercase. Binary suffixes still select binary values.
+    /// Guarantees: stored names and case-sensitive binary suffix detection remain unchanged.
     #[test]
-    fn traffic_gen_headers_normalize_logical_names() {
+    fn traffic_gen_headers_preserve_logical_names() {
         let headers = build_transport_headers(&HashMap::from([
             (context_name("X-Request-Id"), Some("request".to_string())),
             (context_name("X-Trace-Bin"), Some("trace".to_string())),
@@ -1955,17 +1955,17 @@ mod tests {
         .expect("configured headers produce transport headers");
         let request_header = headers
             .iter()
-            .find(|header| header.name.as_str() == "x-request-id")
+            .find(|header| header.name.as_str() == "X-Request-Id")
             .expect("request header is present");
         let trace_header = headers
             .iter()
-            .find(|header| header.name.as_str() == "x-trace-bin")
+            .find(|header| header.name.as_str() == "X-Trace-Bin")
             .expect("trace header is present");
 
-        assert_eq!(request_header.name.as_str(), "x-request-id");
+        assert_eq!(request_header.name.as_str(), "X-Request-Id");
         assert_eq!(request_header.value.value_kind, ValueKind::Text);
-        assert_eq!(trace_header.name.as_str(), "x-trace-bin");
-        assert_eq!(trace_header.value.value_kind, ValueKind::Binary);
+        assert_eq!(trace_header.name.as_str(), "X-Trace-Bin");
+        assert_eq!(trace_header.value.value_kind, ValueKind::Text);
     }
 
     /// Scenario: a generator configures no transport headers.
@@ -1988,9 +1988,9 @@ mod tests {
     }
 
     /// Scenario: configured header names differ only by case.
-    /// Guarantees: declaration collection rejects the duplicate during parsing.
+    /// Guarantees: declaration collection preserves both case-sensitive stored names.
     #[test]
-    fn traffic_gen_declaration_rejects_duplicate_normalized_headers() {
+    fn traffic_gen_declaration_preserves_case_distinct_headers() {
         let config = serde_json::json!({
             "traffic_config": {
                 "signals_per_second": 10,
@@ -2007,7 +2007,16 @@ mod tests {
             }
         });
 
-        assert!((TRAFFIC_GENERATOR_CONTEXT_DECLARATIONS.declarations)(&config).is_err());
+        let declarations = (TRAFFIC_GENERATOR_CONTEXT_DECLARATIONS.declarations)(&config)
+            .expect("case-distinct names should remain valid");
+        let names = declarations
+            .iter()
+            .map(|declaration| match declaration {
+                ContextDeclaration::Produces { entry } => entry.as_str(),
+                other => panic!("unexpected declaration: {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["X-Tenant-Id", "x-tenant-id"]);
     }
 
     /// Scenario: Receiver config validation accepts configs with at least one non-zero signal weight and rejects configs where all weights are zero.

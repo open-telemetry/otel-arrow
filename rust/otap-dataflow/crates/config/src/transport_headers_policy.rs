@@ -88,7 +88,7 @@ pub struct HeaderCapturePolicy {
     pub(crate) headers: Vec<CaptureRule>,
 }
 
-/// Capture rules indexed by normalized wire name.
+/// Capture rules indexed by case-insensitive wire name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompiledHeaderCapturePolicy {
     defaults: CaptureDefaults,
@@ -102,8 +102,16 @@ struct CompiledCapture {
     preserve_original_name: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 struct CaptureKey(ContextEntryName);
+
+impl PartialEq for CaptureKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.as_str().eq_ignore_ascii_case(other.0.as_str())
+    }
+}
+
+impl Eq for CaptureKey {}
 
 impl Hash for CaptureKey {
     fn hash<H: Hasher>(&self, state: &mut H) {
@@ -146,13 +154,13 @@ impl HeaderCapturePolicy {
         self.headers.is_empty()
     }
 
-    /// Rejects duplicate normalized match names.
+    /// Rejects duplicate match names using wire-header case-insensitive semantics.
     pub fn validate(&self) -> Result<(), String> {
         let mut seen = HashMap::new();
         for (rule_index, rule) in self.headers.iter().enumerate() {
             for (match_index, match_name) in rule.match_names.iter().enumerate() {
                 if let Some((first_rule_index, first_match_index)) =
-                    seen.insert(match_name, (rule_index, match_index))
+                    seen.insert(CaptureKey(match_name.clone()), (rule_index, match_index))
                 {
                     return Err(format!(
                         "headers[{rule_index}].match_names[{match_index}] `{match_name}` duplicates \
@@ -180,7 +188,10 @@ impl HeaderCapturePolicy {
 
         for rule in headers {
             for match_name in rule.match_names {
-                let stored_name = rule.store_as.clone().unwrap_or_else(|| match_name.clone());
+                let stored_name = rule
+                    .store_as
+                    .clone()
+                    .unwrap_or_else(|| match_name.to_ascii_lowercase());
                 _ = captures
                     .entry(CaptureKey(match_name))
                     .or_insert_with(|| CompiledCapture {
@@ -338,9 +349,10 @@ const fn default_max_value_bytes() -> usize {
 )]
 #[serde(deny_unknown_fields)]
 pub struct CaptureRule {
-    /// Normalized wire names to match.
+    /// Wire header names to match case-insensitively.
     pub match_names: Vec<ContextEntryName>,
-    /// Stored context entry name. Defaults to the normalized matched name.
+    /// Stored context entry name. Its configured spelling is preserved.
+    /// Defaults to the lowercase matched wire name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub store_as: Option<ContextEntryName>,
     /// Whether this header contains sensitive data (e.g. auth tokens).
@@ -449,7 +461,7 @@ impl HeaderPropagationPolicy {
                 .match_rule
                 .stored_names
                 .iter()
-                .any(|stored| name == stored)
+                .any(|stored| name.as_str().eq_ignore_ascii_case(stored.as_str()))
             {
                 let name_strategy = ov.name.unwrap_or(self.default.name);
                 return (ov.action, name_strategy);
@@ -547,7 +559,11 @@ impl PropagationSelector {
             PropagationSelectorType::Named => self
                 .named
                 .as_ref()
-                .map(|names| names.iter().any(|n| header_name.eq(n)))
+                .map(|names| {
+                    names
+                        .iter()
+                        .any(|name| header_name.as_str().eq_ignore_ascii_case(name.as_str()))
+                })
                 .unwrap_or(false),
         }
     }
@@ -597,7 +613,7 @@ pub enum NameStrategy {
     /// Use the original wire name observed on ingress.
     #[default]
     Preserve,
-    /// Use the normalized stored name.
+    /// Use the stored name, preserving its configured spelling.
     StoredName,
 }
 
@@ -649,7 +665,7 @@ pub struct PropagationOverride {
 )]
 #[serde(deny_unknown_fields)]
 pub struct PropagationMatch {
-    /// Normalized stored names to match.
+    /// Stored names to match case-insensitively, preserving configured spelling.
     pub stored_names: Vec<ContextEntryName>,
 }
 
@@ -674,7 +690,7 @@ mod tests {
         assert_eq!(policy.defaults.on_error, ErrorAction::Drop);
     }
 
-    /// Scenario: capture rules repeat a normalized match name.
+    /// Scenario: capture rules repeat a wire name with different casing.
     /// Guarantees: the error identifies both conflicting locations.
     #[test]
     fn capture_policy_rejects_duplicate_match_names() {
@@ -757,15 +773,15 @@ mod tests {
         assert!(!policy.propagates_original_name(&context_name("dropped")));
     }
 
-    /// Scenario: no consumer needs original names.
-    /// Guarantees: renamed headers retain only their stored names.
+    /// Scenario: no consumer needs original names and `store_as` uses mixed case.
+    /// Guarantees: the header retains the configured stored-name spelling.
     #[test]
     fn capture_policy_can_discard_original_names() {
         let policy = HeaderCapturePolicy::new(
             CaptureDefaults::default(),
             vec![CaptureRule {
                 match_names: vec![context_name("x-tenant")],
-                store_as: Some(context_name("tenant")),
+                store_as: Some(context_name("Tenant")),
                 sensitive: false,
                 value_kind: None,
             }],
@@ -776,8 +792,8 @@ mod tests {
         let _ =
             policy.capture_from_pairs([("X-Tenant", b"acme".as_slice())].into_iter(), &mut headers);
 
-        assert_eq!(headers.as_slice()[0].name, "tenant");
-        assert_eq!(headers.as_slice()[0].wire_name(), "tenant");
+        assert_eq!(headers.as_slice()[0].name, "Tenant");
+        assert_eq!(headers.as_slice()[0].wire_name(), "Tenant");
     }
 
     /// Scenario: YAML sets capture limits, renaming, and sensitive headers.

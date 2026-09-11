@@ -20,7 +20,7 @@ use std::sync::{Arc, OnceLock};
 /// A context entry and its requested representation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ContextEntrySelector {
-    /// Normalized entry name.
+    /// Configured entry name.
     pub name: ContextEntryName,
     /// Requested representation.
     pub form: ContextEntrySelectorForm,
@@ -31,7 +31,8 @@ pub struct ContextEntrySelector {
 pub enum ContextEntrySelectorForm {
     /// Value only.
     Value,
-    /// Normalized name and value.
+    /// Stored name and value. The variant name is historical; it does not
+    /// lowercase an explicitly configured stored name.
     NormalizedKeyValue,
     /// Original name and value.
     OriginalKeyValue,
@@ -45,7 +46,8 @@ pub enum ContextConsumerSelector {
         /// Entries to read.
         entries: Box<[ContextEntrySelector]>,
     },
-    /// Selects every context entry using normalized names.
+    /// Selects every context entry using stored names. The variant name is
+    /// historical; it does not lowercase explicitly configured stored names.
     AllNormalized,
 }
 

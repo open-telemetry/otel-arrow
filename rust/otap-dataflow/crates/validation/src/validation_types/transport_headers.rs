@@ -362,10 +362,12 @@ mod tests {
         ));
     }
 
-    /// Scenario: a header/value assertion has an invalid name.
-    /// Guarantees: construction returns a validation error.
+    /// Scenario: a header/value assertion uses an unrestricted stored name.
+    /// Guarantees: construction preserves the existing accepted input domain.
     #[test]
-    fn key_value_construction_is_fallible() {
-        assert!(TransportHeaderKeyValue::try_new("not valid", "value").is_err());
+    fn key_value_construction_preserves_name() {
+        let pair =
+            TransportHeaderKeyValue::try_new("not normalized", "value").expect("name is accepted");
+        assert_eq!(pair.key.as_str(), "not normalized");
     }
 }

@@ -159,12 +159,11 @@ impl TopicRouter {
         signal_config: &SignalConfig,
         context: &'a Context,
     ) -> Option<&'a TransportHeader> {
-        // Configured and captured names are already normalized.
         let header_key = signal_config.topic_from_transport_header()?.as_str();
         context
             .transport_headers()?
             .iter()
-            .find(|h| h.name.as_str() == header_key)
+            .find(|h| h.name.as_str().eq_ignore_ascii_case(header_key))
     }
 }
 
@@ -604,19 +603,19 @@ mod tests {
         );
     }
 
-    /// Scenario: A valid transport header topic is provided.
-    /// Guarantees: Resolves to the header value without errors.
+    /// Scenario: A valid mixed-case transport header topic is provided.
+    /// Guarantees: Topic routing preserves the header value's exact spelling.
     #[test]
     fn test_resolve_valid_header_topic_still_works() {
         let config = make_signal_config("fallback-topic", Some("x-topic"));
-        let ctx = context_with_headers(vec![make_transport_header("X-Topic", "valid-topic-123")]);
+        let ctx = context_with_headers(vec![make_transport_header("X-Topic", "Tenant-A.Logs")]);
         let mut metrics = KafkaExporterMetrics::register(
             &crate::exporters::kafka_exporter::exporter::test_support::pipeline_context(),
         );
 
         let topic = TopicRouter::resolve(&config, None, &ctx, SignalType::Logs, &mut metrics)
             .expect("valid topic");
-        assert_eq!(&*topic, "valid-topic-123");
+        assert_eq!(&*topic, "Tenant-A.Logs");
         assert!(matches!(topic, Cow::Owned(_)));
         assert_eq!(
             routing_count(&metrics, SignalType::Logs, KafkaTopicSource::Header),
@@ -628,19 +627,38 @@ mod tests {
         );
     }
 
-    /// Scenario: The transport header is mixed case but matches normalized lowercase config.
-    /// Guarantees: Successfully matches and resolves the header topic.
+    /// Scenario: a mixed-case selector targets a default lowercase stored name.
+    /// Guarantees: routing matches stored header names ASCII-case-insensitively.
     #[test]
-    fn test_resolve_matches_normalized_config_key_for_mixed_case_header() {
-        // A header arriving as `X-Target-Topic` is captured (and normalized) as
-        // `x-target-topic`. The config key must be the normalized form for the
-        // router to match it -- `KafkaExporterConfig::try_from` produces this
-        // form from a natural config like `X-Target-Topic`.
-        let config = make_signal_config("fallback-logs", Some("x-target-topic"));
+    fn test_resolve_matches_default_stored_name_case_insensitively() {
+        let config = make_signal_config("fallback-logs", Some("X-Target-Topic"));
         let ctx = context_with_headers(vec![make_transport_header(
-            "X-Target-Topic",
+            "x-target-topic",
             "tenant-a-logs",
         )]);
+        let mut metrics = KafkaExporterMetrics::register(
+            &crate::exporters::kafka_exporter::exporter::test_support::pipeline_context(),
+        );
+
+        let topic = TopicRouter::resolve(&config, None, &ctx, SignalType::Logs, &mut metrics)
+            .expect("valid topic");
+        assert_eq!(&*topic, "tenant-a-logs");
+        assert_eq!(
+            routing_count(&metrics, SignalType::Logs, KafkaTopicSource::Header),
+            1
+        );
+        assert_eq!(
+            routing_count(&metrics, SignalType::Logs, KafkaTopicSource::StaticConfig),
+            0
+        );
+    }
+
+    /// Scenario: a selector targets a mixed-case explicit stored name.
+    /// Guarantees: routing can address custom `store_as` names regardless of ASCII casing.
+    #[test]
+    fn test_resolve_matches_mixed_case_custom_stored_name() {
+        let config = make_signal_config("fallback-logs", Some("tenanttopic"));
+        let ctx = context_with_headers(vec![make_transport_header("TenantTopic", "tenant-a-logs")]);
         let mut metrics = KafkaExporterMetrics::register(
             &crate::exporters::kafka_exporter::exporter::test_support::pipeline_context(),
         );

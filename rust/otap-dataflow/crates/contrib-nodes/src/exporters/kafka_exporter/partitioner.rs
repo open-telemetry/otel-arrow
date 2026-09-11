@@ -12,9 +12,10 @@ use otel_arrow_dfe_config::transport_headers::TransportHeaders;
 use std::hash::{Hash, Hasher};
 use xxhash_rust::xxh64::Xxh64;
 
-/// Builds a deterministic key from normalized header names and values.
+/// Builds a deterministic key from exact stored header names and values.
 ///
-/// Header order and original wire-name casing do not affect the key.
+/// Header order and original wire-name casing do not affect the key. The
+/// configured casing of a custom stored name does affect the key.
 /// Returns a 16-character hexadecimal key, or `None` for empty headers.
 #[must_use]
 pub fn partition_key_from_transport_headers(headers: &TransportHeaders) -> Option<String> {
@@ -22,7 +23,8 @@ pub fn partition_key_from_transport_headers(headers: &TransportHeaders) -> Optio
         return None;
     }
 
-    // Sort by normalized name, then value. Ignore wire-name casing and input order.
+    // Sort by exact stored name, then value. Ignore original wire-name casing
+    // and input order.
     let mut sorted: Vec<&_> = headers.iter().collect();
     sorted.sort_unstable_by(|a, b| {
         a.name

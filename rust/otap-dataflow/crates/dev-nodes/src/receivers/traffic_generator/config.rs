@@ -3,10 +3,10 @@
 
 //! Implementation of the traffic generator receiver configuration
 
-use serde::de::{Deserializer, MapAccess, Visitor};
+use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
 
-use std::collections::{HashMap, hash_map::Entry};
+use std::collections::HashMap;
 use std::num::NonZeroU32;
 
 use otel_arrow_dfe_config::ContextEntryName;
@@ -145,8 +145,7 @@ pub struct Config {
 
     /// Optional transport headers to attach to each generated pdata message.
     ///
-    /// Names are case-insensitive. Normalized duplicates are rejected.
-    /// Values are fixed strings or `null`.
+    /// Names preserve their configured spelling. Values are fixed strings or `null`.
     /// A `null` value generates one random value at startup.
     ///
     /// ```yaml
@@ -154,7 +153,7 @@ pub struct Config {
     ///   x-tenant-id: "acme"
     ///   x-request-id:
     /// ```
-    #[serde(default, deserialize_with = "deserialize_transport_headers")]
+    #[serde(default)]
     transport_headers: HashMap<ContextEntryName, Option<String>>,
 }
 
@@ -492,43 +491,6 @@ pub(crate) fn build_rotation_table(entries: &[ResourceAttributeSet]) -> Vec<usiz
         .collect()
 }
 
-fn deserialize_transport_headers<'de, D>(
-    deserializer: D,
-) -> Result<HashMap<ContextEntryName, Option<String>>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    struct TransportHeadersVisitor;
-
-    impl<'de> Visitor<'de> for TransportHeadersVisitor {
-        type Value = HashMap<ContextEntryName, Option<String>>;
-
-        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            formatter.write_str("transport headers with unique case-insensitive names")
-        }
-
-        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
-            let mut headers = HashMap::new();
-            while let Some((name, value)) = map.next_entry::<ContextEntryName, Option<String>>()? {
-                match headers.entry(name) {
-                    Entry::Vacant(entry) => {
-                        let _ = entry.insert(value);
-                    }
-                    Entry::Occupied(entry) => {
-                        return Err(serde::de::Error::custom(format!(
-                            "duplicate normalized transport header name '{}'",
-                            entry.key()
-                        )));
-                    }
-                }
-            }
-            Ok(headers)
-        }
-    }
-
-    deserializer.deserialize_map(TransportHeadersVisitor)
-}
-
 /// Accepts a plain map, a list of plain maps, a list of weighted structs, or a
 /// mixed list -- all normalized to `Vec<ResourceAttributeSet>`.
 fn deserialize_resource_attributes<'de, D>(
@@ -810,7 +772,7 @@ mod tests {
     }
 
     /// Scenario: mixed-case headers have fixed or null values.
-    /// Guarantees: names normalize without changing fixed or null values.
+    /// Guarantees: names and values preserve their configured spelling and content.
     #[test]
     fn parse_config_transport_headers_with_values() {
         let cfg: Config = serde_json::from_value(json!({
@@ -826,77 +788,43 @@ mod tests {
 
         let headers = cfg.transport_headers();
         assert_eq!(headers.len(), 2);
+        assert!(headers.keys().any(|name| name.as_str() == "X-Tenant-Id"));
+        assert!(headers.keys().any(|name| name.as_str() == "X-Request-Id"));
         assert_eq!(
-            headers.get(&context_name("x-tenant-id")),
+            headers.get(&context_name("X-Tenant-Id")),
             Some(&Some("acme".to_string())),
             "fixed value should be preserved"
         );
         assert_eq!(
-            headers.get(&context_name("x-request-id")),
+            headers.get(&context_name("X-Request-Id")),
             Some(&None),
             "null value should parse as None"
         );
+        assert!(!headers.contains_key(&context_name("x-tenant-id")));
     }
 
     /// Scenario: header names differ only by case.
-    /// Guarantees: all duplicates fail. Errors omit header values.
+    /// Guarantees: both case-sensitive stored names and their values are preserved.
     #[test]
-    fn parse_config_transport_headers_rejects_duplicate_normalized_names() {
-        for headers in [
-            json!({"X-Tenant-Id": "acme", "x-tenant-id": "contoso"}),
-            json!({"X-Tenant-Id": "acme", "x-tenant-id": "acme"}),
-            json!({"X-Tenant-Id": null, "x-tenant-id": null}),
-        ] {
-            let error = serde_json::from_value::<Config>(json!({
-                "traffic_config": base_traffic(),
-                "transport_headers": headers,
-            }))
-            .err()
-            .expect("duplicate normalized header name should be rejected")
-            .to_string();
-
-            assert!(error.contains("duplicate normalized transport header name 'x-tenant-id'"));
-            assert!(!error.contains("acme"));
-            assert!(!error.contains("contoso"));
-        }
-    }
-
-    /// Scenario: a JSON header map repeats a key.
-    /// Guarantees: the duplicate key is rejected.
-    #[test]
-    fn parse_config_transport_headers_rejects_duplicate_raw_names() {
-        let config = format!(
-            r#"{{"traffic_config":{},"transport_headers":{{"x-id":"first","x-id":"second"}}}}"#,
-            base_traffic()
-        );
-        let error = serde_json::from_str::<Config>(&config)
-            .err()
-            .expect("duplicate raw header name should be rejected")
-            .to_string();
-        assert!(error.contains("duplicate normalized transport header name 'x-id'"));
-    }
-
-    /// Scenario: a header map is empty or contains an invalid name.
-    /// Guarantees: empty maps parse. Invalid names fail.
-    #[test]
-    fn parse_config_transport_headers_validates_names_and_accepts_empty_maps() {
+    fn parse_config_transport_headers_preserves_case_distinct_names() {
         let config: Config = serde_json::from_value(json!({
             "traffic_config": base_traffic(),
-            "transport_headers": {},
+            "transport_headers": {
+                "X-Tenant-Id": "acme",
+                "x-tenant-id": "contoso"
+            },
         }))
-        .expect("empty headers should parse");
-        assert!(config.transport_headers().is_empty());
+        .expect("case-distinct names should parse");
 
-        for name in ["", "x tenant", "x-\u{00e9}"] {
-            let error = serde_json::from_value::<Config>(json!({
-                "traffic_config": base_traffic(),
-                "transport_headers": {name: "value"},
-            }))
-            .err()
-            .expect("invalid header name should be rejected")
-            .to_string();
-            assert!(error.contains("invalid transport-header context entry reference"));
-        }
+        assert_eq!(config.transport_headers().len(), 2);
+        assert_eq!(
+            config.transport_headers().get(&context_name("X-Tenant-Id")),
+            Some(&Some("acme".to_string()))
+        );
+        assert_eq!(
+            config.transport_headers().get(&context_name("x-tenant-id")),
+            Some(&Some("contoso".to_string()))
+        );
     }
 
     #[test]
