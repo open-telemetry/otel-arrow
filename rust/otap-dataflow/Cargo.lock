@@ -1254,7 +1254,7 @@ dependencies = [
  "otel-arrow-dfe-otap",
  "otel-arrow-dfe-pdata",
  "otel-arrow-dfe-pdata-codec",
- "otel-arrow-dfe-pdata-views 0.56.0",
+ "otel-arrow-dfe-pdata-views",
  "otel-arrow-dfe-telemetry",
  "otel-arrow-dfe-telemetry-macros",
  "otel-arrow-dfe-test-net",
@@ -3965,7 +3965,7 @@ dependencies = [
  "lz4_flex 0.11.6",
  "md-5 0.11.0",
  "opentelemetry-proto",
- "otel-arrow-dfe-pdata-views 0.54.1",
+ "otel-arrow-dfe-pdata-views",
  "p12-keystore",
  "reqwest 0.12.28",
  "rustls",
@@ -7400,7 +7400,7 @@ dependencies = [
  "otel-arrow-dfe-engine",
  "otel-arrow-dfe-otap",
  "otel-arrow-dfe-pdata",
- "otel-arrow-dfe-pdata-views 0.56.0",
+ "otel-arrow-dfe-pdata-views",
  "otel-arrow-dfe-state",
  "otel-arrow-dfe-telemetry",
  "otel-arrow-dfe-telemetry-macros",
@@ -7525,7 +7525,7 @@ dependencies = [
  "otel-arrow-dfe-engine",
  "otel-arrow-dfe-otap",
  "otel-arrow-dfe-pdata",
- "otel-arrow-dfe-pdata-views 0.56.0",
+ "otel-arrow-dfe-pdata-views",
  "otel-arrow-dfe-query-engine",
  "otel-arrow-dfe-query-engine-languages",
  "otel-arrow-dfe-quiver",
@@ -7760,7 +7760,7 @@ dependencies = [
  "otel-arrow-dfe-config",
  "otel-arrow-dfe-pdata-otlp-macros",
  "otel-arrow-dfe-pdata-otlp-model",
- "otel-arrow-dfe-pdata-views 0.56.0",
+ "otel-arrow-dfe-pdata-views",
  "otel-arrow-dfe-test-net",
  "paste",
  "pretty_assertions",
@@ -7789,7 +7789,7 @@ dependencies = [
  "linkme",
  "otel-arrow-dfe-config",
  "otel-arrow-dfe-pdata",
- "otel-arrow-dfe-pdata-views 0.56.0",
+ "otel-arrow-dfe-pdata-views",
  "prost 0.14.4",
  "thiserror 2.0.20",
 ]
@@ -7814,12 +7814,6 @@ dependencies = [
 [[package]]
 name = "otel-arrow-dfe-pdata-views"
 version = "0.54.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f72ca099fdfa6a55842e3f7d6bb053806ba1ec1280324cfebe1166dbadffea16"
-
-[[package]]
-name = "otel-arrow-dfe-pdata-views"
-version = "0.56.0"
 
 [[package]]
 name = "otel-arrow-dfe-query-engine"
@@ -7956,7 +7950,7 @@ dependencies = [
  "otel-arrow-dfe-config",
  "otel-arrow-dfe-expohisto",
  "otel-arrow-dfe-pdata",
- "otel-arrow-dfe-pdata-views 0.56.0",
+ "otel-arrow-dfe-pdata-views",
  "otel-arrow-dfe-telemetry-macros",
  "parking_lot",
  "prost 0.14.4",
