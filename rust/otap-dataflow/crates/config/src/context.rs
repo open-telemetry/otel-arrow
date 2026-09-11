@@ -27,7 +27,7 @@ impl ContextEntryName {
 
     /// Returns an ASCII-lowercase copy.
     #[must_use]
-    pub fn to_ascii_lowercase(&self) -> Self {
+    pub(crate) fn to_ascii_lowercase(&self) -> Self {
         Self(self.0.to_ascii_lowercase().into())
     }
 }
