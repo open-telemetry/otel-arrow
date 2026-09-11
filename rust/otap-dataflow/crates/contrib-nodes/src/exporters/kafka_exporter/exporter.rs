@@ -868,7 +868,7 @@ impl KafkaExporter {
         reporter: &dyn AckNackReporter,
         effect_handler: Option<&EffectHandler<OtapPdata>>,
     ) {
-        let (report_result, context) = match intent {
+        let (report_result, _context) = match intent {
             ReportIntent::Ack => (
                 reporter.ack(pdata).await,
                 "ack for Kafka export (export succeeded)",
