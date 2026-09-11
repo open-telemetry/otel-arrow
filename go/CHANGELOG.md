@@ -11,6 +11,12 @@ changes. See [`RELEASING.md`](../RELEASING.md) for the versioning policy.
 
 <!-- next version -->
 
+## v0.56.0
+
+No changes. This release maintains version parity across the repository.
+
+<!-- previous-version -->
+
 ## v0.55.0
 
 ### :bulb: Enhancements :bulb:

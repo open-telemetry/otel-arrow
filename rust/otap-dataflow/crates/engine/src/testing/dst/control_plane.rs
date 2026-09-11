@@ -92,7 +92,7 @@ async fn run_control_plane_seed(seed: u64) {
         let ack = AckMsg::new(DstPData::with_frames(
             100,
             vec![
-                frame(receiver_id.index, Interests::PRODUCER_METRICS, 1),
+                frame(receiver_id.index, Interests::NODE_OUTPUT_METRICS, 1),
                 frame(
                     processor_id.index,
                     Interests::ACKS
@@ -104,7 +104,7 @@ async fn run_control_plane_seed(seed: u64) {
                         },
                     2,
                 ),
-                frame(exporter_id.index, Interests::CONSUMER_METRICS, 3),
+                frame(exporter_id.index, Interests::NODE_INPUT_METRICS, 3),
             ],
         ));
         completion_tx
@@ -119,9 +119,9 @@ async fn run_control_plane_seed(seed: u64) {
                 DstPData::with_frames(
                     101,
                     vec![
-                        frame(receiver_id.index, Interests::PRODUCER_METRICS, 4),
+                        frame(receiver_id.index, Interests::NODE_OUTPUT_METRICS, 4),
                         frame(processor_id.index, Interests::NACKS, 5),
-                        frame(exporter_id.index, Interests::CONSUMER_METRICS, 6),
+                        frame(exporter_id.index, Interests::NODE_INPUT_METRICS, 6),
                     ],
                 ),
             )
@@ -131,9 +131,9 @@ async fn run_control_plane_seed(seed: u64) {
                 DstPData::with_frames(
                     101,
                     vec![
-                        frame(receiver_id.index, Interests::PRODUCER_METRICS, 4),
+                        frame(receiver_id.index, Interests::NODE_OUTPUT_METRICS, 4),
                         frame(processor_id.index, Interests::NACKS, 5),
-                        frame(exporter_id.index, Interests::CONSUMER_METRICS, 6),
+                        frame(exporter_id.index, Interests::NODE_INPUT_METRICS, 6),
                     ],
                 ),
             )

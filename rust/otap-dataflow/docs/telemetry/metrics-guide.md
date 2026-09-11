@@ -231,7 +231,7 @@ metrics.
 | `receiver.received.messages` | Record one classified external message when receiver-local handling reaches its terminal local outcome. |
 | `receiver.received.payload.size` | Record the encoded application payload bytes observed at the receiver boundary. |
 | `receiver.processing.duration` | Measure the receiver's documented local processing boundary, ending before downstream handoff or channel wait. |
-| `exporter.attempted.messages` | Record every component-local delivery attempt, including attempts that fail during preparation and each backend retry, grouped by terminal attempt outcome. |
+| `exporter.attempted.messages` | Record every node-local delivery attempt, including attempts that fail during preparation and each backend retry, grouped by terminal attempt outcome. |
 | `exporter.attempted.duration` | Measure from attempt start through the terminal local or backend result, excluding Ack/Nack notification delivery. |
 | `exporter.attempted.payload.size` | Record the encoded application payload bytes produced or submitted by the attempt when available. |
 | `exporter.attempted.items` | Record the signal items handled by the attempt. |
@@ -260,16 +260,15 @@ effective node interests when the helper is registered. Constructing an
 exporter attempt starts its optional duration measurement so synchronous
 preparation before an in-flight request is included.
 
-`runtime_metrics: detailed` enables all shared optional component
-measurements. A node can instead opt into component duration, item counts,
-and/or payload size at any runtime metric level with its
-`policies.telemetry` flags. These per-node flags do not enable the engine-owned
-`node.input` or `node.output` metric sets below `runtime_metrics: normal`;
-therefore, at `none` or `basic`, only the opted-in component measurements are
-emitted.
+`runtime_metrics: detailed` enables all shared optional node
+measurements. A node can instead opt into messages, local duration, item
+counts, and/or payload size at any runtime metric level with its
+`policies.telemetry` flags. `completion_duration` independently enables
+`node.completion.duration`. Each opt-in enables only its corresponding
+measurements.
 
-Components with additional diagnostics should compose the shared helper into
-their component metrics aggregate under a `boundary` field. The aggregate owns
+Nodes with additional diagnostics should compose the shared helper into
+their metrics aggregate under a `boundary` field. The aggregate owns
 combined reporting and terminal snapshots, while operation lifecycle calls go
 directly through `boundary`.
 
@@ -356,7 +355,7 @@ Return ordinary failures through `attempt.failed(error)`. Use
 `attempt.refused(error)` instead for a validation, policy, admission, or
 capacity rejection.
 
-`exporter.attempted.messages` counts component-local delivery attempts,
+`exporter.attempted.messages` counts node-local delivery attempts,
 including attempts that fail before a backend call. Each physical retry starts
 a new attempt and records the items and any available encoded payload bytes
 again. Use `node.input.messages` to count PData messages entering the exporter;

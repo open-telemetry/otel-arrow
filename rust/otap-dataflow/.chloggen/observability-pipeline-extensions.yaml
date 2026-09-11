@@ -1,4 +1,0 @@
-change_type: enhancement
-component: engine
-note: Allow extensions to be declared in the engine observability pipeline.
-issues: [4035]
