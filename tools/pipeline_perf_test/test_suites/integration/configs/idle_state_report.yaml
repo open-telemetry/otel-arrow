@@ -168,3 +168,12 @@ result_tables:
   - name: gh_actions_benchmark
     description: The final metrics used with gh_actions_benchmark.
     finite_columns: [value]
+    required_values:
+      name:
+        - idle_cpu_percentage_avg
+        - idle_cpu_percentage_max
+        - idle_ram_mib_avg
+        - idle_ram_mib_max
+        - idle_test_duration
+        - idle_rss_mib_avg
+        - idle_rss_mib_max

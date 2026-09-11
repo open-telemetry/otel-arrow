@@ -225,4 +225,8 @@ result_tables:
       name:
         - logs_produced_rate
         - log_rows_written_rate
+        - df-engine_cpu_percentage_normalized_avg
+        - clickhouse_cpu_percentage_normalized_avg
+        - df-engine_ram_mib_max
+        - clickhouse_ram_mib_max
         - test_duration

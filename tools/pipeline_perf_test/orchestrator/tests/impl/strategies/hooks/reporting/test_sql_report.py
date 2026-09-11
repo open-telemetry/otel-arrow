@@ -244,3 +244,30 @@ def test_result_table_accepts_required_values():
         table,
         pd.DataFrame({"name": ["loss", "produced_rate"], "value": [0.0, 1.0]}),
     )
+
+
+# Scenario: A configured SQL result table contains an invalid required KPI
+# value.
+# Guarantees: Building report results invokes configured validity checks.
+def test_build_result_dataframes_validates_configured_table():
+    table = ResultTable(
+        name="gh_actions_benchmark",
+        finite_columns=["value"],
+        required_values={"name": ["loss", "produced_rate"]},
+    )
+    hook = SQLReportHook(
+        SQLReportConfig(
+            name="validated_report",
+            report_config=SQLReportDetails(result_tables=[table]),
+        )
+    )
+    hook.conn = __import__("duckdb").connect()
+    hook.conn.execute(
+        """
+        CREATE TABLE gh_actions_benchmark AS
+        SELECT 'loss' AS name, CAST('NaN' AS DOUBLE) AS value
+        """
+    )
+
+    with pytest.raises(ValueError, match=r"required values \['produced_rate'\]"):
+        hook._build_result_dataframes()

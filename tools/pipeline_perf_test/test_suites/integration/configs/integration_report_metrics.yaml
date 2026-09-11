@@ -373,7 +373,13 @@ result_tables:
     required_values:
       name:
         - dropped_signals_percentage
+        - cpu_percentage_normalized_avg
+        - cpu_percentage_normalized_max
+        - ram_mib_avg
+        - ram_mib_max
         - metrics_produced_rate
         - metrics_received_rate
         - test_duration
+        - network_tx_bytes_rate_avg
+        - network_rx_bytes_rate_avg
     #display: False

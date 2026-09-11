@@ -488,9 +488,17 @@ result_tables:
     required_values:
       name:
         - dropped_logs_percentage
+        - cpu_percentage_normalized_avg
+        - cpu_percentage_normalized_max
+        - ram_mib_avg
+        - ram_mib_max
         - logs_produced_rate
         - logs_received_rate
         - test_duration
+        - network_tx_bytes_rate_avg
+        - network_rx_bytes_rate_avg
+        - egress_bytes_per_log
+        - uncompressed_bytes_per_log
     #display: False
   - name: dashboard_timeseries
     description: Per-metric time-series data points within the observation window for dashboard charts.

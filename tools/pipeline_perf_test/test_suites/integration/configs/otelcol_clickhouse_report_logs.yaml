@@ -145,3 +145,8 @@ result_tables:
     required_values:
       name:
         - log_rows_written_rate
+        - logs_produced_rate
+        - go-collector_cpu_percentage_normalized_avg
+        - clickhouse_cpu_percentage_normalized_avg
+        - go-collector_ram_mib_max
+        - clickhouse_ram_mib_max

@@ -479,6 +479,8 @@ hooks:
 
         self._run_sql_queries(logger)
 
+        results = self._build_result_dataframes()
+
         if self.config.report_config.write_tables:
             try:
                 self._write_tables(logger, report)
@@ -486,7 +488,6 @@ hooks:
                 logger.error("SQL Report failed to write tables %s", e)
                 raise
 
-        results = self._build_result_dataframes()
         report.set_results(results)
         return report
 
