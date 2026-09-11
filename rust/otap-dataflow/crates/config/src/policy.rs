@@ -227,11 +227,6 @@ impl Policies {
             errors.extend(telemetry.validation_errors(&format!("{path_prefix}.telemetry")));
         }
         if let Some(transport_headers) = &self.transport_headers {
-            if let Err(e) = transport_headers.header_capture.validate() {
-                errors.push(format!(
-                    "{path_prefix}.transport_headers.header_capture.{e}"
-                ));
-            }
             if let Err(e) = transport_headers.header_propagation.validate() {
                 errors.push(format!(
                     "{path_prefix}.transport_headers.header_propagation.default.selector: {e}"
@@ -2203,30 +2198,6 @@ hard_limit: 2 GiB
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("transport_headers.header_propagation.default.selector"));
         assert!(errors[0].contains("'named' list is required"));
-    }
-
-    /// Scenario: a pipeline's capture policy repeats a wire name with different casing.
-    /// Guarantees: the duplicate is rejected with its configuration path.
-    #[test]
-    fn validates_transport_headers_capture_duplicates() {
-        let policies: Policies = serde_yaml::from_str(
-            r#"
-transport_headers:
-  header_capture:
-    headers:
-      - match_names: ["X-Tenant"]
-      - match_names: ["x-tenant"]
-"#,
-        )
-        .expect("parse");
-
-        let errors = policies.validation_errors("policies");
-
-        assert_eq!(errors.len(), 1);
-        assert!(errors[0].contains(
-            "policies.transport_headers.header_capture.headers[1].match_names[0] `x-tenant`"
-        ));
-        assert!(errors[0].contains("duplicates headers[0].match_names[0]"));
     }
 
     #[test]

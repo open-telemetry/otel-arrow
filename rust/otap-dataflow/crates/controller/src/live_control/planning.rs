@@ -672,41 +672,40 @@ impl<
         Ok(candidate_context_policy)
     }
 
-    fn validate_other_pipeline_context_bindings_unchanged(
+    fn validate_deployed_pipeline_context_bindings_unchanged(
         &self,
-        target_pipeline: &PipelineKey,
         candidate_context_policy: &CompiledContextPolicy,
     ) -> Result<(), ControlPlaneError> {
         let state = self
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        Self::validate_other_pipeline_context_bindings_unchanged_in_state(
+        Self::validate_deployed_pipeline_context_bindings_unchanged_in_state(
             &state,
-            target_pipeline,
+            None,
             candidate_context_policy,
         )
     }
 
-    fn validate_other_pipeline_context_bindings_unchanged_in_state(
+    fn validate_deployed_pipeline_context_bindings_unchanged_in_state(
         state: &ControllerRuntimeState,
-        target_pipeline: &PipelineKey,
+        excluded_pipeline: Option<&PipelineKey>,
         candidate_context_policy: &CompiledContextPolicy,
     ) -> Result<(), ControlPlaneError> {
-        // The policy is compiled engine-wide, but a pipeline runtime only reads
-        // the bindings selected by its own pipeline and node IDs. The target
-        // pipeline will receive the candidate snapshot; every other deployed
-        // pipeline keeps its installed snapshot. Different snapshots are safe
-        // only when they compile identical bindings for those other pipelines.
+        // The policy is compiled engine-wide, but each running pipeline uses the
+        // bindings from the snapshot installed with its generation. A replacement
+        // rollout may keep the old generation alive while starting the new one,
+        // so even the rollout target cannot safely change bindings in place.
         //
         // Compare against each pipeline's installed snapshot rather than the
         // controller's latest global snapshot, since prior rollouts may have
-        // installed different snapshots in different generations.
+        // installed different snapshots in different generations. The excluded
+        // pipeline is used only after deletion has stopped all of its generations.
         let mut affected_pipelines: Vec<_> = state
             .logical_pipelines
             .iter()
             .filter(|(pipeline_key, record)| {
-                *pipeline_key != target_pipeline
+                excluded_pipeline != Some(*pipeline_key)
                     && !record
                         .context_policy
                         .pipeline_bindings_match(candidate_context_policy, pipeline_key)
@@ -726,7 +725,7 @@ impl<
         } else {
             Err(ControlPlaneError::InvalidRequest {
                 message: format!(
-                    "live update changes compiled context bindings for other deployed pipelines \
+                    "live update changes compiled context bindings for deployed pipelines \
                      ({}); restart the engine to apply this configuration",
                     affected_pipelines.join(", ")
                 ),
@@ -820,7 +819,7 @@ impl<
             Some(policy) => policy,
             None => self.compile_context_policy(&resolved_candidate_config)?,
         };
-        self.validate_other_pipeline_context_bindings_unchanged(&pipeline_key, &context_policy)?;
+        self.validate_deployed_pipeline_context_bindings_unchanged(&context_policy)?;
         let resolved_pipeline = resolved_candidate_config
             .pipelines
             .into_iter()
@@ -1706,6 +1705,7 @@ impl<
         &self,
         pipeline_key: &PipelineKey,
         engine_operation_id: Option<&str>,
+        candidate_context_policy: Arc<CompiledContextPolicy>,
     ) -> Result<(), ControlPlaneError> {
         {
             let mut state = self
@@ -1736,33 +1736,12 @@ impl<
                 }
             }
 
-            let previous_live_config = state.live_config.clone();
             if let Some(group) = state
                 .live_config
                 .groups
                 .get_mut(pipeline_key.pipeline_group_id())
             {
                 let _ = group.pipelines.remove(pipeline_key.pipeline_id());
-            }
-            let candidate_context_policy = match self
-                .pipeline_factory
-                .compile_context_policy(&state.live_config.resolve())
-            {
-                Ok(policy) => policy,
-                Err(error) => {
-                    state.live_config = previous_live_config;
-                    return Err(ControlPlaneError::InvalidRequest {
-                        message: error.to_string(),
-                    });
-                }
-            };
-            if let Err(error) = Self::validate_other_pipeline_context_bindings_unchanged_in_state(
-                &state,
-                pipeline_key,
-                &candidate_context_policy,
-            ) {
-                state.live_config = previous_live_config;
-                return Err(error);
             }
             let context_policy = if state.context_policy.eq(&candidate_context_policy) {
                 Arc::clone(&state.context_policy)
@@ -1879,7 +1858,7 @@ impl<
         let pipeline_group_id: PipelineGroupId = pipeline_group_id.to_owned().into();
         let pipeline_id: PipelineId = pipeline_id.to_owned().into();
         let pipeline_key = PipelineKey::new(pipeline_group_id.clone(), pipeline_id.clone());
-        let has_active_runtime = {
+        let (has_active_runtime, candidate_context_policy) = {
             let state = self
                 .state
                 .lock()
@@ -1900,14 +1879,37 @@ impl<
             {
                 return Err(ControlPlaneError::RolloutConflict);
             }
-            state
-                .runtime_instances
-                .iter()
-                .any(|(deployed_key, instance)| {
-                    deployed_key.pipeline_group_id == pipeline_group_id
-                        && deployed_key.pipeline_id == pipeline_id
-                        && matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active)
-                })
+
+            let mut candidate_config = state.live_config.clone();
+            if let Some(group) = candidate_config.groups.get_mut(&pipeline_group_id) {
+                let _ = group.pipelines.remove(&pipeline_id);
+            }
+            let candidate_context_policy = self
+                .pipeline_factory
+                .compile_context_policy(&candidate_config.resolve())
+                .map_err(|error| ControlPlaneError::InvalidRequest {
+                    message: error.to_string(),
+                })?;
+            Self::validate_deployed_pipeline_context_bindings_unchanged_in_state(
+                &state,
+                Some(&pipeline_key),
+                &candidate_context_policy,
+            )?;
+            let candidate_context_policy = if state.context_policy.eq(&candidate_context_policy) {
+                Arc::clone(&state.context_policy)
+            } else {
+                candidate_context_policy
+            };
+            let has_active_runtime =
+                state
+                    .runtime_instances
+                    .iter()
+                    .any(|(deployed_key, instance)| {
+                        deployed_key.pipeline_group_id == pipeline_group_id
+                            && deployed_key.pipeline_id == pipeline_id
+                            && matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active)
+                    });
+            (has_active_runtime, candidate_context_policy)
         };
         let shutdown = if has_active_runtime {
             match self.request_shutdown_pipeline_for_engine_operation(
@@ -1953,7 +1955,11 @@ impl<
             None
         };
 
-        self.remove_pipeline_record_for_engine_operation(&pipeline_key, engine_operation_id)?;
+        self.remove_pipeline_record_for_engine_operation(
+            &pipeline_key,
+            engine_operation_id,
+            candidate_context_policy,
+        )?;
         Ok(PipelineDeleteStatus {
             pipeline_group_id,
             pipeline_id,

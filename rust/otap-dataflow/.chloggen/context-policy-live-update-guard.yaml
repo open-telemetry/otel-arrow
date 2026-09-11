@@ -1,5 +1,5 @@
 change_type: bug_fix
 component: engine
-note: Reject live updates that would change compiled context bindings for another deployed pipeline.
+note: Reject live updates that would change compiled context bindings for any deployed pipeline.
 issues: [4008]
-subtext: Restart the engine when a context-policy change introduces cross-pipeline retention requirements.
+subtext: Restart the engine to change context declarations after a pipeline has been deployed.

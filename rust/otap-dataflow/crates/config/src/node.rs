@@ -388,14 +388,6 @@ impl NodeUserConfig {
             });
         }
 
-        if let Some(capture) = &self.header_capture
-            && let Err(e) = capture.validate()
-        {
-            errors.push(Error::InvalidUserConfig {
-                error: format!("node `{node_name}`: header_capture.{e}"),
-            });
-        }
-
         // Validate the selector shape inside node-level header_propagation so
         // that invalid selectors are rejected uniformly.
         if let Some(propagation) = &self.header_propagation
@@ -763,33 +755,6 @@ config:
         assert_eq!(capture.headers.len(), 1);
         assert_eq!(capture.headers[0].match_names, vec!["x-request-id"]);
         assert_eq!(capture.headers[0].store_as.as_deref(), Some("request_id"));
-    }
-
-    /// Scenario: a receiver's capture policy repeats a wire name with different casing.
-    /// Guarantees: the duplicate is rejected with the node's configuration path.
-    #[test]
-    fn receiver_rejects_duplicate_capture_match_names() {
-        let yaml = r#"
-type: "receiver:otap"
-header_capture:
-  headers:
-    - match_names: ["X-Tenant"]
-      store_as: first
-    - match_names: ["x-tenant"]
-      store_as: second
-"#;
-        let cfg: NodeUserConfig = serde_yaml::from_str(yaml).expect("parse");
-        let mut errors = Vec::new();
-
-        cfg.validate_transport_header_policies("otap_ingest", &mut errors);
-
-        assert_eq!(errors.len(), 1);
-        let error = errors
-            .pop()
-            .expect("duplicate capture match should fail node validation")
-            .to_string();
-        assert!(error.contains("node `otap_ingest`: header_capture.headers[1].match_names[0]"));
-        assert!(error.contains("duplicates headers[0].match_names[0]"));
     }
 
     #[test]

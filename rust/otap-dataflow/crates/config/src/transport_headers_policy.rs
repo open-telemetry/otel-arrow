@@ -154,34 +154,12 @@ impl HeaderCapturePolicy {
         self.headers.is_empty()
     }
 
-    /// Rejects duplicate match names using wire-header case-insensitive semantics.
-    pub fn validate(&self) -> Result<(), String> {
-        let mut seen = HashMap::new();
-        for (rule_index, rule) in self.headers.iter().enumerate() {
-            for (match_index, match_name) in rule.match_names.iter().enumerate() {
-                if let Some((first_rule_index, first_match_index)) =
-                    seen.insert(CaptureKey(match_name.clone()), (rule_index, match_index))
-                {
-                    return Err(format!(
-                        "headers[{rule_index}].match_names[{match_index}] `{match_name}` duplicates \
-                         headers[{first_rule_index}].match_names[{first_match_index}]"
-                    ));
-                }
-            }
-        }
-        Ok(())
-    }
-
     /// Indexes capture rules and resolves original-name retention.
     #[must_use]
     pub fn compile(
         self,
         mut consumes_original_name: impl FnMut(&ContextEntryName) -> bool,
     ) -> CompiledHeaderCapturePolicy {
-        debug_assert!(
-            self.validate().is_ok(),
-            "header capture policy must be validated before compilation"
-        );
         let HeaderCapturePolicy { defaults, headers } = self;
         let match_count = headers.iter().map(|rule| rule.match_names.len()).sum();
         let mut captures = HashMap::with_capacity(match_count);
@@ -683,7 +661,6 @@ mod tests {
     fn default_capture_policy_captures_nothing() {
         let policy = HeaderCapturePolicy::default();
         assert!(policy.is_empty());
-        assert!(policy.validate().is_ok());
         assert_eq!(policy.defaults.max_entries, 32);
         assert_eq!(policy.defaults.max_name_bytes, 128);
         assert_eq!(policy.defaults.max_value_bytes, 4096);
@@ -691,9 +668,9 @@ mod tests {
     }
 
     /// Scenario: capture rules repeat a wire name with different casing.
-    /// Guarantees: the error identifies both conflicting locations.
+    /// Guarantees: compilation preserves the first matching rule's precedence.
     #[test]
-    fn capture_policy_rejects_duplicate_match_names() {
+    fn capture_policy_duplicate_match_names_use_first_rule() {
         let policy = HeaderCapturePolicy::new(
             CaptureDefaults::default(),
             vec![
@@ -704,20 +681,25 @@ mod tests {
                     value_kind: None,
                 },
                 CaptureRule {
-                    match_names: vec![context_name("x-tenant")],
+                    match_names: vec![context_name("X-Tenant")],
                     store_as: Some(context_name("second")),
                     sensitive: false,
                     value_kind: None,
                 },
             ],
-        );
+        )
+        .compile(|_| false);
+        let mut headers = TransportHeaders::new();
 
-        let error = policy.validate().expect_err("duplicate should be rejected");
-
-        assert_eq!(
-            error,
-            "headers[1].match_names[0] `x-tenant` duplicates headers[0].match_names[0]"
+        assert!(
+            policy
+                .capture_from_pairs(
+                    std::iter::once(("X-Tenant", b"value".as_slice())),
+                    &mut headers,
+                )
+                .is_none()
         );
+        assert_eq!(headers.as_slice()[0].name, "first");
     }
 
     /// Scenario: a propagation policy uses defaults.

@@ -321,10 +321,35 @@ impl CompiledContextPolicy {
         Some(&self.nodes.get(pipeline)?.get(node)?.bindings)
     }
 
-    /// Returns whether two policies compile identical bindings for one pipeline.
+    /// Returns whether two policies compile identical non-empty bindings for one pipeline.
+    ///
+    /// Nodes without context declarations do not affect the context policy and
+    /// may be added, removed, or renamed during an otherwise safe live update.
     #[must_use]
     pub fn pipeline_bindings_match(&self, other: &Self, pipeline: &PipelineKey) -> bool {
-        self.nodes.get(pipeline) == other.nodes.get(pipeline)
+        let current = self.nodes.get(pipeline);
+        let candidate = other.nodes.get(pipeline);
+        let current_binding_count = current
+            .into_iter()
+            .flat_map(|nodes| nodes.values())
+            .filter(|node| !node.bindings.is_empty())
+            .count();
+        let candidate_binding_count = candidate
+            .into_iter()
+            .flat_map(|nodes| nodes.values())
+            .filter(|node| !node.bindings.is_empty())
+            .count();
+
+        current_binding_count == candidate_binding_count
+            && current
+                .into_iter()
+                .flat_map(|nodes| nodes.iter())
+                .all(|(node_id, node)| {
+                    node.bindings.is_empty()
+                        || candidate
+                            .and_then(|nodes| nodes.get(node_id))
+                            .is_some_and(|candidate_node| candidate_node == node)
+                })
     }
 
     /// Checks component declarations against this node's compiled bindings.

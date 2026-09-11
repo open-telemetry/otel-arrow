@@ -3958,14 +3958,10 @@ fn delete_pipeline_recompiles_context_policy_without_removed_declarations() {
     );
 }
 
-/// Scenario: reconfiguration changes a pipeline's context entry.
-/// Guarantees: the replacement installs and commits the new policy snapshot.
+/// Scenario: reconfiguration changes a deployed pipeline's context declaration.
+/// Guarantees: the update is rejected because old and new generations may overlap.
 #[test]
-fn reconfigure_pipeline_installs_new_context_policy_snapshot() {
-    let _capture_guard = CONTEXT_POLICY_TEST_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    reset_context_policy_test_capture();
+fn reconfigure_rejects_context_policy_changes_to_target_pipeline() {
     let config = engine_config_with_pipeline(
         r#"
         nodes:
@@ -3982,18 +3978,7 @@ fn reconfigure_pipeline_installs_new_context_policy_snapshot() {
         "#,
     );
     let runtime = test_runtime_with_factory(&config, &CONTEXT_POLICY_TEST_PIPELINE_FACTORY);
-    let _runner = ObservedStateRunner::start(&runtime);
     register_existing_pipeline(&runtime, &config);
-    let initial_policy = {
-        let state = runtime
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        Arc::clone(&state.context_policy)
-    };
-    let mut old_runtime =
-        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
-    report_ready(&runtime, deployed_key("g1", "p1", 0, 0));
 
     let replacement = PipelineConfig::from_yaml(
         "g1".into(),
@@ -4013,7 +3998,7 @@ connections:
 "#,
     )
     .expect("replacement should parse");
-    let plan = runtime
+    let error = runtime
         .prepare_rollout_plan(
             "g1",
             "p1",
@@ -4023,61 +4008,15 @@ connections:
                 drain_timeout_secs: 5,
             },
         )
-        .expect("changed declarations should produce a rollout plan");
-    assert_eq!(plan.action, RolloutAction::Replace);
-    reset_context_policy_test_capture();
-    let status = runtime
-        .spawn_rollout(plan)
-        .expect("replacement rollout should start");
+        .expect_err("target pipeline context binding changes should be rejected");
 
-    assert!(matches!(
-        wait_for_shutdown_message(&mut old_runtime),
-        RuntimeControlMsg::Shutdown { .. }
-    ));
-    runtime.note_instance_exit(deployed_key("g1", "p1", 0, 0), RuntimeInstanceExit::Success);
-
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        let rollout = runtime
-            .rollout_status_snapshot(&status.rollout_id)
-            .expect("rollout should remain queryable");
-        if rollout.state == ApiPipelineRolloutState::Succeeded {
-            break;
+    match error {
+        ControlPlaneError::InvalidRequest { message } => {
+            assert!(message.contains("g1:p1"), "{message}");
+            assert!(message.contains("restart the engine"), "{message}");
         }
-        assert_ne!(rollout.state, ApiPipelineRolloutState::Failed);
-        assert!(
-            Instant::now() < deadline,
-            "timed out waiting for replacement rollout"
-        );
-        thread::sleep(Duration::from_millis(25));
+        other => panic!("expected invalid request, got {other:?}"),
     }
-
-    let installed_policy = wait_for_context_policy_test_capture()
-        .upgrade()
-        .expect("replacement policy should remain installed");
-    let committed_policy = {
-        let state = runtime
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        Arc::clone(
-            &state
-                .logical_pipelines
-                .get(&PipelineKey::new("g1".into(), "p1".into()))
-                .expect("pipeline should remain committed")
-                .context_policy,
-        )
-    };
-    assert!(!Arc::ptr_eq(&initial_policy, &installed_policy));
-    assert!(Arc::ptr_eq(&installed_policy, &committed_policy));
-
-    runtime
-        .request_instance_shutdown(
-            &deployed_key("g1", "p1", 0, 1),
-            2,
-            "context policy reconfiguration test cleanup",
-        )
-        .expect("replacement runtime should accept shutdown");
 }
 
 /// Scenario: one pipeline starts preserving names that another pipeline currently discards.
@@ -4176,7 +4115,7 @@ connections:
 }
 
 /// Scenario: deleting one pipeline would change another pipeline's compiled context bindings.
-/// Guarantees: deletion is rejected and the committed configuration remains unchanged.
+/// Guarantees: deletion is rejected before shutdown and committed state remains unchanged.
 #[test]
 fn delete_rejects_context_policy_changes_to_other_pipelines() {
     let config = OtelDataflowSpec::from_yaml(
@@ -4224,6 +4163,14 @@ groups:
     let runtime = test_runtime_with_factory(&config, &CONTEXT_POLICY_TEST_PIPELINE_FACTORY);
     register_pipeline(&runtime, &config, "g1", "capture");
     register_pipeline(&runtime, &config, "g1", "propagate");
+    let mut propagate_runtime = register_runtime_instance(
+        &runtime,
+        "g1",
+        "propagate",
+        0,
+        0,
+        RuntimeInstanceLifecycle::Active,
+    );
 
     let error = runtime
         .request_delete_pipeline("g1", "propagate", 5)
@@ -4250,6 +4197,10 @@ groups:
         state
             .logical_pipelines
             .contains_key(&PipelineKey::new("g1".into(), "propagate".into()))
+    );
+    assert!(
+        propagate_runtime.try_recv().is_err(),
+        "rejected deletion must not begin shutting down the target pipeline"
     );
 }
 
