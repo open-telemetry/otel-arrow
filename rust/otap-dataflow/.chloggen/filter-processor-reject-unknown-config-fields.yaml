@@ -1,0 +1,4 @@
+change_type: bug_fix
+component: pipeline
+note: Reject unknown top-level fields in filter processor configuration.
+issues: [3568]
