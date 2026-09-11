@@ -67,11 +67,12 @@ const SEQ_SIDECAR_V1_LEN: usize = 24;
 
 /// Upper bound on bytes read from the sequence sidecar.
 ///
-/// The format's `size` field is a `u16`, so no valid sidecar exceeds 65535
-/// bytes; this cap is generous headroom above that for future growth while
-/// still preventing an oversized or corrupt file at this path from forcing
-/// an unbounded read on every segment finalization.
-const SEQ_SIDECAR_MAX_READ_LEN: u64 = 4096;
+/// Matches the format's `size` field (`u16`), the largest any valid sidecar
+/// can declare (see `decode_seq_sidecar`). A smaller cap would truncate a
+/// legitimately larger future sidecar, causing it to be misread as corrupt
+/// and its floor silently discarded (issue #4024), while this cap still
+/// bounds every read to a small, fixed allocation.
+const SEQ_SIDECAR_MAX_READ_LEN: u64 = u16::MAX as u64;
 
 /// Reads the sidecar file synchronously, capped at
 /// [`SEQ_SIDECAR_MAX_READ_LEN`] bytes.
@@ -1352,6 +1353,45 @@ mod tests {
             buf.len(),
             SEQ_SIDECAR_MAX_READ_LEN as usize,
             "read must be capped rather than consuming the whole file"
+        );
+    }
+
+    /// Scenario: a forward-written sidecar uses the largest size the format
+    /// allows (`u16::MAX`, well above the old 4096-byte read cap), the same
+    /// kind of file `decode_seq_sidecar_reads_future_version` exercises at a
+    /// much smaller size.
+    /// Guarantees: the bounded reader returns the whole file rather than
+    /// truncating it, so `decode_seq_sidecar` still extracts the v1
+    /// `next_seq` field instead of misclassifying a valid larger sidecar as
+    /// corrupt and silently discarding its floor (issue #4024).
+    #[test]
+    fn read_seq_sidecar_bounded_does_not_truncate_max_protocol_size() {
+        let next_seq: u64 = 0x0BAD_C0FF_EE00_1234;
+        let future_size: u16 = u16::MAX;
+
+        let mut buf = vec![0u8; future_size as usize];
+        buf[0..8].copy_from_slice(SEQ_SIDECAR_MAGIC);
+        buf[8..10].copy_from_slice(&2u16.to_le_bytes());
+        buf[10..12].copy_from_slice(&future_size.to_le_bytes());
+        buf[12..20].copy_from_slice(&next_seq.to_le_bytes());
+        let crc_offset = future_size as usize - 4;
+        let crc = crc32fast::hash(&buf[..crc_offset]);
+        buf[crc_offset..].copy_from_slice(&crc.to_le_bytes());
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(SEQ_SIDECAR_FILENAME);
+        std::fs::write(&path, &buf).unwrap();
+
+        let read_back = read_seq_sidecar_bounded(&path).expect("bounded read");
+        assert_eq!(
+            read_back.len(),
+            future_size as usize,
+            "a maximum-size protocol-valid sidecar must not be truncated by the read cap"
+        );
+        assert_eq!(
+            decode_seq_sidecar(&read_back),
+            Some(next_seq),
+            "the floor must still decode after a full, untruncated read"
         );
     }
 
