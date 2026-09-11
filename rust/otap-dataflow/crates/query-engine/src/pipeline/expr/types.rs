@@ -431,7 +431,7 @@ impl MetricDatapointType {
         }
     }
 
-    // TODO comment
+    /// return the [`ArrowPayloadType`] associated with datapoints of this datapoint type
     pub fn dp_attrs_payload_type(&self) -> ArrowPayloadType {
         match self {
             Self::SummaryDataPoint => ArrowPayloadType::SummaryDpAttrs,
@@ -441,7 +441,7 @@ impl MetricDatapointType {
         }
     }
 
-    // TODO comment
+    /// return the [`ArrowPayloadType`] associated with exemplars of this datapoint type
     pub fn exemplar_payload_type(&self) -> Option<ArrowPayloadType> {
         match self {
             Self::ExponentialHistogramDataPoint => Some(ArrowPayloadType::ExpHistogramDpExemplars),
@@ -451,7 +451,8 @@ impl MetricDatapointType {
         }
     }
 
-    // TODO comments
+    /// return the [`ArrowPayloadType`] associated with attributes of exemplars of this of this
+    /// datapoint type
     pub fn exemplar_attr_payload_type(&self) -> Option<ArrowPayloadType> {
         match self {
             Self::ExponentialHistogramDataPoint => {
@@ -463,7 +464,7 @@ impl MetricDatapointType {
         }
     }
 
-    /// Returns an iterator of all the types of metric datapoints
+    /// returns an iterator of all the types of metric datapoints
     pub fn all() -> impl Iterator<Item = Self> {
         [
             MetricDatapointType::NumberDataPoint,

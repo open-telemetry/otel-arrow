@@ -397,8 +397,8 @@ impl ExprPlanner {
                         DataScope::AttributesAll(left_attrs_id),
                         DataScope::AttributesAll(right_attrs_id),
                     ) = (
-                        left.effective_value_scope()?.as_ref(),
-                        right.effective_value_scope()?.as_ref(),
+                        left.effective_value_scope(&self.record_type)?.as_ref(),
+                        right.effective_value_scope(&self.record_type)?.as_ref(),
                     ) {
                         if left_attrs_id == right_attrs_id {
                             // most performant way to "and" the results of the children exprs
@@ -468,8 +468,8 @@ impl ExprPlanner {
                         eval: LeafEval::new_df_expr(left_expr.or(right_expr), downcast_dicts)?,
                     })
                 } else {
-                    let left_scope = left.effective_value_scope()?;
-                    let right_scope = right.effective_value_scope()?;
+                    let left_scope = left.effective_value_scope(&self.record_type)?;
+                    let right_scope = right.effective_value_scope(&self.record_type)?;
 
                     // If both sides are AttributesAll with the same ID, the most
                     // performant path is a bitmap OR over parent_ids.
@@ -530,7 +530,7 @@ impl ExprPlanner {
 
                 let inner = self.plan_logical(inner_expr, functions)?;
                 let is_attrs_all_scope = matches!(
-                    inner.effective_value_scope()?.as_ref(),
+                    inner.effective_value_scope(&self.record_type)?.as_ref(),
                     DataScope::AttributesAll(_)
                 );
                 Ok(match inner {
@@ -755,7 +755,6 @@ impl ExprPlanner {
             // scalar that gets broadcast across rows.
             (
                 Vec::new(),
-                // TODO need to add test for invoking function on data_points?
                 FunctionArgScope::Combined(DataScope::Record(self.record_scope())),
                 Some(DataScope::Record(self.record_scope())),
                 false,
@@ -2015,7 +2014,13 @@ impl ScopedExpr {
 
     /// returns the scope of the data that would be produced if this Expr was evaluated to
     /// produce a scoped value
-    pub(crate) fn effective_value_scope(&self) -> Result<Cow<'_, DataScope>> {
+    ///
+    /// # Arguments
+    /// - `record_type` - the root record type for which the expression would be evaluated.
+    pub(crate) fn effective_value_scope(
+        &self,
+        record_type: &RecordType,
+    ) -> Result<Cow<'_, DataScope>> {
         match self {
             Self::Eval { scope, .. } => Ok(Cow::Borrowed(scope)),
             Self::JoinAndEval {
@@ -2033,15 +2038,18 @@ impl ScopedExpr {
                 }
 
                 if *align_children_to_record {
-                    // TODO - invalid assumption about the record scope here ...
-                    return Ok(Cow::Owned(DataScope::Record(RecordScope::Signal)));
+                    let record_scope = match record_type {
+                        RecordType::Child(child_kind) => RecordScope::Child(child_kind.clone()),
+                        _ => RecordScope::Signal,
+                    };
+                    return Ok(Cow::Owned(DataScope::Record(record_scope)));
                 }
 
-                let mut curr_scope = children[0].effective_value_scope()?;
+                let mut curr_scope = children[0].effective_value_scope(record_type)?;
 
                 // compute the data scope of what will be produced when the children are join:
                 for child in children.iter().skip(1) {
-                    let next_scope = child.effective_value_scope()?;
+                    let next_scope = child.effective_value_scope(record_type)?;
                     curr_scope = match (curr_scope.as_ref(), next_scope.as_ref()) {
                         (_, DataScope::StaticScalar | DataScope::AttributesAll(_)) => curr_scope,
                         (DataScope::StaticScalar | DataScope::AttributesAll(_), _) => next_scope,
@@ -2080,8 +2088,11 @@ impl ScopedExpr {
                 Ok(curr_scope)
             }
             Self::BitmapAnd(_, _) | Self::BitmapOr(_, _) | Self::BitmapNot(_) => {
-                // TODO - invalid assumption about the record scope here ....
-                Ok(Cow::Owned(DataScope::Record(RecordScope::Signal)))
+                let record_scope = match record_type {
+                    RecordType::Child(child_kind) => RecordScope::Child(child_kind.clone()),
+                    _ => RecordScope::Signal,
+                };
+                Ok(Cow::Owned(DataScope::Record(record_scope)))
             }
         }
     }

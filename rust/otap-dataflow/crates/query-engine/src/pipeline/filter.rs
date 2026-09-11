@@ -9,7 +9,9 @@ use crate::pipeline::expr::eval::EvalContext;
 use crate::pipeline::expr::types::MetricDatapointType;
 use crate::pipeline::expr::{ChildRecordKind, RecordScope};
 use crate::pipeline::expr::{DataScope, ScopedExpr, ScopedValue, eval::resolve_attrs_payload_type};
-use crate::pipeline::filter::data_points::filter_metric_data_points;
+use crate::pipeline::filter::data_points::{
+    filter_metric_datapoints, remove_all_metric_data_points,
+};
 use crate::pipeline::planner::{AttributesIdentifier, RecordType};
 use crate::pipeline::state::ExecutionState;
 
@@ -76,15 +78,11 @@ impl PipelineStage for FilterPipelineStage {
         // Convert the result to a root-aligned BooleanArray selection vector.
         let selection_vec = match result {
             None => {
-                // TODO: we should avoid allocating here and simply return the empty batch.
                 // expression data was absent -- no rows pass the filter
                 BooleanArray::new(BooleanBuffer::new_unset(num_rows), None)
             }
             Some(scoped_value) => {
                 // if not root-scoped, align to root
-
-                // TODO - record scope not hard-coded?
-                // TODO - if it's a scalar, avoid allocating
                 if scoped_value.scope != DataScope::Record(RecordScope::Signal)
                     && !(matches!(scoped_value.scope, DataScope::RootParent(_)))
                     && scoped_value.scope != DataScope::StaticScalar
@@ -112,14 +110,14 @@ impl PipelineStage for FilterPipelineStage {
     async fn execute_on_attributes(
         &mut self,
         attrs_record_batch: RecordBatch,
-        session_ctx: &SessionContext,
+        session_context: &SessionContext,
         _config_options: &ConfigOptions,
         _task_context: Arc<TaskContext>,
         _exec_options: &mut ExecutionState,
     ) -> Result<RecordBatch> {
         let result = self
             .predicate
-            .evaluate_on_batch(&attrs_record_batch, &EvalContext::new(session_ctx))?;
+            .evaluate_on_batch(&attrs_record_batch, &EvalContext::new(session_context))?;
 
         let selection_vec = scoped_value_to_boolean_array(result, attrs_record_batch.num_rows())?;
         let new_batch = filter_record_batch(&attrs_record_batch, &selection_vec)?;
@@ -138,60 +136,20 @@ impl PipelineStage for FilterPipelineStage {
         for metric_datapoint_type in MetricDatapointType::all() {
             let datapoint_payload_type = metric_datapoint_type.payload_type();
             if otap_batch.get(datapoint_payload_type).is_some() {
-                let result = self.predicate.execute_as_value(
+                let predicate_eval_value = self.predicate.execute_as_value(
                     &otap_batch,
                     &EvalContext::new_for_metrics_data_points(metric_datapoint_type, session_ctx),
                 )?;
-
-                match result {
-                    Some(scoped_value) => {
-                        let is_aligned = matches!(
-                            scoped_value.scope,
-                            DataScope::Record(RecordScope::Child(ChildRecordKind::DataPoint)),
-                        );
-
-                        match scoped_value.values {
-                            ColumnarValue::Scalar(scalar) => {
-                                todo!("handle scalar boolean")
-                            }
-                            ColumnarValue::Array(arr) => {
-                                // TODO we're too deeply nested here
-
-                                // get a selection vector (boolean array of rows passing
-                                // predicate) that is aligned with the row order of the
-                                // data point record batch
-                                let arr_aligned = if is_aligned {
-                                    arr
-                                } else {
-                                    todo!("align to datapoint batch and use it as selection vec")
-                                };
-                                // TODO this little segment is copied from below `scoped_Value_to_boolean_array`
-                                // which I don't want ot use anymore b/c it allocates a boolean array when it
-                                // doesn't need to
-                                let selection_vec = as_boolean_array(&arr_aligned).map_err(
-                                    |_| Error::ExecutionError {
-                                        cause: format!(
-                                            "expected boolean array for filter selection, found {}",
-                                            arr_aligned.data_type()
-                                        ),
-                                    },
-                                )?;
-
-                                let mut id_bitmap = self.id_bitmap_pool.acquire();
-                                let result = filter_metric_data_points(
-                                    &mut otap_batch,
-                                    &metric_datapoint_type,
-                                    selection_vec,
-                                    &mut id_bitmap,
-                                );
-                                self.id_bitmap_pool.release(id_bitmap);
-                                result?;
-                            }
-                        }
+                match predicate_eval_value {
+                    Some(value) => {
+                        self.filter_metric_data_points(
+                            value,
+                            &metric_datapoint_type,
+                            &mut otap_batch,
+                        )?;
                     }
                     None => {
-                        // No rows passed filter
-                        todo!("no rows passed filter - remove DP batch and children")
+                        todo!("remove OTAP batch")
                     }
                 }
             }
@@ -205,6 +163,72 @@ impl PipelineStage for FilterPipelineStage {
             RecordType::Signal => true,
             RecordType::Attributes => true,
             RecordType::Child(ChildRecordKind::DataPoint) => true,
+        }
+    }
+}
+
+impl FilterPipelineStage {
+    fn filter_metric_data_points(
+        &mut self,
+        predicate_eval_value: ScopedValue,
+        metric_datapoint_type: &MetricDatapointType,
+        otap_batch: &mut OtapArrowRecords,
+    ) -> Result<()> {
+        let is_aligned = matches!(
+            predicate_eval_value.scope,
+            DataScope::Record(RecordScope::Child(ChildRecordKind::DataPoint)),
+        );
+
+        match predicate_eval_value.values {
+            ColumnarValue::Scalar(scalar) => {
+                match scalar {
+                    ScalarValue::Boolean(Some(true)) => {
+                        // all rows pass, nothing to be filtered
+                        Ok(())
+                    }
+                    ScalarValue::Boolean(_) => {
+                        // no rows pass, datapoints must be removed
+                        remove_all_metric_data_points(otap_batch, metric_datapoint_type);
+                        Ok(())
+                    }
+                    _ => {
+                        return Err(Error::ExecutionError {
+                            cause: format!(
+                                "Received scalar of type {:?} when filtering metric datapoints. expected boolean",
+                                scalar.data_type(),
+                            ),
+                        });
+                    }
+                }
+            }
+            ColumnarValue::Array(arr) => {
+                // get a selection vector (boolean array of rows passing
+                // predicate) that is aligned with the row order of the
+                // data point record batch
+                let arr_aligned = if is_aligned {
+                    arr
+                } else {
+                    todo!("align to datapoint batch and use it as selection vec")
+                };
+
+                let selection_vec =
+                    as_boolean_array(&arr_aligned).map_err(|_| Error::ExecutionError {
+                        cause: format!(
+                            "expected boolean array for filter selection, found {}",
+                            arr_aligned.data_type()
+                        ),
+                    })?;
+
+                let mut id_bitmap = self.id_bitmap_pool.acquire();
+                let result = filter_metric_datapoints(
+                    otap_batch,
+                    &metric_datapoint_type,
+                    selection_vec,
+                    &mut id_bitmap,
+                );
+                self.id_bitmap_pool.release(id_bitmap);
+                result
+            }
         }
     }
 }
