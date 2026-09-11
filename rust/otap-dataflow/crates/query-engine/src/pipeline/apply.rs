@@ -415,7 +415,7 @@ mod test {
                 let err_msg = err.to_string();
 
                 assert!(
-                    err_msg.contains("Data expression not supported on attributes stream: Transform(RenameMapKeys(RenameMapKeysTransformExpression"),
+                    err_msg.contains("Data expression not supported on Attributes stream: Transform(RenameMapKeys(RenameMapKeysTransformExpression"),
                     "unexpected error: {}",
                     err_msg
                 );
@@ -448,7 +448,7 @@ mod test {
                     let err_msg = err.to_string();
 
                     assert!(
-                        err_msg.contains("Invalid source for apply pipeline to attributes"),
+                        err_msg.contains("Invalid source for apply pipeline"),
                         "unexpected error: {}",
                         err_msg
                     );

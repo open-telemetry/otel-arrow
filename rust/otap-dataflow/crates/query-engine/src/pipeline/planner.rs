@@ -618,7 +618,16 @@ impl PipelinePlanner {
         let mut assignments = Vec::new();
         let scoped_planner = ExprPlanner::new(
             self.filter_attribute_keys_case_sensitive,
-            self.record_type.clone(),
+            // FIXME - when we support assigning fields metric datapoints, we may need to pass in
+            // self.record_type.clone() here instead of just copying RecordType::Signal. When we
+            // make this change, it will break some behaviour of assigning attribute value in
+            // nested `apply attribute { ... }` pipelines, especially when there are missing
+            // attributes. This is because the planner tries to be "smart" and figure out that
+            // an expression like "value = values + 2" _only_ makes sense for the "int" column,
+            // and plans an expression referencing "int", but if this field is missing, the
+            // AssignPipelineStage doesn't handle it correctly. Luckily regressions of this are
+            // covered by unit tests.
+            RecordType::Signal,
         );
 
         // TODO - currently the logic for coalescing multiple assignments isn't as intelligent
