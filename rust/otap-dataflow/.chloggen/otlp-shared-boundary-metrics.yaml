@@ -1,0 +1,6 @@
+change_type: breaking
+component: observability
+note: Replace OTLP receiver and exporter telemetry with shared node-boundary metrics.
+issues: [3822]
+subtext: |
+  Migration: Update dashboards and alerts from `receiver.otlp.requests.started/completed/payload_size`, `receiver.otlp.rejections.requests`, and `exporter.exports.*` to `receiver.otlp.requests.accepted/rejected`, `receiver.received.*`, `receiver.processing.duration`, and `exporter.attempted.*`.

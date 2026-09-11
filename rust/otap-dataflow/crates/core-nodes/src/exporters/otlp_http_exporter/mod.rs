@@ -65,6 +65,7 @@ use self::config::Config;
 use crate::exporters::otlp_grpc_exporter::InFlightExports;
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
 use otel_arrow_dfe_otap::bearer_auth::{BearerAuth, BearerAuthEvents};
+use otel_arrow_dfe_otap::metrics::CompletedExporterAttempt;
 use otel_arrow_dfe_otap::otlp_http::client_settings::{HttpClientError, HttpClientSettings};
 use otel_arrow_dfe_otap::otlp_http::{
     LOGS_PATH, METRICS_PATH, PROTOBUF_CONTENT_TYPE, RpcStatus, TRACES_PATH,
@@ -385,11 +386,10 @@ impl OtlpHttpExporter {
 
 #[derive(Debug)]
 struct CompletedExport {
-    result: Result<ServiceResponse, ServiceRequestError>,
+    attempt: CompletedExporterAttempt<(), ServiceRequestError>,
     context: Context,
     saved_payload: OtapPayload,
     signal_type: SignalType,
-    export_started_at: Instant,
     /// Authentication mode used by this request. Bearer-provider requests retain
     /// the token generation so a 401 invalidates only the token that was sent;
     /// agent-fed and unauthenticated requests retain their mode for response
@@ -599,9 +599,10 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                 Message::Control(NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
                 }) => _ = self.metrics.report(&mut metrics_reporter),
-                Message::PData(pdata) => {
-                    let export_started_at = Instant::now();
+                Message::PData(mut pdata) => {
                     let signal_type = pdata.signal_type();
+                    let mut attempt = self.metrics.boundary.attempt(signal_type);
+                    attempt.set_item_count_with(|| pdata.num_items() as u64);
                     let (context, payload) = pdata.into_parts();
 
                     // We normally only reach here with a usable token, since intake
@@ -610,16 +611,23 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                     // usable token we cannot send, so NACK it as retryable -- a token
                     // may yet arrive, so nothing is dropped.
                     if !auth.is_ready() {
-                        let export_duration = export_started_at.elapsed();
+                        let completed = attempt
+                            .run(async |attempt| {
+                                Err::<(), _>(
+                                    attempt.refused(OtlpHttpExporterErrorType::Authentication),
+                                )
+                            })
+                            .await;
+                        let error_type = self
+                            .metrics
+                            .boundary
+                            .record(completed)
+                            .expect_err("authentication attempt must fail");
+                        self.metrics.record_failure(signal_type, error_type);
                         // `NackMsg::new` is retryable by construction.
                         let nack =
                             NackMsg::new(auth.not_ready_reason(), OtapPdata::new(context, payload));
                         _ = effect_handler.notify_nack(nack).await;
-                        self.metrics.record_failure(
-                            signal_type,
-                            OtlpHttpExporterErrorType::Authentication,
-                            export_duration,
-                        );
                         continue;
                     }
 
@@ -644,22 +652,22 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                         InProtoBuffer,
                     }
 
-                    // proto encode the payload into the request body, while keeping a copy of the
+                    // Proto encode the payload into the request body, while keeping a copy of the
                     // original payload if the context allows it to be returned.
                     let (uncompressed, saved_payload) = match payload.into_data() {
                         PayloadData::OtlpBytes(mut otlp_bytes) => {
                             if context.may_return_payload() {
-                                // use cheap clone of bytes as the request body
+                                // Use a cheap clone of bytes as the request body.
                                 let body = otlp_bytes.clone_bytes();
                                 (Uncompressed::Bytes(body), otlp_bytes.into())
                             } else {
-                                // take the bytes and replace with empty bytes in original payload
+                                // Take the bytes and replace them with empty bytes in the payload.
                                 let body = otlp_bytes.replace_bytes(Bytes::new());
                                 (Uncompressed::Bytes(body), otlp_bytes.into())
                             }
                         }
                         PayloadData::OtapArrowRecords(mut otap_batch) => {
-                            // encode the OTAP batch as protobuf request body
+                            // Encode the OTAP batch as a protobuf request body.
                             proto_buffer.clear();
                             let encode_result =
                                 match signal_type {
@@ -672,25 +680,31 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                                 };
 
                             if !context.may_return_payload() {
-                                // drop the original OTAP batch if the context indicates it
-                                // does not wish it to be returned
+                                // Drop the original OTAP batch if it need not be returned.
                                 _ = otap_batch.take_payload();
                             }
 
-                            if let Err(e) = encode_result {
-                                let export_duration = export_started_at.elapsed();
-                                // encoding error, we must have received an invalid structured batch
+                            if let Err(error) = encode_result {
+                                let completed = attempt
+                                    .run(async |attempt| {
+                                        Err::<(), _>(
+                                            attempt.failed(OtlpHttpExporterErrorType::Encoding),
+                                        )
+                                    })
+                                    .await;
+                                let error_type = self
+                                    .metrics
+                                    .boundary
+                                    .record(completed)
+                                    .expect_err("encoding attempt must fail");
+                                self.metrics.record_failure(signal_type, error_type);
+                                // Encoding failed because the structured batch is invalid.
                                 let mut nack = NackMsg::new(
-                                    e.to_string(),
+                                    error.to_string(),
                                     OtapPdata::new(context, otap_batch.into()),
                                 );
                                 nack.permanent = true;
                                 _ = effect_handler.notify_nack(nack).await;
-                                self.metrics.record_failure(
-                                    signal_type,
-                                    OtlpHttpExporterErrorType::Encoding,
-                                    export_duration,
-                                );
                                 continue;
                             }
 
@@ -698,33 +712,43 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                         }
                     };
 
+                    let uncompressed_slice: &[u8] = match &uncompressed {
+                        Uncompressed::Bytes(bytes) => bytes.as_ref(),
+                        Uncompressed::InProtoBuffer => proto_buffer.as_ref(),
+                    };
+                    let payload_size = uncompressed_slice.len();
+
                     let body = match compression {
                         Some(method) => {
-                            let uncompressed_slice: &[u8] = match &uncompressed {
-                                Uncompressed::Bytes(b) => b.as_ref(),
-                                Uncompressed::InProtoBuffer => proto_buffer.as_ref(),
-                            };
-                            if let Err(e) =
+                            if let Err(error) =
                                 method.encode(uncompressed_slice, &mut compressed_buffer)
                             {
-                                let export_duration = export_started_at.elapsed();
+                                let completed = attempt
+                                    .run(async |attempt| {
+                                        attempt.set_payload_size_with(|| payload_size);
+                                        Err::<(), _>(
+                                            attempt.failed(OtlpHttpExporterErrorType::Compression),
+                                        )
+                                    })
+                                    .await;
+                                let error_type = self
+                                    .metrics
+                                    .boundary
+                                    .record(completed)
+                                    .expect_err("compression attempt must fail");
+                                self.metrics.record_failure(signal_type, error_type);
                                 let mut nack = NackMsg::new(
-                                    e.to_string(),
+                                    error.to_string(),
                                     OtapPdata::new(context, saved_payload),
                                 );
                                 nack.permanent = true;
                                 _ = effect_handler.notify_nack(nack).await;
-                                self.metrics.record_failure(
-                                    signal_type,
-                                    OtlpHttpExporterErrorType::Compression,
-                                    export_duration,
-                                );
                                 continue;
                             }
                             Bytes::copy_from_slice(&compressed_buffer)
                         }
                         None => match uncompressed {
-                            Uncompressed::Bytes(b) => b,
+                            Uncompressed::Bytes(bytes) => bytes,
                             Uncompressed::InProtoBuffer => {
                                 Bytes::copy_from_slice(proto_buffer.as_ref())
                             }
@@ -762,33 +786,64 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
 
                     let client = client_pool.get_client();
                     inflight_exports.push(async move {
-                        let mut req = client.post(endpoint.as_str()).body(body);
-                        if let Some(auth) = auth_header {
-                            // A per-request header takes precedence over the
-                            // client's default headers, so the refreshed bearer
-                            // token overrides any statically configured
-                            // `authorization` credential.
-                            req = req.header(http::header::AUTHORIZATION, auth);
-                        }
-                        if let Some(method) = compression {
-                            req = req.header(
-                                http::header::CONTENT_ENCODING,
-                                method.as_http_content_encoding(),
-                            );
-                        }
-                        let result = req.send().await;
-
+                        let attempt = attempt
+                            .run(async |attempt| {
+                                attempt.set_payload_size_with(|| payload_size);
+                                let result = query_result_to_service_response(
+                                    &signal_type,
+                                    max_response_body_len,
+                                    {
+                                        let mut req = client.post(endpoint.as_str()).body(body);
+                                        if let Some(auth) = auth_header {
+                                            // A per-request header takes precedence over the
+                                            // client's default headers, so the refreshed bearer
+                                            // token overrides any statically configured
+                                            // `authorization` credential.
+                                            req = req.header(http::header::AUTHORIZATION, auth);
+                                        }
+                                        if let Some(method) = compression {
+                                            req = req.header(
+                                                http::header::CONTENT_ENCODING,
+                                                method.as_http_content_encoding(),
+                                            );
+                                        }
+                                        req.send().await
+                                    },
+                                )
+                                .await;
+                                match result {
+                                    Ok(service_response) => {
+                                        match service_response.partial_success {
+                                            Some(partial_success)
+                                                if partial_success.rejected == 0 =>
+                                            {
+                                                otel_debug!(
+                                                    "otlp.exporter.http.zero_partial_rejected",
+                                                    details = partial_success.error_message
+                                                );
+                                                Ok(())
+                                            }
+                                            Some(partial_success) => Err(attempt.refused(
+                                                ServiceRequestError::PartialRejection {
+                                                    rejected: partial_success.rejected,
+                                                    error_message: partial_success.error_message,
+                                                },
+                                            )),
+                                            None => Ok(()),
+                                        }
+                                    }
+                                    Err(error) if error.error_type().is_refusal() => {
+                                        Err(attempt.refused(error))
+                                    }
+                                    Err(error) => Err(attempt.failed(error)),
+                                }
+                            })
+                            .await;
                         CompletedExport {
-                            result: query_result_to_service_response(
-                                &signal_type,
-                                max_response_body_len,
-                                result,
-                            )
-                            .await,
+                            attempt,
                             context,
                             saved_payload,
                             signal_type,
-                            export_started_at,
                             request_auth,
                         }
                     })
@@ -877,6 +932,12 @@ enum ServiceRequestError {
 
     #[error("Response body size {body_size} exceeds maximum allowed size of {max_size} bytes")]
     BodyTooLarge { body_size: usize, max_size: usize },
+
+    #[error("{error_message} ({rejected} rejected)")]
+    PartialRejection {
+        rejected: i64,
+        error_message: String,
+    },
 }
 
 impl From<reqwest::Error> for ServiceRequestError {
@@ -903,6 +964,7 @@ impl ServiceRequestError {
             }
             Self::DecodeError(_) => OtlpHttpExporterErrorType::ResponseDecode,
             Self::BodyTooLarge { .. } => OtlpHttpExporterErrorType::ResponseTooLarge,
+            Self::PartialRejection { .. } => OtlpHttpExporterErrorType::PartialRejection,
         }
     }
 
@@ -935,12 +997,13 @@ impl ServiceRequestError {
                     )
             }
 
-            Self::BodyTooLarge { .. } | ServiceRequestError::DecodeError(_) => {
-                // these errors happen when we've received a 200 response, but for some reason
-                // were unable to deserialize the response body.
-                //
-                // this indicates either a full success, or partial success. In either case, we
-                // shouldn't retry. The spec explicitly states this for partial success
+            Self::BodyTooLarge { .. } | Self::DecodeError(_) => {
+                // The backend returned success, but the response could not be
+                // consumed safely. Retrying may duplicate data already accepted.
+                false
+            }
+            Self::PartialRejection { .. } => {
+                // OTLP explicitly forbids retrying partial-success responses.
                 // https://opentelemetry.io/docs/specs/otlp/#partial-success-1
                 false
             }
@@ -1096,69 +1159,37 @@ async fn finalize_completed_export(
     metrics: &mut OtlpHttpExporterMetrics,
 ) -> Option<RequestAuth> {
     let CompletedExport {
-        result,
+        attempt,
         context,
         saved_payload,
         signal_type,
-        export_started_at,
         request_auth,
     } = completed;
-    let export_duration = export_started_at.elapsed();
-
+    let result = metrics.boundary.record(attempt);
     let pdata = OtapPdata::new(context, saved_payload);
 
     // Set to the request identity when the server rejects its credential (401),
     // so the caller can invalidate exactly that generation before retry.
     let mut rejected_auth = None;
     let err = match result {
-        Ok(service_resp) => service_resp.partial_success.and_then(|partial_success| {
-            // As per OTLP HTTP spec, the server may use partial success to convey information
-            // even in the case where it fully accepts the request. In these cases, it MUST have
-            // set the rejected_<signal> field to 0. We'll treat this case as a success
-            if partial_success.rejected == 0 {
-                otel_debug!(
-                    "otlp.exporter.http.zero_partial_rejected",
-                    details = partial_success.error_message
-                );
-
-                None
-            } else {
-                // In the case we received a partial_success, the spec states that the request
-                // should not be retried.
-                // https://opentelemetry.io/docs/specs/otlp/#partial-success-1
-                let retryable = false;
-                Some((
-                    format!(
-                        "{} ({} rejected)",
-                        partial_success.error_message, partial_success.rejected
-                    ),
-                    retryable,
-                    OtlpHttpExporterErrorType::PartialRejection,
-                ))
-            }
-        }),
-        Err(e) => {
+        Ok(()) => None,
+        Err(error) => {
             // A 401 for either dynamic source is retryable and carries the exact
             // request generation back to the owning authentication variant.
-            let auth_failure = request_auth.is_dynamic() && e.is_auth_failure();
+            let auth_failure = request_auth.is_dynamic() && error.is_auth_failure();
             if auth_failure {
                 rejected_auth = Some(request_auth);
             }
-            let retryable = e.is_retryable() || auth_failure;
-            let error_type = e.error_type();
-            Some((e.to_string(), retryable, error_type))
+            Some((
+                error.to_string(),
+                error.is_retryable() || auth_failure,
+                error.error_type(),
+            ))
         }
     };
 
-    // Record the backend result before routing its Ack/Nack. Notification
-    // delivery is a separate pipeline concern and must not redefine or suppress
-    // the terminal HTTP export outcome.
-    if let Some((_, _, error_type)) = &err {
-        metrics.record_failure(signal_type, *error_type, export_duration);
-    } else {
-        metrics.record_success(signal_type, export_duration);
-    }
-
+    // The boundary result is recorded before Ack/Nack routing. Notification
+    // delivery is a separate pipeline concern and cannot redefine the attempt.
     match err {
         None => {
             if let Err(error) = effect_handler.notify_ack(AckMsg::new(pdata)).await {
@@ -1169,13 +1200,14 @@ async fn finalize_completed_export(
                 );
             }
         }
-        Some((err_msg, retryable, _)) => {
+        Some((message, retryable, error_type)) => {
+            metrics.record_failure(signal_type, error_type);
             otel_warn!(
                 "otlp.exporter.http.export_error",
-                message = err_msg,
+                message = message.as_str(),
                 retryable = retryable
             );
-            let mut nack = NackMsg::new(&err_msg, pdata);
+            let mut nack = NackMsg::new(&message, pdata);
             nack.permanent = !retryable;
             if let Err(error) = effect_handler.notify_nack(nack).await {
                 otel_warn!(
@@ -1311,6 +1343,7 @@ mod test {
     use otel_arrow_dfe_engine::shared::message::SharedSender;
     use otel_arrow_dfe_engine::testing::exporter::TestRuntime;
     use otel_arrow_dfe_engine::testing::node::test_node;
+    use otel_arrow_dfe_otap::metrics::ErrorWithOutcome;
     use otel_arrow_dfe_pdata::OtapArrowRecords;
     use otel_arrow_dfe_pdata::OtlpProtoBytes;
     use otel_arrow_dfe_pdata::otap::Logs;
@@ -1325,7 +1358,6 @@ mod test {
     use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::{ResourceSpans, TracesData};
     use otel_arrow_dfe_pdata::testing::equiv::assert_equivalent;
     use otel_arrow_dfe_pdata::testing::round_trip::otlp_to_otap;
-    use otel_arrow_dfe_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 
@@ -3929,59 +3961,46 @@ mod test {
             metrics_reporter,
             otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
         );
+        let runtime = Runtime::new().unwrap();
+        let attempt = runtime.block_on(metrics.boundary.attempt(SignalType::Logs).run(
+            async |attempt| {
+                Err(attempt.failed(ServiceRequestError::BodyTooLarge {
+                    body_size: 2,
+                    max_size: 1,
+                }))
+            },
+        ));
         let completed = CompletedExport {
-            result: Err(ServiceRequestError::BodyTooLarge {
-                body_size: 2,
-                max_size: 1,
-            }),
+            attempt,
             context: Context::default(),
             saved_payload: OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into(),
             signal_type: SignalType::Logs,
-            export_started_at: Instant::now(),
             request_auth: RequestAuth::None,
         };
 
-        let _ = Runtime::new().unwrap().block_on(finalize_completed_export(
+        let _ = runtime.block_on(finalize_completed_export(
             completed,
             &effect_handler,
             &mut metrics,
         ));
 
-        assert_eq!(
-            metrics
-                .exports
-                .get(SignalOutcomeAttributes {
-                    signal: SignalType::Logs,
-                    outcome: Outcome::Failure,
-                })
-                .messages
-                .get(),
-            1
-        );
-        assert_eq!(
-            metrics
-                .exports
-                .get(SignalOutcomeAttributes {
-                    signal: SignalType::Logs,
-                    outcome: Outcome::Success,
-                })
-                .messages
-                .get(),
-            0
-        );
-        assert_eq!(
-            metrics
-                .exports
-                .get(SignalOutcomeAttributes {
-                    signal: SignalType::Logs,
-                    outcome: Outcome::Failure,
-                })
-                .duration_seconds
-                .get()
-                .count(),
-            1
-        );
         let snapshots = metrics.terminal_snapshots();
+        assert!(snapshots.iter().any(|snapshot| {
+            snapshot.descriptor().name == "exporter.attempted"
+                && snapshot.measurement_attribute_value("signal") == Some("logs")
+                && snapshot.measurement_attribute_value("outcome") == Some("failure")
+                && snapshot
+                    .descriptor()
+                    .metrics
+                    .iter()
+                    .position(|metric| metric.name == "messages")
+                    .is_some_and(|index| snapshot.get_metrics()[index].to_u64_lossy() == 1)
+        }));
+        assert!(!snapshots.iter().any(|snapshot| {
+            snapshot.descriptor().name == "exporter.attempted"
+                && snapshot.measurement_attribute_value("signal") == Some("logs")
+                && snapshot.measurement_attribute_value("outcome") == Some("success")
+        }));
         assert!(snapshots.iter().any(|snapshot| {
             snapshot.descriptor().name == "exporter.otlp_http.failures"
                 && snapshot.measurement_attribute_value("signal") == Some("logs")
@@ -3990,7 +4009,90 @@ mod test {
         }));
     }
 
-    /// Scenario: A zero-rejection partial success cannot deliver its upstream Ack notification.
+    /// Scenario: A successful HTTP response rejects part of an OTLP logs request.
+    /// Guarantees: The existing permanent Nack is preserved while shared metrics record one refused attempt and the bounded partial-rejection diagnostic.
+    #[test]
+    fn partial_rejection_preserves_nack_and_records_refused_attempt() {
+        let registry = TelemetryRegistryHandle::new();
+        let controller = ControllerContext::new(registry);
+        let pipeline_ctx =
+            controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let mut metrics = OtlpHttpExporterMetrics::register(&pipeline_ctx);
+
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let mut effect_handler = EffectHandler::new(
+            test_node("test-exporter"),
+            metrics_reporter,
+            otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+        );
+        let (completion_tx, mut completion_rx) =
+            otel_arrow_dfe_engine::control::pipeline_completion_msg_channel(1);
+        effect_handler.set_pipeline_completion_msg_sender(completion_tx);
+        let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into())
+            .test_subscribe_to(
+                Interests::ACKS | Interests::NACKS,
+                TestCallData::default().into(),
+                123,
+            );
+        let (context, saved_payload) = pdata.into_parts();
+        let runtime = Runtime::new().unwrap();
+        let attempt = runtime.block_on(metrics.boundary.attempt(SignalType::Logs).run(
+            async |attempt| {
+                Err(attempt.refused(ServiceRequestError::PartialRejection {
+                    rejected: 1,
+                    error_message: "partial success error".to_owned(),
+                }))
+            },
+        ));
+        let completed = CompletedExport {
+            attempt,
+            context,
+            saved_payload,
+            signal_type: SignalType::Logs,
+            request_auth: RequestAuth::None,
+        };
+
+        let rejected_auth = runtime.block_on(finalize_completed_export(
+            completed,
+            &effect_handler,
+            &mut metrics,
+        ));
+        assert!(rejected_auth.is_none());
+
+        let completion = runtime
+            .block_on(completion_rx.recv())
+            .expect("partial rejection must route a completion");
+        match completion {
+            PipelineCompletionMsg::DeliverNack { nack } => {
+                assert!(nack.permanent, "partial rejection must remain permanent");
+                assert!(nack.reason.contains("partial success error (1 rejected)"));
+            }
+            PipelineCompletionMsg::DeliverAck { .. } => {
+                panic!("partial rejection must not route an Ack")
+            }
+        }
+
+        let snapshots = metrics.terminal_snapshots();
+        assert!(snapshots.iter().any(|snapshot| {
+            snapshot.descriptor().name == "exporter.attempted"
+                && snapshot.measurement_attribute_value("signal") == Some("logs")
+                && snapshot.measurement_attribute_value("outcome") == Some("refused")
+                && snapshot
+                    .descriptor()
+                    .metrics
+                    .iter()
+                    .position(|metric| metric.name == "messages")
+                    .is_some_and(|index| snapshot.get_metrics()[index].to_u64_lossy() == 1)
+        }));
+        assert!(snapshots.iter().any(|snapshot| {
+            snapshot.descriptor().name == "exporter.otlp_http.failures"
+                && snapshot.measurement_attribute_value("signal") == Some("logs")
+                && snapshot.measurement_attribute_value("error.type") == Some("partial_rejection")
+                && snapshot.get_metrics()[0].to_u64_lossy() == 1
+        }));
+    }
+
+    /// Scenario: A successful backend export cannot deliver its upstream Ack notification.
     /// Guarantees: The backend success is recorded once without a failure classification.
     #[test]
     fn successful_export_is_recorded_when_ack_notification_fails() {
@@ -4013,51 +4115,46 @@ mod test {
         let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into())
             .test_subscribe_to(Interests::ACKS, TestCallData::default().into(), 123);
         let (context, saved_payload) = pdata.into_parts();
+        let runtime = Runtime::new().unwrap();
+        let attempt = runtime.block_on(
+            metrics
+                .boundary
+                .attempt(SignalType::Logs)
+                .run(async |_| Ok::<_, ErrorWithOutcome<ServiceRequestError>>(())),
+        );
         let completed = CompletedExport {
-            result: Ok(ServiceResponse {
-                partial_success: Some(PartialSuccess {
-                    rejected: 0,
-                    error_message: "informational warning".to_owned(),
-                }),
-            }),
+            attempt,
             context,
             saved_payload,
             signal_type: SignalType::Logs,
-            export_started_at: Instant::now(),
             request_auth: RequestAuth::None,
         };
 
-        let _ = Runtime::new().unwrap().block_on(finalize_completed_export(
+        let _ = runtime.block_on(finalize_completed_export(
             completed,
             &effect_handler,
             &mut metrics,
         ));
 
-        assert_eq!(
-            metrics
-                .exports
-                .get(SignalOutcomeAttributes {
-                    signal: SignalType::Logs,
-                    outcome: Outcome::Success,
-                })
-                .messages
-                .get(),
-            1
-        );
-        assert_eq!(
-            metrics
-                .exports
-                .get(SignalOutcomeAttributes {
-                    signal: SignalType::Logs,
-                    outcome: Outcome::Failure,
-                })
-                .messages
-                .get(),
-            0
-        );
+        let snapshots = metrics.terminal_snapshots();
+        assert!(snapshots.iter().any(|snapshot| {
+            snapshot.descriptor().name == "exporter.attempted"
+                && snapshot.measurement_attribute_value("signal") == Some("logs")
+                && snapshot.measurement_attribute_value("outcome") == Some("success")
+                && snapshot
+                    .descriptor()
+                    .metrics
+                    .iter()
+                    .position(|metric| metric.name == "messages")
+                    .is_some_and(|index| snapshot.get_metrics()[index].to_u64_lossy() == 1)
+        }));
+        assert!(!snapshots.iter().any(|snapshot| {
+            snapshot.descriptor().name == "exporter.attempted"
+                && snapshot.measurement_attribute_value("signal") == Some("logs")
+                && snapshot.measurement_attribute_value("outcome") == Some("failure")
+        }));
         assert!(
-            metrics
-                .terminal_snapshots()
+            snapshots
                 .iter()
                 .all(|snapshot| snapshot.descriptor().name != "exporter.otlp_http.failures")
         );

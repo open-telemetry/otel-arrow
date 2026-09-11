@@ -5,14 +5,12 @@
 
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_engine::context::PipelineContext;
-use otel_arrow_dfe_otap::metrics::ExporterExportMetrics;
-use otel_arrow_dfe_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
+use otel_arrow_dfe_otap::metrics::ExporterMetrics;
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
 use otel_arrow_dfe_telemetry::instrument::Counter;
 use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
-use std::time::Duration;
 use tonic::{Code, Status};
 
 /// Actionable category for a failed OTLP gRPC export.
@@ -61,6 +59,15 @@ impl OtlpGrpcExporterErrorType {
             Code::Ok => Self::Other,
         }
     }
+
+    /// Returns whether the destination refused the attempt without an exporter failure.
+    #[must_use]
+    pub(super) const fn is_refusal(self) -> bool {
+        matches!(
+            self,
+            Self::Authentication | Self::Authorization | Self::Throttled | Self::Rejected
+        )
+    }
 }
 
 /// Signal and error dimensions for failed OTLP gRPC exports.
@@ -88,7 +95,7 @@ struct OtlpGrpcExporterFailureMetrics {
 
 /// Terminal outcome and failure metrics emitted by an OTLP gRPC exporter.
 pub(super) struct OtlpGrpcExporterMetrics {
-    pub(super) exports: MeasurementMetricSet<ExporterExportMetrics>,
+    pub(super) boundary: ExporterMetrics,
     failures: MeasurementMetricSet<OtlpGrpcExporterFailureMetrics>,
 }
 
@@ -97,34 +104,17 @@ impl OtlpGrpcExporterMetrics {
     #[must_use]
     pub(super) fn register(pipeline_ctx: &PipelineContext) -> Self {
         Self {
-            exports: ExporterExportMetrics::register(pipeline_ctx),
+            boundary: ExporterMetrics::register(pipeline_ctx),
             failures: OtlpGrpcExporterFailureMetrics::register(pipeline_ctx),
         }
     }
 
-    /// Records one successful terminal export.
-    pub(super) fn record_success(&mut self, signal: SignalType, duration: Duration) {
-        self.exports
-            .with(SignalOutcomeAttributes {
-                signal,
-                outcome: Outcome::Success,
-            })
-            .record(duration);
-    }
-
-    /// Records one failed terminal export and exactly one diagnostic category.
+    /// Records one failed terminal export diagnostic category.
     pub(super) fn record_failure(
         &mut self,
         signal: SignalType,
         error_type: OtlpGrpcExporterErrorType,
-        duration: Duration,
     ) {
-        self.exports
-            .with(SignalOutcomeAttributes {
-                signal,
-                outcome: Outcome::Failure,
-            })
-            .record(duration);
         self.failures
             .with(OtlpGrpcFailureAttributes { signal, error_type })
             .messages
@@ -133,15 +123,14 @@ impl OtlpGrpcExporterMetrics {
 
     /// Reports all touched OTLP gRPC exporter metric buckets.
     pub(super) fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), TelemetryError> {
-        reporter
-            .report_measurement(&mut self.exports)
-            .and_then(|()| reporter.report_measurement(&mut self.failures))
+        self.boundary.report(reporter)?;
+        reporter.report_measurement(&mut self.failures)
     }
 
     /// Takes terminal snapshots of all touched metric buckets.
     #[must_use]
     pub(super) fn terminal_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
-        let mut snapshots = self.exports.terminal_snapshots();
+        let mut snapshots = self.boundary.terminal_snapshots();
         snapshots.extend(self.failures.terminal_snapshots());
         snapshots
     }
@@ -151,6 +140,7 @@ impl OtlpGrpcExporterMetrics {
 mod tests {
     use super::*;
     use otel_arrow_dfe_engine::context::ControllerContext;
+    use otel_arrow_dfe_otap::metrics::ErrorWithOutcome;
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 
     fn new_metrics() -> OtlpGrpcExporterMetrics {
@@ -210,35 +200,36 @@ mod tests {
     #[test]
     fn failure_classification_is_paired_with_the_terminal_outcome() {
         let mut metrics = new_metrics();
-        metrics.record_success(SignalType::Logs, Duration::from_millis(10));
-        metrics.record_failure(
-            SignalType::Logs,
-            OtlpGrpcExporterErrorType::Unavailable,
-            Duration::from_millis(20),
+        let completed = futures::executor::block_on(
+            metrics
+                .boundary
+                .attempt(SignalType::Logs)
+                .run(async |_| Ok::<_, ErrorWithOutcome<OtlpGrpcExporterErrorType>>(())),
         );
+        metrics.boundary.record(completed).unwrap();
+        let completed =
+            futures::executor::block_on(metrics.boundary.attempt(SignalType::Logs).run(
+                async |attempt| {
+                    Err::<(), _>(attempt.failed(OtlpGrpcExporterErrorType::Unavailable))
+                },
+            ));
+        let error_type = metrics.boundary.record(completed).unwrap_err();
+        metrics.record_failure(SignalType::Logs, error_type);
 
-        assert_eq!(
-            metrics
-                .exports
-                .get(SignalOutcomeAttributes {
-                    signal: SignalType::Logs,
-                    outcome: Outcome::Success,
-                })
-                .messages
-                .get(),
-            1
-        );
-        assert_eq!(
-            metrics
-                .exports
-                .get(SignalOutcomeAttributes {
-                    signal: SignalType::Logs,
-                    outcome: Outcome::Failure,
-                })
-                .messages
-                .get(),
-            1
-        );
+        let snapshots = metrics.boundary.terminal_snapshots();
+        for outcome in ["success", "failure"] {
+            assert!(snapshots.iter().any(|snapshot| {
+                snapshot.descriptor().name == "exporter.attempted"
+                    && snapshot.measurement_attribute_value("signal") == Some("logs")
+                    && snapshot.measurement_attribute_value("outcome") == Some(outcome)
+                    && snapshot
+                        .descriptor()
+                        .metrics
+                        .iter()
+                        .position(|metric| metric.name == "messages")
+                        .is_some_and(|index| snapshot.get_metrics()[index].to_u64_lossy() == 1)
+            }));
+        }
         assert_eq!(
             metrics
                 .failures
