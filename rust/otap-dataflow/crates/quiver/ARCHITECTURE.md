@@ -869,6 +869,46 @@ The 16-digit zero-padding ensures lexicographic ordering matches numeric
 ordering, allowing simple directory listings to enumerate segments in order.
 The `SegmentSeq::to_filename_component()` method generates this format.
 
+`segment_seq` must never be reused, even if every segment file is later
+deleted (e.g. by retention cleanup) and the store restarts--reuse could be
+misread by a subscriber's persisted progress as data it already delivered.
+To guarantee this independent of what files or subscriber progress remain on
+disk, the next allocatable sequence number is persisted in a tiny sidecar
+(`segments/quiver.segment.seq`) each time a segment is finalized, via an
+atomic write-fsync-rename. On startup this value, not just the highest
+`.qseg` filename observed, forms the floor for `next_segment_seq`.
+
+```text
+SeqSidecar (v1, 24 bytes) {
+    [u8; 8] magic = b"QUIVER\0N";  // distinguishes from other Quiver files
+    u16 version = 1;                // bump if layout changes
+    u16 size = 24;                  // total encoded size (enables variable-width)
+    u64 next_seq;                   // lowest sequence a future segment may use
+    u32 crc32;                      // covers magic..next_seq (everything except CRC)
+}
+```
+
+As with the WAL cursor sidecar, the `size` field lets a future version append
+fields while remaining readable here. Writes are serialized and the stored
+value is monotonic, so concurrent finalizations completing out of order cannot
+regress the floor. The floor is persisted after the segment file is written but
+before the segment is registered, so a persist failure leaves the segment
+durable yet invisible to subscribers and to cleanup; the restart filename scan
+then raises the floor and the segment is delivered normally.
+
+At startup the floor is the maximum of three independent sources: the highest
+`.qseg` filename, this sidecar, and the highest segment tracked by restored
+subscriber progress. The last matters because progress files live outside the
+segments directory, so they still bound sequence reuse when the sidecar is
+absent -- on the first start after an upgrade, or if the segments directory is
+cleared wholesale.
+
+A sidecar that is missing or corrupt is treated as "no value", since the
+remaining sources still bound the floor and the next write restores it. A
+sidecar that exists but cannot be read is different: it may hold the highest
+floor, so both `persist_next_seq` and engine startup fail rather than proceed
+with a value that cannot be verified.
+
 #### Read-Only Enforcement
 
 Finalized segment files are immutable by design. After writing completes,
