@@ -530,7 +530,8 @@ mod tests {
     };
     use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
     use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans, Span};
-    use otel_arrow_dfe_pdata::{OtapPayload, OtlpProtoBytes, Producer, TryIntoWithOptions};
+    use otel_arrow_dfe_pdata::{OtlpProtoBytes, Producer, TryIntoWithOptions};
+    use otel_arrow_dfe_pdata_codec::OtapPayload;
     use prost::Message;
     use std::collections::BTreeMap;
 

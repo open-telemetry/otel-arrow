@@ -21,17 +21,24 @@ use otel_arrow_dfe_config::PortName;
 use otel_arrow_dfe_config::{SignalFormat, SignalType};
 use otel_arrow_dfe_engine::_private::AckNackRouting;
 use otel_arrow_dfe_engine::control::{
-    AckMsg, CallData, Frame, NackMsg, RouteData, nanos_since_birth,
+    AckMsg, CallData, Frame, NackMsg, NodeControlMsg, RouteData, nanos_since_birth,
 };
 use otel_arrow_dfe_engine::error::{Error, TypedError};
 use otel_arrow_dfe_engine::flow_metrics::FlowMetricInterests;
-use otel_arrow_dfe_engine::processor::{FlowMetricEffectHandler, FlowMetricHook};
+use otel_arrow_dfe_engine::processor::{
+    FlowMetricEffectHandler, FlowMetricHook, ProcessorRuntimeRequirements,
+};
+use otel_arrow_dfe_engine::runtime_services::CodecEffectHandler;
 use otel_arrow_dfe_engine::{
     ConsumerEffectHandlerExtension, FlowMetricAccumulation, Interests,
     MessageSourceLocalEffectHandlerExtension, MessageSourceSharedEffectHandlerExtension,
     ProducerEffectHandlerExtension,
 };
-use otel_arrow_dfe_pdata::OtapPayload;
+use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayloadHelpers};
+use otel_arrow_dfe_pdata_codec::{
+    CodecError, CodecService, EncodePolicy, EncodingPlan, InspectionPlan, OtapPayload,
+    PdataEncoding, PdataPayloadDecodeError, PdataView,
+};
 
 use crate::transport_headers::TransportHeaders;
 
@@ -622,6 +629,101 @@ pub struct OtapPdata {
     payload: OtapPayload,
 }
 
+/// Owned capability proving that pdata is available as native Arrow records.
+#[derive(Clone, Debug)]
+pub struct OtapArrowPdata {
+    context: Context,
+    records: OtapArrowRecords,
+}
+
+impl OtapArrowPdata {
+    /// Constructs native pdata from its delivery context and records.
+    #[must_use]
+    pub const fn new(context: Context, records: OtapArrowRecords) -> Self {
+        Self { context, records }
+    }
+
+    /// Borrows the delivery context.
+    #[must_use]
+    pub const fn context(&self) -> &Context {
+        &self.context
+    }
+
+    /// Returns a mutable delivery context.
+    pub const fn context_mut(&mut self) -> &mut Context {
+        &mut self.context
+    }
+
+    /// Borrows native records.
+    #[must_use]
+    pub const fn records(&self) -> &OtapArrowRecords {
+        &self.records
+    }
+
+    /// Returns mutable native records.
+    pub const fn records_mut(&mut self) -> &mut OtapArrowRecords {
+        &mut self.records
+    }
+
+    /// Returns the signal represented by the native records.
+    #[must_use]
+    pub fn signal_type(&self) -> SignalType {
+        self.records.signal_type()
+    }
+
+    /// Splits delivery context and native records without cloning.
+    #[must_use]
+    pub fn into_parts(self) -> (Context, OtapArrowRecords) {
+        (self.context, self.records)
+    }
+
+    /// Converts back to dynamically represented pipeline pdata.
+    #[must_use]
+    pub fn into_pdata(self) -> OtapPdata {
+        OtapPdata::new(self.context, self.records.into())
+    }
+}
+
+impl From<OtapArrowPdata> for OtapPdata {
+    fn from(value: OtapArrowPdata) -> Self {
+        value.into_pdata()
+    }
+}
+
+/// A failed codec conversion carrying the exact original pdata for Nack or retry.
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+pub struct OtapPdataDecodeError(Box<OtapPdataDecodeErrorInner>);
+
+#[derive(Debug, thiserror::Error)]
+#[error("{source}")]
+struct OtapPdataDecodeErrorInner {
+    #[source]
+    source: CodecError,
+    pdata: OtapPdata,
+}
+
+impl OtapPdataDecodeError {
+    /// Returns the codec or conversion error.
+    #[must_use]
+    pub const fn error(&self) -> &CodecError {
+        &self.0.source
+    }
+
+    /// Borrows the exact original pdata retained for recovery.
+    #[must_use]
+    pub const fn pdata(&self) -> &OtapPdata {
+        &self.0.pdata
+    }
+
+    /// Splits the error and recoverable original pdata.
+    #[must_use]
+    pub fn into_parts(self) -> (CodecError, OtapPdata) {
+        let inner = *self.0;
+        (inner.source, inner.pdata)
+    }
+}
+
 /* -------- Signal type -------- */
 
 impl OtapPdata {
@@ -650,6 +752,25 @@ impl OtapPdata {
     #[must_use]
     pub const fn new(context: Context, payload: OtapPayload) -> Self {
         Self { context, payload }
+    }
+
+    /// Extracts native records through reusable codec state while retaining
+    /// the exact original pdata on failure.
+    pub fn try_into_otap(
+        self,
+        codecs: &CodecService,
+    ) -> Result<OtapArrowPdata, OtapPdataDecodeError> {
+        let Self { context, payload } = self;
+        match payload.try_into_otap(codecs) {
+            Ok(records) => Ok(OtapArrowPdata::new(context, records)),
+            Err(error) => {
+                let (source, payload) = error.into_parts();
+                Err(OtapPdataDecodeError(Box::new(OtapPdataDecodeErrorInner {
+                    source,
+                    pdata: Self { context, payload },
+                })))
+            }
+        }
     }
 
     /// Returns the type of signal represented by this `OtapPdata` instance.
@@ -962,6 +1083,192 @@ impl_consumer_ext!(otel_arrow_dfe_engine::local::exporter::EffectHandler<OtapPda
 impl_consumer_ext!(otel_arrow_dfe_engine::shared::processor::EffectHandler<OtapPdata>);
 impl_consumer_ext!(otel_arrow_dfe_engine::shared::exporter::EffectHandler<OtapPdata>);
 
+/* -------- Pdata codec effect handler extensions -------- */
+
+/// Representation-independent pdata operations supplied by an effect handler.
+///
+/// Codec state belongs to the pipeline runtime. These methods are async at the
+/// node boundary so codecs that need an offloaded or asynchronous executor can
+/// be added later without storing codec state in nodes. The current operations
+/// scope their synchronous state borrow entirely before returning.
+#[allow(async_fn_in_trait)]
+pub trait PdataEffectHandlerExtension: CodecEffectHandler {
+    /// Resolves an output plan once while starting the consuming node.
+    fn resolve_encoding_plan(
+        &self,
+        encoding: &PdataEncoding,
+        policy: EncodePolicy,
+    ) -> Result<EncodingPlan, CodecError> {
+        EncodingPlan::resolve(self.codec_service().registry(), encoding, policy)
+    }
+
+    /// Resolves accepted encoded identities once while starting a read-only node.
+    fn resolve_inspection_plan(
+        &self,
+        encodings: &[PdataEncoding],
+    ) -> Result<InspectionPlan, CodecError> {
+        let codecs = encodings
+            .iter()
+            .map(|encoding| self.codec_service().registry().resolve(encoding))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(InspectionPlan::accept_encoded(codecs))
+    }
+
+    /// Moves native records or decodes encoded pdata with recoverable failure.
+    async fn try_into_otap(&self, pdata: OtapPdata)
+    -> Result<OtapArrowPdata, OtapPdataDecodeError>;
+
+    /// Moves native records or decodes a payload with recoverable failure.
+    async fn try_payload_into_otap(
+        &self,
+        payload: OtapPayload,
+    ) -> Result<OtapArrowRecords, PdataPayloadDecodeError>;
+
+    /// Borrows a read-only view through runtime-owned codec state.
+    async fn view<'a>(
+        &self,
+        payload: &'a OtapPayload,
+        plan: &InspectionPlan,
+    ) -> Result<PdataView<'a>, CodecError>;
+
+    /// Encodes inside a scope that cannot cross an await point.
+    async fn with_encoded<R>(
+        &self,
+        payload: &mut OtapPayload,
+        plan: &EncodingPlan,
+        consume: impl FnOnce(&[u8]) -> R,
+    ) -> Result<R, CodecError>;
+
+    /// Encodes to owned bytes suitable for asynchronous delivery.
+    async fn encode_owned(
+        &self,
+        payload: &mut OtapPayload,
+        plan: &EncodingPlan,
+    ) -> Result<bytes::Bytes, CodecError>;
+}
+
+/// Processor capability for algorithms that always require mutable native OTAP.
+///
+/// Implementors only receive typed Arrow pdata. The adapter owns conversion
+/// and the permanent Nack policy for malformed encoded input.
+#[async_trait(?Send)]
+pub trait NativePdataProcessor {
+    /// Processes one successfully materialized native batch.
+    async fn process_native(
+        &mut self,
+        pdata: OtapArrowPdata,
+        effect_handler: &mut otel_arrow_dfe_engine::local::processor::EffectHandler<OtapPdata>,
+    ) -> Result<(), Error>;
+
+    /// Processes a control message without forcing pdata conversion.
+    async fn process_control(
+        &mut self,
+        _control: NodeControlMsg<OtapPdata>,
+        _effect_handler: &mut otel_arrow_dfe_engine::local::processor::EffectHandler<OtapPdata>,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// Declares runtime services required by the native processor.
+    fn runtime_requirements(&self) -> ProcessorRuntimeRequirements {
+        ProcessorRuntimeRequirements::none()
+    }
+}
+
+/// Runs a [`NativePdataProcessor`] behind the dynamic pdata boundary.
+pub struct NativeProcessorAdapter;
+
+impl NativeProcessorAdapter {
+    /// Converts pdata, permanently Nacks codec failures, and invokes the
+    /// processor only after native access has been established.
+    pub async fn process<P: NativePdataProcessor>(
+        processor: &mut P,
+        msg: otel_arrow_dfe_engine::message::Message<OtapPdata>,
+        effect_handler: &mut otel_arrow_dfe_engine::local::processor::EffectHandler<OtapPdata>,
+    ) -> Result<(), Error> {
+        match msg {
+            otel_arrow_dfe_engine::message::Message::Control(control) => {
+                processor.process_control(control, effect_handler).await
+            }
+            otel_arrow_dfe_engine::message::Message::PData(pdata) => {
+                match effect_handler.try_into_otap(pdata).await {
+                    Ok(pdata) => processor.process_native(pdata, effect_handler).await,
+                    Err(error) => {
+                        let (error, pdata) = error.into_parts();
+                        effect_handler
+                            .notify_nack(NackMsg::new_permanent(error.to_string(), pdata))
+                            .await
+                    }
+                }
+            }
+        }
+    }
+}
+
+macro_rules! impl_pdata_effect_handler_ext {
+    ($handler:ty) => {
+        impl PdataEffectHandlerExtension for $handler {
+            async fn try_into_otap(
+                &self,
+                pdata: OtapPdata,
+            ) -> Result<OtapArrowPdata, OtapPdataDecodeError> {
+                let (context, payload) = pdata.into_parts();
+                match payload.try_into_otap(self.codec_service()) {
+                    Ok(records) => Ok(OtapArrowPdata::new(context, records)),
+                    Err(error) => {
+                        let (source, payload) = error.into_parts();
+                        Err(OtapPdataDecodeError(Box::new(OtapPdataDecodeErrorInner {
+                            source,
+                            pdata: OtapPdata::new(context, payload),
+                        })))
+                    }
+                }
+            }
+
+            async fn try_payload_into_otap(
+                &self,
+                payload: OtapPayload,
+            ) -> Result<OtapArrowRecords, PdataPayloadDecodeError> {
+                payload.try_into_otap(self.codec_service())
+            }
+
+            async fn view<'a>(
+                &self,
+                payload: &'a OtapPayload,
+                plan: &InspectionPlan,
+            ) -> Result<PdataView<'a>, CodecError> {
+                payload.view(self.codec_service(), plan)
+            }
+
+            async fn with_encoded<R>(
+                &self,
+                payload: &mut OtapPayload,
+                plan: &EncodingPlan,
+                consume: impl FnOnce(&[u8]) -> R,
+            ) -> Result<R, CodecError> {
+                payload.with_encoded_output(self.codec_service(), plan, |output| {
+                    consume(output.as_ref())
+                })
+            }
+
+            async fn encode_owned(
+                &self,
+                payload: &mut OtapPayload,
+                plan: &EncodingPlan,
+            ) -> Result<bytes::Bytes, CodecError> {
+                payload.encode_bytes(self.codec_service(), plan)
+            }
+        }
+    };
+}
+
+impl_pdata_effect_handler_ext!(otel_arrow_dfe_engine::local::processor::EffectHandler<OtapPdata>);
+impl_pdata_effect_handler_ext!(otel_arrow_dfe_engine::local::exporter::EffectHandler<OtapPdata>);
+impl_pdata_effect_handler_ext!(otel_arrow_dfe_engine::local::receiver::EffectHandler<OtapPdata>);
+impl_pdata_effect_handler_ext!(otel_arrow_dfe_engine::shared::processor::EffectHandler<OtapPdata>);
+impl_pdata_effect_handler_ext!(otel_arrow_dfe_engine::shared::exporter::EffectHandler<OtapPdata>);
+impl_pdata_effect_handler_ext!(otel_arrow_dfe_engine::shared::receiver::EffectHandler<OtapPdata>);
+
 /* --------  effect handler extensions (shared, local) -------- */
 
 /// Forward-path flow_metric accumulation for non-overlapping ranges.
@@ -1225,12 +1532,53 @@ mod test {
     use std::mem::size_of;
     use tokio::sync::mpsc;
 
-    /// Scenario: Queued OTAP pdata is built for a 64-bit target before codec integration.
-    /// Guarantees: The baseline queued-message layout remains fixed for later comparisons.
+    /// Scenario: Queued and native-capability pdata are built for a 64-bit target.
+    /// Guarantees: Transitional encoded storage reduces the queue below the 152-byte baseline.
     #[test]
     #[cfg(target_pointer_width = "64")]
     fn legacy_otap_pdata_layout_is_stable() {
-        assert_eq!(size_of::<OtapPdata>(), 152);
+        assert_eq!(size_of::<OtapPdata>(), 144);
+        assert!(size_of::<OtapArrowPdata>() <= size_of::<OtapPdata>());
+    }
+
+    /// Scenario: Malformed encoded pdata carries delivery context through failed conversion.
+    /// Guarantees: Recovery preserves peer address, codec identity, bytes, signal, and item count.
+    #[test]
+    fn encoded_conversion_failure_preserves_delivery_ownership() {
+        use bytes::Bytes;
+        use otel_arrow_dfe_pdata_codec::{CodecService, PdataEncoding, PdataFormat};
+
+        let peer = "127.0.0.1:4317".parse().expect("peer address");
+        let bytes = Bytes::from_static(&[0x0a, 0x05, 0x01]);
+        let pointer = bytes.as_ptr();
+        let service = CodecService::new().expect("valid codec registry");
+        let codec = service
+            .registry()
+            .resolve(&PdataEncoding::OTLP)
+            .expect("OTLP codec");
+        let payload = OtapPayload::from_encoded(
+            codec
+                .admit(SignalType::Logs, bytes)
+                .expect("lazy admission"),
+        )
+        .with_item_count(9);
+        let pdata = OtapPdata::new(Context::default(), payload).with_peer_addr(peer);
+
+        let error = pdata
+            .try_into_otap(&service)
+            .expect_err("malformed OTLP must fail");
+        let (_, recovered) = error.into_parts();
+        assert_eq!(recovered.peer_addr(), Some(peer));
+        assert_eq!(
+            recovered.payload_ref().format(),
+            PdataFormat::encoded(codec)
+        );
+        assert_eq!(recovered.payload_ref().known_item_count(), Some(9));
+        assert_eq!(
+            recovered.payload_ref().encoded_bytes().unwrap().as_ptr(),
+            pointer
+        );
+        assert_eq!(recovered.signal_type(), SignalType::Logs);
     }
 
     fn create_test() -> (TestCallData, OtapPdata) {

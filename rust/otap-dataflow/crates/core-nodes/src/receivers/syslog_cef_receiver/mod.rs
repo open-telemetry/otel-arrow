@@ -1298,7 +1298,7 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otel_arrow_dfe_pdata::PayloadData;
+    use otel_arrow_dfe_pdata_codec::PayloadData;
 
     // Test-only constructor, not compiled in production
     impl SyslogCefReceiver {

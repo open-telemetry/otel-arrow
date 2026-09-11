@@ -35,12 +35,15 @@ use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
-use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_otap::pdata::{OtapPdata, PdataEffectHandlerExtension};
+use otel_arrow_dfe_pdata::OtapPayloadHelpers;
 use otel_arrow_dfe_pdata::views::otap::{OtapLogsView, OtapMetricsView, OtapTracesView};
 use otel_arrow_dfe_pdata::views::otlp::bytes::logs::RawLogsData;
 use otel_arrow_dfe_pdata::views::otlp::bytes::metrics::RawMetricsData;
 use otel_arrow_dfe_pdata::views::otlp::bytes::traces::RawTraceData;
-use otel_arrow_dfe_pdata::{OtapPayload, OtapPayloadHelpers, PayloadData};
+#[cfg(test)]
+use otel_arrow_dfe_pdata_codec::OtapPayload;
+use otel_arrow_dfe_pdata_codec::{InspectionPlan, PdataEncoding, PdataView};
 use otel_arrow_dfe_telemetry::attributes::AttributeEnum as _;
 use otel_arrow_dfe_telemetry::common_attributes::{
     Outcome, SignalAttributes, SignalOutcomeAttributes,
@@ -109,6 +112,7 @@ impl Exporter<OtapPdata> for FileExporter {
         mut inbox: ExporterInbox<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
+        let inspection_plan = effect_handler.resolve_inspection_plan(&[PdataEncoding::OTLP])?;
         otel_info!(
             "otelcol.node.file.start",
             format = self.config.format.as_str(),
@@ -140,7 +144,8 @@ impl Exporter<OtapPdata> for FileExporter {
                     return Ok(TerminalState::new(deadline, snapshots));
                 }
                 Message::PData(pdata) => {
-                    self.export_pdata(pdata, &effect_handler).await?;
+                    self.export_pdata(pdata, &effect_handler, &inspection_plan)
+                        .await?;
                 }
                 _ => {}
             }
@@ -153,6 +158,7 @@ impl FileExporter {
         &mut self,
         mut pdata: OtapPdata,
         effect_handler: &EffectHandler<OtapPdata>,
+        inspection_plan: &InspectionPlan,
     ) -> Result<(), Error> {
         let signal = pdata.signal_type();
         if pdata.is_empty() {
@@ -160,11 +166,21 @@ impl FileExporter {
             self.record_export_outcome(signal, Outcome::Success);
             return Ok(());
         }
-        if let Err(error) = encode_payload(
-            pdata.payload_ref(),
-            &mut self.frame,
-            self.config.max_frame_bytes,
-        ) {
+        let view = match effect_handler
+            .view(pdata.payload_ref(), inspection_plan)
+            .await
+        {
+            Ok(view) => view,
+            Err(error) => {
+                self.record_export_outcome(signal, Outcome::Failure);
+                let reason = format!("file exporter rejected invalid pdata: {error}");
+                effect_handler
+                    .notify_nack(NackMsg::new_permanent(reason, pdata))
+                    .await?;
+                return Ok(());
+            }
+        };
+        if let Err(error) = encode_payload(view, &mut self.frame, self.config.max_frame_bytes) {
             self.record_export_outcome(signal, Outcome::Failure);
             let reason = match error {
                 EncodeFailure::Frame(FrameEncodeError::FrameTooLarge { .. }) => {
@@ -363,42 +379,42 @@ enum EncodeFailure {
 }
 
 fn encode_payload(
-    payload: &OtapPayload,
+    view: PdataView<'_>,
     frame: &mut Vec<u8>,
     max_frame_bytes: usize,
 ) -> Result<(), EncodeFailure> {
     frame.clear();
-    match payload.data() {
-        PayloadData::OtlpBytes(bytes) => match bytes {
-            otel_arrow_dfe_pdata::OtlpProtoBytes::ExportLogsRequest(_) => {
-                let view = RawLogsData::try_from(bytes)
-                    .map_err(|error| EncodeFailure::View(error.to_string()))?;
-                encode_logs(&view, frame, max_frame_bytes)?;
-            }
-            otel_arrow_dfe_pdata::OtlpProtoBytes::ExportMetricsRequest(bytes) => {
-                let view = RawMetricsData::try_new(bytes)
-                    .map_err(|error| EncodeFailure::View(error.to_string()))?;
-                encode_metrics(&view, frame, max_frame_bytes)?;
-            }
-            otel_arrow_dfe_pdata::OtlpProtoBytes::ExportTracesRequest(bytes) => {
-                let view = RawTraceData::try_new(bytes)
-                    .map_err(|error| EncodeFailure::View(error.to_string()))?;
-                encode_traces(&view, frame, max_frame_bytes)?;
-            }
-        },
-        PayloadData::OtapArrowRecords(records) => match records.signal_type() {
+    match view {
+        PdataView::Encoded(view) => match view.signal_type() {
             SignalType::Logs => {
-                let view = OtapLogsView::try_from(records)
+                let view = RawLogsData::try_new(view.bytes())
                     .map_err(|error| EncodeFailure::View(error.to_string()))?;
                 encode_logs(&view, frame, max_frame_bytes)?;
             }
             SignalType::Metrics => {
-                let view = OtapMetricsView::try_from(records)
+                let view = RawMetricsData::try_new(view.bytes())
                     .map_err(|error| EncodeFailure::View(error.to_string()))?;
                 encode_metrics(&view, frame, max_frame_bytes)?;
             }
             SignalType::Traces => {
-                let view = OtapTracesView::try_from(records)
+                let view = RawTraceData::try_new(view.bytes())
+                    .map_err(|error| EncodeFailure::View(error.to_string()))?;
+                encode_traces(&view, frame, max_frame_bytes)?;
+            }
+        },
+        PdataView::Native(records) => match records.signal_type() {
+            SignalType::Logs => {
+                let view = OtapLogsView::try_from(records.as_ref())
+                    .map_err(|error| EncodeFailure::View(error.to_string()))?;
+                encode_logs(&view, frame, max_frame_bytes)?;
+            }
+            SignalType::Metrics => {
+                let view = OtapMetricsView::try_from(records.as_ref())
+                    .map_err(|error| EncodeFailure::View(error.to_string()))?;
+                encode_metrics(&view, frame, max_frame_bytes)?;
+            }
+            SignalType::Traces => {
+                let view = OtapTracesView::try_from(records.as_ref())
                     .map_err(|error| EncodeFailure::View(error.to_string()))?;
                 encode_traces(&view, frame, max_frame_bytes)?;
             }
@@ -413,6 +429,21 @@ const fn signal_index(signal: SignalType) -> usize {
         SignalType::Metrics => 1,
         SignalType::Traces => 2,
     }
+}
+
+#[cfg(test)]
+fn encode_payload_for_test(
+    payload: &OtapPayload,
+    frame: &mut Vec<u8>,
+    max_frame_bytes: usize,
+) -> Result<(), EncodeFailure> {
+    let service = otel_arrow_dfe_pdata_codec::CodecService::new().unwrap();
+    let codec = service.registry().resolve(&PdataEncoding::OTLP).unwrap();
+    let plan = InspectionPlan::accept_encoded([codec]);
+    let view = payload
+        .view(&service, &plan)
+        .map_err(|error| EncodeFailure::View(error.to_string()))?;
+    encode_payload(view, frame, max_frame_bytes)
 }
 
 fn exporter_error(
@@ -556,7 +587,7 @@ mod tests {
         let expected_fields = ["resourceLogs", "resourceMetrics", "resourceSpans"];
         let mut frame = Vec::new();
         for (payload, expected_field) in payloads.iter().zip(expected_fields) {
-            encode_payload(payload, &mut frame, 4096).unwrap();
+            encode_payload_for_test(payload, &mut frame, 4096).unwrap();
             let value: serde_json::Value = serde_json::from_slice(&frame).unwrap();
             assert!(value.get(expected_field).is_some());
         }
@@ -569,7 +600,7 @@ mod tests {
         let payload =
             OtapPayload::from(OtlpProtoBytes::new_from_bytes(SignalType::Logs, vec![0x80]));
         let mut frame = b"previous telemetry\n".to_vec();
-        assert!(encode_payload(&payload, &mut frame, 4096).is_err());
+        assert!(encode_payload_for_test(&payload, &mut frame, 4096).is_err());
         assert!(frame.is_empty());
     }
 

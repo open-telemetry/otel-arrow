@@ -48,6 +48,7 @@ tokio = { workspace = true }
 
 otel-arrow-dfe-query-engine-languages = { workspace = true }
 otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
+otel-arrow-dfe-pdata-codec = { workspace = true, features = ["testing"] }
 
 [target.'cfg(not(windows))'.dev-dependencies]
 tikv-jemallocator.workspace = true

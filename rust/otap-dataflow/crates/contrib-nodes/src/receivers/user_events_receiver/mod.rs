@@ -1144,7 +1144,7 @@ mod config_tests {
     };
     use otel_arrow_dfe_engine::message::Sender;
     use otel_arrow_dfe_engine::testing::{test_node, test_pipeline_ctx};
-    use otel_arrow_dfe_pdata::OtapPayload;
+    use otel_arrow_dfe_pdata_codec::OtapPayload;
     use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 
     fn test_metrics() -> Rc<RefCell<MetricSet<UserEventsReceiverMetrics>>> {

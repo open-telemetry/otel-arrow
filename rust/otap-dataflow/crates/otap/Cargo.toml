@@ -42,6 +42,7 @@ otel-arrow-dfe-engine-macros = { workspace = true }
 otel-arrow-dfe-channel = { workspace = true }
 otel-arrow-dfe-config = { workspace = true }
 otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
+otel-arrow-dfe-pdata-codec = { workspace = true, features = ["testing"] }
 otel-arrow-dfe-telemetry = { workspace = true }
 otel-arrow-dfe-telemetry-macros = { workspace = true }
 

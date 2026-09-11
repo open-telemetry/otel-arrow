@@ -3,7 +3,7 @@
 
 use ahash::{AHashMap as HashMap, AHashSet as HashSet};
 use otel_arrow_dfe_otap::pdata::Context;
-use otel_arrow_dfe_pdata::OtapPayload;
+use otel_arrow_dfe_pdata_codec::OtapPayload;
 
 /// Tracks relationships between batches <-> messages + their data.
 /// High-perf: uses AHashMap/AHashSet (fastest hashing for u64 keys).
@@ -143,8 +143,8 @@ mod tests {
     use super::*;
     use bytes::Bytes;
     use otel_arrow_dfe_otap::pdata::Context;
-    use otel_arrow_dfe_pdata::PayloadData;
     use otel_arrow_dfe_pdata::otlp::OtlpProtoBytes;
+    use otel_arrow_dfe_pdata_codec::PayloadData;
 
     /// Helper to create a test OtapPayload from bytes
     fn test_payload(data: &'static [u8]) -> OtapPayload {

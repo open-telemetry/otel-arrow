@@ -33,9 +33,11 @@ use otel_arrow_dfe_engine::{
 use otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES;
 use otel_arrow_dfe_otap::accessory::context::split_contexts::{Contexts, OutboundError};
 use otel_arrow_dfe_otap::accessory::slots::Key;
-use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_otap::pdata::{OtapPdata, PdataEffectHandlerExtension};
 use otel_arrow_dfe_otap::transport_headers::{TransportHeader, ValueKind};
-use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayload, TryIntoWithOptions};
+#[cfg(test)]
+use otel_arrow_dfe_pdata::OtapArrowRecords;
+use otel_arrow_dfe_pdata_codec::OtapPayload;
 use otel_arrow_dfe_query_engine::parser::default_parser_options;
 use otel_arrow_dfe_query_engine::pipeline::partition::{PartitionValue, Partitioner};
 use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
@@ -250,12 +252,20 @@ impl Processor<OtapPdata> for PartitionProcessor {
                     pdata.add_flow_compute(flow);
                 }
 
-                let (mut inbound_context, payload) = pdata.into_parts();
-                let inbound_payload = inbound_context
-                    .may_return_payload()
-                    .then_some(payload.clone());
-                let signal_type = payload.signal_type();
-                let mut otap_batch: OtapArrowRecords = payload.try_into_with_default()?;
+                let return_payload = pdata.context_mut().may_return_payload();
+                let inbound_payload = return_payload.then(|| pdata.payload_ref().clone());
+                let arrow_pdata = match effect_handler.try_into_otap(pdata).await {
+                    Ok(arrow_pdata) => arrow_pdata,
+                    Err(error) => {
+                        let (error, pdata) = error.into_parts();
+                        effect_handler
+                            .notify_nack(NackMsg::new_permanent(error.to_string(), pdata))
+                            .await?;
+                        return Ok(());
+                    }
+                };
+                let signal_type = arrow_pdata.signal_type();
+                let (mut inbound_context, mut otap_batch) = arrow_pdata.into_parts();
                 otap_batch.decode_transport_optimized_ids()?;
                 let inbound_batch_num_items = otap_batch.num_items();
 
