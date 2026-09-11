@@ -10,7 +10,7 @@ use crate::pipeline::expr::types::MetricDatapointType;
 use crate::pipeline::expr::{ChildRecordKind, RecordScope};
 use crate::pipeline::expr::{DataScope, ScopedExpr, ScopedValue, eval::resolve_attrs_payload_type};
 use crate::pipeline::filter::data_points::{
-    filter_metric_datapoints, remove_all_metric_data_points,
+    filter_metric_data_points, remove_all_metric_data_points,
 };
 use crate::pipeline::planner::{AttributesIdentifier, RecordType};
 use crate::pipeline::state::ExecutionState;
@@ -176,7 +176,7 @@ impl FilterPipelineStage {
     fn filter_metric_data_points(
         &mut self,
         predicate_eval_value: ScopedValue,
-        metric_datapoint_type: &MetricDatapointType,
+        metric_data_point_type: &MetricDatapointType,
         otap_batch: &mut OtapArrowRecords,
     ) -> Result<()> {
         let is_aligned = matches!(
@@ -193,17 +193,15 @@ impl FilterPipelineStage {
                     }
                     ScalarValue::Boolean(_) => {
                         // no rows pass, datapoints must be removed
-                        remove_all_metric_data_points(otap_batch, metric_datapoint_type);
+                        remove_all_metric_data_points(otap_batch, metric_data_point_type);
                         Ok(())
                     }
-                    _ => {
-                        return Err(Error::ExecutionError {
-                            cause: format!(
-                                "Received scalar of type {:?} when filtering metric datapoints. expected boolean",
-                                scalar.data_type(),
-                            ),
-                        });
-                    }
+                    _ => Err(Error::ExecutionError {
+                        cause: format!(
+                            "Received scalar of type {:?} when filtering metric datapoints. expected boolean",
+                            scalar.data_type(),
+                        ),
+                    }),
                 }
             }
             ColumnarValue::Array(arr) => {
@@ -231,9 +229,9 @@ impl FilterPipelineStage {
                     })?;
 
                 let mut id_bitmap = self.id_bitmap_pool.acquire();
-                let result = filter_metric_datapoints(
+                let result = filter_metric_data_points(
                     otap_batch,
-                    &metric_datapoint_type,
+                    metric_data_point_type,
                     selection_vec,
                     &mut id_bitmap,
                 );

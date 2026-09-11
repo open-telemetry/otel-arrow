@@ -40,7 +40,7 @@ use crate::pipeline::routing::RouteToPipelineStage;
 use crate::pipeline::{BoxedPipelineStage, PipelineStage};
 
 /// Identifier for what will be treated as a record in the pipeline that is being planned.
-/// 
+///
 /// Typically this is used in cases where we plan an nested pipeline on some child element
 /// via an expression like `apply attributes { ... }` or `apply data_points { ... }`
 #[derive(Clone, Debug)]
@@ -924,7 +924,6 @@ impl PipelinePlanner {
             results.push(Box::new(pipeline_stage));
         }
 
-        println!("number of sets = {:?}", results.len());
         Ok(results)
     }
 }

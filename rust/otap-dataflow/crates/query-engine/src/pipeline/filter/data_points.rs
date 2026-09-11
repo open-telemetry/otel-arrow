@@ -22,7 +22,7 @@ use crate::pipeline::expr::types::MetricDatapointType;
 ///
 /// If after discarding the filtered rows some record batch turns out to be empty, it will
 /// be removed entirely from the OTAP batch.
-pub fn filter_metric_datapoints(
+pub fn filter_metric_data_points(
     otap_batch: &mut OtapArrowRecords,
     datapoint_type: &MetricDatapointType,
     data_point_selection_vec: &BooleanArray,
@@ -54,15 +54,15 @@ pub fn filter_metric_datapoints(
     if let Some(batch) = otap_batch.remove(datapoint_type.dp_attrs_payload_type()) {
         tmp.set(datapoint_type.dp_attrs_payload_type(), batch)?
     }
-    if let Some(exemplar_payload_type) = datapoint_type.exemplar_payload_type() {
-        if let Some(batch) = otap_batch.remove(exemplar_payload_type) {
-            tmp.set(exemplar_payload_type, batch)?;
-        }
+    if let Some(exemplar_payload_type) = datapoint_type.exemplar_payload_type()
+        && let Some(batch) = otap_batch.remove(exemplar_payload_type)
+    {
+        tmp.set(exemplar_payload_type, batch)?;
     }
-    if let Some(exemplar_attr_payload_type) = datapoint_type.exemplar_attr_payload_type() {
-        if let Some(batch) = otap_batch.remove(exemplar_attr_payload_type) {
-            tmp.set(exemplar_attr_payload_type, batch)?;
-        }
+    if let Some(exemplar_attr_payload_type) = datapoint_type.exemplar_attr_payload_type()
+        && let Some(batch) = otap_batch.remove(exemplar_attr_payload_type)
+    {
+        tmp.set(exemplar_attr_payload_type, batch)?;
     }
 
     filter_child_batch::<UInt32Type>(

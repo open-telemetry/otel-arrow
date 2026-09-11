@@ -11,7 +11,6 @@ use arrow::array::{Array, UInt16Array};
 use arrow::util::bit_iterator::BitSliceIterator;
 use datafusion::common::cast::as_boolean_array;
 use datafusion::logical_expr::ColumnarValue;
-use datafusion::prelude::SessionContext;
 use datafusion::scalar::ScalarValue;
 use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_pdata::otap::filter::IdBitmapPool;
@@ -325,9 +324,9 @@ fn scoped_value_to_id_mask(
             // we don't yet support expression evaluation that would need to convert
             // the ID column from record batch representing a repeated child type
             // (like metric data points) into an ID bitmap.
-            return Err(Error::NotYetSupportedError {
+            Err(Error::NotYetSupportedError {
                 message: "conversion of child record scoped expression values to bitmap".into(),
-            });
+            })
         }
         DataScope::Attribute(_, _) | DataScope::AttributesAll(_) => {
             // attribute-scoped: use parent_ids to populate an IdBitmap

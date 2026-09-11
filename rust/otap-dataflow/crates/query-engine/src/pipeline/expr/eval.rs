@@ -33,7 +33,6 @@ use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_pdata::arrays::{
     get_optional_array_from_struct_array_from_record_batch, get_required_array,
 };
-use otel_arrow_dfe_pdata::otlp::metrics::MetricType;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_dfe_pdata::schema::consts;
 
@@ -208,8 +207,6 @@ pub(super) fn eval_datafusion_expr_value(
                 }
                 DataScope::StaticScalar => Some(Cow::Borrowed(SCALAR_RECORD_BATCH_INPUT.deref())),
             };
-
-            println!("source rb in eval = {:?}", source_rb);
 
             let source_rb = match source_rb {
                 Some(rb) => rb,

@@ -2070,7 +2070,7 @@ fn validate_expr_cardinality(
                     // record like a metric datapoint. The planner shouldn't be creating plans like
                     // this, but we'll reject it here if that's what has been passed as an argument
                     return Err(Error::InvalidPipelineError {
-                        cause: format!("Cannot assign non-record attribute from non-signal record"),
+                        cause: "Cannot assign non-record attribute from non-signal record".into(),
                         query_location: dest_query_location.cloned(),
                     });
                 }
@@ -2162,7 +2162,7 @@ fn validate_struct_col_assign_cardinality(
                     // a metric datapoint. The planner shouldn't be creating plans like this, but
                     // we'll reject it here if that's what has been passed as an argument
                     return Err(Error::InvalidPipelineError {
-                        cause: format!("Cannot assign struct column from non-signal record"),
+                        cause: "Cannot assign struct column from non-signal record".into(),
                         query_location: dest_query_location.cloned(),
                     });
                 }

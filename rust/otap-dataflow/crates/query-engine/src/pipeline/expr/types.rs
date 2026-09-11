@@ -413,6 +413,7 @@ pub fn coerce_arithmetic(
 
 /// identifier of metric datapoint type
 #[derive(Clone, Copy)]
+#[allow(clippy::enum_variant_names)]
 pub enum MetricDatapointType {
     NumberDataPoint,
     HistogramDataPoint,

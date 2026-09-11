@@ -22,7 +22,7 @@ use crate::pipeline::concat::{
     concatenate_attrs_record_batches, concatenate_logs, concatenate_metrics, concatenate_traces,
 };
 use crate::pipeline::expr::eval::EvalContext;
-use crate::pipeline::expr::{DataScope, RecordScope, ScopedExpr};
+use crate::pipeline::expr::{DataScope, ScopedExpr};
 use crate::pipeline::filter::{align_selection_to_record, scoped_value_to_boolean_array};
 use crate::pipeline::planner::RecordType;
 use crate::pipeline::state::ExecutionState;
