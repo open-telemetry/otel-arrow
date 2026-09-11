@@ -674,7 +674,7 @@ impl Processor<OtapPdata> for RetryProcessor {
             Message::Control(control_msg) => match control_msg {
                 NodeControlMsg::Ack(ack) => self.handle_ack(ack, effect_handler).await,
                 NodeControlMsg::Nack(nack) => self.handle_nack(nack, effect_handler).await,
-                NodeControlMsg::ResumeData { when, data } => {
+                NodeControlMsg::ResumeData { when, data, .. } => {
                     if let Some(calldata) = data.source_route() {
                         let _rstate: RetryState = calldata.calldata.try_into()?;
                         self.handle_resumed(when, data, effect_handler).await?;
