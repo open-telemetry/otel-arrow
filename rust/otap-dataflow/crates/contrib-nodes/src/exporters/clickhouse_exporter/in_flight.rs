@@ -5,6 +5,7 @@
 
 use std::collections::VecDeque;
 use std::num::NonZeroUsize;
+use std::rc::Rc;
 use std::time::Instant;
 
 use futures::StreamExt;
@@ -21,7 +22,7 @@ pub(super) type WrittenRows = Vec<(ArrowPayloadType, u64)>;
 pub(super) struct CompletedWrite {
     pub pdata: OtapPdata,
     pub export_started_at: Instant,
-    pub result: Result<WrittenRows, ClickhouseExporterError>,
+    pub result: Result<WrittenRows, Rc<ClickhouseExporterError>>,
 }
 
 /// Tracks insert futures and enforces the configured concurrency bound.

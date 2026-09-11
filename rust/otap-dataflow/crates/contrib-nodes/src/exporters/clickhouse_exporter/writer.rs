@@ -27,23 +27,24 @@ use std::collections::HashMap;
 
 use arrow_array::RecordBatch;
 use clickhouse::Client;
-use clickhouse_ext_arrow::ArrowClientExt;
+use clickhouse_ext_arrow::{ArrowClientExt, ArrowInsert};
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use secrecy::ExposeSecret;
 
 use crate::exporters::clickhouse_exporter::{
-    config::Config,
+    config::RuntimeConfig,
     error::ClickhouseExporterError,
     tables::{build_payload_destination_table_map, init_table, validate_identifier},
 };
 
+#[derive(Clone)]
 pub struct ClickHouseWriter {
     client: Client,
     payload_destination_tables: HashMap<ArrowPayloadType, String>,
 }
 
 impl ClickHouseWriter {
-    pub async fn new(config: &Config) -> Result<Self, ClickhouseExporterError> {
+    pub async fn new(config: &RuntimeConfig) -> Result<Self, ClickhouseExporterError> {
         let payload_destination_tables = build_payload_destination_table_map(config);
         otel_info!(
             "clickhouse.exporter.tables.bound",
@@ -71,23 +72,17 @@ impl ClickHouseWriter {
         table_name: &str,
         batch: &RecordBatch,
     ) -> Result<(), ClickhouseExporterError> {
-        let mut insert = self.client.insert_arrow(table_name).map_err(|e| {
-            ClickhouseExporterError::InsertRequestError {
-                error: format!("{e}"),
-            }
-        })?;
+        let mut insert = self
+            .start_insert(table_name)
+            .map_err(|source| ClickhouseExporterError::InsertRequestError { source })?;
         insert
             .write(batch)
             .await
-            .map_err(|e| ClickhouseExporterError::InsertRequestError {
-                error: format!("{e}"),
-            })?;
+            .map_err(|source| ClickhouseExporterError::InsertRequestError { source })?;
         insert
             .end()
             .await
-            .map_err(|e| ClickhouseExporterError::InsertResponseError {
-                error: format!("{e}"),
-            })?;
+            .map_err(|source| ClickhouseExporterError::InsertResponseError { source })?;
         otel_debug!(
             "clickhouse.exporter.batch.written",
             message = "Record batch successfully written.",
@@ -98,6 +93,20 @@ impl ClickHouseWriter {
 
         Ok(())
     }
+
+    pub(super) fn destination_table(&self, payload_type: ArrowPayloadType) -> Option<&str> {
+        self.payload_destination_tables
+            .get(&payload_type)
+            .map(String::as_str)
+    }
+
+    pub(super) fn start_insert(
+        &self,
+        table_name: &str,
+    ) -> Result<ArrowInsert, clickhouse::error::Error> {
+        self.client.insert_arrow(table_name)
+    }
+
     pub async fn write_batches(
         &self,
         write_batches: &HashMap<ArrowPayloadType, RecordBatch>,
@@ -118,7 +127,7 @@ impl ClickHouseWriter {
 ///
 /// `Client` is cheap to clone (it is `Arc`-backed internally), so callers can build one per
 /// target database without concern.
-pub fn build_client(config: &Config, database: &str) -> Client {
+pub fn build_client(config: &RuntimeConfig, database: &str) -> Client {
     let mut client = Client::default()
         .with_url(config.endpoint.clone())
         .with_database(database)
@@ -133,7 +142,7 @@ pub fn build_client(config: &Config, database: &str) -> Client {
 }
 
 /// Ensure db and all tables are initialized if required.
-async fn ensure_db(client: &Client, config: &Config) -> Result<(), ClickhouseExporterError> {
+async fn ensure_db(client: &Client, config: &RuntimeConfig) -> Result<(), ClickhouseExporterError> {
     validate_identifier(&config.database, "database")?;
     client
         .query(&format!(
@@ -149,7 +158,7 @@ async fn ensure_db(client: &Client, config: &Config) -> Result<(), ClickhouseExp
 }
 
 /// Initialize tables.
-async fn init_db(client: &Client, config: &Config) -> Result<(), ClickhouseExporterError> {
+async fn init_db(client: &Client, config: &RuntimeConfig) -> Result<(), ClickhouseExporterError> {
     ensure_db(client, config).await?;
     for entry in config.tables.iter_tables() {
         init_table(client, &entry, config).await?;
