@@ -160,7 +160,9 @@ fn map_admin_error(error: &otel_arrow_dfe_admin_api::Error) -> u8 {
             | OperationErrorKind::PipelineNotFound
             | OperationErrorKind::RolloutNotFound
             | OperationErrorKind::ShutdownNotFound => 3,
-            OperationErrorKind::Conflict | OperationErrorKind::InvalidRequest => 4,
+            OperationErrorKind::Conflict
+            | OperationErrorKind::InvalidRequest
+            | OperationErrorKind::UnsupportedMutation => 4,
             OperationErrorKind::Internal => 6,
         },
         _ => 6,
@@ -176,6 +178,7 @@ fn admin_error_kind(error: &otel_arrow_dfe_admin_api::Error) -> &'static str {
             | OperationErrorKind::ShutdownNotFound => "not_found",
             OperationErrorKind::Conflict => "conflict",
             OperationErrorKind::InvalidRequest => "invalid_request",
+            OperationErrorKind::UnsupportedMutation => "unsupported_mutation",
             OperationErrorKind::Internal => "internal",
         },
         otel_arrow_dfe_admin_api::Error::ClientConfig { .. } => "client_config",
@@ -189,6 +192,7 @@ fn admin_error_kind(error: &otel_arrow_dfe_admin_api::Error) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use otel_arrow_dfe_admin_api::operations::OperationError;
 
     /// Scenario: a runtime failure is rendered with `--error-format json`.
     /// Guarantees: scripts can parse a compact structured error object with a
@@ -217,5 +221,18 @@ mod tests {
 
         assert!(error.should_print());
         assert_eq!(error.exit_code(), 5);
+    }
+
+    /// Scenario: the admin API requires a mutation to be rewritten at a supported scope.
+    /// Guarantees: dfctl preserves the unsupported-mutation kind and uses the request-error exit code.
+    #[test]
+    fn unsupported_mutation_admin_error_is_actionable() {
+        let error = otel_arrow_dfe_admin_api::Error::AdminOperation {
+            status: 422,
+            error: OperationError::new(OperationErrorKind::UnsupportedMutation),
+        };
+
+        assert_eq!(map_admin_error(&error), 4);
+        assert_eq!(admin_error_kind(&error), "unsupported_mutation");
     }
 }
