@@ -362,12 +362,10 @@ mod tests {
         ));
     }
 
-    /// Scenario: a header/value assertion uses an unrestricted stored name.
-    /// Guarantees: construction preserves the existing accepted input domain.
+    /// Scenario: a header/value assertion uses an invalid stored name.
+    /// Guarantees: construction rejects whitespace in the context entry name.
     #[test]
-    fn key_value_construction_preserves_name() {
-        let pair =
-            TransportHeaderKeyValue::try_new("not normalized", "value").expect("name is accepted");
-        assert_eq!(pair.key.as_str(), "not normalized");
+    fn key_value_construction_rejects_invalid_name() {
+        assert!(TransportHeaderKeyValue::try_new("not valid", "value").is_err());
     }
 }

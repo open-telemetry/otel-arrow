@@ -56,6 +56,16 @@ impl TryFrom<&str> for ContextEntryName {
     type Error = Error;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
+        if value.is_empty()
+            || value.contains(':')
+            || !value.bytes().all(|byte| byte.is_ascii_graphic())
+        {
+            return Err(Error::InvalidUserConfig {
+                error: format!(
+                    "invalid transport-header context entry name `{value}`; expected a single printable ASCII name"
+                ),
+            });
+        }
         Ok(Self(value.into()))
     }
 }
@@ -118,13 +128,12 @@ mod tests {
         assert_eq!(BTreeSet::from([upper, lower]).len(), 2);
     }
 
-    /// Scenario: existing configuration uses unrestricted context names.
-    /// Guarantees: wrapping a name does not introduce new validation failures.
+    /// Scenario: a context name is empty, composite, contains whitespace, or is non-ASCII.
+    /// Guarantees: invalid context entry names are rejected without changing valid-name casing.
     #[test]
-    fn context_entry_name_preserves_existing_input_domain() {
-        for value in ["", "two words", "line\nbreak", "caf\u{e9}"] {
-            let name = ContextEntryName::try_from(value).expect("existing names remain accepted");
-            assert_eq!(name.as_str(), value);
+    fn context_entry_name_rejects_invalid_forms() {
+        for value in ["", "entry:member", "two words", "line\nbreak", "caf\u{e9}"] {
+            assert!(ContextEntryName::try_from(value).is_err(), "{value:?}");
         }
     }
 
