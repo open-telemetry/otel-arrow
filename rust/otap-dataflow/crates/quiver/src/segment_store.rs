@@ -886,6 +886,7 @@ impl SegmentStore {
                 .open(&tmp_path)
                 .await?;
             file.write_all(&encode_seq_sidecar(next_seq)).await?;
+            file.flush().await?;
             file.sync_data().await?;
             drop(file);
             tokio::fs::rename(&tmp_path, &path).await?;

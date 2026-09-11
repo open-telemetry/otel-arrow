@@ -136,6 +136,13 @@ pub struct QuiverEngine {
     metrics: PersistenceMetrics,
     /// Write-ahead log writer (uses tokio mutex for async lock across await points).
     wal_writer: TokioMutex<WalWriter>,
+    /// Serializes the complete segment finalization transaction.
+    ///
+    /// The open-segment lock only protects swapping the accumulator. This
+    /// async lock remains held through writing, sequence-floor persistence,
+    /// WAL cursor advancement, and registration so a later segment cannot
+    /// become visible after an earlier finalization poisons the engine.
+    segment_finalize_lock: TokioMutex<()>,
     /// Current open segment accumulator.
     open_segment: Mutex<OpenSegment>,
     /// Cursor representing all entries in the current open segment.
@@ -349,6 +356,17 @@ fn segment_error_from_subscriber(e: SubscriberError) -> SegmentError {
 }
 
 impl QuiverEngine {
+    fn reject_if_sequence_persist_poisoned(&self) -> Result<()> {
+        if self.sequence_persist_poisoned.load(Ordering::Acquire) {
+            return Err(SegmentError::io_no_path(std::io::Error::other(
+                "segment sequence floor could not be persisted for a prior segment; \
+                 ingestion and finalization are disabled until restart",
+            ))
+            .into());
+        }
+        Ok(())
+    }
+
     /// Creates a builder for constructing a `QuiverEngine`.
     ///
     /// This provides a cleaner interface with sensible defaults
@@ -587,6 +605,7 @@ impl QuiverEngine {
             config,
             metrics: PersistenceMetrics::new(),
             wal_writer: TokioMutex::new(wal_writer),
+            segment_finalize_lock: TokioMutex::new(()),
             open_segment: Mutex::new(OpenSegment::new()),
             segment_cursor: Mutex::new(WalConsumerCursor::default()),
             next_segment_seq: AtomicU64::new(next_segment_seq),
@@ -814,7 +833,7 @@ impl QuiverEngine {
     ///
     /// - WAL appends are serialized (`TokioMutex`), so entries are added
     ///   one at a time.
-    /// - Finalization is serialized (`Mutex<OpenSegment>`), so at most one
+    /// - Finalization is serialized (`segment_finalize_lock`), so at most one
     ///   segment writes to disk at a time.
     /// - The `hard_cap - soft_cap = segment_target_size` headroom absorbs
     ///   the overshoot from racing callers, since individual WAL entries
@@ -832,6 +851,12 @@ impl QuiverEngine {
     /// - Segment finalization fails
     pub async fn ingest<B: RecordBundle>(&self, bundle: &B) -> Result<()> {
         self.metrics.record_ingest_attempt();
+
+        // Once a segment has been written without a durable sequence floor,
+        // accepting more data could leave it only in memory under
+        // `DurabilityMode::SegmentOnly`, since finalization remains disabled
+        // until restart.
+        self.reject_if_sequence_persist_poisoned()?;
 
         // Step 0: Check budget watermark before doing any work.
         // This is a best-effort gate -- see "Budget gating" in the doc comment.
@@ -1394,6 +1419,8 @@ impl QuiverEngine {
     /// guarantees that even if `used` was at the soft cap before finalization,
     /// the resulting `used` won't exceed `hard_cap`.
     async fn finalize_segment_impl(&self) -> Result<()> {
+        let _finalize_guard = self.segment_finalize_lock.lock().await;
+
         // A prior finalize left a segment durably written but unregistered
         // because its sequence floor could not be persisted. Refuse further
         // finalization until restart: letting a later segment register and
@@ -1402,13 +1429,7 @@ impl QuiverEngine {
         // (issue #4024). The accumulated open segment is left untouched so
         // it is not lost either; it will be recovered via WAL replay
         // (`DurabilityMode::Wal`) or written fresh after restart.
-        if self.sequence_persist_poisoned.load(Ordering::Acquire) {
-            return Err(SegmentError::io_no_path(std::io::Error::other(
-                "segment sequence floor could not be persisted for a prior segment; \
-                 finalization is disabled until restart",
-            ))
-            .into());
-        }
+        self.reject_if_sequence_persist_poisoned()?;
 
         // Check if there's anything to finalize
         {
@@ -2320,6 +2341,7 @@ mod tests {
     use crate::wal::{CURSOR_SIDECAR_FILENAME, WalReader};
     use arrow_array::builder::Int64Builder;
     use arrow_schema::{DataType, Field, Schema};
+    use std::future::Future;
     use std::num::NonZeroU64;
     use std::sync::Arc;
     use tempfile::tempdir;
@@ -6543,12 +6565,13 @@ mod tests {
     /// leaving that segment unregistered. This is injected by pre-creating a
     /// directory at the sidecar's temp-file path, so `persist_next_seq`'s
     /// `OpenOptions::open` fails without disturbing segment writes.
-    /// Guarantees: the engine refuses all further finalization after the
-    /// failure, even once the fault is cleared and nothing new needs
-    /// finalizing. Without this, a later finalize could succeed and advance
-    /// subscriber progress past the withheld segment, causing
-    /// `SubscriberRegistry::open` to classify it as already completed and
-    /// permanently skip it on restart (issue #4024).
+    /// Guarantees: the engine refuses repeated ingestion and finalization
+    /// attempts after the failure without changing the open segment, and
+    /// shutdown leaves the previously accepted data recoverable after restart.
+    /// Without this, later accepted data could remain only in memory while
+    /// finalization is disabled, or a later finalize could advance subscriber
+    /// progress past the withheld segment and permanently skip it on restart
+    /// (issue #4024).
     #[tokio::test]
     async fn finalize_disables_further_finalization_after_sequence_persist_failure() {
         let dir = tempdir().expect("tempdir");
@@ -6558,7 +6581,7 @@ mod tests {
             .build()
             .expect("config");
 
-        let engine = QuiverEngine::open(config, test_budget())
+        let engine = QuiverEngine::open(config.clone(), test_budget())
             .await
             .expect("engine");
 
@@ -6589,11 +6612,92 @@ mod tests {
         // clear, but the engine must not attempt finalization again anyway.
         fs::remove_dir_all(&blocked_tmp_path).expect("clear fault");
 
+        let open_segment_bundles = engine.open_segment.lock().bundle_count();
+        for attempt in 1..=3 {
+            assert!(
+                engine.ingest(&bundle).await.is_err(),
+                "ingest attempt {attempt} must be rejected after poisoning"
+            );
+            assert_eq!(
+                engine.open_segment.lock().bundle_count(),
+                open_segment_bundles,
+                "rejected ingest attempt {attempt} must not change the open segment"
+            );
+        }
+
         let second_flush = engine.flush().await;
         assert!(
             second_flush.is_err(),
             "finalization must remain disabled after a sequence persist failure, \
              even with nothing new to finalize and the fault cleared, until restart"
+        );
+        assert!(
+            engine.shutdown().await.is_err(),
+            "shutdown must report the poisoned state"
+        );
+        drop(engine);
+
+        let reopened = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("restart recovers the withheld segment");
+        let sub_id = SubscriberId::new("poison-recovery").expect("subscriber id");
+        reopened
+            .register_subscriber(sub_id.clone())
+            .expect("register subscriber");
+        reopened
+            .activate_subscriber(&sub_id)
+            .expect("activate subscriber");
+        let recovered = reopened
+            .poll_next_bundle(&sub_id)
+            .expect("poll recovered segment")
+            .expect("previously accepted bundle must survive shutdown and restart");
+        recovered.ack();
+    }
+
+    /// Scenario: a finalization is queued behind another finalization while
+    /// the engine becomes poisoned.
+    /// Guarantees: the queued finalization checks poison only after acquiring
+    /// the transaction lock, then fails without removing the open segment.
+    #[tokio::test]
+    async fn queued_finalization_observes_poison_before_swapping_open_segment() {
+        let dir = tempdir().expect("tempdir");
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .durability(DurabilityMode::SegmentOnly)
+            .build()
+            .expect("config");
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine");
+        engine
+            .ingest(&DummyBundle::new())
+            .await
+            .expect("ingest succeeds");
+        let open_segment_bundles = engine.open_segment.lock().bundle_count();
+
+        let finalize_guard = engine.segment_finalize_lock.lock().await;
+        let queued_flush = engine.flush();
+        tokio::pin!(queued_flush);
+
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(
+            Future::poll(queued_flush.as_mut(), &mut context).is_pending(),
+            "flush must wait for the active finalization transaction"
+        );
+
+        engine
+            .sequence_persist_poisoned
+            .store(true, Ordering::Release);
+        drop(finalize_guard);
+
+        assert!(
+            queued_flush.await.is_err(),
+            "queued finalization must observe the poisoned state"
+        );
+        assert_eq!(
+            engine.open_segment.lock().bundle_count(),
+            open_segment_bundles,
+            "queued finalization must not remove the open segment after poisoning"
         );
     }
 
