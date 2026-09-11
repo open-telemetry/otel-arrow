@@ -1,0 +1,6 @@
+change_type: breaking
+component: engine
+note: "Rename node completion duration and make node telemetry measurements independently selectable."
+issues: [3881]
+subtext: |
+  Migration: Query `node.completion.duration` instead of `node.input.duration` and `node.output.duration`. Per-node message, completion, duration, item, and size opt-ins now work at every runtime metric level.

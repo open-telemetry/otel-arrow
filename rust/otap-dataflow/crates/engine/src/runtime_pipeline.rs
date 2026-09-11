@@ -7,8 +7,8 @@ use crate::Interests;
 use crate::ReceivedAtNode;
 use crate::Unwindable;
 use crate::channel_metrics::{
-    ChannelMetricsHandle, NodeInputItemMetrics, NodeInputMetrics, NodeInputSizeMetrics,
-    NodeOutputItemMetrics, NodeOutputMetrics, NodeOutputSizeMetrics,
+    ChannelMetricsHandle, NodeCompletionMetrics, NodeInputItemMetrics, NodeInputMetrics,
+    NodeInputSizeMetrics, NodeOutputItemMetrics, NodeOutputMetrics, NodeOutputSizeMetrics,
 };
 use crate::completion_emission_metrics::{
     CompletionEmissionMetricsHandle, make_completion_emission_metrics,
@@ -60,9 +60,9 @@ const EXTENSION_MONITOR_TICK_INTERVAL: Duration = Duration::from_secs(1);
 /// to active extensions so they can refresh their own metric sets.
 const EXTENSION_MONITOR_COLLECT_TELEMETRY_INTERVAL: Duration = Duration::from_secs(10);
 
-/// Build produced-request metric sets indexed by sorted output port name,
+/// Build output-message metric sets indexed by sorted output port name,
 /// matching the `output_port_index` layout used in `RouteData`.
-fn make_produced_metrics(
+fn make_output_metrics(
     telemetry_handle: &Option<NodeTelemetryHandle>,
     pipeline_context: &PipelineContext,
 ) -> Vec<MeasurementMetricSet<NodeOutputMetrics>> {
@@ -82,8 +82,29 @@ fn make_produced_metrics(
         .unwrap_or_default()
 }
 
-/// Build optional produced-item metric sets indexed by sorted output port name.
-fn make_produced_item_metrics(
+/// Build completion-duration metric sets indexed by sorted output port name.
+fn make_output_completion_metrics(
+    telemetry_handle: &Option<NodeTelemetryHandle>,
+    pipeline_context: &PipelineContext,
+) -> Vec<MeasurementMetricSet<NodeCompletionMetrics>> {
+    telemetry_handle
+        .as_ref()
+        .map(|h| {
+            let mut keys = h.output_channel_keys();
+            keys.sort_by(|a, b| a.0.cmp(&b.0));
+            keys.iter()
+                .map(|(_, key)| {
+                    NodeCompletionMetrics::register(
+                        &pipeline_context.metric_set_registrar_for_entity(*key),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Build optional output-item metric sets indexed by sorted output port name.
+fn make_output_item_metrics(
     telemetry_handle: &Option<NodeTelemetryHandle>,
     pipeline_context: &PipelineContext,
 ) -> Vec<MeasurementMetricSet<NodeOutputItemMetrics>> {
@@ -103,7 +124,7 @@ fn make_produced_item_metrics(
         .unwrap_or_default()
 }
 
-/// Build optional produced-size metric sets indexed by sorted output port name.
+/// Build optional output-size metric sets indexed by sorted output port name.
 fn make_output_size_metrics(
     telemetry_handle: &Option<NodeTelemetryHandle>,
     pipeline_context: &PipelineContext,
@@ -126,8 +147,8 @@ fn make_output_size_metrics(
 
 /// Build per-node metric handles for the runtime control manager.
 ///
-/// - `has_input`: whether to register consumed-request metrics (false for receivers).
-/// - `has_outputs`: whether to register produced-request metrics (false for exporters).
+/// - `has_input`: whether to register input metrics (false for receivers).
+/// - `has_outputs`: whether to register output metrics (false for exporters).
 /// - `node_interests`: the effective metric interests for this node.
 fn make_node_metric_handles(
     telemetry_handle: &Option<NodeTelemetryHandle>,
@@ -137,14 +158,14 @@ fn make_node_metric_handles(
     node_interests: Interests,
     completion_emission: Option<CompletionEmissionMetricsHandle>,
 ) -> NodeMetricHandles {
-    let consumer_metrics_enabled =
-        has_input && node_interests.contains(Interests::CONSUMER_METRICS);
-    let producer_metrics_enabled =
-        has_outputs && node_interests.contains(Interests::PRODUCER_METRICS);
-    let item_counts_enabled = node_interests.contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS);
-    let size_enabled = node_interests.contains(Interests::PRODUCED_CONSUMED_SIZE);
+    let input_metrics_enabled = has_input && node_interests.contains(Interests::NODE_INPUT_METRICS);
+    let output_metrics_enabled =
+        has_outputs && node_interests.contains(Interests::NODE_OUTPUT_METRICS);
+    let completion_duration_enabled = node_interests.contains(Interests::NODE_COMPLETION_DURATION);
+    let item_counts_enabled = node_interests.contains(Interests::NODE_ITEM_COUNTS);
+    let size_enabled = node_interests.contains(Interests::NODE_SIZE);
 
-    let consumed = if consumer_metrics_enabled {
+    let input = if input_metrics_enabled {
         telemetry_handle
             .as_ref()
             .and_then(|h| h.input_channel_key())
@@ -154,7 +175,19 @@ fn make_node_metric_handles(
     } else {
         None
     };
-    let input_size = if size_enabled && consumer_metrics_enabled {
+    let input_completion = if completion_duration_enabled && has_input {
+        telemetry_handle
+            .as_ref()
+            .and_then(|h| h.input_channel_key())
+            .map(|key| {
+                NodeCompletionMetrics::register(
+                    &pipeline_context.metric_set_registrar_for_entity(key),
+                )
+            })
+    } else {
+        None
+    };
+    let input_size = if size_enabled && has_input {
         telemetry_handle
             .as_ref()
             .and_then(|h| h.input_channel_key())
@@ -166,7 +199,7 @@ fn make_node_metric_handles(
     } else {
         None
     };
-    let input_items = if item_counts_enabled && consumer_metrics_enabled {
+    let input_items = if item_counts_enabled && has_input {
         telemetry_handle
             .as_ref()
             .and_then(|h| h.input_channel_key())
@@ -178,27 +211,34 @@ fn make_node_metric_handles(
     } else {
         None
     };
-    let produced = if producer_metrics_enabled {
-        make_produced_metrics(telemetry_handle, pipeline_context)
+    let outputs = if output_metrics_enabled {
+        make_output_metrics(telemetry_handle, pipeline_context)
     } else {
         Vec::new()
     };
-    let output_items = if item_counts_enabled && producer_metrics_enabled {
-        make_produced_item_metrics(telemetry_handle, pipeline_context)
+    let output_completion = if completion_duration_enabled && has_outputs && !has_input {
+        make_output_completion_metrics(telemetry_handle, pipeline_context)
     } else {
         Vec::new()
     };
-    let output_size = if size_enabled && producer_metrics_enabled {
+    let output_items = if item_counts_enabled && has_outputs {
+        make_output_item_metrics(telemetry_handle, pipeline_context)
+    } else {
+        Vec::new()
+    };
+    let output_size = if size_enabled && has_outputs {
         make_output_size_metrics(telemetry_handle, pipeline_context)
     } else {
         Vec::new()
     };
     NodeMetricHandles {
         registry: pipeline_context.metrics_registry(),
-        input: consumed,
+        input,
+        input_completion,
         input_items,
         input_size,
-        outputs: produced,
+        outputs,
+        output_completion,
         output_items,
         output_size,
         completion_emission,
@@ -1157,10 +1197,10 @@ mod tests {
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use otel_arrow_dfe_telemetry::{InternalTelemetrySystem, LogContext};
 
-    /// Scenario: optional node measurement interests are present without the normal-level message interests.
-    /// Guarantees: no consumed or produced message, item, or size metric sets are registered below normal.
+    /// Scenario: completion duration, item counts, and size are enabled without message interests.
+    /// Guarantees: optional node measurements register independently without input/output message sets.
     #[test]
-    fn node_metrics_require_direction_interests() {
+    fn optional_node_metrics_do_not_require_direction_interests() {
         let (pipeline_context, registry) = crate::testing::test_pipeline_ctx();
         let node_entity_key = pipeline_context.register_node_entity();
         let telemetry_handle = NodeTelemetryHandle::new(registry.clone(), node_entity_key);
@@ -1189,17 +1229,21 @@ mod tests {
             &pipeline_context,
             true,
             true,
-            Interests::PRODUCED_CONSUMED_ITEM_COUNTS | Interests::PRODUCED_CONSUMED_SIZE,
+            Interests::NODE_COMPLETION_DURATION
+                | Interests::NODE_ITEM_COUNTS
+                | Interests::NODE_SIZE,
             None,
         );
 
         assert!(handles.input.is_none());
-        assert!(handles.input_items.is_none());
-        assert!(handles.input_size.is_none());
+        assert!(handles.input_completion.is_some());
+        assert!(handles.input_items.is_some());
+        assert!(handles.input_size.is_some());
         assert!(handles.outputs.is_empty());
-        assert!(handles.output_items.is_empty());
-        assert!(handles.output_size.is_empty());
-        assert_eq!(registry.metric_set_count(), 0);
+        assert!(handles.output_completion.is_empty());
+        assert_eq!(handles.output_items.len(), 1);
+        assert_eq!(handles.output_size.len(), 1);
+        assert_eq!(registry.metric_set_count(), 5);
     }
 
     /// Scenario: a pipeline has pending terminal metrics when telemetry cleanup starts.
