@@ -413,5 +413,4 @@ result_tables:
         - network_tx_bytes_rate_avg
         - network_rx_bytes_rate_avg
         - egress_bytes_per_log
-        - uncompressed_bytes_per_log
     #display: False

@@ -498,7 +498,6 @@ result_tables:
         - network_tx_bytes_rate_avg
         - network_rx_bytes_rate_avg
         - egress_bytes_per_log
-        - uncompressed_bytes_per_log
     #display: False
   - name: dashboard_timeseries
     description: Per-metric time-series data points within the observation window for dashboard charts.
