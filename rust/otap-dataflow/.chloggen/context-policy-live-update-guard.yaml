@@ -1,5 +1,0 @@
-change_type: bug_fix
-component: engine
-note: Reject live updates that would change compiled context bindings for any deployed pipeline.
-issues: [4008]
-subtext: Restart the engine to change context declarations after a pipeline has been deployed.

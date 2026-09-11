@@ -1,5 +1,5 @@
 change_type: enhancement
 component: engine
-note: Preserve original transport-header names only when a consumer requires. Use a hash lookup instead of linear scan for transport header capture matches.
-issues: [3919]
-subtext: Reduce allocation overhead for configured transport-header capture and propagation policies.
+note: Improve transport-header capture and propagation efficiency.
+issues: [3919, 4008]
+subtext: Changing deployed context declarations requires an engine restart. Kafka topic-routing header selectors preserve spelling and match stored names case-insensitively.

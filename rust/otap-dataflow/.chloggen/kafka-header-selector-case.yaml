@@ -1,5 +1,0 @@
-change_type: bug_fix
-component: pipeline
-note: Preserve Kafka topic-routing header selector spelling and match stored transport-header names case-insensitively.
-issues: [4008]
-subtext: Mixed-case custom store_as names can now select Kafka topics. Header-provided Kafka topic values continue to retain their exact spelling.
