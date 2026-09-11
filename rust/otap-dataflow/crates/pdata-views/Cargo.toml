@@ -1,6 +1,6 @@
 [package]
 name = "otel-arrow-dfe-pdata-views"
-version = "0.56.0"
+version = "0.54.1"
 authors.workspace = true
 edition.workspace = true
 repository.workspace = true
