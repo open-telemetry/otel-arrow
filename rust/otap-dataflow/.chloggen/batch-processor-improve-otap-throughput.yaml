@@ -1,0 +1,9 @@
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+
+change_type: enhancement
+component: pipeline
+note: "Increase OTAP batch processor throughput for both already-sized and merged payloads."
+issues: [3172]
+subtext: |
+  Already-sized OTAP payloads pass through without copying, while compatible payloads use a faster guarded merge path.
