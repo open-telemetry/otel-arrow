@@ -168,7 +168,7 @@ fn create_host_metrics_receiver(
         });
     }
     let mut receiver = HostMetricsReceiver::from_config(&node_config.config)?;
-    receiver.metrics = Some(pipeline.register_metrics::<HostMetricsReceiverMetrics>());
+    receiver.metrics = Some(HostMetricsReceiverMetrics::register(&pipeline));
     Ok(ReceiverWrapper::local(
         receiver,
         node,
