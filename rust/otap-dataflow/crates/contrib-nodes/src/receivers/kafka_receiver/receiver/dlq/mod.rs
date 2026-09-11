@@ -11,11 +11,14 @@
 //!
 //! # Non-stall contract
 //!
-//! All DLQ broker I/O runs off the receive loop and is timeout-bounded:
-//! - the producer polls on its own background thread and each produce awaits a
-//!   bounded delivery future;
-//! - the permanent-nack re-read runs on `spawn_blocking` with a fetch timeout.
-//!
+//! All DLQ broker I/O runs off the receive loop and is timeout-bounded: the
+//! producer polls on its own background thread and each produce awaits a bounded
+//! delivery future; the permanent-nack re-read runs on `spawn_blocking` with a
+//! fetch timeout. Outstanding deliveries are bounded by [`DLQ_MAX_IN_FLIGHT`];
+//! when that bound is reached an incoming failure is immediately reported as a
+//! loss (no queue). On any failure -- produce error, timeout, unrecoverable
+//! bytes, or in-flight full -- the message is counted as `dlq.loss` and the
+//! source offset is advanced, so ingestion never stalls.
 //!
 //! # Swap seam
 //!
@@ -31,7 +34,7 @@ mod reread;
 
 use self::headers::{DlqHeaderContext, build_dlq_headers};
 use self::producer::{DlqProducer, DlqRecord, DlqSendOutcome};
-use self::reread::{RereadConsumer, RereadOutcome, reread_blocking};
+use self::reread::{RereadConsumer, RereadOutcome};
 use super::super::config::{
     DLQ_MAX_IN_FLIGHT, DLQ_OP_TIMEOUT_MS, KafkaReceiverConfig, ResolvedDlqConfig,
 };
@@ -42,6 +45,7 @@ use rdkafka::message::OwnedHeaders;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// The failure category that triggered a dead-letter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,6 +81,33 @@ pub(crate) struct DlqSource {
     pub(crate) offset: i64,
 }
 
+/// Common context shared by every dead-letter job, independent of how the bytes
+/// are obtained (in hand vs. recovered by re-read).
+struct JobMeta {
+    reason: DlqReason,
+    source: DlqSource,
+    signal: Option<SignalType>,
+    /// The error/reason string rendered into the `dlq.error` header.
+    error: String,
+    /// The resolved destination DLQ topic.
+    topic: String,
+}
+
+impl JobMeta {
+    /// Build the header context for this job.
+    fn header_context(&self) -> DlqHeaderContext {
+        DlqHeaderContext {
+            error: self.error.clone(),
+            reason: self.reason.as_str(),
+            source_topic: self.source.topic.to_string(),
+            source_partition: self.source.partition,
+            source_offset: self.source.offset,
+            signal: signal_str(self.signal),
+            timestamp_millis: now_millis(),
+        }
+    }
+}
+
 /// Signal string for the `dlq.signal` header.
 fn signal_str(signal: Option<SignalType>) -> &'static str {
     match signal {
@@ -105,59 +136,53 @@ pub(crate) struct DlqCompletion {
 }
 
 impl DlqCompletion {
+    /// A message that could not be dead-lettered and must be dropped (loss).
+    fn loss(meta: JobMeta) -> Self {
+        Self {
+            source: meta.source,
+            signal: meta.signal,
+            reason: meta.reason,
+            produced: false,
+            permanent_failure: true,
+        }
+    }
+
+    /// Map a producer send outcome for `meta` to a completion.
+    fn from_outcome(meta: JobMeta, outcome: DlqSendOutcome) -> Self {
+        let (produced, permanent_failure) = match outcome {
+            DlqSendOutcome::Produced => (true, false),
+            DlqSendOutcome::Failed { permanent } => (false, permanent),
+        };
+        Self {
+            source: meta.source,
+            signal: meta.signal,
+            reason: meta.reason,
+            produced,
+            permanent_failure,
+        }
+    }
+
     /// The failure category as its wire string, for logging.
     pub(crate) fn reason_str(&self) -> &'static str {
         self.reason.as_str()
     }
 }
 
-/// A dead-letter job with the source bytes already in hand (decode /
-/// unknown_topic path).
-struct InlineJob {
-    reason: DlqReason,
-    source: DlqSource,
-    signal: Option<SignalType>,
-    error: String,
-    topic: String,
-    payload: Vec<u8>,
-    original_headers: Option<OwnedHeaders>,
+/// How a job's payload bytes are obtained.
+enum JobKind {
+    /// Bytes already in hand (decode / unknown_topic path).
+    Inline {
+        payload: Vec<u8>,
+        original_headers: Option<OwnedHeaders>,
+    },
+    /// Bytes must be recovered from Kafka by the re-read consumer.
+    Reread,
 }
 
-/// A dead-letter job whose bytes must be recovered from Kafka (permanent-nack
-/// path).
-struct RereadJob {
-    reason: DlqReason,
-    source: DlqSource,
-    signal: Option<SignalType>,
-    error: String,
-    topic: String,
-}
-
-/// A job awaiting an in-flight slot.
-enum PendingJob {
-    Inline(InlineJob),
-    Reread(RereadJob),
-}
-
-impl PendingJob {
-    fn source(&self) -> &DlqSource {
-        match self {
-            PendingJob::Inline(j) => &j.source,
-            PendingJob::Reread(j) => &j.source,
-        }
-    }
-    fn signal(&self) -> Option<SignalType> {
-        match self {
-            PendingJob::Inline(j) => j.signal,
-            PendingJob::Reread(j) => j.signal,
-        }
-    }
-    fn reason(&self) -> DlqReason {
-        match self {
-            PendingJob::Inline(j) => j.reason,
-            PendingJob::Reread(j) => j.reason,
-        }
-    }
+/// A dead-letter job awaiting an in-flight slot.
+struct Job {
+    meta: JobMeta,
+    kind: JobKind,
 }
 
 /// A future producing one [`DlqCompletion`].
@@ -197,7 +222,7 @@ impl DlqManager {
         let producer_config = config
             .build_dlq_producer_config()
             .expect("dlq present implies producer config");
-        let producer = DlqProducer::new(&producer_config)?;
+        let producer = Arc::new(DlqProducer::new(&producer_config)?);
 
         let reread = if dlq.capture_permanent_nack {
             let consumer_config = config
@@ -215,25 +240,19 @@ impl DlqManager {
 
         Ok(Some(Self {
             config: dlq.clone(),
-            producer: Arc::new(producer),
+            producer,
             reread,
             in_flight: FuturesUnordered::new(),
         }))
     }
 
-    /// Whether `decode` failures should be dead-lettered.
-    pub(crate) fn captures_decode(&self) -> bool {
-        self.config.capture_decode
-    }
-
-    /// Whether `unknown_topic` failures should be dead-lettered.
-    pub(crate) fn captures_unknown_topic(&self) -> bool {
-        self.config.capture_unknown_topic
-    }
-
-    /// Whether `permanent_nack` failures should be dead-lettered.
-    pub(crate) fn captures_permanent_nack(&self) -> bool {
-        self.config.capture_permanent_nack
+    /// Whether the given failure category should be dead-lettered.
+    pub(crate) fn captures(&self, reason: DlqReason) -> bool {
+        match reason {
+            DlqReason::Decode => self.config.capture_decode,
+            DlqReason::UnknownTopic => self.config.capture_unknown_topic,
+            DlqReason::PermanentNack => self.config.capture_permanent_nack,
+        }
     }
 
     /// Resolve the DLQ topic for a signal. `None` when the message's signal has
@@ -242,12 +261,10 @@ impl DlqManager {
     fn topic_for(&self, signal: Option<SignalType>) -> Option<String> {
         // Prefer the signal-specific topic; fall back to any configured topic
         // for signal-less categories (e.g. unknown_topic).
-        if let Some(sig) = signal
-            && let Some(topic) = self.config.topic_for(sig)
-        {
-            return Some(topic.to_string());
-        }
-        self.config.all_topics().first().map(|t| (*t).to_string())
+        signal
+            .and_then(|sig| self.config.topic_for(sig))
+            .or_else(|| self.config.all_topics().first().copied())
+            .map(str::to_string)
     }
 
     /// Submit a decode / unknown_topic failure whose bytes are already in hand.
@@ -264,25 +281,16 @@ impl DlqManager {
         payload: Vec<u8>,
         original_headers: Option<OwnedHeaders>,
     ) -> Option<DlqCompletion> {
-        let Some(topic) = self.topic_for(signal) else {
-            return Some(DlqCompletion {
-                source,
-                signal,
-                reason,
-                produced: false,
-                permanent_failure: true,
-            });
-        };
-        let job = PendingJob::Inline(InlineJob {
+        self.submit(
             reason,
             source,
             signal,
             error,
-            topic,
-            payload,
-            original_headers,
-        });
-        self.admit(job)
+            JobKind::Inline {
+                payload,
+                original_headers,
+            },
+        )
     }
 
     /// Submit a permanent-nack failure whose bytes must be recovered by the
@@ -295,62 +303,65 @@ impl DlqManager {
         signal: Option<SignalType>,
         error: String,
     ) -> Option<DlqCompletion> {
-        let reason = DlqReason::PermanentNack;
-        let Some(topic) = self.topic_for(signal) else {
-            return Some(DlqCompletion {
-                source,
-                signal,
-                reason,
-                produced: false,
-                permanent_failure: true,
-            });
-        };
-        let job = PendingJob::Reread(RereadJob {
-            reason,
+        self.submit(
+            DlqReason::PermanentNack,
             source,
             signal,
             error,
-            topic,
-        });
+            JobKind::Reread,
+        )
+    }
+
+    /// Resolve the destination topic, build the job, and admit it. Returns an
+    /// immediate loss completion when no topic resolves or the in-flight bound
+    /// is reached.
+    fn submit(
+        &mut self,
+        reason: DlqReason,
+        source: DlqSource,
+        signal: Option<SignalType>,
+        error: String,
+        kind: JobKind,
+    ) -> Option<DlqCompletion> {
+        let Some(topic) = self.topic_for(signal) else {
+            return Some(DlqCompletion::loss(JobMeta {
+                reason,
+                source,
+                signal,
+                error,
+                topic: String::new(),
+            }));
+        };
+        let job = Job {
+            meta: JobMeta {
+                reason,
+                source,
+                signal,
+                error,
+                topic,
+            },
+            kind,
+        };
         self.admit(job)
     }
 
     /// Admit a job: start it when an in-flight slot is free, otherwise return a
     /// loss completion so the caller records `dlq.loss` and advances the source
     /// offset.
-    fn admit(&mut self, job: PendingJob) -> Option<DlqCompletion> {
-        if self.in_flight.len() < DLQ_MAX_IN_FLIGHT {
-            self.start(job);
-            None
-        } else {
+    fn admit(&mut self, job: Job) -> Option<DlqCompletion> {
+        if self.in_flight.len() >= DLQ_MAX_IN_FLIGHT {
             // In-flight full: drop the incoming message so ingestion never stalls.
-            Some(DlqCompletion {
-                source: job.source().clone(),
-                signal: job.signal(),
-                reason: job.reason(),
-                produced: false,
-                permanent_failure: true,
-            })
+            return Some(DlqCompletion::loss(job.meta));
         }
-    }
-
-    /// Spawn the work future for a job into the in-flight set.
-    // DLQ-PHASE-2 (Change): instead of handing the job to the producer, build an
-    // OtapPdata (raw bytes -> OtlpProtoBytes::Export*Request, dlq.* as transport
-    // headers) and send it out the "dlq" port with an ACKS_OR_NACKS
-    // subscription; the ack/nack later completes the job.
-    fn start(&mut self, job: PendingJob) {
+        // DLQ-PHASE-2 (Change): instead of handing the job to the producer, build
+        // an OtapPdata (raw bytes -> OtlpProtoBytes::Export*Request, dlq.* as
+        // transport headers) and send it out the "dlq" port with an
+        // ACKS_OR_NACKS subscription; the ack/nack later completes the job.
         let producer = Arc::clone(&self.producer);
-        match job {
-            PendingJob::Inline(inline) => {
-                self.in_flight.push(Box::pin(run_inline(producer, inline)));
-            }
-            PendingJob::Reread(reread_job) => {
-                let reread = self.reread.clone();
-                self.in_flight
-                    .push(Box::pin(run_reread(producer, reread, reread_job)));
-            }
-        }
+        let reread = self.reread.clone();
+        self.in_flight
+            .push(Box::pin(run_job(producer, reread, job)));
+        None
     }
 
     /// Await the next completed DLQ delivery. Resolves to `None` only when there
@@ -362,7 +373,7 @@ impl DlqManager {
         self.in_flight.next().await
     }
 
-    /// Whether the manager has any outstanding or queued work.
+    /// Whether the manager has any outstanding work.
     // DLQ-PHASE-2 (Remove): the completion-drain branch it guards is removed.
     pub(crate) fn has_work(&self) -> bool {
         !self.in_flight.is_empty()
@@ -379,121 +390,52 @@ impl DlqManager {
     }
 }
 
-/// Build the DLQ record for an inline job and produce it.
-async fn run_inline(producer: Arc<DlqProducer>, job: InlineJob) -> DlqCompletion {
-    let ctx = header_context(&job.reason, &job.source, job.signal, &job.error);
-    let headers = build_dlq_headers(&ctx, job.original_headers.as_ref());
-    let record = DlqRecord {
-        topic: job.topic,
-        payload: job.payload,
-        headers,
-    };
-    let outcome = producer.produce(record).await;
-    finish(job.reason, job.source, job.signal, outcome)
-}
-
-/// Recover the bytes for a re-read job, then produce it. A failed recovery is a
-/// loss with no produce attempt.
-async fn run_reread(
+/// Run one dead-letter job to completion: obtain the payload bytes (in hand for
+/// inline jobs, recovered by the re-read consumer for permanent nacks), build
+/// the DLQ record, and produce it. Any recovery failure is a loss with no
+/// produce attempt.
+async fn run_job(
     producer: Arc<DlqProducer>,
     reread: Option<Arc<RereadConsumer>>,
-    job: RereadJob,
+    job: Job,
 ) -> DlqCompletion {
-    let Some(reread) = reread else {
-        return DlqCompletion {
-            source: job.source,
-            signal: job.signal,
-            reason: job.reason,
-            produced: false,
-            permanent_failure: true,
-        };
-    };
-
-    let consumer = reread.handle();
-    let fetch_timeout = reread.fetch_timeout();
-    let topic = job.source.topic.clone();
-    let partition = job.source.partition;
-    let offset = job.source.offset;
-
-    // Recover the original bytes off the receive loop.
-    let recovered = tokio::task::spawn_blocking(move || {
-        reread_blocking(&consumer, &topic, partition, offset, fetch_timeout)
-    })
-    .await;
-
-    let result = match recovered {
-        Ok(RereadOutcome::Recovered(result)) => result,
-        // Not found, timed out, or the blocking task failed: loss.
-        Ok(RereadOutcome::NotFound) | Err(_) => {
-            return DlqCompletion {
-                source: job.source,
-                signal: job.signal,
-                reason: job.reason,
-                produced: false,
-                permanent_failure: true,
+    let Job { meta, kind } = job;
+    let (payload, source_headers) = match kind {
+        JobKind::Inline {
+            payload,
+            original_headers,
+        } => (payload, original_headers),
+        JobKind::Reread => {
+            // Permanent-nack capture guarantees the re-read consumer exists.
+            let Some(reread) = reread else {
+                return DlqCompletion::loss(meta);
             };
+            match reread.recover(&meta.source).await {
+                RereadOutcome::Recovered(result) => (result.payload, result.headers),
+                // Not found, timed out, or the blocking task failed: loss.
+                RereadOutcome::NotFound => return DlqCompletion::loss(meta),
+            }
         }
     };
 
-    let ctx = header_context(&job.reason, &job.source, job.signal, &job.error);
-    let headers = build_dlq_headers(&ctx, result.headers.as_ref());
-    let record = DlqRecord {
-        topic: job.topic,
-        payload: result.payload,
-        headers,
-    };
-    let outcome = producer.produce(record).await;
-    finish(job.reason, job.source, job.signal, outcome)
-}
-
-/// Build the header context for a job.
-fn header_context(
-    reason: &DlqReason,
-    source: &DlqSource,
-    signal: Option<SignalType>,
-    error: &str,
-) -> DlqHeaderContext {
-    DlqHeaderContext {
-        error: error.to_string(),
-        reason: reason.as_str(),
-        source_topic: source.topic.to_string(),
-        source_partition: source.partition,
-        source_offset: source.offset,
-        signal: signal_str(signal),
-        timestamp_millis: now_millis(),
-    }
-}
-
-/// Map a producer outcome to a completion.
-fn finish(
-    reason: DlqReason,
-    source: DlqSource,
-    signal: Option<SignalType>,
-    outcome: DlqSendOutcome,
-) -> DlqCompletion {
-    match outcome {
-        DlqSendOutcome::Produced => DlqCompletion {
-            source,
-            signal,
-            reason,
-            produced: true,
-            permanent_failure: false,
-        },
-        DlqSendOutcome::Failed { permanent } => DlqCompletion {
-            source,
-            signal,
-            reason,
-            produced: false,
-            permanent_failure: permanent,
-        },
-    }
+    let headers = build_dlq_headers(&meta.header_context(), source_headers.as_ref());
+    let outcome = producer
+        .produce(DlqRecord {
+            topic: meta.topic.clone(),
+            payload,
+            headers,
+        })
+        .await;
+    DlqCompletion::from_outcome(meta, outcome)
 }
 
 /// Current wall-clock time in unix milliseconds (best-effort; 0 before epoch).
 fn now_millis() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
 }
+
+#[cfg(test)]
+mod tests;

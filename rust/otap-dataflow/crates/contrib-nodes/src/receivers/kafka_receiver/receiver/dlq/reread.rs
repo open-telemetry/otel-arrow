@@ -19,6 +19,7 @@
 //! whether replay is enabled or disabled and never perturbs the main consumer's
 //! position or pause state.
 
+use super::DlqSource;
 use rdkafka::consumer::{BaseConsumer, Consumer};
 use rdkafka::message::{Message, OwnedHeaders, OwnedMessage};
 use rdkafka::topic_partition_list::{Offset, TopicPartitionList};
@@ -68,15 +69,22 @@ impl RereadConsumer {
         })
     }
 
-    /// A cloneable handle to the underlying consumer for use inside a blocking
-    /// worker.
-    pub(crate) fn handle(&self) -> Arc<BaseConsumer> {
-        Arc::clone(&self.consumer)
-    }
-
-    /// Configured per-job fetch timeout.
-    pub(crate) fn fetch_timeout(&self) -> Duration {
-        self.fetch_timeout
+    /// Recover the original bytes for `source` off the receive loop.
+    ///
+    /// Runs the blocking assign/poll/unassign on `spawn_blocking` so the
+    /// single-threaded receive loop is never blocked; a join failure is folded
+    /// into [`RereadOutcome::NotFound`].
+    pub(crate) async fn recover(&self, source: &DlqSource) -> RereadOutcome {
+        let consumer = Arc::clone(&self.consumer);
+        let fetch_timeout = self.fetch_timeout;
+        let topic = Arc::clone(&source.topic);
+        let partition = source.partition;
+        let offset = source.offset;
+        tokio::task::spawn_blocking(move || {
+            reread_blocking(&consumer, &topic, partition, offset, fetch_timeout)
+        })
+        .await
+        .unwrap_or(RereadOutcome::NotFound)
     }
 
     /// Service a keep-warm poll so the idle consumer stays connected and its
@@ -94,7 +102,7 @@ impl RereadConsumer {
 /// needed and the just-assigned seek race is avoided), polls until the target
 /// offset is observed or the deadline elapses, verifies the offset matches, and
 /// always unassigns before returning so the consumer is idle again.
-pub(crate) fn reread_blocking(
+fn reread_blocking(
     consumer: &BaseConsumer,
     topic: &str,
     partition: i32,

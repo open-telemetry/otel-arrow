@@ -6,12 +6,13 @@
 
 //! Low-level DLQ producer wrapper.
 //!
-//! Wraps the shared, low-CPU [`ExporterFutureProducer`] port so the receiver
-//! can produce dead-letter records with per-delivery futures and a bounded set
-//! of outstanding sends. This module is intentionally the single seam that a
-//! future out-port implementation would replace: the receiver interacts with
-//! DLQ egress only through [`DlqProducer`] and the delivery outcome it yields,
-//! which mirrors the ack/nack an out-port would eventually deliver.
+//! Wraps the shared, low-CPU [`ExporterFutureProducer`] port so the receiver can
+//! produce dead-letter records with a per-delivery, timeout-bounded future.
+//! Outstanding deliveries are bounded by the [`DlqManager`](super::DlqManager),
+//! not here. This module is intentionally the single seam that a future out-port
+//! implementation would replace: the receiver interacts with DLQ egress only
+//! through [`DlqProducer`] and the delivery outcome it yields, which mirrors the
+//! ack/nack an out-port would eventually deliver.
 
 use super::super::super::config::DLQ_OP_TIMEOUT_MS;
 use crate::exporters::kafka_exporter::producer::{ExporterFutureProducer, ExporterFutureRecord};
@@ -19,7 +20,6 @@ use rdkafka::ClientConfig;
 use rdkafka::client::DefaultClientContext;
 use rdkafka::error::KafkaError;
 use rdkafka::message::OwnedHeaders;
-use rdkafka::producer::future_producer::OwnedDeliveryResult;
 use std::time::Duration;
 use tokio::time::timeout;
 
@@ -74,9 +74,14 @@ impl DlqProducer {
     /// runtime; the underlying producer polls on its own background thread, so
     /// awaiting here does not block librdkafka.
     pub(crate) async fn produce(&self, record: DlqRecord) -> DlqSendOutcome {
-        let future_record = ExporterFutureRecord::<[u8], [u8]>::to(&record.topic)
-            .payload(&record.payload)
-            .headers(record.headers.clone());
+        let DlqRecord {
+            topic,
+            payload,
+            headers,
+        } = record;
+        let future_record = ExporterFutureRecord::<[u8], [u8]>::to(&topic)
+            .payload(&payload)
+            .headers(headers);
 
         let delivery = match self.producer.send_result(future_record) {
             Ok(delivery) => delivery,
@@ -126,7 +131,46 @@ fn is_permanent_send_error(err: &KafkaError) -> bool {
     )
 }
 
-/// Unused re-export sink to keep `OwnedDeliveryResult` documented in scope for
-/// readers of this module.
-#[allow(dead_code)]
-type _DeliveryResult = OwnedDeliveryResult;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rdkafka::error::KafkaError;
+    use rdkafka::types::RDKafkaErrorCode;
+
+    /// Scenario: record-level produce errors are classified as permanent.
+    /// Guarantees: errors that would never succeed on retry mark `permanent`,
+    /// so the loss log reflects a non-retryable failure.
+    #[test]
+    fn record_level_errors_are_permanent() {
+        for code in [
+            RDKafkaErrorCode::MessageSizeTooLarge,
+            RDKafkaErrorCode::InvalidRecord,
+            RDKafkaErrorCode::UnknownTopicOrPartition,
+            RDKafkaErrorCode::InvalidArgument,
+        ] {
+            let err = KafkaError::MessageProduction(code);
+            assert!(
+                is_permanent_send_error(&err),
+                "{code:?} should be permanent"
+            );
+        }
+    }
+
+    /// Scenario: transient/environmental produce errors are not permanent.
+    /// Guarantees: timeouts and broker-availability errors are classified
+    /// transient (the DLQ still drops them, but the log distinguishes the cause).
+    #[test]
+    fn transient_errors_are_not_permanent() {
+        for code in [
+            RDKafkaErrorCode::MessageTimedOut,
+            RDKafkaErrorCode::BrokerTransportFailure,
+            RDKafkaErrorCode::QueueFull,
+        ] {
+            let err = KafkaError::MessageProduction(code);
+            assert!(
+                !is_permanent_send_error(&err),
+                "{code:?} should be transient"
+            );
+        }
+    }
+}

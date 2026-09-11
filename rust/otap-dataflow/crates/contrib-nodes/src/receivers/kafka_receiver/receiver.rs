@@ -49,7 +49,9 @@ use tokio_util::sync::CancellationToken;
 
 mod consumer;
 mod decode;
-mod dlq;
+// pub(crate) so the metrics module can implement `From<DlqReason>` for its
+// bounded attribute enum (single reason mapping, no duplication).
+pub(crate) mod dlq;
 mod offset_feedback;
 mod replay;
 // pub(crate) so config-time DLQ loop-prevention can reuse the same topic
@@ -1209,7 +1211,7 @@ impl KafkaReceiver {
         message: &BorrowedMessage<'_>,
     ) -> Option<(Vec<u8>, Option<rdkafka::message::OwnedHeaders>)> {
         let dlq = dlq?;
-        if !dlq.captures_decode() && !dlq.captures_unknown_topic() {
+        if !dlq.captures(DlqReason::Decode) && !dlq.captures(DlqReason::UnknownTopic) {
             return None;
         }
         let payload = message.payload().map(<[u8]>::to_vec).unwrap_or_default();
@@ -1225,8 +1227,8 @@ impl KafkaReceiver {
     /// defer the offset advance until the delivery completes; returns `false`
     /// when there is no DLQ handling for this failure (the caller advances now).
     ///
-    /// An immediate loss (no topic resolved or the pending queue is full) is
-    /// recorded here and returns `false` so the caller advances immediately.
+    /// An immediate loss (no topic resolved or the in-flight bound is reached)
+    /// is recorded here and returns `false` so the caller advances immediately.
     fn try_dlq_inline(
         &mut self,
         dlq: &mut Option<DlqManager>,
@@ -1250,12 +1252,7 @@ impl KafkaReceiver {
         let Some(manager) = dlq.as_mut() else {
             return false;
         };
-        let captured = match reason {
-            DlqReason::Decode if manager.captures_decode() => true,
-            DlqReason::UnknownTopic if manager.captures_unknown_topic() => true,
-            _ => false,
-        };
-        if !captured {
+        if !manager.captures(reason) {
             return false;
         }
 
@@ -1265,18 +1262,15 @@ impl KafkaReceiver {
             partition,
             offset,
         };
-        let error = decode_err.to_string();
-        let immediate =
-            manager.submit_inline(reason, source, signal, error, payload, original_headers);
-        match immediate {
-            // Enqueued or started: defer the offset advance.
-            None => true,
-            // Could not enqueue (loss): record and let the caller advance now.
-            Some(completion) => {
-                self.record_dlq_completion(&completion, /* advance */ false);
-                false
-            }
-        }
+        let immediate = manager.submit_inline(
+            reason,
+            source,
+            signal,
+            decode_err.to_string(),
+            payload,
+            original_headers,
+        );
+        self.handle_submit_outcome(immediate)
     }
 
     /// Attempt to dead-letter a permanently-nacked message via the re-read
@@ -1289,7 +1283,7 @@ impl KafkaReceiver {
     ) -> bool {
         if !dlq
             .as_ref()
-            .is_some_and(DlqManager::captures_permanent_nack)
+            .is_some_and(|manager| manager.captures(DlqReason::PermanentNack))
         {
             return false;
         }
@@ -1299,7 +1293,6 @@ impl KafkaReceiver {
         let Some(feedback) = self.resolve_offset_feedback(calldata) else {
             return false;
         };
-        let signal = None;
         let source = DlqSource {
             topic: Arc::clone(&feedback.topic),
             partition: feedback.partition,
@@ -1315,39 +1308,39 @@ impl KafkaReceiver {
         );
 
         let manager = dlq.as_mut().expect("dlq presence checked above");
-        let immediate = manager.submit_reread(source, signal, "permanent nack".to_string());
-        match immediate {
-            None => true,
-            Some(completion) => {
-                self.record_dlq_completion(&completion, false);
-                false
-            }
+        let immediate = manager.submit_reread(source, None, "permanent nack".to_string());
+        self.handle_submit_outcome(immediate)
+    }
+
+    /// Record DLQ telemetry for a completed workflow (attempt outcome, plus a
+    /// loss when the message could not be dead-lettered).
+    fn record_dlq_completion(&mut self, completion: &DlqCompletion) {
+        use super::metrics::{KafkaReceiverDlqOutcome, KafkaReceiverDlqReason};
+        let reason = KafkaReceiverDlqReason::from(completion.reason);
+        let outcome = if completion.produced {
+            KafkaReceiverDlqOutcome::Produced
+        } else {
+            KafkaReceiverDlqOutcome::Failed
+        };
+        self.metrics
+            .record_dlq_attempt(completion.signal, reason, outcome);
+        if !completion.produced {
+            // A message that could not be dead-lettered is permanent data loss.
+            self.metrics.record_dlq_loss(completion.signal, reason);
         }
     }
 
-    /// Apply a completed DLQ workflow: record telemetry and, when `advance` is
-    /// set, advance the source offset (past the dead-lettered message).
-    fn record_dlq_completion(&mut self, completion: &DlqCompletion, _advance: bool) {
-        use super::metrics::{KafkaReceiverDlqOutcome, KafkaReceiverDlqReason};
-        let reason = match completion.reason {
-            DlqReason::Decode => KafkaReceiverDlqReason::Decode,
-            DlqReason::UnknownTopic => KafkaReceiverDlqReason::UnknownTopic,
-            DlqReason::PermanentNack => KafkaReceiverDlqReason::PermanentNack,
-        };
-        if completion.produced {
-            self.metrics.record_dlq_attempt(
-                completion.signal,
-                reason,
-                KafkaReceiverDlqOutcome::Produced,
-            );
-        } else {
-            self.metrics.record_dlq_attempt(
-                completion.signal,
-                reason,
-                KafkaReceiverDlqOutcome::Failed,
-            );
-            // A message that could not be dead-lettered is permanent data loss.
-            self.metrics.record_dlq_loss(completion.signal, reason);
+    /// Interpret a submit outcome: `None` means the DLQ accepted the job and the
+    /// offset advance is deferred to the completion; `Some(loss)` means the job
+    /// was rejected immediately, so record the loss here and let the caller
+    /// advance the offset now. Returns `true` when the advance is deferred.
+    fn handle_submit_outcome(&mut self, immediate: Option<DlqCompletion>) -> bool {
+        match immediate {
+            None => true,
+            Some(completion) => {
+                self.record_dlq_completion(&completion);
+                false
+            }
         }
     }
 
@@ -1394,7 +1387,7 @@ impl KafkaReceiver {
         consumer: &StreamConsumer<C>,
         receiver_id: &NodeId,
     ) {
-        self.record_dlq_completion(&completion, true);
+        self.record_dlq_completion(&completion);
         if completion.produced {
             otel_debug!(
                 "kafka.dlq.produced",

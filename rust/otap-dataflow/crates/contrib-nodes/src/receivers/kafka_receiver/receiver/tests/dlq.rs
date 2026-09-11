@@ -375,3 +375,76 @@ async fn permanent_nack_not_captured_is_not_dead_lettered() {
     )
     .await;
 }
+
+/// Scenario: a record arrives on a topic matched by the include regex but
+/// removed by `exclude_topics`, so it routes to no signal (unknown topic) while
+/// the DLQ captures `unknown_topic`.
+/// Guarantees: the original bytes are dead-lettered byte-identically with reason
+/// `unknown_topic`, and the source offset advances.
+#[tokio::test]
+async fn unknown_topic_is_dead_lettered_byte_identical() {
+    const EXCLUDED: &str = "dlq-unknown-excluded";
+    // The DLQ topic must sit outside the `^dlq-unknown-.*` ingest regex, or
+    // loop-prevention validation would reject it.
+    const DLQ: &str = "unknown-dead-letters";
+    let group = "dlq-unknown-group";
+    with_cluster(
+        KafkaTestCluster::builder()
+            .topic_with(EXCLUDED, 1, 1)
+            .topic_with(DLQ, 1, 1),
+        |cluster| async move {
+            let producer = cluster.producer().build();
+            let req = create_traces_with_spans();
+            let mut bytes = vec![];
+            req.encode(&mut bytes).expect("encode");
+            // A well-formed record on the excluded topic: it is subscribed (the
+            // include regex matches) but routes to no signal.
+            producer
+                .send_full(SendRecord::new(EXCLUDED, &bytes).key(b"k"))
+                .await
+                .expect("send");
+
+            // Subscribe via the broad `^dlq-unknown-.*` regex so EXCLUDED is
+            // consumed by librdkafka, but exclude it so it routes to no signal
+            // (the unknown-topic path). The DLQ topic sits outside that regex.
+            use crate::receivers::kafka_receiver::config::DlqConfig;
+            let builder =
+                KafkaReceiverConfigBuilder::new(cluster.bootstrap_servers(), group, "test-client")
+                    .with_traces(
+                        SignalConfig::new(vec!["^dlq-unknown-.*$".to_string()])
+                            .with_encoding(MessageFormat::OtlpProto)
+                            .with_exclude_topics(vec!["^dlq-unknown-excluded$".to_string()]),
+                    )
+                    .with_commit(CommitConfig {
+                        mode: ConfigCommitMode::Manual,
+                        interval_ms: None,
+                    })
+                    .with_auto_offset_reset(AutoOffsetReset::Earliest)
+                    .with_dlq(DlqConfig {
+                        topic: Some(DLQ.to_string()),
+                        per_signal: None,
+                        capture: vec![DlqCapture::UnknownTopic],
+                        connection: None,
+                    });
+            let cfg = KafkaReceiverConfig::try_from(builder).expect("valid");
+            let receiver = KafkaReceiverHarness::start(&cluster, cfg);
+
+            let records = drain_dlq_topic(&cluster, DLQ, 1, Duration::from_secs(30)).await;
+            assert_eq!(records.len(), 1, "expected one dead-lettered record");
+            assert_eq!(
+                records[0].payload.as_deref(),
+                Some(bytes.as_slice()),
+                "unknown-topic DLQ payload must be byte-identical to the source"
+            );
+            assert_eq!(records[0].header("dlq.reason"), Some(&b"unknown_topic"[..]));
+            assert_eq!(
+                records[0].header("dlq.source.topic"),
+                Some(EXCLUDED.as_bytes())
+            );
+
+            receiver.shutdown(Duration::from_secs(5));
+            let _ = receiver.await_terminal_state().await;
+        },
+    )
+    .await;
+}

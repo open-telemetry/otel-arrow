@@ -79,6 +79,17 @@ pub enum KafkaReceiverDlqReason {
     PermanentNack,
 }
 
+impl From<super::receiver::dlq::DlqReason> for KafkaReceiverDlqReason {
+    fn from(reason: super::receiver::dlq::DlqReason) -> Self {
+        use super::receiver::dlq::DlqReason;
+        match reason {
+            DlqReason::Decode => Self::Decode,
+            DlqReason::UnknownTopic => Self::UnknownTopic,
+            DlqReason::PermanentNack => Self::PermanentNack,
+        }
+    }
+}
+
 /// Signal context for a dead-lettered message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
 pub enum KafkaReceiverDlqSignal {
@@ -545,8 +556,28 @@ impl KafkaReceiverMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::receivers::kafka_receiver::receiver::dlq::DlqReason;
     use otel_arrow_dfe_engine::context::ControllerContext;
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+
+    /// Scenario: the domain `DlqReason` maps to the bounded metric attribute enum.
+    /// Guarantees: every reason has a stable, distinct attribute value so the
+    /// mapping is centralized (no duplicated match at call sites).
+    #[test]
+    fn dlq_reason_maps_to_metric_attribute() {
+        assert_eq!(
+            KafkaReceiverDlqReason::from(DlqReason::Decode),
+            KafkaReceiverDlqReason::Decode
+        );
+        assert_eq!(
+            KafkaReceiverDlqReason::from(DlqReason::UnknownTopic),
+            KafkaReceiverDlqReason::UnknownTopic
+        );
+        assert_eq!(
+            KafkaReceiverDlqReason::from(DlqReason::PermanentNack),
+            KafkaReceiverDlqReason::PermanentNack
+        );
+    }
 
     fn new_test_metrics() -> KafkaReceiverMetrics {
         let registry = TelemetryRegistryHandle::new();
