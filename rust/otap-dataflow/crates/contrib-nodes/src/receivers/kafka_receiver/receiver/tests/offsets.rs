@@ -609,8 +609,7 @@ async fn poison_message_advances_without_stalling_partition() {
                 probe_committed_offset(&brokers, group, TOPIC),
             );
 
-            receiver.shutdown(Duration::from_secs(5));
-            let terminal = receiver.await_terminal_state().await;
+            let terminal = shutdown_and_terminal(receiver, Duration::from_secs(5)).await;
             let decode_rejections = measurement_counter(
                 terminal.metrics(),
                 "receiver.kafka.rejections",
@@ -694,8 +693,7 @@ async fn auto_commit_mode_lets_librdkafka_own_offsets() {
                 probe_committed_offset(&brokers, group, TOPIC),
             );
 
-            receiver.shutdown(Duration::from_secs(5));
-            let terminal = receiver.await_terminal_state().await;
+            let terminal = shutdown_and_terminal(receiver, Duration::from_secs(5)).await;
             assert_eq!(
                 measurement_counter(
                     terminal.metrics(),
@@ -890,10 +888,7 @@ async fn safety_net_timer_commits_without_acks_drain_or_shutdown() {
             let cfg = manual_traces_config(cluster.bootstrap_servers(), group, TOPIC, 200, None);
             let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
 
-            for _ in 0..RECORDS {
-                let pdata = receiver.recv_pdata().await;
-                receiver.ack(pdata);
-            }
+            recv_and_ack(&mut receiver, RECORDS).await;
 
             // Wait for the periodic commit timer to persist the acked
             // offsets. No drain, no shutdown yet: the commit must come from

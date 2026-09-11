@@ -150,8 +150,7 @@ async fn draining_receiver_task_completes_before_deadline_under_rebalance_churn(
                         manual_traces_config(cluster.bootstrap_servers(), group, TOPIC, 500, None);
                     let churn = KafkaReceiverHarness::start(&cluster, churn_cfg);
                     tokio::time::sleep(Duration::from_millis(200)).await;
-                    churn.shutdown(Duration::from_secs(1));
-                    let _ = churn.await_terminal_state().await;
+                    let _ = shutdown_and_terminal(churn, Duration::from_secs(1)).await;
                     tokio::time::sleep(Duration::from_millis(200)).await;
                 }
             };
@@ -266,8 +265,7 @@ async fn draining_receiver_leaves_group_so_peer_gains_partitions() {
                 }
             }
 
-            receiver_b.shutdown(Duration::from_secs(5));
-            let _terminal_b = receiver_b.await_terminal_state().await;
+            let _terminal_b = shutdown_and_terminal(receiver_b, Duration::from_secs(5)).await;
         },
     )
     .await;
@@ -307,10 +305,7 @@ async fn drain_ingress_stops_polling_and_notifies_drained() {
 
             // Consume and ack the initial batch so offsets are tracked and
             // committable at drain time.
-            for _ in 0..INITIAL {
-                let pdata = receiver.recv_pdata().await;
-                receiver.ack(pdata);
-            }
+            recv_and_ack(&mut receiver, INITIAL).await;
 
             // Begin receiver-first drain.
             receiver.drain(Duration::from_secs(5));
@@ -659,10 +654,7 @@ async fn drain_under_sustained_traffic_commits_and_stops_cleanly() {
 
             // Consume and ack every pre-drain record so its offset is
             // committable at drain time.
-            for _ in 0..PRE_DRAIN {
-                let pdata = receiver.recv_pdata().await;
-                receiver.ack(pdata);
-            }
+            recv_and_ack(&mut receiver, PRE_DRAIN).await;
 
             // Begin the receiver-first drain while traffic continues.
             receiver.drain(Duration::from_secs(5));
@@ -822,10 +814,7 @@ async fn shutdown_with_broker_unavailable_does_not_hang() {
 
             // Consume and ack every record so there are tracked offsets to
             // commit at shutdown.
-            for _ in 0..RECORDS {
-                let pdata = receiver.recv_pdata().await;
-                receiver.ack(pdata);
-            }
+            recv_and_ack(&mut receiver, RECORDS).await;
 
             // Make the broker slow to respond so the shutdown-time close
             // (unsubscribe + consumer drop) is delayed well past the shutdown
@@ -902,10 +891,7 @@ async fn shutdown_with_lag_refresh_in_flight_still_terminates_within_deadline() 
                 50,
             );
             let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
-            for _ in 0..RECORDS {
-                let pdata = receiver.recv_pdata().await;
-                receiver.ack(pdata);
-            }
+            recv_and_ack(&mut receiver, RECORDS).await;
 
             // Give the lag timer several ticks so a refresh worker is spawned
             // and can be in flight when the shutdown arrives.

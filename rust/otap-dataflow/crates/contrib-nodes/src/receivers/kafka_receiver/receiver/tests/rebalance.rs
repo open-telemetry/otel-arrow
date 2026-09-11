@@ -390,10 +390,7 @@ async fn rebalance_single_consumer_assigns_and_commits() {
                 // commits acknowledged offsets).
                 let total =
                     (REBALANCE_RECORDS_PER_PARTITION * REBALANCE_TEST_PARTITIONS) as usize;
-                for _ in 0..total {
-                    let pdata = receiver.recv_pdata().await;
-                    receiver.ack(pdata);
-                }
+                recv_and_ack(&mut receiver, total).await;
 
                 // Allow at least one safety-net commit cycle to fire.
                 tokio::time::sleep(Duration::from_millis(800)).await;
@@ -464,10 +461,7 @@ async fn rebalance_revoke_commits_before_reassign() {
                 // initially) and ack each so A advances and commits its offsets.
                 let total =
                     (REBALANCE_RECORDS_PER_PARTITION * REBALANCE_TEST_PARTITIONS) as usize;
-                for _ in 0..total {
-                    let pdata = receiver.recv_pdata().await;
-                    receiver.ack(pdata);
-                }
+                recv_and_ack(&mut receiver, total).await;
 
                 // Let a safety-net commit flush A's progress on both partitions.
                 tokio::time::sleep(Duration::from_millis(800)).await;
@@ -552,10 +546,7 @@ async fn rebalance_cooperative_sticky_retains_owned_partitions() {
 
             // A initially owns both partitions: consume and ack the two
             // initial records.
-            for _ in 0..REBALANCE_TEST_PARTITIONS as usize {
-                let pdata = receiver.recv_pdata().await;
-                receiver.ack(pdata);
-            }
+            recv_and_ack(&mut receiver, REBALANCE_TEST_PARTITIONS as usize).await;
 
             // A second cooperative-sticky consumer joins the group, forcing
             // an incremental rebalance that moves exactly one partition to B
@@ -675,10 +666,7 @@ async fn rebalance_revoke_then_reassign_preserves_new_records() {
             let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
 
             // Consume + ack the initial records (receiver owns all partitions).
-            for _ in 0..REBALANCE_TEST_PARTITIONS as usize {
-                let pdata = receiver.recv_pdata().await;
-                receiver.ack(pdata);
-            }
+            recv_and_ack(&mut receiver, REBALANCE_TEST_PARTITIONS as usize).await;
 
             // A second consumer joins (forcing a revoke), then drops out of
             // scope (reassigning all partitions back to the receiver).
@@ -883,8 +871,7 @@ async fn rebalance_two_receivers_scale_up_down_distribute_without_loss_or_double
             // Step 5: shut down B (scale-down). This forces a second
             // rebalance that returns B's partition to A. B commits the
             // offsets it acked as part of its graceful shutdown.
-            receiver_b.shutdown(Duration::from_secs(5));
-            let terminal_b = receiver_b.await_terminal_state().await;
+            let terminal_b = shutdown_and_terminal(receiver_b, Duration::from_secs(5)).await;
 
             // Step 6: drain A. The loop body focuses solely on A receiving
             // and acking records; A re-consuming and acking the tail B did
@@ -913,8 +900,7 @@ async fn rebalance_two_receivers_scale_up_down_distribute_without_loss_or_double
             );
 
             // Shut down A (flushes its tracked offsets) and collect metrics.
-            receiver_a.shutdown(Duration::from_secs(5));
-            let terminal_a = receiver_a.await_terminal_state().await;
+            let terminal_a = shutdown_and_terminal(receiver_a, Duration::from_secs(5)).await;
 
             // ---- Assertions ----
             let mut fa = FoldedMetrics::new();
@@ -1096,10 +1082,8 @@ async fn run_two_member_strategy_rebalance(topic: &'static str, strategy: Rebala
                      offsets did not converge",
             );
 
-            receiver_a.shutdown(Duration::from_secs(5));
-            let terminal_a = receiver_a.await_terminal_state().await;
-            receiver_b.shutdown(Duration::from_secs(5));
-            let terminal_b = receiver_b.await_terminal_state().await;
+            let terminal_a = shutdown_and_terminal(receiver_a, Duration::from_secs(5)).await;
+            let terminal_b = shutdown_and_terminal(receiver_b, Duration::from_secs(5)).await;
 
             let mut fa = FoldedMetrics::new();
             fa.fold_all(terminal_a.metrics());
@@ -1234,8 +1218,7 @@ async fn stale_ack_after_revoke_counts_feedback_after_revocation() {
 
             // Ack and Shutdown share the same FIFO control channel, so the
             // feedback is handled before the terminal snapshot is taken.
-            receiver.shutdown(Duration::from_secs(5));
-            let terminal = receiver.await_terminal_state().await;
+            let terminal = shutdown_and_terminal(receiver, Duration::from_secs(5)).await;
             drop(trigger);
 
             let mut m = FoldedMetrics::new();
@@ -1318,8 +1301,7 @@ async fn stale_nack_after_revoke_counts_feedback_after_revocation() {
 
             // Nack and Shutdown share the same FIFO control channel, so the
             // feedback is handled before the terminal snapshot is taken.
-            receiver.shutdown(Duration::from_secs(5));
-            let terminal = receiver.await_terminal_state().await;
+            let terminal = shutdown_and_terminal(receiver, Duration::from_secs(5)).await;
             drop(trigger);
 
             let mut m = FoldedMetrics::new();
@@ -1376,19 +1358,12 @@ async fn idempotent_redelivery_under_new_generation_is_reprocessed_not_skipped()
                 .await;
 
             // Idempotent manual-commit receiver.
-            let builder =
-                KafkaReceiverConfigBuilder::new(cluster.bootstrap_servers(), group, "test-client")
-                    .with_traces(
-                        SignalConfig::new(vec![TOPIC.to_string()])
-                            .with_encoding(MessageFormat::OtlpProto),
-                    )
-                    .with_commit(CommitConfig {
-                        mode: ConfigCommitMode::Manual,
-                        interval_ms: Some(500),
-                    })
-                    .with_auto_offset_reset(AutoOffsetReset::Earliest)
-                    .with_isolation_level(IsolationLevel::ReadUncommitted)
-                    .with_enable_idempotency(true);
+            let builder = manual_traces_builder(cluster.bootstrap_servers(), group, TOPIC)
+                .with_commit(CommitConfig {
+                    mode: ConfigCommitMode::Manual,
+                    interval_ms: Some(500),
+                })
+                .with_enable_idempotency(true);
             let cfg = KafkaReceiverConfig::try_from(builder).expect("test config valid");
             let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
 
@@ -1427,8 +1402,7 @@ async fn idempotent_redelivery_under_new_generation_is_reprocessed_not_skipped()
                      reprocessed (delivered again), not skipped; got {redelivered}",
             );
 
-            receiver.shutdown(Duration::from_secs(5));
-            let terminal = receiver.await_terminal_state().await;
+            let terminal = shutdown_and_terminal(receiver, Duration::from_secs(5)).await;
 
             let mut m = FoldedMetrics::new();
             m.fold_all(terminal.metrics());
@@ -1485,20 +1459,7 @@ async fn inflight_records_on_revoke_are_redelivered_with_bounded_duplication() {
             // genuinely re-delivered (the harshest bounded-duplication case)
             // rather than skipped. No safety-net timer so acks alone drive
             // commits.
-            let builder =
-                KafkaReceiverConfigBuilder::new(cluster.bootstrap_servers(), group, "test-client")
-                    .with_traces(
-                        SignalConfig::new(vec![TOPIC.to_string()])
-                            .with_encoding(MessageFormat::OtlpProto),
-                    )
-                    .with_commit(CommitConfig {
-                        mode: ConfigCommitMode::Manual,
-                        interval_ms: None,
-                    })
-                    .with_auto_offset_reset(AutoOffsetReset::Earliest)
-                    .with_isolation_level(IsolationLevel::ReadUncommitted);
-            let cfg = KafkaReceiverConfig::try_from(builder).expect("test config valid");
-            let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+            let mut receiver = start_manual_traces_receiver(&cluster, group, TOPIC);
 
             // Count how many times each (partition, offset) is delivered.
             let mut delivery_counts: HashMap<(i32, i64), usize> = HashMap::new();
@@ -1547,8 +1508,7 @@ async fn inflight_records_on_revoke_are_redelivered_with_bounded_duplication() {
                 }
             }
 
-            receiver.shutdown(Duration::from_secs(5));
-            let terminal = receiver.await_terminal_state().await;
+            let terminal = shutdown_and_terminal(receiver, Duration::from_secs(5)).await;
 
             // No loss: every produced (partition, offset) was delivered at
             // least once.

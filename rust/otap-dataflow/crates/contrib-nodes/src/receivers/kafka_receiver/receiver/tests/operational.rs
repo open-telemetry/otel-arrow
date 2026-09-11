@@ -391,8 +391,7 @@ async fn decode_rejections_are_categorized_separately_from_filtering_and_rebalan
                 "poison record must not be forwarded",
             );
 
-            receiver.shutdown(Duration::from_secs(5));
-            let terminal = receiver.await_terminal_state().await;
+            let terminal = shutdown_and_terminal(receiver, Duration::from_secs(5)).await;
             let mut m = FoldedMetrics::new();
             m.fold_all(terminal.metrics());
 
@@ -469,18 +468,12 @@ async fn unknown_topic_rejections_are_categorized_separately_from_decode_errors(
             // (the include regex matches), so the receiver-side guard is what
             // rejects the excluded topic.
             let builder =
-                KafkaReceiverConfigBuilder::new(cluster.bootstrap_servers(), group, "test-client")
+                manual_traces_builder(cluster.bootstrap_servers(), group, "^visibility-.*")
                     .with_traces(
                         SignalConfig::new(vec!["^visibility-.*".to_string()])
                             .with_encoding(MessageFormat::OtlpProto)
                             .with_exclude_topics(vec!["^visibility-excluded$".to_string()]),
-                    )
-                    .with_commit(CommitConfig {
-                        mode: ConfigCommitMode::Manual,
-                        interval_ms: None,
-                    })
-                    .with_auto_offset_reset(AutoOffsetReset::Earliest)
-                    .with_isolation_level(IsolationLevel::ReadUncommitted);
+                    );
             let cfg = KafkaReceiverConfig::try_from(builder).expect("test config valid");
             let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
 
@@ -496,8 +489,7 @@ async fn unknown_topic_rejections_are_categorized_separately_from_decode_errors(
                 "excluded topic record must not be forwarded",
             );
 
-            receiver.shutdown(Duration::from_secs(5));
-            let terminal = receiver.await_terminal_state().await;
+            let terminal = shutdown_and_terminal(receiver, Duration::from_secs(5)).await;
             let unknown_topic_rejections = measurement_counter(
                 terminal.metrics(),
                 "receiver.kafka.rejections",

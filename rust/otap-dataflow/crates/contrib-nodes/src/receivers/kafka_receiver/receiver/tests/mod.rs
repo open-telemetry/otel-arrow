@@ -24,6 +24,7 @@ use crate::common::kafka::test::with_cluster;
 use otel_arrow_dfe_config::transport_headers_policy::{CaptureDefaults, CaptureRule};
 use otel_arrow_dfe_engine::context::ControllerContext;
 use otel_arrow_dfe_engine::control::RuntimeControlMsg;
+use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_pdata::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::Producer;
 use otel_arrow_dfe_pdata::otap::{Logs, Metrics};
@@ -303,6 +304,34 @@ fn start_manual_traces_receiver(
 async fn shutdown_receiver(receiver: KafkaReceiverHarness) {
     receiver.shutdown(Duration::from_secs(5));
     receiver.await_stopped().await;
+}
+
+/// Request shutdown with `deadline`, then await and return the node's
+/// [`TerminalState`] so the caller can assert on its metrics/outcome. Consumes
+/// the harness. Use this instead of [`shutdown_receiver`] when the test needs
+/// the terminal state rather than a plain stop.
+async fn shutdown_and_terminal(
+    receiver: KafkaReceiverHarness,
+    deadline: Duration,
+) -> TerminalState {
+    receiver.shutdown(deadline);
+    receiver.await_terminal_state().await
+}
+
+/// Receive `n` pdata batches in order, acking each immediately. Used by tests
+/// that only need to drain and acknowledge a known count without inspecting the
+/// payloads. `n` accepts any integer type (e.g. `usize` or `i64`) used by the
+/// calling test's record constant.
+async fn recv_and_ack<C>(receiver: &mut KafkaReceiverHarness, n: C)
+where
+    C: TryInto<usize>,
+    C::Error: std::fmt::Debug,
+{
+    let n = n.try_into().expect("record count fits in usize");
+    for _ in 0..n {
+        let pdata = receiver.recv_pdata().await;
+        receiver.ack(pdata);
+    }
 }
 
 /// Probe the committed offset for `(topic, partition 0)` in `group`, panicking

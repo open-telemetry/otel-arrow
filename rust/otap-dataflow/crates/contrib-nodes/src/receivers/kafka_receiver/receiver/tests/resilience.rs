@@ -67,10 +67,7 @@ async fn transport_error_is_non_fatal_and_recovers() {
 
             // The same receive loop must now deliver every record -- it was
             // not killed by the sustained transport errors.
-            for _ in 0..RECORDS {
-                let pdata = receiver.recv_pdata().await;
-                receiver.ack(pdata);
-            }
+            recv_and_ack(&mut receiver, RECORDS).await;
 
             shutdown_receiver(receiver).await;
         },
@@ -109,10 +106,7 @@ async fn broker_outage_then_recovery_resumes_without_loss() {
             let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
 
             // Consume and ack the first batch before the outage.
-            for _ in 0..PRE {
-                let pdata = receiver.recv_pdata().await;
-                receiver.ack(pdata);
-            }
+            recv_and_ack(&mut receiver, PRE).await;
 
             // Prolonged outage: every broker down. No new records must be
             // delivered while the brokers are unreachable.
@@ -137,10 +131,7 @@ async fn broker_outage_then_recovery_resumes_without_loss() {
 
             // The same receiver must reconnect and deliver every post-outage
             // record without loss.
-            for _ in 0..POST {
-                let pdata = receiver.recv_pdata().await;
-                receiver.ack(pdata);
-            }
+            recv_and_ack(&mut receiver, POST).await;
 
             shutdown_receiver(receiver).await;
         },
@@ -183,10 +174,7 @@ async fn intermittent_network_interruption_recovers_without_loss() {
             let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
 
             // Consume and ack the first batch before the interruption.
-            for _ in 0..PRE {
-                let pdata = receiver.recv_pdata().await;
-                receiver.ack(pdata);
-            }
+            recv_and_ack(&mut receiver, PRE).await;
 
             // Transient network interruption: a long burst of fetch errors
             // that blocks fetches while active. Consumed one-per-request in
@@ -216,10 +204,7 @@ async fn intermittent_network_interruption_recovers_without_loss() {
 
             // The same receiver must recover and deliver every post-interruption
             // record without loss.
-            for _ in 0..POST {
-                let pdata = receiver.recv_pdata().await;
-                receiver.ack(pdata);
-            }
+            recv_and_ack(&mut receiver, POST).await;
 
             // No loss: the committed offset reaches the full produced count.
             let brokers = cluster.bootstrap_servers().to_string();
@@ -297,8 +282,7 @@ async fn broker_latency_does_not_corrupt_offset_accounting() {
                 probe_committed_offset(&brokers, group, TOPIC),
             );
 
-            receiver.shutdown(Duration::from_secs(5));
-            let terminal = receiver.await_terminal_state().await;
+            let terminal = shutdown_and_terminal(receiver, Duration::from_secs(5)).await;
             assert_eq!(
                 measurement_counter(
                     terminal.metrics(),
@@ -376,17 +360,11 @@ async fn adversarial_topic_and_header_values_do_not_stall_loop() {
                 },
             );
             let builder =
-                KafkaReceiverConfigBuilder::new(cluster.bootstrap_servers(), group, "test-client")
+                manual_traces_builder(cluster.bootstrap_servers(), group, "^sec-adversarial-.*")
                     .with_traces(
                         SignalConfig::new(vec!["^sec-adversarial-.*".to_string()])
                             .with_encoding(MessageFormat::OtapProto),
                     )
-                    .with_commit(CommitConfig {
-                        mode: ConfigCommitMode::Manual,
-                        interval_ms: None,
-                    })
-                    .with_auto_offset_reset(AutoOffsetReset::Earliest)
-                    .with_isolation_level(IsolationLevel::ReadUncommitted)
                     .with_resource_attrs_from_headers(extraction);
             let cfg = KafkaReceiverConfig::try_from(builder).expect("test config valid");
             let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
@@ -422,8 +400,7 @@ async fn adversarial_topic_and_header_values_do_not_stall_loop() {
                 "poison record must not be forwarded, and the loop must not stall",
             );
 
-            receiver.shutdown(Duration::from_secs(5));
-            let terminal = receiver.await_terminal_state().await;
+            let terminal = shutdown_and_terminal(receiver, Duration::from_secs(5)).await;
             let decode_rejections = measurement_counter(
                 terminal.metrics(),
                 "receiver.kafka.rejections",

@@ -551,25 +551,12 @@ async fn read_committed_isolation_delivers_and_commits() {
             let bytes = encoded_trace_fixture();
             produce_traces(&producer, TOPIC, RECORDS, &bytes).await;
 
-            let builder =
-                KafkaReceiverConfigBuilder::new(cluster.bootstrap_servers(), group, "test-client")
-                    .with_traces(
-                        SignalConfig::new(vec![TOPIC.to_string()])
-                            .with_encoding(MessageFormat::OtlpProto),
-                    )
-                    .with_commit(CommitConfig {
-                        mode: ConfigCommitMode::Manual,
-                        interval_ms: None,
-                    })
-                    .with_auto_offset_reset(AutoOffsetReset::Earliest)
-                    .with_isolation_level(IsolationLevel::ReadCommitted);
+            let builder = manual_traces_builder(cluster.bootstrap_servers(), group, TOPIC)
+                .with_isolation_level(IsolationLevel::ReadCommitted);
             let cfg = KafkaReceiverConfig::try_from(builder).expect("test config valid");
             let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
 
-            for _ in 0..RECORDS {
-                let pdata = receiver.recv_pdata().await;
-                receiver.ack(pdata);
-            }
+            recv_and_ack(&mut receiver, RECORDS).await;
 
             let brokers = cluster.bootstrap_servers().to_string();
             let committed = poll_committed_offset(
