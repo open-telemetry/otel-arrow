@@ -11,8 +11,8 @@
 ## Overview
 
 The transform processor applies query-language transformations to OTAP batches.
-It currently accepts KQL, OPL, or OTTL log statements and may emit zero, one, or
-multiple output batches depending on the transformation.
+It accepts KQL, OPL, or OTTL log statements.
+Queries may emit zero, one, or multiple output batches.
 
 This processor and its query engine integration are under active development.
 
@@ -47,6 +47,15 @@ config:
     log_statements:
       - set(attributes["processed"], true)
 ```
+
+## Parsing Framed Logs
+
+Use the [log parser processor](../log_parser_processor/README.md) for declarative
+regex, JSON Pointer, and CSV parsing, then connect its output to a transform
+node for query-based filtering or enrichment. The former branch-only
+`parse_logs` transform option is rejected, including when combined with a query.
+Change the node type to `processor:log_parser` and move the settings formerly
+nested under `config.parse_logs` directly under `config`.
 
 ## Telemetry
 

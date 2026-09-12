@@ -615,7 +615,8 @@ impl<'a> MaybeDictArrayAccessor<'a, FixedSizeBinaryArray> {
 }
 
 impl<'a> MaybeDictArrayAccessor<'a, StringArray> {
-    pub(crate) fn try_new(arr: &'a ArrayRef) -> Result<Self> {
+    /// Borrow a native or dictionary-encoded string array without materializing its values.
+    pub fn try_new(arr: &'a ArrayRef) -> Result<Self> {
         Self::try_new_with_datatype(StringArray::DATA_TYPE, arr)
     }
 
@@ -627,7 +628,9 @@ impl<'a> MaybeDictArrayAccessor<'a, StringArray> {
         Self::try_new(get_required_array(record_batch, column_name)?)
     }
 
-    pub(crate) fn str_at(&self, idx: usize) -> Option<&str> {
+    /// Borrow the string at a row, returning `None` for a null value.
+    #[must_use]
+    pub fn str_at(&self, idx: usize) -> Option<&str> {
         match self {
             Self::Dictionary16(dict) => dict.str_at(idx),
             Self::Dictionary8(dict) => dict.str_at(idx),

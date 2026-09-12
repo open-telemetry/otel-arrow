@@ -187,6 +187,17 @@ impl SignalScope {
 impl TransformProcessor {
     /// Create new instance from serialized configuration
     fn from_config(pipeline_ctx: &PipelineContext, config: &Value) -> Result<Self, ConfigError> {
+        if config.get("parse_logs").is_some()
+            || ["kql_query", "opl_query", "ottl"]
+                .iter()
+                .filter(|key| config.get(**key).is_some())
+                .count()
+                != 1
+        {
+            return Err(ConfigError::InvalidUserConfig {
+                error: "exactly one transform mode is required".into(),
+            });
+        }
         let config: Config =
             serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
                 error: format!("Failed to parse TransformProcessor config: {e}"),
@@ -205,9 +216,9 @@ impl TransformProcessor {
             filter_attribute_keys_case_sensitive: config.filter_attribute_keys_case_sensitive,
         };
 
-        let (transforms, language) = match &config.query {
+        let (transforms, language) = match config.query {
             Query::KqlQuery(query) => {
-                let pipeline_expr = KqlParser::parse_with_options(query, parser_options)
+                let pipeline_expr = KqlParser::parse_with_options(&query, parser_options)
                     .map_err(map_parser_err)?
                     .pipeline;
                 let signal_scope = SignalScope::try_from_kql_query(
@@ -222,7 +233,7 @@ impl TransformProcessor {
                 )
             }
             Query::OplQuery(query) => {
-                let pipeline_expr = OplParser::parse_with_options(query, parser_options)
+                let pipeline_expr = OplParser::parse_with_options(&query, parser_options)
                     .map_err(map_parser_err)?
                     .pipeline;
                 let signal_scope = SignalScope::try_from_opl_query(
@@ -554,6 +565,26 @@ fn create_transform_processor(
 }
 
 /// Register TransformProcessor
+fn validate_transform_config(config: &Value) -> Result<(), ConfigError> {
+    if config.get("parse_logs").is_some()
+        || ["kql_query", "opl_query", "ottl"]
+            .iter()
+            .filter(|key| config.get(**key).is_some())
+            .count()
+            != 1
+    {
+        return Err(ConfigError::InvalidUserConfig {
+            error: "exactly one transform mode is required".into(),
+        });
+    }
+    let _: Config =
+        serde_json::from_value(config.clone()).map_err(|error| ConfigError::InvalidUserConfig {
+            error: error.to_string(),
+        })?;
+    Ok(())
+}
+
+/// Register TransformProcessor
 #[allow(unsafe_code)]
 #[otel_arrow_dfe_engine::component_inventory(category = Processor)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
@@ -561,7 +592,7 @@ pub static TRANSFORM_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorF
     name: TRANSFORM_PROCESSOR_URN,
     create: create_transform_processor,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<Config>,
+    validate_config: validate_transform_config,
 };
 
 #[async_trait(?Send)]
@@ -839,10 +870,17 @@ mod test {
     fn transform_metric_points(
         telemetry_registry: &TelemetryRegistryHandle,
     ) -> Vec<TransformMetricPoint> {
+        metric_points_for(telemetry_registry, "processor.transform")
+    }
+
+    fn metric_points_for(
+        telemetry_registry: &TelemetryRegistryHandle,
+        metric_set: &str,
+    ) -> Vec<TransformMetricPoint> {
         let mut points = Vec::new();
         telemetry_registry.visit_current_metrics_with_item_attrs(
             |descriptor, _entity_attributes, item_attributes, metrics| {
-                if descriptor.name != "processor.transform" {
+                if descriptor.name != metric_set {
                     return;
                 }
 
@@ -1018,6 +1056,27 @@ mod test {
         runtime: &TestRuntime<OtapPdata>,
     ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
         try_create_with_config(json!({ "opl_query": query }), runtime)
+    }
+
+    /// Scenario: The removed parsing key appears alone or alongside a supported query mode.
+    /// Guarantees: Validation and construction reject the key instead of silently omitting parsing.
+    #[test]
+    fn test_rejects_removed_parsing_mode() {
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let removed = json!({"parse_logs": {}});
+        assert!(validate_transform_config(&removed).is_err());
+        assert!(try_create_with_config(removed, &runtime).is_err());
+        for mut config in [
+            json!({"kql_query": "logs | where true"}),
+            json!({"opl_query": "logs | where true"}),
+            json!({"ottl": {"log_statements": ["set(severity_text, \"INFO\")"]}}),
+        ] {
+            assert!(validate_transform_config(&config).is_ok());
+            assert!(try_create_with_config(config.clone(), &runtime).is_ok());
+            config["parse_logs"] = json!({});
+            assert!(validate_transform_config(&config).is_err());
+            assert!(try_create_with_config(config, &runtime).is_err());
+        }
     }
 
     #[test]
