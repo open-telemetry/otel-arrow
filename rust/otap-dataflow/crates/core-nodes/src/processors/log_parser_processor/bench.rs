@@ -1,10 +1,8 @@
 use super::*;
 
 /// Benchmark-only access to compiled record parsers.
-#[cfg(feature = "bench")]
 pub struct BenchLogParser(parse_logs::Parser);
 
-#[cfg(feature = "bench")]
 impl BenchLogParser {
     /// Compile a parsing configuration before measurement begins.
     #[must_use]
