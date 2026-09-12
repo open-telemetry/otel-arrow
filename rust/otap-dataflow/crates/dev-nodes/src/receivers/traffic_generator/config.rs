@@ -3,7 +3,7 @@
 
 //! Implementation of the traffic generator receiver configuration
 
-use serde::de::Deserializer;
+use serde::de::{Deserializer, MapAccess, Visitor};
 use serde::{Deserialize, Serialize};
 
 use std::collections::HashMap;
@@ -153,8 +153,44 @@ pub struct Config {
     ///   x-tenant-id: "acme"
     ///   x-request-id:
     /// ```
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_transport_headers")]
     transport_headers: HashMap<ContextEntryName, Option<String>>,
+}
+
+fn deserialize_transport_headers<'de, D>(
+    deserializer: D,
+) -> Result<HashMap<ContextEntryName, Option<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct TransportHeadersVisitor;
+
+    impl<'de> Visitor<'de> for TransportHeadersVisitor {
+        type Value = HashMap<ContextEntryName, Option<String>>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a map of transport header names to string or null values")
+        }
+
+        fn visit_map<M>(self, mut access: M) -> Result<Self::Value, M::Error>
+        where
+            M: MapAccess<'de>,
+        {
+            let mut headers = HashMap::with_capacity(access.size_hint().unwrap_or(0));
+            while let Some((raw_name, value)) = access.next_entry::<String, Option<String>>()? {
+                let name = ContextEntryName::try_from(raw_name.as_str())
+                    .map_err(serde::de::Error::custom)?;
+                if headers.insert(name.clone(), value).is_some() {
+                    return Err(serde::de::Error::custom(format!(
+                        "duplicate transport header name `{name}` after ASCII lowercase normalization"
+                    )));
+                }
+            }
+            Ok(headers)
+        }
+    }
+
+    deserializer.deserialize_map(TransportHeadersVisitor)
 }
 
 /// Configuration to describe the traffic being sent
@@ -804,22 +840,22 @@ mod tests {
     }
 
     /// Scenario: configured header names differ only by case.
-    /// Guarantees: they collapse to one canonical lowercase entry.
+    /// Guarantees: deserialization rejects the duplicate canonical lowercase name.
     #[test]
-    fn parse_config_transport_headers_collapses_case_distinct_names() {
-        let config: Config = serde_json::from_value(json!({
+    fn parse_config_transport_headers_rejects_case_distinct_duplicates() {
+        let error = serde_json::from_value::<Config>(json!({
             "traffic_config": base_traffic(),
             "transport_headers": {
                 "X-Tenant-Id": "acme",
                 "x-tenant-id": "contoso"
             },
         }))
-        .expect("case-distinct names should normalize");
+        .err()
+        .expect("case-distinct names should collide after normalization");
 
-        assert_eq!(config.transport_headers().len(), 1);
         assert_eq!(
-            config.transport_headers().get(&context_name("x-tenant-id")),
-            Some(&Some("contoso".to_string()))
+            error.to_string(),
+            "duplicate transport header name `x-tenant-id` after ASCII lowercase normalization"
         );
     }
 

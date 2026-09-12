@@ -66,24 +66,24 @@ fn test_validate_config(
     Ok(())
 }
 
-const CONTEXT_POLICY_TEST_RECEIVER_URN: &str = "urn:test:receiver:context-policy";
-static CONTEXT_POLICY_TEST_LOCK: Mutex<()> = Mutex::new(());
-static CONTEXT_POLICY_TEST_CAPTURE: Mutex<Option<std::sync::Weak<CompiledContextPolicy>>> =
+const CONTEXT_BINDINGS_TEST_RECEIVER_URN: &str = "urn:test:receiver:context-bindings";
+static CONTEXT_BINDINGS_TEST_LOCK: Mutex<()> = Mutex::new(());
+static CONTEXT_BINDINGS_TEST_CAPTURE: Mutex<Option<std::sync::Weak<CompiledContextBindings>>> =
     Mutex::new(None);
-static CONTEXT_POLICY_TEST_RUNTIME: Mutex<Option<std::sync::Weak<ControllerRuntime<()>>>> =
+static CONTEXT_BINDINGS_TEST_RUNTIME: Mutex<Option<std::sync::Weak<ControllerRuntime<()>>>> =
     Mutex::new(None);
-static CONTEXT_POLICY_TEST_DECLARATION_CALLS: AtomicUsize = AtomicUsize::new(0);
+static CONTEXT_BINDINGS_TEST_DECLARATION_CALLS: AtomicUsize = AtomicUsize::new(0);
 
-fn reset_context_policy_test_capture() {
-    *CONTEXT_POLICY_TEST_CAPTURE
+fn reset_context_bindings_test_capture() {
+    *CONTEXT_BINDINGS_TEST_CAPTURE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
 }
 
-fn wait_for_context_policy_test_capture() -> std::sync::Weak<CompiledContextPolicy> {
+fn wait_for_context_bindings_test_capture() -> std::sync::Weak<CompiledContextBindings> {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        if let Some(policy) = CONTEXT_POLICY_TEST_CAPTURE
+        if let Some(policy) = CONTEXT_BINDINGS_TEST_CAPTURE
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
@@ -92,20 +92,20 @@ fn wait_for_context_policy_test_capture() -> std::sync::Weak<CompiledContextPoli
         }
         assert!(
             Instant::now() < deadline,
-            "timed out waiting for context policy installation"
+            "timed out waiting for context binding installation"
         );
         thread::sleep(Duration::from_millis(25));
     }
 }
 
 #[derive(Deserialize)]
-struct ContextPolicyTestConfig {
+struct ContextBindingsTestConfig {
     produces: ContextEntryName,
     #[serde(default)]
     probe_controller_lock: bool,
 }
 
-impl ConfigNodeContextDeclaration for ContextPolicyTestConfig {
+impl ConfigNodeContextDeclaration for ContextBindingsTestConfig {
     fn context_declarations(&self) -> NodeContextDeclarations {
         vec![ContextDeclaration::Produces {
             entry: self.produces.clone(),
@@ -115,17 +115,17 @@ impl ConfigNodeContextDeclaration for ContextPolicyTestConfig {
     }
 }
 
-fn context_policy_test_declarations(
+fn context_bindings_test_declarations(
     value: &serde_json::Value,
 ) -> Result<NodeContextDeclarations, otel_arrow_dfe_config::error::Error> {
-    let config: ContextPolicyTestConfig =
+    let config: ContextBindingsTestConfig =
         serde_json::from_value(value.clone()).map_err(|error| {
             otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: error.to_string(),
             }
         })?;
     if config.probe_controller_lock {
-        let runtime = CONTEXT_POLICY_TEST_RUNTIME
+        let runtime = CONTEXT_BINDINGS_TEST_RUNTIME
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .as_ref()
@@ -137,28 +137,28 @@ fn context_policy_test_declarations(
                         .to_owned(),
                 }
             })?;
-            let _ = CONTEXT_POLICY_TEST_DECLARATION_CALLS.fetch_add(1, Ordering::Relaxed);
+            let _ = CONTEXT_BINDINGS_TEST_DECLARATION_CALLS.fetch_add(1, Ordering::Relaxed);
         }
     }
     Ok(config.context_declarations())
 }
 
-fn context_policy_test_receiver_create(
+fn context_bindings_test_receiver_create(
     pipeline_ctx: PipelineContext,
     node: otel_arrow_dfe_engine::node::NodeId,
     node_config: Arc<NodeUserConfig>,
     receiver_config: &ReceiverConfig,
     _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
 ) -> Result<ReceiverWrapper<()>, otel_arrow_dfe_config::error::Error> {
-    let config: ContextPolicyTestConfig = serde_json::from_value(node_config.config.clone())
+    let config: ContextBindingsTestConfig = serde_json::from_value(node_config.config.clone())
         .map_err(
             |error| otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: error.to_string(),
             },
         )?;
     config.validate_context_declarations(&pipeline_ctx)?;
-    let policy = pipeline_ctx.compiled_context_policy();
-    *CONTEXT_POLICY_TEST_CAPTURE
+    let policy = pipeline_ctx.compiled_context_bindings();
+    *CONTEXT_BINDINGS_TEST_CAPTURE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::downgrade(policy));
     Ok(ReceiverWrapper::local(
@@ -349,16 +349,16 @@ static TEST_PIPELINE_FACTORY: PipelineFactory<()> = PipelineFactory::new(
     &[],
 );
 
-static CONTEXT_POLICY_TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
+static CONTEXT_BINDINGS_TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
     ReceiverFactory {
-        name: CONTEXT_POLICY_TEST_RECEIVER_URN,
-        create: context_policy_test_receiver_create,
+        name: CONTEXT_BINDINGS_TEST_RECEIVER_URN,
+        create: context_bindings_test_receiver_create,
         context_declarations: Some(ContextDeclarationProvider {
-            declarations: context_policy_test_declarations,
+            declarations: context_bindings_test_declarations,
         }),
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
-            ContextPolicyTestConfig,
+            ContextBindingsTestConfig,
         >,
     },
     ReceiverFactory {
@@ -370,7 +370,7 @@ static CONTEXT_POLICY_TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
     },
 ];
 
-static CONTEXT_POLICY_TEST_EXPORTER_FACTORIES: &[ExporterFactory<()>] = &[
+static CONTEXT_BINDINGS_TEST_EXPORTER_FACTORIES: &[ExporterFactory<()>] = &[
     ExporterFactory {
         name: "urn:test:exporter:example",
         create: recovery_test_exporter_create,
@@ -394,10 +394,10 @@ static CONTEXT_POLICY_TEST_EXPORTER_FACTORIES: &[ExporterFactory<()>] = &[
     },
 ];
 
-static CONTEXT_POLICY_TEST_PIPELINE_FACTORY: PipelineFactory<()> = PipelineFactory::new(
-    CONTEXT_POLICY_TEST_RECEIVER_FACTORIES,
+static CONTEXT_BINDINGS_TEST_PIPELINE_FACTORY: PipelineFactory<()> = PipelineFactory::new(
+    CONTEXT_BINDINGS_TEST_RECEIVER_FACTORIES,
     TEST_PROCESSOR_FACTORIES,
-    CONTEXT_POLICY_TEST_EXPORTER_FACTORIES,
+    CONTEXT_BINDINGS_TEST_EXPORTER_FACTORIES,
     &[],
 );
 
@@ -528,8 +528,8 @@ fn test_runtime_with_supplied_log_filter_and_topology(
     let (memory_pressure_tx, _memory_pressure_rx) =
         tokio::sync::watch::channel(MemoryPressureChanged::initial());
     let context = pipeline_factory
-        .compile_context(&config.resolve(), None)
-        .expect("test context policy should compile");
+        .compile_initial_context(&config.resolve())
+        .expect("test context bindings should compile");
 
     (
         Arc::new(ControllerRuntime::new(
@@ -540,8 +540,8 @@ fn test_runtime_with_supplied_log_filter_and_topology(
             engine_event_reporter,
             metrics_reporter,
             declared_topics,
-            context.requirements,
-            context.policy,
+            context.runtime_requirements,
+            context.bindings,
             available_core_ids(),
             topology,
             TracingSetup::new(ProviderSetup::Noop, LogLevel::default(), engine_context)
@@ -772,7 +772,7 @@ fn register_runtime_instance(
         .state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let context_policy = Arc::clone(&state.latest_context_policy);
+    let context_bindings = Arc::clone(&state.latest_context_bindings);
     _ = state.runtime_instances.insert(
         DeployedPipelineKey {
             pipeline_group_id: pipeline_group_id.to_owned().into(),
@@ -782,7 +782,7 @@ fn register_runtime_instance(
         },
         RuntimeInstanceRecord {
             control_sender: Some(control_sender),
-            context_policy,
+            context_bindings,
             lifecycle,
         },
     );
@@ -803,12 +803,12 @@ fn register_runtime_instance_with_sender(
         .state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let context_policy = Arc::clone(&state.latest_context_policy);
+    let context_bindings = Arc::clone(&state.latest_context_bindings);
     _ = state.runtime_instances.insert(
         pipeline_key,
         RuntimeInstanceRecord {
             control_sender: Some(control_sender),
-            context_policy,
+            context_bindings,
             lifecycle,
         },
     );
@@ -908,12 +908,12 @@ fn launched_runtime_instance(
 ) -> LaunchedPipelineThread<()> {
     let (tx, _rx) = runtime_ctrl_msg_channel::<()>(4);
     let control_sender: Arc<dyn PipelineAdminSender> = Arc::new(tx);
-    let context_policy = {
+    let context_bindings = {
         let state = runtime
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        Arc::clone(&state.latest_context_policy)
+        Arc::clone(&state.latest_context_bindings)
     };
     LaunchedPipelineThread {
         pipeline_key: DeployedPipelineKey {
@@ -923,7 +923,7 @@ fn launched_runtime_instance(
             deployment_generation: generation,
         },
         control_sender,
-        context_policy,
+        context_bindings,
         _marker: std::marker::PhantomData,
     }
 }
@@ -3678,12 +3678,12 @@ fn rollback_replace_rollout_restores_recovered_serving_generation() {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let _ = state.generation_counters.insert(pipeline_key.clone(), 2);
-        let context_policy = Arc::clone(&state.latest_context_policy);
+        let context_bindings = Arc::clone(&state.latest_context_bindings);
         let _ = state.runtime_recoveries.insert(
             (pipeline_key.clone(), 0),
             RuntimeRecoveryState {
                 serving_generation: 1,
-                context_policy,
+                context_bindings,
                 restart_count: 1,
                 ready_since: Some(Instant::now()),
                 worker_id: None,
@@ -3913,16 +3913,16 @@ fn delete_pipeline_removes_stopped_pipeline_from_live_config() {
 /// Scenario: a pipeline with context declarations is launched and deleted.
 /// Guarantees: the runtime receives its policy. Deletion updates the policy and releases the old one.
 #[test]
-fn delete_pipeline_recompiles_context_policy_without_removed_declarations() {
-    let _capture_guard = CONTEXT_POLICY_TEST_LOCK
+fn delete_pipeline_recompiles_context_bindings_without_removed_declarations() {
+    let _capture_guard = CONTEXT_BINDINGS_TEST_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    reset_context_policy_test_capture();
+    reset_context_bindings_test_capture();
     let config = engine_config_with_pipeline(
         r#"
         nodes:
           receiver:
-            type: "urn:test:receiver:context-policy"
+            type: "urn:test:receiver:context-bindings"
             config:
               produces: X-Tenant
           exporter:
@@ -3933,14 +3933,14 @@ fn delete_pipeline_recompiles_context_policy_without_removed_declarations() {
             to: exporter
         "#,
     );
-    let runtime = test_runtime_with_factory(&config, &CONTEXT_POLICY_TEST_PIPELINE_FACTORY);
+    let runtime = test_runtime_with_factory(&config, &CONTEXT_BINDINGS_TEST_PIPELINE_FACTORY);
     let _runner = ObservedStateRunner::start(&runtime);
-    let initial_policy = {
+    let initial_bindings = {
         let state = runtime
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        Arc::clone(&state.latest_context_policy)
+        Arc::clone(&state.latest_context_bindings)
     };
     let resolved = config
         .resolve()
@@ -3967,20 +3967,20 @@ fn delete_pipeline_recompiles_context_policy_without_removed_declarations() {
     let _deployed_key = runtime
         .launch_regular_pipeline_instance(
             &resolved,
-            Arc::clone(&initial_policy),
+            Arc::clone(&initial_bindings),
             &live_placement,
             core_id,
             0,
         )
         .expect("pipeline should launch");
-    let installed_policy = wait_for_context_policy_test_capture();
+    let installed_bindings = wait_for_context_bindings_test_capture();
     assert!(Arc::ptr_eq(
-        &initial_policy,
-        &installed_policy
+        &initial_bindings,
+        &installed_bindings
             .upgrade()
             .expect("installed policy should be live")
     ));
-    drop(initial_policy);
+    drop(initial_bindings);
 
     let status = runtime
         .request_delete_pipeline("g1", "p1", 5)
@@ -3994,16 +3994,17 @@ fn delete_pipeline_recompiles_context_policy_without_removed_declarations() {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         (
             state.live_config.clone(),
-            Arc::clone(&state.latest_context_policy),
+            Arc::clone(&state.latest_context_bindings),
         )
     };
-    let expected_policy = CONTEXT_POLICY_TEST_PIPELINE_FACTORY
-        .compile_context_policy(&committed_config.resolve())
-        .expect("post-delete policy should compile");
+    let expected_bindings = CONTEXT_BINDINGS_TEST_PIPELINE_FACTORY
+        .compile_initial_context(&committed_config.resolve())
+        .expect("post-delete policy should compile")
+        .bindings;
 
-    assert!(committed_policy.eq(&expected_policy));
+    assert!(committed_policy.eq(&expected_bindings));
     assert!(
-        installed_policy.upgrade().is_none(),
+        installed_bindings.upgrade().is_none(),
         "deleted pipeline policy should be released"
     );
 }
@@ -4011,8 +4012,8 @@ fn delete_pipeline_recompiles_context_policy_without_removed_declarations() {
 /// Scenario: deleting a pipeline recompiles declarations for a remaining pipeline.
 /// Guarantees: declaration callbacks run without holding the controller state lock.
 #[test]
-fn delete_pipeline_compiles_context_policy_outside_controller_lock() {
-    let _capture_guard = CONTEXT_POLICY_TEST_LOCK
+fn delete_pipeline_compiles_context_bindings_outside_controller_lock() {
+    let _capture_guard = CONTEXT_BINDINGS_TEST_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let config = OtelDataflowSpec::from_yaml(
@@ -4024,7 +4025,7 @@ groups:
       delete:
         nodes:
           receiver:
-            type: "urn:test:receiver:context-policy"
+            type: "urn:test:receiver:context-bindings"
             config:
               produces: delete-marker
           exporter:
@@ -4036,7 +4037,7 @@ groups:
       remain:
         nodes:
           receiver:
-            type: "urn:test:receiver:context-policy"
+            type: "urn:test:receiver:context-bindings"
             config:
               produces: remain-marker
               probe_controller_lock: true
@@ -4049,9 +4050,9 @@ groups:
 "#,
     )
     .expect("engine config should parse");
-    let runtime = test_runtime_with_factory(&config, &CONTEXT_POLICY_TEST_PIPELINE_FACTORY);
-    CONTEXT_POLICY_TEST_DECLARATION_CALLS.store(0, Ordering::Relaxed);
-    *CONTEXT_POLICY_TEST_RUNTIME
+    let runtime = test_runtime_with_factory(&config, &CONTEXT_BINDINGS_TEST_PIPELINE_FACTORY);
+    CONTEXT_BINDINGS_TEST_DECLARATION_CALLS.store(0, Ordering::Relaxed);
+    *CONTEXT_BINDINGS_TEST_RUNTIME
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::downgrade(&runtime));
 
@@ -4059,12 +4060,12 @@ groups:
         .request_delete_pipeline("g1", "delete", 5)
         .expect("deletion should compile declarations without the state lock");
 
-    *CONTEXT_POLICY_TEST_RUNTIME
+    *CONTEXT_BINDINGS_TEST_RUNTIME
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
     assert_eq!(status.state, "succeeded");
     assert_eq!(
-        CONTEXT_POLICY_TEST_DECLARATION_CALLS.load(Ordering::Relaxed),
+        CONTEXT_BINDINGS_TEST_DECLARATION_CALLS.load(Ordering::Relaxed),
         1
     );
 }
@@ -4072,12 +4073,12 @@ groups:
 /// Scenario: reconfiguration changes a deployed pipeline's context declaration.
 /// Guarantees: the update is rejected because old and new generations may overlap.
 #[test]
-fn reconfigure_rejects_context_policy_changes_to_target_pipeline() {
+fn reconfigure_rejects_context_bindings_changes_to_target_pipeline() {
     let config = engine_config_with_pipeline(
         r#"
         nodes:
           receiver:
-            type: "urn:test:receiver:context-policy"
+            type: "urn:test:receiver:context-bindings"
             config:
               produces: X-Tenant
           exporter:
@@ -4088,7 +4089,7 @@ fn reconfigure_rejects_context_policy_changes_to_target_pipeline() {
             to: exporter
         "#,
     );
-    let runtime = test_runtime_with_factory(&config, &CONTEXT_POLICY_TEST_PIPELINE_FACTORY);
+    let runtime = test_runtime_with_factory(&config, &CONTEXT_BINDINGS_TEST_PIPELINE_FACTORY);
     register_existing_pipeline(&runtime, &config);
 
     let replacement = PipelineConfig::from_yaml(
@@ -4097,7 +4098,7 @@ fn reconfigure_rejects_context_policy_changes_to_target_pipeline() {
         r#"
 nodes:
   receiver:
-    type: "urn:test:receiver:context-policy"
+    type: "urn:test:receiver:context-bindings"
     config:
       produces: X-Account
   exporter:
@@ -4133,7 +4134,7 @@ connections:
 /// Scenario: one pipeline starts requiring original names that the engine currently discards.
 /// Guarantees: the live update is rejected because the engine-wide representation is immutable.
 #[test]
-fn reconfigure_rejects_context_policy_changes_to_other_pipelines() {
+fn reconfigure_rejects_context_bindings_changes_to_other_pipelines() {
     let config = OtelDataflowSpec::from_yaml(
         r#"
 version: otel_dataflow/v1
@@ -4143,7 +4144,7 @@ groups:
       capture:
         nodes:
           receiver:
-            type: "urn:test:receiver:context-policy"
+            type: "urn:test:receiver:context-bindings"
             header_capture:
               headers:
                 - match_names: ["x-tenant-id"]
@@ -4159,7 +4160,7 @@ groups:
       propagate:
         nodes:
           receiver:
-            type: "urn:test:receiver:context-policy"
+            type: "urn:test:receiver:context-bindings"
             config:
               produces: source-marker
           exporter:
@@ -4176,7 +4177,7 @@ groups:
 "#,
     )
     .expect("engine config should parse");
-    let runtime = test_runtime_with_factory(&config, &CONTEXT_POLICY_TEST_PIPELINE_FACTORY);
+    let runtime = test_runtime_with_factory(&config, &CONTEXT_BINDINGS_TEST_PIPELINE_FACTORY);
     register_pipeline(&runtime, &config, "g1", "capture");
     register_pipeline(&runtime, &config, "g1", "propagate");
 
@@ -4186,7 +4187,7 @@ groups:
         r#"
 nodes:
   receiver:
-    type: "urn:test:receiver:context-policy"
+    type: "urn:test:receiver:context-bindings"
     config:
       produces: source-marker
   exporter:
@@ -4231,7 +4232,7 @@ connections:
 /// Scenario: deleting the last original-name consumer leaves a capture pipeline deployed.
 /// Guarantees: deletion succeeds and the remaining generation keeps preserving original names.
 #[test]
-fn delete_preserves_installed_context_requirements() {
+fn delete_preserves_installed_context_runtime_requirements() {
     let config = OtelDataflowSpec::from_yaml(
         r#"
 version: otel_dataflow/v1
@@ -4241,7 +4242,7 @@ groups:
       capture:
         nodes:
           receiver:
-            type: "urn:test:receiver:context-policy"
+            type: "urn:test:receiver:context-bindings"
             header_capture:
               headers:
                 - match_names: ["x-tenant-id"]
@@ -4257,7 +4258,7 @@ groups:
       propagate:
         nodes:
           receiver:
-            type: "urn:test:receiver:context-policy"
+            type: "urn:test:receiver:context-bindings"
             config:
               produces: source-marker
           exporter:
@@ -4274,15 +4275,15 @@ groups:
 "#,
     )
     .expect("engine config should parse");
-    let runtime = test_runtime_with_factory(&config, &CONTEXT_POLICY_TEST_PIPELINE_FACTORY);
+    let runtime = test_runtime_with_factory(&config, &CONTEXT_BINDINGS_TEST_PIPELINE_FACTORY);
     register_pipeline(&runtime, &config, "g1", "capture");
     register_pipeline(&runtime, &config, "g1", "propagate");
-    let initial_policy = {
+    let initial_bindings = {
         let state = runtime
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        Arc::clone(&state.latest_context_policy)
+        Arc::clone(&state.latest_context_bindings)
     };
 
     let status = runtime
@@ -4299,15 +4300,16 @@ groups:
             .pipelines
             .contains_key(&PipelineId::from("propagate"))
     );
-    assert!(initial_policy.pipeline_bindings_match(
-        &state.latest_context_policy,
+    assert!(initial_bindings.pipeline_bindings_match(
+        &state.latest_context_bindings,
         &PipelineKey::new("g1".into(), "capture".into())
     ));
-    let unpinned_policy = CONTEXT_POLICY_TEST_PIPELINE_FACTORY
-        .compile_context_policy(&state.live_config.resolve())
-        .expect("remaining config should compile without installed requirements");
-    assert!(!state.latest_context_policy.pipeline_bindings_match(
-        &unpinned_policy,
+    let unpinned_bindings = CONTEXT_BINDINGS_TEST_PIPELINE_FACTORY
+        .compile_initial_context(&state.live_config.resolve())
+        .expect("remaining config should compile without installed requirements")
+        .bindings;
+    assert!(!state.latest_context_bindings.pipeline_bindings_match(
+        &unpinned_bindings,
         &PipelineKey::new("g1".into(), "capture".into())
     ));
 }
@@ -4315,12 +4317,12 @@ groups:
 /// Scenario: a new pipeline requires an original name already preserved by the engine.
 /// Guarantees: the compatible pipeline is accepted without changing deployed bindings.
 #[test]
-fn reconfigure_accepts_supported_context_requirements() {
+fn reconfigure_accepts_supported_context_runtime_requirements() {
     let config = engine_config_with_pipeline(
         r#"
         nodes:
           receiver:
-            type: "urn:test:receiver:context-policy"
+            type: "urn:test:receiver:context-bindings"
             config:
               produces: source-marker
           exporter:
@@ -4337,7 +4339,7 @@ fn reconfigure_accepts_supported_context_requirements() {
             to: exporter
         "#,
     );
-    let runtime = test_runtime_with_factory(&config, &CONTEXT_POLICY_TEST_PIPELINE_FACTORY);
+    let runtime = test_runtime_with_factory(&config, &CONTEXT_BINDINGS_TEST_PIPELINE_FACTORY);
     register_existing_pipeline(&runtime, &config);
     let pipeline =
         config.groups[&PipelineGroupId::from("g1")].pipelines[&PipelineId::from("p1")].clone();
@@ -4358,13 +4360,13 @@ fn reconfigure_accepts_supported_context_requirements() {
 }
 
 /// Scenario: recovery restarts a failed pipeline generation.
-/// Guarantees: recovery reuses that generation's policy snapshot.
+/// Guarantees: recovery reuses that generation's binding snapshot.
 #[test]
-fn runtime_recovery_reuses_context_policy_snapshot() {
-    let _capture_guard = CONTEXT_POLICY_TEST_LOCK
+fn runtime_recovery_reuses_context_bindings_snapshot() {
+    let _capture_guard = CONTEXT_BINDINGS_TEST_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    reset_context_policy_test_capture();
+    reset_context_bindings_test_capture();
     let config = engine_config_with_pipeline(
         r#"
         policies:
@@ -4376,7 +4378,7 @@ fn runtime_recovery_reuses_context_policy_snapshot() {
             reset_after: 1m
         nodes:
           receiver:
-            type: "urn:test:receiver:context-policy"
+            type: "urn:test:receiver:context-bindings"
             config:
               produces: X-Tenant
           exporter:
@@ -4387,15 +4389,15 @@ fn runtime_recovery_reuses_context_policy_snapshot() {
             to: exporter
         "#,
     );
-    let runtime = test_runtime_with_factory(&config, &CONTEXT_POLICY_TEST_PIPELINE_FACTORY);
+    let runtime = test_runtime_with_factory(&config, &CONTEXT_BINDINGS_TEST_PIPELINE_FACTORY);
     let _runner = ObservedStateRunner::start(&runtime);
     register_existing_pipeline(&runtime, &config);
-    let expected_policy = {
+    let expected_bindings = {
         let state = runtime
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        Arc::clone(&state.latest_context_policy)
+        Arc::clone(&state.latest_context_bindings)
     };
     let _runtime_control =
         register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
@@ -4406,10 +4408,10 @@ fn runtime_recovery_reuses_context_policy_snapshot() {
         RuntimeInstanceExit::Error(RuntimeInstanceError::runtime("boom".to_owned())),
     );
 
-    let recovered_policy = wait_for_context_policy_test_capture()
+    let recovered_bindings = wait_for_context_bindings_test_capture()
         .upgrade()
         .expect("recovered policy should remain installed");
-    assert!(Arc::ptr_eq(&expected_policy, &recovered_policy));
+    assert!(Arc::ptr_eq(&expected_bindings, &recovered_bindings));
 
     let pipeline_key = PipelineKey::new("g1".into(), "p1".into());
     let _ = wait_for_observed_status(&runtime, &pipeline_key, |status| {
@@ -4421,7 +4423,7 @@ fn runtime_recovery_reuses_context_policy_snapshot() {
         .request_instance_shutdown(
             &deployed_key("g1", "p1", 0, 1),
             2,
-            "context policy recovery test cleanup",
+            "context binding recovery test cleanup",
         )
         .expect("recovered runtime should accept shutdown");
 }
@@ -4828,7 +4830,7 @@ groups:
       p1:
         nodes:
           receiver:
-            type: "urn:test:receiver:context-policy"
+            type: "urn:test:receiver:context-bindings"
             config:
               produces: retained-marker
           exporter:
@@ -4840,7 +4842,7 @@ groups:
       p2:
         nodes:
           receiver:
-            type: "urn:test:receiver:context-policy"
+            type: "urn:test:receiver:context-bindings"
             config:
               produces: X-Tenant
           exporter:
@@ -4859,7 +4861,7 @@ groups:
         .expect("test group should exist")
         .pipelines
         .remove(&PipelineId::from("p2"));
-    let runtime = test_runtime_with_factory(&config, &CONTEXT_POLICY_TEST_PIPELINE_FACTORY);
+    let runtime = test_runtime_with_factory(&config, &CONTEXT_BINDINGS_TEST_PIPELINE_FACTORY);
     register_pipeline(&runtime, &config, "g1", "p1");
     register_pipeline(&runtime, &config, "g1", "p2");
     let _p1_runtime =
@@ -4902,7 +4904,7 @@ fn reconcile_engine_config_preserves_missing_resources_when_requested() {
                   end: 0
         nodes:
           receiver:
-            type: "urn:test:receiver:context-policy"
+            type: "urn:test:receiver:context-bindings"
             config:
               produces: X-Tenant
           exporter:
@@ -4922,7 +4924,7 @@ fn reconcile_engine_config_preserves_missing_resources_when_requested() {
         .expect("test group should exist")
         .pipelines
         .insert("p2".into(), retained_pipeline);
-    let runtime = test_runtime_with_factory(&config, &CONTEXT_POLICY_TEST_PIPELINE_FACTORY);
+    let runtime = test_runtime_with_factory(&config, &CONTEXT_BINDINGS_TEST_PIPELINE_FACTORY);
     register_existing_pipeline(&runtime, &config);
     register_pipeline(&runtime, &config, "g1", "p2");
     let _p1_runtime =

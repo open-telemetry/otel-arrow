@@ -12,7 +12,7 @@ use crate::attributes::{
     NodeWithCustomTopicAttributeSet, NodeWithTopicAttributeSet, PipelineAttributeSet,
     config_map_to_telemetry,
 };
-use crate::context_declaration::CompiledContextPolicy;
+use crate::context_declaration::CompiledContextBindings;
 use crate::entity_context::{current_node_telemetry_handle, node_entity_key};
 use crate::listener_group::ListenerGroupSnapshot;
 use crate::memory_limiter::MemoryPressureState;
@@ -143,8 +143,8 @@ pub struct PipelineContext {
     // Consumers should cache any needed listener plan during setup rather than cloning
     // or searching this snapshot from the per-record data path.
     listener_group_snapshot: Arc<ListenerGroupSnapshot>,
-    /// Compiled policy shared by this runtime's nodes.
-    compiled_context_policy: Arc<CompiledContextPolicy>,
+    /// Compiled context bindings shared by this runtime's nodes.
+    compiled_context_bindings: Arc<CompiledContextBindings>,
 }
 
 /// Registrar that binds generated metric-set registration to an existing entity.
@@ -341,7 +341,7 @@ impl PipelineContext {
             node_names: Arc::new(HashMap::new()),
             topic_set: None,
             listener_group_snapshot: Arc::new(ListenerGroupSnapshot::empty()),
-            compiled_context_policy: Arc::new(CompiledContextPolicy::empty()),
+            compiled_context_bindings: Arc::new(CompiledContextBindings::empty()),
         }
     }
 
@@ -457,15 +457,15 @@ impl PipelineContext {
         Arc::clone(&self.listener_group_snapshot)
     }
 
-    /// Sets this context's compiled policy.
-    pub fn set_compiled_context_policy(&mut self, policy: Arc<CompiledContextPolicy>) {
-        self.compiled_context_policy = policy;
+    /// Sets this context's compiled bindings.
+    pub fn set_compiled_context_bindings(&mut self, bindings: Arc<CompiledContextBindings>) {
+        self.compiled_context_bindings = bindings;
     }
 
-    /// Returns this context's compiled policy.
+    /// Returns this context's compiled bindings.
     #[must_use]
-    pub fn compiled_context_policy(&self) -> &Arc<CompiledContextPolicy> {
-        &self.compiled_context_policy
+    pub fn compiled_context_bindings(&self) -> &Arc<CompiledContextBindings> {
+        &self.compiled_context_bindings
     }
 
     /// Returns the pipeline-scoped topic set, if one was injected.
@@ -809,7 +809,7 @@ impl PipelineContext {
             node_names: self.node_names.clone(),
             topic_set: self.topic_set.clone(),
             listener_group_snapshot: Arc::clone(&self.listener_group_snapshot),
-            compiled_context_policy: self.compiled_context_policy.clone(),
+            compiled_context_bindings: self.compiled_context_bindings.clone(),
         }
     }
 }
@@ -1190,7 +1190,7 @@ mod tests {
     }
 
     /// Scenario: a node context is created from a pipeline context.
-    /// Guarantees: both contexts share the same compiled policy snapshot.
+    /// Guarantees: both contexts share the same compiled binding snapshot.
     #[test]
     fn pipeline_context_preserves_compiled_policy_across_node_context() {
         let resolved = otel_arrow_dfe_config::engine::ResolvedOtelDataflowSpec {
@@ -1198,13 +1198,14 @@ mod tests {
             pipelines: Vec::new(),
         };
         let factory = crate::PipelineFactory::<()>::new(&[], &[], &[], &[]);
-        let policy = factory
-            .compile_context_policy(&resolved)
-            .expect("context policy");
+        let bindings = factory
+            .compile_initial_context(&resolved)
+            .expect("context bindings")
+            .bindings;
         let controller = ControllerContext::new(TelemetryRegistryHandle::new());
         let mut pipeline =
             controller.pipeline_context_with("group".into(), "pipeline".into(), 0, 1, 0);
-        pipeline.set_compiled_context_policy(Arc::clone(&policy));
+        pipeline.set_compiled_context_bindings(Arc::clone(&bindings));
 
         let node = pipeline.with_node_context(
             "node".into(),
@@ -1213,7 +1214,7 @@ mod tests {
             HashMap::new(),
         );
 
-        assert!(Arc::ptr_eq(node.compiled_context_policy(), &policy));
+        assert!(Arc::ptr_eq(node.compiled_context_bindings(), &bindings));
     }
 
     fn pipeline_ctx_with_custom_attrs(

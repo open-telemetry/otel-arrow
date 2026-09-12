@@ -71,7 +71,7 @@ use otel_arrow_dfe_engine::ReceivedAtNode;
 use otel_arrow_dfe_engine::Unwindable;
 use otel_arrow_dfe_engine::context::{ControllerContext, PipelineContext};
 use otel_arrow_dfe_engine::context_declaration::{
-    CompiledContextPolicy, TransportHeaderRequirements,
+    CompiledContextBindings, ContextRuntimeRequirements,
 };
 use otel_arrow_dfe_engine::control::{
     PipelineAdminSender, PipelineCompletionMsgReceiver, PipelineCompletionMsgSender,
@@ -1308,7 +1308,7 @@ impl<
         let resolved_config = engine_config.resolve();
         let context = self
             .pipeline_factory
-            .compile_context(&resolved_config, None)
+            .compile_initial_context(&resolved_config)
             .map_err(|source| Error::PipelineRuntimeError {
                 source: Box::new(source),
             })?;
@@ -1537,8 +1537,8 @@ impl<
             engine_evt_reporter.clone(),
             metrics_reporter.clone(),
             declared_topics,
-            context.requirements,
-            Arc::clone(&context.policy),
+            context.runtime_requirements,
+            Arc::clone(&context.bindings),
             all_cores.clone(),
             topology,
             telemetry_system.engine_tracing_setup(),
@@ -1589,7 +1589,7 @@ impl<
             observability_core,
             observability_pipeline,
             &engine_config,
-            Arc::clone(&context.policy),
+            Arc::clone(&context.bindings),
             &telemetry_system,
             self.pipeline_factory,
             &controller_ctx,
@@ -1731,7 +1731,7 @@ impl<
                     placement.core_id,
                     placement.numa_node_id,
                     Arc::clone(&listener_group_snapshot),
-                    Arc::clone(&context.policy),
+                    Arc::clone(&context.bindings),
                     num_cores,
                     pipeline_entry.pipeline.clone(),
                     pipeline_entry.policies.channel_capacity.clone(),
@@ -2561,7 +2561,7 @@ impl<
         core_id: CoreId,
         numa_node_id: usize,
         listener_group_snapshot: Arc<ListenerGroupSnapshot>,
-        context_policy: Arc<CompiledContextPolicy>,
+        context_bindings: Arc<CompiledContextBindings>,
         num_cores: usize,
         pipeline_config: PipelineConfig,
         channel_capacity_policy: ChannelCapacityPolicy,
@@ -2601,7 +2601,7 @@ impl<
         )?;
         pipeline_ctx.set_topic_set(topic_set);
         pipeline_ctx.set_listener_group_snapshot_arc(listener_group_snapshot);
-        pipeline_ctx.set_compiled_context_policy(Arc::clone(&context_policy));
+        pipeline_ctx.set_compiled_context_bindings(Arc::clone(&context_bindings));
         let (runtime_ctrl_msg_tx, runtime_ctrl_msg_rx) =
             runtime_ctrl_msg_channel(channel_capacity_policy.control.pipeline);
         let (pipeline_completion_msg_tx, pipeline_completion_msg_rx) =
@@ -2672,7 +2672,7 @@ impl<
         Ok(LaunchedPipelineThread {
             pipeline_key,
             control_sender,
-            context_policy,
+            context_bindings,
             _marker: std::marker::PhantomData,
         })
     }
@@ -2685,7 +2685,7 @@ impl<
         observability_core: CoreId,
         observability_pipeline: ResolvedPipelineConfig,
         config: &OtelDataflowSpec,
-        context_policy: Arc<CompiledContextPolicy>,
+        context_bindings: Arc<CompiledContextBindings>,
         telemetry_system: &InternalTelemetrySystem,
         pipeline_factory: &'static PipelineFactory<PData>,
         controller_ctx: &ControllerContext,
@@ -2714,7 +2714,7 @@ impl<
             observability_core,
             observability_numa_node_id,
             Arc::new(ListenerGroupSnapshot::empty()),
-            context_policy,
+            context_bindings,
             1,
             pipeline_config,
             channel_capacity_policy,

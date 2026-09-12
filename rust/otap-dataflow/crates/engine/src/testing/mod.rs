@@ -93,7 +93,7 @@ pub fn test_pipeline_ctx_with_interests(
     (ctx, registry)
 }
 
-/// Compiles and installs a policy for one test pipeline.
+/// Compiles and installs bindings for one test pipeline.
 ///
 /// Ignores engine and group policies.
 /// Compile the full engine configuration to test inheritance or multiple pipelines.
@@ -101,7 +101,7 @@ pub fn test_pipeline_ctx_with_interests(
 /// # Errors
 ///
 /// Returns configuration or declaration errors.
-pub fn install_test_context_policy<PData: 'static + Clone + std::fmt::Debug>(
+pub fn install_test_context_bindings<PData: 'static + Clone + std::fmt::Debug>(
     pipeline_ctx: &mut PipelineContext,
     factory: &crate::PipelineFactory<PData>,
     pipeline: PipelineConfig,
@@ -116,7 +116,8 @@ pub fn install_test_context_policy<PData: 'static + Clone + std::fmt::Debug>(
             role: ResolvedPipelineRole::Regular,
         }],
     };
-    pipeline_ctx.set_compiled_context_policy(factory.compile_context_policy(&resolved)?);
+    pipeline_ctx
+        .set_compiled_context_bindings(factory.compile_initial_context(&resolved)?.bindings);
     Ok(())
 }
 

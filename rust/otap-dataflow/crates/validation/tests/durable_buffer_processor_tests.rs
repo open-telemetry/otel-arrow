@@ -29,7 +29,7 @@ use otel_arrow_dfe_engine::control::{
     RuntimeControlMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
 };
 use otel_arrow_dfe_engine::entity_context::set_pipeline_entity_key;
-use otel_arrow_dfe_engine::testing::install_test_context_policy;
+use otel_arrow_dfe_engine::testing::install_test_context_bindings;
 use otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_dfe_quiver::segment::SegmentReader;
@@ -461,8 +461,8 @@ where
         1,
         0,
     );
-    install_test_context_policy(&mut pipeline_ctx, &OTAP_PIPELINE_FACTORY, config.clone())
-        .expect("test context policy should compile");
+    install_test_context_bindings(&mut pipeline_ctx, &OTAP_PIPELINE_FACTORY, config.clone())
+        .expect("test context bindings should compile");
 
     let pipeline_entity_key = pipeline_ctx.register_pipeline_entity();
     let channel_capacity_policy = ChannelCapacityPolicy::default();
@@ -757,8 +757,8 @@ where
         1,
         0,
     );
-    install_test_context_policy(&mut pipeline_ctx, &OTAP_PIPELINE_FACTORY, config.clone())
-        .expect("test context policy should compile");
+    install_test_context_bindings(&mut pipeline_ctx, &OTAP_PIPELINE_FACTORY, config.clone())
+        .expect("test context bindings should compile");
 
     let pipeline_entity_key = pipeline_ctx.register_pipeline_entity();
     let channel_capacity_policy = ChannelCapacityPolicy::default();

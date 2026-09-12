@@ -25,7 +25,7 @@ use otel_arrow_dfe_engine::control::{
     RuntimeControlMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
 };
 use otel_arrow_dfe_engine::entity_context::set_pipeline_entity_key;
-use otel_arrow_dfe_engine::testing::install_test_context_policy;
+use otel_arrow_dfe_engine::testing::install_test_context_bindings;
 use otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY;
 use otel_arrow_dfe_state::store::ObservedStateStore;
 use otel_arrow_dfe_telemetry::InternalTelemetrySystem;
@@ -62,8 +62,8 @@ fn test_telemetry_registries_cleanup() {
         1,
         0,
     );
-    install_test_context_policy(&mut pipeline_ctx, &OTAP_PIPELINE_FACTORY, config.clone())
-        .expect("test context policy should compile");
+    install_test_context_bindings(&mut pipeline_ctx, &OTAP_PIPELINE_FACTORY, config.clone())
+        .expect("test context bindings should compile");
 
     let pipeline_entity_key = pipeline_ctx.register_pipeline_entity();
     let channel_capacity_policy = ChannelCapacityPolicy::default();
@@ -161,8 +161,8 @@ fn test_pipeline_fan_in_builds() {
     let controller_ctx = ControllerContext::new(registry.clone());
     let mut pipeline_ctx =
         controller_ctx.pipeline_context_with(pipeline_group_id, pipeline_id, 0, 1, 0);
-    install_test_context_policy(&mut pipeline_ctx, &OTAP_PIPELINE_FACTORY, config.clone())
-        .expect("test context policy should compile");
+    install_test_context_bindings(&mut pipeline_ctx, &OTAP_PIPELINE_FACTORY, config.clone())
+        .expect("test context bindings should compile");
 
     let _pipeline_entity_key = pipeline_ctx.register_pipeline_entity();
     let _runtime_pipeline = OTAP_PIPELINE_FACTORY
@@ -204,8 +204,8 @@ fn test_pipeline_mixed_receivers_shared_channel_builds() {
     let controller_ctx = ControllerContext::new(registry.clone());
     let mut pipeline_ctx =
         controller_ctx.pipeline_context_with(pipeline_group_id, pipeline_id, 0, 1, 0);
-    install_test_context_policy(&mut pipeline_ctx, &OTAP_PIPELINE_FACTORY, config.clone())
-        .expect("test context policy should compile");
+    install_test_context_bindings(&mut pipeline_ctx, &OTAP_PIPELINE_FACTORY, config.clone())
+        .expect("test context bindings should compile");
 
     let _pipeline_entity_key = pipeline_ctx.register_pipeline_entity();
     let _runtime_pipeline = OTAP_PIPELINE_FACTORY

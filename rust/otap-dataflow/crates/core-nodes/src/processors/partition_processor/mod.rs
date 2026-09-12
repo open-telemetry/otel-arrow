@@ -521,7 +521,7 @@ mod test {
             PipelineCompletionMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
         },
         testing::{
-            install_test_context_policy,
+            install_test_context_bindings,
             processor::{TestContext, TestRuntime},
             test_node,
         },
@@ -580,12 +580,12 @@ mod test {
             "nodes": { "partition_processor": &node_config }
         }))
         .expect("test pipeline configuration");
-        install_test_context_policy(
+        install_test_context_bindings(
             &mut pipeline_context,
             &OTAP_PIPELINE_FACTORY,
             pipeline_config,
         )
-        .expect("test context policy should compile");
+        .expect("test context bindings should compile");
         let pipeline_context = pipeline_context.with_node_context(
             "partition_processor".into(),
             node_config.r#type.clone(),

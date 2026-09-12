@@ -365,7 +365,7 @@ impl ConfigNodeContextDeclaration for KafkaExporterConfig {
                         });
                 let partition = signal.partition_by_transport_headers().then_some(
                     ContextDeclaration::Consumes {
-                        selector: ContextConsumerSelector::AllNormalized,
+                        selector: ContextConsumerSelector::AllStored,
                     },
                 );
                 topic.into_iter().chain(partition)
@@ -1682,7 +1682,7 @@ pub mod test_support {
                     },
                 },
                 ContextDeclaration::Consumes {
-                    selector: ContextConsumerSelector::AllNormalized,
+                    selector: ContextConsumerSelector::AllStored,
                 },
             ]
             .into_iter()

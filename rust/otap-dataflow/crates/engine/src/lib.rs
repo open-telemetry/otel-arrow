@@ -13,7 +13,6 @@ use crate::{
         PdataChannelSenderMetricSets, SharedChannelQueueDepth,
     },
     config::{ExporterConfig, ExtensionConfig, ProcessorConfig, ReceiverConfig},
-    context_declaration::{CompiledContextAccess, ContextDeclaration},
     control::{AckMsg, CallData, NackMsg},
     effect_handler::SourceTagging,
     entity_context::{NodeTelemetryGuard, NodeTelemetryHandle, with_node_telemetry_handle},
@@ -1968,17 +1967,9 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let create = factory.create;
 
         let capture_policy = pipeline_ctx
-            .compiled_context_policy()
-            .node_bindings(&pipeline_ctx.pipeline_key(), &pipeline_ctx.node_id())
-            .into_iter()
-            .flatten()
-            .find_map(|binding| match (&binding.declaration, &binding.access) {
-                (
-                    ContextDeclaration::HeaderCapture { .. },
-                    CompiledContextAccess::HeaderCapture(policy),
-                ) => Some(policy.clone()),
-                _ => None,
-            });
+            .compiled_context_bindings()
+            .header_capture_policy(&pipeline_ctx.pipeline_key(), &pipeline_ctx.node_id())
+            .cloned();
 
         let receiver = create(
             (*pipeline_ctx).clone(),
@@ -2130,17 +2121,9 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let create = factory.create;
 
         let propagation_policy = pipeline_ctx
-            .compiled_context_policy()
-            .node_bindings(&pipeline_ctx.pipeline_key(), &pipeline_ctx.node_id())
-            .into_iter()
-            .flatten()
-            .find_map(|binding| match (&binding.declaration, &binding.access) {
-                (
-                    ContextDeclaration::HeaderPropagation { policy },
-                    CompiledContextAccess::HeaderPropagation,
-                ) => Some(policy.clone()),
-                _ => None,
-            });
+            .compiled_context_bindings()
+            .header_propagation_policy(&pipeline_ctx.pipeline_key(), &pipeline_ctx.node_id())
+            .cloned();
 
         let exporter = create(
             (*pipeline_ctx).clone(),

@@ -2,4 +2,4 @@ change_type: enhancement
 component: engine
 note: Improve transport-header capture and propagation efficiency with canonical lowercase names.
 issues: [3919, 4008]
-subtext: New original-name requirements need an engine restart. Compatible pipelines can be updated live while preserving the engine's initial header representation.
+subtext: New original-name requirements need an engine restart. Compatible pipelines can update live while preserving the initial representation. Case-colliding configured names are rejected.

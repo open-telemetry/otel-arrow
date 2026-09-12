@@ -650,17 +650,20 @@ impl<
         )
     }
 
-    fn compile_context_policy(
+    fn compile_context_bindings(
         &self,
         resolved: &ResolvedOtelDataflowSpec,
-    ) -> Result<Arc<CompiledContextPolicy>, ControlPlaneError> {
+    ) -> Result<Arc<CompiledContextBindings>, ControlPlaneError> {
         let context = self
             .pipeline_factory
-            .compile_context(resolved, Some(&self.context_requirements))
+            .compile_candidate_context(resolved, &self.context_runtime_requirements)
             .map_err(|error| ControlPlaneError::InvalidRequest {
                 message: error.to_string(),
             })?;
-        if !self.context_requirements.supports(&context.requirements) {
+        if !self
+            .context_runtime_requirements
+            .can_satisfy(&context.runtime_requirements)
+        {
             return Err(ControlPlaneError::InvalidRequest {
                 message: "request requires original transport-header names that the running engine does not preserve; restart the engine to apply this configuration".to_owned(),
             });
@@ -670,16 +673,16 @@ impl<
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if state.latest_context_policy.eq(&context.policy) {
-                return Ok(Arc::clone(&state.latest_context_policy));
+            if state.latest_context_bindings.eq(&context.bindings) {
+                return Ok(Arc::clone(&state.latest_context_bindings));
             }
         };
-        Ok(context.policy)
+        Ok(context.bindings)
     }
 
     fn validate_deployed_pipeline_context_bindings_unchanged(
         &self,
-        candidate_context_policy: &CompiledContextPolicy,
+        candidate_context_bindings: &CompiledContextBindings,
     ) -> Result<(), ControlPlaneError> {
         let state = self
             .state
@@ -689,7 +692,7 @@ impl<
             &state,
             None,
             None,
-            candidate_context_policy,
+            candidate_context_bindings,
         )
     }
 
@@ -697,7 +700,7 @@ impl<
         state: &ControllerRuntimeState,
         excluded_pipeline: Option<&PipelineKey>,
         included_pipelines: Option<&HashSet<PipelineKey>>,
-        candidate_context_policy: &CompiledContextPolicy,
+        candidate_context_bindings: &CompiledContextBindings,
     ) -> Result<(), ControlPlaneError> {
         // The policy is compiled engine-wide, but each running pipeline uses the
         // bindings from the snapshot installed with its generation. A replacement
@@ -715,8 +718,8 @@ impl<
                 included_pipelines.is_none_or(|included| included.contains(*pipeline_key))
                     && excluded_pipeline != Some(*pipeline_key)
                     && !record
-                        .context_policy
-                        .pipeline_bindings_match(candidate_context_policy, pipeline_key)
+                        .context_bindings
+                        .pipeline_bindings_match(candidate_context_bindings, pipeline_key)
             })
             .map(|(pipeline_key, _)| {
                 format!(
@@ -747,7 +750,7 @@ impl<
         pipeline_id: &str,
         request: &ReconfigureRequest,
         planning_config: Option<&OtelDataflowSpec>,
-        prepared_context_policy: Option<Arc<CompiledContextPolicy>>,
+        prepared_context_bindings: Option<Arc<CompiledContextBindings>>,
         engine_operation_id: Option<&str>,
         projected_reserved_core_ids: Option<&BTreeSet<usize>>,
     ) -> Result<CandidateRolloutPlan, ControlPlaneError> {
@@ -823,10 +826,10 @@ impl<
         Self::validate_live_memory_limiter_unchanged(&live_config, &candidate_config)?;
 
         let resolved_candidate_config = candidate_config.resolve();
-        let context_policy = match prepared_context_policy {
+        let context_bindings = match prepared_context_bindings {
             Some(policy) => policy,
             None => {
-                let policy = self.compile_context_policy(&resolved_candidate_config)?;
+                let policy = self.compile_context_bindings(&resolved_candidate_config)?;
                 self.validate_deployed_pipeline_context_bindings_unchanged(&policy)?;
                 policy
             }
@@ -1078,7 +1081,7 @@ impl<
             pipeline_id,
             action,
             resolved_pipeline,
-            context_policy,
+            context_bindings,
             base_config_revision,
             current_record,
             current_placement,
@@ -1280,28 +1283,28 @@ impl<
                     plan.pipeline_id.clone(),
                     plan.resolved_pipeline.pipeline.clone(),
                 );
-            let context_policy = match plan.action {
+            let context_bindings = match plan.action {
                 RolloutAction::NoOp => plan
                     .current_record
                     .as_ref()
-                    .map(|record| Arc::clone(&record.context_policy))
+                    .map(|record| Arc::clone(&record.context_bindings))
                     .expect("no-op rollout has a committed record"),
                 RolloutAction::Create | RolloutAction::Resize | RolloutAction::Replace => {
-                    Arc::clone(&plan.context_policy)
+                    Arc::clone(&plan.context_bindings)
                 }
             };
             _ = state.logical_pipelines.insert(
                 plan.pipeline_key.clone(),
                 LogicalPipelineRecord {
                     resolved: plan.resolved_pipeline.clone(),
-                    context_policy: Arc::clone(&context_policy),
+                    context_bindings: Arc::clone(&context_bindings),
                     active_generation,
                     placement: plan.target_placement.placement.clone(),
                     placement_generation: plan.target_placement.listener_group_snapshot.generation,
                 },
             );
             if !matches!(plan.action, RolloutAction::NoOp) {
-                state.latest_context_policy = context_policy;
+                state.latest_context_bindings = context_bindings;
             }
             state.config_revision += 1;
             state
@@ -1723,7 +1726,7 @@ impl<
         pipeline_key: &PipelineKey,
         engine_operation_id: Option<&str>,
         expected_config_revision: u64,
-        candidate_context_policy: Arc<CompiledContextPolicy>,
+        candidate_context_bindings: Arc<CompiledContextBindings>,
     ) -> Result<(), ControlPlaneError> {
         {
             let mut state = self
@@ -1764,14 +1767,17 @@ impl<
             {
                 let _ = group.pipelines.remove(pipeline_key.pipeline_id());
             }
-            let context_policy = if state.latest_context_policy.eq(&candidate_context_policy) {
-                Arc::clone(&state.latest_context_policy)
+            let context_bindings = if state
+                .latest_context_bindings
+                .eq(&candidate_context_bindings)
+            {
+                Arc::clone(&state.latest_context_bindings)
             } else {
-                candidate_context_policy
+                candidate_context_bindings
             };
             let _ = state.logical_pipelines.remove(pipeline_key);
             let _ = state.generation_counters.remove(pipeline_key);
-            state.latest_context_policy = context_policy;
+            state.latest_context_bindings = context_bindings;
             state.config_revision += 1;
             state
                 .runtime_recoveries
@@ -1907,8 +1913,9 @@ impl<
             }
             (candidate_config, state.config_revision)
         };
-        let candidate_context_policy = self.compile_context_policy(&candidate_config.resolve())?;
-        let (has_active_runtime, candidate_context_policy) = {
+        let candidate_context_bindings =
+            self.compile_context_bindings(&candidate_config.resolve())?;
+        let (has_active_runtime, candidate_context_bindings) = {
             let state = self
                 .state
                 .lock()
@@ -1927,14 +1934,16 @@ impl<
                 &state,
                 Some(&pipeline_key),
                 None,
-                &candidate_context_policy,
+                &candidate_context_bindings,
             )?;
-            let candidate_context_policy =
-                if state.latest_context_policy.eq(&candidate_context_policy) {
-                    Arc::clone(&state.latest_context_policy)
-                } else {
-                    candidate_context_policy
-                };
+            let candidate_context_bindings = if state
+                .latest_context_bindings
+                .eq(&candidate_context_bindings)
+            {
+                Arc::clone(&state.latest_context_bindings)
+            } else {
+                candidate_context_bindings
+            };
             let has_active_runtime =
                 state
                     .runtime_instances
@@ -1944,7 +1953,7 @@ impl<
                             && deployed_key.pipeline_id == pipeline_id
                             && matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active)
                     });
-            (has_active_runtime, candidate_context_policy)
+            (has_active_runtime, candidate_context_bindings)
         };
         let shutdown = if has_active_runtime {
             match self.request_shutdown_pipeline_for_engine_operation(
@@ -1994,7 +2003,7 @@ impl<
             &pipeline_key,
             engine_operation_id,
             base_config_revision,
-            candidate_context_policy,
+            candidate_context_bindings,
         )?;
         Ok(PipelineDeleteStatus {
             pipeline_group_id,
@@ -2164,7 +2173,8 @@ impl<
             }
         }
         let candidate_resolved_config = candidate_config.resolve();
-        let candidate_context_policy = self.compile_context_policy(&candidate_resolved_config)?;
+        let candidate_context_bindings =
+            self.compile_context_bindings(&candidate_resolved_config)?;
         let retained_pipeline_keys: HashSet<_> = candidate_resolved_config
             .pipelines
             .iter()
@@ -2185,7 +2195,7 @@ impl<
                 &state,
                 None,
                 Some(&retained_pipeline_keys),
-                &candidate_context_policy,
+                &candidate_context_bindings,
             )?;
         }
         let desired_phase_by_key: HashMap<_, _> = candidate_resolved_config
@@ -2242,7 +2252,7 @@ impl<
                 pipeline_key.pipeline_id(),
                 &reconfigure_request,
                 Some(&candidate_config),
-                Some(Arc::clone(&candidate_context_policy)),
+                Some(Arc::clone(&candidate_context_bindings)),
                 Some(guard.operation_id()),
                 Some(&projected_exclusive_core_ids),
             )?;

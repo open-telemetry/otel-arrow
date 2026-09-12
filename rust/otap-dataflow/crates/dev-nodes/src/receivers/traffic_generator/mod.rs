@@ -1993,9 +1993,9 @@ mod tests {
     }
 
     /// Scenario: configured header names differ only by case.
-    /// Guarantees: declaration collection produces one canonical lowercase name.
+    /// Guarantees: declaration collection rejects the duplicate canonical lowercase name.
     #[test]
-    fn traffic_gen_declaration_collapses_case_distinct_headers() {
+    fn traffic_gen_declaration_rejects_case_distinct_duplicates() {
         let config = serde_json::json!({
             "traffic_config": {
                 "signals_per_second": 10,
@@ -2012,19 +2012,17 @@ mod tests {
             }
         });
 
-        let declarations = (TRAFFIC_GENERATOR_RECEIVER
+        let error = (TRAFFIC_GENERATOR_RECEIVER
             .context_declarations
             .expect("traffic generator should declare context")
             .declarations)(&config)
-        .expect("case-distinct names should normalize");
-        let names = declarations
-            .iter()
-            .map(|declaration| match declaration {
-                ContextDeclaration::Produces { entry } => entry.as_str(),
-                other => panic!("unexpected declaration: {other:?}"),
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(names, vec!["x-tenant-id"]);
+        .expect_err("case-distinct names should collide after normalization");
+        assert!(
+            error.to_string().contains(
+                "duplicate transport header name `x-tenant-id` after ASCII lowercase normalization"
+            ),
+            "{error}"
+        );
     }
 
     /// Scenario: Receiver config validation accepts configs with at least one non-zero signal weight and rejects configs where all weights are zero.
