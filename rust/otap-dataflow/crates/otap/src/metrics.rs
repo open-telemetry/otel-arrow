@@ -87,7 +87,7 @@ impl ReceiverProcessingMetrics {
 /// Receiver-local processing state captured for enabled shared metrics.
 #[derive(Debug)]
 pub struct ReceiverProcessing {
-    measure_duration: bool,
+    started_at: Option<Instant>,
     payload_size: Option<u64>,
     accepts_payload_size: bool,
 }
@@ -146,7 +146,10 @@ impl ReceiverMetrics {
     #[must_use]
     pub fn processing(&self) -> ReceiverProcessing {
         ReceiverProcessing {
-            measure_duration: self.interests.contains(Interests::NODE_LOCAL_DURATION),
+            started_at: self
+                .interests
+                .contains(Interests::NODE_LOCAL_DURATION)
+                .then(Instant::now),
             payload_size: None,
             accepts_payload_size: self.interests.contains(Interests::NODE_SIZE),
         }
@@ -230,7 +233,6 @@ impl ReceiverProcessing {
         mut self,
         work: impl FnOnce(&mut ReceiverProcessing) -> Result<(SignalType, T), ErrorWithOutcome<E>>,
     ) -> CompletedReceiverProcessing<T, E> {
-        let started_at = self.measure_duration.then(Instant::now);
         let result = work(&mut self);
         let (signal, outcome, result) = match result {
             Ok((signal, value)) => (Some(signal), Outcome::Success, Ok(value)),
@@ -243,10 +245,18 @@ impl ReceiverProcessing {
         CompletedReceiverProcessing {
             signal,
             outcome,
-            duration: started_at.map(|started_at| started_at.elapsed()),
+            duration: self.started_at.map(|started_at| started_at.elapsed()),
             payload_size: self.payload_size,
             result,
         }
+    }
+}
+
+impl<T, E> CompletedReceiverProcessing<T, E> {
+    /// Replaces the processing outcome with a later terminal receiver outcome.
+    pub fn with_outcome(mut self, outcome: Outcome) -> Self {
+        self.outcome = outcome;
+        self
     }
 }
 
@@ -975,6 +985,42 @@ mod tests {
                         .any(|metric| metric.name == metric_name)
             }));
         }
+    }
+
+    /// Scenario: A receiver finishes active processing before a later pipeline handoff is refused.
+    /// Guarantees: Processing duration has no outcome while terminal metrics use the deferred refused outcome.
+    #[test]
+    fn receiver_helper_records_deferred_terminal_outcome() {
+        let interests = Interests::NODE_OUTPUT_METRICS
+            | Interests::NODE_LOCAL_DURATION
+            | Interests::NODE_SIZE;
+        let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(interests);
+        let mut metrics = ReceiverMetrics::register(&pipeline_ctx);
+
+        let completed = metrics.processing().run(|processing| {
+            processing.set_payload_size_with(|| 128);
+            Ok::<_, ErrorWithOutcome<()>>((SignalType::Logs, ()))
+        });
+        metrics
+            .record(completed.with_outcome(Outcome::Refused))
+            .expect("processing succeeds before handoff refusal");
+
+        let snapshots = metrics.terminal_snapshots();
+        assert_eq!(snapshots.len(), 3);
+        assert!(snapshots.iter().any(|snapshot| {
+            snapshot.descriptor().name == "receiver.processing"
+                && snapshot.measurement_attribute_value("signal") == Some("logs")
+                && snapshot.measurement_attribute_value("outcome").is_none()
+        }));
+        assert!(
+            snapshots
+                .iter()
+                .filter(|snapshot| { snapshot.descriptor().name == "receiver.received" })
+                .all(|snapshot| {
+                    snapshot.measurement_attribute_value("signal") == Some("logs")
+                        && snapshot.measurement_attribute_value("outcome") == Some("refused")
+                })
+        );
     }
 
     /// Scenario: Receiver payload-size measurement is enabled but the boundary size is unavailable.
