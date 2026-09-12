@@ -1,5 +1,5 @@
 change_type: enhancement
 component: engine
-note: Improve transport-header capture and propagation efficiency.
+note: Improve transport-header capture and propagation efficiency with canonical lowercase names.
 issues: [3919, 4008]
-subtext: Changing deployed context declarations requires an engine restart. Kafka topic-routing header selectors preserve spelling and match stored names case-insensitively.
+subtext: New original-name requirements need an engine restart. Compatible pipelines can be updated live while preserving the engine's initial header representation.

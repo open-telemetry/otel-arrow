@@ -94,6 +94,8 @@ pub(super) struct ControllerRuntime<PData: 'static + Clone + Send + Sync + std::
     metrics_reporter: MetricsReporter,
     /// Topic registry shared by all runtime instances.
     declared_topics: DeclaredTopics<PData>,
+    /// Immutable engine-wide requirements for transport-header representation.
+    context_requirements: TransportHeaderRequirements,
     /// Controller-wide core ids available for policy-based allocation.
     available_core_ids: Vec<CoreId>,
     /// Controller-owned topology snapshot used for live rollout placement metadata.
@@ -147,6 +149,7 @@ impl<
         engine_event_reporter: ObservedEventReporter,
         metrics_reporter: MetricsReporter,
         declared_topics: DeclaredTopics<PData>,
+        context_requirements: TransportHeaderRequirements,
         context_policy: Arc<CompiledContextPolicy>,
         available_core_ids: Vec<CoreId>,
         topology: NumaTopology,
@@ -165,6 +168,7 @@ impl<
             engine_event_reporter,
             metrics_reporter,
             declared_topics,
+            context_requirements,
             available_core_ids,
             topology,
             engine_tracing_setup,
@@ -174,7 +178,7 @@ impl<
             state: Mutex::new(ControllerRuntimeState {
                 live_config,
                 config_revision: 0,
-                context_policy,
+                latest_context_policy: context_policy,
                 logical_pipelines: HashMap::new(),
                 runtime_instances: HashMap::new(),
                 runtime_recoveries: HashMap::new(),
@@ -228,7 +232,7 @@ impl<
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let context_policy = Arc::clone(&state.context_policy);
+        let context_policy = Arc::clone(&state.latest_context_policy);
         _ = state
             .generation_counters
             .insert(pipeline_key.clone(), generation + 1);

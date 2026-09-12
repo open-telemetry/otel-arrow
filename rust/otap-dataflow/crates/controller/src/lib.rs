@@ -70,7 +70,9 @@ use otel_arrow_dfe_engine::PipelineFactory;
 use otel_arrow_dfe_engine::ReceivedAtNode;
 use otel_arrow_dfe_engine::Unwindable;
 use otel_arrow_dfe_engine::context::{ControllerContext, PipelineContext};
-use otel_arrow_dfe_engine::context_declaration::CompiledContextPolicy;
+use otel_arrow_dfe_engine::context_declaration::{
+    CompiledContextPolicy, TransportHeaderRequirements,
+};
 use otel_arrow_dfe_engine::control::{
     PipelineAdminSender, PipelineCompletionMsgReceiver, PipelineCompletionMsgSender,
     RuntimeCtrlMsgReceiver, RuntimeCtrlMsgSender, pipeline_completion_msg_channel,
@@ -1304,9 +1306,9 @@ impl<
 
         let num_pipeline_groups = engine_config.groups.len();
         let resolved_config = engine_config.resolve();
-        let context_policy = self
+        let context = self
             .pipeline_factory
-            .compile_context_policy(&resolved_config)
+            .compile_context(&resolved_config, None)
             .map_err(|source| Error::PipelineRuntimeError {
                 source: Box::new(source),
             })?;
@@ -1535,7 +1537,8 @@ impl<
             engine_evt_reporter.clone(),
             metrics_reporter.clone(),
             declared_topics,
-            Arc::clone(&context_policy),
+            context.requirements,
+            Arc::clone(&context.policy),
             all_cores.clone(),
             topology,
             telemetry_system.engine_tracing_setup(),
@@ -1586,7 +1589,7 @@ impl<
             observability_core,
             observability_pipeline,
             &engine_config,
-            Arc::clone(&context_policy),
+            Arc::clone(&context.policy),
             &telemetry_system,
             self.pipeline_factory,
             &controller_ctx,
@@ -1728,7 +1731,7 @@ impl<
                     placement.core_id,
                     placement.numa_node_id,
                     Arc::clone(&listener_group_snapshot),
-                    Arc::clone(&context_policy),
+                    Arc::clone(&context.policy),
                     num_cores,
                     pipeline_entry.pipeline.clone(),
                     pipeline_entry.policies.channel_capacity.clone(),

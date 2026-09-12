@@ -62,8 +62,8 @@ pub struct SignalConfig {
     /// When set and the header is present in the pdata context, its value
     /// becomes the Kafka destination topic instead of the static `topic` field.
     ///
-    /// The configured spelling is preserved. The router matches it against
-    /// stored transport-header names using ASCII case-insensitive comparison.
+    /// The name is canonicalized to lowercase and matched against stored
+    /// transport-header names.
     #[serde(default)]
     topic_from_transport_header: Option<ContextEntryName>,
 
@@ -2307,9 +2307,9 @@ mod tests {
     }
 
     /// Scenario: Kafka exporter validation receives mixed-case header selectors.
-    /// Guarantees: validation preserves each selector's configured spelling.
+    /// Guarantees: validation stores each selector using its canonical lowercase identity.
     #[test]
-    fn test_topic_from_transport_header_preserves_case_on_validation() {
+    fn test_topic_from_transport_header_normalizes_case_on_validation() {
         let json = r#"{
             "brokers": "kafka:9092",
             "client_id": "test",
@@ -2330,7 +2330,7 @@ mod tests {
                 .unwrap()
                 .topic_from_transport_header()
                 .map(ContextEntryName::as_str),
-            Some("X-Traces-Topic")
+            Some("x-traces-topic")
         );
         assert_eq!(
             config
@@ -2338,7 +2338,7 @@ mod tests {
                 .unwrap()
                 .topic_from_transport_header()
                 .map(ContextEntryName::as_str),
-            Some("X-Target-Topic")
+            Some("x-target-topic")
         );
     }
 

@@ -145,7 +145,7 @@ pub struct Config {
 
     /// Optional transport headers to attach to each generated pdata message.
     ///
-    /// Names preserve their configured spelling. Values are fixed strings or `null`.
+    /// Names are canonicalized to lowercase. Values are fixed strings or `null`.
     /// A `null` value generates one random value at startup.
     ///
     /// ```yaml
@@ -772,7 +772,7 @@ mod tests {
     }
 
     /// Scenario: mixed-case headers have fixed or null values.
-    /// Guarantees: names and values preserve their configured spelling and content.
+    /// Guarantees: names are canonicalized to lowercase and values retain their content.
     #[test]
     fn parse_config_transport_headers_with_values() {
         let cfg: Config = serde_json::from_value(json!({
@@ -788,8 +788,8 @@ mod tests {
 
         let headers = cfg.transport_headers();
         assert_eq!(headers.len(), 2);
-        assert!(headers.keys().any(|name| name.as_str() == "X-Tenant-Id"));
-        assert!(headers.keys().any(|name| name.as_str() == "X-Request-Id"));
+        assert!(headers.keys().any(|name| name.as_str() == "x-tenant-id"));
+        assert!(headers.keys().any(|name| name.as_str() == "x-request-id"));
         assert_eq!(
             headers.get(&context_name("X-Tenant-Id")),
             Some(&Some("acme".to_string())),
@@ -800,13 +800,13 @@ mod tests {
             Some(&None),
             "null value should parse as None"
         );
-        assert!(!headers.contains_key(&context_name("x-tenant-id")));
+        assert!(headers.contains_key(&context_name("x-tenant-id")));
     }
 
-    /// Scenario: header names differ only by case.
-    /// Guarantees: both case-sensitive stored names and their values are preserved.
+    /// Scenario: configured header names differ only by case.
+    /// Guarantees: they collapse to one canonical lowercase entry.
     #[test]
-    fn parse_config_transport_headers_preserves_case_distinct_names() {
+    fn parse_config_transport_headers_collapses_case_distinct_names() {
         let config: Config = serde_json::from_value(json!({
             "traffic_config": base_traffic(),
             "transport_headers": {
@@ -814,13 +814,9 @@ mod tests {
                 "x-tenant-id": "contoso"
             },
         }))
-        .expect("case-distinct names should parse");
+        .expect("case-distinct names should normalize");
 
-        assert_eq!(config.transport_headers().len(), 2);
-        assert_eq!(
-            config.transport_headers().get(&context_name("X-Tenant-Id")),
-            Some(&Some("acme".to_string()))
-        );
+        assert_eq!(config.transport_headers().len(), 1);
         assert_eq!(
             config.transport_headers().get(&context_name("x-tenant-id")),
             Some(&Some("contoso".to_string()))

@@ -527,8 +527,8 @@ fn test_runtime_with_supplied_log_filter_and_topology(
         Controller::<()>::declare_topics(config).expect("declared topics should be valid");
     let (memory_pressure_tx, _memory_pressure_rx) =
         tokio::sync::watch::channel(MemoryPressureChanged::initial());
-    let context_policy = pipeline_factory
-        .compile_context_policy(&config.resolve())
+    let context = pipeline_factory
+        .compile_context(&config.resolve(), None)
         .expect("test context policy should compile");
 
     (
@@ -540,7 +540,8 @@ fn test_runtime_with_supplied_log_filter_and_topology(
             engine_event_reporter,
             metrics_reporter,
             declared_topics,
-            context_policy,
+            context.requirements,
+            context.policy,
             available_core_ids(),
             topology,
             TracingSetup::new(ProviderSetup::Noop, LogLevel::default(), engine_context)
@@ -771,7 +772,7 @@ fn register_runtime_instance(
         .state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let context_policy = Arc::clone(&state.context_policy);
+    let context_policy = Arc::clone(&state.latest_context_policy);
     _ = state.runtime_instances.insert(
         DeployedPipelineKey {
             pipeline_group_id: pipeline_group_id.to_owned().into(),
@@ -802,7 +803,7 @@ fn register_runtime_instance_with_sender(
         .state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let context_policy = Arc::clone(&state.context_policy);
+    let context_policy = Arc::clone(&state.latest_context_policy);
     _ = state.runtime_instances.insert(
         pipeline_key,
         RuntimeInstanceRecord {
@@ -912,7 +913,7 @@ fn launched_runtime_instance(
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        Arc::clone(&state.context_policy)
+        Arc::clone(&state.latest_context_policy)
     };
     LaunchedPipelineThread {
         pipeline_key: DeployedPipelineKey {
@@ -3677,7 +3678,7 @@ fn rollback_replace_rollout_restores_recovered_serving_generation() {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let _ = state.generation_counters.insert(pipeline_key.clone(), 2);
-        let context_policy = Arc::clone(&state.context_policy);
+        let context_policy = Arc::clone(&state.latest_context_policy);
         let _ = state.runtime_recoveries.insert(
             (pipeline_key.clone(), 0),
             RuntimeRecoveryState {
@@ -3939,7 +3940,7 @@ fn delete_pipeline_recompiles_context_policy_without_removed_declarations() {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        Arc::clone(&state.context_policy)
+        Arc::clone(&state.latest_context_policy)
     };
     let resolved = config
         .resolve()
@@ -3991,7 +3992,10 @@ fn delete_pipeline_recompiles_context_policy_without_removed_declarations() {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        (state.live_config.clone(), Arc::clone(&state.context_policy))
+        (
+            state.live_config.clone(),
+            Arc::clone(&state.latest_context_policy),
+        )
     };
     let expected_policy = CONTEXT_POLICY_TEST_PIPELINE_FACTORY
         .compile_context_policy(&committed_config.resolve())
@@ -4126,8 +4130,8 @@ connections:
     }
 }
 
-/// Scenario: one pipeline starts preserving names that another pipeline currently discards.
-/// Guarantees: the live update is rejected because it would change the other pipeline's bindings.
+/// Scenario: one pipeline starts requiring original names that the engine currently discards.
+/// Guarantees: the live update is rejected because the engine-wide representation is immutable.
 #[test]
 fn reconfigure_rejects_context_policy_changes_to_other_pipelines() {
     let config = OtelDataflowSpec::from_yaml(
@@ -4214,17 +4218,20 @@ connections:
 
     match error {
         ControlPlaneError::InvalidRequest { message } => {
-            assert!(message.contains("g1:capture"), "{message}");
+            assert!(
+                message.contains("original transport-header names"),
+                "{message}"
+            );
             assert!(message.contains("restart the engine"), "{message}");
         }
         other => panic!("expected invalid request, got {other:?}"),
     }
 }
 
-/// Scenario: deleting one pipeline would change another pipeline's compiled context bindings.
-/// Guarantees: deletion is rejected before shutdown and committed state remains unchanged.
+/// Scenario: deleting the last original-name consumer leaves a capture pipeline deployed.
+/// Guarantees: deletion succeeds and the remaining generation keeps preserving original names.
 #[test]
-fn delete_rejects_context_policy_changes_to_other_pipelines() {
+fn delete_preserves_installed_context_requirements() {
     let config = OtelDataflowSpec::from_yaml(
         r#"
 version: otel_dataflow/v1
@@ -4270,45 +4277,84 @@ groups:
     let runtime = test_runtime_with_factory(&config, &CONTEXT_POLICY_TEST_PIPELINE_FACTORY);
     register_pipeline(&runtime, &config, "g1", "capture");
     register_pipeline(&runtime, &config, "g1", "propagate");
-    let mut propagate_runtime = register_runtime_instance(
-        &runtime,
-        "g1",
-        "propagate",
-        0,
-        0,
-        RuntimeInstanceLifecycle::Active,
-    );
+    let initial_policy = {
+        let state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Arc::clone(&state.latest_context_policy)
+    };
 
-    let error = runtime
+    let status = runtime
         .request_delete_pipeline("g1", "propagate", 5)
-        .expect_err("cross-pipeline context binding changes should prevent deletion");
-
-    match error {
-        ControlPlaneError::InvalidRequest { message } => {
-            assert!(message.contains("g1:capture"), "{message}");
-            assert!(message.contains("restart the engine"), "{message}");
-        }
-        other => panic!("expected invalid request, got {other:?}"),
-    }
+        .expect("removing an original-name consumer should remain compatible");
 
     let state = runtime
         .state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert_eq!(status.state, "succeeded");
     assert!(
-        state.live_config.groups[&PipelineGroupId::from("g1")]
+        !state.live_config.groups[&PipelineGroupId::from("g1")]
             .pipelines
             .contains_key(&PipelineId::from("propagate"))
     );
-    assert!(
-        state
-            .logical_pipelines
-            .contains_key(&PipelineKey::new("g1".into(), "propagate".into()))
+    assert!(initial_policy.pipeline_bindings_match(
+        &state.latest_context_policy,
+        &PipelineKey::new("g1".into(), "capture".into())
+    ));
+    let unpinned_policy = CONTEXT_POLICY_TEST_PIPELINE_FACTORY
+        .compile_context_policy(&state.live_config.resolve())
+        .expect("remaining config should compile without installed requirements");
+    assert!(!state.latest_context_policy.pipeline_bindings_match(
+        &unpinned_policy,
+        &PipelineKey::new("g1".into(), "capture".into())
+    ));
+}
+
+/// Scenario: a new pipeline requires an original name already preserved by the engine.
+/// Guarantees: the compatible pipeline is accepted without changing deployed bindings.
+#[test]
+fn reconfigure_accepts_supported_context_requirements() {
+    let config = engine_config_with_pipeline(
+        r#"
+        nodes:
+          receiver:
+            type: "urn:test:receiver:context-policy"
+            config:
+              produces: source-marker
+          exporter:
+            type: "urn:test:exporter:example"
+            header_propagation:
+              default:
+                selector:
+                  type: named
+                  named: [x-tenant]
+                name: preserve
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+        "#,
     );
-    assert!(
-        propagate_runtime.try_recv().is_err(),
-        "rejected deletion must not begin shutting down the target pipeline"
-    );
+    let runtime = test_runtime_with_factory(&config, &CONTEXT_POLICY_TEST_PIPELINE_FACTORY);
+    register_existing_pipeline(&runtime, &config);
+    let pipeline =
+        config.groups[&PipelineGroupId::from("g1")].pipelines[&PipelineId::from("p1")].clone();
+
+    let plan = runtime
+        .prepare_rollout_plan(
+            "g1",
+            "p2",
+            &ReconfigureRequest {
+                pipeline,
+                step_timeout_secs: 5,
+                drain_timeout_secs: 5,
+            },
+        )
+        .expect("installed original-name requirements should support the new pipeline");
+
+    assert_eq!(plan.action, RolloutAction::Create);
 }
 
 /// Scenario: recovery restarts a failed pipeline generation.
@@ -4349,7 +4395,7 @@ fn runtime_recovery_reuses_context_policy_snapshot() {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        Arc::clone(&state.context_policy)
+        Arc::clone(&state.latest_context_policy)
     };
     let _runtime_control =
         register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
@@ -4761,27 +4807,144 @@ fn reconcile_engine_config_deletes_missing_resources_by_default() {
     );
 }
 
-/// Scenario: a full-config reconciliation request omits live resources with
-/// `delete_missing` disabled.
-/// Guarantees: reconciliation succeeds without deleting the omitted group or
-/// pipeline.
+/// Scenario: reconciliation retains one pipeline and omits another pipeline
+/// with context declarations while `delete_missing` is enabled.
+/// Guarantees: the retained pipeline is a no-op and the omitted pipeline is deleted.
 #[test]
-fn reconcile_engine_config_preserves_missing_resources_when_requested() {
-    let config = engine_config_with_pipeline(simple_pipeline_yaml());
-    let runtime = test_runtime(&config);
+fn reconcile_engine_config_deletes_missing_context_pipeline() {
+    let config = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+groups:
+  g1:
+    policies:
+      resources:
+        core_allocation:
+          type: core_set
+          set:
+            - start: 0
+              end: 0
+    pipelines:
+      p1:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:context-policy"
+            config:
+              produces: retained-marker
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+      p2:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:context-policy"
+            config:
+              produces: X-Tenant
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    )
+    .expect("engine config should parse");
+    let mut desired = config.clone();
+    _ = desired
+        .groups
+        .get_mut(&PipelineGroupId::from("g1"))
+        .expect("test group should exist")
+        .pipelines
+        .remove(&PipelineId::from("p2"));
+    let runtime = test_runtime_with_factory(&config, &CONTEXT_POLICY_TEST_PIPELINE_FACTORY);
+    register_pipeline(&runtime, &config, "g1", "p1");
+    register_pipeline(&runtime, &config, "g1", "p2");
+    let _p1_runtime =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
 
     let status = runtime
-        .reconcile_engine_config(reconcile_request(empty_engine_config(), false))
+        .reconcile_engine_config(reconcile_request(desired, true))
+        .expect("missing context pipeline should be deleted");
+
+    assert_eq!(status.state, EngineConfigReconcileState::Succeeded);
+    assert_eq!(
+        status
+            .changes
+            .iter()
+            .map(|change| (
+                change.pipeline_id.as_ref().map(|id| id.as_ref()),
+                change.action,
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (Some("p1"), ConfigChangeAction::Noop),
+            (Some("p2"), ConfigChangeAction::Delete),
+        ]
+    );
+}
+
+/// Scenario: a partial reconciliation requests unchanged pipeline p1 while
+/// omitting deployed pipeline p2 with context declarations.
+/// Guarantees: `delete_missing=false` plans p1 as a no-op and retains p2.
+#[test]
+fn reconcile_engine_config_preserves_missing_resources_when_requested() {
+    let desired_config = engine_config_with_pipeline(
+        r#"
+        policies:
+          resources:
+            core_allocation:
+              type: core_set
+              set:
+                - start: 0
+                  end: 0
+        nodes:
+          receiver:
+            type: "urn:test:receiver:context-policy"
+            config:
+              produces: X-Tenant
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    );
+    let mut config = desired_config.clone();
+    let retained_pipeline =
+        config.groups[&PipelineGroupId::from("g1")].pipelines[&PipelineId::from("p1")].clone();
+    _ = config
+        .groups
+        .get_mut(&PipelineGroupId::from("g1"))
+        .expect("test group should exist")
+        .pipelines
+        .insert("p2".into(), retained_pipeline);
+    let runtime = test_runtime_with_factory(&config, &CONTEXT_POLICY_TEST_PIPELINE_FACTORY);
+    register_existing_pipeline(&runtime, &config);
+    register_pipeline(&runtime, &config, "g1", "p2");
+    let _p1_runtime =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+    let _p2_runtime =
+        register_runtime_instance(&runtime, "g1", "p2", 0, 0, RuntimeInstanceLifecycle::Active);
+
+    let status = runtime
+        .reconcile_engine_config(reconcile_request(desired_config, false))
         .expect("missing resources should be preserved");
 
     assert_eq!(status.state, EngineConfigReconcileState::Succeeded);
-    assert!(status.changes.is_empty());
+    assert_eq!(status.changes.len(), 1);
+    assert_eq!(status.changes[0].action, ConfigChangeAction::Noop);
     let snapshot = runtime.engine_config_snapshot();
-    assert!(
-        snapshot.groups[&PipelineGroupId::from("g1")]
-            .pipelines
-            .contains_key(&PipelineId::from("p1"))
-    );
+    for pipeline_id in ["p1", "p2"] {
+        assert!(
+            snapshot.groups[&PipelineGroupId::from("g1")]
+                .pipelines
+                .contains_key(&PipelineId::from(pipeline_id))
+        );
+    }
 }
 
 /// Scenario: full-config reconciliation is rejected after validation because a

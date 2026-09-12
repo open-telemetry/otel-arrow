@@ -13,7 +13,7 @@ use otel_arrow_dfe_config::transport_headers_policy::{
     TransportHeadersPolicy,
 };
 use otel_arrow_dfe_config::{ContextEntryName, NodeId as ConfigNodeId, PipelineKey};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 /// A context entry and its requested representation.
@@ -31,7 +31,7 @@ pub enum ContextEntrySelectorForm {
     /// Value only.
     Value,
     /// Stored name and value. The variant name is historical; it does not
-    /// lowercase an explicitly configured stored name.
+    /// otherwise transform the canonical lowercase stored name.
     NormalizedKeyValue,
     /// Original name and value.
     OriginalKeyValue,
@@ -45,8 +45,7 @@ pub enum ContextConsumerSelector {
         /// Entries to read.
         entries: Box<[ContextEntrySelector]>,
     },
-    /// Selects every context entry using stored names. The variant name is
-    /// historical; it does not lowercase explicitly configured stored names.
+    /// Selects every context entry using canonical lowercase stored names.
     AllNormalized,
 }
 
@@ -232,10 +231,109 @@ pub(crate) enum CompiledContextAccess {
 
 type DeclaredContextPolicy = HashMap<PipelineKey, HashMap<ConfigNodeId, NodeContextDeclarations>>;
 
+/// Immutable engine-wide requirements for representing captured transport headers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransportHeaderRequirements {
+    default_preserve_original: bool,
+    overrides: BTreeMap<ContextEntryName, bool>,
+}
+
+/// Context declarations compiled for one resolved engine configuration.
+#[derive(Debug, Clone)]
+pub struct ContextPolicyCompilation {
+    /// Requirements derived from the candidate declarations.
+    pub requirements: TransportHeaderRequirements,
+    /// Node bindings compiled using the installed or candidate requirements.
+    pub policy: Arc<CompiledContextPolicy>,
+}
+
+impl TransportHeaderRequirements {
+    fn compile(declarations: &DeclaredContextPolicy) -> Self {
+        let declarations = declarations
+            .values()
+            .flat_map(HashMap::values)
+            .flat_map(NodeContextDeclarations::iter)
+            .filter(|declaration| declaration.contributes_original_name_requirement())
+            .collect::<Vec<_>>();
+        let default_preserve_original = declarations.iter().any(|declaration| {
+            matches!(
+                declaration,
+                ContextDeclaration::HeaderPropagation { policy }
+                    if policy.propagates_original_name_by_default()
+            )
+        });
+        let mut explicit_names = BTreeSet::new();
+        for declaration in &declarations {
+            match declaration {
+                ContextDeclaration::Consumes {
+                    selector: ContextConsumerSelector::Entries { entries },
+                } => {
+                    explicit_names.extend(
+                        entries
+                            .iter()
+                            .filter(|entry| {
+                                entry.form == ContextEntrySelectorForm::OriginalKeyValue
+                            })
+                            .map(|entry| entry.name.clone()),
+                    );
+                }
+                ContextDeclaration::HeaderPropagation { policy } => {
+                    policy.visit_original_name_requirement_names(|name| {
+                        _ = explicit_names.insert(name.clone());
+                    });
+                }
+                ContextDeclaration::Consumes {
+                    selector: ContextConsumerSelector::AllNormalized,
+                }
+                | ContextDeclaration::Produces { .. }
+                | ContextDeclaration::HeaderCapture { .. } => {}
+            }
+        }
+
+        let overrides = explicit_names
+            .into_iter()
+            .filter_map(|name| {
+                let preserve_original = declarations
+                    .iter()
+                    .any(|declaration| declaration.requires_original_name(&name));
+                (preserve_original != default_preserve_original)
+                    .then_some((name, preserve_original))
+            })
+            .collect();
+        Self {
+            default_preserve_original,
+            overrides,
+        }
+    }
+
+    /// Returns whether the installed representation supports every candidate requirement.
+    #[must_use]
+    pub fn supports(&self, candidate: &Self) -> bool {
+        if candidate.default_preserve_original && !self.default_preserve_original {
+            return false;
+        }
+        self.overrides
+            .keys()
+            .chain(candidate.overrides.keys())
+            .all(|name| {
+                !candidate.preserves_original_name(name) || self.preserves_original_name(name)
+            })
+    }
+
+    /// Returns whether captured entries with this stored name retain the original wire name.
+    #[must_use]
+    pub fn preserves_original_name(&self, name: &ContextEntryName) -> bool {
+        self.overrides
+            .get(name)
+            .copied()
+            .unwrap_or(self.default_preserve_original)
+    }
+}
+
 impl CompiledNodeContext {
     fn compile(
         declarations: NodeContextDeclarations,
-        original_name_requirements: &[ContextDeclaration],
+        requirements: &TransportHeaderRequirements,
     ) -> Self {
         let bindings = declarations
             .into_iter()
@@ -244,11 +342,11 @@ impl CompiledNodeContext {
                     ContextDeclaration::Produces { .. } => CompiledContextAccess::Produces,
                     ContextDeclaration::Consumes { .. } => CompiledContextAccess::Consumes,
                     ContextDeclaration::HeaderCapture { policy } => {
-                        CompiledContextAccess::HeaderCapture(policy.clone().compile(|name| {
-                            original_name_requirements
-                                .iter()
-                                .any(|declaration| declaration.requires_original_name(name))
-                        }))
+                        CompiledContextAccess::HeaderCapture(
+                            policy
+                                .clone()
+                                .compile(|name| requirements.preserves_original_name(name)),
+                        )
                     }
                     ContextDeclaration::HeaderPropagation { .. } => {
                         CompiledContextAccess::HeaderPropagation
@@ -274,15 +372,10 @@ impl CompiledContextPolicy {
         }
     }
 
-    fn compile(declarations: DeclaredContextPolicy) -> Self {
-        let original_name_requirements: Vec<_> = declarations
-            .values()
-            .flat_map(HashMap::values)
-            .flat_map(NodeContextDeclarations::iter)
-            .filter(|declaration| declaration.contributes_original_name_requirement())
-            .cloned()
-            .collect();
-
+    fn compile(
+        declarations: DeclaredContextPolicy,
+        requirements: &TransportHeaderRequirements,
+    ) -> Self {
         let nodes = declarations
             .into_iter()
             .map(|(pipeline, nodes)| {
@@ -291,7 +384,7 @@ impl CompiledContextPolicy {
                     .map(|(node, declarations)| {
                         (
                             node,
-                            CompiledNodeContext::compile(declarations, &original_name_requirements),
+                            CompiledNodeContext::compile(declarations, requirements),
                         )
                     })
                     .collect();
@@ -367,11 +460,40 @@ impl CompiledContextPolicy {
 }
 
 impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
+    /// Compiles candidate requirements and node bindings.
+    ///
+    /// When `installed_requirements` is provided, node bindings use that immutable
+    /// engine-wide representation while the returned requirements describe the candidate.
+    pub fn compile_context(
+        &self,
+        resolved: &ResolvedOtelDataflowSpec,
+        installed_requirements: Option<&TransportHeaderRequirements>,
+    ) -> Result<ContextPolicyCompilation, EngineError> {
+        let declarations = self.context_declarations(resolved)?;
+        let candidate_requirements = TransportHeaderRequirements::compile(&declarations);
+        let applied_requirements = installed_requirements.unwrap_or(&candidate_requirements);
+        let policy = Arc::new(CompiledContextPolicy::compile(
+            declarations,
+            applied_requirements,
+        ));
+        Ok(ContextPolicyCompilation {
+            requirements: candidate_requirements,
+            policy,
+        })
+    }
+
     /// Compiles context policies for the full resolved engine configuration.
     pub fn compile_context_policy(
         &self,
         resolved: &ResolvedOtelDataflowSpec,
     ) -> Result<Arc<CompiledContextPolicy>, EngineError> {
+        Ok(self.compile_context(resolved, None)?.policy)
+    }
+
+    fn context_declarations(
+        &self,
+        resolved: &ResolvedOtelDataflowSpec,
+    ) -> Result<DeclaredContextPolicy, EngineError> {
         let mut declarations = DeclaredContextPolicy::new();
 
         for pipeline in &resolved.pipelines {
@@ -399,7 +521,7 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
             let _ = declarations.insert(pipeline_key, declarations_by_node);
         }
 
-        Ok(Arc::new(CompiledContextPolicy::compile(declarations)))
+        Ok(declarations)
     }
 
     fn wrapper_context_declaration(
@@ -529,7 +651,16 @@ mod preserve_original_name_tests {
     }
 
     fn compiled_policy(effective: NodeContextDeclarations) -> CompiledContextPolicy {
-        CompiledContextPolicy::compile(HashMap::from([(
+        let declarations = HashMap::from([(
+            pipeline("group", "pipeline"),
+            HashMap::from([(ConfigNodeId::from("node"), effective)]),
+        )]);
+        let requirements = TransportHeaderRequirements::compile(&declarations);
+        CompiledContextPolicy::compile(declarations, &requirements)
+    }
+
+    fn requirements(effective: NodeContextDeclarations) -> TransportHeaderRequirements {
+        TransportHeaderRequirements::compile(&HashMap::from([(
             pipeline("group", "pipeline"),
             HashMap::from([(ConfigNodeId::from("node"), effective)]),
         )]))
@@ -637,6 +768,113 @@ mod preserve_original_name_tests {
                 .iter()
                 .any(|declaration| declaration.requires_original_name(&context_name("value")))
         );
+    }
+
+    /// Scenario: propagation preserves arbitrary names but overrides one stored name.
+    /// Guarantees: the canonical profile uses a true default with one lowercase exception.
+    #[test]
+    fn requirements_canonicalize_default_and_overrides() {
+        let propagation: HeaderPropagationPolicy = serde_json::from_value(serde_json::json!({
+            "default": {
+                "selector": {"type": "all_captured"},
+                "name": "preserve"
+            },
+            "overrides": [{
+                "match": {"stored_names": ["Authorization"]},
+                "name": "stored_name"
+            }]
+        }))
+        .expect("valid propagation policy");
+        let requirements = requirements(
+            [ContextDeclaration::HeaderPropagation {
+                policy: propagation,
+            }]
+            .into_iter()
+            .collect(),
+        );
+
+        assert!(requirements.default_preserve_original);
+        assert!(!requirements.preserves_original_name(&context_name("AUTHORIZATION")));
+        assert!(requirements.preserves_original_name(&context_name("X-Tenant")));
+        assert_eq!(
+            requirements.overrides,
+            BTreeMap::from([(context_name("authorization"), false)])
+        );
+    }
+
+    /// Scenario: live declarations add and remove original-name consumers.
+    /// Guarantees: installed requirements allow subsets but reject unsupported names and defaults.
+    #[test]
+    fn installed_requirements_support_only_available_original_names() {
+        let installed = requirements(
+            [
+                ContextDeclaration::Consumes {
+                    selector: ContextConsumerSelector::Entries {
+                        entries: vec![ContextEntrySelector {
+                            name: context_name("x-tenant"),
+                            form: ContextEntrySelectorForm::OriginalKeyValue,
+                        }]
+                        .into_boxed_slice(),
+                    },
+                },
+                ContextDeclaration::Consumes {
+                    selector: ContextConsumerSelector::Entries {
+                        entries: vec![ContextEntrySelector {
+                            name: context_name("authorization"),
+                            form: ContextEntrySelectorForm::Value,
+                        }]
+                        .into_boxed_slice(),
+                    },
+                },
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let removed = requirements(NodeContextDeclarations::default());
+        let supported = requirements(
+            [ContextDeclaration::Consumes {
+                selector: ContextConsumerSelector::Entries {
+                    entries: vec![ContextEntrySelector {
+                        name: context_name("X-Tenant"),
+                        form: ContextEntrySelectorForm::OriginalKeyValue,
+                    }]
+                    .into_boxed_slice(),
+                },
+            }]
+            .into_iter()
+            .collect(),
+        );
+        let unsupported_name = requirements(
+            [ContextDeclaration::Consumes {
+                selector: ContextConsumerSelector::Entries {
+                    entries: vec![ContextEntrySelector {
+                        name: context_name("x-request-id"),
+                        form: ContextEntrySelectorForm::OriginalKeyValue,
+                    }]
+                    .into_boxed_slice(),
+                },
+            }]
+            .into_iter()
+            .collect(),
+        );
+        let unsupported_default = requirements(
+            [ContextDeclaration::HeaderPropagation {
+                policy: serde_json::from_value(serde_json::json!({
+                    "default": {
+                        "selector": {"type": "all_captured"},
+                        "name": "preserve"
+                    }
+                }))
+                .expect("valid propagation policy"),
+            }]
+            .into_iter()
+            .collect(),
+        );
+
+        assert!(installed.supports(&removed));
+        assert!(installed.supports(&supported));
+        assert!(!installed.supports(&unsupported_name));
+        assert!(!installed.supports(&unsupported_default));
     }
 
     /// Scenario: a propagation declaration selects one original header name.
@@ -780,10 +1018,12 @@ mod preserve_original_name_tests {
             .into_iter()
             .chain(std::iter::once(propagation_declaration.clone()))
             .collect();
-        let policy = CompiledContextPolicy::compile(HashMap::from([(
+        let declarations = HashMap::from([(
             pipeline.clone(),
             HashMap::from([(node.clone(), declarations)]),
-        )]));
+        )]);
+        let requirements = TransportHeaderRequirements::compile(&declarations);
+        let policy = CompiledContextPolicy::compile(declarations, &requirements);
 
         assert!(
             policy

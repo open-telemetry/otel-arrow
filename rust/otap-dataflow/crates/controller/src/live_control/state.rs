@@ -528,8 +528,8 @@ pub(super) struct ControllerRuntimeState {
     pub(super) live_config: OtelDataflowSpec,
     /// Monotonic revision for committed logical config changes.
     pub(super) config_revision: u64,
-    /// Policy for the committed live configuration.
-    pub(super) context_policy: Arc<CompiledContextPolicy>,
+    /// Latest node-binding snapshot compiled for the committed live configuration.
+    pub(super) latest_context_policy: Arc<CompiledContextPolicy>,
     /// Committed logical pipelines keyed by group/pipeline id.
     pub(super) logical_pipelines: HashMap<PipelineKey, LogicalPipelineRecord>,
     /// Deployed runtime instances keyed by group/pipeline/core/generation.
