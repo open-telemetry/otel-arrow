@@ -30,7 +30,7 @@ use otel_arrow_dfe_channel::error::SendError;
 use otel_arrow_dfe_channel::mpsc;
 use otel_arrow_dfe_config::PortName;
 use otel_arrow_dfe_config::node::NodeUserConfig;
-use otel_arrow_dfe_config::transport_headers_policy::HeaderCapturePolicy;
+use otel_arrow_dfe_config::transport_headers_policy::CompiledHeaderCapturePolicy;
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -65,7 +65,7 @@ pub enum ReceiverWrapper<PData> {
         /// Whether outgoing messages need source node tagging.
         source_tag: SourceTagging,
         /// Pre-resolved capture policy for transport header extraction.
-        capture_policy: Option<HeaderCapturePolicy>,
+        capture_policy: Option<CompiledHeaderCapturePolicy>,
     },
     /// A receiver with a `Send` implementation.
     Shared {
@@ -91,7 +91,7 @@ pub enum ReceiverWrapper<PData> {
         /// Whether outgoing messages need source node tagging.
         source_tag: SourceTagging,
         /// Pre-resolved capture policy for transport header extraction.
-        capture_policy: Option<HeaderCapturePolicy>,
+        capture_policy: Option<CompiledHeaderCapturePolicy>,
     },
 }
 
@@ -501,7 +501,7 @@ impl<PData> NodeWithPDataSender<PData> for ReceiverWrapper<PData> {
 impl<PData> ReceiverWrapper<PData> {
     /// Returns the wrapper with the given pre-resolved capture engine for
     /// transport header extraction.
-    pub(crate) fn with_capture_policy(self, policy: Option<HeaderCapturePolicy>) -> Self {
+    pub(crate) fn with_capture_policy(self, policy: Option<CompiledHeaderCapturePolicy>) -> Self {
         match self {
             ReceiverWrapper::Local {
                 node_id,
@@ -901,7 +901,7 @@ mod tests {
             Arc::new(NodeUserConfig::new_receiver_config("test")),
             test_runtime.config(),
         )
-        .with_capture_policy(Some(HeaderCapturePolicy::default()));
+        .with_capture_policy(Some(HeaderCapturePolicy::default().compile(|_| true)));
 
         match wrapper {
             ReceiverWrapper::Local { capture_policy, .. } => assert!(
@@ -922,7 +922,7 @@ mod tests {
             Arc::new(NodeUserConfig::new_receiver_config("test")),
             test_runtime.config(),
         )
-        .with_capture_policy(Some(HeaderCapturePolicy::default()));
+        .with_capture_policy(Some(HeaderCapturePolicy::default().compile(|_| true)));
 
         match wrapper {
             ReceiverWrapper::Shared { capture_policy, .. } => assert!(

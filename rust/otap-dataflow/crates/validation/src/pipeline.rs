@@ -355,7 +355,12 @@ fn set_config_by_path(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use otel_arrow_dfe_config::ContextEntryName;
     use otel_arrow_dfe_config::transport_headers_policy::*;
+
+    fn context_name(raw: &str) -> ContextEntryName {
+        ContextEntryName::try_from(raw).expect("valid test context entry name")
+    }
 
     fn sample_yaml() -> &'static str {
         r#"
@@ -572,7 +577,7 @@ nodes:
             header_capture: HeaderCapturePolicy::new(
                 CaptureDefaults::default(),
                 vec![CaptureRule {
-                    match_names: vec!["x-tenant-id".into()],
+                    match_names: vec![context_name("x-tenant-id")],
                     store_as: None,
                     sensitive: false,
                     value_kind: None,
@@ -618,7 +623,7 @@ header_propagation:
             header_capture: HeaderCapturePolicy::new(
                 CaptureDefaults::default(),
                 vec![CaptureRule {
-                    match_names: vec!["x-tenant-id".into()],
+                    match_names: vec![context_name("x-tenant-id")],
                     store_as: None,
                     sensitive: false,
                     value_kind: None,
@@ -668,7 +673,7 @@ header_propagation:
             header_capture: HeaderCapturePolicy::new(
                 CaptureDefaults::default(),
                 vec![CaptureRule {
-                    match_names: vec!["x-tenant-id".into()],
+                    match_names: vec![context_name("x-tenant-id")],
                     store_as: None,
                     sensitive: false,
                     value_kind: None,

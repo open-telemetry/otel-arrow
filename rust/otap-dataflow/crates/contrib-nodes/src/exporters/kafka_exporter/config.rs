@@ -11,6 +11,7 @@ use crate::common::kafka::{
     DebugContext, LogLevel, MessageFormat, debug_list_to_string, default_message_format_header,
     validate_kafka_topic,
 };
+use otel_arrow_dfe_config::ContextEntryName;
 use rdkafka::ClientConfig;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -61,19 +62,15 @@ pub struct SignalConfig {
     /// When set and the header is present in the pdata context, its value
     /// becomes the Kafka destination topic instead of the static `topic` field.
     ///
-    /// The lookup matches on the header's normalized logical name. Captured
-    /// transport headers are lowercased on ingress, so this value is lowercased
-    /// during config validation ([`KafkaExporterConfig::try_from`]) to match --
-    /// e.g., `"X-Target-Topic"` is stored as `"x-target-topic"`. If a capture
-    /// policy stores the header under a custom `store_as` name, this value must
-    /// equal that stored name.
+    /// The name is canonicalized to lowercase and matched against stored
+    /// transport-header names.
     #[serde(default)]
-    topic_from_transport_header: Option<String>,
+    topic_from_transport_header: Option<ContextEntryName>,
 
     /// Enable partitioning by transport headers (default: false).
     ///
     /// When `true`, all transport headers from the pdata context are hashed
-    /// (by normalized name and raw value) to produce a deterministic partition
+    /// (by exact stored name and raw value) to produce a deterministic partition
     /// key. This ensures that requests carrying the same set of transport
     /// headers (e.g., same tenant ID, same auth token) are routed to the same
     /// Kafka partition, regardless of original header casing.
@@ -142,15 +139,23 @@ impl SignalConfig {
 
     /// The transport header name for dynamic topic routing, if set.
     #[must_use]
-    pub fn topic_from_transport_header(&self) -> Option<&str> {
-        self.topic_from_transport_header.as_deref()
+    pub fn topic_from_transport_header(&self) -> Option<&ContextEntryName> {
+        self.topic_from_transport_header.as_ref()
     }
 
     /// Set the transport header name for dynamic topic routing.
     #[must_use]
-    pub fn with_topic_from_transport_header(mut self, key: impl Into<String>) -> Self {
-        self.topic_from_transport_header = Some(key.into());
+    pub fn with_topic_from_transport_header(mut self, key: ContextEntryName) -> Self {
+        self.topic_from_transport_header = Some(key);
         self
+    }
+
+    /// Converts the dynamic topic header name into its configuration type.
+    pub fn try_with_topic_from_transport_header<K>(self, key: K) -> Result<Self, K::Error>
+    where
+        K: TryInto<ContextEntryName>,
+    {
+        Ok(self.with_topic_from_transport_header(key.try_into()?))
     }
 
     /// Whether partitioning by transport headers is enabled for this signal.
@@ -677,7 +682,7 @@ fn validate_signal_topics(signal: &SignalConfig) -> Result<(), String> {
 impl TryFrom<KafkaExporterConfigBuilder> for KafkaExporterConfig {
     type Error = String;
 
-    fn try_from(mut builder: KafkaExporterConfigBuilder) -> Result<Self, Self::Error> {
+    fn try_from(builder: KafkaExporterConfigBuilder) -> Result<Self, Self::Error> {
         if builder.client_id.is_empty() {
             return Err("client_id can't be empty".to_string());
         }
@@ -752,25 +757,6 @@ impl TryFrom<KafkaExporterConfigBuilder> for KafkaExporterConfig {
         // Validate TLS configuration when present
         if let Some(ref tls) = builder.tls {
             tls.validate().map_err(|e| format!("tls: {e}"))?;
-        }
-
-        // Normalize each signal's dynamic-routing header key to match how
-        // transport headers store their logical names. Captured headers are
-        // lowercased on ingress (`wire_name.to_ascii_lowercase()`), so a natural
-        // config like `X-Target-Topic` would otherwise never match and silently
-        // fall back to the static topic. Normalizing once here means the router
-        // can do a plain equality check without re-normalizing per message.
-        for signal in [
-            builder.traces.as_mut(),
-            builder.metrics.as_mut(),
-            builder.logs.as_mut(),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            if let Some(header) = signal.topic_from_transport_header.as_mut() {
-                *header = header.to_ascii_lowercase();
-            }
         }
 
         Ok(Self(builder))
@@ -1052,6 +1038,10 @@ impl PartitionerStrategy {
 mod tests {
     use super::*;
     use rdkafka::config::RDKafkaLogLevel;
+
+    fn context_name(raw: &str) -> ContextEntryName {
+        raw.try_into().expect("valid test context entry name")
+    }
 
     // ---- SignalConfig ----
 
@@ -2148,7 +2138,11 @@ mod tests {
 
         let config: KafkaExporterConfig = serde_json::from_str(json).expect("valid config");
         let logs = config.logs().expect("logs should be configured");
-        assert_eq!(logs.topic_from_transport_header(), Some("x_target_topic"));
+        assert_eq!(
+            logs.topic_from_transport_header()
+                .map(ContextEntryName::as_str),
+            Some("x_target_topic")
+        );
     }
 
     #[test]
@@ -2164,13 +2158,32 @@ mod tests {
         assert!(logs.topic_from_transport_header().is_none());
     }
 
+    /// Scenario: a builder receives a mixed-case topic header name.
+    /// Guarantees: the selector is stored using its canonical lowercase identity.
     #[test]
     fn test_signal_config_builder_with_topic_from_transport_header() {
         let signal = SignalConfig::new("otlp_logs".into(), MessageFormat::OtlpProto)
-            .with_topic_from_transport_header("x_target_topic");
+            .try_with_topic_from_transport_header("X_Target_Topic")
+            .expect("valid test context entry name");
 
-        assert_eq!(signal.topic_from_transport_header(), Some("x_target_topic"));
+        assert_eq!(
+            signal
+                .topic_from_transport_header()
+                .map(ContextEntryName::as_str),
+            Some("x_target_topic")
+        );
         assert_eq!(signal.topic(), "otlp_logs");
+    }
+
+    /// Scenario: a builder receives an invalid topic header name.
+    /// Guarantees: invalid names return an error.
+    #[test]
+    fn test_signal_config_builder_rejects_invalid_topic_header() {
+        assert!(
+            SignalConfig::new("otlp_logs".into(), MessageFormat::OtlpProto)
+                .try_with_topic_from_transport_header("not valid")
+                .is_err()
+        );
     }
 
     // ---- Security: dynamic-routing allowlist config ----
@@ -2182,7 +2195,7 @@ mod tests {
     #[test]
     fn allowlist_config_is_accepted() {
         let signal = SignalConfig::new("static".into(), MessageFormat::OtlpProto)
-            .with_topic_from_transport_header("x-target-topic")
+            .with_topic_from_transport_header(context_name("x-target-topic"))
             .with_allowed_topics(["approved"])
             .with_allowed_topics_regex(["tenant_.*"]);
 
@@ -2279,16 +2292,24 @@ mod tests {
         let metrics = config.metrics().expect("metrics configured");
         let logs = config.logs().expect("logs configured");
 
-        assert_eq!(traces.topic_from_transport_header(), Some("x_traces_topic"));
+        assert_eq!(
+            traces
+                .topic_from_transport_header()
+                .map(ContextEntryName::as_str),
+            Some("x_traces_topic")
+        );
         assert!(metrics.topic_from_transport_header().is_none());
-        assert_eq!(logs.topic_from_transport_header(), Some("x_logs_topic"));
+        assert_eq!(
+            logs.topic_from_transport_header()
+                .map(ContextEntryName::as_str),
+            Some("x_logs_topic")
+        );
     }
 
+    /// Scenario: Kafka exporter validation receives mixed-case header selectors.
+    /// Guarantees: validation stores each selector using its canonical lowercase identity.
     #[test]
-    fn test_topic_from_transport_header_is_lowercased_on_validation() {
-        // A natural mixed-case header name must be normalized (lowercased) so it
-        // matches captured transport header names, which are lowercased on
-        // ingress. Dashes are preserved (capture uses `to_ascii_lowercase`).
+    fn test_topic_from_transport_header_normalizes_case_on_validation() {
         let json = r#"{
             "brokers": "kafka:9092",
             "client_id": "test",
@@ -2304,11 +2325,19 @@ mod tests {
 
         let config: KafkaExporterConfig = serde_json::from_str(json).expect("valid config");
         assert_eq!(
-            config.traces().unwrap().topic_from_transport_header(),
+            config
+                .traces()
+                .unwrap()
+                .topic_from_transport_header()
+                .map(ContextEntryName::as_str),
             Some("x-traces-topic")
         );
         assert_eq!(
-            config.logs().unwrap().topic_from_transport_header(),
+            config
+                .logs()
+                .unwrap()
+                .topic_from_transport_header()
+                .map(ContextEntryName::as_str),
             Some("x-target-topic")
         );
     }

@@ -18,6 +18,7 @@ use std::num::NonZeroU64;
 
 use async_trait::async_trait;
 use otel_arrow_dfe_config::PortName;
+use otel_arrow_dfe_config::transport_headers::TransportHeaders;
 use otel_arrow_dfe_config::{SignalFormat, SignalType};
 use otel_arrow_dfe_engine::_private::AckNackRouting;
 use otel_arrow_dfe_engine::control::{
@@ -32,8 +33,6 @@ use otel_arrow_dfe_engine::{
     ProducerEffectHandlerExtension,
 };
 use otel_arrow_dfe_pdata::OtapPayload;
-
-use crate::transport_headers::TransportHeaders;
 
 /// Context for OTAP requests.
 ///
@@ -1201,8 +1200,9 @@ mod test {
     use crate::testing::{
         TestCallData, create_empty_test_pdata, create_test_pdata, next_ack, next_nack,
     };
-    use crate::transport_headers::TransportHeader;
     use otel_arrow_dfe_channel::mpsc::Channel as LocalChannel;
+    use otel_arrow_dfe_config::ContextEntryName;
+    use otel_arrow_dfe_config::transport_headers::{TransportHeader, ValueKind};
     use otel_arrow_dfe_engine::ConsumerEffectHandlerExtension;
     use otel_arrow_dfe_engine::control::{
         PipelineCompletionMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
@@ -2551,7 +2551,14 @@ mod test {
     fn clone_detached_keeps_request_metadata_and_drops_routing_state() {
         let addr: SocketAddr = "10.0.0.1:5005".parse().unwrap();
         let mut headers = TransportHeaders::new();
-        headers.push(TransportHeader::text("tenant", "x-tenant", "acme"));
+        let name = ContextEntryName::try_from("tenant").expect("valid test context entry name");
+        headers.push(TransportHeader::captured(
+            name,
+            "x-tenant",
+            true,
+            ValueKind::Text,
+            "acme".as_bytes(),
+        ));
 
         let (test_data, pdata) = create_test();
         let mut pdata = pdata

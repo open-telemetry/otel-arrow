@@ -1259,6 +1259,7 @@ dependencies = [
  "otel-arrow-dfe-telemetry-macros",
  "otel-arrow-dfe-test-net",
  "prost 0.14.4",
+ "rdkafka",
  "roaring",
  "serde_json",
  "tikv-jemallocator",
@@ -7299,6 +7300,7 @@ name = "otel-arrow-dfe-config"
 version = "0.56.0"
 dependencies = [
  "byte-unit",
+ "hashbrown 0.17.1",
  "humantime-serde",
  "k8s-openapi",
  "kube",
@@ -7643,6 +7645,7 @@ dependencies = [
  "parking_lot",
  "prost 0.14.4",
  "secrecy",
+ "serde",
  "serde_json",
  "serde_yaml",
  "smallvec",

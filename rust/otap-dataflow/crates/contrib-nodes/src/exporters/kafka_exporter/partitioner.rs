@@ -1,62 +1,44 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Partition key generation for Kafka messages.
+//! Kafka partition keys derived from transport headers.
 //!
-//! This module provides functions to generate deterministic partition keys for
-//! Kafka messages based on transport headers. The transport headers are hashed
-//! into a fixed-size, hex-encoded key that librdkafka's partitioner algorithm
-//! (configured via [`PartitionerStrategy`]) then maps to a concrete partition
-//! number.
+//! Headers are hashed into a fixed-size hexadecimal key.
+//! The configured [`PartitionerStrategy`] selects the partition.
 //!
 //! [`PartitionerStrategy`]: super::config::PartitionerStrategy
 
-use otel_arrow_dfe_otap::transport_headers::TransportHeaders;
+use otel_arrow_dfe_config::transport_headers::TransportHeaders;
 use std::hash::{Hash, Hasher};
 use xxhash_rust::xxh64::Xxh64;
 
-/// Build a deterministic partition key from transport headers.
+/// Builds a deterministic key from exact stored header names and values.
 ///
-/// Mirrors how the rotel / OpenTelemetry Collector Kafka exporters derive their
-/// partition key: the headers are sorted, a single hasher is initialized, and
-/// each sorted header is folded into that one hasher; the resulting `u64` is
-/// then hex-encoded into the Kafka record key. This ensures that requests
-/// carrying the same set of transport headers (e.g., same tenant ID, same auth
-/// token) produce the same key and are therefore routed to the same Kafka
-/// partition by librdkafka's partitioner.
-///
-/// Using the transport header name means that headers differing only in casing
-/// or formatting (e.g. `X-Tenant-Id` vs `x-tenant-id`) produce the same key.
-///
-/// # Arguments
-/// * `headers` - Transport headers captured from the inbound request.
-///
-/// # Returns
-/// A hex-encoded 16-character key, or `None` when there are no transport headers
+/// Header order and original wire-name casing do not affect the key. The
+/// configured casing of a custom stored name does affect the key.
+/// Returns a 16-character hexadecimal key, or `None` for empty headers.
 #[must_use]
 pub fn partition_key_from_transport_headers(headers: &TransportHeaders) -> Option<String> {
     if headers.is_empty() {
         return None;
     }
 
-    // Sort the headers by (name, value) to make the key order-independent.
-    // TransportHeaders is backed by a Vec, so iteration order depends on
-    // insertion order; sorting removes that dependency. We sort on the
-    // normalized `name` (not `wire_name`) so headers differing only in original
-    // casing produce the same partition key.
+    // Sort by exact stored name, then value. Ignore original wire-name casing
+    // and input order.
     let mut sorted: Vec<&_> = headers.iter().collect();
-    sorted.sort_unstable_by(|a, b| a.name.cmp(&b.name).then_with(|| a.value.cmp(&b.value)));
+    sorted.sort_unstable_by(|a, b| {
+        a.name
+            .cmp(&b.name)
+            .then_with(|| a.value.bytes.cmp(&b.value.bytes))
+    });
 
-    // Initialize a single hasher and fold each sorted header into it. For each
-    // header we hash its name and value
     let mut hasher = Xxh64::new(0);
     for header in sorted {
         header.name.hash(&mut hasher);
-        header.value.hash(&mut hasher);
+        header.value.bytes.hash(&mut hasher);
     }
     let hash = hasher.finish();
 
-    // Hex-encode the hash bytes
     Some(hex::encode(hash.to_be_bytes()))
 }
 
@@ -101,7 +83,39 @@ pub fn partition_key_for_signal(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otel_arrow_dfe_otap::transport_headers::TransportHeader;
+    use otel_arrow_dfe_config::transport_headers::{TransportHeader, ValueKind};
+
+    fn context_name(raw: &str) -> otel_arrow_dfe_config::ContextEntryName {
+        raw.try_into().expect("valid test context entry name")
+    }
+
+    fn transport_header_text(
+        normalized_name: &str,
+        wire_name: &str,
+        value: impl Into<Vec<u8>>,
+    ) -> TransportHeader {
+        TransportHeader::captured(
+            context_name(normalized_name),
+            wire_name,
+            true,
+            ValueKind::Text,
+            value.into(),
+        )
+    }
+
+    fn transport_header_binary(
+        normalized_name: &str,
+        wire_name: &str,
+        value: impl Into<Vec<u8>>,
+    ) -> TransportHeader {
+        TransportHeader::captured(
+            context_name(normalized_name),
+            wire_name,
+            true,
+            ValueKind::Binary,
+            value.into(),
+        )
+    }
 
     // ---- Transport header partition key tests ----
 
@@ -115,12 +129,12 @@ mod tests {
     #[test]
     fn test_transport_headers_key_is_deterministic() {
         let mut headers = TransportHeaders::new();
-        headers.push(TransportHeader::text(
+        headers.push(transport_header_text(
             "x_tenant_id",
             "X-Tenant-Id",
             b"tenant-123",
         ));
-        headers.push(TransportHeader::text("x_region", "X-Region", b"us-east-1"));
+        headers.push(transport_header_text("x_region", "X-Region", b"us-east-1"));
 
         let key1 = partition_key_from_transport_headers(&headers);
         let key2 = partition_key_from_transport_headers(&headers);
@@ -132,14 +146,14 @@ mod tests {
     #[test]
     fn test_transport_headers_different_values_produce_different_keys() {
         let mut headers1 = TransportHeaders::new();
-        headers1.push(TransportHeader::text(
+        headers1.push(transport_header_text(
             "x_tenant_id",
             "X-Tenant-Id",
             b"tenant-a",
         ));
 
         let mut headers2 = TransportHeaders::new();
-        headers2.push(TransportHeader::text(
+        headers2.push(transport_header_text(
             "x_tenant_id",
             "X-Tenant-Id",
             b"tenant-b",
@@ -154,14 +168,14 @@ mod tests {
     #[test]
     fn test_transport_headers_different_names_produce_different_keys() {
         let mut headers1 = TransportHeaders::new();
-        headers1.push(TransportHeader::text(
+        headers1.push(transport_header_text(
             "x_tenant_id",
             "X-Tenant-Id",
             b"value",
         ));
 
         let mut headers2 = TransportHeaders::new();
-        headers2.push(TransportHeader::text("x_region", "X-Region", b"value"));
+        headers2.push(transport_header_text("x_region", "X-Region", b"value"));
 
         let key1 = partition_key_from_transport_headers(&headers1);
         let key2 = partition_key_from_transport_headers(&headers2);
@@ -172,7 +186,7 @@ mod tests {
     #[test]
     fn test_transport_headers_key_is_fixed_size_hex() {
         let mut headers = TransportHeaders::new();
-        headers.push(TransportHeader::text(
+        headers.push(transport_header_text(
             "x_tenant_id",
             "X-Tenant-Id",
             b"tenant-123",
@@ -193,7 +207,7 @@ mod tests {
     #[test]
     fn test_transport_headers_binary_values_produce_fixed_size_hex() {
         let mut headers = TransportHeaders::new();
-        headers.push(TransportHeader::binary(
+        headers.push(transport_header_binary(
             "x_binary",
             "X-Binary",
             [0x01, 0x02, 0x03, 0xFF],
@@ -211,17 +225,17 @@ mod tests {
     #[test]
     fn test_transport_headers_order_independent() {
         let mut headers_ab = TransportHeaders::new();
-        headers_ab.push(TransportHeader::text(
+        headers_ab.push(transport_header_text(
             "x_tenant_id",
             "X-Tenant-Id",
             b"tenant-123",
         ));
-        headers_ab.push(TransportHeader::text("x_region", "X-Region", b"us-east-1"));
+        headers_ab.push(transport_header_text("x_region", "X-Region", b"us-east-1"));
 
         // Same headers, reversed insertion order.
         let mut headers_ba = TransportHeaders::new();
-        headers_ba.push(TransportHeader::text("x_region", "X-Region", b"us-east-1"));
-        headers_ba.push(TransportHeader::text(
+        headers_ba.push(transport_header_text("x_region", "X-Region", b"us-east-1"));
+        headers_ba.push(transport_header_text(
             "x_tenant_id",
             "X-Tenant-Id",
             b"tenant-123",
@@ -248,7 +262,7 @@ mod tests {
     #[test]
     fn test_transport_headers_hash_matches_documented_pipeline() {
         let mut headers = TransportHeaders::new();
-        headers.push(TransportHeader::text(
+        headers.push(transport_header_text(
             "x_tenant_id",
             "X-Tenant-Id",
             b"tenant-123",
@@ -302,7 +316,7 @@ mod tests {
             .with_partition_by_transport_headers(true);
 
         let mut headers = TransportHeaders::new();
-        headers.push(TransportHeader::text(
+        headers.push(transport_header_text(
             "x_tenant_id",
             "X-Tenant-Id",
             b"tenant-123",
@@ -330,7 +344,7 @@ mod tests {
         let secret_value = "Bearer-super-secret-token-abcdef0123456789";
         let sensitive_name = "authorization";
         let mut headers = TransportHeaders::new();
-        headers.push(TransportHeader::text(
+        headers.push(transport_header_text(
             sensitive_name,
             "Authorization",
             secret_value.as_bytes(),
@@ -363,7 +377,7 @@ mod tests {
     #[test]
     fn partition_key_is_stable_hash_for_same_sensitive_header() {
         let mut headers = TransportHeaders::new();
-        headers.push(TransportHeader::text(
+        headers.push(transport_header_text(
             "x_tenant_id",
             "X-Tenant-Id",
             b"tenant-super-secret",

@@ -851,3 +851,14 @@ original state.
 - `GET /groups/{group}/pipelines/{id}/status` is the best endpoint
   for watching serving generations and per-instance phase changes during a
   rollout.
+
+## Transport Header Context Limitation
+
+Any live update that changes the effective context declarations or
+transport-header capture/propagation policy of a deployed pipeline is rejected
+and requires a full engine restart. This includes changes local to the pipeline
+being replaced because its old and new generations can overlap during rollout,
+as well as changes that would alter another pipeline's compiled bindings.
+
+Dependency-aware live context-policy updates remain follow-up work tracked in
+[issue #3917](https://github.com/open-telemetry/otel-arrow/issues/3917).

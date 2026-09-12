@@ -3,12 +3,13 @@
 
 //! Implementation of the traffic generator receiver configuration
 
-use serde::de::Deserializer;
+use serde::de::{Deserializer, MapAccess, Visitor};
 use serde::{Deserialize, Serialize};
 
 use std::collections::HashMap;
 use std::num::NonZeroU32;
 
+use otel_arrow_dfe_config::ContextEntryName;
 use weaver_common::result::WResult;
 use weaver_common::vdir::VirtualDirectoryPath;
 use weaver_forge::registry::ResolvedRegistry;
@@ -144,16 +145,52 @@ pub struct Config {
 
     /// Optional transport headers to attach to each generated pdata message.
     ///
-    /// Keys are header names. Values are optional fixed strings; when left
-    /// empty, a random value is generated once at startup.
+    /// Names are canonicalized to lowercase. Values are fixed strings or `null`.
+    /// A `null` value generates one random value at startup.
     ///
     /// ```yaml
     /// transport_headers:
     ///   x-tenant-id: "acme"
     ///   x-request-id:
     /// ```
-    #[serde(default)]
-    transport_headers: HashMap<String, Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_transport_headers")]
+    transport_headers: HashMap<ContextEntryName, Option<String>>,
+}
+
+fn deserialize_transport_headers<'de, D>(
+    deserializer: D,
+) -> Result<HashMap<ContextEntryName, Option<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct TransportHeadersVisitor;
+
+    impl<'de> Visitor<'de> for TransportHeadersVisitor {
+        type Value = HashMap<ContextEntryName, Option<String>>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a map of transport header names to string or null values")
+        }
+
+        fn visit_map<M>(self, mut access: M) -> Result<Self::Value, M::Error>
+        where
+            M: MapAccess<'de>,
+        {
+            let mut headers = HashMap::with_capacity(access.size_hint().unwrap_or(0));
+            while let Some((raw_name, value)) = access.next_entry::<String, Option<String>>()? {
+                let name = ContextEntryName::try_from(raw_name.as_str())
+                    .map_err(serde::de::Error::custom)?;
+                if headers.insert(name.clone(), value).is_some() {
+                    return Err(serde::de::Error::custom(format!(
+                        "duplicate transport header name `{name}` after ASCII lowercase normalization"
+                    )));
+                }
+            }
+            Ok(headers)
+        }
+    }
+
+    deserializer.deserialize_map(TransportHeadersVisitor)
 }
 
 /// Configuration to describe the traffic being sent
@@ -259,7 +296,7 @@ impl Config {
     #[must_use]
     pub fn with_transport_headers(
         mut self,
-        transport_headers: HashMap<String, Option<String>>,
+        transport_headers: HashMap<ContextEntryName, Option<String>>,
     ) -> Self {
         self.transport_headers = transport_headers;
         self
@@ -336,7 +373,7 @@ impl Config {
     /// Keys are header names. Entries with a value produce fixed headers;
     /// entries left empty produce a random value generated once at startup.
     #[must_use]
-    pub fn transport_headers(&self) -> &HashMap<String, Option<String>> {
+    pub fn transport_headers(&self) -> &HashMap<ContextEntryName, Option<String>> {
         &self.transport_headers
     }
 }
@@ -552,7 +589,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::{Config, DataSource, GenerationStrategy, build_rotation_table};
+    use otel_arrow_dfe_config::ContextEntryName;
     use serde_json::json;
+
+    fn context_name(raw: &str) -> ContextEntryName {
+        ContextEntryName::try_from(raw).expect("valid test context entry name")
+    }
 
     #[test]
     fn parse_config_defaults_enable_ack_nack_to_false() {
@@ -748,6 +790,8 @@ mod tests {
 
     // -- transport_headers config tests ----------------------------------------
 
+    /// Scenario: `transport_headers` is omitted.
+    /// Guarantees: no headers are configured.
     #[test]
     fn parse_config_transport_headers_default_empty() {
         let cfg: Config = serde_json::from_value(json!({
@@ -763,6 +807,8 @@ mod tests {
         );
     }
 
+    /// Scenario: mixed-case headers have fixed or null values.
+    /// Guarantees: names are canonicalized to lowercase and values retain their content.
     #[test]
     fn parse_config_transport_headers_with_values() {
         let cfg: Config = serde_json::from_value(json!({
@@ -770,23 +816,46 @@ mod tests {
             "data_source": "synthetic",
             "generation_strategy": "fresh",
             "transport_headers": {
-                "x-tenant-id": "acme",
-                "x-request-id": null
+                "X-Tenant-Id": "acme",
+                "X-Request-Id": null
             }
         }))
         .expect("config should parse");
 
         let headers = cfg.transport_headers();
         assert_eq!(headers.len(), 2);
+        assert!(headers.keys().any(|name| name.as_str() == "x-tenant-id"));
+        assert!(headers.keys().any(|name| name.as_str() == "x-request-id"));
         assert_eq!(
-            headers.get("x-tenant-id"),
+            headers.get(&context_name("X-Tenant-Id")),
             Some(&Some("acme".to_string())),
             "fixed value should be preserved"
         );
         assert_eq!(
-            headers.get("x-request-id"),
+            headers.get(&context_name("X-Request-Id")),
             Some(&None),
             "null value should parse as None"
+        );
+        assert!(headers.contains_key(&context_name("x-tenant-id")));
+    }
+
+    /// Scenario: configured header names differ only by case.
+    /// Guarantees: deserialization rejects the duplicate canonical lowercase name.
+    #[test]
+    fn parse_config_transport_headers_rejects_case_distinct_duplicates() {
+        let error = serde_json::from_value::<Config>(json!({
+            "traffic_config": base_traffic(),
+            "transport_headers": {
+                "X-Tenant-Id": "acme",
+                "x-tenant-id": "contoso"
+            },
+        }))
+        .err()
+        .expect("case-distinct names should collide after normalization");
+
+        assert_eq!(
+            error.to_string(),
+            "duplicate transport header name `x-tenant-id` after ASCII lowercase normalization"
         );
     }
 

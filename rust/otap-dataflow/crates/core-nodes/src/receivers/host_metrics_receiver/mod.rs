@@ -151,6 +151,7 @@ pub static HOST_METRICS_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
          _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
             create_host_metrics_receiver(pipeline, node, node_config, receiver_config)
         },
+    context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: validate_host_metrics_config,
 };
