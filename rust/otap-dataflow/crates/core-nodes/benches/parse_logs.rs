@@ -1,6 +1,6 @@
 //! Record and native batch parsing throughput and requested-heap qualification.
 
-use otel_arrow_dfe_core_nodes::processors::transform_processor::BenchLogParser;
+use otel_arrow_dfe_core_nodes::processors::log_parser_processor::BenchLogParser;
 use otel_arrow_dfe_pdata::{
     OtapArrowRecords,
     proto::{

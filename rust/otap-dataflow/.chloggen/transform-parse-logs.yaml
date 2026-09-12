@@ -1,13 +1,13 @@
 # Use this changelog template to create an entry for release notes.
 
 # One of 'breaking', 'deprecation', 'new_component', 'enhancement', 'bug_fix'
-change_type: enhancement
+change_type: new_component
 
 # Must be one of the components listed in config.yaml.
 component: pipeline
 
 # A brief description of the change.
-note: Add configurable regex, JSON and headerless CSV parsing of framed log bodies in the transform processor.
+note: Add a dedicated log parser processor for configurable regex, JSON and headerless CSV parsing of framed log bodies.
 
 # Tracking issue or PR number is assigned when this change is submitted.
 issues: []
