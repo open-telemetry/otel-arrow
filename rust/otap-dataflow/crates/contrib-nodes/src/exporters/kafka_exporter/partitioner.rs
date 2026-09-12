@@ -90,12 +90,12 @@ mod tests {
     }
 
     fn transport_header_text(
-        normalized_name: &str,
+        stored_name: &str,
         wire_name: &str,
         value: impl Into<Vec<u8>>,
     ) -> TransportHeader {
         TransportHeader::captured(
-            context_name(normalized_name),
+            context_name(stored_name),
             wire_name,
             true,
             ValueKind::Text,
@@ -104,12 +104,12 @@ mod tests {
     }
 
     fn transport_header_binary(
-        normalized_name: &str,
+        stored_name: &str,
         wire_name: &str,
         value: impl Into<Vec<u8>>,
     ) -> TransportHeader {
         TransportHeader::captured(
-            context_name(normalized_name),
+            context_name(stored_name),
             wire_name,
             true,
             ValueKind::Binary,
@@ -181,6 +181,22 @@ mod tests {
         let key2 = partition_key_from_transport_headers(&headers2);
 
         assert_ne!(key1, key2);
+    }
+
+    /// Scenario: explicit stored header names differ only by ASCII case.
+    /// Guarantees: partition keys preserve the configured stored-name identity.
+    #[test]
+    fn transport_headers_stored_name_case_affects_partition_key() {
+        let mut mixed_case = TransportHeaders::new();
+        mixed_case.push(transport_header_text("Tenant", "X-Tenant-Id", b"tenant-a"));
+
+        let mut lowercase = TransportHeaders::new();
+        lowercase.push(transport_header_text("tenant", "X-Tenant-Id", b"tenant-a"));
+
+        assert_ne!(
+            partition_key_from_transport_headers(&mixed_case),
+            partition_key_from_transport_headers(&lowercase)
+        );
     }
 
     #[test]

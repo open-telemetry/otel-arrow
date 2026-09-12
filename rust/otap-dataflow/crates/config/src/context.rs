@@ -9,8 +9,9 @@ use serde::{Deserialize, Serialize};
 
 /// A context entry name.
 ///
-/// Names are normalized to ASCII lowercase during construction so equality,
-/// ordering, and hashing follow transport-header name semantics.
+/// The configured spelling is preserved. Equality, ordering, and hashing are
+/// case-sensitive; callers that need transport-header matching semantics must
+/// compare names case-insensitively at that boundary.
 #[derive(
     Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord, Hash,
 )]
@@ -18,10 +19,16 @@ use serde::{Deserialize, Serialize};
 pub struct ContextEntryName(Box<str>);
 
 impl ContextEntryName {
-    /// Returns the canonical lowercase name.
+    /// Returns the configured name.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// Returns an ASCII-lowercase copy.
+    #[must_use]
+    pub(crate) fn to_ascii_lowercase(&self) -> Self {
+        Self(self.0.to_ascii_lowercase().into())
     }
 }
 
@@ -59,7 +66,7 @@ impl TryFrom<&str> for ContextEntryName {
                 ),
             });
         }
-        Ok(Self(value.to_ascii_lowercase().into()))
+        Ok(Self(value.into()))
     }
 }
 
@@ -94,31 +101,31 @@ mod tests {
     use super::*;
 
     /// Scenario: a context name contains mixed-case ASCII.
-    /// Guarantees: construction and string conversion expose its canonical lowercase identity.
+    /// Guarantees: construction and string conversion preserve the configured spelling.
     #[test]
-    fn context_entry_name_normalizes_and_converts() {
+    fn context_entry_name_preserves_and_converts() {
         let name = ContextEntryName::try_from("X-Tenant_Id.1".to_owned()).expect("valid name");
 
-        assert_eq!(name.as_str(), "x-tenant_id.1");
-        assert_eq!(name.as_ref(), "x-tenant_id.1");
-        assert_eq!(name.to_string(), "x-tenant_id.1");
+        assert_eq!(name.as_str(), "X-Tenant_Id.1");
+        assert_eq!(name.as_ref(), "X-Tenant_Id.1");
+        assert_eq!(name.to_string(), "X-Tenant_Id.1");
 
         let owned: String = name.into();
-        assert_eq!(owned, "x-tenant_id.1");
+        assert_eq!(owned, "X-Tenant_Id.1");
     }
 
     /// Scenario: context names differ only by ASCII case.
-    /// Guarantees: they normalize to the same stored identity.
+    /// Guarantees: their stored identities remain distinct.
     #[test]
-    fn context_entry_name_identity_is_case_insensitive() {
+    fn context_entry_name_identity_is_case_sensitive() {
         use std::collections::{BTreeSet, HashSet};
 
         let upper = ContextEntryName::try_from("X-Tenant").expect("valid name");
         let lower = ContextEntryName::try_from("x-tenant").expect("valid name");
 
-        assert_eq!(upper, lower);
-        assert_eq!(HashSet::from([upper.clone(), lower.clone()]).len(), 1);
-        assert_eq!(BTreeSet::from([upper, lower]).len(), 1);
+        assert_ne!(upper, lower);
+        assert_eq!(HashSet::from([upper.clone(), lower.clone()]).len(), 2);
+        assert_eq!(BTreeSet::from([upper, lower]).len(), 2);
     }
 
     /// Scenario: a context name is empty, composite, contains whitespace, or is non-ASCII.
@@ -131,15 +138,15 @@ mod tests {
     }
 
     /// Scenario: a mixed-case name passes through serde.
-    /// Guarantees: serde exposes the canonical lowercase identity.
+    /// Guarantees: serde preserves the configured spelling.
     #[test]
-    fn context_entry_name_serde_normalizes_string() {
+    fn context_entry_name_serde_preserves_string() {
         let name: ContextEntryName = serde_json::from_str("\"X-Tenant\"").expect("deserialize");
 
-        assert_eq!(name, "x-tenant");
+        assert_eq!(name, "X-Tenant");
         assert_eq!(
             serde_json::to_string(&name).expect("serialize"),
-            "\"x-tenant\""
+            "\"X-Tenant\""
         );
     }
 }

@@ -156,9 +156,11 @@ Operators who route by header (or otherwise want default-deny) should set
 When `partition_by_transport_headers` is enabled, the record key is a
 deterministic 16-character hash of the transport header names and values -- never
 the plaintext value -- so tenant IDs / auth tokens are not exposed in the record
-key. The accepted tradeoff is that a given tenant/token produces a *stable* key,
-which makes its traffic fingerprintable via partition-assignment analysis; this
-is intentional (co-locating a tenant's data is the feature). Leave
+key. Header names use their exact stored spelling: original wire-name casing is
+ignored, while explicitly configured `store_as` casing contributes to the hash.
+The accepted tradeoff is that a given tenant/token produces a *stable* key, which
+makes its traffic fingerprintable via partition-assignment analysis; this is
+intentional (co-locating a tenant's data is the feature). Leave
 `partition_by_transport_headers` disabled (the default) for null-key
 round-robin partitioning.
 
@@ -282,8 +284,10 @@ hashed to partition numbers. The default is `consistent_random`.
 When `partition_by_transport_headers` is enabled on a signal, the exporter
 hashes the request's transport headers to derive the Kafka record key, so
 requests carrying the same headers (e.g. same tenant ID) are routed to the same
-partition. This setting is per-signal -- each of `traces`, `metrics`, and `logs`
-can independently opt in.
+partition. The hash uses each header's exact stored name and value. Original
+wire-name casing does not affect the key, but explicitly configured `store_as`
+casing does. This setting is per-signal -- each of `traces`, `metrics`, and
+`logs` can independently opt in.
 
 ### Producer Tuning
 

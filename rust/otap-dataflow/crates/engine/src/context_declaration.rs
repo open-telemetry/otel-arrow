@@ -48,7 +48,7 @@ pub struct ContextEntrySelector {
 pub enum ContextEntrySelectorForm {
     /// Value only.
     Value,
-    /// Canonical stored name and value.
+    /// Stored name and value, preserving configured spelling.
     StoredKeyValue,
     /// Original name and value.
     OriginalKeyValue,
@@ -62,7 +62,7 @@ pub enum ContextConsumerSelector {
         /// Entries to read.
         entries: Box<[ContextEntrySelector]>,
     },
-    /// Selects every context entry using its canonical stored name.
+    /// Selects every context entry using its stored name.
     AllStored,
 }
 
@@ -107,7 +107,7 @@ impl ContextDeclaration {
                         _ = requirements
                             .original_name_retention
                             .overrides
-                            .insert(entry.name.clone(), true);
+                            .insert(original_name_key(&entry.name), true);
                     }
                 }
             }
@@ -130,7 +130,7 @@ impl ContextDeclaration {
                         _ = requirements
                             .original_name_retention
                             .overrides
-                            .insert(name.clone(), preserve_original);
+                            .insert(original_name_key(name), preserve_original);
                     }
                 });
             }
@@ -277,8 +277,8 @@ pub struct ContextRuntimeRequirements {
 struct OriginalNameRetention {
     /// Disposition for names without an explicit override.
     default_preserve_original: bool,
-    /// Name-specific dispositions that differ from the default.
-    overrides: BTreeMap<ContextEntryName, bool>,
+    /// Lowercase name-specific dispositions that differ from the default.
+    overrides: BTreeMap<Box<str>, bool>,
 }
 
 /// Requirements and node bindings prepared from one resolved configuration.
@@ -348,7 +348,7 @@ impl OriginalNameRetention {
             .into_iter()
             .filter_map(|name| {
                 let preserve_original =
-                    self.preserves_original_name(&name) || other.preserves_original_name(&name);
+                    self.preserves_original_key(&name) || other.preserves_original_key(&name);
                 (preserve_original != default_preserve_original)
                     .then_some((name, preserve_original))
             })
@@ -367,16 +367,24 @@ impl OriginalNameRetention {
             .keys()
             .chain(candidate.overrides.keys())
             .all(|name| {
-                !candidate.preserves_original_name(name) || self.preserves_original_name(name)
+                !candidate.preserves_original_key(name) || self.preserves_original_key(name)
             })
     }
 
     fn preserves_original_name(&self, name: &ContextEntryName) -> bool {
+        self.preserves_original_key(&original_name_key(name))
+    }
+
+    fn preserves_original_key(&self, name: &str) -> bool {
         self.overrides
             .get(name)
             .copied()
             .unwrap_or(self.default_preserve_original)
     }
+}
+
+fn original_name_key(name: &ContextEntryName) -> Box<str> {
+    name.as_str().to_ascii_lowercase().into()
 }
 
 impl CompiledNodeBindings {
@@ -836,7 +844,7 @@ mod tests {
     }
 
     /// Scenario: propagation preserves arbitrary names but overrides one stored name.
-    /// Guarantees: the canonical profile uses a true default with one lowercase exception.
+    /// Guarantees: the profile uses a true default with one case-insensitive exception.
     #[test]
     fn requirements_canonicalize_default_and_overrides() {
         let propagation: HeaderPropagationPolicy = serde_json::from_value(serde_json::json!({
@@ -867,7 +875,7 @@ mod tests {
         assert!(requirements.preserves_original_name(&context_name("X-Tenant")));
         assert_eq!(
             requirements.original_name_retention.overrides,
-            BTreeMap::from([(context_name("authorization"), false)])
+            BTreeMap::from([(Box::<str>::from("authorization"), false)])
         );
     }
 

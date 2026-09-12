@@ -136,6 +136,10 @@ when its wire name matches any entry in `match_names`
   (`text` or `binary`). When omitted, headers ending in `-bin`
   are treated as binary; all others as text.
 
+Configured spelling remains part of the stored context-entry identity. Policy
+matching is case-insensitive where documented, but exact stored-name operations
+such as Kafka partition-key hashing observe that spelling.
+
 ### Defaults
 
 The `defaults` block sets limits applied to all captured headers

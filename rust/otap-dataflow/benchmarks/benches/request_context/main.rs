@@ -25,7 +25,7 @@ const PRODUCER_CASES: [ProducerCase; 2] = [ProducerCase::Unrenamed, ProducerCase
 const RECEIVE_CONSUMER_CASES: [ConsumerCase; 2] = [ConsumerCase::None, ConsumerCase::Original];
 const CONSUMER_CASES: [ConsumerCase; 3] = [
     ConsumerCase::None,
-    ConsumerCase::Normalized,
+    ConsumerCase::Stored,
     ConsumerCase::Original,
 ];
 
@@ -47,7 +47,7 @@ impl ProducerCase {
 #[derive(Clone, Copy)]
 enum ConsumerCase {
     None,
-    Normalized,
+    Stored,
     Original,
 }
 
@@ -55,7 +55,7 @@ impl ConsumerCase {
     const fn name(self) -> &'static str {
         match self {
             Self::None => "no_consumer",
-            Self::Normalized => "normalized_consumer",
+            Self::Stored => "stored_name_consumer",
             Self::Original => "original_consumer",
         }
     }
@@ -63,7 +63,7 @@ impl ConsumerCase {
     fn propagation_policy(self) -> Option<HeaderPropagationPolicy> {
         let name = match self {
             Self::None => return None,
-            Self::Normalized => NameStrategy::StoredName,
+            Self::Stored => NameStrategy::StoredName,
             Self::Original => NameStrategy::Preserve,
         };
         Some(HeaderPropagationPolicy::new(
@@ -112,21 +112,21 @@ struct CurrentHeaders {
 enum LegacyHeaderName {
     Prepared(ContextEntryName),
     Preserved {
-        normal: ContextEntryName,
+        stored: ContextEntryName,
         original: Cow<'static, str>,
     },
 }
 
 impl LegacyHeaderName {
-    fn normalized(&self) -> &ContextEntryName {
+    fn stored(&self) -> &ContextEntryName {
         match self {
-            Self::Prepared(normal) | Self::Preserved { normal, .. } => normal,
+            Self::Prepared(stored) | Self::Preserved { stored, .. } => stored,
         }
     }
 
     fn original(&self) -> &str {
         match self {
-            Self::Prepared(normal) => normal,
+            Self::Prepared(stored) => stored,
             Self::Preserved { original, .. } => original,
         }
     }
@@ -353,12 +353,12 @@ fn receive_kafka_legacy(match_names: &[ContextEntryName], headers: &OwnedHeaders
         headers: capture_kafka_headers(
             match_names,
             headers,
-            |normal, wire_name, value_kind, value| {
-                let name = if normal.as_str() == wire_name {
-                    LegacyHeaderName::Prepared(normal)
+            |stored, wire_name, value_kind, value| {
+                let name = if stored.as_str() == wire_name {
+                    LegacyHeaderName::Prepared(stored)
                 } else {
                     LegacyHeaderName::Preserved {
-                        normal,
+                        stored,
                         original: wire_name.to_owned().into(),
                     }
                 };
@@ -380,8 +380,8 @@ fn receive_kafka_current(
         headers: capture_kafka_headers(
             match_names,
             headers,
-            |normal, wire_name, value_kind, value| {
-                TransportHeader::captured(normal, wire_name, true, value_kind, value)
+            |stored, wire_name, value_kind, value| {
+                TransportHeader::captured(stored, wire_name, true, value_kind, value)
             },
         ),
     }
@@ -397,7 +397,7 @@ fn capture_kafka_headers<T>(
         let Some(value) = header.value else {
             continue;
         };
-        let Some(normal) = match_names
+        let Some(stored) = match_names
             .iter()
             .find(|name| header.key.eq_ignore_ascii_case(name))
         else {
@@ -408,7 +408,7 @@ fn capture_kafka_headers<T>(
         } else {
             ValueKind::Text
         };
-        captured.push(capture(normal.clone(), header.key, value_kind, value));
+        captured.push(capture(stored.clone(), header.key, value_kind, value));
     }
     Arc::new(captured)
 }
@@ -455,12 +455,12 @@ fn assert_header_layout_improved() {
     let variants = [
         LegacyHeaderName::Prepared(context_name("prepared")),
         LegacyHeaderName::Preserved {
-            normal: context_name("preserved"),
+            stored: context_name("preserved"),
             original: "Preserved".to_owned().into(),
         },
     ];
     for variant in &variants {
-        let _ = black_box(variant.normalized());
+        let _ = black_box(variant.stored());
         let _ = black_box(variant.original());
     }
     assert!(size_of::<LegacyHeaderName>() > size_of::<ContextEntryName>());

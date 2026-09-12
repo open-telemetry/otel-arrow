@@ -62,8 +62,8 @@ pub struct SignalConfig {
     /// When set and the header is present in the pdata context, its value
     /// becomes the Kafka destination topic instead of the static `topic` field.
     ///
-    /// The name is canonicalized to lowercase and matched against stored
-    /// transport-header names.
+    /// The configured spelling is preserved. The router matches it against
+    /// stored transport-header names using ASCII case-insensitive comparison.
     #[serde(default)]
     topic_from_transport_header: Option<ContextEntryName>,
 
@@ -73,7 +73,8 @@ pub struct SignalConfig {
     /// (by exact stored name and raw value) to produce a deterministic partition
     /// key. This ensures that requests carrying the same set of transport
     /// headers (e.g., same tenant ID, same auth token) are routed to the same
-    /// Kafka partition, regardless of original header casing.
+    /// Kafka partition, regardless of original wire-header casing. Configured
+    /// stored-name casing is preserved and contributes to the key.
     ///
     /// Combine with [`KafkaExporterConfig::partitioning_strategy`] to control
     /// which hashing algorithm librdkafka uses to map the key to a partition.
@@ -2159,7 +2160,7 @@ mod tests {
     }
 
     /// Scenario: a builder receives a mixed-case topic header name.
-    /// Guarantees: the selector is stored using its canonical lowercase identity.
+    /// Guarantees: the configured selector spelling is preserved.
     #[test]
     fn test_signal_config_builder_with_topic_from_transport_header() {
         let signal = SignalConfig::new("otlp_logs".into(), MessageFormat::OtlpProto)
@@ -2170,7 +2171,7 @@ mod tests {
             signal
                 .topic_from_transport_header()
                 .map(ContextEntryName::as_str),
-            Some("x_target_topic")
+            Some("X_Target_Topic")
         );
         assert_eq!(signal.topic(), "otlp_logs");
     }
@@ -2307,9 +2308,9 @@ mod tests {
     }
 
     /// Scenario: Kafka exporter validation receives mixed-case header selectors.
-    /// Guarantees: validation stores each selector using its canonical lowercase identity.
+    /// Guarantees: validation preserves each selector's configured spelling.
     #[test]
-    fn test_topic_from_transport_header_normalizes_case_on_validation() {
+    fn test_topic_from_transport_header_preserves_case_on_validation() {
         let json = r#"{
             "brokers": "kafka:9092",
             "client_id": "test",
@@ -2330,7 +2331,7 @@ mod tests {
                 .unwrap()
                 .topic_from_transport_header()
                 .map(ContextEntryName::as_str),
-            Some("x-traces-topic")
+            Some("X-Traces-Topic")
         );
         assert_eq!(
             config
@@ -2338,7 +2339,7 @@ mod tests {
                 .unwrap()
                 .topic_from_transport_header()
                 .map(ContextEntryName::as_str),
-            Some("x-target-topic")
+            Some("X-Target-Topic")
         );
     }
 

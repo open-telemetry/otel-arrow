@@ -1580,12 +1580,12 @@ pub mod test_support {
         }
 
         fn transport_header(
-            normalized_name: &str,
+            stored_name: &str,
             wire_name: &str,
             value: impl Into<Vec<u8>>,
         ) -> TransportHeader {
             TransportHeader::captured(
-                context_name(normalized_name),
+                context_name(stored_name),
                 wire_name,
                 true,
                 ValueKind::Text,
