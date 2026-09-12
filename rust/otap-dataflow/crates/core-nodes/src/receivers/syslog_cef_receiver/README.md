@@ -457,14 +457,14 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 Each UDP datagram or emitted TCP frame records one shared receiver observation
 when receiver-local handling terminates. TCP payload size excludes the newline
-delimiter. Duration starts when the classified payload is available and ends at
-pipeline handoff, rejection, or failure, including time spent in a batch.
+delimiter. Processing duration covers active admission, parsing, and record
+append work. It excludes batch buffering and pipeline handoff.
 
 | Metric | Unit | Description |
 | --- | --- | --- |
 | `receiver.received.messages` | `{message}` | Number of classified external messages, grouped by `signal=logs` and terminal `outcome`. |
-| `receiver.received.payload.size` | `By` | Encoded application payload bytes visible before parsing, grouped by `signal=logs` and terminal `outcome`. |
-| `receiver.received.duration` | `s` | Receiver-local handling duration per external message, grouped by `signal=logs` and terminal `outcome`. |
+| `receiver.received.payload.size` | `By` | Optional encoded application payload bytes visible before parsing, grouped by `signal=logs` and terminal `outcome`. |
+| `receiver.processing.duration` | `s` | Optional active receiver-local processing duration per external message, grouped by `signal=logs`. |
 
 `outcome=success` means pipeline handoff completed, `outcome=refused` means
 validation, admission, capacity, shutdown, or pipeline handoff rejected the

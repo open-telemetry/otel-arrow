@@ -27,10 +27,12 @@ use otel_arrow_dfe_engine::{
     local::receiver as local,
 };
 use otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES;
-use otel_arrow_dfe_otap::metrics::ReceiverReceivedMetrics;
+use otel_arrow_dfe_otap::metrics::{
+    CompletedReceiverProcessing, ReceiverMetrics, ReceiverProcessing,
+};
 use otel_arrow_dfe_otap::pdata::OtapPdata;
 use otel_arrow_dfe_telemetry::common_attributes::{
-    Outcome, ReceiverRejectionErrorType, SignalOutcomeAttributes, SignalRegistrationAttributes,
+    Outcome, ReceiverRejectionErrorType, SignalRegistrationAttributes,
 };
 use otel_arrow_dfe_telemetry::instrument::{Counter, UpDownCounter};
 use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
@@ -79,15 +81,17 @@ const MAX_TASK_DRAIN_WAIT: Duration = Duration::from_secs(1);
 
 /// Lifecycle data retained while one classified message waits for batch handoff.
 struct PendingReceivedMessage {
-    observed_at: Instant,
-    payload_size: u64,
+    processing: Option<ReceiverProcessing>,
+    completed: Option<CompletedReceiverProcessing<(), ()>>,
+    payload_size: usize,
 }
 
 impl PendingReceivedMessage {
-    fn new(payload_size: usize) -> Self {
+    fn new(payload_size: usize, processing: ReceiverProcessing) -> Self {
         Self {
-            observed_at: Instant::now(),
-            payload_size: payload_size as u64,
+            processing: Some(processing),
+            completed: None,
+            payload_size,
         }
     }
 }
@@ -661,8 +665,9 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                 } else {
                                                                     &line_bytes[..]
                                                                 };
-                                                                let received_message =
-                                                                    PendingReceivedMessage::new(message_bytes.len());
+                                                                let mut received_message = metrics
+                                                                    .borrow()
+                                                                    .start_received(message_bytes.len());
 
                                                                 if admission_state.should_shed_ingress() {
                                                                     otel_warn!(
@@ -710,6 +715,9 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                     match parser::parse(message_bytes) {
                                                                         Ok(parsed_message) => {
                                                                             arrow_records_builder.append_syslog(parsed_message);
+                                                                            metrics.borrow_mut().finish_processing(
+                                                                                &mut received_message,
+                                                                            );
                                                                             pending_messages.push(received_message);
                                                                         }
                                                                         Err(_e) => {
@@ -773,8 +781,9 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             } else {
                                                                 &line_bytes[..]
                                                             };
-                                                            let received_message =
-                                                                PendingReceivedMessage::new(message_to_parse.len());
+                                                            let mut received_message = metrics
+                                                                .borrow()
+                                                                .start_received(message_to_parse.len());
 
                                                             if admission_state.should_shed_ingress() {
                                                                 otel_warn!(
@@ -827,6 +836,9 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             match parser::parse(message_to_parse) {
                                                                 Ok(parsed) => {
                                                                     arrow_records_builder.append_syslog(parsed);
+                                                                    metrics.borrow_mut().finish_processing(
+                                                                        &mut received_message,
+                                                                    );
                                                                     pending_messages.push(received_message);
                                                                 }
                                                                 Err(_e) => {
@@ -1033,7 +1045,8 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                         self.metrics.borrow_mut().record_truncation();
                                     }
 
-                                    let received_message = PendingReceivedMessage::new(n);
+                                    let mut received_message =
+                                        self.metrics.borrow().start_received(n);
                                     if self.admission_state.should_shed_ingress() {
                                         self.metrics.borrow_mut().record_rejection(SyslogCefProtocol::Udp, ReceiverRejectionErrorType::MemoryPressure, 1);
                                         self.metrics.borrow_mut().record_received(received_message, Outcome::Refused);
@@ -1059,6 +1072,9 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     };
 
                                     arrow_records_builder.append_syslog(parsed_message);
+                                    self.metrics
+                                        .borrow_mut()
+                                        .finish_processing(&mut received_message);
                                     pending_messages.push(received_message);
 
                                     if arrow_records_builder.len() >= max_batch_size {
@@ -1218,7 +1234,7 @@ pub struct SyslogCefConnectionMetrics {
 
 /// Shared bounded-cardinality Syslog CEF receiver metrics tracker.
 pub struct SyslogCefReceiverMetrics {
-    received: otel_arrow_dfe_telemetry::metrics::MeasurementMetricSet<ReceiverReceivedMetrics>,
+    received: ReceiverMetrics,
     rejections: otel_arrow_dfe_telemetry::metrics::MeasurementMetricSet<SyslogCefRejectionMetrics>,
     transport: otel_arrow_dfe_telemetry::metrics::MeasurementMetricSet<SyslogCefTransportMetrics>,
     truncations: otel_arrow_dfe_telemetry::metrics::MetricSet<SyslogCefTruncationMetrics>,
@@ -1233,7 +1249,7 @@ impl SyslogCefReceiverMetrics {
             signal: SignalType::Logs,
         };
         Self {
-            received: ReceiverReceivedMetrics::register(pipeline_ctx),
+            received: ReceiverMetrics::register(pipeline_ctx),
             rejections: SyslogCefRejectionMetrics::register(pipeline_ctx, &signal_attrs),
             transport: SyslogCefTransportMetrics::register(pipeline_ctx),
             truncations: SyslogCefTruncationMetrics::register(pipeline_ctx, &signal_attrs),
@@ -1241,14 +1257,28 @@ impl SyslogCefReceiverMetrics {
         }
     }
 
+    /// Starts optional receiver-local processing for one classified message.
+    fn start_received(&self, payload_size: usize) -> PendingReceivedMessage {
+        PendingReceivedMessage::new(payload_size, self.received.processing())
+    }
+
+    /// Completes receiver-local processing before batching or downstream handoff.
+    fn finish_processing(&mut self, message: &mut PendingReceivedMessage) {
+        if let Some(processing) = message.processing.take() {
+            let payload_size = message.payload_size;
+            message.completed = Some(processing.run(|processing| {
+                processing.set_payload_size_with(|| payload_size);
+                Ok((SignalType::Logs, ()))
+            }));
+        }
+    }
+
     /// Records one classified message when receiver-local handling terminates.
-    fn record_received(&mut self, message: PendingReceivedMessage, outcome: Outcome) {
-        self.received
-            .with(SignalOutcomeAttributes {
-                signal: SignalType::Logs,
-                outcome,
-            })
-            .record(message.observed_at.elapsed(), message.payload_size);
+    fn record_received(&mut self, mut message: PendingReceivedMessage, outcome: Outcome) {
+        self.finish_processing(&mut message);
+        if let Some(completed) = message.completed.take() {
+            let _ = self.received.record(completed.with_outcome(outcome));
+        }
     }
 
     /// Records all classified messages that terminate with the same batch outcome.
@@ -1310,7 +1340,7 @@ impl SyslogCefReceiverMetrics {
         &mut self,
         reporter: &mut otel_arrow_dfe_telemetry::reporter::MetricsReporter,
     ) -> Result<(), otel_arrow_dfe_telemetry::error::Error> {
-        reporter.report_measurement(&mut self.received)?;
+        self.received.report(reporter)?;
         reporter.report_measurement(&mut self.rejections)?;
         reporter.report_measurement(&mut self.transport)?;
         reporter.report(&mut self.truncations)?;
@@ -1430,6 +1460,8 @@ mod tests {
     use tokio::net::{TcpStream, UdpSocket};
     use tokio::time::{Duration, timeout};
 
+    /// Scenario: A pending Syslog batch is dropped before downstream handoff.
+    /// Guarantees: Buffered records are cleared and each pending message is recorded as refused.
     #[test]
     fn drop_syslog_batch_discards_records_without_downstream_send() {
         let receiver = SyslogCefReceiver::new(Config::new_tcp(
@@ -1439,7 +1471,7 @@ mod tests {
         let parsed = parser::parse(b"<34>1 2024-01-15T10:30:45.123Z host app - ID1 msg")
             .expect("valid syslog line");
         arrow_records_builder.append_syslog(parsed);
-        let mut pending_messages = vec![PendingReceivedMessage::new(55)];
+        let mut pending_messages = vec![receiver.metrics.borrow().start_received(55)];
 
         drop_syslog_batch(
             &receiver.metrics,
@@ -1449,17 +1481,18 @@ mod tests {
 
         assert_eq!(arrow_records_builder.len(), 0);
         assert!(pending_messages.is_empty());
-        let m = receiver.metrics.borrow();
-        assert_eq!(
-            m.received
-                .get(SignalOutcomeAttributes {
-                    signal: SignalType::Logs,
-                    outcome: Outcome::Refused,
-                })
-                .messages
-                .get(),
-            1
-        );
+        let mut m = receiver.metrics.borrow_mut();
+        let snapshots = m.received.terminal_snapshots();
+        assert!(snapshots.iter().any(|snapshot| {
+            snapshot.descriptor().name == "receiver.received"
+                && snapshot.measurement_attribute_value("signal") == Some("logs")
+                && snapshot.measurement_attribute_value("outcome") == Some("refused")
+                && snapshot
+                    .descriptor()
+                    .metrics
+                    .iter()
+                    .any(|metric| metric.name == "messages")
+        }));
         assert!(
             m.rejections_for(
                 SyslogCefProtocol::Tcp,
@@ -3813,7 +3846,8 @@ mod telemetry_tests {
         );
         let mut metrics = SyslogCefReceiverMetrics::register(&pipeline_ctx);
 
-        metrics.record_received(PendingReceivedMessage::new(64), Outcome::Success);
+        let received_message = metrics.start_received(64);
+        metrics.record_received(received_message, Outcome::Success);
         metrics.record_rejection(
             SyslogCefProtocol::Udp,
             ReceiverRejectionErrorType::MemoryPressure,
