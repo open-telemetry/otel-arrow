@@ -260,6 +260,13 @@ impl CompiledHeaderCapturePolicy {
     }
 
     fn find_capture(&self, wire_name: &str) -> Option<&CompiledCapture> {
+        // Avoid hashing for the common single-header policy.
+        if self.captures.len() == 1 {
+            let (key, capture) = self.captures.iter().next()?;
+            return wire_name
+                .eq_ignore_ascii_case(key.0.as_str())
+                .then_some(capture);
+        }
         self.captures.get(&WireName(wire_name))
     }
 }
