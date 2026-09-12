@@ -110,9 +110,11 @@ fn encode_seq_sidecar(next_seq: u64) -> [u8; SEQ_SIDECAR_V1_LEN] {
 }
 
 /// Decodes a sidecar buffer, returning `None` if it is truncated, declares an
-/// unusable size, or fails magic/version/CRC validation. Corruption is treated
-/// as "no persisted value" rather than a hard error, since the filename-derived
-/// floor still provides a (weaker) fallback.
+/// unusable size, or fails magic/version/CRC validation. Callers treat `None`
+/// as an unverifiable floor and fail closed: writes are atomic (temp file,
+/// fsync, rename), so a sidecar that is present but does not decode is
+/// positive evidence of damage, and the value it held may be higher than any
+/// other source can reconstruct.
 ///
 /// Newer versions are accepted as long as they carry the v1 fields, so a
 /// forward-written sidecar still constrains this reader's sequence floor
@@ -788,30 +790,38 @@ impl SegmentStore {
     }
 
     /// Interprets the outcome of reading the sidecar, distinguishing "absent"
-    /// from "unreadable".
+    /// from "unverifiable".
     ///
-    /// `Ok(None)` means no usable value is on disk (missing, or present but
-    /// corrupt); `Err` means the file exists but could not be read, so its
-    /// contents are unknown and must not be assumed absent.
+    /// `Ok(None)` means the file is missing, which is indistinguishable from a
+    /// first run and is therefore benign. `Err` means the file is present but
+    /// its floor cannot be established -- either it could not be read, or it
+    /// could be read but failed validation. Both are treated alike: a present
+    /// sidecar must be verifiable, because the floor it holds can exceed
+    /// anything the filenames or subscriber progress can reconstruct (for
+    /// example after retention deleted every segment file), and assuming it
+    /// absent would silently reallocate sequence numbers already in use
+    /// (issue #4024).
     fn interpret_seq_sidecar(
         path: &Path,
         read_result: std::io::Result<Vec<u8>>,
     ) -> std::io::Result<Option<u64>> {
         match read_result {
-            Ok(buf) => {
-                let decoded = decode_seq_sidecar(&buf);
-                if decoded.is_none() {
-                    otel_warn!(
+            Ok(buf) => match decode_seq_sidecar(&buf) {
+                Some(next_seq) => Ok(Some(next_seq)),
+                None => {
+                    otel_error!(
                         "quiver.segment.seq",
                         path = %path.display(),
                         error_type = "invalid_metadata",
                         message = "corrupt segment sequence sidecar, \
-                                   floor falls back to filenames and \
-                                   subscriber progress",
+                                   cannot verify the segment sequence floor",
                     );
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "corrupt segment sequence sidecar",
+                    ))
                 }
-                Ok(decoded)
-            }
+            },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => {
                 otel_warn!(
@@ -844,6 +854,10 @@ impl SegmentStore {
     /// sequence reuse across cleanup + restart cycles. Writes use an atomic
     /// rename plus `fsync` of the file and parent directory so a crash never
     /// leaves a partially written sidecar.
+    ///
+    /// The engine calls this to *reserve* a block of sequence numbers before
+    /// allocating any of them, so the floor recorded here is always above
+    /// every sequence number in use.
     ///
     /// Calls are serialized and the stored value is monotonic: concurrent
     /// finalizations may persist out of order, and a lower value must never
@@ -938,6 +952,16 @@ impl SegmentStore {
     ///
     /// Returns an error if directory scanning fails.
     pub fn scan_existing_with_max_age(&self, max_age: Option<Duration>) -> Result<ScanResult> {
+        // Validate the sidecar before registering any segments so a startup
+        // failure cannot leave segment bytes charged to the shared budget.
+        let loaded_seq_sidecar = self.load_seq_sidecar();
+        if loaded_seq_sidecar.is_err() {
+            return Ok(ScanResult {
+                seq_sidecar_unreadable: true,
+                ..ScanResult::default()
+            });
+        }
+
         let mut found = Vec::new();
         let mut deleted = Vec::new();
         let mut highest_seen = None;
@@ -1008,7 +1032,6 @@ impl SegmentStore {
         found.sort_by_key(|(seq, _)| *seq);
         deleted.sort_by_key(|(seq, _)| *seq);
 
-        let loaded_seq_sidecar = self.load_seq_sidecar();
         Ok(ScanResult {
             found,
             deleted,
@@ -1049,6 +1072,13 @@ impl SegmentStore {
     #[must_use]
     pub fn segment_sequences(&self) -> Vec<SegmentSeq> {
         self.segments.read().keys().copied().collect()
+    }
+
+    /// Returns the segment bytes currently charged to the shared disk budget.
+    pub(crate) fn tracked_disk_bytes(&self) -> u64 {
+        self.segments.read().values().fold(0, |total, handle| {
+            total.saturating_add(handle.file_size_bytes)
+        })
     }
 
     /// Returns the finalized segment file size in bytes.
@@ -1257,12 +1287,17 @@ mod tests {
         assert_eq!(store.read_persisted_next_seq(), Some(100));
     }
 
-    /// Scenario: the sidecar file exists but is corrupted (bad CRC).
-    /// Guarantees: corruption is treated as "no persisted value" instead of
-    /// propagating an error, so startup proceeds on the remaining floors and
-    /// the next write restores a valid sidecar.
+    /// Scenario: the sidecar file exists but is corrupted (bad CRC), so the
+    /// floor it held cannot be recovered.
+    /// Guarantees: a present-but-unverifiable sidecar is reported the same way
+    /// as an unreadable one -- the scan flags it and `persist_next_seq`
+    /// refuses to overwrite it -- rather than being downgraded to "absent".
+    /// Treating it as absent would drop a floor that the filenames and
+    /// subscriber progress cannot always reconstruct (for example after
+    /// retention deleted every segment file), silently reallocating sequence
+    /// numbers already in use (issue #4024).
     #[tokio::test]
-    async fn read_persisted_next_seq_ignores_corrupt_sidecar() {
+    async fn corrupt_sidecar_is_reported_like_an_unreadable_one() {
         let dir = tempdir().unwrap();
         let segment_dir = dir.path().join("segments");
         std::fs::create_dir_all(&segment_dir).unwrap();
@@ -1275,7 +1310,22 @@ mod tests {
         bytes[last] ^= 0xFF;
         std::fs::write(&sidecar_path, bytes).unwrap();
 
-        assert_eq!(store.read_persisted_next_seq(), None);
+        let err = store
+            .load_seq_sidecar()
+            .expect_err("a corrupt sidecar must not be reported as absent");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+
+        let scan_result = store.scan_existing().expect("scan");
+        assert!(
+            scan_result.seq_sidecar_unreadable,
+            "a corrupt sidecar must be flagged so the engine refuses to open"
+        );
+        assert_eq!(scan_result.persisted_next_seq, None);
+
+        assert!(
+            store.persist_next_seq(3).await.is_err(),
+            "a corrupt sidecar must not be overwritten with a lower floor"
+        );
     }
 
     /// Scenario: the segment directory is empty (no `.qseg` files) but a
@@ -1517,6 +1567,23 @@ mod tests {
             "an unreadable sidecar must be reported, not silently ignored"
         );
         assert_eq!(scan_result.persisted_next_seq, None);
+    }
+
+    /// Scenario: startup scans a valid segment while its sequence sidecar is
+    /// present but corrupt.
+    /// Guarantees: sidecar validation fails before the segment is registered,
+    /// so the store and shared disk budget remain unchanged.
+    #[test]
+    fn scan_existing_does_not_register_segments_when_sidecar_is_unreadable() {
+        let (store, budget, _seq, _file_size) = store_with_budget_and_segment();
+        std::fs::write(store.seq_sidecar_path(), [0u8; 1]).unwrap();
+
+        let scan_result = store.scan_existing().expect("scan");
+
+        assert!(scan_result.seq_sidecar_unreadable);
+        assert!(scan_result.found.is_empty());
+        assert_eq!(store.segment_count(), 0);
+        assert_eq!(budget.used(), 0);
     }
 
     /// Scenario: many tasks persist sequence floors concurrently and out of
