@@ -3,6 +3,7 @@
 
 use bytes::Bytes;
 
+use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_telemetry::common_attributes::HttpResponse;
 use rand::{RngExt, SeedableRng, rngs::SmallRng};
 use reqwest::{
@@ -19,6 +20,12 @@ const MAX_RETRIES: u32 = 5;
 const INITIAL_BACKOFF: Duration = Duration::from_secs(3);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 const MAX_IDLE_CONNECTIONS_PER_HOST: usize = 2;
+
+/// Counts naturally available for every HTTP attempt of one compressed batch.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct ExportAttemptMetadata {
+    pub(super) items: u64,
+}
 
 /// HTTP header name for Azure Monitor source resource ID tracking.
 pub(super) const AZURE_MONITOR_SOURCE_RESOURCEID_HEADER: &str = "azure-monitor-source-resourceid";
@@ -178,17 +185,22 @@ impl LogsIngestionClient {
     /// recovery belongs to the caller, which invalidates the rejected token and
     /// re-dispatches once a fresh one is cached.
     ///
+    /// Every HTTP attempt (including internal retries) records a shared
+    /// `exporter.attempted.*` observation using `metadata`.
+    ///
     /// # Arguments
     /// * `body` - The gzip-compressed JSON data to send
     /// * `auth_header` - The authorization header for this request
+    /// * `metadata` - Counts naturally available for every HTTP attempt of this batch
     ///
     /// # Returns
     /// * `Ok(Duration)` - Total time spent (including retries) if successful
     /// * `Err(Error)` - Error if all retries are exhausted or a non-retryable error is returned
-    pub async fn export(
+    pub(super) async fn export(
         &mut self,
         body: Bytes,
         auth_header: &HeaderValue,
+        metadata: ExportAttemptMetadata,
     ) -> Result<Duration, Error> {
         let mut attempt = 0u32;
         let mut rng = SmallRng::seed_from_u64(
@@ -200,7 +212,7 @@ impl LogsIngestionClient {
         );
 
         loop {
-            match self.try_export(body.clone(), auth_header).await {
+            match self.try_export(body.clone(), auth_header, metadata).await {
                 Ok(duration) => return Ok(duration),
                 Err(e) if !e.is_retryable() => {
                     return Err(Error::ExportFailed {
@@ -242,8 +254,30 @@ impl LogsIngestionClient {
         }
     }
 
-    /// Single export attempt without retry logic.
+    /// Single export attempt without retry logic. Records one shared
+    /// `exporter.attempted.*` observation per invocation.
     async fn try_export(
+        &mut self,
+        body: Bytes,
+        auth_header: &HeaderValue,
+        metadata: ExportAttemptMetadata,
+    ) -> Result<Duration, Error> {
+        let attempt = self.metrics.borrow().boundary.attempt(SignalType::Logs);
+        let completed = attempt
+            .run(async |attempt| {
+                attempt.set_item_count_with(|| metadata.items);
+                attempt.set_payload_size_with(|| body.len());
+                match self.try_export_request(body, auth_header).await {
+                    Ok(duration) => Ok(duration),
+                    Err(error) if error.is_refusal() => Err(attempt.refused(error)),
+                    Err(error) => Err(attempt.failed(error)),
+                }
+            })
+            .await;
+        self.metrics.borrow_mut().boundary.record(completed)
+    }
+
+    async fn try_export_request(
         &mut self,
         body: Bytes,
         auth_header: &HeaderValue,
@@ -334,8 +368,10 @@ fn http_response_for_status(status: u16) -> HttpResponse {
 mod tests {
     use super::super::metrics::AzureMonitorExporterMetricsTracker;
     use super::*;
-    use otel_arrow_dfe_engine::context::{ControllerContext, PipelineContext};
-    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_engine::Interests;
+    use otel_arrow_dfe_engine::testing::test_pipeline_ctx_with_interests;
+    use otel_arrow_dfe_telemetry::common_attributes::Outcome;
+    use otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot;
     use reqwest::header::HeaderValue;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -345,10 +381,14 @@ mod tests {
     // ==================== Test Helpers ====================
 
     fn create_test_metrics() -> AzureMonitorExporterMetricsRc {
-        let registry = TelemetryRegistryHandle::new();
-        let controller = ControllerContext::new(registry);
-        let pipeline_ctx: PipelineContext =
-            controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        // Enable every shared exporter attempt bucket (messages, duration,
+        // payload.size, items) so tests can observe them without depending on
+        // pipeline-wide MetricLevel defaults.
+        let interests = Interests::NODE_INPUT_METRICS
+            | Interests::NODE_LOCAL_DURATION
+            | Interests::NODE_ITEM_COUNTS
+            | Interests::NODE_SIZE;
+        let (pipeline_ctx, _registry) = test_pipeline_ctx_with_interests(interests);
         Rc::new(RefCell::new(AzureMonitorExporterMetricsTracker::register(
             &pipeline_ctx,
         )))
@@ -374,6 +414,29 @@ mod tests {
             .expect("failed to create HTTP client")
     }
 
+    fn attempted_messages(snapshots: &[MetricSetSnapshot], outcome: Outcome) -> u64 {
+        let outcome = match outcome {
+            Outcome::Success => "success",
+            Outcome::Failure => "failure",
+            Outcome::Refused => "refused",
+        };
+        let snapshot = snapshots
+            .iter()
+            .find(|snapshot| {
+                snapshot.descriptor().name == "exporter.attempted"
+                    && snapshot.measurement_attribute_value("signal") == Some("logs")
+                    && snapshot.measurement_attribute_value("outcome") == Some(outcome)
+            })
+            .expect("exporter attempt snapshot");
+        let messages = snapshot
+            .descriptor()
+            .metrics
+            .iter()
+            .position(|metric| metric.name == "messages")
+            .expect("messages metric");
+        snapshot.get_metrics()[messages].to_u64_lossy()
+    }
+
     /// Scenario: Azure Monitor returns classified client-error and unclassified HTTP statuses.
     /// Guarantees: 400 and 404 have dedicated metric buckets; other statuses use `Other`.
     #[test]
@@ -381,6 +444,134 @@ mod tests {
         assert_eq!(http_response_for_status(400), HttpResponse::Http400);
         assert_eq!(http_response_for_status(404), HttpResponse::Http404);
         assert_eq!(http_response_for_status(418), HttpResponse::Other);
+    }
+
+    /// Scenario: HTTP attempts terminate as accepted, backend-refused, and exporter/transport failures.
+    /// Guarantees: Every 4xx client-error status is a refusal; 5xx and transport errors remain failures.
+    #[test]
+    fn classifies_shared_export_attempt_outcomes() {
+        assert!(Error::unauthorized(String::new()).is_refusal());
+        assert!(Error::forbidden(String::new()).is_refusal());
+        assert!(Error::PayloadTooLarge.is_refusal());
+        assert!(
+            Error::RateLimited {
+                body: String::new(),
+                retry_after: None,
+            }
+            .is_refusal()
+        );
+        assert!(
+            Error::UnexpectedStatus {
+                status: reqwest::StatusCode::BAD_REQUEST,
+                body: String::new(),
+            }
+            .is_refusal()
+        );
+        // Uncommon 4xx statuses that Azure Monitor may return (e.g. 422 for
+        // schema rejection, 418 for anything unclassified) must not surface as
+        // exporter failures.
+        assert!(
+            Error::UnexpectedStatus {
+                status: reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+                body: String::new(),
+            }
+            .is_refusal()
+        );
+        assert!(
+            Error::UnexpectedStatus {
+                status: reqwest::StatusCode::IM_A_TEAPOT,
+                body: String::new(),
+            }
+            .is_refusal()
+        );
+        assert!(
+            !Error::ServerError {
+                status: reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+                body: String::new(),
+                retry_after: None,
+            }
+            .is_refusal()
+        );
+    }
+
+    /// Scenario: Azure submissions succeed, are rate limited, and fail at the backend.
+    /// Guarantees: Each concrete HTTP submission records exactly one shared attempt outcome.
+    #[tokio::test]
+    async fn records_shared_metrics_for_each_http_attempt() {
+        let metrics = create_test_metrics();
+        for (status, expected_error) in [(204, false), (429, true), (500, true)] {
+            let mock_server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(status))
+                .expect(1)
+                .mount(&mock_server)
+                .await;
+            let mut client = LogsIngestionClient::from_parts(
+                create_test_http_client(),
+                mock_server.uri(),
+                metrics.clone(),
+            );
+
+            let result = client
+                .try_export(
+                    Bytes::from_static(b"payload"),
+                    &HeaderValue::from_static("******"),
+                    ExportAttemptMetadata { items: 3 },
+                )
+                .await;
+            assert_eq!(result.is_err(), expected_error);
+        }
+
+        let snapshots = metrics.borrow_mut().boundary.terminal_snapshots();
+        assert_eq!(attempted_messages(&snapshots, Outcome::Success), 1);
+        assert_eq!(attempted_messages(&snapshots, Outcome::Refused), 1);
+        assert_eq!(attempted_messages(&snapshots, Outcome::Failure), 1);
+    }
+
+    /// Scenario: A retried batch first receives a 500 and then a 204 on the retry.
+    /// Guarantees: Each internal HTTP attempt records its own shared exporter attempt outcome.
+    //
+    // Note: uses real time (not `start_paused`) because `start_paused` interferes with reqwest's
+    // request timeout during real network I/O to the mock server. The test tolerates the client's
+    // real exponential-backoff wait (INITIAL_BACKOFF = 3s * ~0.85..1.15 jitter).
+    #[tokio::test]
+    async fn retries_record_each_shared_attempt() {
+        let metrics = create_test_metrics();
+        let mock_server = MockServer::start().await;
+        // First attempt: 500 (retryable failure). Subsequent attempts: 204 (success).
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(500))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let mut client = LogsIngestionClient::from_parts(
+            create_test_http_client(),
+            mock_server.uri(),
+            metrics.clone(),
+        );
+
+        let result = client
+            .export(
+                Bytes::from_static(b"payload"),
+                &HeaderValue::from_static("******"),
+                ExportAttemptMetadata { items: 3 },
+            )
+            .await;
+        assert!(
+            result.is_ok(),
+            "expected retried export to succeed: {result:?}"
+        );
+
+        let snapshots = metrics.borrow_mut().boundary.terminal_snapshots();
+        assert_eq!(attempted_messages(&snapshots, Outcome::Success), 1);
+        assert_eq!(attempted_messages(&snapshots, Outcome::Failure), 1);
     }
 
     // ==================== Construction Tests ====================
@@ -465,6 +656,7 @@ mod tests {
             .export(
                 Bytes::from_static(b"payload"),
                 &HeaderValue::from_static("Bearer supplied-token"),
+                ExportAttemptMetadata { items: 0 },
             )
             .await;
 
@@ -502,6 +694,7 @@ mod tests {
                 .export(
                     Bytes::from_static(b"payload"),
                     &HeaderValue::from_str(token).unwrap(),
+                    ExportAttemptMetadata { items: 0 },
                 )
                 .await
                 .expect("export should succeed");
@@ -531,6 +724,7 @@ mod tests {
             .export(
                 Bytes::from_static(b"payload"),
                 &HeaderValue::from_static("Bearer stale"),
+                ExportAttemptMetadata { items: 0 },
             )
             .await
             .expect_err("401 should fail the export");
@@ -563,6 +757,7 @@ mod tests {
             .export(
                 Bytes::from_static(b"payload"),
                 &HeaderValue::from_static("Bearer scoped-out"),
+                ExportAttemptMetadata { items: 0 },
             )
             .await
             .expect_err("403 should fail the export");
@@ -599,6 +794,7 @@ mod tests {
             .export(
                 Bytes::from_static(b"payload"),
                 &HeaderValue::from_static("Bearer token"),
+                ExportAttemptMetadata { items: 0 },
             )
             .await
             .expect("export should succeed");
