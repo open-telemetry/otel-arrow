@@ -2159,7 +2159,7 @@ mod tests {
     }
 
     /// Scenario: a builder receives a mixed-case topic header name.
-    /// Guarantees: the configured selector spelling is preserved.
+    /// Guarantees: the selector is stored using its canonical lowercase identity.
     #[test]
     fn test_signal_config_builder_with_topic_from_transport_header() {
         let signal = SignalConfig::new("otlp_logs".into(), MessageFormat::OtlpProto)
@@ -2170,7 +2170,7 @@ mod tests {
             signal
                 .topic_from_transport_header()
                 .map(ContextEntryName::as_str),
-            Some("X_Target_Topic")
+            Some("x_target_topic")
         );
         assert_eq!(signal.topic(), "otlp_logs");
     }
