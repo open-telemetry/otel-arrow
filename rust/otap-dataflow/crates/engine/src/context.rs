@@ -1380,4 +1380,57 @@ mod tests {
             "nodes without custom attributes must not emit a custom attribute: {rendered}"
         );
     }
+
+    /// Scenario: a node registers a measurement metric set with a topic dimension.
+    /// Guarantees: the registered measurement set links to the topic entity, preserving
+    /// topic, node, and custom identity attributes when configured, and omitting empty custom attributes when not.
+    #[test]
+    fn register_measurement_metrics_with_topic_links_entity_with_and_without_custom_attrs() {
+        use crate::flow_metrics::FlowInputMessageMetrics;
+
+        // Without custom attributes
+        let registry = TelemetryRegistryHandle::new();
+        let ctx = pipeline_ctx_with_custom_attrs(registry.clone(), HashMap::new());
+        let metrics = ctx.register_measurement_metrics_with_topic::<FlowInputMessageMetrics>(
+            Cow::Borrowed("test-topic"),
+        );
+        let key = metrics.entity_key();
+        let (schema, rendered) = registry
+            .visit_entity(key, |a| (a.schema_name(), a.attributes_to_string()))
+            .expect("measurement set entity registered without custom attrs");
+        assert_eq!(schema, "node.topic.attrs");
+        assert!(
+            rendered.contains("topic=test-topic") && rendered.contains("node.id=test-node"),
+            "base topic attributes must be preserved: {rendered}"
+        );
+        assert!(
+            !rendered.contains("custom="),
+            "nodes without custom attributes must not emit a custom attribute: {rendered}"
+        );
+
+        // With custom attributes
+        let registry = TelemetryRegistryHandle::new();
+        let mut custom = HashMap::new();
+        let _ = custom.insert(
+            "custom.identity.foo".to_string(),
+            TelemetryAttribute::new(AttributeValue::String("bar".to_string())),
+        );
+        let ctx = pipeline_ctx_with_custom_attrs(registry.clone(), custom);
+        let metrics = ctx.register_measurement_metrics_with_topic::<FlowInputMessageMetrics>(
+            Cow::Borrowed("test-topic"),
+        );
+        let key = metrics.entity_key();
+        let (schema, rendered) = registry
+            .visit_entity(key, |a| (a.schema_name(), a.attributes_to_string()))
+            .expect("measurement set entity registered with custom attrs");
+        assert_eq!(schema, "node.custom.topic.attrs");
+        assert!(
+            rendered.contains("custom={custom.identity.foo=bar}"),
+            "custom identity attributes missing from topic entity: {rendered}"
+        );
+        assert!(
+            rendered.contains("topic=test-topic") && rendered.contains("node.id=test-node"),
+            "base topic attributes must be preserved: {rendered}"
+        );
+    }
 }

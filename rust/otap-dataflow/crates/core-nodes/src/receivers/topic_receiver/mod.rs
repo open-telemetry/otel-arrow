@@ -8,7 +8,7 @@ otel_arrow_dfe_telemetry::otel_component_scope!(
     target = "otel.receiver.topic",
 );
 
-pub mod metrics;
+mod metrics;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otel_arrow_dfe_channel::error::SendError;

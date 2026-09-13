@@ -80,9 +80,9 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | `receiver.topic.forward.messages` | `{message}` | `outcome` | Number of messages forwarded dimensionalized by `outcome` (`success`, `failure`). |
 | `receiver.topic.lag.events` | `{event}` | `event.type` | Number of lag events emitted by broadcast subscriptions, dimensionalized by `event.type` (`notification`, `disconnect`). |
 | `receiver.topic.bridge.controls` | `{control}` | `control`, `result` | Number of downstream ACK/NACK bridge controls, dimensionalized by `control` (`ack`, `nack`) and `result` (`success`, `ignored_propagation_disabled`, `missing_calldata`, `invalid_or_untracked_id`, `runtime_failure`). |
-| `receiver.topic.lagged_messages` | `{message}` | | Total messages missed across lag notifications. |
-| `receiver.topic.downstream_backpressure_events` | `{event}` | | Number of downstream backpressure events (>= 500ms blocked). |
-| `receiver.topic.downstream_blocked_ms` | `ms` | | Total milliseconds blocked while forwarding to downstream. |
+| `receiver.topic.lagged.messages` | `{message}` | | Total messages missed across lag notifications. |
+| `receiver.topic.downstream.backpressure.events` | `{event}` | | Number of downstream backpressure events (>= 500ms blocked). |
+| `receiver.topic.downstream.blocked.ms` | `ms` | | Total milliseconds blocked while forwarding to downstream. |
 
 ### Events
 
