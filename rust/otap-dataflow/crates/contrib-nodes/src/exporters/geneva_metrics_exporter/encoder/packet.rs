@@ -858,6 +858,38 @@ mod tests {
         assert!(writer.bytes().is_empty());
     }
 
+    /// Scenario: Exponential histogram bucket totals exceed u32::MAX but narrow to the scalar count.
+    /// Guarantees: Validation uses ME's u32 narrowing semantics and permits the metric to encode.
+    #[test]
+    fn accepts_narrowed_exponential_histogram_counts() {
+        for (bucket_total, scalar_count) in [
+            (u64::from(u32::MAX) + 1, 0),
+            (u64::MAX, u64::from(u32::MAX)),
+        ] {
+            let metric = standard_metric(
+                MetricValues::Double(NumericValues {
+                    min: None,
+                    max: None,
+                    sum: Some(1.0),
+                    count: Some(scalar_count),
+                    milliseconds: None,
+                    histogram: Some(MetricHistogram::Exponential(ExponentialHistogram {
+                        scale: 0,
+                        zero_count: bucket_total,
+                        negative: Vec::new(),
+                        positive: Vec::new(),
+                    })),
+                }),
+                SUM | COUNT | HISTOGRAM | METRIC_TYPE_DELTA_EXPONENTIAL_HISTOGRAM,
+            );
+            let mut writer = Writer::default();
+
+            write_metric(&mut writer, &metric)
+                .expect("narrowed exponential histogram count should encode");
+            assert!(!writer.bytes().is_empty());
+        }
+    }
+
     /// Scenario: An exponential histogram bucket total exceeds the scalar count's unsigned 64-bit range.
     /// Guarantees: Widened summation reports the exact total instead of wrapping before comparison.
     #[test]
@@ -1129,6 +1161,67 @@ mod tests {
                 maximum: 999,
             })
         );
+    }
+
+    /// Scenario: Callers validate representative valid and invalid metrics before packet construction.
+    /// Guarantees: The public metric validator returns the same result as encoding a one-metric packet.
+    #[test]
+    fn validate_metric_matches_single_metric_packet_encoding() {
+        let valid = standard_metric(unsigned_values(1, 1), SUM | COUNT);
+
+        let mut missing_sum = valid.clone();
+        let MetricValues::Unsigned(values) = &mut missing_sum.values else {
+            unreachable!("test metric should use unsigned values");
+        };
+        values.sum = None;
+
+        let invalid_histogram = standard_metric(
+            MetricValues::Double(NumericValues {
+                min: None,
+                max: None,
+                sum: Some(1.0),
+                count: Some(0),
+                milliseconds: None,
+                histogram: Some(MetricHistogram::Exponential(ExponentialHistogram {
+                    scale: 21,
+                    zero_count: 0,
+                    negative: Vec::new(),
+                    positive: Vec::new(),
+                })),
+            }),
+            SUM | COUNT | HISTOGRAM | METRIC_TYPE_DELTA_EXPONENTIAL_HISTOGRAM,
+        );
+
+        let mut invalid_exemplar = valid.clone();
+        invalid_exemplar.sampling_type |= EXEMPLAR;
+        invalid_exemplar.exemplars.push(MetricExemplar {
+            value: 1.0,
+            time_unix_nano: None,
+            trace_id: None,
+            span_id: None,
+            sample_count: None,
+            filtered_attributes: vec![
+                ("key".to_string(), "value".to_string());
+                usize::from(u8::MAX) + 1
+            ],
+        });
+
+        for (case, current_time_bucket, metric) in [
+            ("valid", DEFAULT_TIME_BUCKET, valid.clone()),
+            ("missing scalar", DEFAULT_TIME_BUCKET, missing_sum),
+            ("invalid histogram", DEFAULT_TIME_BUCKET, invalid_histogram),
+            ("invalid exemplar", DEFAULT_TIME_BUCKET, invalid_exemplar),
+            ("invalid packet timestamp", MAX_TIME_BUCKET + 1, valid),
+        ] {
+            let validation = validate_metric(&metric, current_time_bucket);
+            let encoding = encode(&Packet {
+                current_time_bucket,
+                metrics: vec![metric],
+            })
+            .map(|_| ());
+
+            assert_eq!(validation, encoding, "{case}");
+        }
     }
 
     /// Scenario: Packet and metric whole-second buckets reach and exceed ME's maximum u64 tick value.
