@@ -141,18 +141,14 @@ impl<
         launched: LaunchedPipelineThread<PData>,
     ) {
         let context_bindings = Arc::clone(&launched.context_bindings);
-        let (should_compact, pending_exit, shutdown_sender) = {
+        let (should_compact, pending_exit, shutdown_sender, shutdown_deadline) = {
             let mut state = self
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
 
             let should_shutdown = state.global_shutdown_requested;
-            let control_sender = if should_shutdown {
-                None
-            } else {
-                Some(launched.control_sender.clone())
-            };
+            let control_sender = Some(launched.control_sender.clone());
 
             _ = state.runtime_instances.insert(
                 launched.pipeline_key.clone(),
@@ -176,16 +172,32 @@ impl<
             } else {
                 None
             };
+            let shutdown_deadline = state.global_shutdown_deadline;
 
-            (should_compact, pending_exit, shutdown_sender)
+            (
+                should_compact,
+                pending_exit,
+                shutdown_sender,
+                shutdown_deadline,
+            )
         };
 
         if let Some(sender) = shutdown_sender {
             // Send shutdown after releasing the state lock to avoid lock contention or deadlocks.
-            let _ = sender.try_send_shutdown(
-                Instant::now() + Duration::from_secs(60),
-                "global shutdown (late registration)".to_owned(),
-            );
+            let deadline =
+                shutdown_deadline.unwrap_or_else(|| Instant::now() + Duration::from_secs(60));
+            if let Err(err) =
+                sender.try_send_shutdown(deadline, "global shutdown (late registration)".to_owned())
+            {
+                otel_warn!(
+                    "otelcol.pipeline.shutdown.dispatch_failed",
+                    pipeline_group_id = %launched.pipeline_key.pipeline_group_id,
+                    pipeline_id = %launched.pipeline_key.pipeline_id,
+                    core_id = launched.pipeline_key.core_id,
+                    error = ?err,
+                    message = "Failed to dispatch global shutdown to pipeline instance.",
+                );
+            }
         }
 
         if should_compact {
@@ -1566,6 +1578,9 @@ impl<
             let coordinator_reserved = !coordinator_active
                 && (!producer_keys.is_empty() || !observability_senders.is_empty());
             state.global_shutdown_requested = true;
+            if state.global_shutdown_deadline.is_none() {
+                state.global_shutdown_deadline = Some(deadline);
+            }
             if coordinator_reserved {
                 state.global_shutdown_coordinators += 1;
             }

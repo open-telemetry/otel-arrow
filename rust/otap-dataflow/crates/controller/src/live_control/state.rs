@@ -564,6 +564,8 @@ pub(super) struct ControllerRuntimeState {
     pub(super) active_instances: usize,
     /// Whether at least one engine-wide shutdown request has been accepted.
     pub(super) global_shutdown_requested: bool,
+    /// The deadline for the global shutdown, if requested.
+    pub(super) global_shutdown_deadline: Option<Instant>,
     /// Number of phased global-shutdown coordinators still running.
     pub(super) global_shutdown_coordinators: usize,
     /// Active engine-scoped live operation, if any.

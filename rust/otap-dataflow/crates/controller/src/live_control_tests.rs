@@ -817,6 +817,41 @@ fn register_runtime_instance_with_sender(
     }
 }
 
+struct RetryingPipelineAdminSender {
+    calls: Arc<Mutex<Vec<String>>>,
+    failures_remaining: Arc<AtomicUsize>,
+}
+
+impl PipelineAdminSender for RetryingPipelineAdminSender {
+    fn try_send_shutdown(&self, _deadline: Instant, reason: String) -> Result<(), EngineError> {
+        self.calls
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(reason);
+        let remaining = self.failures_remaining.load(Ordering::SeqCst);
+        if remaining > 0 {
+            self.failures_remaining
+                .store(remaining - 1, Ordering::SeqCst);
+            Err(EngineError::RuntimeMsgError {
+                error: "simulated send failure".to_owned(),
+            })
+        } else {
+            Ok(())
+        }
+    }
+}
+
+fn retrying_admin_sender(
+    initial_failures: usize,
+) -> (Arc<dyn PipelineAdminSender>, Arc<Mutex<Vec<String>>>) {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let sender = Arc::new(RetryingPipelineAdminSender {
+        calls: Arc::clone(&calls),
+        failures_remaining: Arc::new(AtomicUsize::new(initial_failures)),
+    });
+    (sender, calls)
+}
+
 struct RecordingPipelineAdminSender {
     calls: Arc<Mutex<Vec<String>>>,
     failure: Option<String>,
@@ -5886,6 +5921,117 @@ fn request_shutdown_all_attempts_all_active_instances_before_returning_error() {
 /// observability sender is not called until every regular instance reports its
 /// terminal exit, preserving their final internal telemetry.
 #[test]
+#[test]
+fn request_shutdown_all_retries_failed_sends() {
+    let runtime = test_runtime(&engine_config_with_pipeline(simple_pipeline_yaml()));
+    let key0 = deployed_key("g1", "p1", 0, 0);
+
+    // Fails on the first try, succeeds on the second try.
+    let (sender0, calls0) = retrying_admin_sender(1);
+
+    register_runtime_instance_with_sender(
+        &runtime,
+        key0.clone(),
+        sender0,
+        RuntimeInstanceLifecycle::Active,
+    );
+
+    // First attempt should fail.
+    let err = runtime
+        .request_shutdown_all(5)
+        .expect_err("shutdown-all should report the failed sender");
+
+    let ControlPlaneError::Internal { message } = err else {
+        panic!("unexpected shutdown-all error: {err:?}");
+    };
+    assert!(message.contains("g1:p1 core=0 generation=0"));
+    assert!(message.contains("simulated send failure"));
+
+    // Sender should still be retained because it failed.
+    let state = runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(
+        state
+            .runtime_instances
+            .get(&key0)
+            .and_then(|instance| instance.control_sender.as_ref())
+            .is_some(),
+        "failed shutdown send should retain control sender"
+    );
+    drop(state);
+
+    // Second attempt should succeed.
+    runtime
+        .request_shutdown_all(5)
+        .expect("retry should succeed");
+
+    // Sender should now be released.
+    let state = runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(
+        state
+            .runtime_instances
+            .get(&key0)
+            .and_then(|instance| instance.control_sender.as_ref())
+            .is_none(),
+        "successful shutdown send should release control sender"
+    );
+    drop(state);
+
+    // Should have been called twice.
+    assert_eq!(
+        *calls0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        vec!["global shutdown".to_owned(), "global shutdown".to_owned()]
+    );
+}
+
+#[test]
+fn register_launched_instance_respects_global_shutdown_timeout() {
+    let runtime = test_runtime(&engine_config_with_pipeline(simple_pipeline_yaml()));
+    let key0 = deployed_key("g1", "p1", 0, 0);
+
+    // First request global shutdown with a specific timeout.
+    let _ = runtime.request_shutdown_all(30);
+
+    let (sender0, notifications) = deadline_notifying_admin_sender();
+    let context_bindings = {
+        let state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Arc::clone(&state.latest_context_bindings)
+    };
+
+    let launched = LaunchedPipelineThread {
+        pipeline_key: key0,
+        control_sender: sender0,
+        context_bindings,
+        _marker: std::marker::PhantomData,
+    };
+
+    // Late registration should immediately receive a shutdown signal.
+    runtime.register_launched_instance(launched);
+
+    let (reason, deadline) = notifications
+        .recv()
+        .expect("should receive shutdown signal");
+    assert_eq!(reason, "global shutdown (late registration)");
+
+    // Deadline should be ~30 seconds from now.
+    let diff = deadline.duration_since(Instant::now());
+    assert!(
+        diff.as_secs() > 25 && diff.as_secs() <= 31,
+        "deadline should respect the original global shutdown timeout (30s), got {}s",
+        diff.as_secs()
+    );
+}
+
 fn request_shutdown_all_stops_observability_after_regular_instances_exit() {
     let runtime = test_runtime(&engine_config_with_pipeline(simple_pipeline_yaml()));
     let regular_key0 = deployed_key("g1", "p1", 0, 0);
@@ -6778,12 +6924,14 @@ async fn has_active_instances_checks_multiple_state_fields() {
             create: blocking_create,
             wiring_contract: WiringContract::UNRESTRICTED,
             validate_config: test_validate_config,
+            context_declarations: None,
         },
         ReceiverFactory {
             name: "urn:otel:receiver:internal_telemetry",
             create: test_receiver_create,
             wiring_contract: WiringContract::UNRESTRICTED,
             validate_config: test_validate_config,
+            context_declarations: None,
         },
     ]));
     let test_factory = Box::leak(Box::new(PipelineFactory::new(

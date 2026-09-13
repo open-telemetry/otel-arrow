@@ -204,6 +204,7 @@ impl<
                 first_error: None,
                 instance_wait_released: false,
                 global_shutdown_requested: false,
+                global_shutdown_deadline: None,
                 global_shutdown_coordinators: 0,
             }),
             state_changed: Condvar::new(),
