@@ -666,9 +666,9 @@ pub const HISTOGRAM_DETAILED_WORDS: usize = 26;
 /// This is what an instrument hands to the reporting path: components record
 /// into [`Mmsc`], [`HistogramNormal`], or [`HistogramDetailed`], each of which
 /// yields the matching variant from its `get`. Nothing records into a
-/// `DistributionValue` itself, because the tier a component needs is a property of
-/// the metric and is fixed by the declared field type. Selecting it at runtime
-/// awaits a way to resolve it from configuration.
+/// `DistributionValue` itself, because each concrete metric-set field remains
+/// statically typed. Runtime-configurable metrics select between typed metric
+/// sets before recording begins.
 ///
 /// The tier is carried rather than erased because the reporting path needs it:
 /// the OTLP bridge exports [`DistributionValue::Basic`] as a bucketless histogram

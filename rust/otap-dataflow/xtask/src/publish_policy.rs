@@ -7,6 +7,7 @@ pub(crate) const INDEPENDENT_VERSION_PACKAGES: &[&str] = &["otel-arrow-dfe-pdata
 
 pub(crate) const PUBLISH_PACKAGES: &[&str] = &[
     "otel-arrow-dfe-admin",
+    "otel-arrow-dfe-admin-api",
     "otel-arrow-dfe-admin-types",
     "otel-arrow-dfe-channel",
     "otel-arrow-dfe-component-inventory-syntax",
@@ -19,6 +20,7 @@ pub(crate) const PUBLISH_PACKAGES: &[&str] = &[
     "otel-arrow-dfe-engine-macros",
     "otel-arrow-dfe-expohisto",
     "otel-arrow-dfe-pdata",
+    "otel-arrow-dfe-pdata-codec",
     "otel-arrow-dfe-pdata-otlp-macros",
     "otel-arrow-dfe-pdata-otlp-model",
     "otel-arrow-dfe-pdata-views",

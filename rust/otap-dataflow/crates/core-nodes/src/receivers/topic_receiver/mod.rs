@@ -212,6 +212,7 @@ pub static TOPIC_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
                 receiver_config,
             ))
         },
+    context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: |config| TopicReceiver::parse_config(config).map(|_| ()),
 };
@@ -873,6 +874,7 @@ mod tests {
                         pipeline_completion_tx,
                         metrics_reporter,
                         otel_arrow_dfe_engine::Interests::empty(),
+                        otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
                     )
                     .await
             });
@@ -973,6 +975,7 @@ mod tests {
                         pipeline_completion_tx,
                         metrics_reporter,
                         otel_arrow_dfe_engine::Interests::empty(),
+                        otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
                     )
                     .await
             });
@@ -1077,6 +1080,7 @@ mod tests {
                         pipeline_completion_tx,
                         metrics_reporter,
                         otel_arrow_dfe_engine::Interests::empty(),
+                        otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
                     )
                     .await
             });
@@ -1172,6 +1176,7 @@ mod tests {
                         pipeline_completion_tx,
                         metrics_reporter,
                         otel_arrow_dfe_engine::Interests::empty(),
+                        otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
                     )
                     .await
             });
@@ -1294,6 +1299,7 @@ mod tests {
                         pipeline_completion_tx,
                         metrics_reporter,
                         otel_arrow_dfe_engine::Interests::empty(),
+                        otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
                     )
                     .await
             });
