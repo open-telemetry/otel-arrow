@@ -305,6 +305,11 @@ pub struct ManifestEntry {
     /// bundles this is the count of log records, metric data points,
     /// or spans. `None` means the count is unknown.
     item_count: Option<u64>,
+    /// Logical bytes in this bundle's original payload representation.
+    ///
+    /// This excludes segment encoding and shared file overhead. `None` means
+    /// the count is unknown.
+    byte_count: Option<u64>,
     /// Mapping from slot to the stream/chunk containing that slot's data.
     slot_refs: HashMap<SlotId, SlotChunkRef>,
 }
@@ -318,9 +323,19 @@ impl ManifestEntry {
 
     /// Creates a manifest entry with an optional authoritative item count.
     pub(crate) fn new_with_item_count(bundle_index: u32, item_count: Option<u64>) -> Self {
+        Self::new_with_counts(bundle_index, item_count, None)
+    }
+
+    /// Creates a manifest entry with optional authoritative item and byte counts.
+    pub(crate) fn new_with_counts(
+        bundle_index: u32,
+        item_count: Option<u64>,
+        byte_count: Option<u64>,
+    ) -> Self {
         Self {
             bundle_index,
             item_count,
+            byte_count,
             slot_refs: HashMap::new(),
         }
     }
@@ -339,6 +354,11 @@ impl ManifestEntry {
     /// Returns the authoritative item count when available.
     pub(crate) const fn exact_item_count(&self) -> Option<u64> {
         self.item_count
+    }
+
+    /// Returns the authoritative logical byte count when available.
+    pub(crate) const fn exact_byte_count(&self) -> Option<u64> {
+        self.byte_count
     }
 
     /// Adds a slot reference to this manifest entry.

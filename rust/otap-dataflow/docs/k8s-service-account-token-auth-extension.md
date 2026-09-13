@@ -306,7 +306,7 @@ core count and the same token is reviewed once per core.
 | `audiences` | list of audiences | *required* | Per-audience admission audiences. Must be non-empty, with a unique `audience` per entry. |
 | `cache_ttl` | duration | `5m` | How long a reached decision is cached, keyed by the token's SHA-256 digest. Must be non-zero. |
 | `cache_max_entries` | integer | `1024` | Upper bound on cached decisions. Must be greater than zero. |
-| `review_timeout` | duration | `10s` | Maximum duration of each `TokenReview` or `SubjectAccessReview`. Must be non-zero. |
+| `review_timeout` | duration | `5s` | Maximum duration of each `TokenReview` or `SubjectAccessReview`. Must be non-zero. |
 
 Each **entry**:
 
@@ -334,13 +334,13 @@ extensions:
             verb: export
             namespace: tenant-b
       cache_ttl: 5m
-      review_timeout: 10s
+      review_timeout: 5s
 ```
 
 A receiver binds it via its `capabilities:` map (see
-[`docs/configuration-model.md`](configuration-model.md)). No built-in receiver
-invokes `bearer_token_authorizer` yet, so binding it does not itself enforce
-authentication.
+[`docs/configuration-model.md`](configuration-model.md)). The built-in OTLP
+receiver invokes `bearer_token_authorizer` for OTLP/gRPC and OTLP/HTTP requests
+before accepting their telemetry payloads.
 
 ### Collector RBAC
 

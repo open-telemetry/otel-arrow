@@ -166,6 +166,30 @@ impl PartitionTracker {
     fn pending_count(&self) -> usize {
         self.pending.len()
     }
+
+    /// Rewind this partition to the earliest unresolved offset after a
+    /// non-permanent NACK.
+    ///
+    /// The failed offset must still be pending. Every pending or acknowledged
+    /// offset at or after the rewind point belongs to the obsolete delivery
+    /// generation and is discarded; the rewind point remains pending so the
+    /// committable offset cannot advance past it.
+    fn prepare_replay(&mut self, failed_offset: i64) -> Option<(i64, isize)> {
+        if !self.pending.contains(&failed_offset) {
+            return None;
+        }
+
+        let rewind_offset = self.pending.first().copied()?;
+        let old_pending = self.pending.len();
+        self.pending.clear();
+        let _ = self.pending.insert(rewind_offset);
+        self.last_lowest = Some(rewind_offset);
+        self.high_water_mark = self
+            .high_water_mark
+            .zip(rewind_offset.checked_sub(1))
+            .map(|(high_water_mark, cap)| high_water_mark.min(cap));
+        Some((rewind_offset, 1 - old_pending as isize))
+    }
 }
 
 /// Tracks offsets across all topic-partitions.
@@ -191,8 +215,9 @@ pub struct OffsetTracker {
     tpl: TopicPartitionList,
     /// O(1) aggregate of pending offsets across every tracked partition.
     ///
-    /// Maintained incrementally at the three mutation sites ([`track`](Self::track),
-    /// [`acknowledge`](Self::acknowledge), [`revoke`](Self::revoke)) so
+    /// Maintained incrementally at the mutation sites ([`track`](Self::track),
+    /// [`acknowledge`](Self::acknowledge), [`prepare_replay`](Self::prepare_replay),
+    /// and [`revoke`](Self::revoke)) so
     /// [`total_pending`](Self::total_pending) never rescans partitions on the
     /// hot receive path.
     total_pending: usize,
@@ -211,8 +236,8 @@ impl OffsetTracker {
 
     /// Apply a signed per-partition pending-count delta to the cached
     /// aggregate. `delta` originates from [`PartitionTracker::track`] (fresh
-    /// insert, duplicate, or newer-generation reset) or an acknowledge/revoke
-    /// removal.
+    /// insert, duplicate, or newer-generation reset), replay rewind, or an
+    /// acknowledge/revoke removal.
     fn apply_pending_delta(&mut self, delta: isize) {
         // A correct delta never drives the aggregate negative; a saturating
         // signed add keeps the counter well-defined even if it somehow did.
@@ -350,6 +375,28 @@ impl OffsetTracker {
             self.apply_pending_delta(-1);
         }
         advanced
+    }
+
+    /// Prepare a partition for deliberate replay after a non-permanent NACK.
+    ///
+    /// Returns the earliest unresolved offset that must be used for the Kafka
+    /// seek. Returning `None` means the failed offset is no longer pending, so
+    /// duplicate or obsolete feedback must not initiate a replay.
+    pub fn prepare_replay(
+        &mut self,
+        topic: &str,
+        partition: i32,
+        failed_offset: i64,
+        ownership_generation: u64,
+    ) -> Option<i64> {
+        let (rewind_offset, delta) = self
+            .partitions
+            .get_mut(topic)
+            .and_then(|parts| parts.get_mut(&partition))
+            .filter(|tracker| tracker.generation == ownership_generation)
+            .and_then(|tracker| tracker.prepare_replay(failed_offset))?;
+        self.apply_pending_delta(delta);
+        Some(rewind_offset)
     }
 
     /// Check whether an offset has already been seen for this topic+partition.
@@ -670,6 +717,65 @@ mod tests {
         );
         assert_eq!(pt.high_water_mark(), None);
         assert_eq!(pt.committable_offset(), Some(200));
+    }
+
+    /// Scenario: A later in-flight offset is transiently NACKed while an earlier offset is unresolved.
+    /// Guarantees: Replay rewinds to the earliest pending offset and no old later ACK can advance the watermark.
+    #[test]
+    fn partition_replay_rewinds_to_earliest_unresolved_offset() {
+        let mut pt = PartitionTracker::new(1);
+        for offset in 100..=105 {
+            let _ = pt.track(offset, 1);
+        }
+        let _ = pt.acknowledge(100);
+        let _ = pt.acknowledge(102);
+        let _ = pt.acknowledge(104);
+
+        let (rewind, delta) = pt.prepare_replay(105).expect("failed offset is pending");
+
+        assert_eq!(rewind, 101);
+        assert_eq!(delta, -2);
+        assert_eq!(pt.pending_count(), 1);
+        assert_eq!(pt.committable_offset(), Some(101));
+        assert_eq!(pt.high_water_mark(), Some(100));
+        assert_eq!(pt.acknowledge(105), (false, false));
+        assert_eq!(pt.committable_offset(), Some(101));
+    }
+
+    /// Scenario: A replay is prepared after later offsets were already acknowledged.
+    /// Guarantees: The old high-water mark is truncated so replay ACKs cannot commit past undelivered records.
+    #[test]
+    fn partition_replay_truncates_old_high_water_mark() {
+        let mut pt = PartitionTracker::new(1);
+        for offset in 10..=12 {
+            let _ = pt.track(offset, 1);
+        }
+        let _ = pt.acknowledge(10);
+        let _ = pt.acknowledge(12);
+
+        let (rewind, _) = pt.prepare_replay(11).expect("failed offset is pending");
+        assert_eq!(rewind, 11);
+        assert_eq!(pt.high_water_mark(), Some(10));
+
+        assert_eq!(pt.acknowledge(11), (true, true));
+        assert_eq!(pt.committable_offset(), Some(12));
+    }
+
+    /// Scenario: A transient NACK rewinds one of two independently tracked partitions.
+    /// Guarantees: The failed partition stays at its rewind offset while the sibling can advance.
+    #[test]
+    fn tracker_replay_does_not_block_other_partitions() {
+        let mut tracker = OffsetTracker::new();
+        tracker.track("traces", 0, 10, 1);
+        tracker.track("traces", 1, 20, 1);
+
+        assert_eq!(tracker.prepare_replay("traces", 0, 10, 1), Some(10));
+        assert!(tracker.acknowledge("traces", 1, 20));
+
+        assert_eq!(
+            committable_sorted(&tracker),
+            vec![("traces".to_string(), 0, 10), ("traces".to_string(), 1, 21),]
+        );
     }
 
     /// Scenario (offset guarantees): the multi-partition tracker tracks and acks a record.

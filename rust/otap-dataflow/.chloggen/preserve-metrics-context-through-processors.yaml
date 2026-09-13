@@ -1,5 +1,0 @@
-change_type: bug_fix
-component: pipeline
-note: "Preserve receiver item-count metrics through processors that batch, split, partition, or aggregate telemetry."
-issues: [3803]
-subtext:

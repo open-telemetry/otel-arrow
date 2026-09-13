@@ -832,10 +832,11 @@ mod tests {
         // Wait until all cores appear in the state map.
         let pipeline_key = PipelineKey::new(Cow::Borrowed("group"), Cow::Borrowed("pipeline"));
         for _ in 0..200 {
-            if let Some(status) = handle.pipeline_status(&pipeline_key) {
-                if status.total_cores() == num_cores && status.running_cores() == num_cores {
-                    break;
-                }
+            if let Some(status) = handle.pipeline_status(&pipeline_key)
+                && status.total_cores() == num_cores
+                && status.running_cores() == num_cores
+            {
+                break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -929,10 +930,11 @@ mod tests {
         // Wait until all cores reach Running.
         let pipeline_key = PipelineKey::new(Cow::Borrowed("group"), Cow::Borrowed("pipeline"));
         for _ in 0..200 {
-            if let Some(status) = handle.pipeline_status(&pipeline_key) {
-                if status.total_cores() == num_cores && status.running_cores() == num_cores {
-                    break;
-                }
+            if let Some(status) = handle.pipeline_status(&pipeline_key)
+                && status.total_cores() == num_cores
+                && status.running_cores() == num_cores
+            {
+                break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }

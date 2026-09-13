@@ -1,5 +1,10 @@
 # OTel-Arrow Pipeline Data
 
+This crate is currently pre-1.0. Its public API may evolve between minor
+releases.
+
+## Overview
+
 PData refers generally to the pipeline data type used within an
 OpenTelemetry pipeline.  This package is the location of our core
 utilities for converting between several representations.
@@ -21,6 +26,29 @@ representations of OpenTelemetry:
 [PROST_RS]: https://github.com/tokio-rs/prost/blob/master/README.md
 [ARROW_IPC]: https://arrow.apache.org/docs/format/IPC.html
 [OTLP]: https://opentelemetry.io/docs/specs/otel/protocol/
+
+## Key Types
+
+- `OtlpProtoBytes`: encoded OTLP export requests for logs, metrics, or traces
+- `OtapArrowRecords`: Arrow record batches grouped by telemetry signal
+- `OtapPayload`: shared payload container for OTLP bytes or OTAP records
+- `Producer` and `Consumer`: OTAP Arrow stream encoding and decoding
+- `TryFromWithOptions` and `TryIntoWithOptions`: bounded representation
+  conversions
+- `TraceID` and `SpanID`: fixed-width telemetry identifiers
+
+## Usage
+
+```sh
+cargo add otel-arrow-dfe-pdata
+```
+
+```rust
+use otel_arrow_dfe_pdata::OtlpProtoBytes;
+
+let payload = OtlpProtoBytes::ExportLogsRequest(Vec::new().into());
+assert_eq!(payload.num_bytes(), 0);
+```
 
 This library a low-level interface for producing and consuming OTAP
 records.  This library includes built-in support for batching and

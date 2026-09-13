@@ -12,6 +12,11 @@
 {{- end }}
 ## {{ .Version }}
 
+{{- if and (not .BreakingChanges) (not .Deprecations) (not .NewComponents) (not .Enhancements) (not .BugFixes) }}
+
+No changes. This release maintains version parity across the repository.
+{{- end }}
+
 {{- if .BreakingChanges }}
 
 ### :stop_sign: Breaking changes :stop_sign:

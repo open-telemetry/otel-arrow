@@ -51,7 +51,7 @@ fn config_defaults_apply() {
     assert!(cfg.audiences[0].resource_attributes.is_none());
     assert_eq!(cfg.cache_ttl, Duration::from_secs(300));
     assert_eq!(cfg.cache_max_entries, 1024);
-    assert_eq!(cfg.review_timeout, Duration::from_secs(10));
+    assert_eq!(cfg.review_timeout, Duration::from_secs(5));
 }
 
 /// Scenario: parse configs that omit `audiences`, supply an empty list, or a

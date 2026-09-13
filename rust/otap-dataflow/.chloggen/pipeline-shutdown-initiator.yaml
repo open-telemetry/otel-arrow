@@ -1,5 +1,0 @@
-change_type: enhancement
-component: observability
-note: "Report dfctl or admin_api as the initiator in explicit pipeline shutdown status."
-issues: [3800]
-subtext:

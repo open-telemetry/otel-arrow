@@ -2,6 +2,9 @@
 
 # Contrib Nodes
 
+This crate is currently pre-1.0. Its public API may evolve between minor
+releases.
+
 Contrib nodes are optional receivers, processors, and exporters that extend the
 default OTel Arrow Dataflow Engine build. Use this catalog to find the node
 `type` to put in runtime YAML and to open the node-specific documentation for

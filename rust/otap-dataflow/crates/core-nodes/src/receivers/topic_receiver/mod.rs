@@ -163,6 +163,7 @@ pub static TOPIC_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
                 receiver_config,
             ))
         },
+    context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: |config| TopicReceiver::parse_config(config).map(|_| ()),
 };
@@ -222,8 +223,9 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
         let run_result: Result<TerminalState, Error> = async {
             loop {
                 if let Some(deadline) = draining_deadline {
-                    if let Some(pending) = pending_forward.take() {
-                        if let Some(reason) = draining_reason.as_deref() {
+                    if let Some(pending) = pending_forward.take()
+                        && let Some(reason) = draining_reason.as_deref()
+                    {
                             if let Some(message_id) = pending.tracked_message_id {
                                 match subscription.nack(message_id, reason) {
                                     Ok(()) => metrics.record_bridge(BridgeControl::Nack, BridgeResult::Success),
@@ -251,7 +253,6 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
                                 message = "Topic receiver dropped an unsent topic message while entering ingress drain"
                             );
                         }
-                    }
 
                     if pending_tracked_message_ids.is_empty() {
                         effect_handler.notify_receiver_drained().await?;
@@ -816,6 +817,7 @@ mod tests {
                         pipeline_completion_tx,
                         metrics_reporter,
                         otel_arrow_dfe_engine::Interests::empty(),
+                        otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
                     )
                     .await
             });
@@ -916,6 +918,7 @@ mod tests {
                         pipeline_completion_tx,
                         metrics_reporter,
                         otel_arrow_dfe_engine::Interests::empty(),
+                        otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
                     )
                     .await
             });
@@ -1020,6 +1023,7 @@ mod tests {
                         pipeline_completion_tx,
                         metrics_reporter,
                         otel_arrow_dfe_engine::Interests::empty(),
+                        otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
                     )
                     .await
             });
@@ -1115,6 +1119,7 @@ mod tests {
                         pipeline_completion_tx,
                         metrics_reporter,
                         otel_arrow_dfe_engine::Interests::empty(),
+                        otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
                     )
                     .await
             });
@@ -1237,6 +1242,7 @@ mod tests {
                         pipeline_completion_tx,
                         metrics_reporter,
                         otel_arrow_dfe_engine::Interests::empty(),
+                        otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
                     )
                     .await
             });

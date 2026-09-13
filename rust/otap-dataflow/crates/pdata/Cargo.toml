@@ -1,11 +1,15 @@
 [package]
 name = "otel-arrow-dfe-pdata"
+description = "OpenTelemetry Protocol and Arrow telemetry data model"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
-publish.workspace = true
+readme = "README.md"
+publish = true
+keywords = ["telemetry", "opentelemetry", "otlp", "otap", "arrow"]
+categories = ["encoding"]
 rust-version.workspace = true
 
 [dependencies]

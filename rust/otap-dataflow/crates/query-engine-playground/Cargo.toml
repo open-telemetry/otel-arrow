@@ -21,7 +21,7 @@ prost = { workspace = true }
 serde = { workspace = true }
 tokio = { workspace = true }
 
-data_engine_parser_abstractions = { workspace = true }
+otel-arrow-contrib-data-engine-parser-abstractions = { workspace = true }
 otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
 otel-arrow-dfe-query-engine = { workspace = true }
 otel-arrow-dfe-query-engine-languages = { workspace = true }

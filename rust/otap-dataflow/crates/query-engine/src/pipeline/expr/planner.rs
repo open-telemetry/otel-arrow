@@ -9,14 +9,6 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use arrow::datatypes::DataType;
-use data_engine_expressions::{
-    BinaryMathematicalScalarExpression, BooleanValue, CaptureTextScalarExpression,
-    CoalesceScalarExpression, CollectionScalarExpression, CombineScalarExpression, DateTimeValue,
-    DoubleValue, Expression, IntegerValue, InvokeFunctionArgument, InvokeFunctionScalarExpression,
-    JoinTextScalarExpression, LogicalExpression, MathScalarExpression, PipelineFunction,
-    PipelineFunctionImplementation, ReplaceTextScalarExpression, ScalarExpression,
-    StaticScalarExpression, StringScalarExpression, StringValue, TextScalarExpression, ValueType,
-};
 use datafusion::functions::core::coalesce::CoalesceFunc;
 use datafusion::functions::core::expr_ext::FieldAccessor;
 use datafusion::functions::crypto::{md5, sha256, sha512};
@@ -26,11 +18,20 @@ use datafusion::functions::math::log10;
 use datafusion::functions::string::{
     concat, concat_ws, ends_with, lower, ltrim, replace, rtrim, starts_with, upper, uuid,
 };
-use datafusion::logical_expr::ScalarUDFImpl;
 use datafusion::logical_expr::expr::ScalarFunction;
 use datafusion::logical_expr::simplify::{ExprSimplifyResult, SimplifyContext};
 use datafusion::logical_expr::{BinaryExpr, Expr, Operator, ScalarUDF, col, lit, not};
+use datafusion::logical_expr::{ScalarUDFImpl, cast};
 use datafusion::prelude::{binary_expr, lit_timestamp_nano};
+use otel_arrow_contrib_data_engine_expressions::{
+    BinaryMathematicalScalarExpression, BooleanValue, CaptureTextScalarExpression,
+    CoalesceScalarExpression, CollectionScalarExpression, CombineScalarExpression,
+    ConvertScalarExpression, DateTimeValue, DoubleValue, Expression, IntegerValue,
+    InvokeFunctionArgument, InvokeFunctionScalarExpression, JoinTextScalarExpression,
+    LogicalExpression, MathScalarExpression, PipelineFunction, PipelineFunctionImplementation,
+    ReplaceTextScalarExpression, ScalarExpression, StaticScalarExpression, StringScalarExpression,
+    StringValue, TextScalarExpression, ValueType,
+};
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_pdata::otlp::metrics::MetricType;
 use otel_arrow_dfe_pdata::schema::consts;
@@ -39,7 +40,7 @@ use otel_arrow_dfe_pdata::schema::consts;
 use crate::consts::SHA1_FUNC_NAME;
 use crate::consts::{
     ENCODE_FUNC_NAME, ENDS_WITH_FUNC_NAME, FNV_FUNC_NAME, FORMAT_DATETIME_FUNC_NAME, LOG_FUNC_NAME,
-    LOWER_CASE_FUNC_NAME, LTRIM_FUNC_NAME, MD5_FUNC_NAME, MURMUR3_FUNC_NAME,
+    LOWER_CASE_FUNC_NAME, LTRIM_FUNC_NAME, MD5_FUNC_NAME, MURMUR3_FUNC_NAME, NOW_FUNC_NAME,
     REGEXP_SUBSTR_FUNC_NAME, RTRIM_FUNC_NAME, SHA256_FUNC_NAME, SHA512_FUNC_NAME,
     STARTS_WITH_FUNC_NAME, UPPER_CASE_FUNC_NAME, UUID_FUNC_NAME, UUIDV7_FUNC_NAME, XXH3_FUNC_NAME,
     XXH128_FUNC_NAME,
@@ -48,7 +49,7 @@ use crate::error::{Error, Result};
 use crate::pipeline::assign::leaf_requires_dict_downcast;
 use crate::pipeline::expr::join::is_one_to_many;
 use crate::pipeline::expr::types::{
-    ExprLogicalType, coerce_arithmetic, nested_struct_field_type, root_field_type,
+    ExprLogicalType, cast_expr, coerce_arithmetic, nested_struct_field_type, root_field_type,
 };
 use crate::pipeline::expr::{DataScope, VALUE_COLUMN_NAME, arg_column_name};
 use crate::pipeline::expr::{
@@ -60,7 +61,8 @@ use crate::pipeline::functions::is_type::IsTypeFunc;
 #[cfg(feature = "sha1-hash")]
 use crate::pipeline::functions::sha1_hash;
 use crate::pipeline::functions::{
-    arity_range, fnv_hash, murmur3_hash, regexp_substr, substring, uuidv7, xxh3_hash, xxh128_hash,
+    arity_range, fnv_hash, murmur3_hash, now, regexp_substr, substring, uuidv7, xxh3_hash,
+    xxh128_hash,
 };
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
 use crate::pipeline::project::{Projection, ProjectionOptions};
@@ -253,6 +255,10 @@ impl ExprPlanner {
 
             ScalarExpression::Coalesce(coalesce_expr) => {
                 self.plan_coalesce_expr(coalesce_expr, functions)
+            }
+
+            ScalarExpression::Convert(convert_scalar_expression) => {
+                self.plan_type_cast_expr(convert_scalar_expression, functions)
             }
 
             ScalarExpression::InvokeFunction(invoke_expr) => {
@@ -474,10 +480,9 @@ impl ExprPlanner {
                         DataScope::AttributesAll(left_attrs_id),
                         DataScope::AttributesAll(right_attrs_id),
                     ) = (left_scope.as_ref(), right_scope.as_ref())
+                        && left_attrs_id == right_attrs_id
                     {
-                        if left_attrs_id == right_attrs_id {
-                            return Ok(ScopedExpr::BitmapOr(Box::new(left), Box::new(right)));
-                        }
+                        return Ok(ScopedExpr::BitmapOr(Box::new(left), Box::new(right)));
                     }
 
                     // When either side is attribute-scoped, align children to root
@@ -729,20 +734,20 @@ impl ExprPlanner {
         let invoke_arg_exprs = invoke_expr.get_arguments();
         let num_args = invoke_arg_exprs.len();
 
-        if let Some(arity_range) = arity_range(&df_udf.scalar_udf.signature().type_signature) {
-            if !arity_range.contains(&num_args) {
-                return Err(Error::InvalidPipelineError {
-                    cause: format!(
-                        "function '{func_name}' expects {} arguments. Received {num_args}",
-                        if arity_range.len() > 1 {
-                            format!("{}-{}", arity_range.start, arity_range.end - 1)
-                        } else {
-                            format!("{}", arity_range.start)
-                        }
-                    ),
-                    query_location: Some(invoke_expr.get_query_location().clone()),
-                });
-            }
+        if let Some(arity_range) = arity_range(&df_udf.scalar_udf.signature().type_signature)
+            && !arity_range.contains(&num_args)
+        {
+            return Err(Error::InvalidPipelineError {
+                cause: format!(
+                    "function '{func_name}' expects {} arguments. Received {num_args}",
+                    if arity_range.len() > 1 {
+                        format!("{}-{}", arity_range.start, arity_range.end - 1)
+                    } else {
+                        format!("{}", arity_range.start)
+                    }
+                ),
+                query_location: Some(invoke_expr.get_query_location().clone()),
+            });
         }
 
         let (arg_exprs, args_scope, data_scope, source_dict_downcast) = if invoke_arg_exprs
@@ -777,7 +782,7 @@ impl ExprPlanner {
             Expr::ScalarFunction(ScalarFunction::new_udf(df_udf.scalar_udf, arg_exprs));
 
         if let Some(data_type) = df_udf.cast_result_to {
-            logical_expr = datafusion::logical_expr::cast(logical_expr, data_type);
+            logical_expr = cast(logical_expr, data_type);
         }
 
         let dict_downcast = source_dict_downcast || df_udf.requires_dict_downcast;
@@ -1079,15 +1084,15 @@ impl ExprPlanner {
         // Try fused attribute comparison optimization: when one side is an attribute
         // access and the other is a typed literal, skip the expensive key-filter +
         // value-projection materialization step.
-        if !self.plan_for_attributes {
-            if let Some(fused) = self.try_plan_fused_attr_comparison(
+        if !self.plan_for_attributes
+            && let Some(fused) = self.try_plan_fused_attr_comparison(
                 &mut left,
                 operator,
                 &mut right,
                 case_sensitive,
-            )? {
-                return Ok(fused);
-            }
+            )?
+        {
+            return Ok(fused);
         }
 
         // handle body field comparisons -- body is an AnyValue struct, so we need to
@@ -1338,18 +1343,17 @@ impl ExprPlanner {
 
     fn plan_contains(
         &self,
-        contains_expr: &data_engine_expressions::ContainsLogicalExpression,
+        contains_expr: &otel_arrow_contrib_data_engine_expressions::ContainsLogicalExpression,
         functions: &[PipelineFunction],
     ) -> Result<ScopedExpr> {
         let mut haystack = self.plan_scalar(contains_expr.get_haystack(), functions)?;
         let mut needle = self.plan_scalar(contains_expr.get_needle(), functions)?;
-
         // Try fused attribute contains optimization: when haystack is attributes["key"]
         // and needle is a string literal.
-        if !self.plan_for_attributes {
-            if let Some(fused) = self.try_plan_fused_attr_contains(&haystack, &needle)? {
-                return Ok(fused);
-            }
+        if !self.plan_for_attributes
+            && let Some(fused) = self.try_plan_fused_attr_contains(&haystack, &needle)?
+        {
+            return Ok(fused);
         }
 
         // for body column, resolve to body.str for text contains
@@ -1473,7 +1477,7 @@ impl ExprPlanner {
 
     fn plan_matches(
         &self,
-        matches_expr: &data_engine_expressions::MatchesLogicalExpression,
+        matches_expr: &otel_arrow_contrib_data_engine_expressions::MatchesLogicalExpression,
         functions: &[PipelineFunction],
     ) -> Result<ScopedExpr> {
         let pattern = match matches_expr.get_pattern() {
@@ -1489,13 +1493,12 @@ impl ExprPlanner {
         };
 
         let mut haystack = self.plan_scalar(matches_expr.get_haystack(), functions)?;
-
         // Try fused attribute matches optimization: when haystack is attributes["key"]
         // and pattern is a static regex.
-        if !self.plan_for_attributes {
-            if let Some(fused) = self.try_plan_fused_attr_matches(&haystack, &pattern)? {
-                return Ok(fused);
-            }
+        if !self.plan_for_attributes
+            && let Some(fused) = self.try_plan_fused_attr_matches(&haystack, &pattern)?
+        {
+            return Ok(fused);
         }
 
         // for body column, resolve to body.str for regex matching
@@ -1755,6 +1758,104 @@ impl ExprPlanner {
         }
     }
 
+    fn plan_type_cast_expr(
+        &self,
+        convert_scalar_expression: &ConvertScalarExpression,
+        functions: &[PipelineFunction],
+    ) -> Result<PlannedOp> {
+        // TODO there are opportunities to optimize this type conversion:
+        //
+        // The convert expression only specifies the logical type that the eval result
+        // should be converted to. For now we're naively casting to the arrow data type
+        // type which will may eventually be converted to yet another type for example:
+        // - if the result is being used in assignment to a dictionary field, we may need
+        //   to convert the cast result to a DictionaryArray
+        // - in the cast of an integer type, the type may be converted to a different int
+        //   according to arithmetic conversion rules or for assignment to a field of a
+        //   different type of integer.
+        //
+        // We may do better here by:
+        // a) implementing a UDF that can do a "logical cast", and apply the cast operation
+        // to only dictionary values if that is what it receives as an argument
+        // b) have an expression optimizer that can check for double casts, for example to
+        // different integer types or from dict to non-dict arrays multiple times, and
+        // collapsing into a single cast to the final target type.
+
+        let (expr_logical_type, arrow_type, inner) = match convert_scalar_expression {
+            ConvertScalarExpression::Integer(inner) => {
+                (ExprLogicalType::AnyInt, DataType::Int64, inner)
+            }
+            ConvertScalarExpression::String(inner) => {
+                (ExprLogicalType::String, DataType::Utf8, inner)
+            }
+            ConvertScalarExpression::Double(inner) => {
+                (ExprLogicalType::Float64, DataType::Float64, inner)
+            }
+            ConvertScalarExpression::Boolean(inner) => {
+                (ExprLogicalType::Boolean, DataType::Boolean, inner)
+            }
+            other => {
+                return Err(Error::NotYetSupportedError {
+                    message: format!("conversion expression not yet supported {other:?}"),
+                });
+            }
+        };
+
+        fn cast_leaf_eval(eval: &mut LeafEval, arrow_type: DataType) -> Result<()> {
+            match eval {
+                LeafEval::DatafusionExpr {
+                    logical_expr,
+                    eval_anyval_as_struct,
+                    projection_opts,
+                    ..
+                } => {
+                    cast_expr(logical_expr, arrow_type);
+                    *eval_anyval_as_struct = false;
+
+                    // arrow-rs's "cast" implementation has a particular quirk where it will apply
+                    // the cast to all the dictionary values before possibly expanding them into a
+                    // non-dict encoded array. This includes dict values that are orphaned, which
+                    // means if we have an expr like `attributes["stringified_int"] as Integer`,
+                    // we will filter the attr record batch by this key and then must ensure there
+                    // are no orphaned values in a post-filter, dict encoded values column, as
+                    // these could cause the cast to unexpectedly fail
+                    projection_opts.sanitize_dicts = true;
+
+                    Ok(())
+                }
+                LeafEval::BatchPredicate(_) => {
+                    // TODO add support for expressions such as `is Log as String` which would
+                    // produce "true" for log batches, and false otherwise
+                    Err(Error::NotYetSupportedError {
+                        message: "casting result of batch predicate not yet supported".into(),
+                    })
+                }
+            }
+        }
+
+        let mut source = self.plan_scalar(inner.get_inner_expression(), functions)?;
+        source.expr_type = expr_logical_type.clone();
+
+        match &mut source.expr {
+            ScopedExpr::BitmapAnd(_, _) | ScopedExpr::BitmapOr(_, _) | ScopedExpr::BitmapNot(_) => {
+                let mut eval = LeafEval::new_df_expr(col(arg_column_name(0)), false)?;
+                cast_leaf_eval(&mut eval, arrow_type)?;
+                source.expr = ScopedExpr::JoinAndEval {
+                    children: vec![source.expr],
+                    eval,
+                    default_null_children: false,
+                    align_children_to_root: false,
+                    short_circuit: None,
+                };
+            }
+            ScopedExpr::Eval { eval, .. } | ScopedExpr::JoinAndEval { eval, .. } => {
+                cast_leaf_eval(eval, arrow_type)?;
+            }
+        }
+
+        Ok(source)
+    }
+
     /// Build a binary operation as either a single `Eval` (same-scope) or `JoinAndEval`
     /// (cross-scope).
     fn build_binary_expr(
@@ -1879,6 +1980,7 @@ impl DataFusionFunctionDef {
             ENDS_WITH_FUNC_NAME => Self::new(ends_with(), ExprLogicalType::Boolean, true, None),
             LOG_FUNC_NAME => Self::new(log10(), ExprLogicalType::Float64, true, None),
             LTRIM_FUNC_NAME => Self::new(ltrim(), ExprLogicalType::String, true, None),
+            NOW_FUNC_NAME => Self::new(now(), ExprLogicalType::TimestampNanosecond, false, None),
             REGEXP_SUBSTR_FUNC_NAME => {
                 Self::new(regexp_substr(), ExprLogicalType::String, false, None)
             }
@@ -2078,10 +2180,9 @@ fn escape_like_literals(planned: &mut PlannedOp) {
             },
         ..
     } = &mut planned.expr
+        && contains_like_pattern(s)
     {
-        if contains_like_pattern(s) {
-            *s = escape_like_pattern(s);
-        }
+        *s = escape_like_pattern(s);
     }
 }
 
@@ -2159,17 +2260,17 @@ fn is_attr_value_column(planned: &PlannedOp) -> bool {
 ///
 /// This replaces the `AttrValueColumnSelectionOptimizer` from the old filter planning path.
 fn resolve_attr_value_column_in_planned_ops(left: &mut PlannedOp, right: &mut PlannedOp) {
-    if is_attr_value_column(left) {
-        if let Some(col_name) = get_literal_any_val_field(right) {
-            rewrite_attr_value_column(left, col_name);
-            return;
-        }
+    if is_attr_value_column(left)
+        && let Some(col_name) = get_literal_any_val_field(right)
+    {
+        rewrite_attr_value_column(left, col_name);
+        return;
     }
 
-    if is_attr_value_column(right) {
-        if let Some(col_name) = get_literal_any_val_field(left) {
-            rewrite_attr_value_column(right, col_name);
-        }
+    if is_attr_value_column(right)
+        && let Some(col_name) = get_literal_any_val_field(left)
+    {
+        rewrite_attr_value_column(right, col_name);
     }
 }
 
@@ -2210,18 +2311,18 @@ fn rewrite_attr_value_column(planned: &mut PlannedOp, field_name: &str) {
 /// `col("body").field("str")` (or the appropriate sub-field based on the literal type).
 fn resolve_body_field_in_planned_ops(left: &mut PlannedOp, right: &mut PlannedOp) {
     // body == literal: rewrite body
-    if is_body_planned_op(left) {
-        if let Some(field_name) = get_literal_any_val_field(right) {
-            rewrite_body_expr(left, field_name);
-            return;
-        }
+    if is_body_planned_op(left)
+        && let Some(field_name) = get_literal_any_val_field(right)
+    {
+        rewrite_body_expr(left, field_name);
+        return;
     }
 
     // literal == body: rewrite body
-    if is_body_planned_op(right) {
-        if let Some(field_name) = get_literal_any_val_field(left) {
-            rewrite_body_expr(right, field_name);
-        }
+    if is_body_planned_op(right)
+        && let Some(field_name) = get_literal_any_val_field(left)
+    {
+        rewrite_body_expr(right, field_name);
     }
 }
 
@@ -2306,14 +2407,14 @@ fn rewrite_body_expr(planned: &mut PlannedOp, field_name: &str) {
 mod test {
     use super::*;
 
-    use data_engine_expressions::{
+    use datafusion::common::cast::as_boolean_array;
+    use datafusion::logical_expr::ColumnarValue;
+    use datafusion::scalar::ScalarValue;
+    use otel_arrow_contrib_data_engine_expressions::{
         EqualToLogicalExpression, GetRecordTypeScalarExpression, GreaterThanLogicalExpression,
         IntegerScalarExpression, NotLogicalExpression, QueryLocation, SourceScalarExpression,
         ValueAccessor,
     };
-    use datafusion::common::cast::as_boolean_array;
-    use datafusion::logical_expr::ColumnarValue;
-    use datafusion::scalar::ScalarValue;
     use otel_arrow_dfe_pdata::otap::filter::IdBitmapPool;
     use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
     use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
@@ -2478,7 +2579,9 @@ mod test {
 
     #[test]
     fn test_plan_same_scope_arithmetic() {
-        use data_engine_expressions::{BinaryMathematicalScalarExpression, MathScalarExpression};
+        use otel_arrow_contrib_data_engine_expressions::{
+            BinaryMathematicalScalarExpression, MathScalarExpression,
+        };
 
         let planner = ExprPlanner::new();
         let left = make_column_expr("severity_number");
@@ -2516,7 +2619,9 @@ mod test {
 
     #[test]
     fn test_plan_cross_scope_arithmetic() {
-        use data_engine_expressions::{BinaryMathematicalScalarExpression, MathScalarExpression};
+        use otel_arrow_contrib_data_engine_expressions::{
+            BinaryMathematicalScalarExpression, MathScalarExpression,
+        };
 
         let planner = ExprPlanner::new();
         let left = make_column_expr("severity_number");
@@ -2582,7 +2687,11 @@ mod test {
             make_int_literal(10),
         ));
 
-        let and_expr = data_engine_expressions::AndLogicalExpression::new(ql(), left_eq, right_gt);
+        let and_expr = otel_arrow_contrib_data_engine_expressions::AndLogicalExpression::new(
+            ql(),
+            left_eq,
+            right_gt,
+        );
         let logical = LogicalExpression::And(and_expr);
 
         let op = planner.plan_logical(&logical, &[]).unwrap();
@@ -2794,7 +2903,7 @@ mod test {
 
     #[test]
     fn test_plan_fused_attr_gt_integer() {
-        use data_engine_expressions::GreaterThanLogicalExpression;
+        use otel_arrow_contrib_data_engine_expressions::GreaterThanLogicalExpression;
 
         // Test batch with integer attributes
         let logs = to_logs_data(vec![
@@ -2869,7 +2978,11 @@ mod test {
             false,
         ));
 
-        let and_expr = data_engine_expressions::AndLogicalExpression::new(ql(), left, right);
+        let and_expr = otel_arrow_contrib_data_engine_expressions::AndLogicalExpression::new(
+            ql(),
+            left,
+            right,
+        );
         let logical = LogicalExpression::And(and_expr);
 
         let op = planner.plan_logical(&logical, &[]).unwrap();
@@ -2900,7 +3013,7 @@ mod test {
         // attributes["x"] + 2 > 5 should NOT use fused path (attribute in arithmetic)
         // But just attributes["x"] > 5 SHOULD use fused path
 
-        use data_engine_expressions::{
+        use otel_arrow_contrib_data_engine_expressions::{
             BinaryMathematicalScalarExpression, GreaterThanLogicalExpression, MathScalarExpression,
         };
 
@@ -2982,7 +3095,11 @@ mod test {
             false,
         ));
 
-        let and_expr = data_engine_expressions::AndLogicalExpression::new(ql(), left_eq, right_eq);
+        let and_expr = otel_arrow_contrib_data_engine_expressions::AndLogicalExpression::new(
+            ql(),
+            left_eq,
+            right_eq,
+        );
         let logical = LogicalExpression::And(and_expr);
         let op = planner.plan_logical(&logical, &[]).unwrap();
 
@@ -3022,7 +3139,11 @@ mod test {
             false,
         ));
 
-        let or_expr = data_engine_expressions::OrLogicalExpression::new(ql(), left_eq, right_eq);
+        let or_expr = otel_arrow_contrib_data_engine_expressions::OrLogicalExpression::new(
+            ql(),
+            left_eq,
+            right_eq,
+        );
         let logical = LogicalExpression::Or(or_expr);
         let op = planner.plan_logical(&logical, &[]).unwrap();
 
@@ -3044,7 +3165,9 @@ mod test {
     /// strategy, preventing incorrect early termination of arithmetic evaluation.
     #[test]
     fn test_plan_cross_scope_arithmetic_no_short_circuit_strategy() {
-        use data_engine_expressions::{BinaryMathematicalScalarExpression, MathScalarExpression};
+        use otel_arrow_contrib_data_engine_expressions::{
+            BinaryMathematicalScalarExpression, MathScalarExpression,
+        };
 
         let planner = ExprPlanner::new();
 

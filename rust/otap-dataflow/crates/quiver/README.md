@@ -1,5 +1,8 @@
 # Quiver (Experimental) - Arrow-Based Persistence for OTAP Dataflow
 
+This crate is currently pre-1.0. Its public API may evolve between minor
+releases.
+
 Quiver is a standalone, embeddable Arrow-based segment store packaged as a
 reusable Rust crate. It provides durable buffering with crash recovery for
 telemetry pipelines. See `ARCHITECTURE.md` for design details.

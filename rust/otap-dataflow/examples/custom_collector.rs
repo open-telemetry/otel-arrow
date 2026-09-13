@@ -25,6 +25,8 @@ use otel_arrow_dfe_contrib_nodes as _;
 use otel_arrow_dfe_controller::Controller;
 use otel_arrow_dfe_controller::startup;
 use otel_arrow_dfe_core_nodes as _;
+#[cfg(feature = "dev-tools")]
+use otel_arrow_dfe_dev_nodes as _;
 use otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY;
 
 /// A minimal custom OTAP dataflow collector.

@@ -156,6 +156,8 @@ impl SharedCapabilityEntry {
 /// one-shot guard is encoded directly in the shared entry's
 /// `Cell::take()` -- no separate claim flag needed.
 pub(crate) struct ResolvedLocalEntry {
+    /// The extension selected by the node's binding.
+    pub(crate) extension_id: ExtensionId,
     /// Per-node produce closure, cloned from the registry entry.
     ///
     /// Wrapped in `Cell<Option<_>>` so the consumer-side one-shot
@@ -181,6 +183,8 @@ pub(crate) struct ResolvedLocalEntry {
 /// per-binding one-shot contract is enforced naturally without an
 /// auxiliary claim flag.
 pub(crate) struct ResolvedSharedEntry {
+    /// The extension selected by the node's binding.
+    pub(crate) extension_id: ExtensionId,
     /// Per-node produce closure, cloned from the registry entry.
     ///
     /// Wrapped in `Cell<Option<_>>` for the same reason as

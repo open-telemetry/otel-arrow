@@ -11,8 +11,10 @@ use super::otlp_bridge::{
     process_protobuf_otlp_export_logs_service_request_using_pipeline,
 };
 use async_trait::async_trait;
-use data_engine_recordset::{RecordSetEngineCounters, RecordSetEngineDiagnosticLevel};
 use linkme::distributed_slice;
+use otel_arrow_contrib_data_engine_recordset::{
+    RecordSetEngineCounters, RecordSetEngineDiagnosticLevel,
+};
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_engine::{
@@ -38,6 +40,7 @@ pub const RECORDSET_KQL_PROCESSOR_URN: &str = "urn:microsoft:processor:recordset
 pub static RECORDSET_KQL_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: RECORDSET_KQL_PROCESSOR_URN,
     create: create_recordset_kql_processor,
+    context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
         RecordsetKqlProcessorConfig,

@@ -5,7 +5,6 @@
 
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_engine::context::PipelineContext;
-use otel_arrow_dfe_otap::metrics::ReceiverMessageMetrics;
 use otel_arrow_dfe_telemetry::common_attributes::{
     Outcome, OutcomeAttributes, ReceiverRejectionErrorType, SignalAttributes,
     SignalOutcomeAttributes,
@@ -146,6 +145,24 @@ impl KafkaReceiverTransportErrorType {
     }
 }
 
+/// Lifecycle and payload metrics for admitted Kafka messages.
+#[metric_set(
+    name = "receiver.kafka.messages",
+    measurement_attributes = SignalAttributes
+)]
+#[derive(Debug, Default, Clone)]
+pub struct KafkaReceiverMessageMetrics {
+    /// Number of decoded messages admitted to the pipeline send path.
+    #[metric(unit = "{message}")]
+    pub started: Counter<u64>,
+    /// Number of admitted messages whose receiver work terminated.
+    #[metric(unit = "{message}")]
+    pub completed: Counter<u64>,
+    /// Encoded Kafka payload bytes admitted to the pipeline send path.
+    #[metric(unit = "By")]
+    pub payload_size: Counter<u64>,
+}
+
 /// Bounded error category for a Kafka consumer transport failure.
 #[attribute_set(item, measurement)]
 #[derive(Debug, Clone, Copy)]
@@ -222,12 +239,36 @@ pub struct KafkaReceiverConsumerMetrics {
     /// Synchronous commit calls that failed while partitions were being revoked.
     #[metric(name = "group.rebalance.commit_failures", unit = "{error}")]
     pub rebalance_commit_failures: Counter<u64>,
+    /// Partition resume operations that failed while clearing rebalance pause state.
+    #[metric(name = "group.rebalance.resume_failures", unit = "{error}")]
+    pub rebalance_resume_failures: Counter<u64>,
     /// Mean broker-committed consumer-group lag across every owned partition.
     #[metric(name = "group.lag", unit = "{message}")]
     pub lag: Gauge<f64>,
     /// Ack or nack responses ignored because their partition ownership was stale.
     #[metric(name = "group.feedback.after_revocation", unit = "{response}")]
     pub feedback_after_revocation: Counter<u64>,
+    /// Non-permanent NACK responses received from downstream.
+    #[metric(name = "retry.transient_nacks", unit = "{response}")]
+    pub transient_nacks: Counter<u64>,
+    /// Kafka replay attempts started after transient NACK backoff.
+    #[metric(name = "retry.replay_attempts", unit = "{attempt}")]
+    pub replay_attempts: Counter<u64>,
+    /// Current number of partitions paused during transient-NACK recovery.
+    #[metric(name = "retry.partitions_paused", unit = "{partition}")]
+    pub retry_partitions_paused: ObserveUpDownCounter<u64>,
+    /// Partition pause operations that failed during transient-NACK recovery.
+    #[metric(name = "retry.pause_failures", unit = "{error}")]
+    pub retry_pause_failures: Counter<u64>,
+    /// Partition seek operations that failed during transient-NACK recovery.
+    #[metric(name = "retry.seek_failures", unit = "{error}")]
+    pub retry_seek_failures: Counter<u64>,
+    /// Partition resume operations that failed during transient-NACK recovery.
+    #[metric(name = "retry.resume_failures", unit = "{error}")]
+    pub retry_resume_failures: Counter<u64>,
+    /// Feedback ignored because it belongs to an obsolete replay generation.
+    #[metric(name = "retry.feedback.stale", unit = "{response}")]
+    pub stale_retry_feedback: Counter<u64>,
 }
 
 /// Transport-level Kafka receiver errors.
@@ -245,7 +286,7 @@ pub struct KafkaReceiverTransportMetrics {
 /// Bounded-cardinality Kafka receiver metrics tracker.
 pub struct KafkaReceiverMetrics {
     /// Admitted message lifecycle metrics.
-    pub messages: MeasurementMetricSet<ReceiverMessageMetrics>,
+    pub messages: MeasurementMetricSet<KafkaReceiverMessageMetrics>,
     /// Downstream acknowledgement metrics.
     pub acknowledgements: MeasurementMetricSet<KafkaReceiverAcknowledgementMetrics>,
     /// Pre-admission rejection metrics.
@@ -263,7 +304,7 @@ impl KafkaReceiverMetrics {
     #[must_use]
     pub fn register(pipeline_ctx: &PipelineContext) -> Self {
         Self {
-            messages: ReceiverMessageMetrics::register(pipeline_ctx),
+            messages: KafkaReceiverMessageMetrics::register(pipeline_ctx),
             acknowledgements: KafkaReceiverAcknowledgementMetrics::register(pipeline_ctx),
             rejections: KafkaReceiverRejectionMetrics::register(pipeline_ctx),
             offset_commits: KafkaReceiverOffsetCommitMetrics::register(pipeline_ctx),
@@ -285,7 +326,7 @@ impl KafkaReceiverMetrics {
         let messages = self.messages.with(SignalAttributes { signal });
         messages.started.inc();
         if payload_bytes > 0 {
-            messages.bytes.add(payload_bytes);
+            messages.payload_size.add(payload_bytes);
         }
     }
 
@@ -443,6 +484,7 @@ mod tests {
         metrics.record_message_admitted(SignalType::Logs, 42);
         metrics.record_message_completed(SignalType::Logs);
         metrics.record_acknowledgement(SignalType::Logs, Outcome::Refused);
+        metrics.record_acknowledgement(SignalType::Logs, Outcome::Failure);
         metrics.record_rejection(
             Some(SignalType::Logs),
             ReceiverRejectionErrorType::InvalidRequest,
@@ -461,7 +503,7 @@ mod tests {
         });
         assert_eq!(messages.started.get(), 1);
         assert_eq!(messages.completed.get(), 1);
-        assert_eq!(messages.bytes.get(), 42);
+        assert_eq!(messages.payload_size.get(), 42);
         assert_eq!(metrics.consumer.records_received.get(), 1);
         assert_eq!(metrics.consumer.record_bytes.get(), 42);
         assert_eq!(
@@ -480,6 +522,17 @@ mod tests {
                 .get(SignalOutcomeAttributes {
                     signal: SignalType::Logs,
                     outcome: Outcome::Refused,
+                })
+                .responses
+                .get(),
+            1
+        );
+        assert_eq!(
+            metrics
+                .acknowledgements
+                .get(SignalOutcomeAttributes {
+                    signal: SignalType::Logs,
+                    outcome: Outcome::Failure,
                 })
                 .responses
                 .get(),
@@ -570,7 +623,7 @@ mod tests {
         let snapshots = metrics.terminal_snapshots();
         assert_eq!(snapshots.len(), 4);
         assert!(snapshots.iter().any(|snapshot| {
-            snapshot.descriptor().name == "receiver.messages"
+            snapshot.descriptor().name == "receiver.kafka.messages"
                 && snapshot.measurement_attribute_value("signal") == Some("traces")
         }));
         assert!(snapshots.iter().any(|snapshot| {

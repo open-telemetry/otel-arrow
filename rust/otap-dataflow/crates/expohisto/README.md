@@ -1,5 +1,8 @@
 # otel-arrow-dfe-expohisto
 
+This crate is currently pre-1.0. Its public API may evolve between minor
+releases.
+
 An OpenTelemetry exponential histogram aggregator.
 
 ## Overview

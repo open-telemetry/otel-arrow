@@ -483,15 +483,15 @@ impl Transformer {
         if !schema.attribute_mapping.is_empty() {
             for attr in log_record.attributes() {
                 let attr_key: Cow<'_, str> = String::from_utf8_lossy(attr.key());
-                if let Some(dest) = schema.attribute_mapping.get(attr_key.as_ref()) {
-                    if let Some(val) = attr.value() {
-                        if has_field {
-                            out.push(b',');
-                        }
-                        has_field = true;
-                        out.extend_from_slice(dest);
-                        Self::write_any_value_json(&val, out);
+                if let Some(dest) = schema.attribute_mapping.get(attr_key.as_ref())
+                    && let Some(val) = attr.value()
+                {
+                    if has_field {
+                        out.push(b',');
                     }
+                    has_field = true;
+                    out.extend_from_slice(dest);
+                    Self::write_any_value_json(&val, out);
                 }
             }
         }
@@ -804,10 +804,10 @@ impl Transformer {
     ) {
         for attr in resource.attributes() {
             let key: Cow<'_, str> = String::from_utf8_lossy(attr.key());
-            if let Some(mapped_name) = schema.resource_mapping.get(key.as_ref()) {
-                if let Some(value) = attr.value() {
-                    _ = map.insert(mapped_name.clone(), Self::convert_any_value(&value));
-                }
+            if let Some(mapped_name) = schema.resource_mapping.get(key.as_ref())
+                && let Some(value) = attr.value()
+            {
+                _ = map.insert(mapped_name.clone(), Self::convert_any_value(&value));
             }
         }
     }
@@ -820,10 +820,10 @@ impl Transformer {
     ) {
         for attr in scope.attributes() {
             let key: Cow<'_, str> = String::from_utf8_lossy(attr.key());
-            if let Some(mapped_name) = schema.scope_mapping.get(key.as_ref()) {
-                if let Some(value) = attr.value() {
-                    _ = map.insert(mapped_name.clone(), Self::convert_any_value(&value));
-                }
+            if let Some(mapped_name) = schema.scope_mapping.get(key.as_ref())
+                && let Some(value) = attr.value()
+            {
+                _ = map.insert(mapped_name.clone(), Self::convert_any_value(&value));
             }
         }
     }
