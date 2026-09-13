@@ -6778,12 +6778,14 @@ async fn has_active_instances_checks_multiple_state_fields() {
             create: blocking_create,
             wiring_contract: WiringContract::UNRESTRICTED,
             validate_config: test_validate_config,
+            context_declarations: None,
         },
         ReceiverFactory {
             name: "urn:otel:receiver:internal_telemetry",
             create: test_receiver_create,
             wiring_contract: WiringContract::UNRESTRICTED,
             validate_config: test_validate_config,
+            context_declarations: None,
         },
     ]));
     let test_factory = Box::leak(Box::new(PipelineFactory::new(
