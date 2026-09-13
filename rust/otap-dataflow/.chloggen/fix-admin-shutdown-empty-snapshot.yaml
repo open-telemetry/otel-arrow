@@ -8,11 +8,17 @@ change_type: bug_fix
 component: engine
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: >-
-  Fix `POST /api/v1/groups/shutdown?wait=true` incorrectly returning `504 Gateway
-  Timeout` when the observed state store is empty (no pipelines registered). An empty
-  snapshot is now treated as all-terminated, so the handler returns `200 OK`
-  immediately instead of polling until `timeout_secs` expires.
+note: "Return 200 immediately on shutdown when observed state store has no pipelines"
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [3465]
+
+# (Optional) One or more lines of additional information to render under the primary note.
+# These lines will be padded with 2 spaces and then inserted directly into the document.
+# Use pipe (|) for multiline entries. Breaking entries must include a `Migration:`
+# section with the specific action consumers must take. Keep notes to 200
+# characters and subtext to 300 characters.
+subtext: >-
+  Fix `POST /api/v1/groups/shutdown?wait=true` incorrectly timing out with 504
+  when the observed state store is empty. An empty snapshot is now treated as
+  all-terminated while verifying no controller lifecycle operations are pending.
