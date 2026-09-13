@@ -70,7 +70,6 @@ pub struct JournaldCheckpointMetrics {
 
 /// Error types for journald source read failures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
-#[allow(dead_code)]
 pub enum SourceErrorType {
     /// Permission denied.
     Permission,
@@ -151,7 +150,7 @@ impl JournaldReceiverMetrics {
         snapshots.extend(self.checkpoints.terminal_snapshots());
         snapshots.extend(self.source_errors.terminal_snapshots());
         if self.output.needs_flush() {
-            snapshots.push(self.output.snapshot());
+            snapshots.extend(self.output.terminal_snapshots());
         }
         snapshots
     }
@@ -174,9 +173,13 @@ impl JournaldReceiverMetrics {
 mod tests {
     use super::*;
     use otel_arrow_dfe_engine::context::ControllerContext;
+    use otel_arrow_dfe_telemetry::attributes::AttributeEnum;
     use otel_arrow_dfe_telemetry::common_attributes::Outcome;
+    use otel_arrow_dfe_telemetry::metrics::MetricValue;
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 
+    /// Scenario: Journald receiver metric sets are transferred into terminal snapshots twice.
+    /// Guarantees: Output counters and dimensional metric buckets emit on the first snapshot and are empty on the second.
     #[test]
     fn test_journald_receiver_metrics() {
         let registry_handle = TelemetryRegistryHandle::new();
@@ -225,9 +228,28 @@ mod tests {
             .rewinds
             .add(1);
 
+        // Record checkpoints
+        metrics
+            .checkpoints
+            .with(OutcomeAttributes {
+                outcome: Outcome::Success,
+            })
+            .commits
+            .add(4);
+
+        // Record source errors
+        metrics
+            .source_errors
+            .with(SourceErrorAttributes {
+                error_type: SourceErrorType::Other,
+            })
+            .events
+            .add(1);
+
         // Record output
         metrics.output.batches.add(10);
         metrics.output.records.add(100);
+        metrics.output.dropped_fields.add(3);
 
         let snapshots = metrics.snapshot();
 
@@ -240,24 +262,41 @@ mod tests {
             s.descriptor().name == "receiver.journald.acknowledgements"
                 && s.measurement_attribute_value("outcome") == Some("success")
         }));
-        assert!(
-            snapshots
-                .iter()
-                .any(|s| { s.descriptor().name == "receiver.journald.output" })
+        assert!(snapshots.iter().any(|s| {
+            s.descriptor().name == "receiver.journald.checkpoints"
+                && s.measurement_attribute_value("outcome") == Some("success")
+        }));
+        assert!(snapshots.iter().any(|s| {
+            s.descriptor().name == "receiver.journald.source"
+                && s.measurement_attribute_value("error.type") == Some("other")
+        }));
+
+        let output_snapshot = snapshots
+            .iter()
+            .find(|s| s.descriptor().name == "receiver.journald.output")
+            .expect("output snapshot should be present");
+        assert_eq!(
+            output_snapshot.get_metrics(),
+            &[
+                MetricValue::U64(10),
+                MetricValue::U64(100),
+                MetricValue::U64(3),
+            ]
         );
 
         let snapshots2 = metrics.snapshot();
-        // Terminal snapshots from MeasurementMetricSet should only be returned once,
-        // so they should not appear in the second snapshot.
-        assert!(
-            !snapshots2
-                .iter()
-                .any(|s| s.descriptor().name == "receiver.journald.lifecycle")
-        );
-        assert!(
-            !snapshots2
-                .iter()
-                .any(|s| s.descriptor().name == "receiver.journald.acknowledgements")
-        );
+        // Terminal snapshots from all sets should only be returned once,
+        // so the second snapshot must be completely empty.
+        assert!(snapshots2.is_empty());
+    }
+
+    /// Scenario: Source error enum variants provide bounded string representations.
+    /// Guarantees: Variants map directly to canonical snake_case string values.
+    #[test]
+    fn test_source_error_type_variants() {
+        assert_eq!(SourceErrorType::Permission.as_str(), "permission");
+        assert_eq!(SourceErrorType::CorruptJournal.as_str(), "corrupt_journal");
+        assert_eq!(SourceErrorType::IoFailure.as_str(), "io_failure");
+        assert_eq!(SourceErrorType::Other.as_str(), "other");
     }
 }

@@ -62,23 +62,23 @@ pub(crate) fn proto_encode_resource(
     result_buf: &mut ProtoBuffer,
 ) -> Result<()> {
     // add attributes
-    if let Some(attrs_arrays) = resource_attrs_arrays {
-        if let Some(res_id) = resource_arrays.id.value_at(index) {
-            for attr_index in
-                ChildIndexIter::new(res_id, &attrs_arrays.parent_id, resource_attrs_cursor)
-            {
-                result_buf.encode_len_delimited(RESOURCE_ATTRIBUTES, |result_buf| {
-                    encode_key_value(attrs_arrays, attr_index, result_buf)
-                })?;
-            }
+    if let Some(attrs_arrays) = resource_attrs_arrays
+        && let Some(res_id) = resource_arrays.id.value_at(index)
+    {
+        for attr_index in
+            ChildIndexIter::new(res_id, &attrs_arrays.parent_id, resource_attrs_cursor)
+        {
+            result_buf.encode_len_delimited(RESOURCE_ATTRIBUTES, |result_buf| {
+                encode_key_value(attrs_arrays, attr_index, result_buf)
+            })?;
         }
     }
 
-    if let Some(col) = resource_arrays.dropped_attributes_count {
-        if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(RESOURCE_DROPPED_ATTRIBUTES_COUNT, wire_types::VARINT)?;
-            result_buf.encode_varint(val as u64)?;
-        }
+    if let Some(col) = resource_arrays.dropped_attributes_count
+        && let Some(val) = col.value_at(index)
+    {
+        result_buf.encode_field_tag(RESOURCE_DROPPED_ATTRIBUTES_COUNT, wire_types::VARINT)?;
+        result_buf.encode_varint(val as u64)?;
     }
 
     Ok(())
@@ -192,37 +192,35 @@ pub(crate) fn proto_encode_instrumentation_scope(
     scope_attrs_cursor: &mut SortedBatchCursor,
     result_buf: &mut ProtoBuffer,
 ) -> Result<()> {
-    if let Some(col) = &scope_arrays.name {
-        if let Some(val) = col.str_at(index) {
-            result_buf.encode_string(INSTRUMENTATION_SCOPE_NAME, val)?;
+    if let Some(col) = &scope_arrays.name
+        && let Some(val) = col.str_at(index)
+    {
+        result_buf.encode_string(INSTRUMENTATION_SCOPE_NAME, val)?;
+    }
+
+    if let Some(col) = &scope_arrays.version
+        && let Some(val) = col.str_at(index)
+    {
+        result_buf.encode_string(INSTRUMENTATION_SCOPE_VERSION, val)?;
+    }
+
+    if let Some(attr_arrays) = scope_attrs_arrays
+        && let Some(scope_id) = scope_arrays.id.value_at(index)
+    {
+        for attr_index in ChildIndexIter::new(scope_id, &attr_arrays.parent_id, scope_attrs_cursor)
+        {
+            result_buf.encode_len_delimited(INSTRUMENTATION_SCOPE_ATTRIBUTES, |result_buf| {
+                encode_key_value(attr_arrays, attr_index, result_buf)
+            })?;
         }
     }
 
-    if let Some(col) = &scope_arrays.version {
-        if let Some(val) = col.str_at(index) {
-            result_buf.encode_string(INSTRUMENTATION_SCOPE_VERSION, val)?;
-        }
-    }
-
-    if let Some(attr_arrays) = scope_attrs_arrays {
-        if let Some(scope_id) = scope_arrays.id.value_at(index) {
-            for attr_index in
-                ChildIndexIter::new(scope_id, &attr_arrays.parent_id, scope_attrs_cursor)
-            {
-                result_buf
-                    .encode_len_delimited(INSTRUMENTATION_SCOPE_ATTRIBUTES, |result_buf| {
-                        encode_key_value(attr_arrays, attr_index, result_buf)
-                    })?;
-            }
-        }
-    }
-
-    if let Some(col) = scope_arrays.dropped_attributes_count {
-        if let Some(val) = col.value_at(index) {
-            result_buf
-                .encode_field_tag(INSTRUMENTATION_DROPPED_ATTRIBUTES_COUNT, wire_types::VARINT)?;
-            result_buf.encode_varint(val as u64)?;
-        }
+    if let Some(col) = scope_arrays.dropped_attributes_count
+        && let Some(val) = col.value_at(index)
+    {
+        result_buf
+            .encode_field_tag(INSTRUMENTATION_DROPPED_ATTRIBUTES_COUNT, wire_types::VARINT)?;
+        result_buf.encode_varint(val as u64)?;
     }
 
     Ok(())
@@ -332,10 +330,13 @@ pub const TRUNCATION_SUFFIX: &[u8] = "[...]".as_bytes();
 /// buffer write methods. This is used for to indicate truncation, no
 /// distinction is made for partial/total drop.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Dropped;
+pub enum EncodeFailure {
+    /// Ran out of space.
+    Dropped,
+}
 
 /// Result type for buffer write methods.
-pub type EncodeResult = std::result::Result<(), Dropped>;
+pub type EncodeResult = std::result::Result<(), EncodeFailure>;
 
 /// Saved buffer position for transactional encoding.
 ///
@@ -513,7 +514,7 @@ pub trait BoundedBuf {
         // always uses a 1-byte length varint).
         let min_overhead = tag_bytes + 1 + suffix_len;
         if avail < min_overhead {
-            return Err(Dropped);
+            return Err(EncodeFailure::Dropped);
         }
 
         // After the tag, we have `len_and_payload` bytes for the length
@@ -546,7 +547,7 @@ pub trait BoundedBuf {
             .expect("pre-validated fit");
         self.try_extend(TRUNCATION_SUFFIX)
             .expect("pre-validated fit");
-        Err(Dropped)
+        Err(EncodeFailure::Dropped)
     }
 
     /// Encode a string field, truncating with a suffix if it won't fit.
@@ -560,13 +561,13 @@ pub trait BoundedBuf {
         &mut self,
         field_tag: u64,
         val: &str,
-    ) -> std::result::Result<bool, Dropped> {
+    ) -> std::result::Result<bool, EncodeFailure> {
         let start = self.len();
         match self.encode_string_bounded(field_tag, val) {
             Ok(()) => Ok(false),
-            Err(Dropped) => {
+            Err(failure) => {
                 if self.len() == start {
-                    Err(Dropped)
+                    Err(failure)
                 } else {
                     Ok(true)
                 }
@@ -597,7 +598,7 @@ pub trait BoundedBuf {
     /// closure's content, and patches the length. If any write fails,
     /// the error propagates via `?`.
     #[inline]
-    fn encode_len_delimited<E: From<Dropped>>(
+    fn encode_len_delimited<E: From<EncodeFailure>>(
         &mut self,
         field_tag: u64,
         f: impl FnOnce(&mut Self) -> std::result::Result<(), E>,
@@ -622,7 +623,7 @@ pub trait BoundedBuf {
         f: F,
     ) -> std::result::Result<(), E>
     where
-        E: From<Dropped>,
+        E: From<EncodeFailure>,
         F: FnOnce(&mut Self) -> std::result::Result<(), E>,
         Self: Sized,
     {
@@ -643,7 +644,7 @@ pub trait BoundedBuf {
     /// arranging that any "hard failure" (where no useful bytes were written)
     /// is rolled back at an outer transaction boundary via [`try_encode`].
     #[inline]
-    fn encode_len_delimited_partial<E: From<Dropped>>(
+    fn encode_len_delimited_partial<E: From<EncodeFailure>>(
         &mut self,
         field_tag: u64,
         f: impl FnOnce(&mut Self) -> std::result::Result<(), E>,
@@ -668,7 +669,7 @@ pub trait BoundedBuf {
         f: F,
     ) -> std::result::Result<(), E>
     where
-        E: From<Dropped>,
+        E: From<EncodeFailure>,
         F: FnOnce(&mut Self) -> std::result::Result<(), E>,
         Self: Sized,
     {
@@ -702,7 +703,7 @@ pub trait BoundedBuf {
 
     /// Try to encode a complete field atomically.
     ///
-    /// If the closure returns an error (e.g., `Dropped` or any other
+    /// If the closure returns an error (e.g., `EncodeFailure::Dropped` or any other
     /// error type), the buffer is rolled back to its state before the
     /// call and the error is returned.
     #[inline]
@@ -829,6 +830,14 @@ impl ProtoBuffer {
             self.buffer.reserve(capacity - self.buffer.capacity());
         }
     }
+
+    /// Clears the buffer and bounds the allocation retained for later encodes.
+    pub fn retain_capacity(&mut self, maximum: usize) {
+        self.buffer.clear();
+        if self.buffer.capacity() > maximum {
+            self.buffer = Vec::with_capacity(maximum.min(self.limit));
+        }
+    }
 }
 
 impl BoundedBuf for ProtoBuffer {
@@ -850,7 +859,7 @@ impl BoundedBuf for ProtoBuffer {
             self.buffer.extend_from_slice(slice);
             Ok(())
         } else {
-            Err(Dropped)
+            Err(EncodeFailure::Dropped)
         }
     }
     #[inline]
@@ -941,7 +950,7 @@ impl<const N: usize> BoundedBuf for StackProtoBuffer<N> {
             self.pos = new_pos;
             Ok(())
         } else {
-            Err(Dropped)
+            Err(EncodeFailure::Dropped)
         }
     }
     #[inline]
@@ -1085,16 +1094,16 @@ impl SortedBatchCursor {
         // If the most recently consumed row's parent id is `<= target`, then `target`'s rows (if
         // any) are at or after `curr_index`, so a forward scan suffices -- no search needed. Nulls
         // (value_at == None) fall through to the search, as does the very first seek of a batch.
-        if self.curr_index > 0 {
-            if let Some(prev) = parent_id_col.value_at(self.sorted_indices[self.curr_index - 1]) {
-                // `target >= prev`: forward scan suffices. Incomparable values (partial_cmp ==
-                // None) fall through to the search as a safe default.
-                if matches!(
-                    target.partial_cmp(&prev),
-                    Some(Ordering::Greater | Ordering::Equal)
-                ) {
-                    return;
-                }
+        if self.curr_index > 0
+            && let Some(prev) = parent_id_col.value_at(self.sorted_indices[self.curr_index - 1])
+        {
+            // `target >= prev`: forward scan suffices. Incomparable values (partial_cmp ==
+            // None) fall through to the search as a safe default.
+            if matches!(
+                target.partial_cmp(&prev),
+                Some(Ordering::Greater | Ordering::Equal)
+            ) {
+                return;
             }
         }
 
@@ -1357,20 +1366,24 @@ where
 
 #[cfg(test)]
 mod test {
-    use std::sync::Arc;
-
+    use crate::{
+        arrays::MaybeDictArrayAccessor,
+        otlp::common::{
+            BatchSorter, BoundedBuf, ChildIndexIter, EncodeFailure, EncodeResult, ProtoBuffer,
+            Result, SortedBatchCursor, StackProtoBuffer, TRUNCATION_SUFFIX, encode_len_placeholder,
+            patch_len_placeholder,
+        },
+        proto::OtlpProtoMessage,
+        proto::consts::wire_types,
+        schema::consts,
+        testing::{fixtures::*, round_trip::*},
+    };
     use arrow::{
         array::{RecordBatch, StructArray, UInt16Array},
         datatypes::{DataType, Field, Fields, Schema, UInt16Type},
     };
-
-    use crate::{
-        arrays::MaybeDictArrayAccessor,
-        otlp::common::{BatchSorter, ChildIndexIter, SortedBatchCursor},
-        proto::OtlpProtoMessage,
-        schema::consts,
-        testing::{fixtures::*, round_trip::*},
-    };
+    use prost::Message;
+    use std::sync::Arc;
 
     #[test]
     fn test_child_index_iter_shuffled_order() {
@@ -1731,8 +1744,6 @@ mod test {
 
     #[test]
     fn test_encode_len_placeholder_sizes() {
-        use crate::otlp::common::{ProtoBuffer, encode_len_placeholder};
-
         fn check<const N: usize>() {
             let mut buf = ProtoBuffer::default();
             encode_len_placeholder::<N, _>(&mut buf).unwrap();
@@ -1751,8 +1762,6 @@ mod test {
 
     #[test]
     fn test_patch_len_placeholder_roundtrip() {
-        use crate::otlp::common::{ProtoBuffer, encode_len_placeholder, patch_len_placeholder};
-
         // Verify that encoding+patching with each placeholder size produces
         // valid varints that a standard decoder would read correctly.
         fn check<const N: usize>(test_lengths: &[usize]) {
@@ -1783,8 +1792,6 @@ mod test {
 
     #[test]
     fn test_encode_len_delimited_auto_width() {
-        use crate::otlp::common::{BoundedBuf, ProtoBuffer, Result, StackProtoBuffer};
-
         // A small inline buffer (127 bytes) should use a 1-byte placeholder.
         let mut buf = StackProtoBuffer::<127>::default();
         buf.encode_len_delimited(1, |buf: &mut StackProtoBuffer<127>| -> Result<()> {
@@ -1813,8 +1820,6 @@ mod test {
 
     #[test]
     fn try_encode_rolls_back_buffer_on_error() {
-        use crate::otlp::common::{BoundedBuf, Dropped, EncodeResult, ProtoBuffer};
-
         let mut buf = ProtoBuffer::default();
         buf.encode_string(1, "before").unwrap();
         let snapshot: Vec<u8> = buf.as_ref().to_vec();
@@ -1824,9 +1829,9 @@ mod test {
             // Write several bytes successfully, then fail.
             b.encode_string(2, "partial-content")?;
             b.encode_varint(0xDEAD_BEEF)?;
-            Err(Dropped)
+            Err(EncodeFailure::Dropped)
         });
-        assert_eq!(res, Err(Dropped));
+        assert_eq!(res, Err(EncodeFailure::Dropped));
         assert_eq!(buf.len(), snapshot_len, "len must be restored");
         assert_eq!(buf.as_ref(), snapshot.as_slice(), "bytes must be identical");
 
@@ -1842,15 +1847,13 @@ mod test {
         // an unpatched 0-length placeholder followed by partial content bytes.
         // The bytes are wire-corrupt and MUST be wrapped in try_encode by
         // callers (this is the bug that bit encode_body_string).
-        use crate::otlp::common::{BoundedBuf, Dropped, EncodeResult, StackProtoBuffer};
-
         let mut buf = StackProtoBuffer::<8>::default();
         let r: EncodeResult = buf.encode_len_delimited(1, |b| {
             // Write enough partial content to force overflow before completion.
             b.encode_string(1, "AAAAAAAAAAAAAAAAAAAA")?;
             Ok(())
         });
-        assert_eq!(r, Err(Dropped));
+        assert_eq!(r, Err(EncodeFailure::Dropped));
         // tag(1) + placeholder(1) was written, plus partial content bytes.
         // The placeholder is unpatched (still 0x00), so a parser would read
         // the body as 0 bytes and continue at the partial content as garbage.
@@ -1862,15 +1865,12 @@ mod test {
         let r: EncodeResult = buf.try_encode(|b| {
             b.encode_len_delimited(1, |b| b.encode_string(1, "AAAAAAAAAAAAAAAAAAAA"))
         });
-        assert_eq!(r, Err(Dropped));
+        assert_eq!(r, Err(EncodeFailure::Dropped));
         assert_eq!(buf.len(), 0, "try_encode rolled back partial bytes");
     }
 
     #[test]
     fn encode_len_delimited_partial_patches_length_on_err() {
-        use crate::otlp::common::{BoundedBuf, Dropped, EncodeResult, StackProtoBuffer};
-        use crate::proto::consts::wire_types;
-
         // Partial mode: even when the inner closure returns Err mid-way, the
         // length placeholder reflects the bytes actually written, leaving a
         // valid LEN-prefixed wire field that can be parsed.
@@ -1882,9 +1882,9 @@ mod test {
         let r: EncodeResult = buf.encode_len_delimited_partial(1, |b| {
             b.extend_from_slice(b"abcde")?;
             // Caller signals "partial" via Err to outer logic, but bytes stay.
-            Err(Dropped)
+            Err(EncodeFailure::Dropped)
         });
-        assert_eq!(r, Err(Dropped));
+        assert_eq!(r, Err(EncodeFailure::Dropped));
 
         // Read back: tag for field 1 (LEN), then patched length, then 5 bytes.
         let bytes = &buf.as_ref()[len_before..];
@@ -1905,8 +1905,6 @@ mod test {
 
     #[test]
     fn encode_string_truncating_three_outcomes() {
-        use crate::otlp::common::{BoundedBuf, Dropped, StackProtoBuffer, TRUNCATION_SUFFIX};
-
         // (a) Full fit -> Ok(false), no suffix.
         let mut buf = StackProtoBuffer::<64>::default();
         let r = buf.encode_string_truncating(1, "hi");
@@ -1920,13 +1918,13 @@ mod test {
         assert_eq!(r, Ok(true));
         assert!(buf.as_ref().ends_with(TRUNCATION_SUFFIX));
 
-        // (c) Hard fail -> Err(Dropped), buffer unchanged.
+        // (c) Hard fail -> Dropped, buffer unchanged.
         let mut buf = StackProtoBuffer::<4>::default();
         // Pre-fill so remaining < min_overhead.
         buf.extend_from_slice(b"abcd").unwrap();
         let snapshot: Vec<u8> = buf.as_ref().to_vec();
         let r = buf.encode_string_truncating(1, &long);
-        assert_eq!(r, Err(Dropped));
+        assert_eq!(r, Err(EncodeFailure::Dropped));
         assert_eq!(
             buf.as_ref(),
             snapshot.as_slice(),
@@ -1936,9 +1934,6 @@ mod test {
 
     #[test]
     fn encode_string_truncating_round_trips_via_prost() {
-        use crate::otlp::common::{BoundedBuf, StackProtoBuffer};
-        use prost::Message;
-
         // Encode a truncating string as if it were the "string_value" of an
         // AnyValue (field 1 = string) and decode via prost to confirm the
         // bytes form a valid wire message ending in the truncation suffix.
@@ -1990,8 +1985,6 @@ mod test {
 
     #[test]
     fn with_max_remaining_restores_outer_limit() {
-        use crate::otlp::common::{BoundedBuf, StackProtoBuffer};
-
         let mut buf = StackProtoBuffer::<64>::default();
         let outer_limit = buf.limit();
         let outer_remaining = buf.remaining();
@@ -2008,8 +2001,6 @@ mod test {
 
     #[test]
     fn with_max_remaining_nests_correctly() {
-        use crate::otlp::common::{BoundedBuf, StackProtoBuffer};
-
         let mut buf = StackProtoBuffer::<128>::default();
         let outer = buf.limit();
 
@@ -2027,8 +2018,6 @@ mod test {
 
     #[test]
     fn with_max_remaining_saturates_and_honors_outer() {
-        use crate::otlp::common::{BoundedBuf, StackProtoBuffer};
-
         let mut buf = StackProtoBuffer::<32>::default();
         let outer = buf.limit();
 

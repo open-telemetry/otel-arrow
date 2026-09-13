@@ -144,27 +144,27 @@ async fn ingest_handler(
     }
 
     // Check payload size limit.
-    if let Some(max_size) = state.cli.payload_too_large {
-        if body.len() > max_size {
-            println!(
-                "[mock-la] POST dcr={dcr} stream={stream} \
-                 \u{2014} 413 Payload Too Large ({} > {max_size})",
-                body.len()
-            );
-            return (StatusCode::PAYLOAD_TOO_LARGE, "Payload Too Large").into_response();
-        }
+    if let Some(max_size) = state.cli.payload_too_large
+        && body.len() > max_size
+    {
+        println!(
+            "[mock-la] POST dcr={dcr} stream={stream} \
+             \u{2014} 413 Payload Too Large ({} > {max_size})",
+            body.len()
+        );
+        return (StatusCode::PAYLOAD_TOO_LARGE, "Payload Too Large").into_response();
     }
 
     // Check fail-after threshold.
     let success_so_far = state.stats.success_count.load(Ordering::Relaxed);
-    if let Some(fail_after) = state.cli.fail_after {
-        if success_so_far >= fail_after {
-            println!(
-                "[mock-la] POST dcr={dcr} stream={stream} \
-                 \u{2014} 503 (fail-after {fail_after} reached)"
-            );
-            return (StatusCode::SERVICE_UNAVAILABLE, "Service Unavailable").into_response();
-        }
+    if let Some(fail_after) = state.cli.fail_after
+        && success_so_far >= fail_after
+    {
+        println!(
+            "[mock-la] POST dcr={dcr} stream={stream} \
+             \u{2014} 503 (fail-after {fail_after} reached)"
+        );
+        return (StatusCode::SERVICE_UNAVAILABLE, "Service Unavailable").into_response();
     }
 
     // Random failure simulation.

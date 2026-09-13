@@ -1,19 +1,17 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Protocol-neutral transport header abstraction for end-to-end header
-//! propagation through the pipeline.
+//! Transport headers carried through the pipeline context.
 //!
-//! Transport headers represent request-scoped metadata captured from inbound
-//! transport protocols (gRPC metadata, HTTP headers) and carried through the
-//! pipeline context.
+//! Headers can come from gRPC metadata, HTTP headers, or other transports.
 //!
-//! The abstraction preserves:
-//! - Duplicate header names (multiple entries with the same logical name)
-//! - Binary values (e.g. gRPC binary metadata with `-bin` suffix)
-//! - Original wire names for lossless round-tripping
-//! - Normalized logical names for policy matching
+//! Preserves:
+//! - Duplicate header names
+//! - Text and binary values
+//! - Original wire names when required
+//! - Stored context entry names for policy matching
 
+use crate::context::ContextEntryName;
 use std::fmt;
 use std::sync::Arc;
 
@@ -35,58 +33,87 @@ impl fmt::Display for ValueKind {
     }
 }
 
-/// A single captured transport header.
-///
-/// Each entry records both the normalized logical name (used for policy
-/// matching) and the original wire name observed on ingress (used for
-/// lossless re-emission on egress).
+/// A header value and its optional original name.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TransportHeader {
-    /// Normalized logical name used for matching and policy lookup.
-    pub name: String,
-    /// Original header or metadata name observed on ingress.
-    pub wire_name: String,
+pub struct TransportHeaderValue {
+    /// Original wire name when required and different from the stored name.
+    pub original_name: Option<Box<str>>,
     /// Whether the value is text or binary.
     pub value_kind: ValueKind,
     /// Raw value bytes.
-    pub value: Vec<u8>,
+    pub bytes: Box<[u8]>,
+}
+
+/// A transport header stored in context.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TransportHeader {
+    /// Stored context entry name.
+    pub name: ContextEntryName,
+    /// Value and optional original wire name.
+    pub value: TransportHeaderValue,
 }
 
 impl TransportHeader {
-    /// Create a new text transport header.
+    /// Creates a header without an original wire name.
     #[must_use]
-    pub fn text(
-        name: impl Into<String>,
-        wire_name: impl Into<String>,
-        value: impl Into<Vec<u8>>,
+    pub fn new<V: Into<Box<[u8]>>>(
+        name: ContextEntryName,
+        value_kind: ValueKind,
+        value: V,
     ) -> Self {
-        Self {
-            name: name.into(),
-            wire_name: wire_name.into(),
-            value_kind: ValueKind::Text,
-            value: value.into(),
+        TransportHeader {
+            name,
+            value: TransportHeaderValue {
+                original_name: None,
+                value_kind,
+                bytes: value.into(),
+            },
         }
     }
 
-    /// Create a new binary transport header.
+    /// Creates a captured header. Keeps a distinct original name when requested.
     #[must_use]
-    pub fn binary(
-        name: impl Into<String>,
-        wire_name: impl Into<String>,
-        value: impl Into<Vec<u8>>,
+    pub fn captured<V: Into<Box<[u8]>>>(
+        name: ContextEntryName,
+        wire_name: &str,
+        preserve_original_name: bool,
+        value_kind: ValueKind,
+        value: V,
     ) -> Self {
+        let original_name = (preserve_original_name && name.as_str() != wire_name)
+            .then(|| wire_name.to_owned().into_boxed_str());
         Self {
-            name: name.into(),
-            wire_name: wire_name.into(),
-            value_kind: ValueKind::Binary,
-            value: value.into(),
+            name,
+            value: TransportHeaderValue {
+                original_name,
+                value_kind,
+                bytes: value.into(),
+            },
         }
+    }
+
+    /// Creates a text header.
+    #[must_use]
+    pub fn text(name: ContextEntryName, value: impl Into<Vec<u8>>) -> Self {
+        Self::new(name, ValueKind::Text, value.into())
+    }
+
+    /// Creates a binary header.
+    #[must_use]
+    pub fn binary(name: ContextEntryName, value: impl Into<Vec<u8>>) -> Self {
+        Self::new(name, ValueKind::Binary, value.into())
+    }
+
+    /// Returns the original wire name or the stored name.
+    #[must_use]
+    pub fn wire_name(&self) -> &str {
+        self.value.original_name.as_deref().unwrap_or(&self.name)
     }
 
     /// Returns the value as a UTF-8 string, if it is valid text.
     #[must_use]
     pub fn value_as_str(&self) -> Option<&str> {
-        std::str::from_utf8(&self.value).ok()
+        std::str::from_utf8(&self.value.bytes).ok()
     }
 }
 
@@ -127,9 +154,15 @@ impl TransportHeaders {
         Arc::make_mut(&mut self.headers).push(header);
     }
 
-    /// Remove all headers from the collection.
-    pub fn clear(&mut self) {
-        Arc::make_mut(&mut self.headers).clear();
+    /// Clears the headers and reserves space for `capacity` entries.
+    pub(crate) fn clear_and_reserve(&mut self, capacity: usize) -> &mut Vec<TransportHeader> {
+        if Arc::strong_count(&self.headers) != 1 {
+            self.headers = Arc::new(Vec::with_capacity(capacity));
+        }
+        let headers = Arc::make_mut(&mut self.headers);
+        headers.clear();
+        headers.reserve(capacity);
+        headers
     }
 
     /// Returns `true` if there are no headers.
@@ -149,10 +182,10 @@ impl TransportHeaders {
         self.headers.iter()
     }
 
-    /// Find all headers matching a normalized name (case-sensitive match on
-    /// the logical name).
+    /// Finds headers by exact stored name.
+    /// Uses a linear scan for validation.
     pub fn find_by_name<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a TransportHeader> {
-        self.headers.iter().filter(move |h| h.name == name)
+        self.headers.iter().filter(move |h| h.name.as_str() == name)
     }
 
     /// Returns a slice of all headers.
@@ -171,64 +204,81 @@ mod tests {
         PropagationSelector, PropagationSelectorType,
     };
 
+    fn context_name(raw: &str) -> ContextEntryName {
+        ContextEntryName::try_from(raw).expect("valid test context entry name")
+    }
+
+    fn header(normal: &str, wire_name: &str, value: impl AsRef<[u8]>) -> TransportHeader {
+        TransportHeader::captured(
+            context_name(normal),
+            wire_name,
+            true,
+            ValueKind::Text,
+            value.as_ref(),
+        )
+    }
+
+    /// Scenario: matching and nonmatching headers are interleaved.
+    /// Guarantees: lookup preserves all matching values in order.
     #[test]
     fn find_by_name_returns_matching_headers() {
         let mut headers = TransportHeaders::new();
-        headers.push(TransportHeader::text("tenant", "X-Tenant", b"a".to_vec()));
-        headers.push(TransportHeader::text(
-            "request-id",
-            "X-Request-Id",
-            b"b".to_vec(),
-        ));
-        headers.push(TransportHeader::text("tenant", "X-Tenant", b"c".to_vec()));
+        headers.push(header("tenant", "X-Tenant", b"a"));
+        headers.push(header("request-id", "X-Request-Id", b"b"));
+        headers.push(header("tenant", "X-Tenant", b"c"));
 
         let tenants: Vec<_> = headers.find_by_name("tenant").collect();
         assert_eq!(tenants.len(), 2);
-        assert_eq!(tenants[0].value, b"a");
-        assert_eq!(tenants[1].value, b"c");
+        assert_eq!(&*tenants[0].value.bytes, b"a");
+        assert_eq!(&*tenants[1].value.bytes, b"c");
     }
 
+    /// Scenario: two headers have the same name.
+    /// Guarantees: neither header replaces the other.
     #[test]
     fn duplicate_names_preserved() {
         let mut headers = TransportHeaders::new();
-        headers.push(TransportHeader::text("key", "Key", b"val1".to_vec()));
-        headers.push(TransportHeader::text("key", "Key", b"val2".to_vec()));
+        headers.push(header("key", "Key", b"val1"));
+        headers.push(header("key", "Key", b"val2"));
         assert_eq!(headers.len(), 2);
     }
 
+    /// Scenario: a text header contains valid UTF-8.
+    /// Guarantees: the string view preserves the text.
     #[test]
     fn value_as_str_for_text() {
-        let h = TransportHeader::text("name", "Name", b"hello".to_vec());
+        let h = header("name", "Name", b"hello");
         assert_eq!(h.value_as_str(), Some("hello"));
     }
 
+    /// Scenario: a binary header contains invalid UTF-8.
+    /// Guarantees: the string view returns `None`.
     #[test]
     fn value_as_str_for_invalid_utf8() {
-        let h = TransportHeader::binary("name-bin", "name-bin", vec![0xFF, 0xFE]);
+        let h = TransportHeader::binary(context_name("name-bin"), vec![0xFF, 0xFE]);
         assert_eq!(h.value_as_str(), None);
     }
 
     // -- Capture engine tests ------------------------------------------------
 
     fn make_capture_policy(rules: Vec<CaptureRule>) -> HeaderCapturePolicy {
-        HeaderCapturePolicy {
-            defaults: CaptureDefaults::default(),
-            headers: rules,
-        }
+        HeaderCapturePolicy::new(CaptureDefaults::default(), rules)
     }
 
     fn rule(names: &[&str], store_as: Option<&str>) -> CaptureRule {
         CaptureRule {
-            match_names: names.iter().map(|s| s.to_string()).collect(),
-            store_as: store_as.map(|s| s.to_string()),
+            match_names: names.iter().map(|n| context_name(n)).collect(),
+            store_as: store_as.map(context_name),
             sensitive: false,
             value_kind: None,
         }
     }
 
+    /// Scenario: headers arrive with no capture rules.
+    /// Guarantees: capture returns no headers or limit errors.
     #[test]
     fn capture_empty_policy_captures_nothing() {
-        let policy = HeaderCapturePolicy::default();
+        let policy = HeaderCapturePolicy::default().compile(|_| true);
         let pairs = vec![("X-Tenant-Id", b"abc" as &[u8])];
         let mut result = TransportHeaders::new();
         let stats = policy.capture_from_pairs(pairs.into_iter(), &mut result);
@@ -236,12 +286,15 @@ mod tests {
         assert!(stats.is_none());
     }
 
+    /// Scenario: capture rules select and rename incoming headers.
+    /// Guarantees: only matches are stored. Values and original names are retained.
     #[test]
     fn capture_matching_headers() {
         let policy = make_capture_policy(vec![
             rule(&["x-tenant-id"], Some("tenant_id")),
             rule(&["x-request-id"], None),
-        ]);
+        ])
+        .compile(|_| true);
 
         let pairs: Vec<(&str, &[u8])> = vec![
             ("X-Tenant-Id", b"t-123"),
@@ -253,14 +306,16 @@ mod tests {
         assert!(stats.is_none());
         assert_eq!(result.len(), 2);
         assert_eq!(result.as_slice()[0].name, "tenant_id");
-        assert_eq!(result.as_slice()[0].wire_name, "X-Tenant-Id");
-        assert_eq!(result.as_slice()[0].value, b"t-123");
+        assert_eq!(result.as_slice()[0].wire_name(), "X-Tenant-Id");
+        assert_eq!(&*result.as_slice()[0].value.bytes, b"t-123");
         assert_eq!(result.as_slice()[1].name, "x-request-id");
     }
 
+    /// Scenario: a wire name uses different casing from its capture rule.
+    /// Guarantees: it matches the rule and retains its wire spelling.
     #[test]
     fn capture_case_insensitive_matching() {
-        let policy = make_capture_policy(vec![rule(&["x-tenant-id"], None)]);
+        let policy = make_capture_policy(vec![rule(&["x-tenant-id"], None)]).compile(|_| true);
 
         let pairs: Vec<(&str, &[u8])> = vec![("X-TENANT-ID", b"val")];
         let mut result = TransportHeaders::new();
@@ -268,13 +323,38 @@ mod tests {
         assert!(stats.is_none());
         assert_eq!(result.len(), 1);
         assert_eq!(result.as_slice()[0].name, "x-tenant-id");
-        assert_eq!(result.as_slice()[0].wire_name, "X-TENANT-ID");
+        assert_eq!(result.as_slice()[0].wire_name(), "X-TENANT-ID");
     }
 
+    /// Scenario: one capture rule matches several wire names.
+    /// Guarantees: every alias is captured under the same stored name.
+    #[test]
+    fn capture_rule_supports_multiple_match_names() {
+        let policy = make_capture_policy(vec![rule(&["x-first", "x-second"], Some("combined"))])
+            .compile(|_| false);
+
+        let mut result = TransportHeaders::new();
+        let stats = policy.capture_from_pairs(
+            [
+                ("X-First", b"first".as_slice()),
+                ("X-Second", b"second".as_slice()),
+            ]
+            .into_iter(),
+            &mut result,
+        );
+
+        assert!(stats.is_none());
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().all(|header| header.name == "combined"));
+    }
+
+    /// Scenario: matching headers exceed the entry limit.
+    /// Guarantees: capture respects the limit and counts excess matches.
     #[test]
     fn capture_respects_max_entries() {
         let mut policy = make_capture_policy(vec![rule(&["x-key"], None)]);
         policy.defaults.max_entries = 2;
+        let policy = policy.compile(|_| true);
 
         let pairs: Vec<(&str, &[u8])> = vec![("x-key", b"1"), ("x-key", b"2"), ("x-key", b"3")];
         let mut result = TransportHeaders::new();
@@ -286,36 +366,43 @@ mod tests {
         assert_eq!(stats.skipped_value_too_long, 0);
     }
 
+    /// Scenario: an oversized value precedes a valid value.
+    /// Guarantees: the oversized value is counted and dropped. The valid value is captured.
     #[test]
     fn capture_drops_oversized_value() {
         let mut policy = make_capture_policy(vec![rule(&["x-key"], None)]);
         policy.defaults.max_value_bytes = 3;
+        let policy = policy.compile(|_| true);
 
         let pairs: Vec<(&str, &[u8])> = vec![("x-key", b"toolong"), ("x-key", b"ok")];
         let mut result = TransportHeaders::new();
         let stats = policy.capture_from_pairs(pairs.into_iter(), &mut result);
         assert_eq!(result.len(), 1);
-        assert_eq!(result.as_slice()[0].value, b"ok");
+        assert_eq!(&*result.as_slice()[0].value.bytes, b"ok");
         let stats = stats.expect("should report skipped headers");
         assert_eq!(stats.skipped_value_too_long, 1);
         assert_eq!(stats.skipped_max_entries, 0);
         assert_eq!(stats.skipped_name_too_long, 0);
     }
 
+    /// Scenario: a `-bin` header contains non-text bytes.
+    /// Guarantees: capture accepts the bytes and marks the value as binary.
     #[test]
     fn capture_binary_detection() {
-        let policy = make_capture_policy(vec![rule(&["auth-token-bin"], None)]);
+        let policy = make_capture_policy(vec![rule(&["auth-token-bin"], None)]).compile(|_| true);
 
         let pairs: Vec<(&str, &[u8])> = vec![("auth-token-bin", &[0xFF, 0x00])];
         let mut result = TransportHeaders::new();
         let stats = policy.capture_from_pairs(pairs.into_iter(), &mut result);
         assert!(stats.is_none());
         assert_eq!(result.len(), 1);
-        assert_eq!(result.as_slice()[0].value_kind, ValueKind::Binary);
+        assert_eq!(result.as_slice()[0].value.value_kind, ValueKind::Binary);
     }
 
     // -- Propagation policy tests --------------------------------------------
 
+    /// Scenario: propagation selects all captured headers.
+    /// Guarantees: every header keeps its original wire name.
     #[test]
     fn propagate_all_captured_default() {
         let policy = HeaderPropagationPolicy::new(
@@ -329,16 +416,8 @@ mod tests {
             vec![],
         );
         let mut headers = TransportHeaders::new();
-        headers.push(TransportHeader::text(
-            "tenant_id",
-            "X-Tenant-Id",
-            b"t-1".to_vec(),
-        ));
-        headers.push(TransportHeader::text(
-            "request_id",
-            "X-Request-Id",
-            b"r-1".to_vec(),
-        ));
+        headers.push(header("tenant_id", "X-Tenant-Id", b"t-1"));
+        headers.push(header("request_id", "X-Request-Id", b"r-1"));
 
         let propagated: Vec<_> = policy.propagate(&headers).collect();
         assert_eq!(propagated.len(), 2);
@@ -346,6 +425,8 @@ mod tests {
         assert_eq!(propagated[1].header_name, "X-Request-Id");
     }
 
+    /// Scenario: a drop override excludes authorization.
+    /// Guarantees: other headers still propagate with their original names.
     #[test]
     fn propagate_override_drops_auth() {
         let policy = HeaderPropagationPolicy::new(
@@ -358,7 +439,7 @@ mod tests {
             },
             vec![PropagationOverride {
                 match_rule: PropagationMatch {
-                    stored_names: vec!["authorization".to_string()],
+                    stored_names: vec![context_name("authorization")],
                 },
                 action: PropagationAction::Drop,
                 name: None,
@@ -367,22 +448,16 @@ mod tests {
         );
 
         let mut headers = TransportHeaders::new();
-        headers.push(TransportHeader::text(
-            "tenant_id",
-            "X-Tenant-Id",
-            b"t-1".to_vec(),
-        ));
-        headers.push(TransportHeader::text(
-            "authorization",
-            "Authorization",
-            b"Bearer secret".to_vec(),
-        ));
+        headers.push(header("tenant_id", "X-Tenant-Id", b"t-1"));
+        headers.push(header("authorization", "Authorization", b"Bearer secret"));
 
         let propagated: Vec<_> = policy.propagate(&headers).collect();
         assert_eq!(propagated.len(), 1);
         assert_eq!(propagated[0].header_name, "X-Tenant-Id");
     }
 
+    /// Scenario: a `none` selector has one propagation override.
+    /// Guarantees: only the overridden header is propagated.
     #[test]
     fn propagate_selector_none_drops_all_unless_override() {
         let policy = HeaderPropagationPolicy {
@@ -395,7 +470,7 @@ mod tests {
             },
             overrides: vec![PropagationOverride {
                 match_rule: PropagationMatch {
-                    stored_names: vec!["tenant_id".to_string()],
+                    stored_names: vec![context_name("tenant_id")],
                 },
                 action: PropagationAction::Propagate,
                 name: None,
@@ -404,22 +479,16 @@ mod tests {
         };
 
         let mut headers = TransportHeaders::new();
-        headers.push(TransportHeader::text(
-            "tenant_id",
-            "X-Tenant-Id",
-            b"t-1".to_vec(),
-        ));
-        headers.push(TransportHeader::text(
-            "request_id",
-            "X-Request-Id",
-            b"r-1".to_vec(),
-        ));
+        headers.push(header("tenant_id", "X-Tenant-Id", b"t-1"));
+        headers.push(header("request_id", "X-Request-Id", b"r-1"));
 
         let propagated: Vec<_> = policy.propagate(&headers).collect();
         assert_eq!(propagated.len(), 1);
         assert_eq!(propagated[0].header_name, "X-Tenant-Id");
     }
 
+    /// Scenario: propagation uses `StoredName` for a renamed header.
+    /// Guarantees: the stored name replaces the original wire name.
     #[test]
     fn propagate_stored_name_strategy() {
         let policy = HeaderPropagationPolicy::new(
@@ -435,24 +504,22 @@ mod tests {
         );
 
         let mut headers = TransportHeaders::new();
-        headers.push(TransportHeader::text(
-            "tenant_id",
-            "X-Tenant-Id",
-            b"t-1".to_vec(),
-        ));
+        headers.push(header("tenant_id", "X-Tenant-Id", b"t-1"));
 
         let propagated: Vec<_> = policy.propagate(&headers).collect();
         assert_eq!(propagated.len(), 1);
         assert_eq!(propagated[0].header_name, "tenant_id");
     }
 
+    /// Scenario: a named selector lists one captured entry.
+    /// Guarantees: only that entry is propagated.
     #[test]
     fn propagate_named_selector() {
         let policy = HeaderPropagationPolicy {
             default: PropagationDefault {
                 selector: PropagationSelector {
                     selector_type: PropagationSelectorType::Named,
-                    named: Some(vec!["tenant_id".to_string()]),
+                    named: Some(vec![context_name("tenant_id")]),
                 },
                 ..PropagationDefault::default()
             },
@@ -460,16 +527,8 @@ mod tests {
         };
 
         let mut headers = TransportHeaders::new();
-        headers.push(TransportHeader::text(
-            "tenant_id",
-            "X-Tenant-Id",
-            b"t-1".to_vec(),
-        ));
-        headers.push(TransportHeader::text(
-            "request_id",
-            "X-Request-Id",
-            b"r-1".to_vec(),
-        ));
+        headers.push(header("tenant_id", "X-Tenant-Id", b"t-1"));
+        headers.push(header("request_id", "X-Request-Id", b"r-1"));
 
         let propagated: Vec<_> = policy.propagate(&headers).collect();
         assert_eq!(propagated.len(), 1);

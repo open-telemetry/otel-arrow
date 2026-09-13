@@ -71,6 +71,7 @@ topics:
       broadcast:
         queue_capacity: 4096
         on_lag: drop_oldest
+        ack_mode: first
       ack_propagation:
         mode: disabled
         max_in_flight: 1024
@@ -89,8 +90,9 @@ Mapping from YAML to runtime behavior:
   selects `TopicOptions::Mixed`.
 - `balanced.queue_capacity` and `balanced.on_full` govern balanced
   consumer-group queues.
-- `broadcast.queue_capacity` and `broadcast.on_lag` govern the
-  broadcast ring and slow-subscriber behavior.
+- `broadcast.queue_capacity`, `broadcast.on_lag`, and `broadcast.ack_mode`
+  govern the broadcast ring, slow-subscriber behavior, and tracked Ack/Nack
+  aggregation.
 - `ack_propagation.mode` controls whether topic hops can bridge Ack/Nack
   across pipelines.
 - `ack_propagation.max_in_flight` and `ack_propagation.timeout` govern
@@ -102,13 +104,32 @@ Mapping from YAML to runtime behavior:
   startup, including same-pipeline feedback through a topic and
   multi-pipeline topic loops.
 
-Current limitation: in broadcast mode, `ack_propagation.mode: auto` does not
-aggregate acknowledgements across all subscribers. The first broadcast
-subscriber Ack/Nack resolves the upstream message, so upstream completion does
-not mean all broadcast subscribers processed the message. This matters
-especially with `broadcast.on_lag: drop_oldest`, where one subscriber may miss
-a message that another subscriber still Acks upstream. Future enhancements are
-tracked in [GH-2252](https://github.com/open-telemetry/otel-arrow/issues/2252).
+`broadcast.ack_mode` defaults to `first`, preserving first-subscriber-wins
+behavior. Set it to `all` on a broadcast-only topic to Ack upstream only after
+every subscriber eligible at publish time Acks. Any required Nack, or a
+required subscriber disappearing before Acking, resolves upstream as Nack.
+An empty eligible-subscriber snapshot resolves immediately as Nack, so a
+producer cannot report successful delivery before any topic receiver subscribes
+during startup or live reconfiguration. Recovery still requires the upstream
+source to retry or durably buffer Nacked messages.
+
+`all` requires `ack_propagation.mode: auto` and
+`broadcast.on_lag: disconnect`; startup rejects disabled Ack propagation,
+mixed topics, and balanced-only topics.
+
+Choose the component after each topic receiver based on the required Ack
+boundary:
+
+```text
+export completion:  receiver -> retry          -> exporter
+durable acceptance: receiver -> durable buffer -> exporter
+```
+
+Retry branches keep the topic outcome pending until exporters reach terminal
+outcomes. Durable-buffer branches Ack after persistence and retry exporters
+independently. The topic timeout must exceed the corresponding retry budget or
+durable write latency. `all` is not a distributed transaction and does not
+roll back destinations that already exported successfully.
 
 ## Observability Notes
 

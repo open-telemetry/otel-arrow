@@ -429,10 +429,10 @@ async fn handle_stream<T, F>(
         }
 
         while pending.len() >= max_pending {
-            if let Some(response) = pending.next().await {
-                if send_pending_response(response, &tx).await.is_err() {
-                    return;
-                }
+            if let Some(response) = pending.next().await
+                && send_pending_response(response, &tx).await.is_err()
+            {
+                return;
             }
         }
 

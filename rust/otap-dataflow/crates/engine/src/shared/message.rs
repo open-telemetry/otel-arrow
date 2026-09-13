@@ -133,16 +133,16 @@ impl<T> SharedSender<T> {
         {
             queue_depth.record_send();
         }
-        if let Some(metrics) = &self.metrics {
-            if let Ok(mut metrics) = metrics.lock() {
-                match &result {
-                    Ok(()) => metrics.record_send_ok(signal),
-                    Err(SendError::Full(_)) => {
-                        metrics.record_send_error(signal, ChannelSendErrorType::Full);
-                    }
-                    Err(SendError::Closed(_)) => {
-                        metrics.record_send_error(signal, ChannelSendErrorType::Closed);
-                    }
+        if let Some(metrics) = &self.metrics
+            && let Ok(mut metrics) = metrics.lock()
+        {
+            match &result {
+                Ok(()) => metrics.record_send_ok(signal),
+                Err(SendError::Full(_)) => {
+                    metrics.record_send_error(signal, ChannelSendErrorType::Full);
+                }
+                Err(SendError::Closed(_)) => {
+                    metrics.record_send_error(signal, ChannelSendErrorType::Closed);
                 }
             }
         }
@@ -169,16 +169,16 @@ impl<T> SharedSender<T> {
         {
             queue_depth.record_send();
         }
-        if let Some(metrics) = &self.metrics {
-            if let Ok(mut metrics) = metrics.lock() {
-                match &result {
-                    Ok(()) => metrics.record_send_ok(signal),
-                    Err(SendError::Full(_)) => {
-                        metrics.record_send_error(signal, ChannelSendErrorType::Full);
-                    }
-                    Err(SendError::Closed(_)) => {
-                        metrics.record_send_error(signal, ChannelSendErrorType::Closed);
-                    }
+        if let Some(metrics) = &self.metrics
+            && let Ok(mut metrics) = metrics.lock()
+        {
+            match &result {
+                Ok(()) => metrics.record_send_ok(signal),
+                Err(SendError::Full(_)) => {
+                    metrics.record_send_error(signal, ChannelSendErrorType::Full);
+                }
+                Err(SendError::Closed(_)) => {
+                    metrics.record_send_error(signal, ChannelSendErrorType::Closed);
                 }
             }
         }
@@ -299,12 +299,11 @@ impl<T> SharedReceiver<T> {
         {
             queue_depth.record_receive();
         }
-        if let Some(metrics) = &self.metrics {
-            if let Ok(mut metrics) = metrics.lock() {
-                if let Ok(message) = &result {
-                    metrics.record_recv_ok(self.signal.and_then(|extract| extract(message)));
-                }
-            }
+        if let Some(metrics) = &self.metrics
+            && let Ok(mut metrics) = metrics.lock()
+            && let Ok(message) = &result
+        {
+            metrics.record_recv_ok(self.signal.and_then(|extract| extract(message)));
         }
 
         result
@@ -328,12 +327,11 @@ impl<T> SharedReceiver<T> {
         {
             queue_depth.record_receive();
         }
-        if let Some(metrics) = &self.metrics {
-            if let Ok(mut metrics) = metrics.lock() {
-                if let Ok(message) = &result {
-                    metrics.record_recv_ok(self.signal.and_then(|extract| extract(message)));
-                }
-            }
+        if let Some(metrics) = &self.metrics
+            && let Ok(mut metrics) = metrics.lock()
+            && let Ok(message) = &result
+        {
+            metrics.record_recv_ok(self.signal.and_then(|extract| extract(message)));
         }
 
         result

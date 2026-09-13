@@ -111,6 +111,7 @@ pub static JOURNALD_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
          _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
             create_journald_receiver(pipeline, node, node_config, receiver_config)
         },
+    context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: validate_journald_config,
 };
@@ -256,6 +257,26 @@ enum WorkerError {
     UnexpectedCommand,
     #[error("journald cannot rewind before the first checkpoint is committed")]
     RewindBeforeCheckpoint,
+}
+
+#[cfg(target_os = "linux")]
+impl From<&WorkerError> for SourceErrorType {
+    fn from(err: &WorkerError) -> Self {
+        match err {
+            WorkerError::Journal(journal_err) => match journal_err {
+                journal::JournalError::JournalAccess { .. } => SourceErrorType::Permission,
+                journal::JournalError::CursorUtf8 { .. } => SourceErrorType::CorruptJournal,
+                journal::JournalError::SystemdCall { rc, .. } => match -rc {
+                    libc::EACCES | libc::EPERM => SourceErrorType::Permission,
+                    libc::EBADMSG | libc::EUCLEAN => SourceErrorType::CorruptJournal,
+                    libc::EIO => SourceErrorType::IoFailure,
+                    _ => SourceErrorType::Other,
+                },
+                _ => SourceErrorType::Other,
+            },
+            _ => SourceErrorType::Other,
+        }
+    }
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -594,16 +615,16 @@ fn worker_loop_inner(
                     .filter(|remaining| !remaining.is_zero())
                     .map(|remaining| remaining.min(config.wait_timeout))
             };
-            if let Some(timeout) = read_timeout {
-                if let Some(entry) = reader.next_entry_with_wait_timeout(timeout)? {
-                    if builder.len() == 0 {
-                        first_cursor = entry.cursor.clone();
-                        first_record_at = StdInstant::now();
-                    }
-                    dropped_fields = dropped_fields.saturating_add(entry.dropped_fields);
-                    builder.append(&entry);
-                    last_cursor = entry.cursor;
+            if let Some(timeout) = read_timeout
+                && let Some(entry) = reader.next_entry_with_wait_timeout(timeout)?
+            {
+                if builder.len() == 0 {
+                    first_cursor = entry.cursor.clone();
+                    first_record_at = StdInstant::now();
                 }
+                dropped_fields = dropped_fields.saturating_add(entry.dropped_fields);
+                builder.append(&entry);
+                last_cursor = entry.cursor;
             }
         }
 
@@ -764,10 +785,19 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                                 continue;
                             };
                             if let Some(effect) = apply_pending_ack(&mut pending, batch_id) {
-                                if let Some(metrics) = metrics.as_mut() {
-                                    if effect.record_ack {
-                                        metrics.acknowledgements.with(otel_arrow_dfe_telemetry::common_attributes::OutcomeAttributes { outcome: otel_arrow_dfe_telemetry::common_attributes::Outcome::Success }).responses.add(1);
-                                    }
+                                if let Some(metrics) = metrics.as_mut()
+                                    && effect.record_ack
+                                {
+                                    metrics
+                                        .acknowledgements
+                                        .with(
+                                            otel_arrow_dfe_telemetry::common_attributes::OutcomeAttributes {
+                                                outcome:
+                                                    otel_arrow_dfe_telemetry::common_attributes::Outcome::Success,
+                                            },
+                                        )
+                                        .responses
+                                        .add(1);
                                 }
                                 if let Some(command) = effect.command {
                                     send_worker_command(&worker.cmd_tx, command, &effect_handler).await?;
@@ -1055,7 +1085,13 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                         }
                         Some(WorkerEvent::Failed(err)) => {
                             if let Some(metrics) = metrics.as_mut() {
-                                metrics.source_errors.with(SourceErrorAttributes { error_type: SourceErrorType::Other }).events.add(1);
+                                metrics
+                                    .source_errors
+                                    .with(SourceErrorAttributes {
+                                        error_type: SourceErrorType::from(&err),
+                                    })
+                                    .events
+                                    .add(1);
                             }
                             let error = err.to_string();
                             otel_warn!(
@@ -1070,12 +1106,12 @@ impl local::Receiver<OtapPdata> for JournaldReceiver {
                         Some(WorkerEvent::Stopped) | None => {
                             drop(event_rx);
                             join_worker(worker, &effect_handler).await?;
-                            if let Some(deadline) = drain_deadline {
-                                if pending.is_empty() {
+                            if let Some(deadline) = drain_deadline
+                                && pending.is_empty()
+                            {
                                     effect_handler.notify_receiver_drained().await?;
                                     return Ok(terminal_state(deadline, &mut metrics));
                                 }
-                            }
                             return Err(terminal_error(&effect_handler, "journald worker stopped unexpectedly"));
                         }
                     }
@@ -1279,5 +1315,53 @@ mod tests {
             Some(PendingDecision::FailSent)
         );
         assert!(apply_pending_nack(&mut pending, 7, OnNack::Fail).is_none());
+    }
+
+    /// Scenario: Journal reader and systemd worker errors are classified for source metrics.
+    /// Guarantees: Permission, corrupt journal, IO, and unknown errors map to appropriate SourceErrorType variants.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_source_error_classification() {
+        let access_err = WorkerError::Journal(journal::JournalError::JournalAccess {
+            root_path: PathBuf::from("/"),
+            journal_files: 1,
+            unreadable_files: 1,
+            unreadable_directories: 0,
+            first_error: "permission denied".into(),
+        });
+        assert_eq!(
+            SourceErrorType::from(&access_err),
+            SourceErrorType::Permission
+        );
+
+        let perm_call = WorkerError::Journal(journal::JournalError::SystemdCall {
+            operation: "sd_journal_open",
+            rc: -libc::EACCES,
+        });
+        assert_eq!(
+            SourceErrorType::from(&perm_call),
+            SourceErrorType::Permission
+        );
+
+        let corrupt_call = WorkerError::Journal(journal::JournalError::SystemdCall {
+            operation: "sd_journal_next",
+            rc: -libc::EBADMSG,
+        });
+        assert_eq!(
+            SourceErrorType::from(&corrupt_call),
+            SourceErrorType::CorruptJournal
+        );
+
+        let io_call = WorkerError::Journal(journal::JournalError::SystemdCall {
+            operation: "sd_journal_next",
+            rc: -libc::EIO,
+        });
+        assert_eq!(SourceErrorType::from(&io_call), SourceErrorType::IoFailure);
+
+        let other_call = WorkerError::Journal(journal::JournalError::SystemdCall {
+            operation: "sd_journal_next",
+            rc: -libc::EINVAL,
+        });
+        assert_eq!(SourceErrorType::from(&other_call), SourceErrorType::Other);
     }
 }
