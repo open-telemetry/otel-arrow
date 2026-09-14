@@ -17,6 +17,8 @@ pub struct CompletedExport {
     pub result: Result<Duration, Error>,
     pub row_count: u64,
     pub token_generation: u64,
+    pub compressed_size: u64,
+    pub uncompressed_size: u64,
 }
 
 pub struct InFlightExports {
@@ -92,6 +94,8 @@ impl InFlightExports {
         body: Bytes,
         auth_header: HeaderValue,
         token_generation: u64,
+        compressed_size: u64,
+        uncompressed_size: u64,
     ) {
         let fut = Self::make_export_future(
             client,
@@ -100,6 +104,8 @@ impl InFlightExports {
             body,
             auth_header,
             token_generation,
+            compressed_size,
+            uncompressed_size,
         );
         self.queued_rows = self.queued_rows.saturating_add(row_count);
         self.push(fut);
@@ -118,6 +124,8 @@ impl InFlightExports {
         body: Bytes,
         auth_header: HeaderValue,
         token_generation: u64,
+        compressed_size: u64,
+        uncompressed_size: u64,
     ) -> LocalBoxFuture<'static, CompletedExport> {
         Box::pin(async move {
             let result = client
@@ -133,6 +141,8 @@ impl InFlightExports {
                 result,
                 row_count,
                 token_generation,
+                compressed_size,
+                uncompressed_size,
             }
         })
     }
@@ -210,6 +220,8 @@ mod tests {
                 result,
                 row_count,
                 token_generation: 1,
+                compressed_size: 0,
+                uncompressed_size: 0,
             }
         })
     }
@@ -339,6 +351,8 @@ mod tests {
             Bytes::from("data"),
             auth_header,
             token_generation,
+            0,
+            0,
         );
 
         assert_eq!(exports.len(), 1);
@@ -358,6 +372,8 @@ mod tests {
             Bytes::from("data"),
             auth_header,
             token_generation,
+            0,
+            0,
         );
         assert_eq!(exports.queued_rows(), 100);
 
@@ -369,6 +385,8 @@ mod tests {
             Bytes::from("data"),
             auth_header,
             token_generation,
+            0,
+            0,
         );
         assert_eq!(exports.queued_rows(), 150);
     }
@@ -395,6 +413,8 @@ mod tests {
             Bytes::from("data"),
             auth_header,
             token_generation,
+            0,
+            0,
         );
         assert_eq!(exports.queued_rows(), 25);
     }
@@ -429,6 +449,8 @@ mod tests {
             Bytes::from_static(b"payload"),
             HeaderValue::from_static("Bearer gen-7"),
             42,
+        0,
+        0,
         );
         assert_eq!(exports.queued_rows(), 3);
 

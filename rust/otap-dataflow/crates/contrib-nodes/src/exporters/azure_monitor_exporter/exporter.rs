@@ -149,6 +149,8 @@ impl AzureMonitorExporter {
             result,
             row_count,
             token_generation,
+            compressed_size,
+            uncompressed_size,
         } = completed_export;
 
         // Return the client to the pool
@@ -160,12 +162,25 @@ impl AzureMonitorExporter {
 
         match result {
             Ok(duration) => {
-                self.handle_export_success(effect_handler, batch_id, row_count, duration)
-                    .await
+                self.handle_export_success(
+                    effect_handler,
+                    batch_id,
+                    row_count,
+                    duration,
+                    compressed_size,
+                    uncompressed_size,
+                )
+                .await
             }
             Err(e) => {
-                self.handle_export_failure(effect_handler, batch_id, e)
-                    .await
+                self.handle_export_failure(
+                    effect_handler,
+                    batch_id,
+                    e,
+                    compressed_size,
+                    uncompressed_size,
+                )
+                .await
             }
         }
     }
@@ -176,12 +191,16 @@ impl AzureMonitorExporter {
         batch_id: u64,
         row_count: u64,
         duration: std::time::Duration,
+        compressed_size: u64,
+        uncompressed_size: u64,
     ) -> Result<(), EngineError> {
         // Export succeeded - Ack only fully-completed messages
         let completed_messages = self.state.remove_batch_success(batch_id);
-        self.metrics
-            .borrow_mut()
-            .record_completed_batch(Outcome::Success);
+        self.metrics.borrow_mut().record_completed_batch(
+            Outcome::Success,
+            compressed_size,
+            uncompressed_size,
+        );
 
         otel_debug!(
             "azure_monitor_exporter.export.success",
@@ -203,12 +222,16 @@ impl AzureMonitorExporter {
         effect_handler: &EffectHandler<OtapPdata>,
         batch_id: u64,
         error: Error,
+        compressed_size: u64,
+        uncompressed_size: u64,
     ) -> Result<(), EngineError> {
         // Export failed - Nack ALL messages in this batch, remove entirely
         let failed_messages = self.state.remove_batch_failure(batch_id);
-        self.metrics
-            .borrow_mut()
-            .record_completed_batch(Outcome::Failure);
+        self.metrics.borrow_mut().record_completed_batch(
+            Outcome::Failure,
+            compressed_size,
+            uncompressed_size,
+        );
 
         otel_warn!("azure_monitor_exporter.export.failed", batch_id = batch_id, error = %error);
 
@@ -233,12 +256,8 @@ impl AzureMonitorExporter {
             None => return Ok(()), // No pending batch - nothing to do
         };
 
-        self.metrics
-            .borrow_mut()
-            .add_batch_uncompressed_size(pending_batch.uncompressed_size as f64);
-        self.metrics
-            .borrow_mut()
-            .add_batch_size(pending_batch.compressed_data.len() as f64);
+        let compressed_size = pending_batch.compressed_data.len() as u64;
+        let uncompressed_size = pending_batch.uncompressed_size as u64;
 
         // Settle the completion that frees the slot before reading the token: a
         // 401 completion invalidates the cached header, and stamping this batch
@@ -253,7 +272,13 @@ impl AzureMonitorExporter {
                 reason: auth.not_ready_reason(),
             };
             return self
-                .handle_export_failure(effect_handler, pending_batch.batch_id, error)
+                .handle_export_failure(
+                    effect_handler,
+                    pending_batch.batch_id,
+                    error,
+                    compressed_size,
+                    uncompressed_size,
+                )
                 .await;
         };
 
@@ -265,6 +290,8 @@ impl AzureMonitorExporter {
             pending_batch.compressed_data,
             auth_header,
             token_generation,
+            compressed_size,
+            uncompressed_size,
         );
 
         self.last_batch_queued_at = tokio::time::Instant::now();
@@ -599,11 +626,12 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                             if tracing::enabled!(tracing::Level::DEBUG) {
                                 let m = self.metrics.borrow();
                                 let cl = m.http_for(HttpResponse::Http2xx).latency.get();
-                                let bs = m.batch_size();
+                                let success = m.batch_for(Outcome::Success);
+                                let bs = success.batch_size.get();
                                 otel_debug!(
                                     "azure_monitor_exporter.metrics.collect",
-                                    successful_batches = m.export_for(Outcome::Success).batches.get(),
-                                    failed_batches = m.export_for(Outcome::Failure).batches.get(),
+                                    successful_batches = success.batches.get(),
+                                    failed_batches = m.batch_for(Outcome::Failure).batches.get(),
                                     client_success_latency_avg_ms = if cl.count > 0 { cl.sum / cl.count as f64 } else { 0.0 },
                                     client_success_latency_min_ms = if cl.count > 0 { cl.min } else { 0.0 },
                                     client_success_latency_max_ms = if cl.count > 0 { cl.max } else { 0.0 },
@@ -823,12 +851,12 @@ mod tests {
 
         // This might fail due to missing sender in effect_handler, but state should be updated
         let _ = exporter
-            .handle_export_success(&effect_handler, batch_id, 10, Duration::from_secs(1))
+            .handle_export_success(&effect_handler, batch_id, 10, Duration::from_secs(1), 0, 0)
             .await;
 
         // Verify stats
         let m = exporter.metrics.borrow();
-        let success = m.export_for(Outcome::Success);
+        let success = m.batch_for(Outcome::Success);
         assert_eq!(success.batches.get(), 1);
         drop(m);
 
@@ -874,12 +902,12 @@ mod tests {
         };
 
         let _ = exporter
-            .handle_export_failure(&effect_handler, batch_id, error)
+            .handle_export_failure(&effect_handler, batch_id, error, 0, 0)
             .await;
 
         // Verify stats
         let m = exporter.metrics.borrow();
-        let failure = m.export_for(Outcome::Failure);
+        let failure = m.batch_for(Outcome::Failure);
         assert_eq!(failure.batches.get(), 1);
         drop(m);
 
@@ -925,6 +953,8 @@ mod tests {
             result: Err(Error::unauthorized("rejected".to_string())),
             row_count: 1,
             token_generation,
+            compressed_size: 0,
+            uncompressed_size: 0,
         };
 
         exporter
@@ -997,7 +1027,7 @@ mod tests {
             exporter
                 .metrics
                 .borrow()
-                .export_for(Outcome::Failure)
+                .batch_for(Outcome::Failure)
                 .batches
                 .get(),
             2
@@ -1116,8 +1146,8 @@ mod tests {
         assert_eq!(exporter.in_flight_exports.len(), 0);
         assert!(exporter.state.msg_to_data.is_empty());
         let m = exporter.metrics.borrow();
-        assert_eq!(m.export_for(Outcome::Success).batches.get(), 1);
-        assert_eq!(m.export_for(Outcome::Failure).batches.get(), 0);
+        assert_eq!(m.batch_for(Outcome::Success).batches.get(), 1);
+        assert_eq!(m.batch_for(Outcome::Failure).batches.get(), 0);
     }
 
     /// Scenario: a single logs message carries enough records to fill a batch.
@@ -1175,7 +1205,7 @@ mod tests {
             exporter
                 .metrics
                 .borrow()
-                .export_for(Outcome::Success)
+                .batch_for(Outcome::Success)
                 .batches
                 .get(),
             1
