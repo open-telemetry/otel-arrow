@@ -143,38 +143,47 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 ### Metric Sets
 
+#### `receiver.received`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `receiver.received.messages` | `{message}` | `signal`, `outcome` | Number of classified OTLP messages whose receiver-local handling terminated. |
+| `receiver.received.payload.size` | `By` | `signal`, `outcome` | Encoded application payload bytes observed at the receiver boundary. |
+
+#### `receiver.processing`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `receiver.processing.duration` | `s` | `signal` | Receiver-local processing time before downstream handoff. Emitted when component duration is enabled. |
+
 #### `receiver.otlp.requests`
 
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
-| `receiver.otlp.requests.started` | `{request}` | `signal`, `protocol` | Number of requests admitted to the pipeline send path. |
-| `receiver.otlp.requests.completed` | `{request}` | `signal`, `protocol` | Number of admitted requests whose receiver work terminated. |
-| `receiver.otlp.requests.payload_size` | `By` | `signal`, `protocol` | Decompressed payload bytes for requests admitted to the pipeline send path. |
+| `receiver.otlp.requests.accepted` | `{request}` | `signal`, `protocol` | Number of OTLP requests admitted to the pipeline send path. |
+| `receiver.otlp.requests.rejected` | `{request}` | `protocol`, `error.type` | Number of requests rejected before pipeline admission. |
 
-#### `receiver.otlp.rejections`
-
-| Metric | Unit | Attributes | Description |
-| --- | --- | --- | --- |
-| `receiver.otlp.rejections.requests` | `{request}` | `protocol`, `error.type` | Number of requests rejected before pipeline admission. |
-
-Rate-admission outcomes are reported by the engine metric set
-`admission.rate_limiter`. Its `refusals` counter uses the bounded attributes
-`dimension=bytes` and `refusal=would_throttle|throttle|oversized`. The metric is
-scoped to the configured node entity, but tenant or request identities are
-never measurement attributes. Protocol-specific enforced rejections remain in
-`receiver.otlp.rejections`.
-
-#### `receiver.otlp.acknowledgements`
-
-| Metric | Unit | Attributes | Description |
-| --- | --- | --- | --- |
-| `receiver.otlp.acknowledgements.responses` | `{response}` | `signal`, `outcome` | Number of routed or invalid acknowledgement responses. |
+The shared `receiver.received` metrics report terminal outcome and payload size
+for classified requests.
 
 #### `receiver.otlp.transport`
 
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
 | `receiver.otlp.transport.errors` | `{error}` | `protocol` | Number of transport-level server errors. |
+
+Rate-admission outcomes are reported by the engine metric set
+`admission.rate_limiter`. Its `refusals` counter uses the bounded attributes
+`dimension=bytes` and `refusal=would_throttle|throttle|oversized`. The metric is
+scoped to the configured node entity, but tenant or request identities are
+never measurement attributes. Protocol-specific enforced rejections remain in
+`receiver.otlp.requests.rejected`.
+
+#### `receiver.otlp.acknowledgements`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `receiver.otlp.acknowledgements.responses` | `{response}` | `signal`, `outcome` | Number of routed or invalid acknowledgement responses. |
 
 Attribute values are bounded: `signal` is `traces`, `metrics`, or `logs`;
 `protocol` is `grpc` or `http`; `outcome` is `success`, `failure`, or
