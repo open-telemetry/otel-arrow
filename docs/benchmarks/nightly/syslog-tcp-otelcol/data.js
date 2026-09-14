@@ -1,162 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789350810659,
+  "lastUpdate": 1789415974632,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "name": "Swapnil Ashtekar",
-            "username": "swashtek",
-            "email": "46826200+swashtek@users.noreply.github.com"
-          },
-          "committer": {
-            "name": "GitHub",
-            "username": "web-flow",
-            "email": "noreply@github.com"
-          },
-          "id": "eaf8f4cca694c396409f772a902b1ef512813f3e",
-          "message": "chore: improve GUID formatting and clarify comments in encoder and tests (#3537)\n\n# Change Summary\nchore: improve GUID formatting and clarify comments in encoder and tests\n\n## What issue does this PR close?\n\n## How are these changes tested?\n\n## Are there any user-facing changes?\nNo\n\n### Changelog\n\n<!--\nUser-facing changes need a .chloggen/*.yaml entry. Copy the\nTEMPLATE.yaml\nin go/.chloggen/ or rust/otap-dataflow/.chloggen/ and fill in the\nfields.\nIf not required, include `chore` in the PR title.\n-->\n\n* [ ] Added a `.chloggen/*.yaml` entry\n* [x] This PR is a `chore` (indicated in title)\n* [ ] This is a documentation-only PR.",
-          "timestamp": "2026-07-25T00:36:30Z",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/eaf8f4cca694c396409f772a902b1ef512813f3e"
-        },
-        "date": 1785002314178,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": 2.4155936241149902,
-            "unit": "%",
-            "extra": "Nightly - Syslog TCP (OTel Collector)/SYSLOG-TCP-OTAP (Go Collector) - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 100.60146426195553,
-            "unit": "%",
-            "extra": "Nightly - Syslog TCP (OTel Collector)/SYSLOG-TCP-OTAP (Go Collector) - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 100.78545454545456,
-            "unit": "%",
-            "extra": "Nightly - Syslog TCP (OTel Collector)/SYSLOG-TCP-OTAP (Go Collector) - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 784.8033854166666,
-            "unit": "MiB",
-            "extra": "Nightly - Syslog TCP (OTel Collector)/SYSLOG-TCP-OTAP (Go Collector) - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 826.3984375,
-            "unit": "MiB",
-            "extra": "Nightly - Syslog TCP (OTel Collector)/SYSLOG-TCP-OTAP (Go Collector) - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 60832.88590280781,
-            "unit": "logs/sec",
-            "extra": "Nightly - Syslog TCP (OTel Collector)/SYSLOG-TCP-OTAP (Go Collector) - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 59363.410564033446,
-            "unit": "logs/sec",
-            "extra": "Nightly - Syslog TCP (OTel Collector)/SYSLOG-TCP-OTAP (Go Collector) - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.003729,
-            "unit": "seconds",
-            "extra": "Nightly - Syslog TCP (OTel Collector)/SYSLOG-TCP-OTAP (Go Collector) - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 675507.334283571,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Syslog TCP (OTel Collector)/SYSLOG-TCP-OTAP (Go Collector) - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 15210920.528516117,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Syslog TCP (OTel Collector)/SYSLOG-TCP-OTAP (Go Collector) - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 11.379186739193875,
-            "unit": "bytes/log",
-            "extra": "Nightly - Syslog TCP (OTel Collector)/SYSLOG-TCP-OTAP (Go Collector) - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 2.434478759765625,
-            "unit": "%",
-            "extra": "Nightly - Syslog TCP (OTel Collector)/SYSLOG-TCP-OTLP (Go Collector) - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 83.52668532357434,
-            "unit": "%",
-            "extra": "Nightly - Syslog TCP (OTel Collector)/SYSLOG-TCP-OTLP (Go Collector) - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 86.17118452611219,
-            "unit": "%",
-            "extra": "Nightly - Syslog TCP (OTel Collector)/SYSLOG-TCP-OTLP (Go Collector) - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 60.39140625,
-            "unit": "MiB",
-            "extra": "Nightly - Syslog TCP (OTel Collector)/SYSLOG-TCP-OTLP (Go Collector) - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 61.0859375,
-            "unit": "MiB",
-            "extra": "Nightly - Syslog TCP (OTel Collector)/SYSLOG-TCP-OTLP (Go Collector) - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 28615.657487812598,
-            "unit": "logs/sec",
-            "extra": "Nightly - Syslog TCP (OTel Collector)/SYSLOG-TCP-OTLP (Go Collector) - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 27919.0153893906,
-            "unit": "logs/sec",
-            "extra": "Nightly - Syslog TCP (OTel Collector)/SYSLOG-TCP-OTLP (Go Collector) - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.002116,
-            "unit": "seconds",
-            "extra": "Nightly - Syslog TCP (OTel Collector)/SYSLOG-TCP-OTLP (Go Collector) - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 2688833.903285196,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Syslog TCP (OTel Collector)/SYSLOG-TCP-OTLP (Go Collector) - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 7246081.170873751,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Syslog TCP (OTel Collector)/SYSLOG-TCP-OTLP (Go Collector) - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 96.30833558360263,
-            "unit": "bytes/log",
-            "extra": "Nightly - Syslog TCP (OTel Collector)/SYSLOG-TCP-OTLP (Go Collector) - Egress Bytes Per Log"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -15398,6 +15244,160 @@ window.BENCHMARK_DATA = {
           {
             "name": "egress_bytes_per_log",
             "value": 11.190366053238813,
+            "unit": "bytes/log",
+            "extra": "Nightly - Syslog TCP (OTel Collector)/SYSLOG-TCP-OTAP (Go Collector) - Egress Bytes Per Log"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "renovate[bot]",
+            "username": "renovate[bot]",
+            "email": "29139614+renovate[bot]@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "06a5118d62b1ed9ed7c268e40c40f171758291a6",
+          "message": "chore(deps): update otel/opentelemetry-collector-contrib docker tag to v0.160.0 (#4064)\n\nThis PR contains the following updates:\n\n| Package | Type | Update | Change |\n|---|---|---|---|\n|\n[otel/opentelemetry-collector-contrib](https://redirect.github.com/open-telemetry/opentelemetry-collector-releases)\n| final | minor | `0.158.0` → `0.160.0` |\n\n---\n\n### Release Notes\n\n<details>\n<summary>open-telemetry/opentelemetry-collector-releases\n(otel/opentelemetry-collector-contrib)</summary>\n\n###\n[`v0.160.0`](https://redirect.github.com/open-telemetry/opentelemetry-collector-releases/blob/HEAD/CHANGELOG.md#v01600)\n\n[Compare\nSource](https://redirect.github.com/open-telemetry/opentelemetry-collector-releases/compare/v0.159.0...v0.160.0)\n\n##### 🚀 New components 🚀\n\n- `spanpruningprocessor`: Added missing spanpruningprocessor to\notelcol-contrib\n([#&#8203;1608](https://redirect.github.com/open-telemetry/opentelemetry-collector-releases/issues/1608))\n\n##### 💡 Enhancements 💡\n\n- `otelcol-contrib`: Upgrade go.opentelemetry.io/obi to v0.11.0.\n([#&#8203;1604](https://redirect.github.com/open-telemetry/opentelemetry-collector-releases/issues/1604))\n\n###\n[`v0.159.0`](https://redirect.github.com/open-telemetry/opentelemetry-collector-releases/blob/HEAD/CHANGELOG.md#v01590)\n\n[Compare\nSource](https://redirect.github.com/open-telemetry/opentelemetry-collector-releases/compare/v0.158.0...v0.159.0)\n\n##### 🛑 Breaking changes 🛑\n\n- `contrib`: Remove deprecated kafkatopicsobserver extension from the\ncontrib distribution\n([#&#8203;1597](https://redirect.github.com/open-telemetry/opentelemetry-collector-releases/issues/1597))\n\n##### 🚀 New components 🚀\n\n- `extension/aws_iam_db_auth`: Add `aws_iam_db_auth` to the contrib\ndistribution\n([#&#8203;1591](https://redirect.github.com/open-telemetry/opentelemetry-collector-releases/issues/1591))\n\n</details>\n\n---\n\n### Configuration\n\n📅 **Schedule**: (UTC)\n\n- Branch creation\n  - \"before 8am on Monday\"\n- Automerge\n  - At any time (no schedule defined)\n\n🚦 **Automerge**: Disabled by config. Please merge this manually once you\nare satisfied.\n\n♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the\nrebase/retry checkbox.\n\n🔕 **Ignore**: Close this PR and you won't be reminded about this update\nagain.\n\n---\n\n- [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check\nthis box\n\n---\n\nThis PR was generated by [Mend Renovate](https://mend.io/renovate/).\nView the [repository job\nlog](https://developer.mend.io/github/open-telemetry/otel-arrow).\n\n<!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0NC43OS4xIiwidXBkYXRlZEluVmVyIjoiNDQuNzkuMSIsInRhcmdldEJyYW5jaCI6Im1haW4iLCJsYWJlbHMiOlsiZGVwZW5kZW5jaWVzIl19-->\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>",
+          "timestamp": "2026-09-14T18:16:19Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/06a5118d62b1ed9ed7c268e40c40f171758291a6"
+        },
+        "date": 1789415973384,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0.9044767618179321,
+            "unit": "%",
+            "extra": "Nightly - Syslog TCP (OTel Collector)/SYSLOG-TCP-OTLP (Go Collector) - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 83.2016462891643,
+            "unit": "%",
+            "extra": "Nightly - Syslog TCP (OTel Collector)/SYSLOG-TCP-OTLP (Go Collector) - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 85.0527306501548,
+            "unit": "%",
+            "extra": "Nightly - Syslog TCP (OTel Collector)/SYSLOG-TCP-OTLP (Go Collector) - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 61.141796875,
+            "unit": "MiB",
+            "extra": "Nightly - Syslog TCP (OTel Collector)/SYSLOG-TCP-OTLP (Go Collector) - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 61.9140625,
+            "unit": "MiB",
+            "extra": "Nightly - Syslog TCP (OTel Collector)/SYSLOG-TCP-OTLP (Go Collector) - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 29224.08431202489,
+            "unit": "logs/sec",
+            "extra": "Nightly - Syslog TCP (OTel Collector)/SYSLOG-TCP-OTLP (Go Collector) - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 28959.759260876493,
+            "unit": "logs/sec",
+            "extra": "Nightly - Syslog TCP (OTel Collector)/SYSLOG-TCP-OTLP (Go Collector) - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.00188,
+            "unit": "seconds",
+            "extra": "Nightly - Syslog TCP (OTel Collector)/SYSLOG-TCP-OTLP (Go Collector) - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 2722499.4475148106,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Syslog TCP (OTel Collector)/SYSLOG-TCP-OTLP (Go Collector) - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 7400515.200004472,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Syslog TCP (OTel Collector)/SYSLOG-TCP-OTLP (Go Collector) - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 94.0097403086082,
+            "unit": "bytes/log",
+            "extra": "Nightly - Syslog TCP (OTel Collector)/SYSLOG-TCP-OTLP (Go Collector) - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0.8151453137397766,
+            "unit": "%",
+            "extra": "Nightly - Syslog TCP (OTel Collector)/SYSLOG-TCP-OTAP (Go Collector) - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 100.54878888903309,
+            "unit": "%",
+            "extra": "Nightly - Syslog TCP (OTel Collector)/SYSLOG-TCP-OTAP (Go Collector) - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 100.79497563616675,
+            "unit": "%",
+            "extra": "Nightly - Syslog TCP (OTel Collector)/SYSLOG-TCP-OTAP (Go Collector) - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 784.8109375,
+            "unit": "MiB",
+            "extra": "Nightly - Syslog TCP (OTel Collector)/SYSLOG-TCP-OTAP (Go Collector) - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 872.98046875,
+            "unit": "MiB",
+            "extra": "Nightly - Syslog TCP (OTel Collector)/SYSLOG-TCP-OTAP (Go Collector) - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 55282.81713983316,
+            "unit": "logs/sec",
+            "extra": "Nightly - Syslog TCP (OTel Collector)/SYSLOG-TCP-OTAP (Go Collector) - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 54832.18185240367,
+            "unit": "logs/sec",
+            "extra": "Nightly - Syslog TCP (OTel Collector)/SYSLOG-TCP-OTAP (Go Collector) - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.004178,
+            "unit": "seconds",
+            "extra": "Nightly - Syslog TCP (OTel Collector)/SYSLOG-TCP-OTAP (Go Collector) - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 623646.0881181791,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Syslog TCP (OTel Collector)/SYSLOG-TCP-OTAP (Go Collector) - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 13863116.248689855,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Syslog TCP (OTel Collector)/SYSLOG-TCP-OTAP (Go Collector) - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 11.373723733936012,
             "unit": "bytes/log",
             "extra": "Nightly - Syslog TCP (OTel Collector)/SYSLOG-TCP-OTAP (Go Collector) - Egress Bytes Per Log"
           }
