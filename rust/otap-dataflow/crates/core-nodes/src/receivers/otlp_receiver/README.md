@@ -61,6 +61,13 @@ extensions:
       audiences:
         - audience: "otlp-collector"
 
+policies:
+  authorized_identity:
+    - claim: sub
+      store_as: customer_id
+    - claim: groups
+      store_as: access_groups
+
 nodes:
   otlp_in:
     type: receiver:otlp
@@ -78,6 +85,15 @@ policy denials return `PERMISSION_DENIED`/HTTP 403. An authorizer that cannot
 reach a decision fails closed with `UNAVAILABLE`/HTTP 503.
 
 Receivers with no `bearer_token_authorizer` binding accept traffic unchanged.
+When `policies.authorized_identity` is configured, each listed verified claim
+is copied into pdata context under its `store_as` name. The `sub` claim is the
+authorized subject. Single- and multi-valued claims remain distinct, and an
+absent claim is omitted without rejecting the request.
+
+Authorization-derived context entries are strongly typed and separate from
+transport headers. This policy only captures entries for downstream use; it
+does not propagate them as outbound headers or add routing and predicate
+configuration.
 
 Common gRPC protocol fields include:
 

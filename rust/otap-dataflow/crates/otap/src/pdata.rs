@@ -15,12 +15,14 @@
 
 use std::net::SocketAddr;
 use std::num::NonZeroU64;
+use std::sync::Arc;
 
 use async_trait::async_trait;
-use otel_arrow_dfe_config::PortName;
+use otel_arrow_dfe_config::authorized_identity_policy::AuthorizedIdentityPolicy;
 use otel_arrow_dfe_config::transport_headers::TransportHeaders;
-use otel_arrow_dfe_config::{SignalFormat, SignalType};
+use otel_arrow_dfe_config::{ContextEntryName, PortName, SignalFormat, SignalType};
 use otel_arrow_dfe_engine::_private::AckNackRouting;
+use otel_arrow_dfe_engine::capability::auth::{AuthorizedIdentity, ClaimValue};
 use otel_arrow_dfe_engine::control::{
     AckMsg, CallData, Frame, NackMsg, RouteData, nanos_since_birth,
 };
@@ -33,6 +35,76 @@ use otel_arrow_dfe_engine::{
     ProducerEffectHandlerExtension,
 };
 use otel_arrow_dfe_pdata::OtapPayload;
+
+/// A verified authorization claim stored under a configured context entry name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuthorizedIdentityEntry {
+    name: ContextEntryName,
+    value: ClaimValue,
+}
+
+impl AuthorizedIdentityEntry {
+    /// Returns the configured context entry name.
+    #[must_use]
+    pub fn name(&self) -> &ContextEntryName {
+        &self.name
+    }
+
+    /// Returns the verified claim value without flattening its cardinality.
+    #[must_use]
+    pub fn value(&self) -> &ClaimValue {
+        &self.value
+    }
+}
+
+/// Immutable authorization-derived context entries.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AuthorizedIdentityEntries {
+    entries: Arc<Vec<AuthorizedIdentityEntry>>,
+}
+
+impl AuthorizedIdentityEntries {
+    fn capture(policy: &AuthorizedIdentityPolicy, identity: &AuthorizedIdentity) -> Option<Self> {
+        let entries = policy
+            .iter()
+            .filter_map(|projection| {
+                identity
+                    .claim(&projection.claim)
+                    .cloned()
+                    .map(|value| AuthorizedIdentityEntry {
+                        name: projection.store_as.clone(),
+                        value,
+                    })
+            })
+            .collect::<Vec<_>>();
+        (!entries.is_empty()).then(|| Self {
+            entries: Arc::new(entries),
+        })
+    }
+
+    /// Returns the number of captured entries.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Returns whether no entries were captured.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Iterates over captured entries in policy order.
+    pub fn iter(&self) -> impl Iterator<Item = &AuthorizedIdentityEntry> {
+        self.entries.iter()
+    }
+
+    /// Finds an entry by exact configured name.
+    #[must_use]
+    pub fn get(&self, name: &str) -> Option<&AuthorizedIdentityEntry> {
+        self.entries.iter().find(|entry| entry.name == name)
+    }
+}
 
 /// Context for OTAP requests.
 ///
@@ -54,6 +126,8 @@ pub struct Context {
     /// `None` when no headers have been captured (the common case, zero
     /// additional allocation).
     transport_headers: Option<TransportHeaders>,
+    /// Verified authorization claims selected by policy.
+    authorized_identity: Option<AuthorizedIdentityEntries>,
     /// Peer address observed by the receiving socket at request acceptance
     /// time. `None` for receivers without a real socket.
     peer_addr: Option<SocketAddr>,
@@ -84,6 +158,7 @@ impl Context {
         Self {
             stack: Vec::with_capacity(capacity),
             transport_headers: None,
+            authorized_identity: None,
             peer_addr: None,
             flow_compute_ns: None,
             signal: None,
@@ -422,6 +497,20 @@ impl Context {
         self.transport_headers = Some(headers);
     }
 
+    /// Returns the authorization-derived context entries, if any.
+    #[must_use]
+    pub fn authorized_identity_entries(&self) -> Option<&AuthorizedIdentityEntries> {
+        self.authorized_identity.as_ref()
+    }
+
+    fn capture_authorized_identity(
+        &mut self,
+        policy: &AuthorizedIdentityPolicy,
+        identity: &AuthorizedIdentity,
+    ) {
+        self.authorized_identity = AuthorizedIdentityEntries::capture(policy, identity);
+    }
+
     /// Returns the peer address observed by the receiving socket, if any.
     #[must_use]
     pub fn peer_addr(&self) -> Option<SocketAddr> {
@@ -485,6 +574,7 @@ impl Context {
         Self {
             stack: Vec::new(),
             transport_headers: self.transport_headers.clone(),
+            authorized_identity: self.authorized_identity.clone(),
             peer_addr: self.peer_addr,
             flow_compute_ns: None,
             signal: None,
@@ -843,6 +933,20 @@ impl OtapPdata {
     #[must_use]
     pub fn transport_headers(&self) -> Option<&TransportHeaders> {
         self.context.transport_headers()
+    }
+
+    /// Returns the authorization-derived context entries, if any.
+    #[must_use]
+    pub fn authorized_identity_entries(&self) -> Option<&AuthorizedIdentityEntries> {
+        self.context.authorized_identity_entries()
+    }
+
+    pub(crate) fn capture_authorized_identity(
+        &mut self,
+        policy: &AuthorizedIdentityPolicy,
+        identity: &AuthorizedIdentity,
+    ) {
+        self.context.capture_authorized_identity(policy, identity);
     }
 
     /// Set transport headers on this pdata's context.
@@ -1225,12 +1329,13 @@ mod test {
     use std::mem::size_of;
     use tokio::sync::mpsc;
 
-    /// Scenario: Queued OTAP pdata is built for a 64-bit target before codec integration.
-    /// Guarantees: The baseline queued-message layout remains fixed for later comparisons.
+    /// Scenario: queued OTAP pdata includes optional authorization-derived context.
+    /// Guarantees: the 64-bit queued-message layout reflects only one additional
+    /// pointer for the optional trusted context collection.
     #[test]
     #[cfg(target_pointer_width = "64")]
-    fn legacy_otap_pdata_layout_is_stable() {
-        assert_eq!(size_of::<OtapPdata>(), 152);
+    fn otap_pdata_layout_is_stable() {
+        assert_eq!(size_of::<OtapPdata>(), 160);
     }
 
     fn create_test() -> (TestCallData, OtapPdata) {
@@ -2541,12 +2646,12 @@ mod test {
         );
     }
 
-    /// Scenario: a context carrying transport headers, a peer address, Ack/Nack
-    /// subscribers, an active flow_metric accumulator and a captured signal is
-    /// detached to seed an outbound batch produced by splitting the inbound one.
-    /// Guarantees: the request-scoped metadata is copied while the frame stack,
-    /// flow accumulator and signal are left behind, so each outbound batch keeps
-    /// the originating request's metadata without re-Acking the upstream node.
+    /// Scenario: a context carrying transport headers, authorized identity
+    /// entries, a peer address, Ack/Nack subscribers, an active flow_metric
+    /// accumulator and a captured signal is detached for a split output.
+    /// Guarantees: request-scoped metadata is copied while routing and metric
+    /// state is left behind, so outputs retain trusted identity without
+    /// re-Acking the upstream node.
     #[test]
     fn clone_detached_keeps_request_metadata_and_drops_routing_state() {
         let addr: SocketAddr = "10.0.0.1:5005".parse().unwrap();
@@ -2565,6 +2670,12 @@ mod test {
             .test_subscribe_to(Interests::ACKS | Interests::NACKS, test_data.into(), 101)
             .with_peer_addr(addr)
             .with_transport_headers(headers.clone());
+        let identity_policy: AuthorizedIdentityPolicy = serde_json::from_value(
+            serde_json::json!([{"claim": "sub", "store_as": "customer_id"}]),
+        )
+        .expect("valid authorized identity policy");
+        let identity = AuthorizedIdentity::new().with_subject("customer-42");
+        pdata.capture_authorized_identity(&identity_policy, &identity);
         pdata.start_flow_metric();
         pdata.add_flow_compute(42);
 
@@ -2578,6 +2689,15 @@ mod test {
         let detached = context.clone_detached();
 
         assert_eq!(detached.transport_headers(), Some(&headers));
+        let authorized = detached
+            .authorized_identity_entries()
+            .expect("authorized identity retained");
+        assert_eq!(
+            authorized
+                .get("customer_id")
+                .and_then(|entry| entry.value().as_str()),
+            Some("customer-42")
+        );
         assert_eq!(detached.peer_addr(), Some(addr));
         assert!(
             !detached.has_ack_or_nack_subscribers(),
@@ -2594,6 +2714,37 @@ mod test {
         // processor's slot map and Acks upstream once its outbounds settle.
         assert!(context.has_ack_or_nack_subscribers());
         assert_eq!(context.signal(), Some(SignalType::Logs));
+    }
+
+    /// Scenario: an identity contains one selected multi-valued claim while
+    /// another configured claim is absent.
+    /// Guarantees: claim cardinality is preserved and missing claims do not
+    /// create empty context entries.
+    #[test]
+    fn authorized_identity_capture_preserves_many_and_omits_missing() {
+        let policy: AuthorizedIdentityPolicy = serde_json::from_value(serde_json::json!([
+            {"claim": "groups", "store_as": "access_groups"},
+            {"claim": "missing", "store_as": "missing_entry"}
+        ]))
+        .expect("valid authorized identity policy");
+        let identity = AuthorizedIdentity::new().with_claim_values("groups", ["reader", "writer"]);
+        let mut pdata = create_test_pdata();
+
+        pdata.capture_authorized_identity(&policy, &identity);
+
+        let entries = pdata
+            .authorized_identity_entries()
+            .expect("selected claim captured");
+        assert_eq!(entries.len(), 1);
+        let groups = entries
+            .get("access_groups")
+            .expect("groups destination exists")
+            .value();
+        assert_eq!(
+            groups.as_slice(),
+            &["reader".to_string(), "writer".to_string()]
+        );
+        assert!(entries.get("missing_entry").is_none());
     }
 
     // -----------------------------------------------------------------------

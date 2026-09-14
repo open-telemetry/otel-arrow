@@ -446,6 +446,7 @@ impl EngineObservabilityPolicies {
             resources: None,
             runtime_recovery: None,
             transport_headers: None,
+            authorized_identity: None,
         }
     }
 
