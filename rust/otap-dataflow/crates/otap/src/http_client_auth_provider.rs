@@ -27,7 +27,7 @@ pub struct HttpClientAuthProviderEvents {
     /// A published credential could not be turned into a header.
     pub invalid: fn(HttpClientAuthProviderName, &str),
 
-    /// An error occured publishing a credential.
+    /// An error occurred publishing a credential.
     pub error: fn(HttpClientAuthProviderName, &str),
 
     /// A credential retrieval will be retried.
