@@ -10,8 +10,8 @@ pub type Result<T> = std::result::Result<T, QuiverError>;
 
 /// Errors that can be produced by Quiver APIs.
 ///
-/// Marked `#[non_exhaustive]`: new variants may be added without a breaking
-/// change, so downstream `match` expressions need a wildcard arm.
+/// Marked `#[non_exhaustive]` so callers must include a wildcard arm when
+/// matching and future variants can be added under that API contract.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum QuiverError {
