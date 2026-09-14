@@ -239,3 +239,129 @@ fn text_controls_and_embedded_lf_byte_are_not_normalized() {
         ]
     );
 }
+
+/// Scenario: Each encoding and policy resumes at clean LF boundaries, with BOMs and malformed lookahead.
+/// Guarantees: Reconstruction preserves events and source frontiers; both paths stop at the same fatal error.
+#[test]
+fn clean_line_feed_reconstruction_matches_continuous_decoding() {
+    let mut cases = vec![
+        (Encoding::Utf8, b"\xef\xbb\xbfa\n\xef\xbb\xbfb\n".to_vec()),
+        (Encoding::Utf8, b"a\n\xff\nb\n".to_vec()),
+        (Encoding::Utf8, b"\xef\na\n".to_vec()),
+        (Encoding::Utf8, b"a\n\xe2\x82\nb\n".to_vec()),
+        (Encoding::Ascii, b"a\nb\n".to_vec()),
+        (Encoding::Ascii, b"a\n\xff\nb\n".to_vec()),
+        (Encoding::Raw, b"\xef\xbb\xbfa\n\xff\nb\n".to_vec()),
+    ];
+    for encoding in [Encoding::Utf16Le, Encoding::Utf16Be] {
+        for units in [
+            vec![0xfeff, 0x61, 0x0a, 0xfeff, 0x62, 0x0a],
+            // A lone high surrogate consumes LF as lookahead before reporting the error.
+            vec![0xfeff, 0x61, 0x0a, 0xd800, 0x0a, 0x62, 0x0a],
+        ] {
+            let bytes = units
+                .into_iter()
+                .flat_map(|unit: u16| {
+                    if encoding == Encoding::Utf16Le {
+                        unit.to_le_bytes()
+                    } else {
+                        unit.to_be_bytes()
+                    }
+                })
+                .collect();
+            cases.push((encoding, bytes));
+        }
+    }
+
+    for (encoding, data) in cases {
+        for policy in [
+            OnDecodeError::PreserveRaw,
+            OnDecodeError::Replace,
+            OnDecodeError::Fail,
+        ] {
+            for chunk in [1, 2, 3, data.len()] {
+                let run = |reconstruct: bool| {
+                    let mut decoder = StreamDecoder::new(encoding, policy, 0, true);
+                    let mut events = Vec::new();
+                    let mut used = 0;
+                    let mut yields = 0;
+                    let mut failure = None;
+                    // Every call consumes input, emits an event, or terminates this loop.
+                    for _ in 0..data.len() * 3 + 8 {
+                        let end = (used + chunk).min(data.len());
+                        match decoder.next(used as u64, &data[used..end]) {
+                            Ok(step) => {
+                                used += step.consumed;
+                                if let Some(event) = step.event {
+                                    let is_lf = matches!(
+                                        event,
+                                        DecodeEvent::Unit {
+                                            value: DecodedValue::Scalar('\n')
+                                                | DecodedValue::RawByte(b'\n'),
+                                            ..
+                                        }
+                                    );
+                                    events.push(event);
+                                    if is_lf {
+                                        let boundary = decoder.highest_delivered_source_boundary();
+                                        assert_eq!(decoder.pending_source_start(), None);
+                                        assert_eq!(decoder.terminal_error(), None);
+                                        assert_eq!(boundary, used as u64);
+                                        yields += 1;
+                                        if reconstruct {
+                                            decoder = StreamDecoder::new(
+                                                encoding, policy, boundary, false,
+                                            );
+                                        }
+                                    }
+                                } else if step.consumed == 0 {
+                                    assert_eq!(used, data.len());
+                                    break;
+                                }
+                            }
+                            Err(error) => {
+                                used += error.consumed;
+                                failure = Some(error);
+                                // Fatal state is observed, never reset to get past malformed input.
+                                assert_eq!(decoder.terminal_error(), Some(error.error));
+                                break;
+                            }
+                        }
+                    }
+                    if encoding == Encoding::Utf8
+                        && policy == OnDecodeError::Fail
+                        && data == b"\xef\na\n"
+                    {
+                        assert_eq!(yields, 0);
+                        assert!(matches!(
+                            failure,
+                            Some(super::DecodeFailure {
+                                error: DecodeError::FatalMalformed {
+                                    range: SourceRange { start: 0, end: 1 },
+                                    ..
+                                },
+                                ..
+                            })
+                        ));
+                    } else {
+                        assert!(yields > 0);
+                    }
+                    assert!(failure.is_some() || used == data.len());
+                    (
+                        events,
+                        failure,
+                        used,
+                        decoder.next_expected_input_offset(),
+                        decoder.highest_delivered_source_boundary(),
+                        decoder.pending_source_start(),
+                    )
+                };
+                assert_eq!(
+                    run(false),
+                    run(true),
+                    "{encoding:?} {policy:?} chunk={chunk}"
+                );
+            }
+        }
+    }
+}

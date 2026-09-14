@@ -25,6 +25,11 @@ This implements only the source-decoding part of
 [open-telemetry/otel-arrow#2844][epic], independently of the checkpoint codec
 and processor work.
 
+Compatibility was also reviewed against design commit
+`ea9c554b453d21fa7e21f1b789b52c16bbe3a3d7` and checkpoint codec commit
+`7a804ef2c1400e1f46fa9ab36499b4f35315fc4d`. The table above records the
+original implementation references; the later review does not replace them.
+
 ## Interface and source ownership
 
 ```text
@@ -96,6 +101,30 @@ For a genuinely new stream, explicitly construct a new decoder at zero with
 `new_stream_start == true`. Resume otherwise starts exactly at the supplied
 offset, without rewinding, aligning, or searching for a character boundary;
 the caller establishes a safe boundary or an intentional exclusion.
+
+## Caller-authorized clean-yield reconstruction
+
+Ordinary pauses and descriptor eviction retain the same decoder. A clean yield
+is a separate, caller-authorized transition under the updated design. A
+sufficient decoder-side condition at boundary `B` is that, when the event ending
+at `B` is returned, `highest_delivered_source_boundary() == B`,
+`pending_source_start() == None`, and `terminal_error() == None`. There must be
+no buffered replay or incomplete unit to discard. Capture these facts at `B`;
+checking the live decoder after multiline lookahead has advanced past `B` does
+not establish that earlier boundary's state.
+
+After the framer establishes a completed-record yield point and the receiver
+validates source identity and continuity, decoding can restart with
+`StreamDecoder::new(encoding, policy, B, false)`. Preserve the configured
+encoding and policy. The constructor does not align the offset or restart BOM
+probing; a UTF-16 boundary must come from the actual decoded units, not an
+assumption that every valid boundary has an even absolute offset.
+
+These decoder facts do not establish record completion, source continuity, or
+checkpoint authority. Pending failure handling belongs to the framer and cannot
+be erased by reconstruction. The receiver must preserve completed output and
+may replay only the speculative later input allowed by the clean-yield contract.
+No decoder reset, serialization, or memory-admission API is required for this.
 
 ## Malformed-unit and BOM contract
 
@@ -212,6 +241,7 @@ and explicit failure contract.
 | Complete buffered input before tail policy | `queued_utf16_units_must_be_drained_before_completion`, `divergent_bom_replay_must_be_drained_before_completion` |
 | Fatal evidence, consumption and permitted operations | `fatal_decode_paths_latch_error_and_consumption`, `fatal_incomplete_prefix_does_not_consume_valid_successor`, `offset_overflow_is_immediate_and_sticky_without_wrapping` |
 | Source ownership across all partitions and offsets | `exhaustive_partitions_preserve_terminal_and_pending_state`, `seeded_arbitrary_streams_preserve_source_ownership` |
+| Clean-yield reconstruction | `clean_line_feed_reconstruction_matches_continuous_decoding` compares exact events, source consumption, pending state, and fatal outcomes |
 | Earlier output and safe stopping | `complete_record_precedes_later_error`, `consumer_can_stop_at_an_exact_safe_source_boundary` |
 | Discarded malformed tails / preserve-raw prefix | `discard_scan_does_not_hide_later_malformed_units`, `clean_first_fragment_has_exact_raw_evidence` |
 | Pause, scratch reuse, reset and controls | `pause_and_input_buffer_reuse_preserve_pending_ownership`, `new_stream_reset_is_distinct_from_pause_and_resume`, `text_controls_and_embedded_lf_byte_are_not_normalized` |
