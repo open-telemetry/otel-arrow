@@ -173,7 +173,7 @@ channel and is not duplicated by the exporter.
 | --- | --- | --- | --- |
 | `exporter.attempted.messages` | `{message}` | `signal`, `outcome` | Number of component-local gRPC delivery attempts, including preparation failures. |
 | `exporter.attempted.duration` | `s` | `signal`, `outcome` | Attempt time through the terminal local or backend result, excluding Ack/Nack notification. Emitted when component duration is enabled. |
-| `exporter.attempted.payload.size` | `By` | `signal`, `outcome` | OTLP protobuf payload bytes submitted by the attempt. Emitted when size measurement is enabled. |
+| `exporter.attempted.payload.size` | `By` | `signal`, `outcome` | Uncompressed OTLP protobuf payload bytes submitted by the attempt before transport compression. Emitted when size measurement is enabled. |
 | `exporter.attempted.items` | `{item}` | `signal`, `outcome` | Signal items handled by the attempt. Emitted when item counting is enabled. |
 
 #### `exporter.otlp_grpc.failures`

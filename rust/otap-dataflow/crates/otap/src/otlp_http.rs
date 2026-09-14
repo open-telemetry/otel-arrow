@@ -884,15 +884,15 @@ impl HttpHandler {
 
                 Ok((signal, (pdata, cancel_rx)))
             });
-            let (pdata, cancel_rx) = self
-                .metrics
-                .lock()
-                .boundary
-                .record(completed)
-                .map_err(|response| *response)?;
-            self.metrics
-                .lock()
-                .record_request_admitted(signal, OtlpProtocol::Http);
+            let (pdata, cancel_rx) = {
+                let mut metrics = self.metrics.lock();
+                let result = metrics
+                    .boundary
+                    .record(completed)
+                    .map_err(|response| *response)?;
+                metrics.record_request_admitted(signal, OtlpProtocol::Http);
+                result
+            };
 
             if self
                 .effect_handler

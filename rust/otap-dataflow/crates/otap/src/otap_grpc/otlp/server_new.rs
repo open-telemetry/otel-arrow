@@ -502,10 +502,12 @@ impl UnaryService<OtapPdata> for OtapBatchService {
 
                 Ok((signal, (otap_batch, cancel_rx)))
             });
-            let (otap_batch, cancel_rx) = metrics.lock().boundary.record(completed)?;
-            metrics
-                .lock()
-                .record_request_admitted(signal, OtlpProtocol::Grpc);
+            let (otap_batch, cancel_rx) = {
+                let mut metrics = metrics.lock();
+                let result = metrics.boundary.record(completed)?;
+                metrics.record_request_admitted(signal, OtlpProtocol::Grpc);
+                result
+            };
 
             // Send and wait for Ack/Nack
             match effect_handler
