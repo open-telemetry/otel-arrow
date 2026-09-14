@@ -315,7 +315,7 @@ mod tests {
 
     const TEST_EVENTS: HttpClientAuthProviderEvents = HttpClientAuthProviderEvents {
         invalid: |_, _| INVALID.set(INVALID.get() + 1),
-        error: |_, _| ERROR.set(INVALID.get() + 1),
+        error: |_, _| ERROR.set(ERROR.get() + 1),
         retry: |_, _, _| {},
         stream_closed: |_| {},
     };
