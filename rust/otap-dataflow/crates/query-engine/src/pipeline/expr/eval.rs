@@ -80,6 +80,12 @@ impl<'a> EvalContext<'a> {
             session_context: session_ctx,
         }
     }
+
+    /// return the data_point_type
+    #[cfg(test)]
+    pub(crate) fn data_point_type(&self) -> Option<&MetricDataPointType> {
+        self.data_point_type.as_ref()
+    }
 }
 
 impl ScopedExpr {
@@ -180,7 +186,11 @@ pub(super) fn eval_datafusion_expr_value(
                     ChildRecordKind::DataPoint => match &eval_ctx.data_point_type {
                         Some(dp_type) => otap_batch.get(dp_type.payload_type()).map(Cow::Borrowed),
                         None => {
-                            todo!("return error - invalid context for planned expr")
+                            return Err(Error::ExecutionError {
+                                cause: format!(
+                                    "Expr planned with source DataScope {scope:?} but no data_point_type in eval context",
+                                ),
+                            });
                         }
                     },
                 },

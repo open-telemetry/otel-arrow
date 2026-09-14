@@ -75,7 +75,8 @@ pub struct PipelinePlanner {
     /// Whether to consider  attribute keys case sensitive in filtering pipeline stages
     filter_attribute_keys_case_sensitive: bool,
 
-    /// Which type will be treated as the root record for the pipeline that is being planned.
+    /// Which type within the OTel type hierarchy will be treated as the root record for
+    /// the pipeline that is being planned.
     record_type: RecordType,
 }
 
@@ -865,7 +866,8 @@ impl PipelinePlanner {
                     // create a pipeline stage to execute any previous assignments before executing
                     // this nested pipeline
                     if !assignments.is_empty() {
-                        let pipeline_stage = AssignPipelineStage::try_new(&mut assignments)?;
+                        let pipeline_stage =
+                            AssignPipelineStage::try_new(&mut assignments, &self.record_type)?;
                         results.push(Box::new(pipeline_stage));
                         assignments.clear();
                         cols_or_keys_referenced.clear();
@@ -942,7 +944,8 @@ impl PipelinePlanner {
             // if cannot combine with other assignments, create new pipeline stage and clear
             // list of current assignments
             if !combine {
-                let pipeline_stage = AssignPipelineStage::try_new(&mut assignments)?;
+                let pipeline_stage =
+                    AssignPipelineStage::try_new(&mut assignments, &self.record_type)?;
                 results.push(Box::new(pipeline_stage));
                 assignments.clear();
                 cols_or_keys_referenced.clear();
@@ -954,7 +957,7 @@ impl PipelinePlanner {
         }
 
         if !assignments.is_empty() {
-            let pipeline_stage = AssignPipelineStage::try_new(&mut assignments)?;
+            let pipeline_stage = AssignPipelineStage::try_new(&mut assignments, &self.record_type)?;
             results.push(Box::new(pipeline_stage));
         }
 

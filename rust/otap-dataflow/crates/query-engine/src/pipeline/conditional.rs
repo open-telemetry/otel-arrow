@@ -23,7 +23,7 @@ use crate::pipeline::concat::{
 };
 use crate::pipeline::expr::eval::EvalContext;
 use crate::pipeline::expr::{DataScope, ScopedExpr};
-use crate::pipeline::filter::{align_selection_to_record, scoped_value_to_boolean_array};
+use crate::pipeline::filter::{align_selection_to_root, scoped_value_to_boolean_array};
 use crate::pipeline::planner::RecordType;
 use crate::pipeline::state::ExecutionState;
 use crate::pipeline::{BoxedPipelineStage, PipelineStage};
@@ -159,7 +159,7 @@ impl PipelineStage for ConditionalPipelineStage {
                         DataScope::Record(_) | DataScope::RootParent(_)
                     )) && scoped_value.scope != DataScope::StaticScalar
                     {
-                        align_selection_to_record(Some(scoped_value), &otap_batch)?
+                        align_selection_to_root(Some(scoped_value), &otap_batch)?
                     } else {
                         // extract the BooleanArray from the ScopedValue
                         scoped_value_to_boolean_array(scoped_value.values, root_batch.num_rows())?

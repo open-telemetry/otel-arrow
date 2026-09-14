@@ -52,7 +52,7 @@ use otel_arrow_dfe_pdata::schema::consts;
 use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayloadHelpers};
 
 use crate::error::Result;
-use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
+use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor, RecordType};
 use crate::pipeline::project::{Projection, ProjectionOptions};
 
 mod bitmap;
@@ -177,13 +177,13 @@ impl DataScope {
     pub fn is_scalar(&self) -> bool {
         *self == Self::StaticScalar
     }
-}
 
-impl From<&ColumnAccessor> for DataScope {
-    fn from(value: &ColumnAccessor) -> Self {
-        match value {
-            // TODO not legit record scopes being set here
-            ColumnAccessor::ColumnName(_) => Self::Record(RecordScope::Signal),
+    pub fn from_record_column(column: &ColumnAccessor, record_type: &RecordType) -> Self {
+        match column {
+            ColumnAccessor::ColumnName(_) => match record_type {
+                RecordType::Child(child) => Self::Record(RecordScope::Child(child.clone())),
+                _ => Self::Record(RecordScope::Signal),
+            },
             ColumnAccessor::StructCol(struct_name, _) => match *struct_name {
                 consts::RESOURCE => Self::RootParent(RootParentStruct::Resource),
                 consts::SCOPE => Self::RootParent(RootParentStruct::Scope),
@@ -583,8 +583,8 @@ mod test {
     use crate::pipeline::Pipeline;
     use crate::pipeline::expr::eval::EvalContext;
     use crate::pipeline::expr::{
-        DataScope, LeafEval, RecordScope, ScopedExpr, ScopedValue, ShortCircuitStrategy,
-        SignalTypePredicate, VALUE_COLUMN_NAME, arg_column_name,
+        ChildRecordKind, DataScope, LeafEval, RecordScope, ScopedExpr, ScopedValue,
+        ShortCircuitStrategy, SignalTypePredicate, VALUE_COLUMN_NAME, arg_column_name,
     };
     use crate::pipeline::functions::test::always_panic;
     use crate::pipeline::id_mask::IdMask;
@@ -1221,5 +1221,30 @@ mod test {
 
         // we should be returning a selection vec, not a scalar (which is returned by short-circuit)
         assert!(!matches!(result.values, ColumnarValue::Scalar(_)));
+    }
+
+    /// Scenario: expression with source data scope of data point is evaluated, but the
+    /// data point type is not populated on the eval context
+    /// Guarantees: the expected error is returned
+    #[test]
+    fn test_eval_for_data_point_with_missing_data_point_type_in_context() {
+        let mut expr = ScopedExpr::Eval {
+            scope: DataScope::Record(RecordScope::Child(ChildRecordKind::DataPoint)),
+            eval: LeafEval::new_df_expr(col(consts::FLAGS), false).unwrap(),
+        };
+
+        let session_ctx = Pipeline::create_session_context();
+        let eval_ctx = EvalContext::new(&session_ctx);
+        assert!(eval_ctx.data_point_type().is_none());
+
+        let err = expr
+            .execute_as_value(&test_logs_data(), &eval_ctx)
+            .unwrap_err();
+
+        let err_msg = err.to_string();
+        assert!(
+            err_msg.contains("Expr planned with source DataScope Record(Child(DataPoint)) but no data_point_type in eval context"),
+            "unexpected error message {err_msg}"
+        )
     }
 }

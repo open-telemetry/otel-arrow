@@ -87,7 +87,7 @@ impl PipelineStage for FilterPipelineStage {
                     && !(matches!(scoped_value.scope, DataScope::RootParent(_)))
                     && scoped_value.scope != DataScope::StaticScalar
                 {
-                    align_selection_to_record(Some(scoped_value), &otap_batch)?
+                    align_selection_to_root(Some(scoped_value), &otap_batch)?
                 } else {
                     // extract the BooleanArray from the ScopedValue
                     scoped_value_to_boolean_array(scoped_value.values, num_rows)?
@@ -281,8 +281,8 @@ pub(crate) fn scoped_value_to_boolean_array(
     }
 }
 
-/// Align a predicate evaluation result to the record scope and produce a `BooleanArray`
-/// selection vector.
+/// Align a predicate evaluation result to the root signal batch and produce a `BooleanArray`
+/// selection vector
 ///
 /// This is the standard way for filter and conditional consumers to convert a `ScopedValue`
 /// (which may be in any scope) into a root-aligned boolean selection vector:
@@ -291,7 +291,7 @@ pub(crate) fn scoped_value_to_boolean_array(
 /// - If the result is child-scoped (attributes), aligns to root using the `align` function
 ///   which maps child parent_ids to root ids via `IdBitmap`
 /// - If the result is `None` (missing data), returns an all-false selection vector
-pub(crate) fn align_selection_to_record(
+pub(crate) fn align_selection_to_root(
     result: Option<ScopedValue>,
     otap_batch: &OtapArrowRecords,
 ) -> Result<BooleanArray> {
@@ -303,7 +303,7 @@ pub(crate) fn align_selection_to_record(
     match result {
         None => Ok(BooleanArray::new(BooleanBuffer::new_unset(num_rows), None)),
         Some(scoped_value) => {
-            let aligned = if !matches!(scoped_value.scope, DataScope::Record(_))
+            let aligned = if !matches!(scoped_value.scope, DataScope::Record(RecordScope::Signal))
                 && scoped_value.scope != DataScope::StaticScalar
             {
                 // copy out the attrs_id before moving value, since AttributesIdentifier is Copy

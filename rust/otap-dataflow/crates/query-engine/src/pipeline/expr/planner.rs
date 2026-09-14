@@ -73,7 +73,8 @@ pub(crate) struct ExprPlanner {
     /// When `false`, attribute key filtering uses case-insensitive comparison.
     attr_key_case_sensitive: bool,
 
-    /// TODO commentate what this is
+    /// Which type within the OTel data-model hierarchy should be treated as the root record
+    /// the expression that is being planned.
     record_type: RecordType,
 }
 
