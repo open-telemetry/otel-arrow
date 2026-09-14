@@ -1028,8 +1028,9 @@ mod tests {
         );
     }
 
-    /// Scenario: node and pipeline header policies are configured.
-    /// Guarantees: node policies take precedence. Pipeline policies provide the fallback.
+    /// Scenario: node and pipeline header policies and an identity policy are configured.
+    /// Guarantees: node header policies take precedence, pipeline headers provide the fallback,
+    /// and authorized identity capture is declared only for receivers.
     #[test]
     fn wrapper_declarations_resolve_policy_precedence() {
         let identity_policy: AuthorizedIdentityPolicy =
@@ -1127,6 +1128,35 @@ mod tests {
         );
     }
 
+    /// Scenario: a receiver has an absent or explicitly empty authorized identity policy.
+    /// Guarantees: neither form creates an authorized identity declaration or non-empty binding.
+    #[test]
+    fn empty_authorized_identity_policy_produces_no_binding() {
+        let receiver = NodeUserConfig::new_receiver_config("urn:test:receiver:example");
+
+        for policy in [None, Some(AuthorizedIdentityPolicy::default())] {
+            let declarations =
+                PipelineFactory::<()>::wrapper_context_declarations(&receiver, &None, &policy);
+            assert!(declarations.is_empty());
+
+            let compiled = compiled_bindings(declarations);
+            let node = compiled
+                .by_pipeline
+                .get(&pipeline("group", "pipeline"))
+                .and_then(|nodes| nodes.get(&ConfigNodeId::from("node")))
+                .expect("compiled node binding");
+            assert!(node.is_empty());
+            assert!(
+                compiled
+                    .authorized_identity_policy(
+                        &pipeline("group", "pipeline"),
+                        &ConfigNodeId::from("node"),
+                    )
+                    .is_none()
+            );
+        }
+    }
+
     /// Scenario: a receiver declares an authorized identity claim projection.
     /// Guarantees: compiled node bindings retain the exact policy and changed
     /// projections produce different binding sets.
@@ -1142,14 +1172,25 @@ mod tests {
             .into_iter()
             .collect();
         let compiled = compiled_bindings(declarations);
+        let changed_policy: AuthorizedIdentityPolicy = serde_json::from_value(
+            serde_json::json!([{"claim": "groups", "store_as": "access_groups"}]),
+        )
+        .expect("valid changed authorized identity policy");
+        let changed = compiled_bindings(
+            [ContextDeclaration::AuthorizedIdentityCapture {
+                policy: changed_policy,
+            }]
+            .into_iter()
+            .collect(),
+        );
+        let pipeline = pipeline("group", "pipeline");
 
         assert_eq!(
-            compiled.authorized_identity_policy(
-                &pipeline("group", "pipeline"),
-                &ConfigNodeId::from("node")
-            ),
+            compiled.authorized_identity_policy(&pipeline, &ConfigNodeId::from("node")),
             Some(&policy),
         );
+        assert!(!compiled.pipeline_bindings_match(&changed, &pipeline));
+        assert!(!changed.pipeline_bindings_match(&compiled, &pipeline));
     }
 
     /// Scenario: a node declares a context read and a propagation policy.

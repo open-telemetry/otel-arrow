@@ -2257,6 +2257,27 @@ hard_limit: 2 GiB
         assert!(errors[0].contains("'named' list is required"));
     }
 
+    /// Scenario: an authorized identity policy contains duplicate destination names.
+    /// Guarantees: policy validation reports the error with the authorized identity path.
+    #[test]
+    fn validates_authorized_identity_policy() {
+        let authorized_identity = serde_json::from_value(serde_json::json!([
+            {"claim": "sub", "store_as": "tenant"},
+            {"claim": "groups", "store_as": "tenant"}
+        ]))
+        .expect("policy parses before semantic validation");
+        let policies = Policies {
+            authorized_identity: Some(authorized_identity),
+            ..Default::default()
+        };
+
+        let errors = policies.validation_errors("policies");
+
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("policies.authorized_identity"));
+        assert!(errors[0].contains("destination `tenant` is configured more than once"));
+    }
+
     #[test]
     fn core_allocation_validate_all_cores_valid() {
         assert!(super::CoreAllocation::all_cores().validate().is_ok());

@@ -2557,6 +2557,81 @@ mod tests {
             .run_validation_concurrent(validation);
     }
 
+    /// Scenario: an OTLP HTTP receiver has an identity projection policy but no authorizer.
+    /// Guarantees: an admitted request carries no authorization-derived context entries.
+    #[test]
+    fn test_otlp_http_identity_policy_without_authorizer_captures_nothing() {
+        let test_runtime = TestRuntime::new();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
+        let http_listen: SocketAddr = format!("127.0.0.1:{http_port}").parse().unwrap();
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
+
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let mut config = test_config_http_only(http_listen);
+        config
+            .protocols
+            .http
+            .as_mut()
+            .expect("HTTP test config")
+            .wait_for_result = false;
+
+        let receiver = ReceiverWrapper::shared(
+            OTLPReceiver {
+                config,
+                metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
+                global_max_concurrent_requests: None,
+                authorizer: None,
+                admission_state: SharedReceiverAdmissionState::from_process_state(
+                    &pipeline_ctx.memory_pressure_state(),
+                ),
+            },
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let scenario = move |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                let mut request_bytes = Vec::new();
+                create_logs_service_request()
+                    .encode(&mut request_bytes)
+                    .expect("encode HTTP request");
+
+                let (status, _) = post_otlp_http(http_listen, "/v1/logs", request_bytes)
+                    .await
+                    .expect("HTTP request must return a response");
+                assert_eq!(status, http::StatusCode::OK);
+
+                ctx.send_shutdown(Instant::now(), "Test complete")
+                    .await
+                    .expect("send shutdown");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        let validation = |mut ctx: NotSendValidateContext<OtapPdata>| {
+            Box::pin(async move {
+                let pdata = timeout(Duration::from_secs(3), ctx.recv())
+                    .await
+                    .expect("HTTP request must reach downstream")
+                    .expect("downstream channel must remain open");
+                assert!(
+                    pdata.authorized_identity_entries().is_none(),
+                    "unauthenticated pdata must not carry trusted identity entries"
+                );
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        test_runtime
+            .set_receiver(receiver)
+            .with_authorized_identity_policy(Some(authorized_identity_policy()))
+            .run_test(scenario)
+            .run_validation_concurrent(validation);
+    }
+
     /// Test HTTP-only mode: receiver configured with only HTTP protocol (no gRPC).
     /// This matches the new flexibility matching Go collector's behavior.
     #[test]
