@@ -959,8 +959,7 @@ mod tests {
     }
 
     fn new_test_metrics() -> Arc<Mutex<OtlpReceiverMetrics>> {
-        let (pipeline_ctx, _registry) =
-            test_pipeline_ctx_with_interests(Interests::PRODUCED_CONSUMED_SIZE);
+        let (pipeline_ctx, _registry) = test_pipeline_ctx_with_interests(Interests::NODE_SIZE);
         Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx)))
     }
 
