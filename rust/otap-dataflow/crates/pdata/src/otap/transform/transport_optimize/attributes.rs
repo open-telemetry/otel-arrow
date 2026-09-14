@@ -1002,12 +1002,18 @@ impl TryFrom<&ArrayRef> for AttrsValueSorterInner {
                         }
                     })?;
 
-                    let key_ranks = dict_arr
-                        .keys()
-                        .values()
-                        .iter()
-                        .map(|k| value_ranks[*k as usize] as u16)
-                        .collect::<Vec<_>>();
+                    // Only physical keys in valid (non-null) slots are guaranteed to be
+                    // in-range dictionary indices. Use a rank of 0 for null slots
+                    let keys = dict_arr.keys();
+                    let key_ranks: Vec<u16> = (0..keys.len())
+                        .map(|i| {
+                            if keys.is_valid(i) {
+                                value_ranks[keys.value(i) as usize] as u16
+                            } else {
+                                0
+                            }
+                        })
+                        .collect();
 
                     let rank_nulls = if dict_arr.keys().null_count() > 0 {
                         dict_arr.keys().nulls().cloned()
@@ -2720,6 +2726,83 @@ mod test {
 
         let result = transport_optimize_encode_attrs::<UInt16Type>(&input).unwrap();
         pretty_assertions::assert_eq!(result, expected);
+    }
+
+    /// Scenario: a dictionary-encoded attribute value column has a null row whose
+    /// raw physical key buffer holds a stale index equal to the dictionary length
+    /// (as produced by Arrow `take` reordering keys in the export/serialization path,
+    /// which leaves arbitrary physical values in null key slots).
+    /// Guarantees: transport-optimized encoding does not panic on out-of-range stale
+    /// physical keys in null slots, and those rows are preserved as null in the output.
+    #[test]
+    fn test_transport_optimize_encode_attrs_dict_null_slot_with_stale_key() {
+        // Dictionary values column with exactly 2 entries. Build the keys with an
+        // explicit raw physical buffer plus a separate null bitmap so that a NULL
+        // slot carries a stale physical key equal to the dictionary length (2).
+        //
+        // This mirrors production data: `DictionaryArray::try_new` skips bounds
+        // validation for null key slots (arrow), so this array is valid to
+        // construct, but the pre-fix ranking code indexed `value_ranks[2]` for the
+        // null row and panicked with "index out of bounds".
+        let str_values = Arc::new(StringArray::from_iter_values(["va", "vb"]));
+        // physical keys: row 3 is NULL but carries stale physical value 2 (== len)
+        let raw_keys = ScalarBuffer::<u16>::from(vec![0u16, 1u16, 0u16, 2u16]);
+        let mut null_builder = NullBufferBuilder::new(4);
+        null_builder.append_non_null();
+        null_builder.append_non_null();
+        null_builder.append_non_null();
+        null_builder.append_null(); // stale physical key 2 lives here
+        let keys = UInt16Array::new(raw_keys, null_builder.finish());
+        let str_col = Arc::new(DictionaryArray::new(keys, str_values));
+
+        let input = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt16, false),
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(
+                    consts::ATTRIBUTE_KEY,
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                    false,
+                ),
+                Field::new(
+                    consts::ATTRIBUTE_STR,
+                    DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+                    true,
+                ),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from_iter_values([0, 1, 2, 3])),
+                Arc::new(UInt8Array::from_iter_values([
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(DictionaryArray::new(
+                    UInt8Array::from_iter_values([0, 0, 0, 0]),
+                    Arc::new(StringArray::from_iter_values(["ka"])),
+                )),
+                str_col,
+            ],
+        )
+        .unwrap();
+
+        // Before the fix this panics at attributes.rs with "index out of bounds".
+        let result = transport_optimize_encode_attrs::<UInt16Type>(&input).unwrap();
+
+        // The null row must survive as null; the three non-null rows keep their values.
+        let out_str = result
+            .column_by_name(consts::ATTRIBUTE_STR)
+            .expect("attribute str column exists")
+            .as_any()
+            .downcast_ref::<DictionaryArray<UInt16Type>>()
+            .expect("attribute str column is a UInt16 dictionary");
+        assert_eq!(
+            out_str.null_count(),
+            1,
+            "the single null row must be preserved"
+        );
+        assert_eq!(out_str.len(), 4);
     }
 
     #[test]

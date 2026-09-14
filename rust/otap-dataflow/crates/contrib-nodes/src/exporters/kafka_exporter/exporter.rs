@@ -1537,6 +1537,7 @@ pub mod test_support {
         use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::{
             ResourceSpans, ScopeSpans, Span,
         };
+        use otel_arrow_dfe_pdata::OtapPayload;
 
         /// Tests that payload is properly cloned for both OTLP and OTAP serialization formats.
         /// This ensures no borrow-after-move errors occur when the encoder consumes the payload.
@@ -2110,6 +2111,21 @@ pub mod test_support {
                 Interests::ACKS_OR_NACKS | Interests::RETURN_DATA,
                 TestCallData::default().into(),
                 654321,
+            )
+        }
+
+        /// Wraps the shared crafted OTAP logs records (see
+        /// [`encoder::logs_otap_records_with_stale_dict_key`]) in an
+        /// [`OtapPdata`] with an OTAP payload, so the batch reaches the producer
+        /// (`produce_bar` -> `encode_transport_optimized`) unchanged.
+        ///
+        /// The records carry a dictionary-encoded attribute value column with a
+        /// null row whose raw physical key holds a stale index equal to the
+        /// dictionary length, exercising the out-of-range stale-key path.
+        fn logs_otap_pdata_with_stale_dict_key() -> OtapPdata {
+            OtapPdata::new(
+                Context::default(),
+                OtapPayload::from(encoder::logs_otap_records_with_stale_dict_key()),
             )
         }
 
@@ -5035,6 +5051,50 @@ pub mod test_support {
 
                     exporter.shutdown(Duration::from_millis(500)).await;
 
+                    exporter.await_stopped().await;
+                },
+            )
+            .await;
+        }
+
+        /// Scenario (Kafka integration): export a logs OTAP batch whose
+        /// dictionary-encoded attribute value column has a null row carrying a
+        /// stale physical key equal to the dictionary length. Encoding runs
+        /// inline in the exporter task; before the fix this triggered an
+        /// out-of-bounds panic in transport-optimized encoding that surfaced as
+        /// a JoinError (the production "Join task error: task ... panicked").
+        /// Guarantees: the exporter serializes and delivers the batch without
+        /// panicking. The produced record lands on the configured topic with the
+        /// OTAP message-format header and decodes as a `BatchArrowRecords`, and
+        /// the exporter shuts down cleanly.
+        #[tokio::test]
+        async fn exports_logs_otap_with_stale_dict_key_does_not_panic() {
+            let topic = "it-logs-otap-stale-key";
+            with_cluster(
+                KafkaTestCluster::builder().topic(topic),
+                |cluster| async move {
+                    let consumer = cluster.consumer().subscribe(&[topic]);
+                    let cfg = logs_config(
+                        cluster.bootstrap_servers(),
+                        SignalConfig::new(topic.into(), MessageFormat::OtapProto),
+                    );
+                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+
+                    exporter
+                        .send_pdata(logs_otap_pdata_with_stale_dict_key())
+                        .await
+                        .expect("send pdata");
+
+                    let msg = consumer.recv().await;
+                    let _ = msg.assert_topic(topic).assert_format_otap();
+                    let decoded =
+                        BatchArrowRecords::decode(msg.payload.as_deref().expect("payload"));
+                    assert!(
+                        decoded.is_ok(),
+                        "OTAP payload with a stale null dictionary key should encode and decode as BatchArrowRecords"
+                    );
+
+                    exporter.shutdown(Duration::from_millis(500)).await;
                     exporter.await_stopped().await;
                 },
             )
