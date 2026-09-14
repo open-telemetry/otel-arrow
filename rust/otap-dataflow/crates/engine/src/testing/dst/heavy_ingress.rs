@@ -138,7 +138,7 @@ async fn run_backpressure_interblock_seed(seed: u64) {
                         vec![
                             frame(
                                 receiver_id.index,
-                                Interests::PRODUCER_METRICS,
+                                Interests::NODE_OUTPUT_METRICS,
                                 msg_id * 10 + 1,
                             ),
                             frame(
@@ -154,7 +154,7 @@ async fn run_backpressure_interblock_seed(seed: u64) {
                             ),
                             frame(
                                 exporter_id.index,
-                                Interests::CONSUMER_METRICS,
+                                Interests::NODE_INPUT_METRICS,
                                 msg_id * 10 + 3,
                             ),
                         ],

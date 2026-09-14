@@ -22,6 +22,7 @@ use http::{HeaderName, HeaderValue};
 use linkme::distributed_slice;
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_config::transport_headers::ValueKind;
 use otel_arrow_dfe_engine::ConsumerEffectHandlerExtension;
 use otel_arrow_dfe_engine::ExporterFactory;
 use otel_arrow_dfe_engine::config::ExporterConfig;
@@ -39,7 +40,6 @@ use otel_arrow_dfe_otap::otap_grpc::otlp::client::{
     LogsServiceClient, MetricsServiceClient, TraceServiceClient,
 };
 use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
-use otel_arrow_dfe_otap::transport_headers::ValueKind;
 use otel_arrow_dfe_pdata::otlp::logs::LogsProtoBytesEncoder;
 use otel_arrow_dfe_pdata::otlp::metrics::MetricsProtoBytesEncoder;
 use otel_arrow_dfe_pdata::otlp::traces::TracesProtoBytesEncoder;
@@ -140,6 +140,7 @@ pub static OTLP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
             exporter_config,
         ))
     },
+    context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config,
 };
@@ -177,7 +178,6 @@ impl OTLPExporter {
                 error: e.to_string(),
             }
         })?;
-
         Ok(Self {
             config,
             metrics,
@@ -1118,7 +1118,7 @@ fn build_grpc_metadata(
                         otel_debug!(
                             "otlp.exporter.grpc.header_skip",
                             reason = "invalid ascii metadata key",
-                            header_name = header.header_name
+                            header_name = %header.header_name
                         );
                         continue;
                     };
@@ -1126,7 +1126,7 @@ fn build_grpc_metadata(
                         otel_debug!(
                             "otlp.exporter.grpc.header_skip",
                             reason = "invalid ascii metadata value",
-                            header_name = header.header_name
+                            header_name = %header.header_name
                         );
                         continue;
                     };
@@ -1138,7 +1138,7 @@ fn build_grpc_metadata(
                         otel_debug!(
                             "otlp.exporter.grpc.header_skip",
                             reason = "static header takes precedence over propagated header",
-                            header_name = header.header_name
+                            header_name = %header.header_name
                         );
                         continue;
                     }
@@ -1156,7 +1156,7 @@ fn build_grpc_metadata(
                         otel_debug!(
                             "otlp.exporter.grpc.header_skip",
                             reason = "invalid binary metadata key",
-                            header_name = header.header_name
+                            header_name = %header.header_name
                         );
                         continue;
                     };
@@ -1422,12 +1422,15 @@ struct CompletedExport {
 mod tests {
     use super::*;
 
+    use otel_arrow_dfe_config::ContextEntryName;
     use otel_arrow_dfe_config::node::NodeUserConfig;
     use otel_arrow_dfe_engine::local::capability::auth::bearer_token_provider::BearerTokenProvider;
     use otel_arrow_dfe_otap::bearer_auth::test_support::MockTokenProvider;
     use std::collections::HashMap;
 
-    use otel_arrow_dfe_config::transport_headers::{TransportHeader, TransportHeaders};
+    use otel_arrow_dfe_config::transport_headers::{
+        TransportHeader, TransportHeaders, ValueKind,
+    };
     use otel_arrow_dfe_config::transport_headers_policy::PropagationSelectorType;
     use otel_arrow_dfe_config::transport_headers_policy::{
         HeaderPropagationPolicy, PropagationAction, PropagationDefault, PropagationMatch,
@@ -1472,6 +1475,30 @@ mod tests {
     use tokio::time::{Duration, timeout};
     use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
     use tonic::transport::Server;
+
+    fn context_name(raw: &str) -> ContextEntryName {
+        ContextEntryName::try_from(raw).expect("valid test context entry name")
+    }
+
+    fn text_header(normal: &str, wire_name: &str, value: impl Into<Vec<u8>>) -> TransportHeader {
+        TransportHeader::captured(
+            context_name(normal),
+            wire_name,
+            true,
+            ValueKind::Text,
+            value.into(),
+        )
+    }
+
+    fn binary_header(normal: &str, wire_name: &str, value: impl Into<Vec<u8>>) -> TransportHeader {
+        TransportHeader::captured(
+            context_name(normal),
+            wire_name,
+            true,
+            ValueKind::Binary,
+            value.into(),
+        )
+    }
 
     /// Helper function to wait for and validate an Ack or Nack message with the expected node_id
     async fn wait_for_ack_or_nack(
@@ -3083,7 +3110,7 @@ mod tests {
     fn test_build_grpc_metadata_returns_none_without_policy() {
         let handler = make_effect_handler_with_policy(None);
         let mut headers = TransportHeaders::new();
-        headers.push(TransportHeader::text("x-tenant-id", "x-tenant-id", b"acme"));
+        headers.push(text_header("x-tenant-id", "x-tenant-id", b"acme"));
         let context = context_with_headers(headers);
 
         let result = build_grpc_metadata(&handler, &context, None, None);
@@ -3107,16 +3134,8 @@ mod tests {
         let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
 
         let mut headers = TransportHeaders::new();
-        headers.push(TransportHeader::text(
-            "x-tenant-id",
-            "X-Tenant-Id",
-            b"tenant-abc-123",
-        ));
-        headers.push(TransportHeader::text(
-            "x-request-id",
-            "X-Request-Id",
-            b"req-xyz-789",
-        ));
+        headers.push(text_header("x-tenant-id", "X-Tenant-Id", b"tenant-abc-123"));
+        headers.push(text_header("x-request-id", "X-Request-Id", b"req-xyz-789"));
         let context = context_with_headers(headers);
 
         let metadata = build_grpc_metadata(&handler, &context, None, None)
@@ -3145,7 +3164,7 @@ mod tests {
             },
             vec![PropagationOverride {
                 match_rule: PropagationMatch {
-                    stored_names: vec!["authorization".to_string()],
+                    stored_names: vec![context_name("authorization")],
                 },
                 action: PropagationAction::Drop,
                 name: None,
@@ -3155,8 +3174,8 @@ mod tests {
         let handler = make_effect_handler_with_policy(Some(policy));
 
         let mut headers = TransportHeaders::new();
-        headers.push(TransportHeader::text("x-tenant-id", "X-Tenant-Id", b"acme"));
-        headers.push(TransportHeader::text(
+        headers.push(text_header("x-tenant-id", "X-Tenant-Id", b"acme"));
+        headers.push(text_header(
             "authorization",
             "Authorization",
             b"Bearer secret-token",
@@ -3182,7 +3201,7 @@ mod tests {
 
         let binary_value: Vec<u8> = vec![0x00, 0x01, 0xFF, 0xFE, 0x80, 0x7F];
         let mut headers = TransportHeaders::new();
-        headers.push(TransportHeader::binary(
+        headers.push(binary_header(
             "trace-context-bin",
             "trace-context-bin",
             binary_value.clone(),
@@ -3209,7 +3228,7 @@ mod tests {
         let binary_value: Vec<u8> = vec![0xDE, 0xAD, 0xBE, 0xEF];
         let mut headers = TransportHeaders::new();
         // Wire name does NOT end with -bin; build_grpc_metadata should add the suffix.
-        headers.push(TransportHeader::binary(
+        headers.push(binary_header(
             "custom-binary",
             "custom-binary",
             binary_value.clone(),
@@ -3230,17 +3249,17 @@ mod tests {
         let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
 
         let mut headers = TransportHeaders::new();
-        headers.push(TransportHeader::text(
+        headers.push(text_header(
             "x-forwarded-for",
             "X-Forwarded-For",
             b"10.0.0.1",
         ));
-        headers.push(TransportHeader::text(
+        headers.push(text_header(
             "x-forwarded-for",
             "X-Forwarded-For",
             b"192.168.1.1",
         ));
-        headers.push(TransportHeader::text(
+        headers.push(text_header(
             "x-forwarded-for",
             "X-Forwarded-For",
             b"172.16.0.1",
@@ -3278,7 +3297,7 @@ mod tests {
         let handler = make_effect_handler_with_policy(Some(policy));
 
         let mut headers = TransportHeaders::new();
-        headers.push(TransportHeader::text("x-tenant-id", "X-Tenant-Id", b"acme"));
+        headers.push(text_header("x-tenant-id", "X-Tenant-Id", b"acme"));
         let context = context_with_headers(headers);
 
         let result = build_grpc_metadata(&handler, &context, None, None);
@@ -3318,11 +3337,7 @@ mod tests {
         let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
 
         let mut transport = TransportHeaders::new();
-        transport.push(TransportHeader::text(
-            "x-tenant-id",
-            "X-Tenant-Id",
-            b"tenant-abc",
-        ));
+        transport.push(text_header("x-tenant-id", "X-Tenant-Id", b"tenant-abc"));
         let context = context_with_headers(transport);
 
         let mut static_headers = HashMap::new();
@@ -3356,7 +3371,7 @@ mod tests {
         let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
 
         let mut transport = TransportHeaders::new();
-        transport.push(TransportHeader::text(
+        transport.push(text_header(
             "authorization",
             "Authorization",
             b"Bearer propagated",
@@ -3425,7 +3440,7 @@ mod tests {
         let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
 
         let mut transport = TransportHeaders::new();
-        transport.push(TransportHeader::text(
+        transport.push(text_header(
             "authorization",
             "Authorization",
             b"Bearer propagated",

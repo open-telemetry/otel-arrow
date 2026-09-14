@@ -731,6 +731,9 @@ mod tests {
             .iter()
             .map(|name| {
                 let dependencies: &[&str] = match *name {
+                    "otel-arrow-dfe-admin-api" => {
+                        &["otel-arrow-dfe-admin-types", "otel-arrow-dfe-config"]
+                    }
                     "otel-arrow-dfe-admin" => &[
                         "otel-arrow-dfe-admin-types",
                         "otel-arrow-dfe-config",
