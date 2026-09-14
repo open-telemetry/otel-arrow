@@ -1016,9 +1016,8 @@ mod tests {
     /// Guarantees: Processing duration has no outcome while terminal metrics use the deferred refused outcome.
     #[test]
     fn receiver_helper_records_deferred_terminal_outcome() {
-        let interests = Interests::NODE_OUTPUT_METRICS
-            | Interests::NODE_LOCAL_DURATION
-            | Interests::NODE_SIZE;
+        let interests =
+            Interests::NODE_OUTPUT_METRICS | Interests::NODE_LOCAL_DURATION | Interests::NODE_SIZE;
         let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(interests);
         let mut metrics = ReceiverMetrics::register(&pipeline_ctx);
 
