@@ -5,13 +5,15 @@
 
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_otap::http_client_auth_provider::HttpClientAuthProvider;
 use otel_arrow_dfe_otap::metrics::ExporterExportMetrics;
 use otel_arrow_dfe_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
 use otel_arrow_dfe_telemetry::instrument::Counter;
-use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
+use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetSnapshot};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
+use std::borrow::Cow;
 use std::time::Duration;
 use tonic::{Code, Status};
 
@@ -86,19 +88,47 @@ struct OtlpGrpcExporterFailureMetrics {
     messages: Counter<u64>,
 }
 
+#[attribute_set(item, registration)]
+#[derive(Debug, Clone)]
+struct OtlpGrpcAuthSourceAttributes {
+    source: Cow<'static, str>,
+}
+
+/// Authentication failures, including failures before data admission.
+#[metric_set(
+    name = "exporter.otlp_grpc.authentication",
+    registration_attributes = OtlpGrpcAuthSourceAttributes,
+)]
+#[derive(Debug, Default, Clone)]
+struct OtlpGrpcExporterAuthMetrics {
+    /// Number of credential operations that failed to produce a usable auth.
+    #[metric(unit = "{attempt}")]
+    failures: Counter<u64>,
+}
+
 /// Terminal outcome and failure metrics emitted by an OTLP gRPC exporter.
 pub(super) struct OtlpGrpcExporterMetrics {
     pub(super) exports: MeasurementMetricSet<ExporterExportMetrics>,
     failures: MeasurementMetricSet<OtlpGrpcExporterFailureMetrics>,
+    auth: Option<MetricSet<OtlpGrpcExporterAuthMetrics>>,
 }
 
 impl OtlpGrpcExporterMetrics {
     /// Registers all OTLP gRPC exporter metric sets.
     #[must_use]
-    pub(super) fn register(pipeline_ctx: &PipelineContext) -> Self {
+    pub(super) fn register(
+        pipeline_ctx: &PipelineContext,
+        auth: Option<&dyn HttpClientAuthProvider>,
+    ) -> Self {
         Self {
             exports: ExporterExportMetrics::register(pipeline_ctx),
             failures: OtlpGrpcExporterFailureMetrics::register(pipeline_ctx),
+            auth: auth.map(|a| {
+                OtlpGrpcExporterAuthMetrics::register(
+                    pipeline_ctx,
+                    &OtlpGrpcAuthSourceAttributes { source: a.name() },
+                )
+            }),
         }
     }
 
@@ -131,11 +161,25 @@ impl OtlpGrpcExporterMetrics {
             .inc();
     }
 
+    /// Records one auth poll failure.
+    pub(super) fn record_auth_failure(&mut self) {
+        if let Some(auth) = self.auth.as_mut() {
+            auth.failures.inc();
+        }
+    }
+
     /// Reports all touched OTLP gRPC exporter metric buckets.
     pub(super) fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), TelemetryError> {
         reporter
             .report_measurement(&mut self.exports)
             .and_then(|()| reporter.report_measurement(&mut self.failures))
+            .and_then(|()| {
+                if let Some(auth) = self.auth.as_mut() {
+                    reporter.report(auth)
+                } else {
+                    Ok(())
+                }
+            })
     }
 
     /// Takes terminal snapshots of all touched metric buckets.
@@ -143,6 +187,9 @@ impl OtlpGrpcExporterMetrics {
     pub(super) fn terminal_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
         let mut snapshots = self.exports.terminal_snapshots();
         snapshots.extend(self.failures.terminal_snapshots());
+        if let Some(auth) = self.auth.as_mut() {
+            snapshots.extend(auth.terminal_snapshots());
+        }
         snapshots
     }
 }
@@ -158,7 +205,7 @@ mod tests {
         let controller = ControllerContext::new(registry);
         let pipeline_ctx =
             controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
-        OtlpGrpcExporterMetrics::register(&pipeline_ctx)
+        OtlpGrpcExporterMetrics::register(&pipeline_ctx, None)
     }
 
     /// Scenario: Every gRPC status is classified into a bounded actionable category.

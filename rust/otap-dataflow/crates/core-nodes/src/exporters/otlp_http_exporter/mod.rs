@@ -237,8 +237,7 @@ impl OtlpHttpExporter {
                 | HttpClientAuthProviders::BASIC,
         )?;
 
-        let metrics =
-            OtlpHttpExporterMetrics::register(&pipeline_ctx, auth_provider.as_deref());
+        let metrics = OtlpHttpExporterMetrics::register(&pipeline_ctx, auth_provider.as_deref());
 
         Ok(Self {
             config,
