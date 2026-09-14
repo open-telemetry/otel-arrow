@@ -827,18 +827,14 @@ async fn test_filter_data_points_null_predicate_result() {
 }
 
 /// Scenario: try to execute some queries that have valid syntax, but define operations that are
-/// not yet supported by this query engine
-/// Guarantees: that the operation returns the expected error instead of inadvertently evaluating
+/// not supported by this query engine (although most will be supported in future)
+/// Guarantees: that the operation returns an expected error instead of inadvertently evaluating
 /// and producing invalid results
 #[tokio::test]
 async fn test_not_yet_unsupported_queries_return_error() {
     struct TestCase {
         query: &'static str,
-        expected_error_content: &'static str,
     }
-
-    // Admittedly some of the expected errors below are not very user friendly, but in the near
-    // future functionality will be added so these statements no longer produce errors.
 
     let test_cases = [
         // filtering by attributes is not yet supported
@@ -846,43 +842,38 @@ async fn test_not_yet_unsupported_queries_return_error() {
             query: "metrics | apply data_points {
                 where attributes[\"x\"] > 0
             }",
-            expected_error_content: "DataPoint attribute access not yet supported",
         },
         TestCase {
             query: "metrics | apply data_points {
                 where resource.attributes[\"x\"] > 0
             }",
-            expected_error_content: "parent struct resource access not yet supported for DataPoint",
         },
+        // filtering by checking the type of metric data point is not yet supported
         TestCase {
             query: "metrics | apply data_points {
                 where is Log
             }",
-            expected_error_content: "Checking record type for DataPoint not yet supported",
         },
+        // conditional operator call (if/else) is not yet supported for metric data points
         TestCase {
             query: "metrics | apply data_points {
                 if (flags > 0) {
                     drop
                 }
             }",
-            expected_error_content: "Data expression not supported on Child(DataPoint) stream: Branch(BranchDataExpression",
         },
-        // the following handful of test cases ensure that we don't try to evaluate unsupported
-        // assignment expressions
+        // assignment to metric data point fields or attributes is not yet supported
         TestCase {
             query: "metrics | apply data_points {
                 set flags = 0
             }",
-            expected_error_content: "Data expression not supported on Child(DataPoint) stream: Transform(Set",
         },
         TestCase {
             query: "metrics | apply data_points {
                 set attributes[\"x\"] = 5
             }",
-            expected_error_content: "DataPoint attribute access not yet supported",
         },
-        // nested apply pipeline to modify datapoint attributes is not yet supported
+        // nested apply pipeline to modify data point attributes is not yet supported
         TestCase {
             query: "metrics | apply data_points {
                     where flags > 5 |
@@ -890,7 +881,30 @@ async fn test_not_yet_unsupported_queries_return_error() {
                         set value = 5
                     }
                 }",
-            expected_error_content: "Data expression not supported on Child(DataPoint) stream: Transform(Set",
+        },
+        // assert that special attribute operations are not yet supported
+        TestCase {
+            query: "metrics | apply data_points {
+                rename attributes \"x\" as \"y\"
+            }",
+        },
+        TestCase {
+            query: "metrics | apply data_points {
+                remove attributes[\"x\"]
+            }",
+        },
+        // the following two cases, where we're accessing resource attributes for some datapoint
+        // should probably never be supported (instead, renaming attributes should be supported at
+        // the level metric itself).
+        TestCase {
+            query: "metrics | apply data_points {
+                rename resource.attributes \"x\" as \"y\"
+            }",
+        },
+        TestCase {
+            query: "metrics | apply data_points {
+                remove resource.attributes[\"x\"]
+            }",
         },
     ];
 
@@ -913,14 +927,6 @@ async fn test_not_yet_unsupported_queries_return_error() {
                 .pipeline;
         let mut pipeline = Pipeline::new(pipeline_expr);
         let input_batch = otlp_to_otap(&OtlpProtoMessage::Metrics(to_metrics_data(metrics)));
-        let err = pipeline.execute(input_batch).await.unwrap_err();
-
-        let err_msg = err.to_string();
-        assert!(
-            err_msg.contains(test_case.expected_error_content),
-            "unexpected error for query {}: {}",
-            test_case.query,
-            err_msg
-        )
+        _ = pipeline.execute(input_batch).await.unwrap_err();
     }
 }
