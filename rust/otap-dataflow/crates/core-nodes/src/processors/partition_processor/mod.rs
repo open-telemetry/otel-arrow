@@ -15,10 +15,13 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otel_arrow_dfe_config::SignalType;
-use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_config::transport_headers::{TransportHeader, ValueKind};
+use otel_arrow_dfe_config::{SignalType, context::ContextEntryName, node::NodeUserConfig};
 use otel_arrow_dfe_engine::config::ProcessorConfig;
-use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::context_declaration::{
+    ConfigNodeContextDeclaration, ContextDeclaration, ContextDeclarationProvider,
+    NodeContextDeclarations,
+};
 use otel_arrow_dfe_engine::control::{AckMsg, NackCause, NackMsg, NodeControlMsg};
 use otel_arrow_dfe_engine::error::ProcessorErrorKind;
 use otel_arrow_dfe_engine::local::processor::{EffectHandler, Processor};
@@ -29,12 +32,12 @@ use otel_arrow_dfe_engine::wiring_contract::WiringContract;
 use otel_arrow_dfe_engine::{
     ConsumerEffectHandlerExtension, FlowMetricAccumulation, Interests,
     MessageSourceLocalEffectHandlerExtension, ProcessorFactory, ProducerEffectHandlerExtension,
+    context::PipelineContext,
 };
 use otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES;
 use otel_arrow_dfe_otap::accessory::context::split_contexts::{Contexts, OutboundError};
 use otel_arrow_dfe_otap::accessory::slots::Key;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
-use otel_arrow_dfe_otap::transport_headers::{TransportHeader, ValueKind};
 use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayload, TryIntoWithOptions};
 use otel_arrow_dfe_query_engine::parser::default_parser_options;
 use otel_arrow_dfe_query_engine::pipeline::partition::{PartitionValue, Partitioner};
@@ -75,6 +78,7 @@ fn create_partition_processor(
 pub static PARTITION_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: PARTITION_PROCESSOR_URN,
     create: create_partition_processor,
+    context_declarations: Some(ContextDeclarationProvider::from_typed_config::<Config>()),
     wiring_contract: WiringContract::UNRESTRICTED,
     validate_config: |value| {
         let config: Config = serde_json::from_value(value.clone()).map_err(|e| {
@@ -100,7 +104,6 @@ pub static PARTITION_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorF
                 })?;
             }
         };
-
         Ok(())
     },
 };
@@ -109,7 +112,7 @@ pub static PARTITION_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorF
 pub struct PartitionProcessor {
     contexts: Contexts,
     partitioner: Partitioner,
-    header_name: String,
+    header_name: ContextEntryName,
     serialization_strategy: PartitionValueSerializeStrategy,
     metrics: MeasurementMetricSet<Metrics>,
 }
@@ -124,6 +127,7 @@ impl PartitionProcessor {
                 error: format!("Failed to parse PartitionProcessor config: {e}"),
             }
         })?;
+        config.validate_context_declarations(pipeline_ctx)?;
 
         let partitioner = match config.partition_by {
             PartitionByConfig::OplExpression(opl_expression) => {
@@ -306,7 +310,7 @@ impl Processor<OtapPdata> for PartitionProcessor {
                         let mut headers =
                             inbound_context.take_transport_headers().unwrap_or_default();
                         headers.push(partition_value_to_transport_header(
-                            self.header_name.clone(),
+                            &self.header_name,
                             &self.serialization_strategy,
                             partition.value,
                         ));
@@ -371,7 +375,7 @@ impl Processor<OtapPdata> for PartitionProcessor {
                             let mut headers =
                                 pdata_context.take_transport_headers().unwrap_or_default();
                             headers.push(partition_value_to_transport_header(
-                                self.header_name.clone(),
+                                &self.header_name,
                                 &self.serialization_strategy,
                                 partition.value,
                             ));
@@ -429,11 +433,11 @@ impl Processor<OtapPdata> for PartitionProcessor {
 }
 
 fn partition_value_to_transport_header(
-    name: String,
+    name: &ContextEntryName,
     strategy: &PartitionValueSerializeStrategy,
     partition_value: PartitionValue,
 ) -> TransportHeader {
-    match strategy {
+    let (value_kind, value_bytes) = match strategy {
         PartitionValueSerializeStrategy::ToBytesLossy {
             text_as_binary_header,
         } => {
@@ -455,12 +459,7 @@ fn partition_value_to_transport_header(
                 PartitionValue::Null => Vec::new(),
             };
 
-            TransportHeader {
-                wire_name: name.clone(),
-                name,
-                value_kind,
-                value: header_bytes,
-            }
+            (value_kind, header_bytes)
         }
         PartitionValueSerializeStrategy::Json => {
             let header_bytes = match partition_value {
@@ -493,22 +492,28 @@ fn partition_value_to_transport_header(
                 }
             };
 
-            TransportHeader {
-                wire_name: name.clone(),
-                name,
-                value_kind: ValueKind::Text,
-                value: header_bytes,
-            }
+            (ValueKind::Text, header_bytes)
         }
+    };
+    TransportHeader::new(name.clone(), value_kind, value_bytes)
+}
+
+impl ConfigNodeContextDeclaration for Config {
+    fn context_declarations(&self) -> NodeContextDeclarations {
+        std::iter::once(ContextDeclaration::Produces {
+            entry: self.partition_header_name.clone(),
+        })
+        .collect()
     }
 }
 
 #[cfg(test)]
 mod test {
-    use std::collections::VecDeque;
+    use std::collections::{HashMap, VecDeque};
 
     use super::*;
 
+    use otel_arrow_dfe_engine::context_declaration::ContextDeclaration;
     use otel_arrow_dfe_engine::{
         capability::registry::Capabilities,
         context::ControllerContext,
@@ -516,11 +521,25 @@ mod test {
             PipelineCompletionMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
         },
         testing::{
+            install_test_context_bindings,
             processor::{TestContext, TestRuntime},
             test_node,
         },
     };
+
+    fn context_name(raw: &str) -> ContextEntryName {
+        ContextEntryName::try_from(raw).expect("valid test context entry name")
+    }
+
+    fn transport_header(
+        name: impl AsRef<str>,
+        value_kind: ValueKind,
+        value: impl Into<Box<[u8]>>,
+    ) -> TransportHeader {
+        TransportHeader::new(context_name(name.as_ref()), value_kind, value)
+    }
     use otel_arrow_dfe_otap::{
+        OTAP_PIPELINE_FACTORY,
         pdata::Context,
         testing::{TestCallData, next_ack, next_nack},
     };
@@ -549,7 +568,7 @@ mod test {
 
         let telemetry_registry_handle = runtime.metrics_registry();
         let controller_context = ControllerContext::new(telemetry_registry_handle);
-        let pipeline_context = controller_context.pipeline_context_with(
+        let mut pipeline_context = controller_context.pipeline_context_with(
             "group_id".into(),
             "pipeline_id".into(),
             0,
@@ -557,6 +576,22 @@ mod test {
             0,
         );
         let node_id = test_node("partition_processor");
+        let pipeline_config = serde_json::from_value(serde_json::json!({
+            "nodes": { "partition_processor": &node_config }
+        }))
+        .expect("test pipeline configuration");
+        install_test_context_bindings(
+            &mut pipeline_context,
+            &OTAP_PIPELINE_FACTORY,
+            pipeline_config,
+        )
+        .expect("test context bindings should compile");
+        let pipeline_context = pipeline_context.with_node_context(
+            "partition_processor".into(),
+            node_config.r#type.clone(),
+            node_config.kind(),
+            HashMap::new(),
+        );
         create_partition_processor(
             pipeline_context,
             node_id,
@@ -731,12 +766,7 @@ mod test {
                     let header = headers.find_by_name(header_name).next().unwrap();
                     assert_eq!(
                         header,
-                        &TransportHeader {
-                            name: header_name.to_string(),
-                            wire_name: header_name.to_string(),
-                            value_kind: ValueKind::Text,
-                            value: partition_value.as_bytes().to_vec()
-                        }
+                        &transport_header(header_name, ValueKind::Text, partition_value.as_bytes())
                     );
                     outbound_contexts.push(context);
 
@@ -860,12 +890,7 @@ mod test {
                 let header = headers.find_by_name(header_name).next().unwrap();
                 assert_eq!(
                     header,
-                    &TransportHeader {
-                        name: header_name.to_string(),
-                        wire_name: header_name.to_string(),
-                        value_kind: ValueKind::Text,
-                        value: "0".as_bytes().to_vec()
-                    }
+                    &transport_header(header_name, ValueKind::Text, "0".as_bytes())
                 );
 
                 let proto_bytes = OtlpProtoBytes::try_from_with_default(payload).unwrap();
@@ -1067,7 +1092,13 @@ mod test {
 
                 let mut context = Context::default();
                 let mut headers = context.take_transport_headers().unwrap_or_default();
-                headers.push(TransportHeader::text("h1", "header1", "hello world"));
+                headers.push(TransportHeader::captured(
+                    context_name("h1"),
+                    "header1",
+                    true,
+                    ValueKind::Text,
+                    "hello world".as_bytes(),
+                ));
                 context.set_transport_headers(headers);
                 context.set_peer_addr("10.0.0.1:5005".parse().unwrap());
                 let mut pdata = OtapPdata::new(context, OtapPayload::from(otap_batch));
@@ -1087,13 +1118,13 @@ mod test {
                     // assert the flow counter is distributed outbound batches in proportion
                     // to their size relative to the input
                     let partition_header = headers.find_by_name(header_name).next().unwrap();
-                    if partition_header.value == "0".as_bytes().to_vec() {
+                    if partition_header.value.bytes.as_ref() == b"0" {
                         assert_eq!(flow_counter, Some(4));
                     }
-                    if partition_header.value == "1".as_bytes().to_vec() {
+                    if partition_header.value.bytes.as_ref() == b"1" {
                         assert_eq!(flow_counter, Some(2));
                     }
-                    if partition_header.value == "2".as_bytes().to_vec() {
+                    if partition_header.value.bytes.as_ref() == b"2" {
                         assert_eq!(flow_counter, Some(2));
                     }
                 }
@@ -1120,7 +1151,13 @@ mod test {
                 }));
                 let mut context = Context::default();
                 let mut headers = context.take_transport_headers().unwrap_or_default();
-                headers.push(TransportHeader::text("h1", "header1", "hello world"));
+                headers.push(TransportHeader::captured(
+                    context_name("h1"),
+                    "header1",
+                    true,
+                    ValueKind::Text,
+                    "hello world".as_bytes(),
+                ));
                 context.set_transport_headers(headers);
                 let pdata = OtapPdata::new(context, OtapPayload::from(otap_batch));
                 ctx.process(Message::PData(pdata))
@@ -1441,29 +1478,24 @@ mod test {
 
     #[test]
     fn test_partition_value_to_transport_header_to_bytes_lossy() {
-        let header_name = "partition";
+        let header_name = context_name("partition");
         let strategy = PartitionValueSerializeStrategy::ToBytesLossy {
             text_as_binary_header: false,
         };
 
         let header = partition_value_to_transport_header(
-            header_name.to_string(),
+            &header_name,
             &strategy,
             PartitionValue::String("test".to_string()),
         );
         assert_eq!(
             header,
-            TransportHeader {
-                name: header_name.to_string(),
-                wire_name: header_name.to_string(),
-                value_kind: ValueKind::Text,
-                value: "test".as_bytes().to_vec()
-            }
+            transport_header(&header_name, ValueKind::Text, "test".as_bytes())
         );
 
         // ensure we also encode as Binary if configured ...
         let header = partition_value_to_transport_header(
-            header_name.to_string(),
+            &header_name,
             &PartitionValueSerializeStrategy::ToBytesLossy {
                 text_as_binary_header: true,
             },
@@ -1471,215 +1503,133 @@ mod test {
         );
         assert_eq!(
             header,
-            TransportHeader {
-                name: header_name.to_string(),
-                wire_name: header_name.to_string(),
-                value_kind: ValueKind::Binary,
-                value: "test".as_bytes().to_vec()
-            }
+            TransportHeader::binary(header_name.clone(), "test".as_bytes().to_vec())
         );
 
         // check other header types ...
 
-        let header = partition_value_to_transport_header(
-            header_name.to_string(),
-            &strategy,
-            PartitionValue::Int(514),
-        );
+        let header =
+            partition_value_to_transport_header(&header_name, &strategy, PartitionValue::Int(514));
         assert_eq!(
             header,
-            TransportHeader {
-                name: header_name.to_string(),
-                wire_name: header_name.to_string(),
-                value_kind: ValueKind::Binary,
-                value: 514i64.to_le_bytes().to_vec()
-            }
+            transport_header(&header_name, ValueKind::Binary, 514i64.to_le_bytes())
         );
 
         let header = partition_value_to_transport_header(
-            header_name.to_string(),
+            &header_name,
             &strategy,
             PartitionValue::Float(14.7),
         );
         assert_eq!(
             header,
-            TransportHeader {
-                name: header_name.to_string(),
-                wire_name: header_name.to_string(),
-                value_kind: ValueKind::Binary,
-                value: 14.7f64.to_le_bytes().to_vec()
-            }
+            transport_header(&header_name, ValueKind::Binary, 14.7f64.to_le_bytes())
         );
 
         let header = partition_value_to_transport_header(
-            header_name.to_string(),
+            &header_name,
             &strategy,
             PartitionValue::Boolean(true),
         );
         assert_eq!(
             header,
-            TransportHeader {
-                name: header_name.to_string(),
-                wire_name: header_name.to_string(),
-                value_kind: ValueKind::Binary,
-                value: vec![1]
-            }
+            transport_header(&header_name, ValueKind::Binary, [1])
         );
 
         let header = partition_value_to_transport_header(
-            header_name.to_string(),
+            &header_name,
             &strategy,
             PartitionValue::Boolean(false),
         );
         assert_eq!(
             header,
-            TransportHeader {
-                name: header_name.to_string(),
-                wire_name: header_name.to_string(),
-                value_kind: ValueKind::Binary,
-                value: vec![0]
-            }
+            transport_header(&header_name, ValueKind::Binary, [0])
         );
 
         let header = partition_value_to_transport_header(
-            header_name.to_string(),
+            &header_name,
             &strategy,
             PartitionValue::Binary(vec![4, 1, 8]),
         );
         assert_eq!(
             header,
-            TransportHeader {
-                name: header_name.to_string(),
-                wire_name: header_name.to_string(),
-                value_kind: ValueKind::Binary,
-                value: vec![4, 1, 8],
-            }
+            transport_header(&header_name, ValueKind::Binary, [4, 1, 8])
         );
 
-        let header = partition_value_to_transport_header(
-            header_name.to_string(),
-            &strategy,
-            PartitionValue::Null,
-        );
+        let header =
+            partition_value_to_transport_header(&header_name, &strategy, PartitionValue::Null);
         assert_eq!(
             header,
-            TransportHeader {
-                name: header_name.to_string(),
-                wire_name: header_name.to_string(),
-                value_kind: ValueKind::Binary,
-                value: vec![]
-            }
+            transport_header(&header_name, ValueKind::Binary, [])
         );
     }
 
     #[test]
     fn test_partition_value_to_transport_header_json() {
-        let header_name = "partition";
+        let header_name = context_name("partition");
         let strategy = PartitionValueSerializeStrategy::Json;
 
         let header = partition_value_to_transport_header(
-            header_name.to_string(),
+            &header_name,
             &strategy,
             PartitionValue::String("test".to_string()),
         );
         assert_eq!(
             header,
-            TransportHeader {
-                name: header_name.to_string(),
-                wire_name: header_name.to_string(),
-                value_kind: ValueKind::Text,
-                value: "\"test\"".as_bytes().to_vec()
-            }
+            transport_header(&header_name, ValueKind::Text, "\"test\"".as_bytes())
         );
 
-        let header = partition_value_to_transport_header(
-            header_name.to_string(),
-            &strategy,
-            PartitionValue::Int(514),
-        );
+        let header =
+            partition_value_to_transport_header(&header_name, &strategy, PartitionValue::Int(514));
         assert_eq!(
             header,
-            TransportHeader {
-                name: header_name.to_string(),
-                wire_name: header_name.to_string(),
-                value_kind: ValueKind::Text,
-                value: "514".as_bytes().to_vec()
-            }
+            transport_header(&header_name, ValueKind::Text, "514".as_bytes())
         );
 
         let header = partition_value_to_transport_header(
-            header_name.to_string(),
+            &header_name,
             &strategy,
             PartitionValue::Float(14.7),
         );
         assert_eq!(
             header,
-            TransportHeader {
-                name: header_name.to_string(),
-                wire_name: header_name.to_string(),
-                value_kind: ValueKind::Text,
-                value: "14.7".as_bytes().to_vec()
-            }
+            transport_header(&header_name, ValueKind::Text, "14.7".as_bytes())
         );
 
         let header = partition_value_to_transport_header(
-            header_name.to_string(),
+            &header_name,
             &strategy,
             PartitionValue::Boolean(true),
         );
         assert_eq!(
             header,
-            TransportHeader {
-                name: header_name.to_string(),
-                wire_name: header_name.to_string(),
-                value_kind: ValueKind::Text,
-                value: "true".as_bytes().to_vec()
-            }
+            transport_header(&header_name, ValueKind::Text, "true".as_bytes())
         );
 
         let header = partition_value_to_transport_header(
-            header_name.to_string(),
+            &header_name,
             &strategy,
             PartitionValue::Boolean(false),
         );
         assert_eq!(
             header,
-            TransportHeader {
-                name: header_name.to_string(),
-                wire_name: header_name.to_string(),
-                value_kind: ValueKind::Text,
-                value: "false".as_bytes().to_vec()
-            }
+            transport_header(&header_name, ValueKind::Text, "false".as_bytes())
         );
 
         let header = partition_value_to_transport_header(
-            header_name.to_string(),
+            &header_name,
             &strategy,
             PartitionValue::Binary(vec![4, 1, 8]),
         );
         assert_eq!(
             header,
-            TransportHeader {
-                name: header_name.to_string(),
-                wire_name: header_name.to_string(),
-                value_kind: ValueKind::Text,
-                value: "[4,1,8]".as_bytes().to_vec()
-            }
+            transport_header(&header_name, ValueKind::Text, "[4,1,8]".as_bytes())
         );
 
-        let header = partition_value_to_transport_header(
-            header_name.to_string(),
-            &strategy,
-            PartitionValue::Null,
-        );
+        let header =
+            partition_value_to_transport_header(&header_name, &strategy, PartitionValue::Null);
         assert_eq!(
             header,
-            TransportHeader {
-                name: header_name.to_string(),
-                wire_name: header_name.to_string(),
-                value_kind: ValueKind::Text,
-                value: "null".as_bytes().to_vec()
-            }
+            transport_header(&header_name, ValueKind::Text, "null".as_bytes())
         );
     }
 
@@ -2014,5 +1964,24 @@ mod test {
                 );
             })
             .validate(|_ctx| async move {});
+    }
+
+    /// Scenario: a partition processor has an output header.
+    /// Guarantees: its factory declares that context entry.
+    #[test]
+    fn partition_declaration_names_output() {
+        let config = serde_json::json!({
+            "partition_by": { "opl_expression": "name" },
+            "partition_header_name": "x-partition"
+        });
+        let config: Config = serde_json::from_value(config).unwrap();
+        let decls = config.context_declarations();
+        assert_eq!(decls.len(), 1);
+        assert_eq!(
+            decls.iter().next().expect("one declaration"),
+            &ContextDeclaration::Produces {
+                entry: context_name("x-partition"),
+            }
+        );
     }
 }
