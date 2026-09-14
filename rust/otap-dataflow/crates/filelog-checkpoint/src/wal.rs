@@ -1049,7 +1049,11 @@ pub fn decode_operation(bytes: &[u8]) -> Result<(Operation, usize), DecodeError>
             computed,
         });
     }
-    Ok((Operation::decode_payload(payload)?, consumed))
+    Ok((
+        Operation::decode_payload(payload)
+            .map_err(|error| error.in_complete_container("WAL operation payload"))?,
+        consumed,
+    ))
 }
 
 /// Structurally valid transaction class.
@@ -1391,7 +1395,8 @@ pub fn scan_next_transaction(
     }
     let body = &bytes[TX_HEADER_BYTES..frame_crc_offset];
     Ok(Some(TransactionScan::Complete {
-        transaction: decode_transaction_body(sequence, op_count, body)?,
+        transaction: decode_transaction_body(sequence, op_count, body)
+            .map_err(|error| error.in_complete_container("WAL transaction body"))?,
         consumed: needed,
     }))
 }

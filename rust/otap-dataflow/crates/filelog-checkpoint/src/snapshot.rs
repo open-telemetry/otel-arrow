@@ -268,7 +268,11 @@ impl SnapshotRecord {
                 computed,
             });
         }
-        Ok((Self::decode_payload(payload)?, consumed))
+        Ok((
+            Self::decode_payload(payload)
+                .map_err(|error| error.in_complete_container("snapshot record payload"))?,
+            consumed,
+        ))
     }
 }
 

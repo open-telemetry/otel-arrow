@@ -1775,3 +1775,60 @@ fn snapshot_namespace_mismatch_is_rejected() {
         Err(DecodeError::NamespaceMismatch { .. })
     ));
 }
+
+/// Scenario: A complete operation has a valid CRC but its fields exceed its payload.
+/// Guarantees: Inner missing bytes are corruption, while a physically short frame stays Truncated.
+#[test]
+fn complete_operation_shortfall_is_malformed() {
+    let frame = operation_from_payload(&PROGRESS_OP[4..24]);
+    assert!(matches!(
+        decode_operation(&frame),
+        Err(DecodeError::MalformedPayload {
+            context: "WAL operation payload",
+            ..
+        })
+    ));
+    assert!(matches!(
+        decode_operation(&frame[..frame.len() - 1]),
+        Err(DecodeError::Truncated { .. })
+    ));
+}
+
+/// Scenario: A CRC-valid snapshot record declares more fingerprint bytes than it contains.
+/// Guarantees: A complete record with an inner shortfall is malformed, not incomplete input.
+#[test]
+fn complete_snapshot_record_shortfall_is_malformed() {
+    let mut frame = active_record_frame();
+    let fingerprint_length_offset = 4 + 16 + 4 + 8 + 34;
+    put_u16(&mut frame, fingerprint_length_offset, u16::MAX);
+    refresh_record_crc(&mut frame);
+    let mut snapshot = ACTIVE_SNAPSHOT.to_vec();
+    snapshot[60..60 + frame.len()].copy_from_slice(&frame);
+    assert!(matches!(
+        decode_snapshot(&snapshot, &namespace_digest("app-logs").unwrap(), u32::MAX),
+        Err(DecodeError::MalformedPayload {
+            context: "snapshot record payload",
+            ..
+        })
+    ));
+}
+
+/// Scenario: A complete transaction has valid CRCs but its operation frame exceeds the body.
+/// Guarantees: Inner frame shortfalls never become recoverable WAL tails; a missing outer byte is Incomplete.
+#[test]
+fn complete_transaction_shortfall_is_malformed() {
+    let mut operation = PROGRESS_OP.to_vec();
+    put_u32(&mut operation, 0, 1000);
+    let transaction = transaction_from_operations(&[&operation]);
+    assert!(matches!(
+        scan_next_transaction(&transaction, 1),
+        Err(DecodeError::MalformedPayload {
+            context: "WAL transaction body",
+            ..
+        })
+    ));
+    assert!(matches!(
+        scan_next_transaction(&transaction[..transaction.len() - 1], 1),
+        Ok(Some(TransactionScan::Incomplete { .. }))
+    ));
+}

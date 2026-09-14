@@ -83,3 +83,22 @@ The intended consumers are:
 Both depend on this crate. The checkpoint crate does not depend on the
 receiver, `dfctl`, the engine, controller, OTAP, Arrow, discovery, reader,
 configuration, or telemetry layers.
+
+## Incomplete input and malformed payloads
+
+`Truncated` means the supplied outer input lacks required bytes. It does not
+prove physical EOF or show whether bytes are missing or a declared length is
+wrong. `InvalidLength` similarly reports a fixed-width size mismatch; callers
+must inspect its context and sizes. `SnapshotRecordCountExceedsPhysicalMaximum`
+is an early allocation bound, not proof of truncation: missing bytes or an
+invalid declared count can both trigger it. These errors never authorize repair.
+
+After a record, operation, or transaction passes its complete frame and CRC
+checks, an inner shortfall is `MalformedPayload` with the failing container,
+required bytes, and remaining bytes. Other structural errors retain their
+specific variants. This prevents an inner length error from looking like a
+request to read more outer input. The store must combine codec errors with its
+read/EOF evidence when reporting an incomplete authoritative generation.
+For WAL scanning, only `Ok(TransactionScan::Incomplete)` (inside `Some`) denotes
+a potentially incomplete suffix. Every scanner error is fail-closed corruption
+or another explicit validation failure, never permission to truncate a tail.

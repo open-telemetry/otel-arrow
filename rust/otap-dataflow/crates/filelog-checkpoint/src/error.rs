@@ -18,12 +18,23 @@ pub enum DecodeError {
         /// Observed size.
         actual: usize,
     },
-    /// Fewer bytes remained than a field required.
+    /// The supplied outer input lacks bytes required by its declared structure.
+    /// This does not prove physical EOF or distinguish missing bytes from a bad length.
     #[error("truncated input: needed {needed} bytes, {available} available")]
     Truncated {
         /// Required bytes.
         needed: usize,
         /// Remaining bytes.
+        available: usize,
+    },
+    /// A complete, CRC-validated container lacks bytes required by an inner field.
+    #[error("{context} is malformed: field needs {needed} bytes, {available} available")]
+    MalformedPayload {
+        /// Complete container whose inner structure is invalid.
+        context: &'static str,
+        /// Bytes required by the inner read.
+        needed: usize,
+        /// Bytes remaining in that container.
         available: usize,
     },
     /// A declared length exceeded its absolute format maximum.
@@ -241,6 +252,19 @@ pub enum DecodeError {
         /// Offset that determines the required window and empty digest.
         offset: u64,
     },
+}
+
+impl DecodeError {
+    pub(crate) fn in_complete_container(self, context: &'static str) -> Self {
+        match self {
+            Self::Truncated { needed, available } => Self::MalformedPayload {
+                context,
+                needed,
+                available,
+            },
+            other => other,
+        }
+    }
 }
 
 /// Failure while encoding a constructed checkpoint value.
