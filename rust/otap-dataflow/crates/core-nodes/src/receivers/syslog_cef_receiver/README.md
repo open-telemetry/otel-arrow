@@ -466,9 +466,10 @@ append work. It excludes batch buffering and pipeline handoff.
 | `receiver.received.payload.size` | `By` | Optional encoded application payload bytes visible before parsing, grouped by `signal=logs` and terminal `outcome`. |
 | `receiver.processing.duration` | `s` | Optional active receiver-local processing duration per external message, grouped by `signal=logs`. |
 
-`outcome=success` means pipeline handoff completed, `outcome=refused` means
-validation, admission, capacity, shutdown, or pipeline handoff rejected the
-message, and `outcome=failure` means receiver-local processing failed.
+`outcome=success` means receiver-local admission, parsing, and record append
+completed. `outcome=refused` means local validation or admission rejected the
+message, and `outcome=failure` means receiver-local processing failed. Batch
+buffering, downstream handoff, and Ack/Nack do not change this outcome.
 
 #### Component Diagnostics
 
