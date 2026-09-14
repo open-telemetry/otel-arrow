@@ -891,6 +891,7 @@ mod tests {
 
     use otel_arrow_dfe_channel::error::RecvError;
     use otel_arrow_dfe_config::{ContextEntryName, SignalType};
+    use otel_arrow_dfe_config::authorized_identity_policy::AuthorizedIdentityPolicy;
     use otel_arrow_dfe_config::node::NodeUserConfig;
     use otel_arrow_dfe_config::policy::{
         MemoryLimiterMode, RateLimitAggregation, RateLimitEnforcement, RateLimitPressure,
@@ -904,7 +905,9 @@ mod tests {
     use otel_arrow_dfe_engine::ProducerEffectHandlerExtension;
     use otel_arrow_dfe_engine::admission::{AdmissionBinder, AdmissionContext, AdmissionDecision};
     use otel_arrow_dfe_engine::capability::CapabilityError;
-    use otel_arrow_dfe_engine::capability::auth::{AuthzDecision, BearerToken, DenyReason};
+    use otel_arrow_dfe_engine::capability::auth::{
+        AuthorizedIdentity, AuthzDecision, BearerToken, DenyReason,
+    };
     use otel_arrow_dfe_engine::clock;
     use otel_arrow_dfe_engine::context::ControllerContext;
     use otel_arrow_dfe_engine::control::NackMsg;
@@ -998,11 +1001,23 @@ mod tests {
             credential: &BearerToken,
         ) -> Result<AuthzDecision, CapabilityError> {
             Ok(match credential.expose_token() {
-                "allowed" => AuthzDecision::allow_anonymous(),
+                "allowed" => {
+                    AuthzDecision::allow(AuthorizedIdentity::new().with_subject("test-subject"))
+                }
                 "invalid" => AuthzDecision::deny(DenyReason::InvalidCredential),
                 _ => AuthzDecision::deny(DenyReason::NotPermitted),
             })
         }
+    }
+
+    fn authorized_identity_policy() -> AuthorizedIdentityPolicy {
+        serde_json::from_value(serde_json::json!([
+            {
+                "claim": "sub",
+                "store_as": "customer_id"
+            }
+        ]))
+        .expect("valid authorized identity policy")
     }
 
     fn test_config(addr: SocketAddr) -> Config {
@@ -1077,7 +1092,7 @@ mod tests {
         addr: SocketAddr,
         path: &'static str,
         body: Vec<u8>,
-        authorization: &'static str,
+        authorization: &str,
     ) -> Result<(http::StatusCode, Bytes), Box<dyn std::error::Error + Send + Sync>> {
         let stream = TcpStream::connect(addr).await?;
         let (mut sender, conn) = http1::handshake(TokioIo::new(stream)).await?;
@@ -2361,6 +2376,94 @@ mod tests {
 
         test_runtime
             .set_receiver(receiver)
+            .run_test(scenario)
+            .run_validation_concurrent(validation);
+    }
+
+    /// Scenario: an authorized OTLP HTTP request is handled with a subject
+    /// projection policy configured on the receiver.
+    /// Guarantees: the verified subject is stored under the configured context
+    /// entry name on the pdata forwarded downstream.
+    #[test]
+    fn test_otlp_http_captures_authorized_identity() {
+        let test_runtime = TestRuntime::new();
+        let http_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
+        let http_listen: SocketAddr = format!("127.0.0.1:{http_port}").parse().unwrap();
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
+
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let mut config = test_config_http_only(http_listen);
+        config
+            .protocols
+            .http
+            .as_mut()
+            .expect("HTTP test config")
+            .wait_for_result = false;
+
+        let receiver = ReceiverWrapper::shared(
+            OTLPReceiver {
+                config,
+                metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
+                global_max_concurrent_requests: None,
+                authorizer: Some(Box::new(PolicyAuthorizer)),
+                admission_state: SharedReceiverAdmissionState::from_process_state(
+                    &pipeline_ctx.memory_pressure_state(),
+                ),
+            },
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let scenario = move |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                let mut request_bytes = Vec::new();
+                create_logs_service_request()
+                    .encode(&mut request_bytes)
+                    .expect("encode HTTP request");
+                let authorization = ["Bearer", "allowed"].join(" ");
+
+                let (status, _) = post_otlp_http_with_authorization(
+                    http_listen,
+                    "/v1/logs",
+                    request_bytes,
+                    &authorization,
+                )
+                .await
+                .expect("authorized HTTP request must return a response");
+                assert_eq!(status, http::StatusCode::OK);
+
+                ctx.send_shutdown(Instant::now(), "Test complete")
+                    .await
+                    .expect("send shutdown");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        let validation = |mut ctx: NotSendValidateContext<OtapPdata>| {
+            Box::pin(async move {
+                let pdata = timeout(Duration::from_secs(3), ctx.recv())
+                    .await
+                    .expect("authorized HTTP request must reach downstream")
+                    .expect("downstream channel must remain open");
+                let entries = pdata
+                    .authorized_identity_entries()
+                    .expect("authorized identity entries must be captured");
+                assert_eq!(
+                    entries
+                        .get("customer_id")
+                        .and_then(|entry| entry.value().as_str()),
+                    Some("test-subject")
+                );
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        test_runtime
+            .set_receiver(receiver)
+            .with_authorized_identity_policy(Some(authorized_identity_policy()))
             .run_test(scenario)
             .run_validation_concurrent(validation);
     }
