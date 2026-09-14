@@ -90,19 +90,25 @@ per-reader payload peak; additional mutable state must be separately bounded.
 An implementation cannot claim complete accounting merely from body lengths.
 
 ```text
-partial_state_used = sum(charged unfinished state for each partial reader)
-prospective_partial_state = partial_state_used + additional_allocation_charge
-prospective_partial_state <= limits.max_partial_state_bytes
+partial_state_slot_bytes = conservative configured single-reader peak
+partial_state_slot_count = floor(max_partial_state_bytes / partial_state_slot_bytes)
+partial_state_reserved = admitted_slot_count * partial_state_slot_bytes
+partial_state_used = sum(actual charged unfinished allocations)
+partial_state_used <= partial_state_reserved <= max_partial_state_bytes
 ```
 
-All arithmetic is checked. The reservation precedes allocation and covers old
-and new buffers coexisting during growth, input remainders copied from the
-shared source turn, retained source/text representations, and continuity
-windows. Release follows actual ownership release. Transfers into a batch or
-carry-over move the charge between the relevant models without an unaccounted
-interval. Independent backing copies count independently; shared allocations
-are counted once within this physical-capacity model. This does not change the
-proposed logical retained-work RFC's per-owner attribution semantics.
+All arithmetic is checked. Each holder's actual charge must also fit its own
+slot. The slot peak includes old/new buffers coexisting during growth, owned
+source-turn remainders, source/text representations, mutable decoder/framer
+state, and continuity windows. Unused reservations are not allocated payload or
+RSS, but are unavailable to other readers. The remaining budget below one full
+slot cannot admit another reader. Admission precedes source content reads.
+Release follows actual ownership release at a clean framing boundary, removal,
+or cleanup, as specified by the behavioral contract. Transfers into a batch or
+carry-over require destination admission without an unaccounted interval.
+Independent copies count independently; shared allocations count once within
+this physical-capacity model. This does not change the proposed logical
+retained-work RFC's per-owner attribution semantics.
 
 For aggregate admission, replace an unmultiplied single-reader framer allowance
 with the complete partial-state budget. Add the one shared source-turn buffer,
@@ -115,14 +121,16 @@ again outside the budget.
 Startup derives a worst-case single-reader charge, including growth, and
 rejects a budget smaller than that value. The budget does not promise that all
 tracked files can simultaneously hold maximum-sized partial records. Runtime
-exhaustion follows the behavioral receiver-terminal rule; it is not a wait for
-unfinished writers or permission to discard-and-rewind readers.
+slot exhaustion parks new readers while admitted work remains serviceable. All
+slots can remain held indefinitely by boundary-less input with idle flush
+disabled. Only reservation/accounting violations use the partial-state terminal
+failure path; capacity saturation does not permit discard-and-rewind.
 
 At the proposed defaults, the payload-only framer formula is 16,777,264 bytes
-per worst-case text/preserve-raw reader. A 256 MiB budget accommodates at most
-15 such simultaneous peaks before other mutable state is included. This is a
-conservative growth estimate, not measured steady retained size or a promised
-reader count. Conversely, 10,000 readers retaining only a 1 MiB payload each
+per worst-case text/preserve-raw reader. A 256 MiB budget therefore admits at most
+15 worst-case slots before other mutable state is included, even when actual
+records are short. This is a conservative payload estimate, not the final slot
+size or a promised reader count. Conversely, 10,000 readers retaining only a 1 MiB payload each
 would already need about 9.77 GiB. Qualification must report measured retained
 and transient layouts, feasible concurrent partial-reader populations, and
 representative defaults rather than equating tracked history with RAM capacity.
@@ -140,6 +148,12 @@ budget. Deployment qualification includes process headroom and the combined
 working set of all configured receiver instances and downstream components.
 
 ### Reader table
+
+The bounded clean-yield continuation and guard, plus unread-age and latest-size
+observations, belong to each reader's metadata allowance. Qualification must
+show that the concrete reader-table layout includes them; the existing numeric
+allowance is not proof that new fields fit. Slot release cannot move a variable
+partial-record buffer into this metadata allowance.
 
 ```text
 reader_table_payload =
@@ -270,10 +284,12 @@ unbounded event queue or log flood.
 | `batches_nacked` | Matching aggregate downstream Nacks |
 | `batches_resent` | Retry sends |
 | `retry_attempts` | Resend attempts |
-| `retry_exhausted` | Retained batches exhausting budget |
+| `retry_exhausted` | Initial attempt-budget exhaustion, once per retained batch; periodic paused failures do not increment it again |
+| `delivery_paused` | Gauge with bounded reason: aggregate Nack or pre-publication NoRoute; no per-file labels |
+| `delivery_pause_duration` | Gauge of elapsed current delivery pause; zero after recovery |
 | `stale_completions` | Ignored stale Ack/Nack completions |
 | `ack_membership_failures` | Required publication rejected for zero/unready/unsafe Ack membership |
-| `records_dropped_on_nack` | Explicit `drop_and_continue` loss |
+| `records_dropped_on_retry_exhaustion` | Explicit `drop_and_continue` loss |
 | `checkpoint_transactions` | Logical WAL transactions by operation class |
 | `checkpoint_persists` | Successful append/sync/publication operations |
 | `checkpoint_failures` | Store failures by bounded operation class |
@@ -296,8 +312,10 @@ unbounded event queue or log flood.
 | `copytruncate_detected` | Observable truncation detections |
 | `descriptor_evictions` | Completed resident-handle evictions |
 | `partial_state_bytes` | Gauge of current conservative unfinished-state charge, including nonresident readers |
-| `partial_readers_waiting` | Gauge by bounded wait reason: framing boundary, descriptor capacity, or enforced process pressure; each waiting reader has one current reason |
-| `partial_state_budget_exhausted` | Count of terminal local-capacity failures; distinct from process Hard-pressure pauses |
+| `partial_state_reserved_bytes` | Gauge of capacity committed to admitted framing slots, including unused reservation |
+| `partial_state_admitted_readers` | Gauge of current slot holders |
+| `partial_readers_waiting` | Gauge including readers awaiting first admission; one bounded reason per reader, in precedence order: enforced process pressure, partial-state capacity, descriptor capacity, framing boundary |
+| `partial_state_accounting_failure` | Count of terminal reservation/accounting invariant failures; ordinary slot saturation is not a failure |
 | `descriptor_reopen_failures` | Revalidation/reopen failures by reason |
 | `descriptor_budget_warnings` | Startup descriptor-budget warnings by bounded result |
 | `pinned_rotated_handles` | Current pinned rotated-handle count |
@@ -307,6 +325,12 @@ unbounded event queue or log flood.
 | `eof_reprobes` | Scheduled EOF source probes |
 | `environmental_reprobes` | Bounded transient retries by operation and error class |
 | `read_paused_time` | Source-read pause due to backpressure/in-flight batch |
+| `estimated_unread_bytes` | Gauge in source bytes: aggregate observed backlog for validated tracked source identities/epochs; subject to coverage and observation freshness below |
+| `oldest_observed_unread_age` | Gauge in seconds: oldest still-unread observation marker; not application event age or exact age of every pending byte |
+| `applied_not_durable_bytes` | Gauge in source bytes: applied progress beyond the confirmed durable frontier, counted only within the same file identity/epoch |
+| `backlog_observation_sources` | Receiver-wide source counts by bounded status: observed, unknown, or invalidated; not per-file labels |
+| `backlog_observation_max_age` | Gauge in seconds: maximum age of size observations contributing to the estimate |
+| `backlog_inventory_complete` | Boolean gauge: latest reconciliation completed without coverage gaps; does not claim all source sizes are current |
 | `read_turns` | Source turns and bytes by bounded outcome |
 | `discovery_scan_duration` | Reconciliation duration |
 | `discovery_incomplete` | Incomplete passes by bounded reason |
@@ -339,6 +363,84 @@ separate telemetry review. The descriptive handles in this table are not a publi
 compatibility contract, and an implementation does not claim complete observability
 until that review defines the instrument details.
 
+### Backlog and durability-lag semantics
+
+These signals describe different exposures. Unread bytes remain in source files
+and may become unavailable through rotation, removal, or truncation. Applied but
+not durable progress may be replayed after a failure. Neither metric predicts
+lost records, and neither is a measure of retained batch memory.
+
+For each tracked source with a validated identity/epoch and a successful size
+observation, its unread contribution is `max(observed_size - read_frontier, 0)`.
+The read frontier includes bytes consumed into retained decoder/framer state;
+those bytes are not unread, even when their batch has not been Acked. After a
+clean yield discards speculative read-ahead, use the reset volatile cursor at
+the saved completed-record boundary: discarded bytes become unread again.
+The estimate may rise without new appends; this is not a regression of applied
+or durable progress. Preserve any still-pending `(S, t)` marker, but do not
+reconstruct an earlier cleared marker from guessed history. If needed, install
+the latest valid observation covering the now-unread range. Count a
+logical source once despite multiple path aliases or handles. Size and frontier
+must describe the same stream epoch. Never subtract across truncation/reset or
+identity replacement. Quarantined sources can contribute when their stopped
+frontier and source evidence remain valid; otherwise classify them as unknown.
+
+This is an observation-based estimate, not an upper bound. Appends since the
+last observation and undiscovered files may be missing. Successful existing
+bounded reconciliation, identity validation, and EOF/source probes update it;
+telemetry does not add full scans, source reads, or descriptor opens during
+backpressure or Hard pressure. Preserve the last observation across temporary
+probe failure with its increasing age; mark a never-observed source unknown.
+Confirmed evidence invalidation removes its numeric contribution and increments
+the invalidated coverage population until revalidation or removal. A lower sum
+after invalidation or removal is not evidence that those bytes were delivered.
+Expose incomplete inventory and counts alongside the numeric estimate. An empty
+known subset must not be presented as confirmed zero backlog when coverage is
+unknown, invalidated, or incomplete.
+
+Each source with observed unread data retains one marker `(S, t)`: a validated
+observed source size and its monotonic observation time. Keep it while the read
+frontier is below S. Partial reads and newer appends do not reset t. Clear it
+only when the frontier reaches or passes S, or source evidence is invalidated.
+If the latest valid observation still shows unread bytes, install that
+observation's size and original observation time as the next marker; do not
+invent an older observation time for newly discovered bytes. If no observation
+shows remaining bytes, leave the marker absent until the next ordinary probe.
+
+Export the maximum elapsed time among valid pending markers. At least some
+still-unread bytes below S were present at t, so this is a lower bound on the
+oldest observed unread age, not an exact per-byte age or merely a complete-stall
+timer. The marker plus the latest observation use bounded metadata per source.
+Restart resets volatile ages and observation coverage; age cannot be recovered
+from application timestamps or file modification time. Invalidated evidence
+invalidates both observations and the marker.
+
+Applied-versus-durable lag is the sum of nonnegative applied-minus-durable
+source offsets within matching identities and epochs. Advancing the durable
+frontier after confirmed sync reduces it. Unacknowledged read-ahead is excluded.
+A reset to a new epoch becomes comparable only under the existing atomic synced
+reset contract; no negative difference or cross-epoch subtraction is permitted.
+Compaction and ordinary bookkeeping must not appear as new source-byte lag.
+During recovery before frontiers are established, report lag unavailable rather
+than zero. Unknown write/sync outcomes never advance the confirmed durable
+frontier for telemetry purposes. Checked aggregate arithmetic must not wrap;
+unrepresentable estimates expose an unavailable/overflow status rather than a
+misleading small value. The telemetry review must define availability encoding.
+
+Threshold events use receiver-wide signal identifiers, never file paths or IDs.
+The telemetry contract must define configurable or documented thresholds,
+hysteresis, and a minimum repeat interval before instrumentation is accepted;
+this design introduces no unspecified receiver YAML keys. Emit coalesced crossing
+and recovery events with the value, threshold, observation coverage, and freshness.
+Missing or invalidated evidence cannot produce a healthy/recovered event. Report
+coverage degradation separately, and resume threshold evaluation when evidence
+is available. Only these monitored signals are interpreted; an unread-byte
+threshold is not a declaration of data loss. Maintain fixed event state per
+signal, with bounded emission frequency under oscillation or sustained pressure.
+All added per-source observation metadata belongs in reader-table accounting;
+metric collection uses bounded/incremental work and never introduces per-file
+metric label cardinality.
+
 ### Health-event inventory
 
 Rate-limited operator-visible events cover:
@@ -347,9 +449,14 @@ Rate-limited operator-visible events cover:
 - include patterns apparently covering engine output;
 - incomplete reconciliation and its reason;
 - candidate overflow and prolonged admission stall;
+- unread-byte, observed unread-age, and applied/durable-lag threshold crossings
+  and recovery, with observation coverage/freshness and bounded repeat frequency;
+- backlog coverage degradation or unavailable/overflow estimates;
 - descriptor-budget incompatibility and environmental open/reprobe backoff;
-- partial-state exhaustion with budget, current/requested charge, and partial-reader count;
-- process-pressure intake pause and recovery, distinct from local exhaustion;
+- partial-state saturation and recovery with budget, slot size, reserved/used bytes,
+  and admitted/waiting reader counts; coalesced transitions, not per-file events;
+- partial-state accounting failure with reserved and requested charge;
+- process-pressure intake pause and recovery, distinct from local capacity waiting;
 - pinned rotated-handle saturation and oldest pinned age;
 - discovery traversal/evidence failure;
 - exclusion revocation;
@@ -375,11 +482,11 @@ Rate-limited operator-visible events cover:
 - checkpoint append, sync, recovery, corruption, compaction, publication, and cleanup
   failures;
 - explicit namespace inspection, evidence backup, and whole-namespace reset;
-- aggregate-Nack retry, exhaustion, and explicit drop;
+- aggregate-Nack retry, exhaustion, delivery-pause entry/recovery, and explicit drop;
 - zero or unsafe required Ack membership;
 - stale completion;
 - drain timeout and forced shutdown; and
-- worker failure or blocked-worker lifecycle detachment.
+- worker failure or worker join-timeout process-fatal escalation.
 
 ## Validation matrix
 
@@ -403,6 +510,11 @@ while their semantic and format definitions remain normative from version 1.
 | Configuration | `checkpoint.compact_after_bytes == WAL_HEADER_BYTES + WAL_MAX_TX_FRAME_BYTES` | Accepted |
 | Configuration | `checkpoint.compact_after_bytes < WAL_HEADER_BYTES + WAL_MAX_TX_FRAME_BYTES` | Rejected before startup |
 | Configuration | Nonzero `force_flush_period >= rotation.rotate_wait` | Rejected before startup |
+| Configuration | Idle flush omitted | Resolves to 0s; a live unterminated record does not complete solely because time passes |
+| Framing | Explicit 500ms idle flush with slowly appended application message | Existing EOF-gated timing rules apply; partial output and restart reframing remain documented possibilities |
+| Parsing integration | Oversized JSON/CSV or idle-flushed partial application message | No assumption of independent parseability or automatic reassembly; parser failure preserves input and reports bounded evidence |
+| Parsing integration | Fragment happens to be syntactically valid JSON/CSV | Parse success alone does not establish whole-message completeness; provenance remains available |
+| Configuration | Stored profile used 500ms and new configuration omits idle flush | Default resolves to 0s and mismatch remains fail-closed; explicit old setting preserves compatibility |
 | Configuration | Both multiline patterns | Rejected |
 | Configuration | Unsupported regex construct/profile | Rejected |
 | Configuration | Framing bound exactly minimum | Accepted |
@@ -450,7 +562,7 @@ while their semantic and format definitions remain normative from version 1.
 | Discovery | Traversal reaches maximum recursion depth | At most one directory handle resident; bounded path/locator stack only |
 | Discovery | Directory reopen cannot resume unambiguously | Pass incomplete; no false absence or removal |
 | Discovery | Very large first root before later roots | Bounded state and cancellation; full-pass/root latency measured, with no Phase 1 finite-latency claim |
-| Discovery | Kernel-blocked operation | Async task does not synchronously forever-join |
+| Discovery | Kernel-blocked operation during teardown | Async task remains responsive; missed worker termination deadline invokes process-fatal escalation without declaring worker resources released |
 | Discovery | Old unrelated candidate exactly at age threshold | Eligible |
 | Discovery | Old unrelated candidate beyond age threshold | Present but not admitted; no checkpoint record |
 | Discovery | Ignored candidate receives later append | Later pass may admit it |
@@ -466,7 +578,7 @@ while their semantic and format definitions remain normative from version 1.
 | Identity | Exact locator and mismatched prefix | Atomic superseded-record removal/new registration; no old offset inheritance or duplicate Active locator claim |
 | Identity | Committed offset beyond size | No old offset inheritance |
 | Identity | Growing evidence | Same `file_id`, evidence extends |
-| Identity | Stored framing-profile mismatch | Per-file fail closed; no new identity or `skip_to_end` |
+| Identity | Stored profile mismatch with either Clean or Continuation resume | Phase 1 remains per-file fail-closed; no new identity, profile overwrite, or skip_to_end; Clean alone does not authorize migration |
 | Identity | Locator/inode reused after `RotatedFinalized` | New identity; finalized state never reconnects |
 | Identity | Snapshot or staged WAL result has two Active/Quarantined records claiming one exact locator | Complete snapshot/transaction fails closed before candidate matching or state publication |
 | Identity | `RotatedFinalized` record and one new Active record share a reused locator | Accepted; only the new Active record is candidate-eligible |
@@ -484,16 +596,22 @@ while their semantic and format definitions remain normative from version 1.
 | Configuration | Partial-state budget is zero, unrepresentable, or smaller than conservative one-reader peak | Startup rejects with formula and contributing values |
 | Reader | 513 files, 512 descriptors, 128 KiB turns, 256 KiB newline bodies, beginning admission, sufficient partial budget | Every stable complete record emits and advances after Ack; eviction never repeatedly resets its first chunk |
 | Reader | Split or multiline record needs multiple turns before its first eligible result | Progress survives descriptor turnover under the configured budget |
-| Reader | Partial EOF readers with idle flush disabled fill resident slots | They remain eviction candidates; other complete files progress while partial state remains charged |
+| Reader | Partial EOF readers with idle flush disabled fill resident slots | They remain eviction candidates; other files with framing reservations progress while partial state remains charged |
 | Reader | Nonresident partial reader reaches idle deadline | Reopen and reprobe before flushing; new bytes cancel deadline; failed validation never fabricates EOF |
 | Reader | Truncate/decode-fail scan greatly exceeds body bound | Prefix and scan state survive eviction; tail bytes are not retained; other readers progress and later malformed input still quarantines before same-record progress |
 | Reader | Reopen size below provisional frontier or changed provisional guard | No unvalidated continuation; existing truncate/identity transitions apply after earlier deltas resolve |
 | Reader | Temporary reopen or evidence-read failure | Retain charged state, retry environmentally, and do not assert disappearance |
 | Resource | Partial-state reservation exactly fits remaining budget | Accepted, including peak old/new allocations and input remainder |
-| Resource | Next reservation exceeds budget | Distinct receiver-terminal failure before allocation; no wait-for-writer, rewind loop, loss-policy invocation, or quarantine |
-| Resource | Exhaustion with open/retained/carry-over data | Forced cleanup reports pending work and leaves unacknowledged progress unchanged |
+| Resource | Next slot reservation exceeds budget | Reader parks before source reading; no receiver failure, rewind, loss-policy invocation, or quarantine; admitted readers and completion/control work remain serviceable |
+| Resource | Slot saturation with open/retained/carry-over data | Existing delivery, Ack, checkpoint, and bounded shutdown remain serviceable; waiting alone never advances progress |
+| Resource | Actual allocation would exceed a holder's slot | Terminal accounting failure before allocation; pending work follows existing terminal reporting and unacknowledged progress remains unchanged |
 | Resource | Ownership moves partial state to batch/carry-over or releases state | No unaccounted copy, leaked reservation, or double counting across capacity models |
-| Resource | Supervisor restarts under unchanged exhausting workload | Failure may repeat; no claimed automatic capacity recovery |
+| Resource | All slots hold unterminated records with idle flush disabled; another file contains a complete record | New reader waits observably without a source read or busy loop; no fabricated boundary or automatic restart; no aggregate progress claim |
+| Resource | A holder completes and releases its slot while readers wait | Oldest eligible waiter is admitted before the releasing reader can start new framing work |
+| Resource | Split output or unfinished logical record survives an emission | Slot remains reserved; only a completed logical-record clean yield may discard later speculative read-ahead under the validated replay rule |
+| Resource | Admitted reader grows through its worst-case framing path while all slots are reserved | Growth fits its existing reservation; no additional partial-state admission is required |
+| Resource | Shutdown while readers wait for slots | Bounded shutdown remains responsive; actual ownership controls release and no waiting reader advances checkpoints |
+| Reader | Idle flush is due but nonresident holder cannot reopen because protected handles occupy every descriptor | Slot remains held; descriptor-capacity waiting is observable; no fabricated EOF or timeout record |
 | Memory pressure | Enforced Hard during source intake | Stop new reads/admission between bounded operations; continue bounded completion/control/cleanup without releasing unfinished state |
 | Memory pressure | Soft or observe-only Hard | No pressure-driven source pause or terminal failure; local byte cap remains enforced |
 | Memory pressure | Recovery or stale pressure generation | Recovery resumes retained state; stale update cannot reopen admission |
@@ -568,8 +686,18 @@ while their semantic and format definitions remain normative from version 1.
 | OTAP | Record ready time | `observed_time_unix_nano` set |
 | OTAP | Timestamp/severity/JSON | Not interpreted by receiver |
 | OTAP | `u16` record boundary | 65,535 accepted; overflow impossible |
-| OTAP | Untruncated losslessly textual path | Registered `log.file.path`/`name` emitted |
-| OTAP | Truncated or non-text native path | No misleading registered path; bounded project-native evidence and truncation marker |
+| OTAP | Default or explicit metadata none | No registered path/name or project path bytes, kind, truncation marker, or digest exported; internal progress/Ack correlation is unchanged |
+| OTAP | Metadata name with complete textual evidence | Only basename exported; no directory, native bytes, or path hash |
+| OTAP | Metadata path with complete textual evidence | Registered path and basename exported; no project-native evidence |
+| OTAP | Metadata native | Bounded native evidence exported with defined encoding/truncation markers; registered text attributes only when lossless and complete |
+| OTAP | Truncated or non-text evidence under name/path | Omit unavailable text attributes; no lossy or native/hash fallback |
+| OTAP | Truncated native evidence under native | Bounded stored suffix and complete-path digest follow the registry; no misleading registered path |
+| OTAP | Metadata mode changes while a batch is retained | Retries preserve original batch attributes; later batches follow supported configuration transition without profile-digest mismatch |
+| Resource | Each metadata mode at maximum path bounds | Exported attributes fit configured record/batch admission; none does not remove internal evidence accounting |
+| Configuration | Unknown include_file_metadata value | Startup rejects |
+| Configuration | worker_shutdown_timeout is zero or total deadline arithmetic is unrepresentable | Startup rejects; no wrapped or unlimited cleanup budget |
+| Lifecycle | Startup recovery completes before any eligible file is discovered | Readiness can be signalled after scheduling infrastructure is ready; complete inventory and first publication are not required |
+| Lifecycle | Exclusive replacement requested while old instance owns workers/namespace | New worker creation waits for confirmed old termination and namespace release; construction-only Ready cannot authorize promotion |
 | OTAP | Split fragment | Exact project-experimental ID/index/finality/body/frame attributes |
 | Batch | Final projected size crosses byte bound after framing | Exact bounded record retained as sole carry-over; no reread |
 | Batch | Multiple records same file | Contiguous delta coalesces |
@@ -596,15 +724,24 @@ while their semantic and format definitions remain normative from version 1.
 | Transition ordering | Excluded source remains present beyond retention interval | Active state retained and consumes tracked capacity; ordinary retention cannot remove it |
 | Transition ordering | Previously excluded exact locator becomes included again | Existing progress reconnects; `start_at` does not reapply |
 | Transition ordering | Administrative action while receiver owns delta | Exclusive tool cannot proceed until receiver releases ownership with no delta |
-| Nack | Any aggregate downstream Nack before attempt exhaustion | Same retained batch, bounded backoff, no reread |
+| Nack | Any aggregate downstream Nack before attempt exhaustion | Same retained batch, bounded initial backoff and paused periodic retries when selected, no reread |
 | Nack | `drop_and_continue` | Explicit loss and durable atomic advance |
 | Nack | Aggregate Nack or pre-publication `NoRoute` before retry exhaustion | Retained batch remains byte-identical and progress does not advance; the outcome itself never authorizes progress |
 | Nack | `drop_and_continue` exhausts retry and progress becomes durable before its health event | Progress remains intentionally advanced; event loss on crash is permitted because telemetry is not durable audit state |
-| Nack | Exhaustion | Configured `on_nack` policy |
-| Nack | Proposed default retry schedule | Approximately 11.3 seconds of scheduled backoff before exhaustion, excluding send/timeout time |
-| Nack | Supervisor restarts after default `fail` during persistent outage | Checkpoint/source reconstruction can duplicate; repeated failure can restart-loop without progress |
+| Nack | Exhaustion | Configured `on_retry_exhaustion` policy |
+| Nack | Proposed default retry schedule | Approximately 11.3 seconds of scheduled backoff before pause, excluding send/timeout time; subsequent retries wait max_backoff after terminal failure |
+| Nack | Transient outage outlasts the initial retry budget | Same batch retained, no source reads or checkpoint advancement, no receiver restart; periodic retries remain bounded |
+| Nack | Paused retry receives matching Ack | Ordinary checkpoint application precedes intake recovery; checkpoint failure does not resend the Acked batch |
+| Nack | Repeated paused failures and stale completion | Fixed-size state, one attempt and timer, fresh attempt identity, stale completion ignored; no repeated exhaustion-event flood |
+| Nack | Drain, Shutdown, or Hard pressure during pause | Lifecycle stays responsive, original drain deadline applies, Shutdown cancels retries; completion work does not reopen source intake under Hard pressure |
+| Nack | Explicit fail or drop_and_continue at exhaustion | Fail preserves progress; explicit drop uses the existing atomic authorized-loss transition |
+| Delivery | Invalid startup topology | Fail before source admission without unauthorized progress |
+| Delivery | Downstream permanent/cause metadata crosses the current tracked-topic boundary | Documented metadata loss does not trigger text-based classification; Filelog follows the uniform retry/exhaustion policy |
+| Delivery | Diagnostic reason text suggests permanence | Text does not select control flow; typed permanent handling remains deferred to the engine follow-up and reviewed mapping |
+| Delivery | Generic Nack or repeated NoRoute without permanent evidence | Retry/pause policy applies; duration, repetition, or diagnostic text never establishes permanence |
+| Nack | Supervisor restarts after explicit `fail` during persistent outage | Checkpoint/source reconstruction can duplicate; repeated failure can restart-loop without progress |
 | Nack | Free-form diagnostic text changes | No control-flow change; text is diagnostic only |
-| Nack | Typed local `NoRoute` before accepted publication | Consumes attempt, retains exact batch, uses bounded backoff, then applies `on_nack` at exhaustion; no fabricated Ack |
+| Nack | Typed local `NoRoute` before accepted publication | Consumes attempt, retains exact batch, uses bounded backoff, then applies `on_retry_exhaustion` at exhaustion; no fabricated Ack |
 | Checkpoint | Crash before registration sync | File was never eligible to read |
 | Checkpoint | More new identities than one non-progress transaction permits | Registration split into independently durable bounded chunks; each file reads only after its chunk is durable |
 | Checkpoint | Non-progress transaction exceeds 256 operations or 16 MiB body | Rejected before allocation/application and split by the writer |
@@ -716,11 +853,39 @@ while their semantic and format definitions remain normative from version 1.
 | Truncation | `read_new` | Durable epoch reset before new read |
 | Backpressure | Downstream full | Reads pause; memory stays bounded |
 | Backpressure | Drain arrives during blocked send | Control interrupts send |
-| Lifecycle | Drain rewinds speculative source state | Speculative rolling guard discarded; restart/reopen reseeds at durable frontier |
-| Lifecycle | Normal drain | Ack/persist/sync/release/notify |
+| Telemetry | Backpressure with several tracked files and path aliases | Observed unread bytes count each identity/epoch once and exclude already-read retained bytes |
+| Telemetry | Source grows while probes are paused | Existing estimate is accompanied by increasing observation age; no telemetry-triggered I/O or claim of exact backlog |
+| Telemetry | Incomplete inventory, unknown source, or invalidated evidence | Coverage remains visible; an empty numeric subset is not reported as confirmed zero or threshold recovery |
+| Telemetry | Partial reads occur below observed size S | Marker time remains unchanged until frontier reaches S; then advance to latest pending observed size/time, without losing freshness evidence |
+| Telemetry | Restart or source reset/replacement | Volatile age/coverage reinitializes and offsets are never subtracted across identities/epochs |
+| Telemetry | Ack applied with delayed sync, then sync succeeds | Applied-not-durable lag rises then falls; unacknowledged read-ahead is excluded |
+| Telemetry | Ambiguous sync, recovery not complete, or aggregate overflow | No fabricated durable advance, zero lag, or wrapped estimate; availability is explicit |
+| Telemetry | Repeated threshold crossings and observation loss | Hysteresis/coalescing bound events, evidence loss cannot imply recovery, and no file labels or unbounded event state appear |
+| Lifecycle | Teardown releases speculative state after worker access ceases | No drain-time seek is required; future recovery reconstructs uncommitted work and reseeds the guard from validated durable progress |
+| Lifecycle | Normal drain | Ack/persist/sync, quiescent resource cleanup, confirmed worker joins and namespace release precede drained notification |
 | Lifecycle | Drain timeout with unacked batch | No progress; replay possible |
 | Lifecycle | Clean drain receives no Shutdown | Cleanup still completes |
 | Lifecycle | Direct Shutdown | Immediate forced path handled |
+| Lifecycle | Delivery pause lasts through drain deadline, workers cooperate | Delivery drain reports timeout with unchanged unacknowledged progress; workers receive their separate termination budget and exit without process-fatal escalation |
+| Lifecycle | Repeated Shutdown during worker cancellation | First worker deadline remains fixed; no extra allowance per command |
+| Resource | More hot/backlogged files than slots, with complete records and validated clean boundaries | Holders yield at a valid completed-record boundary after the source-byte service allowance, discarding only replayable later read-ahead; queued readers progress without waiting for EOF |
+| Resource | Saturated slots with many short complete records | Process a source-byte allowance per admission rather than one record; counter survives Ack waits, evidence/read-ahead bytes do not count, and turns remain bounded |
+| Resource | All holders reach EOF with no unfinished state before using their service allowance, while readers wait | Holders release empty buffer capacity and slots without waiting for more bytes; eligible FIFO waiters are admitted |
+| Performance | More backlogged sources than slots under short-line and multiline workloads | Measure throughput, useful versus reread source bytes, evidence-probe count, admission wait, and control latency against unsaturated cases; qualify the service allowance without weakening revalidation |
+| Reader | Resident descriptor changes while its clean-yield reader is parked | Validate saved-boundary evidence before replay even without reopening; apply normal change handling |
+| Telemetry | Clean yield discards read-ahead after earlier backlog observation | Unread estimate uses reset volatile cursor and may increase; applied/durable lag is unchanged and age history is not fabricated |
+| Resource | Clean yield with decoder or multiline start-line lookahead | Saved source boundary and decoder continuation preserve completed output; replay starts at exact same-epoch boundary with no BOM restart or duplicated completed record |
+| Resource | Clean-yield read-ahead replay encounters changed source or pending decode failure | Revalidation and ordered failure handling apply; no mixed stream, hidden failure, or unauthorized progress |
+| Reader | Source rotates/unlinks while parked for a slot | Resident handle is not closed merely for parking; normal protection/eviction rules apply, FIFO remains, and disappearance exposure is reported |
+| Telemetry | Large backlog drains slowly while read frontier remains below S | Observed unread age continues increasing despite successful small reads |
+| Lifecycle | Either worker remains blocked past its worker-termination deadline | Typed process-fatal latch blocks replacement and generation promotion before termination is initiated; no successful-drain signal |
+| Lifecycle | Repeated replacement requests after join timeout | No new worker set is created in the process; late worker exit does not clear the fatal latch |
+| Lifecycle | Only one worker starts before initialization fails | First cancellation on startup failure starts worker_shutdown_timeout immediately; all started workers share that fixed deadline, and timeout still escalates process-fatally |
+| Lifecycle | Drain transitions to forced shutdown | Delivery work stops at its deadline; first cancellation starts one separate worker budget that subsequent commands cannot reset |
+| Lifecycle | Full channels or blocked telemetry/exporter during join timeout | Fatal escalation does not depend on channel capacity, downstream completion, or telemetry delivery |
+| Lifecycle | Surviving worker retains buffers, source handles, leases, or checkpoint access | Handle detachment does not release charges or exclusion; concurrent namespace acquisition remains blocked while old checkpoint access remains possible |
+| Lifecycle | Engine process-fatal integration exercised in an isolated subprocess | Process exits unsuccessfully without waiting again on a deliberately nonterminating worker; unrelated pipelines are not left running; no claim of interrupting a real uninterruptible kernel call |
+| Lifecycle | Teardown completes with every worker terminated before deadline | Joins complete, resources are released safely, and replacement can proceed through normal ownership acquisition without fatal escalation |
 | Lifecycle | Worker blocked in kernel | Engine wait bounded; no false thread-interruption claim |
 | Failure | Per-file read error | Other eligible files continue |
 | Failure | `EAGAIN`, temporary permission/sharing, retryable I/O, or mount outage | Bounded environmental reprobe; no durable quarantine |
@@ -820,7 +985,8 @@ attempt.
 
 ### Example 11: EOF-gated timeout cancellation
 
-A partial record reaches EOF and arms a 500 ms deadline. At 400 ms a new source byte is
+With explicit `force_flush_period: 500ms`, a partial record reaches EOF and arms
+a 500 ms deadline. At 400 ms a new source byte is
 read. The deadline is canceled before that byte enters framing. A timeout cannot emit
 the old prefix separately at 500 ms.
 
@@ -1155,3 +1321,20 @@ publication with the same process-exit window; recovery cannot rely on a visible
 but unsynced generation-zero marker. These cases require fault modeling that
 distinguishes process exit from later loss of unsynced filesystem metadata;
 a simple process restart alone does not prove directory durability.
+
+## Follow-up qualification: framing-profile migration
+
+These cases qualify the separately reviewed
+[clean-boundary migration design](filelog-receiver-phase1-spec.md#follow-up-framing-profile-transitions-at-clean-boundaries),
+not current v1 support. They do not relax Phase 1 mismatch rejection.
+
+- An allowed framing-only change preserves identity and committed offset at a
+  validated durable `Clean` boundary and takes effect only after transition sync.
+- Identity incompatibility, active split continuation, unsupported encoding
+  transitions, and unresolved old-profile deltas prevent migration.
+- A `Clean` checkpoint with live decoder, multiline, lookahead, or source remainder
+  follows the approved volatile-state transition without mixing profiles.
+- Outstanding Nack/pause, drain, and shutdown never force an unauthorized transition.
+- Interrupted publication, replay, compaction, stale expected-profile transactions,
+  and partially migrated file populations recover according to the versioned
+  authority rules without resetting progress or silently changing interpretation.

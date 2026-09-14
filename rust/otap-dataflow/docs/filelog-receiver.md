@@ -150,7 +150,7 @@ reading implementation detail first.
 | Rotation | Supports move/create; a recognized replacement needing a new identity starts at zero, while its own existing durable state wins; copytruncate remains best-effort |
 | Delivery semantics | In-process retries preserve the retained batch; restart does not promise identical record replay and can produce overlapping or differently framed output |
 | Durability | Does not spool emitted OTAP batches to disk |
-| Resource behavior | Uses fixed workers, bounded state and turns; descriptor turnover preserves partial progress within the local byte budget, whose exhaustion is an explicit receiver failure |
+| Resource behavior | Uses fixed workers, bounded state and turns; descriptor turnover preserves partial progress within the local byte budget, whose saturation parks new readers; accounting violations remain terminal |
 | Failure isolation | Most source failures are per-file; batch, ownership, runtime-lease integrity, and checkpoint failures can stop the receiver |
 | Ownership | Serializes one local checkpoint namespace and prevents duplicate in-process readers; provides no distributed fencing |
 | Ack topology | Receives one engine-aggregated completion per batch attempt; required broadcast destinations use automatic Ack propagation and all-required-subscriber aggregation |
@@ -226,6 +226,7 @@ accepted compromises:
 | --- | --- |
 | Receiver | Discovery, file identity, local ownership, source decoding, record framing, source provenance, `observed_time_unix_nano`, aggregate-completion correlation, and Ack-gated progress |
 | Engine/topic runtime | Declaring Ack-required nodes, establishing downstream readiness, snapshotting nonempty required membership, propagating completion, and aggregating required fan-out subscribers into one Ack or Nack for each publication attempt |
+| Format-level reassembly (future) | Combine source frames into complete standardized-format events before publication, with bounded state and source-aware completion; not supplied implicitly by a stateless codec |
 | PData codecs (optional) | Preserving, batching, forwarding, decoding, or encoding complete independently decodable representations with stable format identity, such as standardized syslog, CEF, GELF, or a versioned JSON telemetry format |
 | Processors and OPL | Configurable application interpretation, including JSON/CSV field mapping, timestamp and severity derivation, trace correlation, enrichment, filtering, and routing semantics |
 | Exporters | Destination representation and delivery |
@@ -267,6 +268,60 @@ Processor and OPL capability assessment, including representative structured,
 container, and multiline processing pipelines, belongs in a companion issue or
 document. These receiver documents do not define processor functions,
 application parsers, or processor implementation design.
+
+### Future format-level reassembly
+
+A source frame is a unit delimited by source framing; a completed log event is
+an application message after any required format-level assembly. They need not
+map one-to-one. For example, CRI `P` records carry partial content and an `F`
+record completes the sequence. Publishing each physical record independently
+does not produce independently complete application events, even if each CRI
+envelope can be decoded on its own.
+
+For formats requiring assembly, the intended future order is:
+
+```text
+source bytes -> source framing -> bounded format-level reassembly
+             -> completed-event publication -> application processors/OPL
+```
+
+Reassembly occurs before publishing the application event, so OPL can parse the
+completed body, such as reassembled JSON, without owning CRI transport state or
+source checkpointing. A codec may decode individual envelopes, but stateless
+codec support alone does not establish the stateful reassembly contract. The
+receiver-integrated format adapter must connect that state to source progress;
+its concrete API and placement require a separate design.
+
+That design must define:
+
+- Assembly keys and isolation across source identities, epochs, and format
+  streams, including interleaved stdout/stderr records.
+- Bounds on active assemblies, retained bytes, contributing-range metadata, and
+  work per turn, with explicit admission and capacity behavior.
+- Behavior for missing final markers, malformed sequences, oversize events,
+  idle waits, rotation, truncation, drain, and shutdown. A timeout must not
+  silently claim that a partial event is complete.
+- Provenance covering every contributing source frame, including envelope and
+  delimiter bytes needed for source accounting. Contiguous contributions may
+  use one combined range; interleaved contributions require bounded range sets
+  or an equivalent representation that does not claim intervening bytes.
+- Completion correlation between the published event and all its contributing
+  input. An Ack may authorize those contributions, but a per-source checkpoint
+  advances only through a contiguous resolved frontier and cannot skip earlier
+  unresolved frames belonging to another assembly. Retry must preserve the
+  completed event and its provenance; fan-out completion remains engine-owned.
+- Recovery of unfinished assemblies and the relationship between volatile state,
+  source replay, and any required checkpoint-format extension. Read-ahead alone
+  never authorizes committing partial contributions. Restart and ownership
+  handoff must not mix assemblies from different source epochs or owners.
+
+CRI reassembly is outside Phase 1. Phase 1 split-fragment metadata does not
+implicitly implement CRI `P`/`F` assembly, and the v1 checkpoint format is not
+claimed sufficient for this future state machine without review. Publishing
+raw source frames for an explicitly selected raw-record use case is distinct
+from claiming completed-event output. Any downstream reassembler alternative
+would need its own bounded many-to-one provenance and completion contract; it
+is not ordinary application-level OPL extraction.
 
 ### Logical component boundaries
 
@@ -343,11 +398,25 @@ Phase 1 receiver, never one thread per file, directory, or mount. The factory
 rejects a source pipeline with more than one core for this receiver. Downstream
 topic fanout is the Phase 1 parallelism boundary.
 
+Bounded worker termination and process-fatal escalation are also Phase 1 release
+prerequisites. Delivery drain has its own deadline; first cancellation starts
+a separate fixed worker budget, so an ordinary downstream drain timeout does
+not itself imply worker failure. If a worker cannot terminate within the separate worker-termination deadline,
+the engine must block replacement and initiate process termination, including
+unrelated pipelines. Dropping a join handle does not release the worker's
+resources. Namespace exclusion remains effective until worker access ceases;
+process termination does not promise immediate interruption of a stuck kernel
+call. The [worker termination contract](filelog-receiver-phase1-spec.md#worker-termination-and-process-fatal-join-timeout)
+defines the required engine integration.
+
 Descriptor residency is independent of bounded unfinished-record state. Closing
 an evictable handle preserves its reader's partial state for validated reopen;
 confirmed descriptor-free disappearance and terminal cleanup release it. A
-separate aggregate partial-state cap fails the receiver explicitly on exhaustion
-rather than repeatedly discarding progress or pinning unfinished files forever.
+separate aggregate partial-state cap reserves worst-case framing slots before
+reading and parks new readers when no slot is available. Admitted work continues
+within existing source and downstream limits. Unterminated records with idle
+flush disabled can retain all slots indefinitely; capacity waiting is observable
+but does not terminate the receiver or discard unfinished state.
 The process memory limiter remains the outer guardrail and can pause new source
 intake while existing completion and cleanup work stays serviceable.
 
@@ -513,10 +582,14 @@ implementation:
 - Source progress changes only after the matching aggregate Ack or an explicit
   configured loss policy. One batch's file deltas are applied atomically.
 - Every aggregate Nack is retried within the Phase 1 attempt budget; exhaustion
-  applies `on_nack`. More specific retryability requires a future typed engine
-  outcome rather than interpretation of diagnostic text.
+  applies `on_retry_exhaustion`, defaulting to an observable pause with periodic
+  retries of the same retained batch. Typed Nack fields already exist in the
+  engine but are lost at the tracked-topic boundary. The
+  [engine follow-up](filelog-receiver-phase1-spec.md#engine-follow-up-preserve-typed-nack-metadata)
+  must preserve them end to end before Filelog changes its uniform policy;
+  diagnostic text never selects control flow.
 - A typed pre-publication `NoRoute` consumes that same bounded attempt/backoff
-  budget and applies `on_nack` at exhaustion without fabricating Ack or progress.
+  budget and applies `on_retry_exhaustion` at exhaustion without fabricating Ack or progress.
 - No lifecycle, epoch, identity, reset, quarantine, revocation, or finalization
   transition can overtake an unresolved delta for the affected file.
 - The applied frontier, filesystem-synced durable frontier, and replay frontier
@@ -567,43 +640,61 @@ rules belong to the
 [Phase 1 configuration contract](filelog-receiver-phase1-spec.md#proposed-configuration-contract).
 The proposed schema is not yet a compatibility promise.
 
+This example shows the Filelog node within the engine configuration structure.
+Exporters and pipeline connections are omitted; this is not a complete runnable
+pipeline. The engine state-root requirements are defined separately in this
+design. The pipeline explicitly requests one core because Phase 1 rejects a
+source pipeline allocated more than one core. Multi-instance source ownership
+and coordinated scaling belong to Phase 3.
+
 ```yaml
-receivers:
-  filelog:
-    urn: "urn:otel:receiver:filelog"
-    config:
-      include: ["/var/log/app/*.log"]
-      exclude: ["/var/log/app/debug-*.log"]
-      start_at: end
-      discovery:
-        reconcile_interval: 5s
-        reconcile_jitter_percent: 10
-      reader:
-        eof_reprobe_interval: 250ms
-      encoding: utf-8
-      on_decode_error: preserve_raw
-      framing:
-        max_line_bytes: 1MiB
-        max_record_bytes: 1MiB
-        max_log_size_behavior: split
-        multiline:
-          line_end_pattern: '^END request$'
-      limits:
-        max_open_files: 512
-        max_read_bytes_per_turn: 128KiB
-        max_partial_state_bytes: 256MiB
-      batch:
-        max_records: 1024
-        max_bytes: 8MiB
-      rotation:
-        on_truncate: fail
-      checkpoint:
-        id: app-logs
-      retry:
-        max_attempts: 8
-        initial_backoff: 100ms
-        max_backoff: 5s
-      on_nack: fail
+version: otel_dataflow/v1
+engine: {}
+groups:
+  default:
+    pipelines:
+      main:
+        policies:
+          resources:
+            core_allocation: { type: core_count, count: 1 }
+        nodes:
+          filelog:
+            type: "urn:otel:receiver:filelog"
+            config:
+              include: ["/var/log/app/*.log"]
+              exclude: ["/var/log/app/debug-*.log"]
+              include_file_metadata: none
+              start_at: end
+              discovery:
+                reconcile_interval: 5s
+                reconcile_jitter_percent: 10
+              reader:
+                eof_reprobe_interval: 250ms
+              encoding: utf-8
+              on_decode_error: preserve_raw
+              framing:
+                max_line_bytes: 1MiB
+                max_record_bytes: 1MiB
+                max_log_size_behavior: split
+                force_flush_period: 0s
+                multiline:
+                  line_end_pattern: '^END request$'
+              limits:
+                max_open_files: 512
+                max_read_bytes_per_turn: 128KiB
+                max_partial_state_bytes: 256MiB
+              batch:
+                max_records: 1024
+                max_bytes: 8MiB
+              rotation:
+                on_truncate: fail
+              checkpoint:
+                id: app-logs
+              retry:
+                max_attempts: 8
+                initial_backoff: 100ms
+                max_backoff: 5s
+              on_retry_exhaustion: pause
 ```
 
 The interval values above are reviewable initial defaults, not latency
@@ -612,7 +703,9 @@ validated and scheduled.
 
 Some defaults are omitted from the short YAML above and are defined by the
 complete configuration contract. They also encode deliberate tradeoffs.
-`framing.force_flush_period: 500ms` can split a very slowly written line after an EOF-idle interval.
+`framing.force_flush_period: 0s` disables idle flush by default. Unterminated
+records can wait indefinitely and occupy all partial-state slots; this is
+observable capacity backpressure, not permission to invent a record boundary.
 `rotation.on_truncate: fail` preserves the no-silent-skip posture by requiring
 administration after detected truncation; operators that knowingly prefer
 continued collection with an explicit gap select `read_new`.
@@ -627,15 +720,84 @@ admission for new/live files until finalization succeeds or capacity is raised;
 Phase 1 does not hide that condition behind a deadline-triggered loss policy.
 The proposed 256 MiB partial-state budget is independent of tracked checkpoint
 history and descriptor capacity; it is not a per-instance RSS promise. Too many
-simultaneous unfinished records can exhaust it and terminate collection without
-advancing unacknowledged progress. Its default and conservative sizing require
-workload qualification. Restart alone does not solve capacity exhaustion.
+simultaneous unfinished records can fill all reserved framing slots and park
+additional readers. Its default and conservative sizing require workload
+qualification. Restart alone does not solve sustained capacity saturation.
 The default eight-attempt delivery policy contributes about 11.3 seconds of
-scheduled backoff before `on_nack: fail` terminates the receiver; the same
-budget applies to pre-publication `NoRoute`. Supervisor restart can duplicate
-previously delivered records, and a persistent outage can create a restart
-loop. These are defaults discussed for community review, not an indefinite
-backpressure guarantee.
+scheduled backoff before entering a delivery pause; the same budget applies to
+pre-publication `NoRoute`. While paused, it retains the same batch and retries
+after `retry.max_backoff` following each terminal retryable failure, without
+reading new source content. Ack and successful checkpoint handling allow intake
+to resume. A persistent outage can pause all files indefinitely. Retries can
+still duplicate records at subscribers that accepted an earlier attempt.
+Explicit `fail` and `drop_and_continue` remain alternatives. Invalid startup
+topology fails immediately. Permanent downstream refusal handling is deferred
+until typed metadata survives the topic boundary and its mapping is reviewed;
+generic Nacks or `NoRoute` alone do not prove permanent refusal.
+
+Collection pauses are accompanied by receiver-wide estimates of unread bytes,
+observed unread age, and applied-but-not-durable progress. Observation freshness
+and coverage remain visible, and threshold events are bounded. These describe
+potential source-retention and replay exposure, not guaranteed loss or exact
+application-record age; see the
+[backlog telemetry contract](filelog-receiver-phase1-conformance.md#backlog-and-durability-lag-semantics).
+
+### File metadata export
+
+Internal source identity and Ack/checkpoint provenance are always maintained.
+Exporting host file metadata is optional: `include_file_metadata` defaults to
+`none`. Select `name` for a losslessly textual basename, `path` for textual path
+and basename, or `native` to explicitly include bounded native-path evidence.
+Even a basename may contain sensitive information. Text modes do not silently
+fall back to native bytes or path hashes, and fragment metadata is controlled
+separately by the framing contract. See the
+[provenance contract](filelog-receiver-phase1-spec.md#provenance).
+
+### Framing examples and application parsers
+
+These are illustrative choices, not new named configuration profiles. Each
+fragment belongs inside the Filelog node's `config` mapping in the engine
+structure shown above. Other node settings and pipeline wiring are omitted.
+
+Boundary-based collection (the default) waits for configured record boundaries:
+
+```yaml
+framing:
+  force_flush_period: 0s
+  max_line_bytes: 1MiB
+  max_record_bytes: 1MiB
+  max_log_size_behavior: split
+```
+
+Lower-latency collection explicitly permits partial records after an EOF-idle
+interval. Its `rotation.rotate_wait` must remain greater than the flush period:
+
+```yaml
+framing:
+  force_flush_period: 500ms
+  max_line_bytes: 1MiB
+  max_record_bytes: 1MiB
+  max_log_size_behavior: split
+rotation:
+  rotate_wait: 5s
+```
+
+The second choice can emit incomplete application messages and make their
+boundaries timing-dependent. Recovery can regroup surviving bytes. The first
+avoids idle-time boundaries, but does not promise identical restart output or
+completion of a line whose writer never supplies a boundary.
+
+For JSON/CSV parsing, configure framing for complete application messages and
+size limits for the expected records. Split fragments are not necessarily
+independently parseable; truncation also breaks syntax and intentionally loses
+bytes. Successful parsing alone does not prove that a fragment was a complete
+message. Parser examples should preserve input and report failures, and must not
+assume automatic fragment reassembly. Multiline JSON and CSV with quoted newlines
+need explicitly supported framing/parser behavior. Strict oversized-message
+handling needs a separate rejection or bounded-reassembly contract. See
+[application-format composition](filelog-receiver-phase1-spec.md#composition-with-application-format-parsing).
+
+### Required broadcast completion
 
 For a required broadcast path, the engine topology--not the receiver
 block--must also provide semantics equivalent to:
@@ -745,7 +907,19 @@ fingerprints, and rotation differ. Quiver provides useful versioning, integrity,
 and atomic-publication conventions, but its segment and cursor data model is not
 the filelog checkpoint model.
 
+The [shared source-receiver contract](source-receiver-shared-contract.md) defines
+the proposed Ack/commit, state-root, ownership, lifecycle/readiness, administration,
+and future fencing boundaries with Journald. Agreement on these boundaries
+precedes freezing the affected APIs; shared implementation is not a Phase 1
+prerequisite, and source-specific checkpoint formats remain separate.
+
 ## Future questions -- non-blocking for Phase 1
+
+Safe framing-only reconfiguration at durable clean boundaries is a migration
+follow-up. Phase 1 retains fail-closed profile mismatch handling, including for
+`Clean` resume state, until the explicit transition and checkpoint-versioning
+contract is implemented. See the
+[profile-transition requirements](filelog-receiver-phase1-spec.md#follow-up-framing-profile-transitions-at-clean-boundaries).
 
 1. Is the single-instance Phase 1 delivery an acceptable first step for #2844
    while shared identity, ownership, and fencing remain the target?
@@ -765,23 +939,26 @@ the filelog checkpoint model.
    measurements are required before making a per-instance memory claim?
 8. What Windows fault evidence is sufficient for a crash-durability claim in
    the absence of Unix-equivalent directory sync?
-9. Which retained-batch, checkpoint-envelope, and worker/async plumbing should
-    eventually be shared with journald after filelog validates the abstraction?
+9. Which implementations of the agreed
+   [shared source-receiver contract](source-receiver-shared-contract.md) should
+   be extracted after both receivers demonstrate compatible requirements?
 
 ## Phase 1 completion criteria
 
 Phase 1 is complete only when implementation, documentation, and evidence
 conform to this architecture and the detailed specifications. Source-level unit
-tests alone do not establish production readiness.
+tests alone do not establish production readiness. Qualification must demonstrate
+the engine process-fatal worker-join path, including blocked replacement and
+namespace exclusion while a worker survives.
 
 | Validation category | Required evidence |
 | --- | --- |
 | Discovery | Growing-file admission; include/exclude and alias behavior; new-only `ignore_older_than`; complete/incomplete inventories; independently bounded jittered reconciliation and EOF reprobe; safe FIFO/device/link probing; cancellation; overflow rediscovery and fairness; no false removal |
 | Identity | Exact-locator recovery guarded by prefix and committed-frontier evidence; changed-locator equal fingerprints; lifecycle eligibility; framing-profile incompatibility; locator reuse; growing evidence; unrelated-file `start_at`; matched-path offset-zero rotation replacement; quarantine reconnection; durable registration |
 | Ownership | Namespace serialization; overlapping-pattern runtime leases; lease survival across descriptor eviction; fail-closed registry behavior; no readiness overclaim |
-| Readers and bounds | Open-descriptor cap plus process-limit warning; transient-probe cap; `EMFILE`/`ENFILE` backoff; shared source-turn buffer; eviction blocked by unresolved deltas; charged partial state across descriptor turnover and Ack waits; explicit exhaustion and process-pressure composition; carry-over without reread; hot/cold fairness; EOF reprobe; checked arithmetic; conservative aggregate admission |
+| Readers and bounds | Open-descriptor cap plus process-limit warning; transient-probe cap; `EMFILE`/`ENFILE` backoff; shared source-turn buffer; eviction blocked by unresolved deltas; charged partial state across descriptor turnover and Ack waits; upfront framing-slot admission, observable capacity waiting, and process-pressure composition; carry-over without reread; hot/cold fairness; EOF reprobe; checked arithmetic; conservative aggregate admission |
 | Decoding and framing | Every supported encoding; LF, CR, BOM, NUL, malformed input, source ranges, multiline bounds, split/truncate determinism and decode-fail precedence, continuation restart, incomplete-unit idle flush, and marked D17 terminal emission |
-| OTAP boundary | Raw body; lossless registered path when available; bounded native-path/fragment registry; observed time; deferred generic offset/number; no receiver semantic parsing; bounded cardinality |
+| OTAP boundary | Raw body; opt-in path/name/native export with none default; internal progress provenance independent of attributes; bounded native-path/fragment registry; observed time; deferred generic offset/number; no receiver semantic parsing; bounded cardinality |
 | Delivery | Nonempty ready membership; engine-aggregated all-required Ack; graph rejection without every Ack dependency; universal unresolved-delta ordering; uniform bounded Nack retry; retry exhaustion; atomic progress bound; receiver-wide coupling |
 | State root | Engine-supplied absolute root independent of working directory; secure provisioning and ancestor durability; interrupted creation and unavailable/invalid-root failures; explicit root-change semantics |
 | Recovery output | Crash after idle flush with appended text, completed UTF-8/UTF-16 units, or malformed input; delayed-sync loss; changed metadata; no claim of identical record replay |

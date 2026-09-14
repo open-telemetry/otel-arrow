@@ -1558,8 +1558,16 @@ determinism (`encoding`, `on_decode_error`, the multiline mode and pattern,
 `max_line_bytes`, `max_record_bytes`, `max_log_size_behavior`,
 `max_multiline_lines`, `force_flush_period`). It deliberately excludes knobs
 that affect neither identity nor framing, such as `limits.*`, `batch.*`, and
-`retry.*`. `checkpoint.id` is bound separately by the header
+`retry.*`, and the export-only `include_file_metadata` setting. Internal
+advisory evidence remains stored independently of its export mode.
+`checkpoint.id` is bound separately by the header
 `namespace_digest`; it is not part of the framing profile.
+
+The combined v1 digest does not separately identify identity-only and
+framing-only changes. A stored `Clean` resume does not authorize replacing this
+digest, and v1 defines no profile-transition operation. The
+[clean-boundary migration follow-up](filelog-receiver-phase1-spec.md#follow-up-framing-profile-transitions-at-clean-boundaries)
+must define its transaction and versioning contract before enabling such changes.
 
 The digest is:
 
@@ -1575,9 +1583,16 @@ across those purposes.
 
 ### Compatibility vectors
 
+These vectors fix explicit profile inputs independently of receiver defaults.
+The 500 ms idle-flush vector below is opt-in; the proposed receiver default is
+now zero. The v1 encoding and these explicit-input vectors remain unchanged.
+An existing checkpoint made with 500 ms still requires matching explicit
+configuration or a supported migration; changing a default does not waive
+profile compatibility.
+
 Given the default identity profile (`fingerprint_profile_version = 1`,
 `fingerprint_bytes = 1000`, `ignored_header_bytes = 0`) and the
-newline-framing default profile (`encoding = utf-8 (0x01)`,
+explicit newline-framing profile with idle flush enabled (`encoding = utf-8 (0x01)`,
 `on_decode_error = preserve_raw (0x01)`,
 `multiline_mode = newline (0x00)`, `regex_profile_version = 0`,
 `pattern_len = 0`, `max_line_bytes = 1048576`, `max_record_bytes = 1048576`,
@@ -1744,7 +1759,7 @@ Castagnoli CRC-32C, first checking
 | Unix `UnixBytes` digest for 5,000 bytes of `0x78` (digest covers all bytes; stored path is the final 4,096-byte suffix) | `4edffb8c0486f5658b188d349af1b47270dc02bc0459b60dbfd3c314d9ecffa2` |
 | Empty committed-frontier guard at offset zero | `be47d023a06e82fd6da2daa0631547d6eca297b7ac532cba6471ab90829ec5b9` |
 | Committed-frontier guard for raw bytes `abc\n` at offset 4 | `23321df310e76dad74d895ad8e8e99d64f331fa350d4117f1f818a755d0a306a` |
-| Default framing-profile digest | `b89a44439258d045238a81d1d608cb41abede895ab1e047eef2b83898d3e0b25` |
+| Explicit 500 ms newline framing-profile digest | `b89a44439258d045238a81d1d608cb41abede895ab1e047eef2b83898d3e0b25` |
 | End-pattern framing-profile digest | `1c3159dd242ae99f29b6aace2f40c9d16192db416810456c5975ba8b9a020b54` |
 
 Negative conformance cases mutate a valid fixture and recompute enclosing CRCs
