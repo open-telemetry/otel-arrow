@@ -246,11 +246,9 @@ successes, and Ack/Nack notification failures do not emit this metric.
 
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
-| `exporter.otlp_http.authentication.failures` | `{attempt}` | `error.type` | Agent-fed credential checks that did not produce a usable snapshot, including failures before a signal batch is admitted. |
+| `exporter.otlp_http.authentication` | `{attempt}` | `source` | Auth credential polls that did not produce a usable credential, including failures before a signal batch is admitted. |
 
-Authentication `error.type` is one of `credential_unavailable`,
-`lookup_timeout`, `empty_token`, `token_near_expiry`, `invalid_token`, or
-`rejected_credential_unchanged`.
+Authentication `source` is the registered provider name.
 
 ### Events
 
@@ -262,9 +260,10 @@ Authentication `error.type` is one of `credential_unavailable`,
 | `otlp.exporter.http.shutdown` | `info` | Exporter shutdown and terminal reason. |
 | `otlp.exporter.http.zero_partial_rejected` | `debug` | A zero-length partial-success response was rejected. |
 | `otlp.exporter.http.export_error` | `warn` | An HTTP export request failed; non-success responses include bounded backend error details when available. |
-| `otlp.exporter.http.invalid_bearer_token` | `warn` | A bearer token from the provider could not be turned into a valid `Authorization` header. |
-| `otlp.exporter.http.token_stream_closed` | `warn` | The bearer token provider closed its refresh stream; the last token (if any) is reused and no longer refreshes. |
-| `otlp.exporter.http.agent_fed_credential_unavailable` | `warn` | An agent-fed credential check failed; repeated failures are sampled at powers of two. |
+| `otlp.exporter.http.auth.invalid` | `warn` | A credential from the auth provider could not be turned into a valid header. |
+| `otlp.exporter.http.auth.error` | `error` | A credential could not be retrieved from the auth provider. |
+| `otlp.exporter.http.auth.retry` | `warn` | A credential retrieval failed and will be retried. |
+| `otlp.exporter.http.auth.stream_closed` | `warn` | The auth provider closed its refresh stream; the last credential (if any) is reused and no longer refreshes. |
 
 ## Limits
 
