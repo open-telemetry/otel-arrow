@@ -249,6 +249,7 @@ fn capability_config_error(error: EngineError) -> ConfigError {
 pub static OTLP_HTTP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: OTLP_HTTP_EXPORTER_URN,
     create: factory_create,
+    context_declarations: None,
     wiring_contract: WiringContract::UNRESTRICTED,
     validate_config,
 };
