@@ -1340,7 +1340,7 @@ mod tests {
     }
 
     /// Scenario: A point contains one oversized exemplar and enough valid exemplars to exceed 512 bytes.
-    /// Guarantees: Oversized and excess exemplars are discarded while the metric and bounded exemplar list encode.
+    /// Guarantees: Oversized exemplars are discarded and sampling retains the maximum fitting valid payload.
     #[test]
     fn bounds_exemplars_without_rejecting_the_metric() {
         let minimal_exemplar = OtlpExemplar {
@@ -1381,7 +1381,13 @@ mod tests {
         let metric = &mapped.publications[0].packet.metrics[0];
 
         assert_eq!(mapped.rejected_data_points, 0);
-        assert_eq!(metric.exemplars.len(), 1);
+        let exemplar_size =
+            super::super::encoder::exemplar::encoded_exemplar_size(&metric.exemplars[0])
+                .expect("retained exemplar should be valid");
+        assert_eq!(
+            metric.exemplars.len(),
+            super::super::encoder::exemplar::MAX_EXEMPLAR_PAYLOAD_SIZE / exemplar_size
+        );
         assert_ne!(metric.sampling_type & EXEMPLAR, 0);
         let _ = super::super::encoder::encode(&mapped.publications[0].packet)
             .expect("bounded exemplars should encode");

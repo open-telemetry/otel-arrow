@@ -18,8 +18,7 @@ pub(super) fn retain_exemplars_within_limits(exemplars: &mut Vec<MetricExemplar>
 
     let extrema = ExemplarExtrema::from_exemplars(exemplars);
     for bucket_count in SAMPLING_BUCKET_COUNTS {
-        retain_distribution_sample(exemplars, bucket_count, extrema);
-        payload_size = exemplar_payload_size(exemplars);
+        payload_size = retain_distribution_sample(exemplars, bucket_count, extrema, payload_size);
         if payload_size <= MAX_EXEMPLAR_PAYLOAD_SIZE || exemplars.len() <= 2 {
             break;
         }
@@ -97,9 +96,10 @@ fn retain_distribution_sample(
     exemplars: &mut Vec<MetricExemplar>,
     bucket_count: usize,
     extrema: ExemplarExtrema,
-) {
+    mut payload_size: usize,
+) -> usize {
     if extrema.negative.is_none() && extrema.positive.is_none() {
-        return;
+        return payload_size;
     }
     let mut positive_buckets = [false; MAX_SAMPLING_BUCKET_COUNT + 1];
     let mut negative_buckets = [false; MAX_SAMPLING_BUCKET_COUNT + 1];
@@ -107,36 +107,44 @@ fn retain_distribution_sample(
     let mut nan_seen = false;
 
     exemplars.retain(|exemplar| {
+        if payload_size <= MAX_EXEMPLAR_PAYLOAD_SIZE {
+            return true;
+        }
         let value = exemplar.value;
-        if value == 0.0 {
+        let keep = if value == 0.0 {
             if zero_seen {
-                return false;
+                false
+            } else {
+                zero_seen = true;
+                true
             }
-            zero_seen = true;
-            return true;
-        }
-        let selection = if value > 0.0 {
-            exemplar_bucket(value, extrema.positive, bucket_count)
-                .map(|index| (&mut positive_buckets, index))
-        } else if value < 0.0 {
-            exemplar_bucket(value, extrema.negative, bucket_count)
-                .map(|index| (&mut negative_buckets, index))
         } else {
-            if nan_seen {
-                return false;
+            let selection = if value > 0.0 {
+                exemplar_bucket(value, extrema.positive, bucket_count)
+                    .map(|index| (&mut positive_buckets, index))
+            } else if value < 0.0 {
+                exemplar_bucket(value, extrema.negative, bucket_count)
+                    .map(|index| (&mut negative_buckets, index))
+            } else if nan_seen {
+                None
+            } else {
+                nan_seen = true;
+                return true;
+            };
+            match selection {
+                Some((buckets, index)) if !buckets[index] => {
+                    buckets[index] = true;
+                    true
+                }
+                _ => false,
             }
-            nan_seen = true;
-            return true;
         };
-        let Some((buckets, index)) = selection else {
-            return false;
-        };
-        if buckets[index] {
-            return false;
+        if !keep {
+            payload_size = payload_size.saturating_sub(validated_exemplar_size(exemplar));
         }
-        buckets[index] = true;
-        true
+        keep
     });
+    payload_size
 }
 
 fn exemplar_bucket(value: f64, range: Option<(f64, f64)>, bucket_count: usize) -> Option<usize> {
@@ -213,15 +221,17 @@ mod tests {
     }
 
     /// Scenario: An oversized exemplar set contains only duplicate positive values.
-    /// Guarantees: ME-style bucket sampling retains one representative instead of an arbitrary payload prefix.
+    /// Guarantees: ME-style bucket sampling stops at the payload limit instead of deleting every duplicate.
     #[test]
-    fn samples_duplicate_exemplar_values_once() {
+    fn retains_duplicate_exemplars_up_to_payload_limit() {
         let mut exemplars = vec![sampling_exemplar(68.0); 32];
+        let exemplar_size = validated_exemplar_size(&exemplars[0]);
 
         retain_exemplars_within_limits(&mut exemplars);
 
-        assert_eq!(exemplars.len(), 1);
-        assert_eq!(exemplars[0].value, 68.0);
+        assert_eq!(exemplars.len(), MAX_EXEMPLAR_PAYLOAD_SIZE / exemplar_size);
+        assert!(exemplars.iter().all(|exemplar| exemplar.value == 68.0));
+        assert!(exemplar_payload_size(&exemplars) <= MAX_EXEMPLAR_PAYLOAD_SIZE);
     }
 
     /// Scenario: A zero-only exemplar set exceeds the payload limit by one minimal exemplar.
