@@ -1414,25 +1414,10 @@ mod tests {
     impl SyslogCefReceiver {
         #[allow(dead_code)]
         fn new(config: Config) -> Self {
-            let telemetry_registry =
-                otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new();
-            let _connection_metrics = telemetry_registry
-                .register_metric_set::<SyslogCefConnectionMetrics>(
-                    otel_arrow_dfe_telemetry::testing::EmptyAttributes(),
+            let (pipeline_ctx, _) =
+                otel_arrow_dfe_engine::testing::test_pipeline_ctx_with_interests(
+                    otel_arrow_dfe_engine::Interests::NODE_OUTPUT_METRICS,
                 );
-            // Standalone pipeline context for measurements in tests
-            let controller_ctx =
-                otel_arrow_dfe_engine::context::ControllerContext::new(telemetry_registry.clone());
-            let pipeline_ctx = controller_ctx.pipeline_context_with(
-                otel_arrow_dfe_config::PipelineGroupId::default(),
-                otel_arrow_dfe_config::PipelineId::default(),
-                0,
-                1,
-                0,
-            );
-            let _measurements = Rc::new(RefCell::new(SyslogCefReceiverMetrics::register(
-                &pipeline_ctx,
-            )));
 
             SyslogCefReceiver {
                 config,
@@ -2522,18 +2507,23 @@ mod telemetry_tests {
         RateLimitAggregation, RateLimitEnforcement, RateLimitPressure, RateLimitUnit,
         RateLimiterPolicy, TokenBucketPolicy,
     };
-    use otel_arrow_dfe_engine::context::ControllerContext;
+    use otel_arrow_dfe_engine::Interests;
     use otel_arrow_dfe_engine::local::receiver::Receiver;
     use otel_arrow_dfe_engine::memory_limiter::MemoryPressureLevel;
     use otel_arrow_dfe_engine::message::Sender;
-    use otel_arrow_dfe_engine::testing::{setup_test_runtime, test_node};
-    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+    use otel_arrow_dfe_engine::testing::{
+        setup_test_runtime, test_node, test_pipeline_ctx_with_interests,
+    };
     use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
     use std::time::Instant;
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpStream;
     use tokio::net::UdpSocket;
     use tokio::time::Duration;
+
+    fn test_pipeline_context() -> PipelineContext {
+        test_pipeline_ctx_with_interests(Interests::NODE_OUTPUT_METRICS).0
+    }
 
     fn received_count(
         snaps: &[otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot],
@@ -2645,16 +2635,7 @@ mod telemetry_tests {
     fn udp_telemetry_success_and_failure_and_total() {
         let (rt, local) = setup_test_runtime();
         rt.block_on(local.run_until(async move {
-            // Build pipeline context to register metrics on the receiver
-            let telemetry_registry = TelemetryRegistryHandle::new();
-            let controller = ControllerContext::new(telemetry_registry.clone());
-            let pipeline = controller.pipeline_context_with(
-                otel_arrow_dfe_config::PipelineGroupId::from("test-group".to_string()),
-                otel_arrow_dfe_config::PipelineId::from("test-pipeline".to_string()),
-                0,
-                1, // num_cores
-                0,
-            );
+            let pipeline = test_pipeline_context();
 
             // addr and port for the UDP server to run at
             let listening_port = otel_arrow_dfe_test_net::pick_unused_loopback_udp_port();
@@ -2756,16 +2737,7 @@ mod telemetry_tests {
         use otel_arrow_dfe_engine::testing::setup_test_runtime;
         let (rt, local) = setup_test_runtime();
         rt.block_on(local.run_until(async move {
-            // Build pipeline context
-            let telemetry_registry = TelemetryRegistryHandle::new();
-            let controller = ControllerContext::new(telemetry_registry.clone());
-            let pipeline = controller.pipeline_context_with(
-                otel_arrow_dfe_config::PipelineGroupId::from("grp".to_string()),
-                otel_arrow_dfe_config::PipelineId::from("pipe".to_string()),
-                0,
-                1, // num_cores
-                0,
-            );
+            let pipeline = test_pipeline_context();
 
             // Address
             let port = otel_arrow_dfe_test_net::pick_unused_loopback_udp_port();
@@ -2858,15 +2830,7 @@ mod telemetry_tests {
     fn udp_shutdown_refuses_buffered_message() {
         let (rt, local) = setup_test_runtime();
         rt.block_on(local.run_until(async move {
-            let telemetry_registry = TelemetryRegistryHandle::new();
-            let controller = ControllerContext::new(telemetry_registry.clone());
-            let pipeline = controller.pipeline_context_with(
-                otel_arrow_dfe_config::PipelineGroupId::from("grp".to_string()),
-                otel_arrow_dfe_config::PipelineId::from("pipe".to_string()),
-                0,
-                1,
-                0,
-            );
+            let pipeline = test_pipeline_context();
             let port = otel_arrow_dfe_test_net::pick_unused_loopback_udp_port();
             let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
             let receiver = SyslogCefReceiver::with_pipeline(
@@ -2935,15 +2899,7 @@ mod telemetry_tests {
     fn tcp_drain_flushes_buffered_message() {
         let (rt, local) = setup_test_runtime();
         rt.block_on(local.run_until(async move {
-            let telemetry_registry = TelemetryRegistryHandle::new();
-            let controller = ControllerContext::new(telemetry_registry.clone());
-            let pipeline = controller.pipeline_context_with(
-                otel_arrow_dfe_config::PipelineGroupId::from("grp".to_string()),
-                otel_arrow_dfe_config::PipelineId::from("pipe".to_string()),
-                0,
-                1,
-                0,
-            );
+            let pipeline = test_pipeline_context();
             let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
             let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
             let receiver = SyslogCefReceiver::with_pipeline(
@@ -3019,15 +2975,7 @@ mod telemetry_tests {
     fn tcp_shutdown_interrupts_blocked_downstream_send() {
         let (rt, local) = setup_test_runtime();
         rt.block_on(local.run_until(async move {
-            let telemetry_registry = TelemetryRegistryHandle::new();
-            let controller = ControllerContext::new(telemetry_registry.clone());
-            let pipeline = controller.pipeline_context_with(
-                otel_arrow_dfe_config::PipelineGroupId::from("grp".to_string()),
-                otel_arrow_dfe_config::PipelineId::from("pipe".to_string()),
-                0,
-                1,
-                0,
-            );
+            let pipeline = test_pipeline_context();
             let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
             let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
             let receiver = SyslogCefReceiver::with_pipeline(
@@ -3109,15 +3057,7 @@ mod telemetry_tests {
     fn udp_sheds_ingress_under_hard_memory_pressure() {
         let (rt, local) = setup_test_runtime();
         rt.block_on(local.run_until(async move {
-            let telemetry_registry = TelemetryRegistryHandle::new();
-            let controller = ControllerContext::new(telemetry_registry.clone());
-            let pipeline = controller.pipeline_context_with(
-                otel_arrow_dfe_config::PipelineGroupId::from("grp".to_string()),
-                otel_arrow_dfe_config::PipelineId::from("pipe".to_string()),
-                0,
-                1,
-                0,
-            );
+            let pipeline = test_pipeline_context();
 
             let port = otel_arrow_dfe_test_net::pick_unused_loopback_udp_port();
             let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
@@ -3204,15 +3144,7 @@ mod telemetry_tests {
     fn run_udp_under_capacity_rate_limit_test(enforcement: RateLimitEnforcement) {
         let (rt, local) = setup_test_runtime();
         rt.block_on(local.run_until(async move {
-            let telemetry_registry = TelemetryRegistryHandle::new();
-            let controller = ControllerContext::new(telemetry_registry.clone());
-            let pipeline = controller.pipeline_context_with(
-                otel_arrow_dfe_config::PipelineGroupId::from("grp".to_string()),
-                otel_arrow_dfe_config::PipelineId::from("pipe".to_string()),
-                0,
-                1,
-                0,
-            );
+            let pipeline = test_pipeline_context();
             pipeline
                 .memory_pressure_state()
                 .set_level_for_tests(MemoryPressureLevel::Soft);
@@ -3309,15 +3241,7 @@ mod telemetry_tests {
     fn run_tcp_under_capacity_rate_limit_test(enforcement: RateLimitEnforcement) {
         let (rt, local) = setup_test_runtime();
         rt.block_on(local.run_until(async move {
-            let telemetry_registry = TelemetryRegistryHandle::new();
-            let controller = ControllerContext::new(telemetry_registry.clone());
-            let pipeline = controller.pipeline_context_with(
-                otel_arrow_dfe_config::PipelineGroupId::from("grp".to_string()),
-                otel_arrow_dfe_config::PipelineId::from("pipe".to_string()),
-                0,
-                1,
-                0,
-            );
+            let pipeline = test_pipeline_context();
             pipeline
                 .memory_pressure_state()
                 .set_level_for_tests(MemoryPressureLevel::Soft);
@@ -3420,15 +3344,7 @@ mod telemetry_tests {
     fn udp_refuses_messages_over_rate_limit_under_soft_pressure() {
         let (rt, local) = setup_test_runtime();
         rt.block_on(local.run_until(async move {
-            let telemetry_registry = TelemetryRegistryHandle::new();
-            let controller = ControllerContext::new(telemetry_registry.clone());
-            let pipeline = controller.pipeline_context_with(
-                otel_arrow_dfe_config::PipelineGroupId::from("grp".to_string()),
-                otel_arrow_dfe_config::PipelineId::from("pipe".to_string()),
-                0,
-                1,
-                0,
-            );
+            let pipeline = test_pipeline_context();
             pipeline
                 .memory_pressure_state()
                 .set_level_for_tests(MemoryPressureLevel::Soft);
@@ -3515,15 +3431,7 @@ mod telemetry_tests {
     fn tcp_refuses_messages_over_rate_limit_without_closing_connection() {
         let (rt, local) = setup_test_runtime();
         rt.block_on(local.run_until(async move {
-            let telemetry_registry = TelemetryRegistryHandle::new();
-            let controller = ControllerContext::new(telemetry_registry.clone());
-            let pipeline = controller.pipeline_context_with(
-                otel_arrow_dfe_config::PipelineGroupId::from("grp".to_string()),
-                otel_arrow_dfe_config::PipelineId::from("pipe".to_string()),
-                0,
-                1,
-                0,
-            );
+            let pipeline = test_pipeline_context();
             pipeline
                 .memory_pressure_state()
                 .set_level_for_tests(MemoryPressureLevel::Soft);
@@ -3614,15 +3522,7 @@ mod telemetry_tests {
     fn tcp_oversized_line_charges_rate_limit_per_fragment() {
         let (rt, local) = setup_test_runtime();
         rt.block_on(local.run_until(async move {
-            let telemetry_registry = TelemetryRegistryHandle::new();
-            let controller = ControllerContext::new(telemetry_registry.clone());
-            let pipeline = controller.pipeline_context_with(
-                otel_arrow_dfe_config::PipelineGroupId::from("grp".to_string()),
-                otel_arrow_dfe_config::PipelineId::from("pipe".to_string()),
-                0,
-                1,
-                0,
-            );
+            let pipeline = test_pipeline_context();
             pipeline
                 .memory_pressure_state()
                 .set_level_for_tests(MemoryPressureLevel::Soft);
@@ -3714,15 +3614,7 @@ mod telemetry_tests {
     fn tcp_rate_rejected_three_fragment_line_discards_all_continuations() {
         let (rt, local) = setup_test_runtime();
         rt.block_on(local.run_until(async move {
-            let telemetry_registry = TelemetryRegistryHandle::new();
-            let controller = ControllerContext::new(telemetry_registry.clone());
-            let pipeline = controller.pipeline_context_with(
-                otel_arrow_dfe_config::PipelineGroupId::from("grp".to_string()),
-                otel_arrow_dfe_config::PipelineId::from("pipe".to_string()),
-                0,
-                1,
-                0,
-            );
+            let pipeline = test_pipeline_context();
             pipeline
                 .memory_pressure_state()
                 .set_level_for_tests(MemoryPressureLevel::Soft);
@@ -3839,15 +3731,7 @@ mod telemetry_tests {
 
     #[test]
     fn terminal_snapshots_preserve_enum_attribute_values_once() {
-        let telemetry_registry = TelemetryRegistryHandle::new();
-        let controller = ControllerContext::new(telemetry_registry.clone());
-        let pipeline_ctx = controller.pipeline_context_with(
-            otel_arrow_dfe_config::PipelineGroupId::from("grp".to_string()),
-            otel_arrow_dfe_config::PipelineId::from("pipe".to_string()),
-            0,
-            1,
-            0,
-        );
+        let pipeline_ctx = test_pipeline_context();
         let mut metrics = SyslogCefReceiverMetrics::register(&pipeline_ctx);
 
         let received_message = metrics.start_received(64);
