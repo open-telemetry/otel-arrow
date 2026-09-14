@@ -126,11 +126,14 @@ impl AuthorizedIdentityEntries {
 
 /// Context for OTAP requests.
 ///
-/// Carries three independent concerns:
+/// Carries four independent concerns:
 /// - **Routing stack**: Ack/Nack routing frames used by the pipeline engine
 ///   for result notification. Reset at transport boundaries (topic hops).
 /// - **Transport headers**: Protocol-neutral request-scoped metadata captured
 ///   from inbound transport headers. Preserved across transport boundaries.
+/// - **Authorized identity**: Verified claims selected by policy and kept
+///   separate from untrusted transport headers. Preserved across transport
+///   boundaries.
 /// - **Peer address**: Optional socket address observed by the receiving
 ///   socket at request acceptance time. Populated by receivers that have a
 ///   real socket (OTLP gRPC/HTTP, OTAP gRPC, syslog/CEF) and left `None` by
@@ -2765,8 +2768,8 @@ mod test {
         assert!(entries.get("missing_entry").is_none());
     }
 
-    /// Scenario: pdata debug formatting includes captured single- and
-    /// multi-valued authorized identity claims.
+    /// Scenario: pdata carries authorized identity entries captured from
+    /// single- and multi-valued claims.
     /// Guarantees: debug output exposes destination names and value counts but
     /// never includes authorization claim values.
     #[test]

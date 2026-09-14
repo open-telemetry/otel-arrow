@@ -40,9 +40,10 @@ impl AuthorizedIdentityPolicy {
     pub fn validate(&self) -> Result<(), Error> {
         let mut destinations = HashSet::with_capacity(self.entries.len());
         for entry in &self.entries {
-            if entry.claim.is_empty() {
+            if entry.claim.is_empty() || entry.claim.trim() != entry.claim.as_ref() {
                 return Err(Error::InvalidUserConfig {
-                    error: "authorized_identity claim names must not be empty".to_string(),
+                    error: "authorized_identity claim names must not be blank or contain surrounding whitespace"
+                        .to_string(),
                 });
             }
             if !destinations.insert(&entry.store_as) {
@@ -114,18 +115,18 @@ mod tests {
         assert!(policy.validate().is_err());
     }
 
-    /// Scenario: a projection contains an empty claim name.
-    /// Guarantees: a policy cannot project an unspecified authorization field.
+    /// Scenario: projections contain empty, blank, or surrounding-whitespace
+    /// claim names.
+    /// Guarantees: every configured claim name is non-blank and already
+    /// normalized for exact lookup against an authorized identity.
     #[test]
-    fn policy_rejects_empty_claim_name() {
-        let policy: AuthorizedIdentityPolicy = serde_yaml::from_str(
-            r#"
-- claim: ""
-  store_as: tenant
-"#,
-        )
-        .expect("policy parses before semantic validation");
+    fn policy_rejects_blank_and_surrounding_whitespace_claim_names() {
+        for claim in ["", " ", " sub", "sub ", "\tsub", "sub\n"] {
+            let policy: AuthorizedIdentityPolicy =
+                serde_json::from_value(serde_json::json!([{"claim": claim, "store_as": "tenant"}]))
+                    .expect("policy parses before semantic validation");
 
-        assert!(policy.validate().is_err());
+            assert!(policy.validate().is_err(), "claim `{claim:?}` must fail");
+        }
     }
 }

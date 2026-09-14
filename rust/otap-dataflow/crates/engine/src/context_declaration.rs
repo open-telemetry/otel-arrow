@@ -14,7 +14,8 @@
 //! - `ConfigNodeContextDeclaration`: typed component configs that derive and validate declarations.
 //! - `NodeContextDeclarations`: a sorted, deduplicated declaration set for one node.
 //! - `CompiledContextBindings`: compiled node bindings for every pipeline in a configuration.
-//! - `CompiledNodeBindings`: component declarations and transport-header behavior for one node.
+//! - `CompiledNodeBindings`: component declarations, transport-header behavior, and authorized
+//!   identity capture for one node.
 //! - `ContextDeclarationsByPipeline`: declarations indexed by pipeline and node.
 //! - `ContextRuntimeRequirements`: immutable engine-lifetime requirements for binding preparation.
 //! - `OriginalNameRetention`: the default and per-name original-header retention disposition.
@@ -1158,8 +1159,9 @@ mod tests {
     }
 
     /// Scenario: a receiver declares an authorized identity claim projection.
-    /// Guarantees: compiled node bindings retain the exact policy and changed
-    /// projections produce different binding sets.
+    /// Guarantees: compiled node bindings retain the exact policy and
+    /// live-update compatibility rejects changed projections in either
+    /// comparison direction.
     #[test]
     fn authorized_identity_policy_is_a_compiled_receiver_binding() {
         let policy: AuthorizedIdentityPolicy =

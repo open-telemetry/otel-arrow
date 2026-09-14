@@ -1116,8 +1116,8 @@ mod tests {
 
     /// Scenario: the gRPC authorization layer admits a request with a verified
     /// subject.
-    /// Guarantees: the exact authorized identity reaches the inner OTLP
-    /// service through request extensions for pdata context capture.
+    /// Guarantees: the verified subject reaches the inner OTLP service through
+    /// request extensions for pdata context capture.
     #[tokio::test]
     async fn authorization_layer_forwards_identity_to_otlp_service() {
         let observed_subject = Arc::new(Mutex::new(None));
