@@ -919,10 +919,10 @@ mod tests {
                     node_id,
                     interests: Interests::ACKS,
                     route: RouteData::default(),
-                    produced_items: 0,
-                    consumed_items: 0,
-                    produced_size: 0,
-                    consumed_size: 0,
+                    output_items: 0,
+                    input_items: 0,
+                    output_size: 0,
+                    input_size: 0,
                 }],
             }
         }
@@ -933,10 +933,10 @@ mod tests {
                     node_id,
                     interests: Interests::NACKS,
                     route: RouteData::default(),
-                    produced_items: 0,
-                    consumed_items: 0,
-                    produced_size: 0,
-                    consumed_size: 0,
+                    output_items: 0,
+                    input_items: 0,
+                    output_size: 0,
+                    input_size: 0,
                 }],
             }
         }
