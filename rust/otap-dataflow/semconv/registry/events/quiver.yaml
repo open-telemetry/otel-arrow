@@ -1,0 +1,818 @@
+file_format: definition/2
+events:
+- name: quiver.dict.key_widened
+  brief: The quiver.dict.key_widened internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: field
+    requirement_level: required
+  - ref: original_key_type
+    requirement_level: required
+  - ref: total_values
+    requirement_level: required
+  - ref: widened_key_type
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-quiver
+        severity_levels:
+        - debug
+        sources:
+        - crates/quiver/src/segment/stream_accumulator.rs
+        availability: []
+- name: quiver.dict.native_fallback
+  brief: The quiver.dict.native_fallback internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: field
+    requirement_level: required
+  - ref: original_key_type
+    requirement_level: required
+  - ref: total_values
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-quiver
+        severity_levels:
+        - warn
+        sources:
+        - crates/quiver/src/segment/stream_accumulator.rs
+        availability: []
+- name: quiver.engine.init
+  brief: The quiver.engine.init internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: budget_cap
+    requirement_level: recommended
+  - ref: error
+    requirement_level: recommended
+  - ref: error_type
+    requirement_level: recommended
+  - ref: min_budget
+    requirement_level: recommended
+  - ref: path
+    requirement_level: recommended
+  - ref: reason
+    requirement_level: recommended
+  - ref: segment_size
+    requirement_level: recommended
+  - ref: set_permissions_supported
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-quiver
+        severity_levels:
+        - debug
+        - error
+        - warn
+        sources:
+        - crates/quiver/src/engine.rs
+        availability: []
+- name: quiver.engine.stop
+  brief: The quiver.engine.stop internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: cumulative_segment_bytes
+    requirement_level: recommended
+  - ref: error
+    requirement_level: recommended
+  - ref: error_type
+    requirement_level: recommended
+  - ref: force_dropped_bundles
+    requirement_level: recommended
+  - ref: force_dropped_segments
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-quiver
+        severity_levels:
+        - error
+        - info
+        - warn
+        sources:
+        - crates/quiver/src/engine.rs
+        availability: []
+- name: quiver.engine.tick
+  brief: The quiver.engine.tick internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: deleted
+    requirement_level: required
+  - ref: expired
+    requirement_level: required
+  - ref: flushed
+    requirement_level: required
+  - ref: pending_deletes_cleared
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-quiver
+        severity_levels:
+        - debug
+        sources:
+        - crates/quiver/src/engine.rs
+        availability: []
+- name: quiver.segment.cleanup
+  brief: The quiver.segment.cleanup internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: recommended
+  - ref: path
+    requirement_level: recommended
+  - ref: segment
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-quiver
+        severity_levels:
+        - debug
+        - warn
+        sources:
+        - crates/quiver/src/engine.rs
+        availability: []
+- name: quiver.segment.drop
+  brief: The quiver.segment.drop internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: attempt
+    requirement_level: recommended
+  - ref: attempts
+    requirement_level: recommended
+  - ref: error
+    requirement_level: recommended
+  - ref: error_type
+    requirement_level: recommended
+  - ref: max_age_secs
+    requirement_level: recommended
+  - ref: phase
+    requirement_level: recommended
+  - ref: reason
+    requirement_level: recommended
+  - ref: segment
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-quiver
+        severity_levels:
+        - debug
+        - error
+        - info
+        - warn
+        sources:
+        - crates/quiver/src/engine.rs
+        - crates/quiver/src/segment_store.rs
+        availability: []
+- name: quiver.segment.drop_metadata_failed
+  brief: The quiver.segment.drop_metadata_failed internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  - ref: error_type
+    requirement_level: required
+  - ref: reason
+    requirement_level: required
+  - ref: segment
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-quiver
+        severity_levels:
+        - warn
+        sources:
+        - crates/quiver/src/engine.rs
+        availability: []
+- name: quiver.segment.flush
+  brief: The quiver.segment.flush internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: bytes_written
+    requirement_level: recommended
+  - ref: error
+    requirement_level: recommended
+  - ref: error_type
+    requirement_level: recommended
+  - ref: path
+    requirement_level: recommended
+  - ref: segment
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-quiver
+        severity_levels:
+        - debug
+        - error
+        sources:
+        - crates/quiver/src/engine.rs
+        availability: []
+- name: quiver.segment.scan
+  brief: The quiver.segment.scan internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: deleted_count
+    requirement_level: recommended
+  - ref: error
+    requirement_level: recommended
+  - ref: error_type
+    requirement_level: recommended
+  - ref: next_segment_seq
+    requirement_level: recommended
+  - ref: path
+    requirement_level: recommended
+  - ref: segment
+    requirement_level: recommended
+  - ref: segment_count
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-quiver
+        severity_levels:
+        - debug
+        - error
+        - info
+        - warn
+        sources:
+        - crates/quiver/src/engine.rs
+        - crates/quiver/src/segment_store.rs
+        availability: []
+- name: quiver.subscriber.activate
+  brief: The quiver.subscriber.activate internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: subscriber_id
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-quiver
+        severity_levels:
+        - info
+        sources:
+        - crates/quiver/src/subscriber/registry.rs
+        availability: []
+- name: quiver.subscriber.deactivate
+  brief: The quiver.subscriber.deactivate internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: subscriber_id
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-quiver
+        severity_levels:
+        - info
+        sources:
+        - crates/quiver/src/subscriber/registry.rs
+        availability: []
+- name: quiver.subscriber.progress.flush
+  brief: The quiver.subscriber.progress.flush internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  - ref: error_type
+    requirement_level: required
+  - ref: subscriber_id
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-quiver
+        severity_levels:
+        - warn
+        sources:
+        - crates/quiver/src/subscriber/registry.rs
+        availability: []
+- name: quiver.subscriber.progress.load
+  brief: The quiver.subscriber.progress.load internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  - ref: error_type
+    requirement_level: required
+  - ref: subscriber_id
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-quiver
+        severity_levels:
+        - error
+        sources:
+        - crates/quiver/src/subscriber/registry.rs
+        availability: []
+- name: quiver.subscriber.progress.scan
+  brief: The quiver.subscriber.progress.scan internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  - ref: error_type
+    requirement_level: required
+  - ref: file
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-quiver
+        severity_levels:
+        - warn
+        sources:
+        - crates/quiver/src/subscriber/progress.rs
+        availability: []
+- name: quiver.subscriber.register
+  brief: The quiver.subscriber.register internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: subscriber_id
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-quiver
+        severity_levels:
+        - info
+        sources:
+        - crates/quiver/src/subscriber/registry.rs
+        availability: []
+- name: quiver.subscriber.unregister
+  brief: The quiver.subscriber.unregister internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: subscriber_id
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-quiver
+        severity_levels:
+        - info
+        sources:
+        - crates/quiver/src/subscriber/registry.rs
+        availability: []
+- name: quiver.wal.backpressure
+  brief: The quiver.wal.backpressure internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: aggregate_bytes
+    requirement_level: recommended
+  - ref: entry_count
+    requirement_level: recommended
+  - ref: max_rotated_files
+    requirement_level: recommended
+  - ref: max_wal_size
+    requirement_level: recommended
+  - ref: phase
+    requirement_level: recommended
+  - ref: projected_bytes
+    requirement_level: recommended
+  - ref: reason
+    requirement_level: recommended
+  - ref: rotated_file_count
+    requirement_level: recommended
+  - ref: rotation_target_bytes
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-quiver
+        severity_levels:
+        - warn
+        sources:
+        - crates/quiver/src/engine.rs
+        - crates/quiver/src/wal/writer.rs
+        availability: []
+- name: quiver.wal.cursor.load
+  brief: The quiver.wal.cursor.load internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: cursor_position
+    requirement_level: recommended
+  - ref: error
+    requirement_level: recommended
+  - ref: error_type
+    requirement_level: recommended
+  - ref: reason
+    requirement_level: required
+  - ref: wal_end
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-quiver
+        severity_levels:
+        - warn
+        sources:
+        - crates/quiver/src/engine.rs
+        availability: []
+- name: quiver.wal.drop
+  brief: The quiver.wal.drop internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: aggregate_bytes
+    requirement_level: required
+  - ref: purged_bytes
+    requirement_level: required
+  - ref: remaining_rotated_files
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-quiver
+        severity_levels:
+        - debug
+        sources:
+        - crates/quiver/src/wal/writer.rs
+        availability: []
+- name: quiver.wal.drop.flush
+  brief: The quiver.wal.drop.flush internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: recommended
+  - ref: error_type
+    requirement_level: recommended
+  - ref: reason
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-quiver
+        severity_levels:
+        - warn
+        sources:
+        - crates/quiver/src/wal/writer.rs
+        availability: []
+- name: quiver.wal.entry.decode
+  brief: The quiver.wal.entry.decode internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: payload_len
+    requirement_level: recommended
+  - ref: scope
+    requirement_level: required
+  - ref: sequence
+    requirement_level: required
+  - ref: slot_count
+    requirement_level: recommended
+  - ref: slot_id
+    requirement_level: recommended
+  - ref: timestamp_nanos
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-quiver
+        severity_levels:
+        - debug
+        - warn
+        sources:
+        - crates/quiver/src/engine.rs
+        - crates/quiver/src/wal/replay.rs
+        availability: []
+- name: quiver.wal.expiry.accounting
+  brief: Emitted by OTAP Dataflow as `quiver.wal.expiry.accounting`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: reason
+    requirement_level: required
+  - ref: sequence
+    requirement_level: required
+  - ref: slot_count
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-quiver
+        severity_levels:
+        - warn
+        sources:
+        - crates/quiver/src/engine.rs
+        availability: []
+- name: quiver.wal.file.init
+  brief: The quiver.wal.file.init internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error
+    requirement_level: required
+  - ref: error_type
+    requirement_level: required
+  - ref: file_type
+    requirement_level: required
+  - ref: path
+    requirement_level: required
+  - ref: rotation_id
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-quiver
+        severity_levels:
+        - error
+        - warn
+        sources:
+        - crates/quiver/src/wal/reader.rs
+        availability: []
+- name: quiver.wal.init
+  brief: The quiver.wal.init internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: aggregate_bytes
+    requirement_level: recommended
+  - ref: cursor_position
+    requirement_level: recommended
+  - ref: denominator
+    requirement_level: recommended
+  - ref: error_type
+    requirement_level: recommended
+  - ref: expected
+    requirement_level: recommended
+  - ref: file_size
+    requirement_level: recommended
+  - ref: found
+    requirement_level: recommended
+  - ref: is_new_file
+    requirement_level: recommended
+  - ref: min_header_size
+    requirement_level: recommended
+  - ref: next_sequence
+    requirement_level: recommended
+  - ref: numerator
+    requirement_level: recommended
+  - ref: path
+    requirement_level: recommended
+  - ref: reason
+    requirement_level: recommended
+  - ref: rotated_file_count
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-quiver
+        severity_levels:
+        - error
+        - info
+        sources:
+        - crates/quiver/src/wal/writer.rs
+        availability: []
+- name: quiver.wal.replay
+  brief: The quiver.wal.replay internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: context
+    requirement_level: recommended
+  - ref: cursor_position
+    requirement_level: recommended
+  - ref: error
+    requirement_level: recommended
+  - ref: error_type
+    requirement_level: recommended
+  - ref: reason
+    requirement_level: recommended
+  - ref: replayed
+    requirement_level: recommended
+  - ref: replayed_count
+    requirement_level: recommended
+  - ref: replayed_so_far
+    requirement_level: recommended
+  - ref: sequence
+    requirement_level: recommended
+  - ref: skipped_expired
+    requirement_level: recommended
+  - ref: status
+    requirement_level: recommended
+  - ref: stopped_at_corruption
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-quiver
+        severity_levels:
+        - debug
+        - error
+        - info
+        - warn
+        sources:
+        - crates/quiver/src/engine.rs
+        availability: []
+- name: quiver.wal.replay.accounting
+  brief: Emitted by OTAP Dataflow as `quiver.wal.replay.accounting`.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: reason
+    requirement_level: required
+  - ref: sequence
+    requirement_level: required
+  - ref: slot_count
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-quiver
+        severity_levels:
+        - warn
+        sources:
+        - crates/quiver/src/engine.rs
+        availability: []
+- name: quiver.wal.rotate
+  brief: The quiver.wal.rotate internal telemetry event occurred.
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: aggregate_bytes
+    requirement_level: required
+  - ref: rotated_file_bytes
+    requirement_level: required
+  - ref: rotated_file_count
+    requirement_level: required
+  - ref: rotation_id
+    requirement_level: required
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    otap_dataflow:
+      wire:
+        scope_names:
+        - otap-df-quiver
+        severity_levels:
+        - info
+        sources:
+        - crates/quiver/src/wal/writer.rs
+        availability: []

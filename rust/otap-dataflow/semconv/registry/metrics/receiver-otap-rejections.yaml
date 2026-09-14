@@ -1,0 +1,38 @@
+file_format: definition/2
+metrics:
+- name: receiver.otap.rejections.batches
+  brief: Number of rejected OTAP batches within admitted streams.
+  instrument: counter
+  unit: '{batch}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error.type
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.otap.rejections
+- name: receiver.otap.rejections.streams
+  brief: Number of rejected OTAP streaming RPCs.
+  instrument: counter
+  unit: '{stream}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: error.type
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.otap.rejections

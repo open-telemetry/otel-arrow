@@ -1,0 +1,347 @@
+file_format: definition/2
+metrics:
+- name: tokio.runtime.blocking.task.queue.size
+  brief: Current number of tasks pending in the blocking thread pool. This counts tasks spawned using
+    `spawn_blocking` that have not yet started.
+  instrument: updowncounter
+  unit: '{task}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: tokio.runtime
+      availability: tokio_unstable
+- name: tokio.runtime.blocking.thread.count
+  brief: Current number of threads created for the blocking thread pool.
+  instrument: updowncounter
+  unit: '{thread}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: tokio.runtime
+      availability: tokio_unstable
+- name: tokio.runtime.blocking.thread.idle.count
+  brief: Current number of idle threads in the blocking thread pool.
+  instrument: updowncounter
+  unit: '{thread}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: tokio.runtime
+      availability: tokio_unstable
+- name: tokio.runtime.budget.forced.yield.count
+  brief: Total number of times tasks were forced to yield after exhausting their cooperative budget. This
+    metric requires `tokio_unstable` and 64-bit atomics.
+  instrument: counter
+  unit: '{yield}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: tokio.runtime
+      recording: observed
+      availability: all (tokio_unstable , target_has_atomic = "64")
+- name: tokio.runtime.global.task.queue.size
+  brief: Current number of tasks pending in the runtime's global/injection queue. This queue is used when
+    tasks are spawned or woken from outside the runtime.
+  instrument: updowncounter
+  unit: '{task}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: tokio.runtime
+- name: tokio.runtime.io.driver.fd.deregistered.count
+  brief: Total number of file descriptors deregistered from the runtime's I/O driver. This metric requires
+    `tokio_unstable` and 64-bit atomics (and Tokio's `net` feature).
+  instrument: counter
+  unit: '{fd}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: tokio.runtime
+      recording: observed
+      availability: all (tokio_unstable , target_has_atomic = "64")
+- name: tokio.runtime.io.driver.fd.registered.count
+  brief: Total number of file descriptors registered with the runtime's I/O driver. This metric requires
+    `tokio_unstable` and 64-bit atomics (and Tokio's `net` feature).
+  instrument: counter
+  unit: '{fd}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: tokio.runtime
+      recording: observed
+      availability: all (tokio_unstable , target_has_atomic = "64")
+- name: tokio.runtime.io.driver.ready.count
+  brief: Total number of ready events processed by the runtime's I/O driver. This metric requires `tokio_unstable`
+    and 64-bit atomics (and Tokio's `net` feature).
+  instrument: counter
+  unit: '{ready}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: tokio.runtime
+      recording: observed
+      availability: all (tokio_unstable , target_has_atomic = "64")
+- name: tokio.runtime.remote.schedule.count
+  brief: Total number of tasks scheduled from outside the runtime since it was created. These schedules
+    go through the global injection queue and can be slower than worker-local scheduling. This metric
+    requires `tokio_unstable` and 64-bit atomics.
+  instrument: counter
+  unit: '{remote}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: tokio.runtime
+      recording: observed
+      availability: all (tokio_unstable , target_has_atomic = "64")
+- name: tokio.runtime.spawned.tasks.count
+  brief: Total number of tasks spawned in the runtime since it was created. This counter is monotonically
+    increasing. This metric requires `tokio_unstable` and 64-bit atomics.
+  instrument: counter
+  unit: '{spawn}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: tokio.runtime
+      recording: observed
+      availability: all (tokio_unstable , target_has_atomic = "64")
+- name: tokio.runtime.task.active.count
+  brief: Current number of alive tasks in the runtime. This value increases when tasks are spawned and
+    decreases when tasks complete.
+  instrument: updowncounter
+  unit: '{task}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: tokio.runtime
+- name: tokio.runtime.worker.busy.time
+  brief: Total worker busy time, summed across all runtime workers, since runtime creation. With multiple
+    workers, this sum can exceed wall-clock time because workers can be busy concurrently. This metric
+    is only available on targets with 64-bit atomics.
+  instrument: counter
+  unit: '{s}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: tokio.runtime
+      recording: observed
+      availability: target_has_atomic = "64"
+- name: tokio.runtime.worker.count
+  brief: Number of worker threads used by the Tokio runtime. For Tokio's `current_thread` runtime, this
+    is always `1`.
+  instrument: updowncounter
+  unit: '{thread}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: tokio.runtime
+- name: tokio.runtime.worker.local.queue.size
+  brief: Current number of tasks pending in worker-local queues, summed across all workers.
+  instrument: updowncounter
+  unit: '{task}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: tokio.runtime
+      availability: tokio_unstable
+- name: tokio.runtime.worker.local.schedule.count
+  brief: Total number of tasks scheduled onto worker-local queues, summed across workers, since runtime
+    creation. This metric requires `tokio_unstable` and 64-bit atomics.
+  instrument: counter
+  unit: '{schedule}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: tokio.runtime
+      recording: observed
+      availability: all (tokio_unstable , target_has_atomic = "64")
+- name: tokio.runtime.worker.noop.count
+  brief: Total number of "noop" unpark events, summed across workers, since runtime creation. A noop unpark
+    is when a worker is unparked but finds no work before parking again. This metric requires `tokio_unstable`
+    and 64-bit atomics.
+  instrument: counter
+  unit: '{noop}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: tokio.runtime
+      recording: observed
+      availability: all (tokio_unstable , target_has_atomic = "64")
+- name: tokio.runtime.worker.overflow.count
+  brief: Total number of worker local-queue overflows, summed across workers, since runtime creation.
+    This metric only applies to Tokio's multi-threaded scheduler. This metric requires `tokio_unstable`
+    and 64-bit atomics.
+  instrument: counter
+  unit: '{overflow}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: tokio.runtime
+      recording: observed
+      availability: all (tokio_unstable , target_has_atomic = "64")
+- name: tokio.runtime.worker.park.count
+  brief: Total number of times runtime workers parked, summed across all workers, since runtime creation.
+    A worker "parks" when it becomes idle and waits for new work. This metric is only available on targets
+    with 64-bit atomics.
+  instrument: counter
+  unit: '{park}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: tokio.runtime
+      recording: observed
+      availability: target_has_atomic = "64"
+- name: tokio.runtime.worker.park.unpark.count
+  brief: Total number of park/unpark transitions, summed across all workers, since runtime creation. An
+    odd value means at least one worker is currently parked; an even value means all workers are currently
+    active. This metric is only available on targets with 64-bit atomics.
+  instrument: counter
+  unit: '{unpark}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: tokio.runtime
+      recording: observed
+      availability: target_has_atomic = "64"
+- name: tokio.runtime.worker.poll.count
+  brief: Total number of task polls, summed across workers, since runtime creation. This metric requires
+    `tokio_unstable` and 64-bit atomics.
+  instrument: counter
+  unit: '{poll}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: tokio.runtime
+      recording: observed
+      availability: all (tokio_unstable , target_has_atomic = "64")
+- name: tokio.runtime.worker.steal.attempt.count
+  brief: Total number of steal attempts, summed across workers, since runtime creation. This metric requires
+    `tokio_unstable` and 64-bit atomics.
+  instrument: counter
+  unit: '{steal}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: tokio.runtime
+      recording: observed
+      availability: all (tokio_unstable , target_has_atomic = "64")
+- name: tokio.runtime.worker.steal.success.count
+  brief: Total number of successful steal operations, summed across workers, since runtime creation. This
+    metric requires `tokio_unstable` and 64-bit atomics.
+  instrument: counter
+  unit: '{steal}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - otap.pipeline
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: tokio.runtime
+      recording: observed
+      availability: all (tokio_unstable , target_has_atomic = "64")

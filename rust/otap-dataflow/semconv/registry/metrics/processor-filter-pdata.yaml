@@ -1,0 +1,20 @@
+file_format: definition/2
+metrics:
+- name: processor.filter.pdata.dropped.items
+  brief: Number of signal items (log records, spans, or metric data points) a decision node chose to drop.
+  instrument: counter
+  unit: '{item}'
+  stability: development
+  requirement_level: recommended
+  attributes:
+  - ref: signal
+    requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: processor.filter.pdata

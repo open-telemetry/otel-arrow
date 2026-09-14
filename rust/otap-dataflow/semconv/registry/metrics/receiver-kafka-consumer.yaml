@@ -1,0 +1,187 @@
+file_format: definition/2
+metrics:
+- name: receiver.kafka.consumer.group.feedback.after_revocation
+  brief: Ack or nack responses ignored because their partition ownership was stale.
+  instrument: counter
+  unit: '{response}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.kafka.consumer
+      rust:
+        field: feedback_after_revocation
+- name: receiver.kafka.consumer.group.lag
+  brief: Mean broker-committed consumer-group lag across every owned partition.
+  instrument: gauge
+  unit: '{message}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: double
+    otap_dataflow:
+      metric_set: receiver.kafka.consumer
+      rust:
+        field: lag
+- name: receiver.kafka.consumer.group.partition.assignments
+  brief: Partitions newly acquired by this consumer across rebalances.
+  instrument: counter
+  unit: '{partition}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.kafka.consumer
+      rust:
+        field: partition_assignments
+- name: receiver.kafka.consumer.group.partition.revocations
+  brief: Owned partitions revoked from this consumer across rebalances.
+  instrument: counter
+  unit: '{partition}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.kafka.consumer
+      rust:
+        field: partition_revocations
+- name: receiver.kafka.consumer.group.partitions
+  brief: Current number of partitions owned by this consumer.
+  instrument: updowncounter
+  unit: '{partition}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.kafka.consumer
+      rust:
+        field: partitions
+- name: receiver.kafka.consumer.group.rebalance.commit_failures
+  brief: Synchronous commit calls that failed while partitions were being revoked.
+  instrument: counter
+  unit: '{error}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.kafka.consumer
+      rust:
+        field: rebalance_commit_failures
+- name: receiver.kafka.consumer.group.rebalances
+  brief: Consumer-group assignment events observed by this consumer.
+  instrument: counter
+  unit: '{rebalance}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.kafka.consumer
+      rust:
+        field: rebalances
+- name: receiver.kafka.consumer.records.bytes
+  brief: Kafka record payload bytes delivered before filtering or decoding.
+  instrument: counter
+  unit: By
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.kafka.consumer
+      rust:
+        field: record_bytes
+- name: receiver.kafka.consumer.records.duplicates
+  brief: Messages skipped because their offsets were already tracked in this ownership generation.
+  instrument: counter
+  unit: '{message}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.kafka.consumer
+      rust:
+        field: duplicate_records
+- name: receiver.kafka.consumer.records.inflight
+  brief: Current number of delivered records awaiting acknowledgement and commit progress.
+  instrument: updowncounter
+  unit: '{message}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.kafka.consumer
+      rust:
+        field: records_in_flight
+- name: receiver.kafka.consumer.records.received
+  brief: Kafka records delivered by the consumer before filtering or decoding.
+  instrument: counter
+  unit: '{message}'
+  stability: development
+  requirement_level: recommended
+  entity_associations:
+  - one_of:
+    - otap.node
+    - otap.node.custom
+  annotations:
+    code_generation:
+      metric_value_type: int
+    otap_dataflow:
+      metric_set: receiver.kafka.consumer
