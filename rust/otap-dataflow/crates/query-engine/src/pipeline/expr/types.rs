@@ -452,8 +452,7 @@ impl MetricDataPointType {
         }
     }
 
-    /// return the [`ArrowPayloadType`] associated with attributes of exemplars of this of this
-    /// data point type
+    /// return the [`ArrowPayloadType`] of attributes of exemplars of this data point type
     pub fn exemplar_attr_payload_type(&self) -> Option<ArrowPayloadType> {
         match self {
             Self::ExponentialHistogramDataPoint => {

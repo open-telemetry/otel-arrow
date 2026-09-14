@@ -152,7 +152,7 @@ impl PipelineStage for FilterPipelineStage {
                         // the expression evaluated to None, which we will treat as false.
                         // this may happen in the case of a predicate involving a field that
                         // does not exist, in which case the predicate should fail (unless the
-                        // planner specifically planned for to pass, in which case null wouldn't
+                        // planner specifically planned it to pass, in which case null wouldn't
                         // have been returned here).
                         remove_all_metric_data_points(&mut otap_batch, &metric_data_point_type);
                     }

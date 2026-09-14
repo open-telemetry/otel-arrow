@@ -473,23 +473,23 @@ async fn test_filter_data_points_by_scalar_false() {
         where contains(\"foo\", \"b\") // evaluates to scalar false
     }";
 
-    run_all_datapoints_dropped_test(query).await;
+    run_all_data_points_dropped_test(query).await;
 }
 
-/// Scenario: the "drop" operator call is used in a nested pipeline of metric datapoints
-/// Guarantees: this is supported and the result is that all the metric datapoints are dropped
+/// Scenario: the "drop" operator call is used in a nested pipeline of metric data points
+/// Guarantees: this is supported and the result is that all the metric data points are dropped
 #[tokio::test]
 async fn test_drop_all_metric_data_points() {
     let query = "metrics | apply data_points { drop }";
 
-    run_all_datapoints_dropped_test(query).await;
+    run_all_data_points_dropped_test(query).await;
 }
 
-/// helper which runs a test that evaluates the given query on a batch that contains datapoints
-/// for all types of metrics and child record batches for each type of datapoint (like exemplars,
-/// attributes, and exemplar attributes) and ensures that after execution all the datapoints have
+/// helper which runs a test that evaluates the given query on a batch that contains data points
+/// for all types of metrics and child record batches for each type of data point (like exemplars,
+/// attributes, and exemplar attributes) and ensures that after execution all the data points have
 /// been dropped.
-async fn run_all_datapoints_dropped_test(query: &'static str) {
+async fn run_all_data_points_dropped_test(query: &'static str) {
     let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
         .unwrap()
         .pipeline;
@@ -651,7 +651,10 @@ async fn run_all_datapoints_dropped_test(query: &'static str) {
     );
 }
 
-/// Scenario: filter metric datapoints by a
+/// Scenario: filter metric data points by a field that is not present on the batch containing
+/// the metric data point
+/// Guarantees: the missing field is treated as evaluating to null, which is treated as false
+/// and all the metric data points are removed.
 #[tokio::test]
 async fn test_filter_data_points_null_predicate_result() {
     let query = "metrics | apply data_points {
@@ -831,7 +834,7 @@ async fn test_filter_data_points_null_predicate_result() {
 /// Guarantees: that the operation returns an expected error instead of inadvertently evaluating
 /// and producing invalid results
 #[tokio::test]
-async fn test_not_yet_unsupported_queries_return_error() {
+async fn test_not_supported_queries_return_error() {
     struct TestCase {
         query: &'static str,
     }
@@ -893,7 +896,7 @@ async fn test_not_yet_unsupported_queries_return_error() {
                 remove attributes[\"x\"]
             }",
         },
-        // the following two cases, where we're accessing resource attributes for some datapoint
+        // the following two cases, where we're accessing resource attributes for some data point
         // should probably never be supported (instead, renaming attributes should be supported at
         // the level metric itself).
         TestCase {

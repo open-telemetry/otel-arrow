@@ -18,7 +18,7 @@ use crate::pipeline::expr::types::MetricDataPointType;
 ///
 /// This function also handles automatically filtering the child record batches (attributes,
 /// exemplars, etc.) of these data point types to remove any orphaned children rows (e.g.
-/// remove any attributes/exemplars associated with  discarded data points).
+/// remove any attributes/exemplars associated with discarded data points).
 ///
 /// If after discarding the filtered rows some record batch turns out to be empty, it will
 /// be removed entirely from the OTAP batch.

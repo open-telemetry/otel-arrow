@@ -28,7 +28,7 @@ pub enum ApplySource {
     /// Apply the child pipeline to attributes
     Attributes(AttributesIdentifier),
 
-    /// Apply the child pipeline to metric attributes
+    /// Apply the child pipeline to metric data points
     DataPoints,
 }
 

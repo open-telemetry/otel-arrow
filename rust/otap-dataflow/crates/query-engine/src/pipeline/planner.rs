@@ -41,7 +41,7 @@ use crate::pipeline::{BoxedPipelineStage, PipelineStage};
 
 /// Identifier for what will be treated as a record in the pipeline that is being planned.
 ///
-/// Typically this is used in cases where we plan an nested pipeline on some child element
+/// Typically this is used in cases where we plan a nested pipeline on some child element
 /// via an expression like `apply attributes { ... }` or `apply data_points { ... }`
 #[derive(Clone, Debug)]
 pub enum RecordType {
@@ -641,7 +641,7 @@ impl PipelinePlanner {
         let mut assignments = Vec::new();
         let scoped_planner = ExprPlanner::new(
             self.filter_attribute_keys_case_sensitive,
-            // FIXME - when we support assigning fields metric datapoints, we may need to pass in
+            // FIXME - when we support assigning fields on metric data points, we may need to pass in
             // self.record_type.clone() here instead of just copying RecordType::Signal. When we
             // make this change, it will break some behaviour of assigning attribute value in
             // nested `apply attribute { ... }` pipelines, especially when there are missing

@@ -1,7 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// TODO comment outdated
 //! Implementation of `execute_as_value` for each `ScopedExpr` variant.
 //!
 //! This module contains the logic for evaluating a `ScopedExpr` tree and producing a
@@ -56,7 +55,7 @@ use otel_arrow_dfe_pdata::otap::filter::IdBitmapPool;
 pub(crate) struct EvalContext<'a> {
     /// When evaluating a [`ScopedExpr`] and encountering a data scope identifying
     /// the source as a metric data point, this will be used to determine which record batch
-    /// record batch is that which should be used.
+    /// batch is that which should be used.
     data_point_type: Option<MetricDataPointType>,
 
     /// DataFusion Session context. Used for planning physical expression from logical exprs
@@ -488,7 +487,6 @@ fn invert_boolean_scoped_value(sv: ScopedValue) -> Result<ScopedValue> {
     })
 }
 
-// TODO comment on what this is doing ...
 fn coerce_nulls_for_predicate(
     result_vals: ColumnarValue,
     missing_data_passes: bool,
@@ -509,7 +507,6 @@ fn coerce_nulls_for_predicate(
         ColumnarValue::Scalar(ScalarValue::Boolean(None)) => {
             return ColumnarValue::Scalar(ScalarValue::Boolean(Some(missing_data_passes)));
         }
-        // TODO - unnecessary case below? We've handled all the options
         _ => {}
     }
 

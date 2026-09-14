@@ -104,6 +104,8 @@ impl ExprPlanner {
             RecordType::Child(child) => match child {
                 ChildRecordKind::DataPoint => RecordScope::Child(ChildRecordKind::DataPoint),
             },
+            // In attributes mode the attributes batch IS the "root" for evaluation,
+            // so we use Signal scope -- same as the top-level signal case.
             _ => RecordScope::Signal,
         }
     }
@@ -1678,7 +1680,7 @@ impl ExprPlanner {
                         _ => unreachable!(),
                     };
 
-                    // TODO - need to test this kind of expression on Datapoint fields
+                    // TODO - need to test this kind of expression on data point fields
                     let scope = expr_source
                         .expr
                         .eval_scope()
