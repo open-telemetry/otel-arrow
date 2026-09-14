@@ -1521,6 +1521,7 @@ pub mod test_support {
 
         // OTLP/OTAP proto types used by the payload builders (superset across
         // all builders so no builder needs a local import).
+        use otel_arrow_dfe_pdata::OtapPayload;
         use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::BatchArrowRecords;
         use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
         use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
@@ -1537,7 +1538,6 @@ pub mod test_support {
         use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::{
             ResourceSpans, ScopeSpans, Span,
         };
-        use otel_arrow_dfe_pdata::OtapPayload;
 
         /// Tests that payload is properly cloned for both OTLP and OTAP serialization formats.
         /// This ensures no borrow-after-move errors occur when the encoder consumes the payload.
