@@ -50,10 +50,10 @@ fn traces_canonicalize_singleton_in_place(traces_data: &mut TracesData) {
                 canonicalize_idvec(&mut span.span_id);
 
                 // Status default check
-                if let Some(status) = &span.status {
-                    if *status == Status::default() {
-                        span.status = None;
-                    }
+                if let Some(status) = &span.status
+                    && *status == Status::default()
+                {
+                    span.status = None;
                 }
 
                 // Canonicalize span attributes

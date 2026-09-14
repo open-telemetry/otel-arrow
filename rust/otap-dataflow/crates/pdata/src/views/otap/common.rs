@@ -501,19 +501,17 @@ pub(crate) fn build_attribute_index_u32(batch: &RecordBatch) -> BTreeMap<u32, Ve
     } else if let Some(dict_array) = parent_id_col
         .as_any()
         .downcast_ref::<arrow::array::DictionaryArray<arrow::datatypes::UInt8Type>>()
-    {
-        if let Some(values) = dict_array
+        && let Some(values) = dict_array
             .values()
             .as_any()
             .downcast_ref::<arrow::array::UInt32Array>()
-        {
-            for i in 0..batch.num_rows() {
-                if dict_array.is_valid(i) {
-                    let key = dict_array.keys().value(i) as usize;
-                    if values.is_valid(key) {
-                        let pid = values.value(key);
-                        index.entry(pid).or_default().push(i);
-                    }
+    {
+        for i in 0..batch.num_rows() {
+            if dict_array.is_valid(i) {
+                let key = dict_array.keys().value(i) as usize;
+                if values.is_valid(key) {
+                    let pid = values.value(key);
+                    index.entry(pid).or_default().push(i);
                 }
             }
         }

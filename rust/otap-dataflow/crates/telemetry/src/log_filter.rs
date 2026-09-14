@@ -3,7 +3,7 @@
 
 //! Runtime-reloadable filtering for internal telemetry logs.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::env;
 use std::sync::{Arc, Mutex, Weak};
 
 use arc_swap::ArcSwap;
@@ -16,10 +16,10 @@ use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::layer::{Context, Layer};
 
 struct SharedState {
-    // Desired config value; startup RUST_LOG may temporarily select a different filter.
-    configured_level: ArcSwap<LogLevel>,
-    // The first reconciliation must replace RUST_LOG even when logs.level is unchanged.
-    startup_override_active: AtomicBool,
+    // Captured once so removing an explicit setting has deterministic behavior.
+    fallback_level: LogLevel,
+    // The directive currently installed in all dispatcher-local filters.
+    effective_level: ArcSwap<LogLevel>,
     template: ArcSwap<EnvFilter>,
     layers: Mutex<Vec<Weak<ArcSwap<EnvFilter>>>>,
 }
@@ -29,21 +29,22 @@ pub struct RuntimeLogFilterLayer {
     filter: Arc<ArcSwap<EnvFilter>>,
 }
 
-/// Creates the startup `EnvFilter` from `RUST_LOG`, falling back to `level`.
+/// Creates an `EnvFilter` from a validated log level.
 #[cfg(test)]
 #[must_use]
 pub(crate) fn create_env_filter(level: &LogLevel) -> EnvFilter {
-    create_startup_env_filter(level).0
+    env_filter(level)
 }
 
-fn create_startup_env_filter(level: &LogLevel) -> (EnvFilter, bool) {
-    match EnvFilter::try_from_default_env() {
-        Ok(filter) => (filter, true),
-        Err(_) => (
-            EnvFilter::try_new(level.as_str()).expect("logs.level must be validated before use"),
-            false,
-        ),
-    }
+fn env_filter(level: &LogLevel) -> EnvFilter {
+    EnvFilter::try_new(level.as_str()).expect("log level must be validated before use")
+}
+
+fn capture_fallback_level() -> LogLevel {
+    env::var("RUST_LOG")
+        .ok()
+        .and_then(|value| LogLevel::try_from(value).ok())
+        .unwrap_or_default()
 }
 
 /// A shared factory for runtime-reloadable `EnvFilter` layers.
@@ -56,18 +57,25 @@ pub struct RuntimeLogFilter {
     shared: Arc<SharedState>,
 }
 
-/// A cloneable handle for applying reconciled log-level directives.
+/// A cloneable handle for applying configured log-level directives.
 #[derive(Clone)]
 pub struct RuntimeLogFilterHandle {
     shared: Arc<SharedState>,
 }
 
 impl RuntimeLogFilter {
-    /// Creates a filter and its update handle from the configured log level.
+    /// Creates a filter and its update handle from optional configuration.
+    ///
+    /// An explicit configured level takes precedence. When configuration omits
+    /// the level, a valid `RUST_LOG` value captured here is used, followed by
+    /// the built-in [`LogLevel::default`].
     #[must_use]
-    pub fn new(level: &LogLevel) -> (Self, RuntimeLogFilterHandle) {
-        let (filter, startup_override_active) = create_startup_env_filter(level);
-        Self::from_configured_filter(level, filter, startup_override_active)
+    pub fn new(configured_level: Option<&LogLevel>) -> (Self, RuntimeLogFilterHandle) {
+        let fallback_level = capture_fallback_level();
+        let effective_level = configured_level
+            .cloned()
+            .unwrap_or_else(|| fallback_level.clone());
+        Self::from_levels(effective_level, fallback_level)
     }
 
     /// Creates a filter from the configured level without consulting `RUST_LOG`.
@@ -76,19 +84,17 @@ impl RuntimeLogFilter {
     /// configured-filter behavior independent of the process environment.
     #[must_use]
     pub fn new_configured(level: &LogLevel) -> (Self, RuntimeLogFilterHandle) {
-        let filter =
-            EnvFilter::try_new(level.as_str()).expect("logs.level must be validated before use");
-        Self::from_configured_filter(level, filter, false)
+        Self::from_levels(level.clone(), LogLevel::default())
     }
 
-    fn from_configured_filter(
-        level: &LogLevel,
-        filter: EnvFilter,
-        startup_override_active: bool,
+    fn from_levels(
+        effective_level: LogLevel,
+        fallback_level: LogLevel,
     ) -> (Self, RuntimeLogFilterHandle) {
+        let filter = env_filter(&effective_level);
         let shared = Arc::new(SharedState {
-            configured_level: ArcSwap::from_pointee(level.clone()),
-            startup_override_active: AtomicBool::new(startup_override_active),
+            fallback_level,
+            effective_level: ArcSwap::from_pointee(effective_level),
             template: ArcSwap::from_pointee(filter),
             layers: Mutex::new(Vec::new()),
         });
@@ -104,8 +110,8 @@ impl RuntimeLogFilter {
     pub(crate) fn from_filter(level: LogLevel, filter: EnvFilter) -> Self {
         Self {
             shared: Arc::new(SharedState {
-                configured_level: ArcSwap::from_pointee(level),
-                startup_override_active: AtomicBool::new(false),
+                fallback_level: level.clone(),
+                effective_level: ArcSwap::from_pointee(level),
                 template: ArcSwap::from_pointee(filter),
                 layers: Mutex::new(Vec::new()),
             }),
@@ -128,13 +134,10 @@ impl RuntimeLogFilter {
         RuntimeLogFilterLayer { filter }
     }
 
-    /// Returns the desired configuration value.
-    ///
-    /// Before the first reconciliation this may differ from the effective startup
-    /// filter when `RUST_LOG` supplied that filter.
+    /// Returns the effective level currently installed in tracing filters.
     #[must_use]
-    pub fn configured_level(&self) -> LogLevel {
-        self.shared.configured_level.load().as_ref().clone()
+    pub fn effective_level(&self) -> LogLevel {
+        self.shared.effective_level.load().as_ref().clone()
     }
 }
 
@@ -147,23 +150,20 @@ impl RuntimeLogFilterHandle {
     /// observed their `on_new_span`/`on_enter` callbacks, so its scope stack
     /// stays empty for them. Such directives still work when supplied at
     /// startup. See the crate README for operator-facing details.
-    pub fn apply(&self, level: &LogLevel) {
-        if self.shared.configured_level.load().as_ref() == level
-            && !self.shared.startup_override_active.load(Ordering::Acquire)
-        {
+    pub fn apply(&self, configured_level: Option<&LogLevel>) {
+        let level = configured_level
+            .cloned()
+            .unwrap_or_else(|| self.shared.fallback_level.clone());
+        if self.shared.effective_level.load().as_ref() == &level {
             return;
         }
-        let filter =
-            EnvFilter::try_new(level.as_str()).expect("logs.level must be validated before use");
+        let filter = env_filter(&level);
         let mut layers = self
             .shared
             .layers
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.shared.configured_level.store(Arc::new(level.clone()));
-        self.shared
-            .startup_override_active
-            .store(false, Ordering::Release);
+        self.shared.effective_level.store(Arc::new(level));
         self.shared.template.store(Arc::new(filter.clone()));
         layers.retain(|layer| {
             if let Some(layer) = layer.upgrade() {
@@ -177,13 +177,10 @@ impl RuntimeLogFilterHandle {
         tracing::callsite::rebuild_interest_cache();
     }
 
-    /// Returns the desired configuration value.
-    ///
-    /// Before the first reconciliation this may differ from the effective startup
-    /// filter when `RUST_LOG` supplied that filter.
+    /// Returns the effective level currently installed in tracing filters.
     #[must_use]
-    pub fn configured_level(&self) -> LogLevel {
-        self.shared.configured_level.load().as_ref().clone()
+    pub fn effective_level(&self) -> LogLevel {
+        self.shared.effective_level.load().as_ref().clone()
     }
 }
 
@@ -258,7 +255,7 @@ mod tests {
     fn same_callsite_tracks_runtime_level_updates() {
         crate::with_cleared_rust_log(|| {
             let count = Arc::new(AtomicUsize::new(0));
-            let (filter, handle) = RuntimeLogFilter::new(&level("warn"));
+            let (filter, handle) = RuntimeLogFilter::new(Some(&level("warn")));
             let subscriber = Registry::default()
                 .with(filter.layer())
                 .with(CountingLayer(Arc::clone(&count)));
@@ -269,11 +266,11 @@ mod tests {
                 emit_info();
                 assert_eq!(count.swap(0, Ordering::SeqCst), 0);
 
-                handle.apply(&level("info"));
+                handle.apply(Some(&level("info")));
                 emit_info();
                 assert_eq!(count.swap(0, Ordering::SeqCst), 1);
 
-                handle.apply(&level("error"));
+                handle.apply(Some(&level("error")));
                 emit_info();
                 assert_eq!(count.swap(0, Ordering::SeqCst), 0);
             });
@@ -286,7 +283,7 @@ mod tests {
     fn runtime_update_preserves_target_directives() {
         crate::with_cleared_rust_log(|| {
             let count = Arc::new(AtomicUsize::new(0));
-            let (filter, handle) = RuntimeLogFilter::new(&level("off"));
+            let (filter, handle) = RuntimeLogFilter::new(Some(&level("off")));
             let subscriber = Registry::default()
                 .with(filter.layer())
                 .with(CountingLayer(Arc::clone(&count)));
@@ -295,7 +292,7 @@ mod tests {
                 tracing::info!(target: "runtime_allowed", "allowed target");
                 assert_eq!(count.swap(0, Ordering::SeqCst), 0);
 
-                handle.apply(&level("off,runtime_allowed=info"));
+                handle.apply(Some(&level("off,runtime_allowed=info")));
                 tracing::info!(target: "runtime_allowed", "allowed target");
                 tracing::info!(target: "runtime_blocked", "blocked target");
                 assert_eq!(count.swap(0, Ordering::SeqCst), 1);
@@ -309,7 +306,7 @@ mod tests {
     fn runtime_update_applies_span_directive_only_to_new_spans() {
         crate::with_cleared_rust_log(|| {
             let count = Arc::new(AtomicUsize::new(0));
-            let (filter, handle) = RuntimeLogFilter::new(&level("warn,[reload_span]=debug"));
+            let (filter, handle) = RuntimeLogFilter::new(Some(&level("warn,[reload_span]=debug")));
             let subscriber = Registry::default()
                 .with(filter.layer())
                 .with(CountingLayer(Arc::clone(&count)));
@@ -320,7 +317,7 @@ mod tests {
                 tracing::debug!("old span directive permits this event");
                 assert_eq!(count.swap(0, Ordering::SeqCst), 1);
 
-                handle.apply(&level("warn,[reload_span]=trace"));
+                handle.apply(Some(&level("warn,[reload_span]=trace")));
                 tracing::debug!("existing span falls back to warn");
                 assert_eq!(count.swap(0, Ordering::SeqCst), 0);
                 drop(entered);
@@ -341,7 +338,7 @@ mod tests {
         crate::with_cleared_rust_log(|| {
             let first_count = Arc::new(AtomicUsize::new(0));
             let second_count = Arc::new(AtomicUsize::new(0));
-            let (filter, handle) = RuntimeLogFilter::new(&level("warn"));
+            let (filter, handle) = RuntimeLogFilter::new(Some(&level("warn")));
             let first = tracing::Dispatch::new(
                 Registry::default()
                     .with(filter.layer())
@@ -359,7 +356,7 @@ mod tests {
             assert_eq!(first_count.load(Ordering::SeqCst), 0);
             assert_eq!(second_count.load(Ordering::SeqCst), 0);
 
-            handle.apply(&level("info"));
+            handle.apply(Some(&level("info")));
             tracing::dispatcher::with_default(&first, emit_info);
             tracing::dispatcher::with_default(&second, emit_info);
             assert_eq!(first_count.load(Ordering::SeqCst), 1);
@@ -373,9 +370,9 @@ mod tests {
     fn dispatcher_created_after_update_uses_latest_filter() {
         crate::with_cleared_rust_log(|| {
             let count = Arc::new(AtomicUsize::new(0));
-            let (filter, handle) = RuntimeLogFilter::new(&level("warn"));
+            let (filter, handle) = RuntimeLogFilter::new(Some(&level("warn")));
 
-            handle.apply(&level("info"));
+            handle.apply(Some(&level("info")));
             let dispatch = tracing::Dispatch::new(
                 Registry::default()
                     .with(filter.layer())
@@ -389,27 +386,71 @@ mod tests {
         });
     }
 
-    /// Scenario: RUST_LOG sets the startup filter before runtime configuration changes.
-    /// Guarantees: a reconciled logs.level replaces the startup environment filter.
+    /// Scenario: RUST_LOG is set while logs.level is explicitly configured.
+    /// Guarantees: the explicit configuration controls the initial filter without an activation update.
     #[test]
-    fn runtime_update_overrides_rust_log_startup_filter() {
+    fn explicit_config_overrides_rust_log_from_initial_filter() {
         crate::with_rust_log(Some("error"), || {
             let count = Arc::new(AtomicUsize::new(0));
-            let (filter, handle) = RuntimeLogFilter::new(&level("warn"));
+            let (filter, handle) = RuntimeLogFilter::new(Some(&level("info")));
             let subscriber = Registry::default()
                 .with(filter.layer())
                 .with(CountingLayer(Arc::clone(&count)));
 
             tracing::subscriber::with_default(subscriber, || {
-                tracing::info!("RUST_LOG blocks this startup event");
-                assert_eq!(count.swap(0, Ordering::SeqCst), 0);
-
-                handle.apply(&level("info"));
-                tracing::info!("reconciled logs.level permits this event");
+                tracing::info!("explicit logs.level permits this initial event");
                 assert_eq!(count.swap(0, Ordering::SeqCst), 1);
             });
 
-            assert_eq!(handle.configured_level().as_str(), "info");
+            assert_eq!(handle.effective_level().as_str(), "info");
+        });
+    }
+
+    /// Scenario: logs.level is omitted while RUST_LOG supplies the startup fallback.
+    /// Guarantees: an explicit runtime override can be applied and later removed to restore RUST_LOG.
+    #[test]
+    fn omitted_config_uses_and_restores_captured_rust_log() {
+        crate::with_rust_log(Some("error"), || {
+            let count = Arc::new(AtomicUsize::new(0));
+            let (filter, handle) = RuntimeLogFilter::new(None);
+            let subscriber = Registry::default()
+                .with(filter.layer())
+                .with(CountingLayer(Arc::clone(&count)));
+
+            tracing::subscriber::with_default(subscriber, || {
+                tracing::info!("RUST_LOG blocks the initial event");
+                assert_eq!(count.swap(0, Ordering::SeqCst), 0);
+
+                handle.apply(Some(&level("info")));
+                tracing::info!("explicit logs.level permits the event");
+                assert_eq!(count.swap(0, Ordering::SeqCst), 1);
+
+                handle.apply(None);
+                tracing::info!("restored RUST_LOG blocks the event again");
+                assert_eq!(count.swap(0, Ordering::SeqCst), 0);
+            });
+
+            assert_eq!(handle.effective_level().as_str(), "error");
+        });
+    }
+
+    /// Scenario: logs.level is omitted and RUST_LOG contains an invalid directive.
+    /// Guarantees: the initial filter safely uses the built-in default directive.
+    #[test]
+    fn invalid_rust_log_uses_builtin_fallback() {
+        crate::with_rust_log(Some("info,["), || {
+            let (filter, handle) = RuntimeLogFilter::new(None);
+            let count = Arc::new(AtomicUsize::new(0));
+            let subscriber = Registry::default()
+                .with(filter.layer())
+                .with(CountingLayer(Arc::clone(&count)));
+
+            tracing::subscriber::with_default(subscriber, || {
+                tracing::info!("built-in info fallback permits this event");
+            });
+
+            assert_eq!(count.load(Ordering::SeqCst), 1);
+            assert_eq!(handle.effective_level(), LogLevel::default());
         });
     }
 
@@ -432,34 +473,12 @@ mod tests {
         });
     }
 
-    /// Scenario: RUST_LOG overrides startup with the same logs.level later reconciled.
-    /// Guarantees: the first reconciliation replaces the environment-derived filter.
-    #[test]
-    fn unchanged_runtime_level_overrides_rust_log_startup_filter() {
-        crate::with_rust_log(Some("error"), || {
-            let count = Arc::new(AtomicUsize::new(0));
-            let (filter, handle) = RuntimeLogFilter::new(&level("info"));
-            let subscriber = Registry::default()
-                .with(filter.layer())
-                .with(CountingLayer(Arc::clone(&count)));
-
-            tracing::subscriber::with_default(subscriber, || {
-                tracing::info!("RUST_LOG blocks this startup event");
-                assert_eq!(count.swap(0, Ordering::SeqCst), 0);
-
-                handle.apply(&level("info"));
-                tracing::info!("reconciled logs.level permits this event");
-                assert_eq!(count.swap(0, Ordering::SeqCst), 1);
-            });
-        });
-    }
-
     /// Scenario: a dispatcher-local layer is dropped before another is created.
     /// Guarantees: dead registrations are pruned without waiting for an update.
     #[test]
     fn layer_creation_prunes_dropped_dispatchers() {
         crate::with_cleared_rust_log(|| {
-            let (filter, _handle) = RuntimeLogFilter::new(&level("warn"));
+            let (filter, _handle) = RuntimeLogFilter::new(Some(&level("warn")));
             let first = filter.layer();
             assert_eq!(filter.shared.layers.lock().unwrap().len(), 1);
             drop(first);
@@ -474,11 +493,11 @@ mod tests {
     #[test]
     fn unchanged_level_does_not_replace_filters() {
         crate::with_cleared_rust_log(|| {
-            let (filter, handle) = RuntimeLogFilter::new(&level("warn"));
+            let (filter, handle) = RuntimeLogFilter::new(Some(&level("warn")));
             let layer = filter.layer();
             let before = layer.filter.load_full();
 
-            handle.apply(&level("warn"));
+            handle.apply(Some(&level("warn")));
 
             let after = layer.filter.load_full();
             assert!(Arc::ptr_eq(&before, &after));

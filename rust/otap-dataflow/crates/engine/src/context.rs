@@ -3,6 +3,7 @@
 
 //! Context providing general information on the current controller and the current pipeline.
 
+use crate::Interests;
 use crate::attributes::{
     ChannelImplementation, ChannelKind, ChannelMode, ChannelType, CustomAttributeSet,
     EngineAttributeSet, EngineEntityAttributeSet, ExtensionAttributeSet,
@@ -11,6 +12,7 @@ use crate::attributes::{
     NodeWithCustomTopicAttributeSet, NodeWithTopicAttributeSet, PipelineAttributeSet,
     config_map_to_telemetry,
 };
+use crate::context_declaration::CompiledContextBindings;
 use crate::entity_context::{current_node_telemetry_handle, node_entity_key};
 use crate::listener_group::ListenerGroupSnapshot;
 use crate::memory_limiter::MemoryPressureState;
@@ -18,7 +20,9 @@ use crate::node::NodeId as EngineNodeId;
 use data_encoding::BASE32_NOPAD;
 use otel_arrow_dfe_config::node::NodeKind;
 use otel_arrow_dfe_config::pipeline::telemetry::TelemetryAttribute;
-use otel_arrow_dfe_config::{NodeId as ConfigNodeId, NodeUrn, PipelineGroupId, PipelineId};
+use otel_arrow_dfe_config::{
+    NodeId as ConfigNodeId, NodeUrn, PipelineGroupId, PipelineId, PipelineKey,
+};
 use otel_arrow_dfe_telemetry::InternalTelemetrySettings;
 use otel_arrow_dfe_telemetry::metrics::MetricSetRegistrar;
 use otel_arrow_dfe_telemetry::metrics::{
@@ -120,6 +124,7 @@ pub struct PipelineContext {
     node_id: ConfigNodeId,
     node_urn: NodeUrn,
     node_kind: NodeKind,
+    node_interests: Interests,
     node_telemetry_attrs: HashMap<String, TelemetryAttribute>,
     admission: crate::admission::AdmissionBinder,
 
@@ -138,6 +143,8 @@ pub struct PipelineContext {
     // Consumers should cache any needed listener plan during setup rather than cloning
     // or searching this snapshot from the per-record data path.
     listener_group_snapshot: Arc<ListenerGroupSnapshot>,
+    /// Compiled context bindings shared by this runtime's nodes.
+    compiled_context_bindings: Arc<CompiledContextBindings>,
 }
 
 /// Registrar that binds generated metric-set registration to an existing entity.
@@ -297,6 +304,12 @@ impl ControllerContext {
     }
 }
 
+impl From<&PipelineContextParams> for PipelineKey {
+    fn from(params: &PipelineContextParams) -> Self {
+        PipelineKey::new(params.pipeline_group_id.clone(), params.pipeline_id.clone())
+    }
+}
+
 impl PipelineContext {
     /// Creates a new `PipelineContext`.
     #[allow(dead_code)]
@@ -320,6 +333,7 @@ impl PipelineContext {
             node_id: Default::default(),
             node_urn: Default::default(),
             node_kind: Default::default(),
+            node_interests: Interests::empty(),
             node_telemetry_attrs: HashMap::new(),
             admission: crate::admission::AdmissionBinder::none(),
             pipeline_telemetry_attrs: HashMap::new(),
@@ -327,6 +341,7 @@ impl PipelineContext {
             node_names: Arc::new(HashMap::new()),
             topic_set: None,
             listener_group_snapshot: Arc::new(ListenerGroupSnapshot::empty()),
+            compiled_context_bindings: Arc::new(CompiledContextBindings::empty()),
         }
     }
 
@@ -340,6 +355,18 @@ impl PipelineContext {
     #[must_use]
     pub fn pipeline_id(&self) -> PipelineId {
         self.pipeline_context_params.pipeline_id.clone()
+    }
+
+    /// Returns the pipeline key.
+    #[must_use]
+    pub fn pipeline_key(&self) -> PipelineKey {
+        PipelineKey::from(&self.pipeline_context_params)
+    }
+
+    /// Returns the node ID.
+    #[must_use]
+    pub fn node_id(&self) -> ConfigNodeId {
+        self.node_id.clone()
     }
 
     /// Returns the core ID associated with this pipeline context.
@@ -428,6 +455,17 @@ impl PipelineContext {
     #[must_use]
     pub fn listener_group_snapshot(&self) -> Arc<ListenerGroupSnapshot> {
         Arc::clone(&self.listener_group_snapshot)
+    }
+
+    /// Sets this context's compiled bindings.
+    pub fn set_compiled_context_bindings(&mut self, bindings: Arc<CompiledContextBindings>) {
+        self.compiled_context_bindings = bindings;
+    }
+
+    /// Returns this context's compiled bindings.
+    #[must_use]
+    pub fn compiled_context_bindings(&self) -> &Arc<CompiledContextBindings> {
+        &self.compiled_context_bindings
     }
 
     /// Returns the pipeline-scoped topic set, if one was injected.
@@ -736,6 +774,17 @@ impl PipelineContext {
         self.controller_context.telemetry_registry_handle.clone()
     }
 
+    /// Returns the effective telemetry interests for this node.
+    #[must_use]
+    pub const fn node_interests(&self) -> Interests {
+        self.node_interests
+    }
+
+    /// Sets the effective telemetry interests for this node.
+    pub(crate) fn set_node_interests(&mut self, interests: Interests) {
+        self.node_interests = interests;
+    }
+
     /// Returns a new pipeline context with the given node identifiers.
     #[must_use]
     pub fn with_node_context(
@@ -753,12 +802,14 @@ impl PipelineContext {
             node_id,
             node_urn,
             node_kind,
+            node_interests: Interests::empty(),
             node_telemetry_attrs,
             admission: crate::admission::AdmissionBinder::none(),
             internal_telemetry: None,
             node_names: self.node_names.clone(),
             topic_set: self.topic_set.clone(),
             listener_group_snapshot: Arc::clone(&self.listener_group_snapshot),
+            compiled_context_bindings: self.compiled_context_bindings.clone(),
         }
     }
 }
@@ -1136,6 +1187,34 @@ mod tests {
                 )
                 .is_some()
         );
+    }
+
+    /// Scenario: a node context is created from a pipeline context.
+    /// Guarantees: both contexts share the same compiled binding snapshot.
+    #[test]
+    fn pipeline_context_preserves_compiled_policy_across_node_context() {
+        let resolved = otel_arrow_dfe_config::engine::ResolvedOtelDataflowSpec {
+            engine: Default::default(),
+            pipelines: Vec::new(),
+        };
+        let factory = crate::PipelineFactory::<()>::new(&[], &[], &[], &[]);
+        let bindings = factory
+            .compile_initial_context(&resolved)
+            .expect("context bindings")
+            .bindings;
+        let controller = ControllerContext::new(TelemetryRegistryHandle::new());
+        let mut pipeline =
+            controller.pipeline_context_with("group".into(), "pipeline".into(), 0, 1, 0);
+        pipeline.set_compiled_context_bindings(Arc::clone(&bindings));
+
+        let node = pipeline.with_node_context(
+            "node".into(),
+            "urn:otel:processor:test".into(),
+            NodeKind::Processor,
+            HashMap::new(),
+        );
+
+        assert!(Arc::ptr_eq(node.compiled_context_bindings(), &bindings));
     }
 
     fn pipeline_ctx_with_custom_attrs(

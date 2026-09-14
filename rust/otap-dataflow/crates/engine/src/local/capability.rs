@@ -22,6 +22,10 @@ pub mod auth {
     pub mod api_key_provider {
         pub use crate::capability::auth::api_key_provider::local::ApiKeyProvider;
     }
+    /// Local (!Send) trait variant of the basic-auth-provider capability.
+    pub mod basic_auth_provider {
+        pub use crate::capability::auth::basic_auth_provider::local::BasicAuthProvider;
+    }
     /// Local (!Send) trait variant of the bearer-token-authorizer capability.
     pub mod bearer_token_authorizer {
         pub use crate::capability::auth::bearer_token_authorizer::local::BearerTokenAuthorizer;

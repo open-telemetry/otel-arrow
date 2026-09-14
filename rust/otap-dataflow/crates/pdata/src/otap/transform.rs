@@ -3316,18 +3316,18 @@ fn should_remove_transport_optimized_encoding(
                 }
             }
             KeyTransformRangeType::Delete => {
-                if let Some(prev) = prev_neighbour.as_ref() {
-                    if let Some(next) = next_neighbour.as_ref() {
-                        let delete_joins = are_neighbours_with_delta_encoded_parent_ids(
-                            &key_column,
-                            &val_columns,
-                            replacement_bytes,
-                            prev,
-                            next,
-                        )?;
-                        if delete_joins {
-                            return Ok(true);
-                        }
+                if let Some(prev) = prev_neighbour.as_ref()
+                    && let Some(next) = next_neighbour.as_ref()
+                {
+                    let delete_joins = are_neighbours_with_delta_encoded_parent_ids(
+                        &key_column,
+                        &val_columns,
+                        replacement_bytes,
+                        prev,
+                        next,
+                    )?;
+                    if delete_joins {
+                        return Ok(true);
                     }
                 }
             }

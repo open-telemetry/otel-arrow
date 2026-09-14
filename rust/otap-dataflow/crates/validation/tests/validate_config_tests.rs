@@ -1,0 +1,83 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+//! Tests that every registered component's `validate_config` function correctly
+//! rejects invalid configuration input.
+//!
+//! These tests iterate over all factories registered in `OTAP_PIPELINE_FACTORY`
+//! and call `validate_config` with clearly invalid JSON values to ensure:
+//! 1. Every component's validator is wired up and callable.
+//! 2. Invalid configs produce `Err`, not silent acceptance.
+//!
+//! Valid-config paths are already covered by the CI `validate-configs.sh` script
+//! which runs `--validate-and-exit` against every example YAML in the repo.
+
+use otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY;
+use serde_json::json;
+
+// Keep this side-effect import so the crate is linked and its `linkme`
+// distributed-slice registrations (contrib nodes) are visible
+// in `OTAP_PIPELINE_FACTORY` at runtime.
+use otel_arrow_dfe_contrib_nodes as _;
+
+// Keep this side-effect import so the crate is linked and its `linkme`
+// distributed-slice registrations (core nodes) are visible
+// in `OTAP_PIPELINE_FACTORY` at runtime.
+use otel_arrow_dfe_core_nodes as _;
+
+/// Scenario: every registered receiver validator receives an invalid scalar config.
+/// Guarantees: no receiver silently accepts the invalid configuration.
+#[test]
+fn all_receiver_validators_reject_invalid_config() {
+    let factory_map = OTAP_PIPELINE_FACTORY.get_receiver_factory_map();
+    assert!(
+        !factory_map.is_empty(),
+        "No receiver factories registered \u{2014} test is misconfigured"
+    );
+
+    for (urn, factory) in factory_map {
+        let result = (factory.validate_config)(&json!("this is not a valid config"));
+        assert!(
+            result.is_err(),
+            "Receiver `{urn}`: validate_config should reject a plain string"
+        );
+    }
+}
+
+/// Scenario: every registered processor validator receives an invalid scalar config.
+/// Guarantees: no processor silently accepts the invalid configuration.
+#[test]
+fn all_processor_validators_reject_invalid_config() {
+    let factory_map = OTAP_PIPELINE_FACTORY.get_processor_factory_map();
+    assert!(
+        !factory_map.is_empty(),
+        "No processor factories registered \u{2014} test is misconfigured"
+    );
+
+    for (urn, factory) in factory_map {
+        let result = (factory.validate_config)(&json!("this is not a valid config"));
+        assert!(
+            result.is_err(),
+            "Processor `{urn}`: validate_config should reject a plain string"
+        );
+    }
+}
+
+/// Scenario: every registered exporter validator receives an invalid scalar config.
+/// Guarantees: no exporter silently accepts the invalid configuration.
+#[test]
+fn all_exporter_validators_reject_invalid_config() {
+    let factory_map = OTAP_PIPELINE_FACTORY.get_exporter_factory_map();
+    assert!(
+        !factory_map.is_empty(),
+        "No exporter factories registered \u{2014} test is misconfigured"
+    );
+
+    for (urn, factory) in factory_map {
+        let result = (factory.validate_config)(&json!("this is not a valid config"));
+        assert!(
+            result.is_err(),
+            "Exporter `{urn}`: validate_config should reject a plain string"
+        );
+    }
+}

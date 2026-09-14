@@ -8,7 +8,7 @@
 
 use super::config::{HeaderExtraction, KafkaReceiverConfig};
 use super::error::KafkaReceiverError;
-use super::headers::HeaderExtractions;
+use super::headers::{HeaderExtractions, decode_syslog_logs};
 use super::identity::{DeliveryGeneration, OwnershipGeneration};
 use super::metrics::{KafkaReceiverMetrics, KafkaReceiverRejectionReason};
 use super::offset_tracker::OffsetTracker;
@@ -16,7 +16,7 @@ use super::rebalance::{RebalanceState, RebalancingConsumerContext};
 use super::retry::RetryManager;
 #[cfg(feature = "aws")]
 use crate::common::kafka::security::build_aws_msk_context;
-use crate::common::kafka::{MSG_FORMAT_OTAP, MSG_FORMAT_OTLP, MessageFormat};
+use crate::common::kafka::{MSG_FORMAT_OTAP, MSG_FORMAT_OTLP, MSG_FORMAT_SYSLOG, MessageFormat};
 use async_trait::async_trait;
 use bytes::Bytes;
 use linkme::distributed_slice;
@@ -24,6 +24,8 @@ use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_config::transport_headers::TransportHeaders;
+use otel_arrow_dfe_config::transport_headers_policy::CompiledHeaderCapturePolicy;
+#[cfg(test)]
 use otel_arrow_dfe_config::transport_headers_policy::HeaderCapturePolicy;
 use otel_arrow_dfe_config::validation::validate_typed_config;
 use otel_arrow_dfe_engine::config::ReceiverConfig;
@@ -169,6 +171,7 @@ fn detect_message_format(
     {
         value if value == Some(MSG_FORMAT_OTLP) => MessageFormat::OtlpProto,
         value if value == Some(MSG_FORMAT_OTAP) => MessageFormat::OtapProto,
+        value if value == Some(MSG_FORMAT_SYSLOG) => MessageFormat::Syslog,
         _ => default,
     }
 }
@@ -274,6 +277,7 @@ pub static KAFKA_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
             ))
         },
     validate_config: validate_typed_config::<KafkaReceiverConfig>,
+    context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
 };
 
@@ -290,11 +294,11 @@ impl KafkaReceiver {
         // unique group.instance.id. On a multi-core pipeline every core would
         // otherwise share the configured ID and fence one another, so suffix it
         // with the pipeline core ID.
-        if pipeline_ctx.num_cores() > 1 {
-            if let Some(base_id) = config.group_instance_id() {
-                let resolved = format!("{base_id}-{}", pipeline_ctx.core_id());
-                config.set_group_instance_id(resolved);
-            }
+        if pipeline_ctx.num_cores() > 1
+            && let Some(base_id) = config.group_instance_id()
+        {
+            let resolved = format!("{base_id}-{}", pipeline_ctx.core_id());
+            config.set_group_instance_id(resolved);
         }
 
         // Warn about consumer_config keys that may be overwritten by first-class fields.
@@ -379,20 +383,15 @@ impl KafkaReceiver {
         }
     }
 
-    /// Process a Kafka message into [`OtapPdata`].
+    /// Decodes a Kafka message into [`OtapPdata`].
     ///
-    /// Offset tracking is handled by the caller, not inside this method. This
-    /// allows the caller to track the offset even when decoding fails (poison
-    /// pill handling).
-    ///
-    /// When a [`HeaderCapturePolicy`] is provided, matching Kafka message
-    /// headers are captured into [`TransportHeaders`] and attached to the
-    /// returned [`OtapPdata`] context. This is independent of the
-    /// `resource_attrs_from_headers` config which injects headers into resource attributes.
+    /// The caller tracks offsets, including decode failures.
+    /// A capture policy attaches matching headers to the returned context.
+    /// `resource_attrs_from_headers` separately controls resource attributes.
     fn process_kafka(
         &mut self,
         kafka_message: BorrowedMessage<'_>,
-        capture_policy: Option<&HeaderCapturePolicy>,
+        capture_policy: Option<&CompiledHeaderCapturePolicy>,
     ) -> Result<OtapPdata, KafkaReceiverError> {
         let topic = kafka_message.topic();
 
@@ -421,6 +420,7 @@ impl KafkaReceiver {
                     message_format,
                     HeaderExtractions::apply_otlp_traces,
                     HeaderExtractions::apply_otap_traces,
+                    reject_syslog_for_non_log_signal,
                     decode_traces_payload,
                 )
                 .map_err(KafkaReceiverError::TracesDecode)
@@ -438,6 +438,7 @@ impl KafkaReceiver {
                     message_format,
                     HeaderExtractions::apply_otlp_metrics,
                     HeaderExtractions::apply_otap_metrics,
+                    reject_syslog_for_non_log_signal,
                     decode_metrics_payload,
                 )
                 .map_err(KafkaReceiverError::MetricsDecode)
@@ -455,6 +456,7 @@ impl KafkaReceiver {
                     message_format,
                     HeaderExtractions::apply_otlp_logs,
                     HeaderExtractions::apply_otap_logs,
+                    HeaderExtractions::apply_syslog_logs,
                     decode_logs_payload,
                 )
                 .map_err(KafkaReceiverError::LogsDecode)
@@ -828,12 +830,10 @@ impl KafkaReceiver {
         // A transient NACK configured for replay never advances the offset.
         // The timer delivers `NodeControlMsg::TimerTick` on the control
         // channel, which is handled in the main loop below.
-        if manual_commit {
-            if let Some(ms) = self.config.commit_interval_ms() {
-                let _commit_timer_handle = effect_handler
-                    .start_periodic_timer(Duration::from_millis(ms))
-                    .await?;
-            }
+        if manual_commit && let Some(ms) = self.config.commit_interval_ms() {
+            let _commit_timer_handle = effect_handler
+                .start_periodic_timer(Duration::from_millis(ms))
+                .await?;
         }
 
         // Opt-in consumer-lag refresh timer, derived from the configured
@@ -1646,6 +1646,9 @@ fn decode_traces_payload(
                 .into(),
             ))
         }
+        MessageFormat::Syslog => Err(EngineError::PdataConversionError {
+            error: "syslog encoding is only supported for logs".to_string(),
+        }),
     }
 }
 
@@ -1676,6 +1679,9 @@ fn decode_metrics_payload(
                 .into(),
             ))
         }
+        MessageFormat::Syslog => Err(EngineError::PdataConversionError {
+            error: "syslog encoding is only supported for logs".to_string(),
+        }),
     }
 }
 
@@ -1706,7 +1712,21 @@ fn decode_logs_payload(
                 .into(),
             ))
         }
+        MessageFormat::Syslog => Ok(OtapPdata::new(
+            Context::default(),
+            decode_syslog_logs(data)?.into(),
+        )),
     }
+}
+
+/// Reject Syslog decoding for signal types other than logs.
+fn reject_syslog_for_non_log_signal(
+    _extractions: &HeaderExtractions,
+    _data: &[u8],
+) -> Result<OtapPdata, EngineError> {
+    Err(EngineError::PdataConversionError {
+        error: "syslog encoding is only supported for logs".to_string(),
+    })
 }
 
 /// Decode a Kafka payload with optional header extraction applied to resource
@@ -1724,17 +1744,20 @@ fn decode_with_extractions(
     message_format: MessageFormat,
     apply_otlp: fn(&HeaderExtractions, &[u8]) -> Result<OtapPdata, EngineError>,
     apply_otap: fn(&HeaderExtractions, &[u8]) -> Result<OtapPdata, EngineError>,
+    apply_syslog: fn(&HeaderExtractions, &[u8]) -> Result<OtapPdata, EngineError>,
     decode: fn(&[u8], MessageFormat) -> Result<OtapPdata, EngineError>,
 ) -> Result<OtapPdata, EngineError> {
     if !extractors.is_empty() {
         let extractions = match message_format {
             MessageFormat::OtlpProto => HeaderExtractions::otlp(kafka_message, extractors),
             MessageFormat::OtapProto => HeaderExtractions::otap(kafka_message, extractors),
+            MessageFormat::Syslog => HeaderExtractions::otap(kafka_message, extractors),
         };
         if extractions.has_any() {
             return match message_format {
                 MessageFormat::OtlpProto => apply_otlp(&extractions, data),
                 MessageFormat::OtapProto => apply_otap(&extractions, data),
+                MessageFormat::Syslog => apply_syslog(&extractions, data),
             };
         }
     }
@@ -1748,23 +1771,23 @@ fn decode_with_extractions(
 /// headers into resource attributes.
 fn capture_transport_headers(
     kafka_message: &BorrowedMessage<'_>,
-    capture_policy: Option<&HeaderCapturePolicy>,
+    capture_policy: Option<&CompiledHeaderCapturePolicy>,
     pdata: &mut OtapPdata,
 ) {
-    if let Some(policy) = capture_policy {
-        if let Some(headers) = kafka_message.headers() {
-            let pairs = headers.iter().filter_map(|h| h.value.map(|v| (h.key, v)));
-            let mut transport_headers = TransportHeaders::new();
-            let stats = policy.capture_from_pairs(pairs, &mut transport_headers);
-            if let Some(stats) = stats {
-                otel_error!(
-                    "kafka.capture_policy.limits_exceeded",
-                    stats = %stats,
-                );
-            }
-            if !transport_headers.is_empty() {
-                pdata.set_transport_headers(transport_headers);
-            }
+    if let Some(policy) = capture_policy
+        && let Some(headers) = kafka_message.headers()
+    {
+        let pairs = headers.iter().filter_map(|h| h.value.map(|v| (h.key, v)));
+        let mut transport_headers = TransportHeaders::new();
+        let stats = policy.capture_from_pairs(pairs, &mut transport_headers);
+        if let Some(stats) = stats {
+            otel_error!(
+                "kafka.capture_policy.limits_exceeded",
+                stats = %stats,
+            );
+        }
+        if !transport_headers.is_empty() {
+            pdata.set_transport_headers(transport_headers);
         }
     }
 }
@@ -3942,11 +3965,11 @@ mod tests {
                 // Poll B until it is assigned a partition (drives the rebalance).
                 let mut b_partition = None;
                 for _ in 0..40 {
-                    if let Ok(a) = consumer_b.assignment() {
-                        if let Some(elem) = a.elements().first() {
-                            b_partition = Some(elem.partition());
-                            break;
-                        }
+                    if let Ok(a) = consumer_b.assignment()
+                        && let Some(elem) = a.elements().first()
+                    {
+                        b_partition = Some(elem.partition());
+                        break;
                     }
                     let _ =
                         tokio::time::timeout(Duration::from_millis(500), consumer_b.recv()).await;
@@ -6184,6 +6207,70 @@ mod tests {
         );
     }
 
+    /// Scenario (routing and payload correctness): one RFC 5424 message is received in a
+    /// Kafka record configured for Syslog.
+    /// Guarantees: the shared Syslog parser produces exactly one OpenTelemetry log record.
+    #[test]
+    fn decode_logs_payload_syslog_rfc5424() {
+        let input = b"<34>1 2003-10-11T22:14:15.003Z host app - ID47 - Test message";
+        let mut pdata = decode_logs_payload(input, MessageFormat::Syslog).expect("decode Syslog");
+        let proto: OtlpProtoBytes = pdata
+            .take_payload()
+            .try_into_with_default()
+            .expect("convert Syslog Arrow logs to OTLP");
+        let request = ExportLogsServiceRequest::decode(proto.as_bytes()).expect("decode OTLP logs");
+
+        assert_eq!(request.resource_logs.len(), 1);
+        assert_eq!(request.resource_logs[0].scope_logs.len(), 1);
+        assert_eq!(request.resource_logs[0].scope_logs[0].log_records.len(), 1);
+    }
+
+    /// Scenario (routing and payload correctness): an RFC 3164 message contains a CEF body.
+    /// Guarantees: Kafka Syslog decoding reuses the existing CEF mapping and emits CEF
+    /// attributes on the OpenTelemetry log record.
+    #[test]
+    fn decode_logs_payload_syslog_with_embedded_cef() {
+        let input = b"<34>Oct 11 22:14:15 firewall CEF:0|Vendor|Product|2.0|signature-123|Intrusion detected|7|act=blocked";
+        let mut pdata =
+            decode_logs_payload(input, MessageFormat::Syslog).expect("decode Syslog CEF");
+        let proto: OtlpProtoBytes = pdata
+            .take_payload()
+            .try_into_with_default()
+            .expect("convert Syslog Arrow logs to OTLP");
+        let request = ExportLogsServiceRequest::decode(proto.as_bytes()).expect("decode OTLP logs");
+        let attributes = &request.resource_logs[0].scope_logs[0].log_records[0].attributes;
+
+        assert!(attributes.iter().any(|attribute| {
+            attribute.key == "cef.device_vendor"
+                && attribute
+                    .value
+                    .as_ref()
+                    .and_then(|value| value.value.as_ref())
+                    .is_some_and(|value| {
+                        matches!(value, any_value::Value::StringValue(value) if value == "Vendor")
+                    })
+        }));
+    }
+
+    /// Scenario (routing and payload correctness): an empty Kafka record is decoded as
+    /// Syslog.
+    /// Guarantees: malformed Syslog returns a recoverable per-message error instead of
+    /// panicking or stalling the consumer loop.
+    #[test]
+    fn decode_logs_payload_empty_syslog_returns_error() {
+        let result = decode_logs_payload(b"", MessageFormat::Syslog);
+        assert!(result.is_err());
+    }
+
+    /// Scenario (routing and payload correctness): a traces or metrics message-format
+    /// header requests Syslog.
+    /// Guarantees: runtime header overrides cannot route Syslog bytes into non-log signals.
+    #[test]
+    fn decode_non_logs_payload_syslog_returns_error() {
+        assert!(decode_traces_payload(b"message", MessageFormat::Syslog).is_err());
+        assert!(decode_metrics_payload(b"message", MessageFormat::Syslog).is_err());
+    }
+
     /// Scenario (routing and payload correctness): undecodable bytes are passed to the OTAP
     /// traces decoder.
     /// Guarantees: decode returns an error rather than panicking, so a malformed OTAP
@@ -6796,6 +6883,91 @@ mod tests {
         .await;
     }
 
+    /// Scenario (routing and payload correctness): a raw Syslog Kafka record carries an
+    /// `x-tenant-id` header configured for resource-attribute extraction.
+    /// Guarantees: Syslog uses the shared extraction orchestration and emits the header
+    /// value as the `tenant.id` resource attribute on the decoded log.
+    #[tokio::test]
+    async fn test_kafka_receiver_logs_header_extraction_syslog() {
+        const TOPIC: &str = "test-logs-headers-syslog";
+        with_cluster(
+            KafkaTestCluster::builder().topic(TOPIC),
+            |cluster| async move {
+                let producer = cluster.producer().build();
+                let tenant_value = "acme-corp";
+                let syslog = b"<34>1 2003-10-11T22:14:15.003Z host app - ID47 - Test message";
+
+                producer
+                    .send_full(
+                        SendRecord::new(TOPIC, syslog)
+                            .header("x-tenant-id", tenant_value.as_bytes())
+                            .header("MessageFormat", MSG_FORMAT_SYSLOG),
+                    )
+                    .await
+                    .expect("send Syslog message");
+
+                let mut resource_attrs_from_headers = HashMap::new();
+                let _ = resource_attrs_from_headers.insert(
+                    "x-tenant-id".to_string(),
+                    HeaderExtraction {
+                        key: "tenant.id".to_string(),
+                        value_type: AttributeValueType::String,
+                    },
+                );
+
+                let cfg = KafkaReceiverConfig::try_from(
+                    KafkaReceiverConfigBuilder::new(
+                        cluster.bootstrap_servers(),
+                        "test-group",
+                        "test-client",
+                    )
+                    .with_logs(
+                        SignalConfig::new(vec![TOPIC.to_string()])
+                            .with_encoding(MessageFormat::Syslog),
+                    )
+                    .with_commit(CommitConfig {
+                        mode: ConfigCommitMode::Auto,
+                        interval_ms: Some(1000),
+                    })
+                    .with_auto_offset_reset(AutoOffsetReset::Earliest)
+                    .with_isolation_level(IsolationLevel::ReadUncommitted)
+                    .with_resource_attrs_from_headers(resource_attrs_from_headers),
+                )
+                .expect("test config valid");
+                let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+
+                let mut pdata = receiver.recv_pdata().await;
+                let otlp: OtlpProtoBytes = pdata
+                    .take_payload()
+                    .try_into_with_default()
+                    .expect("convert Syslog Arrow logs to OTLP");
+                let result =
+                    ExportLogsServiceRequest::decode(otlp.as_bytes()).expect("decode OTLP logs");
+                let resource = result.resource_logs[0]
+                    .resource
+                    .as_ref()
+                    .expect("log should have a resource");
+                let tenant_attr = resource
+                    .attributes
+                    .iter()
+                    .find(|attribute| attribute.key == "tenant.id")
+                    .expect("resource should contain tenant.id");
+
+                assert!(matches!(
+                    tenant_attr
+                        .value
+                        .as_ref()
+                        .and_then(|value| value.value.as_ref()),
+                    Some(any_value::Value::StringValue(value)) if value == tenant_value
+                ));
+
+                receiver.shutdown(Duration::from_secs(5));
+                receiver.await_stopped().await;
+            },
+        )
+        .await;
+    }
+
     /// Scenario (routing and payload correctness): a capture policy captures `X-Tenant-Id` (stored as `tenant_id`)
     /// and `X-Request-Id` (default lowercased name) but not `X-Unrelated`.
     /// Guarantees: exactly the two matching Kafka headers are captured into the
@@ -6831,13 +7003,25 @@ mod tests {
                     CaptureDefaults::default(),
                     vec![
                         CaptureRule {
-                            match_names: vec!["X-Tenant-Id".to_string()],
-                            store_as: Some("tenant_id".to_string()),
+                            match_names: vec![
+                                "X-Tenant-Id"
+                                    .try_into()
+                                    .expect("valid test context entry name"),
+                            ],
+                            store_as: Some(
+                                "tenant_id"
+                                    .try_into()
+                                    .expect("valid test context entry name"),
+                            ),
                             sensitive: false,
                             value_kind: None,
                         },
                         CaptureRule {
-                            match_names: vec!["X-Request-Id".to_string()],
+                            match_names: vec![
+                                "X-Request-Id"
+                                    .try_into()
+                                    .expect("valid test context entry name"),
+                            ],
                             store_as: None, // defaults to lowercased wire name
                             sensitive: false,
                             value_kind: None,
@@ -6880,7 +7064,8 @@ mod tests {
                     "tenant_id value mismatch"
                 );
                 assert_eq!(
-                    tenant_headers[0].wire_name, "X-Tenant-Id",
+                    tenant_headers[0].wire_name(),
+                    "X-Tenant-Id",
                     "wire_name should be preserved"
                 );
 
@@ -6999,8 +7184,16 @@ mod tests {
                 let capture_policy = HeaderCapturePolicy::new(
                     CaptureDefaults::default(),
                     vec![CaptureRule {
-                        match_names: vec!["X-Tenant-Id".to_string()],
-                        store_as: Some("tenant_id".to_string()),
+                        match_names: vec![
+                            "X-Tenant-Id"
+                                .try_into()
+                                .expect("valid test context entry name"),
+                        ],
+                        store_as: Some(
+                            "tenant_id"
+                                .try_into()
+                                .expect("valid test context entry name"),
+                        ),
                         sensitive: false,
                         value_kind: None,
                     }],
@@ -7092,8 +7285,16 @@ mod tests {
                 let capture_policy = HeaderCapturePolicy::new(
                     CaptureDefaults::default(),
                     vec![CaptureRule {
-                        match_names: vec!["X-Tenant-Id".to_string()],
-                        store_as: Some("tenant_id".to_string()),
+                        match_names: vec![
+                            "X-Tenant-Id"
+                                .try_into()
+                                .expect("valid test context entry name"),
+                        ],
+                        store_as: Some(
+                            "tenant_id"
+                                .try_into()
+                                .expect("valid test context entry name"),
+                        ),
                         sensitive: false,
                         value_kind: None,
                     }],
@@ -7726,16 +7927,15 @@ mod tests {
                 let mut found_tenant = false;
                 for rs in &result.resource_spans {
                     let resource = rs.resource.as_ref().expect("resource present");
-                    if let Some(kv) = resource.attributes.iter().find(|kv| kv.key == "tenant.id") {
-                        if let Some(any_value::Value::StringValue(s)) =
+                    if let Some(kv) = resource.attributes.iter().find(|kv| kv.key == "tenant.id")
+                        && let Some(any_value::Value::StringValue(s)) =
                             kv.value.as_ref().and_then(|v| v.value.as_ref())
-                        {
-                            assert_eq!(
-                                s, &adversarial_value,
-                                "adversarial header value is extracted verbatim",
-                            );
-                            found_tenant = true;
-                        }
+                    {
+                        assert_eq!(
+                            s, &adversarial_value,
+                            "adversarial header value is extracted verbatim",
+                        );
+                        found_tenant = true;
                     }
                 }
                 assert!(found_tenant, "the tenant.id attribute should be extracted");

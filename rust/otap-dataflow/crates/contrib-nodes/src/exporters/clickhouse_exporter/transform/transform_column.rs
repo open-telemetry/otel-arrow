@@ -542,22 +542,21 @@ fn build_child_attr_list(
         })?;
 
         for j in 0..ids.len() {
-            if !ids.is_null(j) {
-                if let (Some((map, keys, vals)), Some(remap)) = (compact, remap) {
-                    if let Some(&src) = remap.get(&ids.value(j)) {
-                        let src = src as usize;
-                        if src < map.len() && !map.is_null(src) {
-                            let offsets = map.offsets();
-                            let start = offsets[src] as usize;
-                            let end = offsets[src + 1] as usize;
-                            for k in start..end {
-                                out.values().keys().append_value(keys.value(k));
-                                if vals.is_null(k) {
-                                    out.values().values().append_null();
-                                } else {
-                                    out.values().values().append_value(vals.value(k));
-                                }
-                            }
+            if !ids.is_null(j)
+                && let (Some((map, keys, vals)), Some(remap)) = (compact, remap)
+                && let Some(&src) = remap.get(&ids.value(j))
+            {
+                let src = src as usize;
+                if src < map.len() && !map.is_null(src) {
+                    let offsets = map.offsets();
+                    let start = offsets[src] as usize;
+                    let end = offsets[src + 1] as usize;
+                    for k in start..end {
+                        out.values().keys().append_value(keys.value(k));
+                        if vals.is_null(k) {
+                            out.values().values().append_null();
+                        } else {
+                            out.values().values().append_value(vals.value(k));
                         }
                     }
                 }
@@ -900,11 +899,11 @@ pub fn struct_column_to_string(
             }
 
             t if t == AttributeValueType::Str as u8 => {
-                if let Some(string_accessor) = &string_accessor {
-                    if let Some(v) = string_accessor.str_at(i) {
-                        builder.append_value(v);
-                        continue;
-                    }
+                if let Some(string_accessor) = &string_accessor
+                    && let Some(v) = string_accessor.str_at(i)
+                {
+                    builder.append_value(v);
+                    continue;
                 };
                 builder.append_null();
             }
@@ -930,15 +929,15 @@ pub fn struct_column_to_string(
             }
 
             t if t == AttributeValueType::Bool as u8 => {
-                if let Some(bool_accessor) = bool_accessor {
-                    if let Some(v) = bool_accessor.value_at(i) {
-                        if v {
-                            builder.append_value("true");
-                        } else {
-                            builder.append_value("false");
-                        }
-                        continue;
+                if let Some(bool_accessor) = bool_accessor
+                    && let Some(v) = bool_accessor.value_at(i)
+                {
+                    if v {
+                        builder.append_value("true");
+                    } else {
+                        builder.append_value("false");
                     }
+                    continue;
                 };
                 builder.append_null();
             }
@@ -957,15 +956,15 @@ pub fn struct_column_to_string(
             }
 
             t if t == AttributeValueType::Map as u8 || t == AttributeValueType::Slice as u8 => {
-                if let Some(ser_accessor) = &ser_accessor {
-                    if let Some(v) = ser_accessor.slice_at(i) {
-                        let mut buf = Vec::with_capacity(v.len() * 2);
-                        if append_cbor_as_json(&mut buf, v).is_err() {
-                            builder.append_null();
-                        } else {
-                            builder.append_value(buf);
-                            continue;
-                        }
+                if let Some(ser_accessor) = &ser_accessor
+                    && let Some(v) = ser_accessor.slice_at(i)
+                {
+                    let mut buf = Vec::with_capacity(v.len() * 2);
+                    if append_cbor_as_json(&mut buf, v).is_err() {
+                        builder.append_null();
+                    } else {
+                        builder.append_value(buf);
+                        continue;
                     }
                 }
                 builder.append_null();

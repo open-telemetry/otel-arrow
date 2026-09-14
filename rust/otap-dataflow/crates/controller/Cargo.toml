@@ -24,6 +24,7 @@ jemalloc-pprof = ["otel-arrow-dfe-admin/jemalloc-pprof"]
 otel-arrow-dfe-config = { workspace = true }
 otel-arrow-dfe-state = { workspace = true }
 otel-arrow-dfe-engine = { workspace = true }
+otel-arrow-dfe-otap = { workspace = true }
 otel-arrow-dfe-telemetry = { workspace = true }
 otel-arrow-dfe-telemetry-macros = { workspace = true }
 otel-arrow-dfe-admin = { workspace = true }
@@ -39,6 +40,7 @@ smallvec = { workspace = true }
 chrono = { workspace = true }
 futures-util = { workspace = true }
 prost = { workspace = true }
+rustls = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 serde = { workspace = true }
@@ -51,6 +53,12 @@ url = { workspace = true }
 [dev-dependencies]
 async-trait = { workspace = true }
 axum = { workspace = true }
+otel-arrow-dfe-otap = { workspace = true, features = ["test-utils"] }
 otel-arrow-dfe-test-net = { workspace = true }
+otel-arrow-dfe-test-tls-certs = { workspace = true }
+rustls-pki-types = { workspace = true }
+tempfile = { workspace = true }
+tokio-rustls = { workspace = true }
+tokio-tungstenite = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["registry"] }

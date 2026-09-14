@@ -227,12 +227,12 @@ impl IdBitmap {
     /// In-place difference: `self &= !other`.
     pub fn difference_with(&mut self, other: &Self) {
         for (i, self_page) in self.pages.iter_mut().enumerate() {
-            if let Some(sp) = self_page {
-                if let Some(Some(op)) = other.pages.get(i) {
-                    sp.last_used_generation = self.generation;
-                    for (sw, ow) in sp.words.iter_mut().zip(op.words.iter()) {
-                        *sw &= !ow;
-                    }
+            if let Some(sp) = self_page
+                && let Some(Some(op)) = other.pages.get(i)
+            {
+                sp.last_used_generation = self.generation;
+                for (sw, ow) in sp.words.iter_mut().zip(op.words.iter()) {
+                    *sw &= !ow;
                 }
             }
         }
@@ -342,16 +342,16 @@ impl Iterator for IdBitmapIter<'_> {
             // Find the next non-zero word, advancing through words and pages as needed.
             loop {
                 // Try the next word in the current page
-                if let Some(Some(page)) = self.bitmap.pages.get(self.page_idx) {
-                    if self.word_idx < ID_BITMAP_PAGE_WORDS {
-                        let word = page.words[self.word_idx];
-                        self.word_idx += 1;
-                        if word != 0 {
-                            self.current_word = word;
-                            break; // Break inner loop, outer loop will extract bits
-                        }
-                        continue; // Try next word in this page
+                if let Some(Some(page)) = self.bitmap.pages.get(self.page_idx)
+                    && self.word_idx < ID_BITMAP_PAGE_WORDS
+                {
+                    let word = page.words[self.word_idx];
+                    self.word_idx += 1;
+                    if word != 0 {
+                        self.current_word = word;
+                        break; // Break inner loop, outer loop will extract bits
                     }
+                    continue; // Try next word in this page
                 }
 
                 // No more words in this page (or page was None) -- advance to the next page
