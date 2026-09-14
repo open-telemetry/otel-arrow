@@ -22,3 +22,11 @@ profiles.
 The mutated `keep_failed` fixture is intentionally structurally decodable for
 future replay rejection. Its unequal carried epochs are not valid output from
 the current version 1 producer.
+
+`framing-profile-default.bin` and `framing_profile_default` retain their historical
+names for the explicit 500 ms newline profile. They do not represent the current
+receiver default, which disables idle flush. Their bytes and digest remain
+unchanged, including the profile carried by existing snapshot/WAL fixtures.
+`framing-profile-idle-disabled.bin` and `framing_profile_idle_disabled` separately
+cover the zero-millisecond profile using the same independent Python generator.
+The codec takes explicit profile inputs; it does not select receiver defaults.

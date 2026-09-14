@@ -82,7 +82,7 @@ fn frontier_wire(guard: CommittedFrontierGuard) -> Vec<u8> {
     bytes
 }
 
-fn default_profile(multiline: bool) -> FramingProfileParams {
+fn idle_flush_500ms_profile(multiline: bool) -> FramingProfileParams {
     FramingProfileParams {
         fingerprint_profile_version: 1,
         fingerprint_bytes: 1000,
@@ -537,7 +537,7 @@ fn maximum_register_file_frame_is_accepted() {
     assert_eq!(decoded, operation);
 }
 
-/// Scenario: Default and end-pattern framing profiles are serialized independently.
+/// Scenario: Explicit 500 ms newline and end-pattern profiles are serialized independently.
 /// Guarantees: Canonical field order, widths, pattern bytes, and SHA-256 digests match the published vectors.
 #[test]
 fn framing_profile_fixtures_match_codec() {
@@ -553,10 +553,39 @@ fn framing_profile_fixtures_match_codec() {
             "framing_profile_multiline",
         ),
     ] {
-        let profile = default_profile(multiline);
+        let profile = idle_flush_500ms_profile(multiline);
         assert_eq!(profile.canonical_bytes().unwrap(), canonical_fixture);
         assert_eq!(profile.digest().unwrap(), expected(digest_key)[..]);
     }
+}
+
+/// Scenario: Idle flush is disabled in an otherwise identical newline profile.
+/// Guarantees: Zero milliseconds matches independent canonical bytes and digest, differs from the 500 ms profile, and changes only the encoded timeout field.
+#[test]
+fn disabled_idle_flush_profile_matches_independent_fixture() {
+    let enabled = idle_flush_500ms_profile(false);
+    let mut disabled = enabled.clone();
+    disabled.force_flush_period_millis = 0;
+    let canonical = disabled.canonical_bytes().unwrap();
+    let enabled_canonical = enabled.canonical_bytes().unwrap();
+
+    assert_eq!(
+        canonical.as_slice(),
+        include_bytes!("fixtures/framing-profile-idle-disabled.bin")
+    );
+    assert_eq!(
+        disabled.digest().unwrap(),
+        expected("framing_profile_idle_disabled")[..]
+    );
+    assert_ne!(disabled.digest().unwrap(), enabled.digest().unwrap());
+    assert_eq!(canonical.len(), enabled_canonical.len());
+    let timeout_offset = canonical.len() - size_of::<u64>();
+    assert_eq!(
+        canonical[..timeout_offset],
+        enabled_canonical[..timeout_offset]
+    );
+    assert_eq!(&canonical[timeout_offset..], &0u64.to_be_bytes());
+    assert_eq!(&enabled_canonical[timeout_offset..], &500u64.to_be_bytes());
 }
 
 /// Scenario: Recovery scans one hundred correctly sequenced transactions and then an empty suffix.
@@ -723,7 +752,7 @@ fn frontier_guard_window_boundary_is_exact() {
 /// Guarantees: A 4,096-byte pattern is accepted; 4,097 bytes, zero versions, empty patterns, and subminimum fingerprints are rejected.
 #[test]
 fn framing_profile_pattern_and_version_boundaries_are_enforced() {
-    let mut profile = default_profile(false);
+    let mut profile = idle_flush_500ms_profile(false);
     profile.multiline_mode = MultilineMode::StartPattern {
         regex_profile_version: 1,
         pattern: "x".repeat(4096),
@@ -764,13 +793,13 @@ fn framing_profile_pattern_and_version_boundaries_are_enforced() {
         Err(EncodeError::RequiredFieldEmpty { .. })
     ));
 
-    let mut zero_fingerprint_version = default_profile(false);
+    let mut zero_fingerprint_version = idle_flush_500ms_profile(false);
     zero_fingerprint_version.fingerprint_profile_version = 0;
     assert!(matches!(
         zero_fingerprint_version.canonical_bytes(),
         Err(EncodeError::InvalidFieldValue { .. })
     ));
-    let mut short_fingerprint = default_profile(false);
+    let mut short_fingerprint = idle_flush_500ms_profile(false);
     short_fingerprint.fingerprint_bytes = 15;
     assert!(matches!(
         short_fingerprint.canonical_bytes(),

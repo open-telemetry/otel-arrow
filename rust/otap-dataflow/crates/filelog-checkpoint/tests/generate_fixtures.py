@@ -97,7 +97,7 @@ def resume_continuation(start, end, index):
     return u8(1) + u64(start) + u64(end) + u32(index)
 
 
-def canonical_profile(multiline=False):
+def canonical_profile(multiline=False, force_flush_period_millis=500):
     mode = 2 if multiline else 0
     regex_version = 1 if multiline else 0
     pattern = b"^END request$" if multiline else b""
@@ -115,7 +115,7 @@ def canonical_profile(multiline=False):
         + u64(1_048_576)
         + u8(1)
         + u32(500)
-        + u64(500)
+        + u64(force_flush_period_millis)
     )
 
 
@@ -438,7 +438,12 @@ def main():
     write("advisory-long-truncated.bin", advisory(1, b"x" * 5000))
     write("frontier-empty.bin", EMPTY_GUARD)
     write("frontier-nonempty.bin", FOUR_GUARD)
+    # Keep the historical filename and bytes for the explicit 500 ms vector.
     write("framing-profile-default.bin", canonical_profile())
+    write(
+        "framing-profile-idle-disabled.bin",
+        canonical_profile(force_flush_period_millis=0),
+    )
     write("framing-profile-multiline.bin", canonical_profile(True))
 
     operations = {
@@ -499,6 +504,9 @@ def main():
         "frontier_empty": EMPTY_GUARD[2:].hex(),
         "frontier_nonempty": FOUR_GUARD[2:].hex(),
         "framing_profile_default": sha256(canonical_profile()).hexdigest(),
+        "framing_profile_idle_disabled": sha256(
+            canonical_profile(force_flush_period_millis=0)
+        ).hexdigest(),
         "framing_profile_multiline": sha256(canonical_profile(True)).hexdigest(),
     }
     text = "".join(f"{key}={value}\n" for key, value in values.items())
