@@ -128,10 +128,10 @@ dependency bumps):
 - Apply the `skipchangelog` label (for maintainers).
 - Documentation-only PRs (all changed files are under a `docs/` or `rfcs/`
   directory).
-- PRs confined to `rust/experimental/` -- those crates are not released and
-  ship no `CHANGELOG.md`, so there is no changelog to write an entry into. A
+- PRs confined to `rust/contrib/` -- those independently scoped projects ship
+  no repository changelog, so there is no changelog to write an entry into. A
   PR that also touches a released module (for example `rust/otap-dataflow/`)
-  is *not* exempt, even if the bulk of the change is experimental.
+  is *not* exempt, even if the bulk of the change is under `rust/contrib/`.
 - For dependency-update PRs: Renovate auto-applies the `dependencies` label
   and bot-authored PRs are exempt.
 
@@ -406,6 +406,7 @@ repository](https://github.com/open-telemetry/community/blob/main/guides/contrib
 
 ### Approvers
 
+- [Aaron Marten](https://github.com/AaronRM), Microsoft
 - [Cijo Thomas](https://github.com/cijothomas), Microsoft
 
 For more information about the approver role, see the [community
@@ -419,7 +420,6 @@ repository](https://github.com/open-telemetry/community/blob/main/guides/contrib
 
 ### Triagers
 
-- [Aaron Marten](https://github.com/AaronRM), Microsoft
 - [Tom Tan](https://github.com/ThomsonTan), Microsoft
 
 For more information about the triager role, see the [community

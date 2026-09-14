@@ -379,14 +379,13 @@ where
         // and we only want to append segment to the column builder once per value column per type
         if type_range_attr_type != AttributeValueType::Map
             && type_range_attr_type != AttributeValueType::Slice
+            && let Some(sorted_val_col_builder) = sorted_ser_column.as_mut()
         {
-            if let Some(sorted_val_col_builder) = sorted_ser_column.as_mut() {
-                let len = type_range.len();
-                // append the nulls to the null buffer
-                sorted_val_col_builder.append_n_nulls(len);
-                // fill in the data buffers with default values
-                sorted_val_col_builder.append_n_default_values(len);
-            }
+            let len = type_range.len();
+            // append the nulls to the null buffer
+            sorted_val_col_builder.append_n_nulls(len);
+            // fill in the data buffers with default values
+            sorted_val_col_builder.append_n_default_values(len);
         }
     }
 

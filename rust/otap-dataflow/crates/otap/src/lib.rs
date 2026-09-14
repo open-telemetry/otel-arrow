@@ -22,6 +22,8 @@ pub mod metrics;
 /// Shared OTLP receiver metric definitions used by OTLP protocol support.
 pub mod otlp_metrics;
 
+mod bearer_authorization;
+
 /// testing utilities
 #[cfg(any(test, feature = "test-utils"))]
 pub mod otap_mock;
@@ -71,9 +73,9 @@ pub mod object_store;
 /// Cryptographic provider initialization (see [`crypto::install_crypto_provider`]).
 pub mod crypto;
 
-/// Protocol-neutral transport header abstraction for end-to-end header
-/// propagation through the pipeline.
-pub mod transport_headers;
+/// Transport-header capture and propagation tests.
+#[cfg(test)]
+mod transport_headers;
 
 /// TLS utilities
 pub mod tls_utils;

@@ -1,0 +1,236 @@
+version: otel_dataflow/v1
+
+# Compare broadcast Ack resolution modes with the same two branch outcomes:
+#
+#                         receiver -> noop  (fast Ack)
+#   producer -> topic ----|
+#                         receiver -> delay -> error (delayed Nack)
+#
+# `first` resolves Ack when the fast branch Acks before the delayed Nack.
+# `all` waits for both branches and resolves Nack when the delayed branch Nacks.
+# The producer-side delay gives both subscriptions time to register before the
+# first publish; it is sample scaffolding, not part of the topic pattern.
+#
+# Run on one core:
+#   cargo run --bin df_engine -- \
+#     --num-cores 1 \
+#     --config configs/engine-conf/topic_broadcast_ack_modes.yaml
+#
+# Inspect topic outcomes:
+#   curl -s 'http://127.0.0.1:8085/api/v1/telemetry/metrics?format=json' \
+#     | jq '[.metric_sets[]
+#       | select(.name == "exporter.topic")
+#       | {
+#           pipeline: .attributes["pipeline.id"].String,
+#           metrics: [.metrics[]
+#             | select(.name == "published.messages"
+#                 or .name == "end.to.end.acks"
+#                 or .name == "end.to.end.nacks"
+#                 or .name == "tracked.in.flight")
+#             | {name, value}]
+#         }] | sort_by(.pipeline)'
+#
+# Expected after both producers publish 10 messages:
+#
+# - first_producer: 10 published, 10 Ack, 0 Nack
+# - all_producer: 10 published, 0 Ack, 10 Nack
+
+policies:
+  channel_capacity:
+    control:
+      node: 64
+      pipeline: 64
+    pdata: 100
+  health: {}
+  telemetry:
+    pipeline_metrics: true
+    tokio_metrics: true
+    runtime_metrics: basic
+  resources:
+    core_allocation:
+      type: all_cores
+
+engine:
+  http_admin:
+    bind_address: 127.0.0.1:8085
+  telemetry:
+    logs:
+      level: info
+  observability:
+    pipeline:
+      nodes:
+        internal_telemetry_receiver:
+          type: receiver:internal_telemetry
+          config: {}
+        internal_telemetry_sink:
+          type: exporter:noop
+          config: null
+      connections:
+        - from: internal_telemetry_receiver
+          to: internal_telemetry_sink
+
+groups:
+  ack_mode_comparison:
+    policies:
+      resources:
+        core_allocation:
+          type: core_count
+          count: 1
+
+    topics:
+      first_completion:
+        description: "Resolve with the first subscriber outcome"
+        policies:
+          broadcast:
+            queue_capacity: 100
+            on_lag: disconnect
+            ack_mode: first
+          ack_propagation:
+            mode: auto
+            max_in_flight: 32
+            timeout: 5s
+
+      all_completion:
+        description: "Require every eligible subscriber to Ack"
+        policies:
+          broadcast:
+            queue_capacity: 100
+            on_lag: disconnect
+            ack_mode: all
+          ack_propagation:
+            mode: auto
+            max_in_flight: 32
+            timeout: 5s
+
+    pipelines:
+      first_producer:
+        nodes:
+          traffic_gen:
+            type: receiver:traffic_generator
+            config:
+              enable_ack_nack: true
+              data_source: synthetic
+              generation_strategy: pre_generated
+              traffic_config:
+                signals_per_second: 100
+                max_batch_size: 1
+                max_signal_count: 10
+                metric_weight: 0
+                trace_weight: 0
+                log_weight: 1
+          startup_delay:
+            type: processor:delay
+            config:
+              delay: 500ms
+          topic_exporter:
+            type: exporter:topic
+            config:
+              topic: first_completion
+        connections:
+          - from: traffic_gen
+            to: startup_delay
+          - from: startup_delay
+            to: topic_exporter
+
+      first_fast_ack:
+        nodes:
+          topic_receiver:
+            type: receiver:topic
+            config:
+              topic: first_completion
+              subscription:
+                mode: broadcast
+          sink:
+            type: exporter:noop
+            config: null
+        connections:
+          - from: topic_receiver
+            to: sink
+
+      first_delayed_nack:
+        nodes:
+          topic_receiver:
+            type: receiver:topic
+            config:
+              topic: first_completion
+              subscription:
+                mode: broadcast
+          delay:
+            type: processor:delay
+            config:
+              delay: 100ms
+          failing_exporter:
+            type: exporter:error
+            config:
+              message: "simulated delayed branch failure"
+        connections:
+          - from: topic_receiver
+            to: delay
+          - from: delay
+            to: failing_exporter
+
+      all_producer:
+        nodes:
+          traffic_gen:
+            type: receiver:traffic_generator
+            config:
+              enable_ack_nack: true
+              data_source: synthetic
+              generation_strategy: pre_generated
+              traffic_config:
+                signals_per_second: 100
+                max_batch_size: 1
+                max_signal_count: 10
+                metric_weight: 0
+                trace_weight: 0
+                log_weight: 1
+          startup_delay:
+            type: processor:delay
+            config:
+              delay: 500ms
+          topic_exporter:
+            type: exporter:topic
+            config:
+              topic: all_completion
+        connections:
+          - from: traffic_gen
+            to: startup_delay
+          - from: startup_delay
+            to: topic_exporter
+
+      all_fast_ack:
+        nodes:
+          topic_receiver:
+            type: receiver:topic
+            config:
+              topic: all_completion
+              subscription:
+                mode: broadcast
+          sink:
+            type: exporter:noop
+            config: null
+        connections:
+          - from: topic_receiver
+            to: sink
+
+      all_delayed_nack:
+        nodes:
+          topic_receiver:
+            type: receiver:topic
+            config:
+              topic: all_completion
+              subscription:
+                mode: broadcast
+          delay:
+            type: processor:delay
+            config:
+              delay: 100ms
+          failing_exporter:
+            type: exporter:error
+            config:
+              message: "simulated delayed branch failure"
+        connections:
+          - from: topic_receiver
+            to: delay
+          - from: delay
+            to: failing_exporter

@@ -9,6 +9,8 @@ use otel_arrow_dfe_admin_api::{
 };
 use otel_arrow_dfe_config::engine::OtelDataflowSpec;
 use otel_arrow_dfe_controller::Controller;
+// Link the core-node factories used by rendered scenarios.
+use otel_arrow_dfe_core_nodes as _;
 use otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY;
 use std::collections::HashMap;
 use tokio::time::{Duration, sleep};
@@ -205,10 +207,10 @@ fn validation_finished_and_passed(snapshot: &MetricsSnapshot) -> ValidationPollR
             return ValidationPollResult::NotFinished;
         }
         // Exporter is finished -- check its validation result in the same pass.
-        if metric_value(set, VALIDATION_METRIC_NAME).is_some_and(|v| v < 1) {
-            if let Some(label) = attribute_node_id(&set.attributes) {
-                failed_validation_exporters.push(label);
-            }
+        if metric_value(set, VALIDATION_METRIC_NAME).is_some_and(|v| v < 1)
+            && let Some(label) = attribute_node_id(&set.attributes)
+        {
+            failed_validation_exporters.push(label);
         }
     }
 
@@ -228,6 +230,20 @@ mod tests {
     use std::collections::HashMap;
     use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// Scenario: factories are referenced only by literal URNs.
+    /// Guarantees: core factories are linked for traffic and internal telemetry.
+    #[test]
+    fn simulator_links_core_node_factories() {
+        let receivers = OTAP_PIPELINE_FACTORY.get_receiver_factory_map();
+        assert!(receivers.contains_key("urn:otel:receiver:otlp"));
+        assert!(receivers.contains_key("urn:otel:receiver:internal_telemetry"));
+        assert!(
+            OTAP_PIPELINE_FACTORY
+                .get_exporter_factory_map()
+                .contains_key("urn:otel:exporter:noop")
+        );
+    }
 
     fn set_with_node(set_name: &str, metric: &str, value: u64, node_id: &str) -> MetricSetSnapshot {
         MetricSetSnapshot {

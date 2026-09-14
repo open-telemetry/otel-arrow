@@ -308,28 +308,27 @@ impl DiagnosticsCollector {
             );
         }
 
-        if let Some(test_step) = self.step_timings.iter().find(|step| step.name == "test") {
-            if let Some(test_compile_wall) = self
+        if let Some(test_step) = self.step_timings.iter().find(|step| step.name == "test")
+            && let Some(test_compile_wall) = self
                 .compile_reports
                 .iter()
                 .find(|report| report.step == "test")
                 .map(|report| report.compile_wall_time)
-            {
-                let approx_compile = std::cmp::min(test_compile_wall, test_step.duration);
-                let approx_execution = test_step.duration.saturating_sub(approx_compile);
-                println!(
-                    "  {} compile {}, execution {}",
-                    paint("test step split (approx.):", "36"),
-                    paint(
-                        &format_duration(approx_compile),
-                        metric_heat_color(approx_compile)
-                    ),
-                    paint(
-                        &format_duration(approx_execution),
-                        metric_heat_color(approx_execution)
-                    )
-                );
-            }
+        {
+            let approx_compile = std::cmp::min(test_compile_wall, test_step.duration);
+            let approx_execution = test_step.duration.saturating_sub(approx_compile);
+            println!(
+                "  {} compile {}, execution {}",
+                paint("test step split (approx.):", "36"),
+                paint(
+                    &format_duration(approx_compile),
+                    metric_heat_color(approx_compile)
+                ),
+                paint(
+                    &format_duration(approx_execution),
+                    metric_heat_color(approx_execution)
+                )
+            );
         }
     }
 

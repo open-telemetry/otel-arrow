@@ -111,6 +111,24 @@ pub enum Error {
         value: String,
     },
 
+    /// A topic policy is incompatible with the selected runtime mode.
+    #[error(
+        "Topic `{topic}` policy `{policy}={value}` requires mode `{required_mode}`, but selected mode is `{selected_mode}`"
+    )]
+    #[diagnostic(code(data_plane::invalid_topic_policy_for_mode), url(docsrs))]
+    InvalidTopicPolicyForMode {
+        /// The declared topic name.
+        topic: TopicName,
+        /// The incompatible policy key.
+        policy: &'static str,
+        /// The configured policy value.
+        value: String,
+        /// The runtime mode required by this policy.
+        required_mode: &'static str,
+        /// The selected runtime mode.
+        selected_mode: String,
+    },
+
     /// A cycle was detected in the global topic wiring graph.
     #[error("Topic wiring cycle detected: {cycle:?}")]
     #[diagnostic(code(data_plane::topic_wiring_cycle_detected), url(docsrs))]

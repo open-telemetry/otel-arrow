@@ -7,4 +7,10 @@
     feature = "azure-identity-auth-extension",
     feature = "oauth2-client-auth-extension"
 ))]
+pub mod background_refresh;
+
+#[cfg(any(
+    feature = "azure-identity-auth-extension",
+    feature = "oauth2-client-auth-extension"
+))]
 pub mod token_refresh;

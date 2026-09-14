@@ -46,7 +46,7 @@ use crate::thread_task::{ThreadLocalTaskHandle, spawn_thread_local_task};
 use core_affinity::CoreId;
 use otel_arrow_dfe_admin::ControlPlane;
 use otel_arrow_dfe_config::engine::{
-    OtelDataflowSpec, ResolvedPipelineConfig, ResolvedPipelineRole,
+    OtelDataflowSpec, ResolvedOtelDataflowSpec, ResolvedPipelineConfig, ResolvedPipelineRole,
     SYSTEM_OBSERVABILITY_PIPELINE_ID, SYSTEM_PIPELINE_GROUP_ID,
 };
 use otel_arrow_dfe_config::extension::{ExtensionUrn, ExtensionUserConfig};
@@ -62,7 +62,6 @@ use otel_arrow_dfe_config::topic::{
     TopicAckPropagationMode, TopicBackendKind, TopicBroadcastAckMode, TopicBroadcastOnLagPolicy,
     TopicImplSelectionPolicy, TopicSpec,
 };
-use otel_arrow_dfe_config::transport_headers_policy::TransportHeadersPolicy;
 use otel_arrow_dfe_config::{
     DeployedPipelineKey, ExtensionId, PipelineGroupId, PipelineId, PipelineKey,
     SubscriptionGroupName, TopicName, pipeline::PipelineConfig,
@@ -71,6 +70,9 @@ use otel_arrow_dfe_engine::PipelineFactory;
 use otel_arrow_dfe_engine::ReceivedAtNode;
 use otel_arrow_dfe_engine::Unwindable;
 use otel_arrow_dfe_engine::context::{ControllerContext, PipelineContext};
+use otel_arrow_dfe_engine::context_declaration::{
+    CompiledContextBindings, ContextRuntimeRequirements,
+};
 use otel_arrow_dfe_engine::control::{
     PipelineAdminSender, PipelineCompletionMsgReceiver, PipelineCompletionMsgSender,
     RuntimeCtrlMsgReceiver, RuntimeCtrlMsgSender, pipeline_completion_msg_channel,
@@ -578,14 +580,13 @@ impl<
         let balanced_capacity = spec.policies.balanced.queue_capacity.max(1);
         let broadcast_capacity = spec.policies.broadcast.queue_capacity.max(1);
         let broadcast_on_lag = spec.policies.broadcast.on_lag;
-        // TODO(#2252 PR3): pass the configured `ack_mode` through instead of
-        // hardcoding `first`, and reject `all` on non-broadcast-only topics.
+        let broadcast_ack_mode = spec.policies.broadcast.ack_mode;
         match inferred_mode {
             InferredTopicMode::Mixed => TopicOptions::Mixed {
                 balanced_capacity,
                 broadcast_capacity,
                 on_lag: broadcast_on_lag,
-                ack_mode: TopicBroadcastAckMode::First,
+                ack_mode: broadcast_ack_mode,
             },
             InferredTopicMode::BalancedOnly => TopicOptions::BalancedOnly {
                 capacity: balanced_capacity,
@@ -593,7 +594,7 @@ impl<
             InferredTopicMode::BroadcastOnly => TopicOptions::BroadcastOnly {
                 capacity: broadcast_capacity,
                 on_lag: broadcast_on_lag,
-                ack_mode: TopicBroadcastAckMode::First,
+                ack_mode: broadcast_ack_mode,
             },
         }
     }
@@ -1064,6 +1065,18 @@ impl<
             });
         }
 
+        if policies.broadcast.ack_mode == TopicBroadcastAckMode::All
+            && selected_mode != InferredTopicMode::BroadcastOnly
+        {
+            return Err(Error::InvalidTopicPolicyForMode {
+                topic: topic.clone(),
+                policy: "broadcast.ack_mode",
+                value: policies.broadcast.ack_mode.to_string(),
+                required_mode: "broadcast_only",
+                selected_mode: selected_mode.as_str().to_owned(),
+            });
+        }
+
         if matches!(
             selected_mode,
             InferredTopicMode::BroadcastOnly | InferredTopicMode::Mixed
@@ -1293,6 +1306,12 @@ impl<
 
         let num_pipeline_groups = engine_config.groups.len();
         let resolved_config = engine_config.resolve();
+        let context = self
+            .pipeline_factory
+            .compile_initial_context(&resolved_config)
+            .map_err(|source| Error::PipelineRuntimeError {
+                source: Box::new(source),
+            })?;
         let (mut engine, pipelines, observability_pipeline) = resolved_config.into_parts();
         let observability_pipeline =
             observability_pipeline.ok_or_else(|| Error::PipelineRuntimeError {
@@ -1518,6 +1537,8 @@ impl<
             engine_evt_reporter.clone(),
             metrics_reporter.clone(),
             declared_topics,
+            context.runtime_requirements,
+            Arc::clone(&context.bindings),
             all_cores.clone(),
             topology,
             telemetry_system.engine_tracing_setup(),
@@ -1568,6 +1589,7 @@ impl<
             observability_core,
             observability_pipeline,
             &engine_config,
+            Arc::clone(&context.bindings),
             &telemetry_system,
             self.pipeline_factory,
             &controller_ctx,
@@ -1709,11 +1731,11 @@ impl<
                     placement.core_id,
                     placement.numa_node_id,
                     Arc::clone(&listener_group_snapshot),
+                    Arc::clone(&context.bindings),
                     num_cores,
                     pipeline_entry.pipeline.clone(),
                     pipeline_entry.policies.channel_capacity.clone(),
                     pipeline_entry.policies.telemetry.clone(),
-                    pipeline_entry.policies.transport_headers.clone(),
                     pipeline_entry.policies.rate_limiters.clone(),
                     pipeline_entry.policies.rate_limiter_scope.clone(),
                     controller_ctx.clone(),
@@ -2539,11 +2561,11 @@ impl<
         core_id: CoreId,
         numa_node_id: usize,
         listener_group_snapshot: Arc<ListenerGroupSnapshot>,
+        context_bindings: Arc<CompiledContextBindings>,
         num_cores: usize,
         pipeline_config: PipelineConfig,
         channel_capacity_policy: ChannelCapacityPolicy,
         telemetry_policy: TelemetryPolicy,
-        transport_headers_policy: Option<TransportHeadersPolicy>,
         rate_limiter_policies: BTreeMap<String, RateLimiterPolicy>,
         rate_limiter_scope: Option<otel_arrow_dfe_config::policy::RateLimiterDeclarationScope>,
         controller_ctx: ControllerContext,
@@ -2579,6 +2601,7 @@ impl<
         )?;
         pipeline_ctx.set_topic_set(topic_set);
         pipeline_ctx.set_listener_group_snapshot_arc(listener_group_snapshot);
+        pipeline_ctx.set_compiled_context_bindings(Arc::clone(&context_bindings));
         let (runtime_ctrl_msg_tx, runtime_ctrl_msg_rx) =
             runtime_ctrl_msg_channel(channel_capacity_policy.control.pipeline);
         let (pipeline_completion_msg_tx, pipeline_completion_msg_rx) =
@@ -2605,7 +2628,6 @@ impl<
                         pipeline_config,
                         channel_capacity_policy,
                         telemetry_policy,
-                        transport_headers_policy,
                         rate_limiter_policies,
                         rate_limiter_scope,
                         telemetry_reporting_interval,
@@ -2650,6 +2672,7 @@ impl<
         Ok(LaunchedPipelineThread {
             pipeline_key,
             control_sender,
+            context_bindings,
             _marker: std::marker::PhantomData,
         })
     }
@@ -2662,6 +2685,7 @@ impl<
         observability_core: CoreId,
         observability_pipeline: ResolvedPipelineConfig,
         config: &OtelDataflowSpec,
+        context_bindings: Arc<CompiledContextBindings>,
         telemetry_system: &InternalTelemetrySystem,
         pipeline_factory: &'static PipelineFactory<PData>,
         controller_ctx: &ControllerContext,
@@ -2690,11 +2714,11 @@ impl<
             observability_core,
             observability_numa_node_id,
             Arc::new(ListenerGroupSnapshot::empty()),
+            context_bindings,
             1,
             pipeline_config,
             channel_capacity_policy,
             telemetry_policy,
-            None,
             BTreeMap::new(),
             None,
             controller_ctx.clone(),
@@ -2745,7 +2769,6 @@ impl<
         pipeline_config: PipelineConfig,
         channel_capacity_policy: ChannelCapacityPolicy,
         telemetry_policy: TelemetryPolicy,
-        transport_headers_policy: Option<TransportHeadersPolicy>,
         rate_limiter_policies: BTreeMap<String, RateLimiterPolicy>,
         rate_limiter_scope: Option<otel_arrow_dfe_config::policy::RateLimiterDeclarationScope>,
         telemetry_reporting_interval: Duration,
@@ -2805,7 +2828,6 @@ impl<
                     pipeline_config.clone(),
                     channel_capacity_policy,
                     telemetry_policy,
-                    transport_headers_policy,
                     rate_limiter_policies,
                     rate_limiter_scope,
                     internal_telemetry_settings,
@@ -3260,16 +3282,27 @@ connections:
         ))
     }
 
-    static TEST_OBSERVABILITY_RECEIVERS: &[ReceiverFactory<()>] = &[ReceiverFactory {
-        name: "urn:otel:receiver:internal_telemetry",
-        create: create_test_observability_receiver,
-        wiring_contract: WiringContract::UNRESTRICTED,
-        validate_config: accept_any_test_config,
-    }];
+    static TEST_OBSERVABILITY_RECEIVERS: &[ReceiverFactory<()>] = &[
+        ReceiverFactory {
+            name: "urn:otel:receiver:internal_telemetry",
+            create: create_test_observability_receiver,
+            context_declarations: None,
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: accept_any_test_config,
+        },
+        ReceiverFactory {
+            name: "urn:test:receiver:example",
+            create: create_test_observability_receiver,
+            context_declarations: None,
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: accept_any_test_config,
+        },
+    ];
 
     static TEST_OBSERVABILITY_PROCESSORS: &[ProcessorFactory<()>] = &[ProcessorFactory {
         name: "urn:otel:processor:type_router",
         create: create_test_observability_processor,
+        context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: accept_any_test_config,
     }];
@@ -3278,12 +3311,21 @@ connections:
         ExporterFactory {
             name: "urn:otel:exporter:console",
             create: create_test_observability_exporter,
+            context_declarations: None,
             wiring_contract: WiringContract::UNRESTRICTED,
             validate_config: accept_any_test_config,
         },
         ExporterFactory {
             name: "urn:otel:exporter:noop",
             create: create_test_observability_exporter,
+            context_declarations: None,
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: accept_any_test_config,
+        },
+        ExporterFactory {
+            name: "urn:test:exporter:example",
+            create: create_test_observability_exporter,
+            context_declarations: None,
             wiring_contract: WiringContract::UNRESTRICTED,
             validate_config: accept_any_test_config,
         },
@@ -4759,6 +4801,206 @@ groups:
                 otel_arrow_dfe_engine::topic::SubscriberOptions::default(),
             ),
             Err(otel_arrow_dfe_engine::error::Error::SubscribeBalancedNotSupported)
+        ));
+    }
+
+    /// Scenario: YAML config enables all-subscriber Ack consensus on a broadcast-only topic.
+    /// Guarantees: controller mapping preserves `ack_mode: all` and waits for every subscriber.
+    #[tokio::test]
+    async fn declare_topics_maps_all_ack_mode_to_broadcast_consensus() {
+        let yaml = r#"
+version: otel_dataflow/v1
+topics:
+  broadcast_topic:
+    policies:
+      broadcast:
+        on_lag: disconnect
+        ack_mode: all
+      ack_propagation:
+        mode: auto
+groups:
+  g1:
+    pipelines:
+      p1:
+        nodes:
+          recv:
+            type: "urn:otel:receiver:topic"
+            config:
+              topic: broadcast_topic
+          sink:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: recv
+            to: sink
+      p2:
+        nodes:
+          recv:
+            type: "urn:otel:receiver:topic"
+            config:
+              topic: broadcast_topic
+          sink:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: recv
+            to: sink
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("test config should parse");
+        let declared = Controller::<()>::declare_topics(&config).expect("topics should declare");
+        let topic = global_topic_handle(&declared, "broadcast_topic");
+        let mut sub1 = topic
+            .subscribe(
+                otel_arrow_dfe_engine::topic::SubscriptionMode::Broadcast,
+                otel_arrow_dfe_engine::topic::SubscriberOptions::default(),
+            )
+            .expect("first broadcast subscriber should be created");
+        let mut sub2 = topic
+            .subscribe(
+                otel_arrow_dfe_engine::topic::SubscriptionMode::Broadcast,
+                otel_arrow_dfe_engine::topic::SubscriberOptions::default(),
+            )
+            .expect("second broadcast subscriber should be created");
+        let receipt = topic
+            .tracked_publisher()
+            .publish(Arc::new(()))
+            .await
+            .expect("tracked publish should succeed");
+        let message_id = match sub1.recv().await.expect("first delivery should arrive") {
+            otel_arrow_dfe_engine::topic::RecvItem::Message(envelope) => envelope.id,
+            otel_arrow_dfe_engine::topic::RecvItem::Lagged { missed } => {
+                panic!("first subscriber unexpectedly lagged by {missed} messages")
+            }
+        };
+        let second_message_id = match sub2.recv().await.expect("second delivery should arrive") {
+            otel_arrow_dfe_engine::topic::RecvItem::Message(envelope) => envelope.id,
+            otel_arrow_dfe_engine::topic::RecvItem::Lagged { missed } => {
+                panic!("second subscriber unexpectedly lagged by {missed} messages")
+            }
+        };
+        assert_eq!(second_message_id, message_id);
+
+        let mut outcome = Box::pin(receipt.wait_for_outcome());
+        sub1.ack(message_id).expect("first Ack should succeed");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), outcome.as_mut())
+                .await
+                .is_err(),
+            "upstream resolved before all configured subscribers Acked"
+        );
+        sub2.ack(message_id).expect("second Ack should succeed");
+        assert_eq!(
+            outcome.await,
+            otel_arrow_dfe_engine::topic::TrackedPublishOutcome::Ack
+        );
+    }
+
+    /// Scenario: `ack_mode: all` is configured for a topic inferred as balanced-only.
+    /// Guarantees: startup rejects the configuration before creating the topic.
+    #[test]
+    fn declare_topics_rejects_all_ack_mode_for_balanced_only_topic() {
+        let yaml = r#"
+version: otel_dataflow/v1
+topics:
+  balanced_topic:
+    policies:
+      broadcast:
+        on_lag: disconnect
+        ack_mode: all
+      ack_propagation:
+        mode: auto
+groups:
+  g1:
+    pipelines:
+      p1:
+        nodes:
+          recv:
+            type: "urn:otel:receiver:topic"
+            config:
+              topic: balanced_topic
+              subscription:
+                mode: balanced
+                group: workers
+          sink:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: recv
+            to: sink
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("test config should parse");
+        let err = match Controller::<()>::declare_topics(&config) {
+            Ok(_) => panic!("balanced-only all Ack mode should be rejected"),
+            Err(err) => err,
+        };
+
+        match err {
+            Error::InvalidTopicPolicyForMode {
+                topic,
+                policy,
+                value,
+                required_mode,
+                selected_mode,
+            } => {
+                assert_eq!(topic.as_str(), "global::balanced_topic");
+                assert_eq!(policy, "broadcast.ack_mode");
+                assert_eq!(value, "all");
+                assert_eq!(required_mode, "broadcast_only");
+                assert_eq!(selected_mode, "balanced_only");
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    /// Scenario: `ack_mode: all` is configured while implementation selection forces mixed mode.
+    /// Guarantees: startup rejects all-subscriber consensus when balanced delivery is also active.
+    #[test]
+    fn declare_topics_rejects_all_ack_mode_for_mixed_topic() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine:
+  topics:
+    impl_selection: force_mixed
+topics:
+  broadcast_topic:
+    policies:
+      broadcast:
+        on_lag: disconnect
+        ack_mode: all
+      ack_propagation:
+        mode: auto
+groups:
+  g1:
+    pipelines:
+      p1:
+        nodes:
+          recv:
+            type: "urn:otel:receiver:topic"
+            config:
+              topic: broadcast_topic
+          sink:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: recv
+            to: sink
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("test config should parse");
+        let err = match Controller::<()>::declare_topics(&config) {
+            Ok(_) => panic!("mixed all Ack mode should be rejected"),
+            Err(err) => err,
+        };
+
+        assert!(matches!(
+            err,
+            Error::InvalidTopicPolicyForMode {
+                policy: "broadcast.ack_mode",
+                required_mode: "broadcast_only",
+                ..
+            }
         ));
     }
 

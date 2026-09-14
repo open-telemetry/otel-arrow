@@ -1,5 +1,0 @@
-change_type: bug_fix
-component: pipeline
-note: "Prevent the transform processor from forwarding empty output when every signal item is filtered or routed."
-issues: [3891]
-subtext:

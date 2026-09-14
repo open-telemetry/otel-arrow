@@ -14,6 +14,11 @@ use otel_arrow_dfe_config::transport_headers::TransportHeaders;
 use otel_arrow_dfe_engine::ExporterFactory;
 use otel_arrow_dfe_engine::config::ExporterConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
+use otel_arrow_dfe_engine::context_declaration::{
+    ConfigNodeContextDeclaration, ContextConsumerSelector, ContextDeclaration,
+    ContextDeclarationProvider, ContextEntrySelector, ContextEntrySelectorForm,
+    NodeContextDeclarations,
+};
 use otel_arrow_dfe_engine::control::NodeControlMsg;
 use otel_arrow_dfe_engine::error::Error as EngineError;
 use otel_arrow_dfe_engine::exporter::ExporterWrapper;
@@ -115,11 +120,60 @@ pub static VALIDATION_EXPORTER_FACTORY: ExporterFactory<OtapPdata> = ExporterFac
                 exporter_config,
             ))
         },
+    context_declarations: Some(ContextDeclarationProvider::from_typed_config::<
+        ValidationExporterConfig,
+    >()),
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
         ValidationExporterConfig,
     >,
 };
+
+impl ConfigNodeContextDeclaration for ValidationExporterConfig {
+    fn context_declarations(&self) -> NodeContextDeclarations {
+        let mut require_key_names = std::collections::BTreeSet::new();
+        let mut require_key_value_names = std::collections::BTreeSet::new();
+        let mut deny_names = std::collections::BTreeSet::new();
+
+        for instruction in &self.validations {
+            match instruction {
+                ValidationInstructions::TransportHeaderRequireKey { keys } => {
+                    require_key_names.extend(keys.iter().cloned());
+                }
+                ValidationInstructions::TransportHeaderRequireKeyValue { pairs } => {
+                    require_key_value_names.extend(pairs.iter().map(|pair| pair.key.clone()));
+                }
+                ValidationInstructions::TransportHeaderDeny { keys } => {
+                    deny_names.extend(keys.iter().cloned());
+                }
+                ValidationInstructions::Equivalence
+                | ValidationInstructions::SignalDrop { .. }
+                | ValidationInstructions::BatchItems { .. }
+                | ValidationInstructions::BatchBytes { .. }
+                | ValidationInstructions::AttributeDeny { .. }
+                | ValidationInstructions::AttributeRequireKey { .. }
+                | ValidationInstructions::AttributeRequireKeyValue { .. }
+                | ValidationInstructions::AttributeNoDuplicate => {}
+            }
+        }
+
+        [require_key_names, require_key_value_names, deny_names]
+            .into_iter()
+            .filter(|names| !names.is_empty())
+            .map(|names| ContextDeclaration::Consumes {
+                selector: ContextConsumerSelector::Entries {
+                    entries: names
+                        .into_iter()
+                        .map(|name| ContextEntrySelector {
+                            name,
+                            form: ContextEntrySelectorForm::Value,
+                        })
+                        .collect(),
+                },
+            })
+            .collect()
+    }
+}
 
 impl ValidationExporter {
     /// Run the configured validations and update metrics.
@@ -160,6 +214,7 @@ impl ValidationExporter {
                     error: e.to_string(),
                 }
             })?;
+        config.validate_context_declarations(&pipeline_ctx)?;
         let suv_node = pipeline_ctx
             .node_by_name(&config.suv_input)
             .ok_or_else(|| ConfigError::InvalidUserConfig {
@@ -250,5 +305,118 @@ impl Exporter<OtapPdata> for ValidationExporter {
                 _ => {}
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use otel_arrow_dfe_config::ContextEntryName;
+    use otel_arrow_dfe_engine::context_declaration::{
+        ContextConsumerSelector, ContextDeclaration, ContextEntrySelector,
+    };
+
+    fn context_name(raw: &str) -> ContextEntryName {
+        ContextEntryName::try_from(raw).expect("valid test context entry name")
+    }
+
+    fn entries(names: &[&str]) -> Box<[ContextEntrySelector]> {
+        names
+            .iter()
+            .map(|name| ContextEntrySelector {
+                name: context_name(name),
+                form: ContextEntrySelectorForm::Value,
+            })
+            .collect()
+    }
+
+    fn consumes(names: &[&str]) -> ContextDeclaration {
+        ContextDeclaration::Consumes {
+            selector: ContextConsumerSelector::Entries {
+                entries: entries(names),
+            },
+        }
+    }
+
+    /// Scenario: validation checks header names and values.
+    /// Guarantees: context reads are sorted and deduplicated.
+    #[test]
+    fn validation_requires_produce_consumer_declarations() {
+        let config = serde_json::json!({
+            "suv_input": "suv",
+            "validations": [
+                {
+                    "type": "transport_header_require_key",
+                    "keys": ["x-tenant-id", "x-request-id"]
+                },
+                {
+                    "type": "transport_header_require_key_value",
+                    "pairs": [{"key": "x-tenant-id", "value": "acme"}]
+                },
+                {
+                    "type": "transport_header_deny",
+                    "keys": ["x-secret"]
+                }
+            ]
+        });
+
+        let decls = (VALIDATION_EXPORTER_FACTORY
+            .context_declarations
+            .expect("validation exporter should declare context")
+            .declarations)(&config)
+        .unwrap();
+        assert_eq!(
+            decls,
+            [
+                consumes(&["x-request-id", "x-tenant-id"]),
+                consumes(&["x-tenant-id"]),
+                consumes(&["x-secret"]),
+            ]
+            .into_iter()
+            .collect()
+        );
+    }
+
+    /// Scenario: validation only checks for forbidden headers.
+    /// Guarantees: forbidden names are declared as context reads.
+    #[test]
+    fn validation_deny_only_declares_context_entries() {
+        let config = serde_json::json!({
+            "suv_input": "suv",
+            "validations": [
+                {
+                    "type": "transport_header_deny",
+                    "keys": ["X-Secret"]
+                }
+            ]
+        });
+
+        assert_eq!(
+            (VALIDATION_EXPORTER_FACTORY
+                .context_declarations
+                .expect("validation exporter should declare context")
+                .declarations)(&config)
+            .unwrap(),
+            [consumes(&["X-Secret"])].into_iter().collect()
+        );
+    }
+
+    /// Scenario: validation does not inspect transport headers.
+    /// Guarantees: no context consumers are declared.
+    #[test]
+    fn validation_no_header_instructions_empty() {
+        let config = serde_json::json!({
+            "suv_input": "suv",
+            "validations": [
+                {"type": "equivalence"}
+            ]
+        });
+
+        let decls = (VALIDATION_EXPORTER_FACTORY
+            .context_declarations
+            .expect("validation exporter should declare context")
+            .declarations)(&config)
+        .unwrap();
+        assert!(decls.is_empty());
     }
 }
