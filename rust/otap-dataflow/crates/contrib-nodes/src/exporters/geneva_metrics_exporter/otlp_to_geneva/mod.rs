@@ -91,7 +91,6 @@ struct ResourceContext {
     monitoring_account: String,
     namespace: String,
     dimensions: Vec<super::encoder::Dimension>,
-    dimensions_valid: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -184,8 +183,6 @@ fn map_scope(
         .and_then(|scope| attribute_string(&scope.attributes, NAMESPACE_ATTRIBUTE))
         .unwrap_or_else(|| resource.namespace.clone());
     let scope_dimensions = selected_scope_dimensions(scope_metrics, config);
-    let parent_dimensions_valid = resource.dimensions_valid && scope_dimensions.is_some();
-    let scope_dimensions = scope_dimensions.unwrap_or_default();
 
     for otlp_metric in &scope_metrics.metrics {
         let Some(data) = &otlp_metric.data else {
@@ -207,7 +204,6 @@ fn map_scope(
                             &scope_dimensions,
                             config,
                             METRIC_TYPE_GAUGE,
-                            parent_dimensions_valid,
                         ),
                     );
                 }
@@ -230,7 +226,6 @@ fn map_scope(
                             &scope_dimensions,
                             config,
                             metric_type,
-                            parent_dimensions_valid,
                         ),
                     );
                 }
@@ -249,7 +244,6 @@ fn map_scope(
                             &scope_dimensions,
                             config,
                             metric_type,
-                            parent_dimensions_valid,
                         ),
                     );
                 }
@@ -269,7 +263,6 @@ fn map_scope(
                             &scope_dimensions,
                             config,
                             metric_type,
-                            parent_dimensions_valid,
                         ),
                     );
                 }
@@ -289,13 +282,12 @@ fn map_number_point(
     scope_dimensions: &[super::encoder::Dimension],
     config: &Config,
     metric_type: u32,
-    parent_dimensions_valid: bool,
 ) -> MapPointResult {
     if is_stale(point.flags) {
         return MapPointResult::rejected(None);
     }
     let overflow = overflow_diagnostic(&point.attributes, resource, scope_namespace, name);
-    if name.is_empty() || !parent_dimensions_valid {
+    if name.is_empty() {
         return MapPointResult::rejected(overflow);
     }
     let Some(context) = point_context(
@@ -359,13 +351,12 @@ fn map_histogram_point(
     scope_dimensions: &[super::encoder::Dimension],
     config: &Config,
     metric_type: u32,
-    parent_dimensions_valid: bool,
 ) -> MapPointResult {
     if is_stale(point.flags) || !valid_explicit_histogram(point) {
         return MapPointResult::rejected(None);
     }
     let overflow = overflow_diagnostic(&point.attributes, resource, scope_namespace, name);
-    if name.is_empty() || !parent_dimensions_valid {
+    if name.is_empty() {
         return MapPointResult::rejected(overflow);
     }
     let Some(context) = point_context(
@@ -426,7 +417,6 @@ fn map_exponential_histogram_point(
     scope_dimensions: &[super::encoder::Dimension],
     config: &Config,
     metric_type: u32,
-    parent_dimensions_valid: bool,
 ) -> MapPointResult {
     if is_stale(point.flags)
         || !(MIN_EXPONENTIAL_SCALE..=MAX_EXPONENTIAL_SCALE).contains(&point.scale)
@@ -461,7 +451,7 @@ fn map_exponential_histogram_point(
         return MapPointResult::rejected(None);
     };
     let overflow = overflow_diagnostic(&point.attributes, resource, scope_namespace, name);
-    if name.is_empty() || !parent_dimensions_valid {
+    if name.is_empty() {
         return MapPointResult::rejected(overflow);
     }
     let Some(context) = point_context(
@@ -565,16 +555,12 @@ fn add_metric(
 }
 
 fn sum_metric_type(is_monotonic: bool, temporality: i32) -> Option<u32> {
-    let temporality = AggregationTemporality::try_from(temporality).ok()?;
-    match (is_monotonic, temporality) {
-        (true, AggregationTemporality::Delta) => Some(METRIC_TYPE_DELTA_COUNTER),
-        (true, AggregationTemporality::Cumulative | AggregationTemporality::Unspecified) => {
-            Some(METRIC_TYPE_CUMULATIVE_COUNTER)
-        }
-        (false, AggregationTemporality::Delta) => None,
-        (false, AggregationTemporality::Cumulative | AggregationTemporality::Unspecified) => {
-            Some(METRIC_TYPE_CUMULATIVE_UP_DOWN_COUNTER)
-        }
+    let is_delta = temporality == AggregationTemporality::Delta as i32;
+    match (is_monotonic, is_delta) {
+        (true, true) => Some(METRIC_TYPE_DELTA_COUNTER),
+        (true, false) => Some(METRIC_TYPE_CUMULATIVE_COUNTER),
+        (false, true) => None,
+        (false, false) => Some(METRIC_TYPE_CUMULATIVE_UP_DOWN_COUNTER),
     }
 }
 
@@ -895,6 +881,40 @@ mod tests {
                 .find(|dimension| dimension.name == "shared")
                 .map(|dimension| dimension.value.as_str()),
             Some("scope")
+        );
+    }
+
+    /// Scenario: Monotonic and non-monotonic sums use an unrecognized aggregation temporality.
+    /// Guarantees: Every non-delta value follows ME's cumulative counter and up-down-counter paths.
+    #[test]
+    fn maps_unknown_sum_temporalities_as_cumulative() {
+        let unknown_temporality = i32::MAX;
+        let sum = |is_monotonic| {
+            metric::Data::Sum(Sum {
+                data_points: vec![gauge_point(Vec::new())],
+                aggregation_temporality: unknown_temporality,
+                is_monotonic,
+            })
+        };
+        let scope = scope_with_metrics(vec![
+            otlp_metric("counter", sum(true)),
+            otlp_metric("up-down-counter", sum(false)),
+        ]);
+
+        let mapped = map_request(&request(Vec::new(), scope), &config(), TEST_TIME_NANOS)
+            .expect("request should map");
+
+        assert_eq!(mapped.rejected_data_points, 0);
+        assert_eq!(mapped.publications.len(), 1);
+        let metrics = &mapped.publications[0].packet.metrics;
+        assert_eq!(metrics.len(), 2);
+        assert_eq!(
+            metrics[0].sampling_type & super::super::encoder::METRIC_TYPE_MASK,
+            METRIC_TYPE_CUMULATIVE_COUNTER
+        );
+        assert_eq!(
+            metrics[1].sampling_type & super::super::encoder::METRIC_TYPE_MASK,
+            METRIC_TYPE_CUMULATIVE_UP_DOWN_COUNTER
         );
     }
 

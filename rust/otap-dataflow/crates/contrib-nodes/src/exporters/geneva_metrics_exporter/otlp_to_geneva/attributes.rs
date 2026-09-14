@@ -25,7 +25,6 @@ pub(super) fn resource_context(attributes: &[KeyValue], config: &Config) -> Reso
     let mut monitoring_account = None;
     let mut namespace = None;
     let mut dimensions = Vec::new();
-    let mut dimensions_valid = true;
     for attribute in attributes {
         match attribute.key.as_str() {
             ACCOUNT_ATTRIBUTE | PREVIOUS_ACCOUNT_ATTRIBUTE => {
@@ -34,15 +33,13 @@ pub(super) fn resource_context(attributes: &[KeyValue], config: &Config) -> Reso
             NAMESPACE_ATTRIBUTE | PREVIOUS_NAMESPACE_ATTRIBUTE => {
                 namespace = Some(routing_value(attribute));
             }
-            _ if selected_attribute(&attribute.key, &config.resource_attributes)
-                && !add_dimension(
+            _ if selected_attribute(&attribute.key, &config.resource_attributes) => {
+                add_dimension(
                     &mut dimensions,
                     attribute,
                     true,
                     config.honor_resource_attributes,
-                ) =>
-            {
-                dimensions_valid = false;
+                );
             }
             _ => {}
         }
@@ -55,7 +52,6 @@ pub(super) fn resource_context(attributes: &[KeyValue], config: &Config) -> Reso
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| config.metric_namespace.clone()),
         dimensions,
-        dimensions_valid,
     }
 }
 
@@ -78,8 +74,7 @@ pub(super) fn point_context(
                 namespace = routing_value(attribute);
             }
             CARDINALITY_OVERFLOW_ATTRIBUTE => {}
-            _ if !add_dimension(&mut point_dimensions, attribute, false, true) => return None,
-            _ => {}
+            _ => add_dimension(&mut point_dimensions, attribute, false, true),
         }
     }
     let mut dimensions = merge_dimensions(
@@ -89,7 +84,7 @@ pub(super) fn point_context(
         config.honor_resource_attributes,
         config.honor_scope_attributes,
     );
-    if dimensions.len() > MAX_DIMENSIONS {
+    if !dimensions_within_limits(&dimensions) {
         return None;
     }
     dimensions.sort_by(compare_dimensions);
@@ -141,7 +136,7 @@ fn add_dimension(
     attribute: &KeyValue,
     string_only: bool,
     overwrite_duplicate: bool,
-) -> bool {
+) {
     let value =
         attribute
             .value
@@ -161,37 +156,31 @@ fn add_dimension(
                 }
                 _ => String::new(),
             });
-    if attribute.key.chars().count() > MAX_DIMENSION_NAME_CHARS
-        || value.chars().count() > MAX_DIMENSION_VALUE_CHARS
-    {
-        return false;
-    }
     if let Some(existing) = dimensions
         .iter_mut()
         .find(|dimension| dimension.name.eq_ignore_ascii_case(&attribute.key))
     {
-        if overwrite_duplicate {
+        if overwrite_duplicate && !existing.value.eq_ignore_ascii_case(&value) {
             existing.value = value;
         }
-        return true;
+        return;
     }
     dimensions.push(Dimension {
         name: attribute.key.clone(),
         value,
     });
-    true
 }
 
 pub(super) fn selected_scope_dimensions(
     scope_metrics: &ScopeMetrics,
     config: &Config,
-) -> Option<Vec<Dimension>> {
+) -> Vec<Dimension> {
     let Some(scope) = scope_metrics
         .scope
         .as_ref()
         .filter(|scope| !scope.name.is_empty())
     else {
-        return Some(Vec::new());
+        return Vec::new();
     };
     let wildcard_selection = config
         .scope_attributes
@@ -218,17 +207,16 @@ pub(super) fn selected_scope_dimensions(
             && selected_keys
                 .iter()
                 .any(|candidate| *candidate == "*" || *candidate == attribute.key.as_str())
-            && !add_dimension(
+        {
+            add_dimension(
                 &mut dimensions,
                 attribute,
                 true,
                 config.honor_scope_attributes,
-            )
-        {
-            return None;
+            );
         }
     }
-    Some(dimensions)
+    dimensions
 }
 
 fn format_double_dimension(value: f64) -> String {
@@ -292,10 +280,20 @@ fn set_dimension(dimensions: &mut Vec<Dimension>, dimension: &Dimension) {
         .iter_mut()
         .find(|existing| existing.name.eq_ignore_ascii_case(&dimension.name))
     {
-        existing.value.clone_from(&dimension.value);
+        if !existing.value.eq_ignore_ascii_case(&dimension.value) {
+            existing.value.clone_from(&dimension.value);
+        }
     } else {
         dimensions.push(dimension.clone());
     }
+}
+
+fn dimensions_within_limits(dimensions: &[Dimension]) -> bool {
+    dimensions.len() <= MAX_DIMENSIONS
+        && dimensions.iter().all(|dimension| {
+            dimension.name.chars().count() <= MAX_DIMENSION_NAME_CHARS
+                && dimension.value.chars().count() <= MAX_DIMENSION_VALUE_CHARS
+        })
 }
 
 fn compare_dimensions(left: &Dimension, right: &Dimension) -> Ordering {
@@ -372,7 +370,6 @@ mod tests {
             monitoring_account: "resource-account".to_string(),
             namespace: "resource-namespace".to_string(),
             dimensions,
-            dimensions_valid: true,
         }
     }
 
@@ -398,7 +395,6 @@ mod tests {
         assert_eq!(context.monitoring_account, "default-account");
         assert_eq!(context.namespace, "default-namespace");
         assert!(context.dimensions.is_empty());
-        assert!(context.dimensions_valid);
     }
 
     /// Scenario: Resource routing uses either the current or legacy account and namespace attribute names.
@@ -460,9 +456,7 @@ mod tests {
             ],
             &mapping_config,
         );
-
         assert_eq!(context.dimensions, vec![dimension("region", "west")]);
-        assert!(context.dimensions_valid);
     }
 
     /// Scenario: A point supplies destination overrides alongside ordinary dimensions.
@@ -544,6 +538,18 @@ mod tests {
         }
     }
 
+    /// Scenario: An honored resource value differs from the existing point value only by casing.
+    /// Guarantees: ME's case-insensitive duplicate check preserves the first serialized value.
+    #[test]
+    fn preserves_point_value_when_honored_resource_differs_only_by_case() {
+        let point = [dimension("REGION", "WEST")];
+        let resource = [dimension("region", "west")];
+
+        let merged = merge_dimensions(&point, &resource, &[], true, false);
+
+        assert_eq!(merged, point);
+    }
+
     /// Scenario: Point, resource, and scope dimensions arrive in unrelated lexical order.
     /// Guarantees: The merged dimensions are sorted case-insensitively by name and then value.
     #[test]
@@ -589,6 +595,25 @@ mod tests {
         .expect("point context should be valid");
 
         assert_eq!(point.dimensions, vec![dimension("region", "west")]);
+    }
+
+    /// Scenario: Duplicate point values differ only by casing.
+    /// Guarantees: ME retains the first value instead of replacing it with a case-equivalent value.
+    #[test]
+    fn preserves_first_case_equivalent_point_dimension_value() {
+        let point = point_context(
+            &[
+                string_attribute("region", "WEST"),
+                string_attribute("REGION", "west"),
+            ],
+            &resource_with_dimensions(Vec::new()),
+            "scope-namespace",
+            &[],
+            &config(),
+        )
+        .expect("point context should be valid");
+
+        assert_eq!(point.dimensions, vec![dimension("region", "WEST")]);
     }
 
     /// Scenario: Cardinality-overflow metadata is false or has a non-boolean value.
@@ -714,6 +739,45 @@ mod tests {
         assert!(point.is_none());
     }
 
+    /// Scenario: Oversized resource and scope values are replaced by valid point values.
+    /// Guarantees: Dimension limits apply after ME precedence, so discarded parent values do not reject the point.
+    #[test]
+    fn accepts_valid_point_overrides_for_oversized_parent_values() {
+        let oversized = "v".repeat(MAX_DIMENSION_VALUE_CHARS + 1);
+        let mut mapping_config = config();
+        mapping_config.resource_attributes = vec!["resource-shared".to_string()];
+        mapping_config.scope_attributes = vec![ScopeAttributes {
+            name: "meter".to_string(),
+            keys: vec!["scope-shared".to_string()],
+        }];
+        let resource = resource_context(
+            &[string_attribute("resource-shared", &oversized)],
+            &mapping_config,
+        );
+        let scope = scope_metrics("meter", vec![string_attribute("scope-shared", &oversized)]);
+        let scope_dimensions = selected_scope_dimensions(&scope, &mapping_config);
+
+        let point = point_context(
+            &[
+                string_attribute("resource-shared", "point-resource"),
+                string_attribute("scope-shared", "point-scope"),
+            ],
+            &resource,
+            "scope-namespace",
+            &scope_dimensions,
+            &mapping_config,
+        )
+        .expect("overridden oversized values should not reject the point");
+
+        assert_eq!(
+            point.dimensions,
+            vec![
+                dimension("resource-shared", "point-resource"),
+                dimension("scope-shared", "point-scope"),
+            ]
+        );
+    }
+
     /// Scenario: An exact scope selection includes one dimension and the reserved namespace attribute.
     /// Guarantees: Selected dimensions are retained while the namespace routing attribute is never emitted.
     #[test]
@@ -732,8 +796,7 @@ mod tests {
             ],
         );
 
-        let dimensions = selected_scope_dimensions(&scope, &mapping_config)
-            .expect("scope dimensions should be valid");
+        let dimensions = selected_scope_dimensions(&scope, &mapping_config);
 
         assert_eq!(dimensions, vec![dimension("region", "west")]);
     }
@@ -755,8 +818,7 @@ mod tests {
             ],
         );
 
-        let dimensions = selected_scope_dimensions(&scope, &mapping_config)
-            .expect("scope dimensions should be valid");
+        let dimensions = selected_scope_dimensions(&scope, &mapping_config);
 
         assert_eq!(
             dimensions,
@@ -790,8 +852,7 @@ mod tests {
             ],
         );
 
-        let dimensions = selected_scope_dimensions(&scope, &mapping_config)
-            .expect("scope dimensions should be valid");
+        let dimensions = selected_scope_dimensions(&scope, &mapping_config);
 
         assert_eq!(
             dimensions,
@@ -835,8 +896,7 @@ mod tests {
             ],
         );
 
-        let dimensions = selected_scope_dimensions(&scope, &mapping_config)
-            .expect("scope dimensions should be valid");
+        let dimensions = selected_scope_dimensions(&scope, &mapping_config);
 
         assert_eq!(dimensions, vec![dimension("global", "value")]);
     }
@@ -852,8 +912,7 @@ mod tests {
         }];
         let scope = scope_metrics("meter", vec![string_attribute("region", "west")]);
 
-        let dimensions = selected_scope_dimensions(&scope, &mapping_config)
-            .expect("unselected scope should remain valid");
+        let dimensions = selected_scope_dimensions(&scope, &mapping_config);
 
         assert!(dimensions.is_empty());
     }
