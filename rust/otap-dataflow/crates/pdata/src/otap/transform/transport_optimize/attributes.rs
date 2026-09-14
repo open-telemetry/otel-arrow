@@ -1003,17 +1003,14 @@ impl TryFrom<&ArrayRef> for AttrsValueSorterInner {
                     })?;
 
                     // Only physical keys in valid (non-null) slots are guaranteed to be
-                    // in-range dictionary indices. Use a rank of 0 for null slots
-                    let keys = dict_arr.keys();
-                    let key_ranks: Vec<u16> = (0..keys.len())
-                        .map(|i| {
-                            if keys.is_valid(i) {
-                                value_ranks[keys.value(i) as usize] as u16
-                            } else {
-                                0
-                            }
-                        })
-                        .collect();
+                    // in-range dictionary indices. Fall back to rank 0 for any
+                    // out of range values.
+                    let key_ranks = dict_arr
+                        .keys()
+                        .values()
+                        .iter()
+                        .map(|k| *value_ranks.get(*k as usize).unwrap_or(&0) as u16)
+                        .collect::<Vec<_>>();
 
                     let rank_nulls = if dict_arr.keys().null_count() > 0 {
                         dict_arr.keys().nulls().cloned()
@@ -2787,22 +2784,53 @@ mod test {
         )
         .unwrap();
 
+        // Expected output after sorting by (type, key, value):
+        // - all rows are type=Str, key="ka"
+        // - values sort ascending with nulls last:
+        //     "va" (parent_id 0), "va" (parent_id 2), "vb" (parent_id 1), null (parent_id 3)
+        // - PARENT_ID is quasi-delta encoded: the two adjacent equal "va" values are
+        //   delta encoded (0, then 2-0=2); "vb" is a new value (1); the null row is
+        //   never delta encoded (3). This asserts the null landed on the correct row
+        //   (parent_id 3) and that non-null keys/values kept their association.
+        let expected = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt16, false)
+                    .with_encoding(consts::metadata::encodings::QUASI_DELTA),
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(
+                    consts::ATTRIBUTE_KEY,
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                    false,
+                ),
+                Field::new(
+                    consts::ATTRIBUTE_STR,
+                    DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+                    true,
+                ),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from_iter_values([0, 2, 1, 3])),
+                Arc::new(UInt8Array::from_iter_values([
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(DictionaryArray::new(
+                    UInt8Array::from_iter_values([0, 0, 0, 0]),
+                    Arc::new(StringArray::from_iter_values(["ka"])),
+                )),
+                Arc::new(DictionaryArray::new(
+                    UInt16Array::from_iter([Some(0), Some(0), Some(1), None]),
+                    Arc::new(StringArray::from_iter_values(["va", "vb"])),
+                )),
+            ],
+        )
+        .unwrap();
+
         // Before the fix this panics at attributes.rs with "index out of bounds".
         let result = transport_optimize_encode_attrs::<UInt16Type>(&input).unwrap();
-
-        // The null row must survive as null; the three non-null rows keep their values.
-        let out_str = result
-            .column_by_name(consts::ATTRIBUTE_STR)
-            .expect("attribute str column exists")
-            .as_any()
-            .downcast_ref::<DictionaryArray<UInt16Type>>()
-            .expect("attribute str column is a UInt16 dictionary");
-        assert_eq!(
-            out_str.null_count(),
-            1,
-            "the single null row must be preserved"
-        );
-        assert_eq!(out_str.len(), 4);
+        pretty_assertions::assert_eq!(result, expected);
     }
 
     #[test]
