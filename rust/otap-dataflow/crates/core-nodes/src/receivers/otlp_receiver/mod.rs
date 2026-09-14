@@ -2279,6 +2279,95 @@ mod tests {
             .run_validation_concurrent(validation);
     }
 
+    /// Scenario: an authorized OTLP gRPC request passes through the tonic
+    /// server with a subject projection policy configured on the receiver.
+    /// Guarantees: the verified identity survives tonic request reconstruction
+    /// and its subject is stored on the pdata forwarded downstream.
+    #[test]
+    fn test_otlp_grpc_captures_authorized_identity() {
+        let test_runtime = TestRuntime::new();
+        let grpc_addr = "127.0.0.1";
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
+        let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
+        let grpc_listen: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
+
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let mut config = test_config(grpc_listen);
+        config
+            .protocols
+            .grpc
+            .as_mut()
+            .expect("gRPC test config")
+            .wait_for_result = false;
+
+        let receiver = ReceiverWrapper::shared(
+            OTLPReceiver {
+                config,
+                metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
+                global_max_concurrent_requests: None,
+                authorizer: Some(Box::new(PolicyAuthorizer)),
+                admission_state: SharedReceiverAdmissionState::from_process_state(
+                    &pipeline_ctx.memory_pressure_state(),
+                ),
+            },
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let scenario = move |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                let mut logs_client = LogsServiceClient::connect(grpc_endpoint)
+                    .await
+                    .expect("connect gRPC logs client");
+                let mut request = tonic::Request::new(create_logs_service_request());
+                let authorization = ["Bearer", "allowed"].join(" ");
+                _ = request.metadata_mut().insert(
+                    "authorization",
+                    authorization.parse().expect("valid metadata value"),
+                );
+
+                _ = logs_client
+                    .export(request)
+                    .await
+                    .expect("authorized gRPC request must succeed");
+
+                ctx.send_shutdown(Instant::now(), "Test complete")
+                    .await
+                    .expect("send shutdown");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        let validation = |mut ctx: NotSendValidateContext<OtapPdata>| {
+            Box::pin(async move {
+                let pdata = timeout(Duration::from_secs(3), ctx.recv())
+                    .await
+                    .expect("authorized gRPC request must reach downstream")
+                    .expect("downstream channel must remain open");
+                let entries = pdata
+                    .authorized_identity_entries()
+                    .expect("authorized identity entries must be captured");
+                assert_eq!(
+                    entries
+                        .get("customer_id")
+                        .and_then(|entry| entry.value().as_str()),
+                    Some("test-subject")
+                );
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        test_runtime
+            .set_receiver(receiver)
+            .with_authorized_identity_policy(Some(authorized_identity_policy()))
+            .run_test(scenario)
+            .run_validation_concurrent(validation);
+    }
+
     /// Scenario: an HTTP receiver with a bound authorizer receives one denied
     /// request followed by one allowed request.
     /// Guarantees: the denied request returns HTTP 403 without forwarding,
