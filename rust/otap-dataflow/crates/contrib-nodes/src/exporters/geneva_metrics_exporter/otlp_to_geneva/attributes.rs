@@ -297,10 +297,14 @@ fn dimensions_within_limits(dimensions: &[Dimension]) -> bool {
 }
 
 fn compare_dimensions(left: &Dimension, right: &Dimension) -> Ordering {
-    left.name
-        .to_lowercase()
-        .cmp(&right.name.to_lowercase())
-        .then_with(|| left.value.to_lowercase().cmp(&right.value.to_lowercase()))
+    compare_ascii_case_insensitive(&left.name, &right.name)
+        .then_with(|| compare_ascii_case_insensitive(&left.value, &right.value))
+}
+
+fn compare_ascii_case_insensitive(left: &str, right: &str) -> Ordering {
+    left.bytes()
+        .map(|byte| byte.to_ascii_lowercase())
+        .cmp(right.bytes().map(|byte| byte.to_ascii_lowercase()))
 }
 
 pub(super) fn attribute_string(attributes: &[KeyValue], key: &str) -> Option<String> {
@@ -575,6 +579,20 @@ mod tests {
                 dimension("Beta", "scope"),
                 dimension("zeta", "resource"),
             ]
+        );
+    }
+
+    /// Scenario: Dimension names include ASCII case variants and a Unicode character with a similar fold.
+    /// Guarantees: Sorting uses the same ASCII case semantics as duplicate detection and then compares values.
+    #[test]
+    fn sorts_dimensions_with_ascii_case_folding() {
+        assert_eq!(
+            compare_dimensions(&dimension("REGION", "east"), &dimension("region", "WEST")),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_dimensions(&dimension("k", "value"), &dimension("\u{212a}", "value")),
+            Ordering::Less
         );
     }
 
