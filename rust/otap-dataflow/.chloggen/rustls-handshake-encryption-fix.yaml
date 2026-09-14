@@ -11,7 +11,7 @@ component: dependencies
 note: Reject TLS 1.3 handshake messages received at the wrong encryption level by updating rustls to 0.23.45 (RUSTSEC-2026-0285).
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
-issues: [] # Fill in the PR number once the PR is created.
+issues: [4069]
 
 # (Optional) One or more lines of additional information to render under the primary note.
 # These lines will be padded with 2 spaces and then inserted directly into the document.
