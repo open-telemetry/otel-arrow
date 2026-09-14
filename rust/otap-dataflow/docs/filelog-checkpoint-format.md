@@ -498,8 +498,19 @@ Unlike the WAL, a snapshot file has **no torn-tail tolerance**. A snapshot is
 written completely, synced, and only then made reachable through `CURRENT`
 (the [Phase 1 publication and compaction algorithm](filelog-receiver-phase1-spec.md#publication-compaction-cleanup-and-recovery));
 a reader never observes a snapshot that is genuinely still being written.
-Therefore any of the following is corruption and fails recovery closed, with
-no leniency, even if it is the physical end of the file:
+All of the following fail recovery closed, with no tail-repair leniency. The
+recovery error table distinguishes physically incomplete authoritative input
+from invalid complete structures. A missing header, record, or footer is not
+silently repaired. A declared length exceeding the supplied bytes cannot by
+itself distinguish physical truncation from an invalid length; the store must
+combine parser context with complete-read/EOF evidence. Likewise, the early
+record-count versus physical-capacity check bounds allocation but does not prove
+which of those conditions occurred.
+
+After a record or transaction frame is complete and CRC-valid, an inner field
+that cannot fit within its container is structural corruption, not an incomplete
+outer read. WAL scanner errors never become the permitted incomplete-tail result.
+The affected invalid or incomplete snapshot conditions include:
 
 - fewer than 60 bytes available for the header, or header magic/version/flags/CRC invalid;
 - fewer than `record_count` complete, individually CRC-valid records available;
@@ -1590,6 +1601,16 @@ An existing checkpoint made with 500 ms still requires matching explicit
 configuration or a supported migration; changing a default does not waive
 profile compatibility.
 
+For the zero-idle-flush newline profile, use the identity and newline framing
+fields listed below with `force_flush_period_millis = 0`. This is the proposed
+receiver default. Its canonical input is also 82 bytes; only the final eight
+bytes differ from the explicit 500 ms profile:
+
+```text
+canonical_bytes = 6f74656c2d6172726f772d66696c656c6f672d6672616d696e672d70726f66696c652d763100000103e800000000010100000000000000000000100000000000000010000001000001f40000000000000000
+framing_profile_digest = 6dd95711093f4fcffe680091011b1227aabfe8029010413aee7336c59304e393
+```
+
 Given the default identity profile (`fingerprint_profile_version = 1`,
 `fingerprint_bytes = 1000`, `ignored_header_bytes = 0`) and the
 explicit newline-framing profile with idle flush enabled (`encoding = utf-8 (0x01)`,
@@ -1759,6 +1780,7 @@ Castagnoli CRC-32C, first checking
 | Unix `UnixBytes` digest for 5,000 bytes of `0x78` (digest covers all bytes; stored path is the final 4,096-byte suffix) | `4edffb8c0486f5658b188d349af1b47270dc02bc0459b60dbfd3c314d9ecffa2` |
 | Empty committed-frontier guard at offset zero | `be47d023a06e82fd6da2daa0631547d6eca297b7ac532cba6471ab90829ec5b9` |
 | Committed-frontier guard for raw bytes `abc\n` at offset 4 | `23321df310e76dad74d895ad8e8e99d64f331fa350d4117f1f818a755d0a306a` |
+| Zero-idle-flush newline framing-profile digest | `6dd95711093f4fcffe680091011b1227aabfe8029010413aee7336c59304e393` |
 | Explicit 500 ms newline framing-profile digest | `b89a44439258d045238a81d1d608cb41abede895ab1e047eef2b83898d3e0b25` |
 | End-pattern framing-profile digest | `1c3159dd242ae99f29b6aace2f40c9d16192db416810456c5975ba8b9a020b54` |
 
