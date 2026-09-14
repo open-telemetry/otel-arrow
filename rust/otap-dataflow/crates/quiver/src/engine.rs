@@ -624,16 +624,21 @@ impl QuiverEngine {
 
         // Create subscriber registry with segment store as provider
         let registry_config = RegistryConfig::new(&config.data_dir);
-        let registry =
-            SubscriberRegistry::open(registry_config, segment_store.clone()).map_err(|e| {
+        let registry = match SubscriberRegistry::open(registry_config, segment_store.clone()) {
+            Ok(registry) => registry,
+            Err(e) => {
                 otel_error!(
                     "quiver.engine.init",
                     error = %e,
                     error_type = "io",
                     reason = "registry_open_failed",
                 );
-                SegmentError::io(config.data_dir.clone(), std::io::Error::other(e))
-            })?;
+                rollback_startup_budget(&budget, &wal_writer, &segment_store);
+                return Err(
+                    SegmentError::io(config.data_dir.clone(), std::io::Error::other(e)).into(),
+                );
+            }
+        };
 
         // If any segments were deleted during scan, force-complete them in the
         // registry so that subscribers restored from progress.json don't try to
@@ -711,15 +716,25 @@ impl QuiverEngine {
 
         // Apply startup max-age retention only after persisted subscriber
         // progress is loaded, so logical loss excludes already-resolved bundles.
-        let _ = engine.cleanup_expired_segments().map_err(|e| {
-            SegmentError::io(engine.config.data_dir.clone(), std::io::Error::other(e))
-        })?;
+        if let Err(e) = engine.cleanup_expired_segments() {
+            engine.rollback_startup_budget().await;
+            return Err(
+                SegmentError::io(engine.config.data_dir.clone(), std::io::Error::other(e)).into(),
+            );
+        }
 
         // Replay WAL entries that weren't finalized to segments before shutdown/crash
         // This uses the same ingest path as live ingestion (minus WAL writes)
-        let replayed = engine
+        let replayed = match engine
             .replay_wal(wal_item_counter.as_ref(), wal_byte_counter.as_ref())
-            .await?;
+            .await
+        {
+            Ok(replayed) => replayed,
+            Err(e) => {
+                engine.rollback_startup_budget().await;
+                return Err(e);
+            }
+        };
         if replayed > 0 {
             otel_info!("quiver.wal.replay", replayed,);
         }
@@ -2302,6 +2317,12 @@ impl QuiverEngine {
             .lock()
             .open_segment
             .test_backdate_opened_at(offset);
+    }
+
+    /// Removes disk bytes charged during a startup that will return an error.
+    async fn rollback_startup_budget(&self) {
+        let wal_writer = self.wal_writer.lock().await;
+        rollback_startup_budget(&self.budget, &wal_writer, &self.segment_store);
     }
 }
 
@@ -6470,6 +6491,57 @@ mod tests {
         );
     }
 
+    /// Scenario: engine startup discovers a corrupt subscriber progress file
+    /// after WAL and segment files have been charged to a shared disk budget.
+    /// Guarantees: failing closed on the unverifiable progress floor removes
+    /// only the startup charges, so retrying with the same budget does not
+    /// inherit abandoned WAL or segment usage.
+    #[tokio::test]
+    async fn corrupt_subscriber_progress_rolls_back_startup_budget() {
+        let dir = tempdir().expect("tempdir");
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes: NonZeroU64::new(100).expect("non-zero"),
+                ..Default::default()
+            })
+            .build()
+            .expect("config");
+
+        {
+            let engine = QuiverEngine::open(config.clone(), test_budget())
+                .await
+                .expect("seed engine");
+            engine
+                .ingest(&DummyBundle::with_rows(50))
+                .await
+                .expect("seed segment");
+            engine.flush().await.expect("flush seed segment");
+        }
+
+        let sub_id = SubscriberId::new("corrupt-progress").expect("subscriber id");
+        fs::write(
+            crate::subscriber::progress_file_path(dir.path(), &sub_id),
+            b"corrupt",
+        )
+        .expect("write corrupt progress");
+
+        let budget = test_budget();
+        let baseline_usage = 1234;
+        budget.add(baseline_usage);
+        let result = QuiverEngine::open(config, budget.clone()).await;
+
+        assert!(
+            result.is_err(),
+            "open must fail closed when subscriber progress is corrupt"
+        );
+        assert_eq!(
+            budget.used(),
+            baseline_usage,
+            "failed startup must preserve only unrelated shared-budget usage"
+        );
+    }
+
     /// Scenario: WAL durability is enabled and finalization is failing, so the
     /// open segment fills up and ingestion is rejected with
     /// `OpenSegmentAtCapacity`.
@@ -6583,16 +6655,30 @@ mod tests {
                 .data_dir(dir.path())
                 .build()
                 .expect("config");
-            // Establish the directory (and its sidecar) via a normal open
-            // first, so the failure below is isolated to listing it.
+            // Establish the directory via a normal open, then write a valid
+            // sidecar so execute-only permissions still allow the known file
+            // to be read while preventing the directory from being listed.
             drop(
                 QuiverEngine::open(config.clone(), test_budget())
                     .await
                     .expect("initial engine open"),
             );
+            SegmentStore::new(&segment_dir)
+                .persist_next_seq(1)
+                .await
+                .expect("persist sequence sidecar");
+            let sidecar_path = segment_dir.join(crate::segment_store::SEQ_SIDECAR_FILENAME);
 
-            fs::set_permissions(&segment_dir, fs::Permissions::from_mode(0o000))
-                .expect("remove segment directory permissions");
+            fs::set_permissions(&segment_dir, fs::Permissions::from_mode(0o111))
+                .expect("make segment directory execute-only");
+            assert!(
+                fs::read(&sidecar_path).is_ok(),
+                "known sidecar path must remain readable"
+            );
+            assert!(
+                fs::read_dir(&segment_dir).is_err(),
+                "execute-only directory must reject listing"
+            );
 
             let budget = test_budget();
             let baseline_usage = 1234;
