@@ -13,6 +13,7 @@
 //! encountered issues (Nack) downstream, optionally preserving the payload for retry or logging.
 //! This functionality is exposed through various traits implemented by effect handlers.
 
+use std::fmt;
 use std::net::SocketAddr;
 use std::num::NonZeroU64;
 use std::sync::Arc;
@@ -37,10 +38,19 @@ use otel_arrow_dfe_engine::{
 use otel_arrow_dfe_pdata::OtapPayload;
 
 /// A verified authorization claim stored under a configured context entry name.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct AuthorizedIdentityEntry {
     name: ContextEntryName,
     value: ClaimValue,
+}
+
+impl fmt::Debug for AuthorizedIdentityEntry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AuthorizedIdentityEntry")
+            .field("name", &self.name)
+            .field("value_count", &self.value.as_slice().len())
+            .finish()
+    }
 }
 
 impl AuthorizedIdentityEntry {
@@ -58,9 +68,17 @@ impl AuthorizedIdentityEntry {
 }
 
 /// Immutable authorization-derived context entries.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct AuthorizedIdentityEntries {
     entries: Arc<Vec<AuthorizedIdentityEntry>>,
+}
+
+impl fmt::Debug for AuthorizedIdentityEntries {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AuthorizedIdentityEntries")
+            .field("entries", &self.entries)
+            .finish()
+    }
 }
 
 impl AuthorizedIdentityEntries {
@@ -2745,6 +2763,34 @@ mod test {
             &["reader".to_string(), "writer".to_string()]
         );
         assert!(entries.get("missing_entry").is_none());
+    }
+
+    /// Scenario: pdata debug formatting includes captured single- and
+    /// multi-valued authorized identity claims.
+    /// Guarantees: debug output exposes destination names and value counts but
+    /// never includes authorization claim values.
+    #[test]
+    fn authorized_identity_debug_redacts_claim_values() {
+        let policy: AuthorizedIdentityPolicy = serde_json::from_value(serde_json::json!([
+            {"claim": "sub", "store_as": "customer_id"},
+            {"claim": "groups", "store_as": "access_groups"}
+        ]))
+        .expect("valid authorized identity policy");
+        let identity = AuthorizedIdentity::new()
+            .with_subject("sensitive-subject")
+            .with_claim_values("groups", ["sensitive-reader", "sensitive-writer"]);
+        let mut pdata = create_test_pdata();
+
+        pdata.capture_authorized_identity(&policy, &identity);
+
+        let debug = format!("{pdata:?}");
+        assert!(debug.contains("customer_id"));
+        assert!(debug.contains("access_groups"));
+        assert!(debug.contains("value_count: 1"));
+        assert!(debug.contains("value_count: 2"));
+        assert!(!debug.contains("sensitive-subject"));
+        assert!(!debug.contains("sensitive-reader"));
+        assert!(!debug.contains("sensitive-writer"));
     }
 
     // -----------------------------------------------------------------------
