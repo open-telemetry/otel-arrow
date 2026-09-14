@@ -199,7 +199,9 @@ impl AzureMonitorExporterMetricsTracker {
         let bucket = self.batch_metrics.with(OutcomeAttributes { outcome });
         bucket.batches.inc();
         bucket.batch_size.record(compressed_size as f64);
-        bucket.batch_uncompressed_size.record(uncompressed_size as f64);
+        bucket
+            .batch_uncompressed_size
+            .record(uncompressed_size as f64);
     }
 
     #[inline]

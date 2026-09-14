@@ -449,8 +449,8 @@ mod tests {
             Bytes::from_static(b"payload"),
             HeaderValue::from_static("Bearer gen-7"),
             42,
-        0,
-        0,
+            0,
+            0,
         );
         assert_eq!(exports.queued_rows(), 3);
 
