@@ -53,9 +53,9 @@ use otel_arrow_dfe_pdata::otap::filter::IdBitmapPool;
 
 /// Context for evaluating [`ScopedExpr`]
 pub(crate) struct EvalContext<'a> {
-    /// When evaluating a [`ScopedExpr`] and encountering a data scope identifying
-    /// the source as a metric data point, this will be used to determine which record batch
-    /// batch is that which should be used.
+    /// When evaluating a [`ScopedExpr`] and encountering a data scope identifying the source
+    /// as a metric data point, this will be used to determine which record batch is that which
+    /// should be used.
     data_point_type: Option<MetricDataPointType>,
 
     /// DataFusion Session context. Used for planning physical expression from logical exprs
