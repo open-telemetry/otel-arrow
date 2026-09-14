@@ -6265,6 +6265,79 @@ mod tests {
         delivered.ack();
     }
 
+    /// Scenario: a `SegmentOnly` flush is paused while reserving sequence
+    /// numbers, another bundle is ingested, and the reservation then fails.
+    /// Guarantees: admission during the in-flight flush appends to the same
+    /// unswapped open segment, so both accepted bundles remain available and
+    /// are delivered after the sidecar failure clears.
+    #[tokio::test]
+    async fn ingest_during_failed_sequence_reservation_is_retained() {
+        let dir = tempdir().expect("tempdir");
+        let sub_id = SubscriberId::new("s1").expect("id");
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes: NonZeroU64::new(1024 * 1024).expect("non-zero"),
+                ..Default::default()
+            })
+            .durability(DurabilityMode::SegmentOnly)
+            .build()
+            .expect("config");
+
+        let segment_dir = dir.path().join("segments");
+        let blocker = segment_dir.join(crate::segment_store::SEQ_SIDECAR_FILENAME);
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine");
+        engine
+            .register_subscriber(sub_id.clone())
+            .expect("register subscriber");
+        engine.activate_subscriber(&sub_id).expect("activate");
+        engine
+            .ingest(&DummyBundle::with_rows(1))
+            .await
+            .expect("initial ingest");
+
+        let (persist_entered, persist_resume) = engine.segment_store().pause_next_seq_persist();
+        let flush = async { engine.flush().await };
+        let concurrent_ingest = async {
+            persist_entered.notified().await;
+            let result = engine.ingest(&DummyBundle::with_rows(1)).await;
+            fs::create_dir(&blocker).expect("block sidecar path");
+            persist_resume.notify_one();
+            result
+        };
+
+        let (flush_result, ingest_result) = tokio::join!(flush, concurrent_ingest);
+        ingest_result.expect("concurrent ingest remains accepted");
+        assert!(
+            flush_result.is_err(),
+            "flush must fail after the sidecar path is blocked"
+        );
+        assert_eq!(
+            engine.open_segment_bundle_count(),
+            2,
+            "both bundles must remain in the unswapped open segment"
+        );
+        assert!(
+            engine.segment_store().segment_sequences().is_empty(),
+            "no segment may be written when sequence reservation fails"
+        );
+
+        fs::remove_dir(&blocker).expect("clear sidecar path");
+        engine.flush().await.expect("retry flush");
+
+        let mut delivered = 0;
+        while let Some(handle) = engine.poll_next_bundle(&sub_id).expect("poll") {
+            handle.ack();
+            delivered += 1;
+        }
+        assert_eq!(
+            delivered, 2,
+            "both accepted bundles must be delivered after retry"
+        );
+    }
+
     /// Scenario: the same sidecar-unwritable failure occurs under
     /// `DurabilityMode::Wal`, and the engine restarts without ever completing
     /// the finalization.
