@@ -144,6 +144,33 @@ You should see `urn:microsoft:exporter:geneva` in the Exporters list.
 - `max_buffer_size` is currently reserved for a future buffering/flush implementation.
   It is accepted by config parsing but does not change runtime behavior yet.
 
+## Internal telemetry
+
+The exporter uses the shared `exporter.attempted` contract for each encoded
+Geneva batch submitted to the uploader:
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `exporter.attempted.messages` | `{message}` | `signal`, `outcome` | Number of Geneva batch upload attempts. |
+| `exporter.attempted.duration` | `s` | `signal`, `outcome` | Upload attempt time through the terminal backend result. Emitted when component duration is enabled. |
+| `exporter.attempted.payload.size` | `By` | `signal`, `outcome` | LZ4 chunk-compressed Geneva application-payload bytes submitted to the uploader. Emitted when size measurement is enabled. |
+| `exporter.attempted.items` | `{item}` | `signal`, `outcome` | Log records or spans carried by the attempted batch. Emitted when item counting is enabled. |
+
+All fields use `signal` and `outcome`. Duration, payload size, and item counts
+are emitted only when their corresponding component telemetry is enabled.
+
+Geneva LZ4 chunking is part of the backend's application payload format, so
+`payload.size` measures the encoded batch after LZ4 encoding. It excludes HTTP
+headers, framing, TLS overhead, and any other transport-layer amplification.
+
+Geneva-specific metrics retain details that are outside the shared contract:
+
+| Metric set | Attributes | Description |
+| --- | --- | --- |
+| `exporter.geneva.encoding` | `signal`, `outcome` | Encoded batch counts and encoding duration in seconds. |
+| `exporter.geneva.failures` | `signal`, `error.type` | Bounded conversion, decoding, encoding, upload, and unsupported-signal failures. |
+| `exporter.geneva.skipped` | `signal`, `reason` | Messages skipped because the payload is empty. |
+
 ## Configuration
 
 ```yaml
