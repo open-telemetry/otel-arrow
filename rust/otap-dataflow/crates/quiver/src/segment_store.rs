@@ -97,6 +97,21 @@ async fn read_seq_sidecar_bounded_async(path: &Path) -> std::io::Result<Vec<u8>>
     Ok(buf)
 }
 
+/// Syncs the parent directory so a prior rename is durable.
+#[cfg(unix)]
+async fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        tokio::fs::File::open(dir).await?.sync_all().await?;
+    }
+    Ok(())
+}
+
+/// Directory syncing is not available through this implementation off Unix.
+#[cfg(not(unix))]
+async fn sync_parent_dir(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
 /// Encodes a `next_seq` value into the sidecar's on-disk representation.
 fn encode_seq_sidecar(next_seq: u64) -> [u8; SEQ_SIDECAR_V1_LEN] {
     let mut buf = [0u8; SEQ_SIDECAR_V1_LEN];
@@ -885,6 +900,12 @@ impl SegmentStore {
             .map_err(|e| SubscriberError::segment_io(path.clone(), e))?
             .is_some_and(|persisted| persisted >= next_seq)
         {
+            // A prior call may have renamed this value into place and then
+            // failed while syncing the parent directory. Re-sync before
+            // accepting the visible value as durable.
+            sync_parent_dir(&path)
+                .await
+                .map_err(|e| SubscriberError::segment_io(path.clone(), e))?;
             return Ok(());
         }
 
@@ -906,10 +927,7 @@ impl SegmentStore {
             tokio::fs::rename(&tmp_path, &path).await?;
             // The rename is only durable once the parent directory is synced,
             // so a failure here must not be reported as a successful persist.
-            #[cfg(unix)]
-            if let Some(dir) = path.parent() {
-                tokio::fs::File::open(dir).await?.sync_all().await?;
-            }
+            sync_parent_dir(&path).await?;
             Ok::<(), std::io::Error>(())
         }
         .await;
@@ -1346,11 +1364,10 @@ mod tests {
         assert_eq!(scan_result.persisted_next_seq, Some(9));
     }
 
-    /// Scenario: a lower `next_seq` is persisted after a higher one, as can
-    /// happen when concurrent segment finalizations complete out of order.
-    /// Guarantees: the stored floor is monotonic, so a late-arriving lower
-    /// value never regresses the floor and reintroduces sequence reuse
-    /// after a restart.
+    /// Scenario: a lower `next_seq` is persisted after a higher one, including
+    /// the fast path that accepts an already sufficient sidecar value.
+    /// Guarantees: the stored floor remains monotonic and the fast path
+    /// completes its parent-directory durability sync before reporting success.
     #[tokio::test]
     async fn persist_next_seq_never_regresses() {
         let dir = tempdir().unwrap();
