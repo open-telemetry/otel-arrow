@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789320734272,
+  "lastUpdate": 1789350828164,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -3538,6 +3538,64 @@ window.BENCHMARK_DATA = {
             "value": 99936.37384198727,
             "unit": "rows/sec",
             "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - ClickHouse rows written"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Drew Relmas",
+            "username": "drewrelmas",
+            "email": "drewrelmas@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "3281b2eebe891fa9410a477b7a26631410f6cdf2",
+          "message": "feat(filter_processor): Align metrics with universal node telemetry (#4045)\n\n# Change summary\n\n- Rename `processor.filter.pdata` to `processor.filter`\n- Improve test coverage for dropped metric emission\n\n[#3053](https://github.com/open-telemetry/otel-arrow/issues/3053)\npredates universal node input and output metrics. Its proposed\nfilter-specific counters answered whether batches arrived and how many\nitems survived, while configured-path counters indicated only that a\nbatch arrived while an `include` or `exclude` rule was configured.\n\nThose requirements are now covered without duplicating throughput\ninstrumentation:\n\n| Requirement | Metric or source |\n| --- | --- |\n| Batches and items received | `node.input.messages` and\n`node.input.items` |\n| Items kept and forwarded | `node.output.items` |\n| Items filtered | `processor.filter.dropped.items` |\n| Include/exclude configuration | Node configuration |\n\nA configured-path counter would be equivalent to repeating node input\ncounts with a static configuration flag. It would not indicate that\nfiltering completed or that any rule matched, so this change does not\ncarry that counter forward from #3268.\n\n## Related issue\n\n<!--We highly recommend correlation of every PR to an issue-->\n\n- Closes #3053\n- Closes #3649\n\n## Validation\n\nUnit tests\n\n## User-facing changes\n\nMigration: Rename `processor.filter.pdata.dropped.items` to\n`processor.filter.dropped.items`.",
+          "timestamp": "2026-09-13T15:26:20Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/3281b2eebe891fa9410a477b7a26631410f6cdf2"
+        },
+        "date": 1789350826768,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "log_rows_written_rate",
+            "value": 99195.57087214952,
+            "unit": "rows/sec",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - ClickHouse rows written"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 100846.16771743243,
+            "unit": "rows/sec",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - logs produced"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 100291.00710597483,
+            "unit": "rows/sec",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - logs_produced"
+          },
+          {
+            "name": "log_rows_written_rate",
+            "value": 99931.04757717175,
+            "unit": "rows/sec",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - ClickHouse rows written"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 100880.7087636484,
+            "unit": "rows/sec",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - logs_produced"
+          },
+          {
+            "name": "log_rows_written_rate",
+            "value": 100071.98690178168,
+            "unit": "rows/sec",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - ClickHouse rows written"
           }
         ]
       }
