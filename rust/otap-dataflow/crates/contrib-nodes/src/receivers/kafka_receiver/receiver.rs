@@ -20,6 +20,8 @@ use linkme::distributed_slice;
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_config::transport_headers_policy::CompiledHeaderCapturePolicy;
+#[cfg(test)]
 use otel_arrow_dfe_config::transport_headers_policy::HeaderCapturePolicy;
 use otel_arrow_dfe_config::validation::validate_typed_config;
 use otel_arrow_dfe_engine::config::ReceiverConfig;
@@ -123,6 +125,7 @@ pub static KAFKA_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
             ))
         },
     validate_config: validate_typed_config::<KafkaReceiverConfig>,
+    context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
 };
 
@@ -228,20 +231,15 @@ impl KafkaReceiver {
         }
     }
 
-    /// Process a Kafka message into [`OtapPdata`].
+    /// Decodes a Kafka message into [`OtapPdata`].
     ///
-    /// Offset tracking is handled by the caller, not inside this method. This
-    /// allows the caller to track the offset even when decoding fails (poison
-    /// pill handling).
-    ///
-    /// When a [`HeaderCapturePolicy`] is provided, matching Kafka message
-    /// headers are captured into [`TransportHeaders`] and attached to the
-    /// returned [`OtapPdata`] context. This is independent of the
-    /// `resource_attrs_from_headers` config which injects headers into resource attributes.
+    /// The caller tracks offsets, including decode failures.
+    /// A capture policy attaches matching headers to the returned context.
+    /// `resource_attrs_from_headers` separately controls resource attributes.
     fn process_kafka(
         &mut self,
         kafka_message: BorrowedMessage<'_>,
-        capture_policy: Option<&HeaderCapturePolicy>,
+        capture_policy: Option<&CompiledHeaderCapturePolicy>,
     ) -> Result<OtapPdata, KafkaReceiverError> {
         let topic = kafka_message.topic();
 
