@@ -1465,7 +1465,7 @@ mod tests {
     use otel_arrow_dfe_engine::testing::create_not_send_channel;
     use otel_arrow_dfe_engine::testing::{
         exporter::{TestContext, TestRuntime},
-        test_node,
+        test_node, test_pipeline_ctx_with_interests,
     };
     use otel_arrow_dfe_otap::otlp_grpc::OTLPData;
     use otel_arrow_dfe_otap::otlp_mock::{LogsServiceMock, MetricsServiceMock, TraceServiceMock};
@@ -2223,11 +2223,9 @@ mod tests {
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTLP_EXPORTER_URN));
 
-        let telemetry_registry_handle = TelemetryRegistryHandle::new();
-        let controller_ctx = ControllerContext::new(telemetry_registry_handle.clone());
         let node_id = test_node(test_runtime.config().name.clone());
-        let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let (pipeline_ctx, _telemetry_registry_handle) =
+            test_pipeline_ctx_with_interests(Interests::NODE_INPUT_METRICS);
         let mut exporter = ExporterWrapper::local(
             OTLPExporter {
                 config: Config {

@@ -139,15 +139,12 @@ impl OtlpGrpcExporterMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otel_arrow_dfe_engine::context::ControllerContext;
+    use otel_arrow_dfe_engine::Interests;
+    use otel_arrow_dfe_engine::testing::test_pipeline_ctx_with_interests;
     use otel_arrow_dfe_otap::metrics::ErrorWithOutcome;
-    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 
     fn new_metrics() -> OtlpGrpcExporterMetrics {
-        let registry = TelemetryRegistryHandle::new();
-        let controller = ControllerContext::new(registry);
-        let pipeline_ctx =
-            controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::NODE_INPUT_METRICS);
         OtlpGrpcExporterMetrics::register(&pipeline_ctx)
     }
 

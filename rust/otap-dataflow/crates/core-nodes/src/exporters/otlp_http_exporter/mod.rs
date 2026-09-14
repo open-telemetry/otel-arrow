@@ -1344,6 +1344,7 @@ mod test {
     use otel_arrow_dfe_engine::shared::message::SharedSender;
     use otel_arrow_dfe_engine::testing::exporter::TestRuntime;
     use otel_arrow_dfe_engine::testing::node::test_node;
+    use otel_arrow_dfe_engine::testing::test_pipeline_ctx_with_interests;
     use otel_arrow_dfe_otap::metrics::ErrorWithOutcome;
     use otel_arrow_dfe_pdata::OtapArrowRecords;
     use otel_arrow_dfe_pdata::OtlpProtoBytes;
@@ -3950,10 +3951,7 @@ mod test {
     /// Guarantees: Finalization records one paired failure count and duration for the signal.
     #[test]
     fn failed_export_finalization_records_one_terminal_outcome() {
-        let registry = TelemetryRegistryHandle::new();
-        let controller = ControllerContext::new(registry);
-        let pipeline_ctx =
-            controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::NODE_INPUT_METRICS);
         let mut metrics = OtlpHttpExporterMetrics::register(&pipeline_ctx);
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
@@ -4014,10 +4012,7 @@ mod test {
     /// Guarantees: The existing permanent Nack is preserved while shared metrics record one refused attempt and the bounded partial-rejection diagnostic.
     #[test]
     fn partial_rejection_preserves_nack_and_records_refused_attempt() {
-        let registry = TelemetryRegistryHandle::new();
-        let controller = ControllerContext::new(registry);
-        let pipeline_ctx =
-            controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::NODE_INPUT_METRICS);
         let mut metrics = OtlpHttpExporterMetrics::register(&pipeline_ctx);
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
@@ -4097,10 +4092,7 @@ mod test {
     /// Guarantees: The backend success is recorded once without a failure classification.
     #[test]
     fn successful_export_is_recorded_when_ack_notification_fails() {
-        let registry = TelemetryRegistryHandle::new();
-        let controller = ControllerContext::new(registry);
-        let pipeline_ctx =
-            controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::NODE_INPUT_METRICS);
         let mut metrics = OtlpHttpExporterMetrics::register(&pipeline_ctx);
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
