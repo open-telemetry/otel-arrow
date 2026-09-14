@@ -7,4 +7,4 @@ note: "Modernize Geneva exporter metrics with shared attempt telemetry and bound
 issues: [3530, 3822]
 
 subtext: |
-  Migration: Replace `otap.exporter.geneva` queries with `exporter.attempted` for batch uploads and `exporter.geneva.{encoding,failures,skipped}` for diagnostics. Durations now use seconds.
+  Migration: Replace `otap.exporter.geneva` queries with `exporter.attempted` for batch delivery and `exporter.geneva.{encoding,failures,skipped}` for diagnostics. Durations now use seconds.

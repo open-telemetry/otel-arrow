@@ -6,9 +6,7 @@
 use geneva_uploader::client::UploadError;
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_engine::context::PipelineContext;
-#[cfg(test)]
-use otel_arrow_dfe_otap::metrics::ErrorWithOutcome;
-use otel_arrow_dfe_otap::metrics::ExporterMetrics;
+use otel_arrow_dfe_otap::metrics::{ExporterAttempt, ExporterMetrics};
 use otel_arrow_dfe_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
 use otel_arrow_dfe_telemetry::instrument::{Counter, HistogramNormal};
@@ -57,6 +55,12 @@ impl GenevaExporterErrorType {
             UploadError::HttpStatus { .. } | UploadError::Other(_) => Self::Other,
         }
     }
+
+    /// Returns whether the failure explicitly rejected the attempted payload.
+    #[must_use]
+    pub(super) const fn is_refusal(self) -> bool {
+        matches!(self, Self::Throttled | Self::Client | Self::AccountRouting)
+    }
 }
 
 /// Bounded reason that a Geneva PData message did not require an upload.
@@ -94,9 +98,6 @@ struct GenevaSkipAttributes {
 )]
 #[derive(Debug, Default, Clone)]
 struct GenevaEncodingMetrics {
-    /// Compressed Geneva batches produced by completed encoding operations.
-    #[metric(unit = "{batch}")]
-    batches: Counter<u64>,
     /// Time spent encoding and compressing signal data.
     #[metric(unit = "s")]
     duration: HistogramNormal,
@@ -109,9 +110,9 @@ struct GenevaEncodingMetrics {
 )]
 #[derive(Debug, Default, Clone)]
 struct GenevaFailureMetrics {
-    /// Number of failed processing operations.
-    #[metric(unit = "{error}")]
-    errors: Counter<u64>,
+    /// Number of failed or refused delivery attempts.
+    #[metric(unit = "{message}")]
+    messages: Counter<u64>,
 }
 
 /// Geneva messages skipped before an upload attempt.
@@ -154,15 +155,11 @@ impl GenevaExporterMetrics {
         signal: SignalType,
         outcome: Outcome,
         duration: Duration,
-        batches: usize,
     ) {
         let metrics = self
             .encoding
             .with(SignalOutcomeAttributes { signal, outcome });
         metrics.duration.record(duration.as_secs_f64());
-        if batches > 0 {
-            metrics.batches.add(batches as u64);
-        }
     }
 
     /// Records one bounded Geneva-specific failure category.
@@ -173,7 +170,7 @@ impl GenevaExporterMetrics {
     ) {
         self.failures
             .with(GenevaFailureAttributes { signal, error_type })
-            .errors
+            .messages
             .inc();
     }
 
@@ -183,6 +180,23 @@ impl GenevaExporterMetrics {
             .with(GenevaSkipAttributes { signal, reason })
             .messages
             .inc();
+    }
+
+    /// Records an attempt that terminated before producing an uploadable batch.
+    pub(super) async fn record_unsubmitted_attempt(
+        &mut self,
+        attempt: ExporterAttempt,
+        outcome: Outcome,
+    ) {
+        let completed = attempt
+            .run(async |attempt| match outcome {
+                Outcome::Success => Ok(()),
+                Outcome::Failure => Err(attempt.failed(())),
+                Outcome::Refused => Err(attempt.refused(())),
+            })
+            .await;
+        let result = self.boundary.record(completed);
+        debug_assert_eq!(result.is_ok(), outcome == Outcome::Success);
     }
 
     /// Reports every touched Geneva exporter metric bucket.
@@ -209,6 +223,7 @@ mod tests {
     use super::*;
     use otel_arrow_dfe_engine::Interests;
     use otel_arrow_dfe_engine::testing::test_pipeline_ctx_with_interests;
+    use otel_arrow_dfe_otap::metrics::ErrorWithOutcome;
 
     fn metric_value(
         snapshots: &[MetricSetSnapshot],
@@ -240,7 +255,7 @@ mod tests {
     }
 
     /// Scenario: Geneva encoding and upload attempts cover successful and failed log batches.
-    /// Guarantees: Shared attempt values and Geneva-specific bounded attributes remain partitioned by signal and outcome.
+    /// Guarantees: Shared per-batch values and Geneva-specific diagnostics remain partitioned by signal and outcome.
     #[tokio::test]
     async fn geneva_metrics_partition_attempts_and_diagnostics() {
         let interests = Interests::NODE_INPUT_METRICS
@@ -254,7 +269,6 @@ mod tests {
             SignalType::Logs,
             Outcome::Success,
             Duration::from_millis(10),
-            2,
         );
         let completed = metrics
             .boundary
@@ -314,17 +328,8 @@ mod tests {
         assert_eq!(
             metric_value(
                 &snapshots,
-                "exporter.geneva.encoding",
-                "batches",
-                &[("signal", "logs"), ("outcome", "success")],
-            ),
-            2
-        );
-        assert_eq!(
-            metric_value(
-                &snapshots,
                 "exporter.geneva.failures",
-                "errors",
+                "messages",
                 &[("signal", "logs"), ("error.type", "transport")],
             ),
             1
@@ -338,6 +343,32 @@ mod tests {
             ),
             1
         );
+    }
+
+    /// Scenario: Geneva processing terminates before producing an uploadable batch.
+    /// Guarantees: Success, failure, and refusal still emit one shared attempted message with the matching outcome.
+    #[tokio::test]
+    async fn unsubmitted_attempts_record_their_terminal_outcome() {
+        let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::NODE_INPUT_METRICS);
+        let mut metrics = GenevaExporterMetrics::register(&pipeline_ctx);
+
+        for outcome in [Outcome::Success, Outcome::Failure, Outcome::Refused] {
+            let attempt = metrics.boundary.attempt(SignalType::Logs);
+            metrics.record_unsubmitted_attempt(attempt, outcome).await;
+        }
+
+        let snapshots = metrics.terminal_snapshots();
+        for outcome in ["success", "failure", "refused"] {
+            assert_eq!(
+                metric_value(
+                    &snapshots,
+                    "exporter.attempted",
+                    "messages",
+                    &[("signal", "logs"), ("outcome", outcome)],
+                ),
+                1
+            );
+        }
     }
 
     /// Scenario: Geneva uploader failures span HTTP, transport, routing, and fallback variants.
@@ -388,6 +419,26 @@ mod tests {
 
         for (error, expected) in cases {
             assert_eq!(GenevaExporterErrorType::from_upload_error(&error), expected);
+        }
+    }
+
+    /// Scenario: Geneva uploader failures are assigned a shared exporter outcome.
+    /// Guarantees: Capacity, client, and routing rejections are refused while transport and server errors are failures.
+    #[test]
+    fn upload_error_outcomes_match_shared_attempt_semantics() {
+        for error_type in [
+            GenevaExporterErrorType::Throttled,
+            GenevaExporterErrorType::Client,
+            GenevaExporterErrorType::AccountRouting,
+        ] {
+            assert!(error_type.is_refusal());
+        }
+        for error_type in [
+            GenevaExporterErrorType::Server,
+            GenevaExporterErrorType::Transport,
+            GenevaExporterErrorType::Other,
+        ] {
+            assert!(!error_type.is_refusal());
         }
     }
 }

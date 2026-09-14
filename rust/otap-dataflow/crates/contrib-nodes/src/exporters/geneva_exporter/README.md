@@ -147,11 +147,12 @@ You should see `urn:microsoft:exporter:geneva` in the Exporters list.
 ## Internal telemetry
 
 The exporter uses the shared `exporter.attempted` contract for each encoded
-Geneva batch submitted to the uploader:
+Geneva batch submitted to the uploader. A message that terminates during
+preparation, or produces no uploadable batch, records one attempt instead.
 
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
-| `exporter.attempted.messages` | `{message}` | `signal`, `outcome` | Number of Geneva batch upload attempts. |
+| `exporter.attempted.messages` | `{message}` | `signal`, `outcome` | Number of Geneva delivery attempts, including preparation-only outcomes. |
 | `exporter.attempted.duration` | `s` | `signal`, `outcome` | Upload attempt time through the terminal backend result. Emitted when component duration is enabled. |
 | `exporter.attempted.payload.size` | `By` | `signal`, `outcome` | LZ4 chunk-compressed Geneva application-payload bytes submitted to the uploader. Emitted when size measurement is enabled. |
 | `exporter.attempted.items` | `{item}` | `signal`, `outcome` | Log records or spans carried by the attempted batch. Emitted when item counting is enabled. |
@@ -165,11 +166,11 @@ headers, framing, TLS overhead, and any other transport-layer amplification.
 
 Geneva-specific metrics retain details that are outside the shared contract:
 
-| Metric set | Attributes | Description |
+| Metric | Attributes | Description |
 | --- | --- | --- |
-| `exporter.geneva.encoding` | `signal`, `outcome` | Encoded batch counts and encoding duration in seconds. |
-| `exporter.geneva.failures` | `signal`, `error.type` | Bounded conversion, decoding, encoding, upload, and unsupported-signal failures. |
-| `exporter.geneva.skipped` | `signal`, `reason` | Messages skipped because the payload is empty. |
+| `exporter.geneva.encoding.duration` | `signal`, `outcome` | Geneva encoding duration in seconds. |
+| `exporter.geneva.failures.messages` | `signal`, `error.type` | Bounded conversion, decoding, encoding, upload, and unsupported-signal failures. |
+| `exporter.geneva.skipped.messages` | `signal`, `reason` | Messages skipped because the payload is empty. |
 
 ## Configuration
 

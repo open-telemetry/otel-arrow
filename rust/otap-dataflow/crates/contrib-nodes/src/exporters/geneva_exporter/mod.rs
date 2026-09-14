@@ -1089,6 +1089,45 @@ fn create_geneva_client(
     }
 }
 
+#[derive(Debug)]
+enum GenevaExportError {
+    Preparation { message: String, outcome: Outcome },
+    AttemptAlreadyRecorded { message: String },
+}
+
+impl GenevaExportError {
+    fn failed(message: String) -> Self {
+        Self::Preparation {
+            message,
+            outcome: Outcome::Failure,
+        }
+    }
+
+    fn refused(message: String) -> Self {
+        Self::Preparation {
+            message,
+            outcome: Outcome::Refused,
+        }
+    }
+
+    fn attempt_already_recorded(message: String) -> Self {
+        Self::AttemptAlreadyRecorded { message }
+    }
+
+    const fn unsubmitted_outcome(&self) -> Option<Outcome> {
+        match self {
+            Self::Preparation { outcome, .. } => Some(*outcome),
+            Self::AttemptAlreadyRecorded { .. } => None,
+        }
+    }
+
+    fn message(&self) -> &str {
+        match self {
+            Self::Preparation { message, .. } | Self::AttemptAlreadyRecorded { message } => message,
+        }
+    }
+}
+
 async fn upload_batch_attempt(
     client: &GenevaClient,
     batch: &EncodedBatch,
@@ -1104,10 +1143,18 @@ async fn upload_batch_attempt(
                 .upload_batch(batch)
                 .await
                 .map_err(|error| {
-                    attempt.failed((
-                        GenevaExporterErrorType::from_upload_error(&error),
-                        format!("Failed to upload {signal:?} batch: {error}"),
-                    ))
+                    let error_type = GenevaExporterErrorType::from_upload_error(&error);
+                    if error_type.is_refusal() {
+                        attempt.refused((
+                            error_type,
+                            format!("Failed to upload {signal:?} batch: {error}"),
+                        ))
+                    } else {
+                        attempt.failed((
+                            error_type,
+                            format!("Failed to upload {signal:?} batch: {error}"),
+                        ))
+                    }
                 })
                 .map(|()| batch.row_count as u64)
         })
@@ -1163,27 +1210,25 @@ impl GenevaExporter {
         &mut self,
         signal: SignalType,
         encode: impl FnOnce(&GenevaClient) -> Result<Vec<EncodedBatch>, E>,
-    ) -> Result<Vec<EncodedBatch>, String>
+    ) -> Result<Vec<EncodedBatch>, GenevaExportError>
     where
         E: std::fmt::Display,
     {
         let started_at = Instant::now();
         match encode(&self.geneva_client) {
             Ok(batches) => {
-                self.metrics.record_encoding(
-                    signal,
-                    Outcome::Success,
-                    started_at.elapsed(),
-                    batches.len(),
-                );
+                self.metrics
+                    .record_encoding(signal, Outcome::Success, started_at.elapsed());
                 Ok(batches)
             }
             Err(error) => {
                 self.metrics
-                    .record_encoding(signal, Outcome::Failure, started_at.elapsed(), 0);
+                    .record_encoding(signal, Outcome::Failure, started_at.elapsed());
                 self.metrics
                     .record_failure(signal, GenevaExporterErrorType::Encoding);
-                Err(format!("Failed to encode {signal:?}: {error}"))
+                Err(GenevaExportError::failed(format!(
+                    "Failed to encode {signal:?}: {error}"
+                )))
             }
         }
     }
@@ -1209,7 +1254,7 @@ impl GenevaExporter {
         &mut self,
         batches: &[EncodedBatch],
         signal_type: SignalType,
-    ) -> Result<usize, String> {
+    ) -> Result<usize, GenevaExportError> {
         let batches_encoded = batches.len();
         let max_concurrent = self.config.max_concurrent_uploads.max(1);
         let client = &self.geneva_client;
@@ -1248,8 +1293,8 @@ impl GenevaExporter {
             }
         }
 
-        if let Some(e) = first_error {
-            Err(e)
+        if let Some(error) = first_error {
+            Err(GenevaExportError::attempt_already_recorded(error))
         } else {
             Ok(batches_encoded)
         }
@@ -1270,7 +1315,7 @@ impl GenevaExporter {
         &mut self,
         payload: OtapPayload,
         _effect_handler: &EffectHandler<OtapPdata>,
-    ) -> Result<usize, String> {
+    ) -> Result<usize, GenevaExportError> {
         let signal_type = payload.signal_type();
         if payload.is_empty() {
             self.metrics
@@ -1298,7 +1343,10 @@ impl GenevaExporter {
                                 SignalType::Logs,
                                 GenevaExporterErrorType::TransportDecoding,
                             );
-                            format!("Failed to decode OTAP transport-optimized log IDs: {}", e)
+                            GenevaExportError::failed(format!(
+                                "Failed to decode OTAP transport-optimized log IDs: {}",
+                                e
+                            ))
                         })?;
 
                         let logs_view = OtapLogsView::try_from(&otap_records).map_err(|e| {
@@ -1306,7 +1354,10 @@ impl GenevaExporter {
                                 SignalType::Logs,
                                 GenevaExporterErrorType::Conversion,
                             );
-                            format!("Failed to build OTAP logs view: {}", e)
+                            GenevaExportError::failed(format!(
+                                "Failed to build OTAP logs view: {}",
+                                e
+                            ))
                         })?;
 
                         let batches = self.encode_batches(SignalType::Logs, |client| {
@@ -1342,7 +1393,10 @@ impl GenevaExporter {
                                         SignalType::Traces,
                                         GenevaExporterErrorType::Conversion,
                                     );
-                                    format!("Failed to convert OTAP to OTLP: {:?}", e)
+                                    GenevaExportError::failed(format!(
+                                        "Failed to convert OTAP to OTLP: {:?}",
+                                        e
+                                    ))
                                 })?;
 
                         let OtlpProtoBytes::ExportTracesRequest(bytes) = otlp_bytes else {
@@ -1350,7 +1404,9 @@ impl GenevaExporter {
                                 SignalType::Traces,
                                 GenevaExporterErrorType::Conversion,
                             );
-                            return Err("Expected traces but got different signal type".to_string());
+                            return Err(GenevaExportError::failed(
+                                "Expected traces but got different signal type".to_string(),
+                            ));
                         };
 
                         // Decode OTLP bytes to ResourceSpans
@@ -1360,7 +1416,10 @@ impl GenevaExporter {
                                     SignalType::Traces,
                                     GenevaExporterErrorType::ProtobufDecoding,
                                 );
-                                format!("Failed to decode traces request: {}", e)
+                                GenevaExportError::failed(format!(
+                                    "Failed to decode traces request: {}",
+                                    e
+                                ))
                             })?;
 
                         // Encode and compress using Geneva client
@@ -1386,7 +1445,9 @@ impl GenevaExporter {
                             SignalType::Metrics,
                             GenevaExporterErrorType::UnsupportedSignal,
                         );
-                        Err("Geneva exporter does not support metrics signal".to_string())
+                        Err(GenevaExportError::refused(
+                            "Geneva exporter does not support metrics signal".to_string(),
+                        ))
                     }
                 }
             }
@@ -1405,7 +1466,10 @@ impl GenevaExporter {
                                 SignalType::Logs,
                                 GenevaExporterErrorType::ProtobufDecoding,
                             );
-                            format!("Failed to decode logs request: {}", e)
+                            GenevaExportError::failed(format!(
+                                "Failed to decode logs request: {}",
+                                e
+                            ))
                         })?;
 
                         // Encode and compress using Geneva client
@@ -1438,7 +1502,10 @@ impl GenevaExporter {
                                     SignalType::Traces,
                                     GenevaExporterErrorType::ProtobufDecoding,
                                 );
-                                format!("Failed to decode traces request: {}", e)
+                                GenevaExportError::failed(format!(
+                                    "Failed to decode traces request: {}",
+                                    e
+                                ))
                             })?;
 
                         // Encode and compress using Geneva client
@@ -1463,7 +1530,9 @@ impl GenevaExporter {
                             SignalType::Metrics,
                             GenevaExporterErrorType::UnsupportedSignal,
                         );
-                        Err("Geneva exporter does not support metrics signal".to_string())
+                        Err(GenevaExportError::refused(
+                            "Geneva exporter does not support metrics signal".to_string(),
+                        ))
                     }
                 }
             }
@@ -1559,6 +1628,7 @@ impl Exporter<OtapPdata> for GenevaExporter {
                 Message::PData(pdata) => {
                     let (context, payload) = pdata.into_parts();
                     let signal_type = payload.signal_type();
+                    let unsubmitted_attempt = self.metrics.boundary.attempt(signal_type);
 
                     let saved_payload = if context.may_return_payload() {
                         payload.clone()
@@ -1567,20 +1637,33 @@ impl Exporter<OtapPdata> for GenevaExporter {
                     };
 
                     match self.export_payload(payload, &effect_handler).await {
-                        Ok(_batches_uploaded) => {
+                        Ok(batches_uploaded) => {
+                            if batches_uploaded == 0 {
+                                self.metrics
+                                    .record_unsubmitted_attempt(
+                                        unsubmitted_attempt,
+                                        Outcome::Success,
+                                    )
+                                    .await;
+                            }
                             effect_handler
                                 .notify_ack(AckMsg::new(OtapPdata::new(context, saved_payload)))
                                 .await?;
                         }
-                        Err(e) => {
+                        Err(error) => {
+                            if let Some(outcome) = error.unsubmitted_outcome() {
+                                self.metrics
+                                    .record_unsubmitted_attempt(unsubmitted_attempt, outcome)
+                                    .await;
+                            }
                             otel_info!(
                                 "geneva_exporter.error",
-                                error = e,
+                                error = error.message(),
                                 message = "Failed to export to Geneva"
                             );
                             effect_handler
                                 .notify_nack(NackMsg::new(
-                                    &e,
+                                    error.message(),
                                     OtapPdata::new(context, saved_payload),
                                 ))
                                 .await?;
