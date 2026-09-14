@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789412268813,
+  "lastUpdate": 1789418678713,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -37207,6 +37207,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 103.54,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "161134993+Dipanshusinghh@users.noreply.github.com",
+            "name": "Dipanshu singh",
+            "username": "Dipanshusinghh"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "97503d19177d0b81c1d0e630230903567734ddec",
+          "message": "refactor(metrics): Migrate topic_receiver telemetry to enum attributes (#3890)\n\n## Description\n\nMigrate `topic_receiver` telemetry to modern dimensioned metric\npopulations with enum attributes, aligning with the project's telemetry\nguidelines.\n\n### Changes:\n- **`receiver.topic.forward`**: Dimensionalized by `outcome` (`success`,\n`failure`) with unit `{message}`.\n- **`receiver.topic.lag`**: Dimensionalized by `event.type`\n(`notification`, `disconnect`) with unit `{event}`.\n- **`receiver.topic.bridge`**: Dimensionalized by orthogonal dimensions\n`control` (`ack`, `nack`) and `result` (`success`,\n`ignored_propagation_disabled`, `missing_calldata`,\n`invalid_or_untracked_id`, `runtime_failure`) with unit `{control}`.\n- **`receiver.topic`**: General un-dimensioned metrics\n(`receiver.topic.lagged.messages`,\n`receiver.topic.downstream.backpressure.events`,\n`receiver.topic.downstream.blocked.ms`).\n- **Engine Context**: Added `register_measurement_metrics_with_topic` on\n`PipelineContext` to link metric sets to topic entities with support for\ncustom identity attributes.\n- Added comprehensive unit tests for metric partitioning, single-handoff\nterminal snapshots, and topic entity linking.\n- Updated `README.md` and added chloggen breaking-change entry.",
+          "timestamp": "2026-09-14T19:56:21Z",
+          "tree_id": "7e0705afda9afd891b2c1a57993ea3c5bf948f11",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/97503d19177d0b81c1d0e630230903567734ddec"
+        },
+        "date": 1789418663731,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 84.09,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.73,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.87,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.71,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.53,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 71.42,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.83,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 116.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 103.66,
             "unit": "MB"
           }
         ]
