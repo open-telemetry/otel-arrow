@@ -370,6 +370,9 @@ pub struct SegmentStore {
     pending_deletes: Mutex<HashMap<SegmentSeq, PendingDelete>>,
     /// Serializes sequence sidecar read-modify-write cycles.
     seq_sidecar_lock: TokioMutex<()>,
+    /// One-shot pause used to coordinate sequence persistence fault tests.
+    #[cfg(test)]
+    seq_sidecar_persist_pause: Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
 }
 
 impl std::fmt::Debug for SegmentStore {
@@ -401,6 +404,8 @@ impl SegmentStore {
             budget: None,
             pending_deletes: Mutex::new(HashMap::new()),
             seq_sidecar_lock: TokioMutex::new(()),
+            #[cfg(test)]
+            seq_sidecar_persist_pause: Mutex::new(None),
         }
     }
 
@@ -420,7 +425,20 @@ impl SegmentStore {
             budget: Some(budget),
             pending_deletes: Mutex::new(HashMap::new()),
             seq_sidecar_lock: TokioMutex::new(()),
+            #[cfg(test)]
+            seq_sidecar_persist_pause: Mutex::new(None),
         }
+    }
+
+    /// Pauses the next sequence-sidecar persist before it reads the sidecar.
+    #[cfg(test)]
+    pub(crate) fn pause_next_seq_persist(
+        &self,
+    ) -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let resume = Arc::new(tokio::sync::Notify::new());
+        *self.seq_sidecar_persist_pause.lock() = Some((Arc::clone(&entered), Arc::clone(&resume)));
+        (entered, resume)
     }
 
     /// Inserts or replaces a pending-delete entry, preserving the attempt
@@ -892,6 +910,14 @@ impl SegmentStore {
         // Serializes the read-modify-write below and keeps concurrent writers
         // from sharing the temporary file.
         let _guard = self.seq_sidecar_lock.lock().await;
+
+        #[cfg(test)]
+        let persist_pause = { self.seq_sidecar_persist_pause.lock().take() };
+        #[cfg(test)]
+        if let Some((entered, resume)) = persist_pause {
+            entered.notify_one();
+            resume.notified().await;
+        }
 
         // An unreadable sidecar must not be treated as absent: doing so would
         // bypass the monotonic check and could overwrite a higher floor.
