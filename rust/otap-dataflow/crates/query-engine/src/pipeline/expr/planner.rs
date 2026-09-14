@@ -116,7 +116,8 @@ impl ExprPlanner {
         match expr {
             ScalarExpression::Source(source_scalar_expr) => {
                 let value_accessor = source_scalar_expr.get_value_accessor();
-                let column_accessor = ColumnAccessor::try_from(value_accessor)?;
+                let column_accessor =
+                    ColumnAccessor::try_from_value_accessor(value_accessor, &self.record_type)?;
 
                 match column_accessor {
                     ColumnAccessor::ColumnName(column_name) => {
@@ -1191,7 +1192,9 @@ impl ExprPlanner {
         // try to resolve the expression as a column accessor
         if let ScalarExpression::Source(source_expr) = value_expr {
             let value_accessor = source_expr.get_value_accessor();
-            if let Ok(column_accessor) = ColumnAccessor::try_from(value_accessor) {
+            if let Ok(column_accessor) =
+                ColumnAccessor::try_from_value_accessor(value_accessor, &self.record_type)
+            {
                 return match column_accessor {
                     ColumnAccessor::ColumnName(col_name) => {
                         let is_null_expr = if col_name == crate::consts::BODY_FIELD_NAME {
@@ -1591,6 +1594,14 @@ impl ExprPlanner {
                 Operator::Eq,
                 ScalarExpression::Static(StaticScalarExpression::String(typename_expr)),
             ) => {
+                if let RecordType::Child(child_kind) = &self.record_type {
+                    return Err(Error::NotYetSupportedError {
+                        message: format!(
+                            "Checking record type for {child_kind:?} not yet supported"
+                        ),
+                    });
+                }
+
                 let type_name = typename_expr.get_value();
                 let signal_type = match type_name {
                     "Log" => SignalType::Logs,

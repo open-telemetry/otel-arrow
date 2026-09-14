@@ -16,7 +16,9 @@ use otel_arrow_dfe_pdata::{
                 SummaryDataPoint, exponential_histogram_data_point::Buckets,
             },
         },
-    }, schema::consts, testing::round_trip::{otap_to_otlp, otlp_to_otap, to_metrics_data},
+    },
+    schema::consts,
+    testing::round_trip::{otap_to_otlp, otlp_to_otap, to_metrics_data},
 };
 use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
 
@@ -471,6 +473,23 @@ async fn test_filter_data_points_by_scalar_false() {
         where contains(\"foo\", \"b\") // evaluates to scalar false
     }";
 
+    run_all_datapoints_dropped_test(query).await;
+}
+
+/// Scenario: the "drop" operator call is used in a nested pipeline of metric datapoints
+/// Guarantees: this is supported and the result is that all the metric datapoints are dropped
+#[tokio::test]
+async fn test_drop_all_metric_data_points() {
+    let query = "metrics | apply data_points { drop }";
+
+    run_all_datapoints_dropped_test(query).await;
+}
+
+/// helper which runs a test that evaluates the given query on a batch that contains datapoints
+/// for all types of metrics and child record batches for each type of datapoint (like exemplars,
+/// attributes, and exemplar attributes) and ensures that after execution all the datapoints have
+/// been dropped.
+async fn run_all_datapoints_dropped_test(query: &'static str) {
     let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
         .unwrap()
         .pipeline;
@@ -506,6 +525,7 @@ async fn test_filter_data_points_by_scalar_false() {
                 aggregation_temporality: 0,
                 data_points: vec![
                     HistogramDataPoint::build()
+                        .flags(4u32)
                         .attributes(vec![KeyValue::new("a", AnyValue::new_string("d"))])
                         .exemplars(vec![
                             Exemplar::build()
@@ -526,6 +546,7 @@ async fn test_filter_data_points_by_scalar_false() {
                 aggregation_temporality: 0,
                 data_points: vec![
                     ExponentialHistogramDataPoint::build()
+                        .flags(6u32)
                         .attributes(vec![KeyValue::new("a", AnyValue::new_string("d"))])
                         .positive(Buckets::default())
                         .negative(Buckets::default())
@@ -547,6 +568,7 @@ async fn test_filter_data_points_by_scalar_false() {
             .data_summary(Summary {
                 data_points: vec![
                     SummaryDataPoint::build()
+                        .flags(4u32)
                         .attributes(vec![KeyValue::new("a", AnyValue::new_string("b"))])
                         .finish(),
                 ],
@@ -629,6 +651,7 @@ async fn test_filter_data_points_by_scalar_false() {
     );
 }
 
+/// Scenario: filter metric datapoints by a
 #[tokio::test]
 async fn test_filter_data_points_null_predicate_result() {
     let query = "metrics | apply data_points {
@@ -659,8 +682,6 @@ async fn test_filter_data_points_null_predicate_result() {
                                 .finish(),
                         ])
                         .finish(),
-                    NumberDataPoint::build().finish(),
-                    NumberDataPoint::build().finish(),
                 ],
             })
             .finish(),
@@ -805,106 +826,101 @@ async fn test_filter_data_points_null_predicate_result() {
     );
 }
 
-// shouldn't allow this?
+/// Scenario: try to execute some queries that have valid syntax, but define operations that are
+/// not yet supported by this query engine
+/// Guarantees: that the operation returns the expected error instead of inadvertently evaluating
+/// and producing invalid results
 #[tokio::test]
-#[ignore]
-async fn test_apply_to_metric_data_points() {
-    // this is currently a planning error!
-    let query = "metrics | apply data_points {
-        where flags > 5 |
-        apply attributes {
-            set value = 5
-        }
-    }";
+async fn test_not_yet_unsupported_queries_return_error() {
+    struct TestCase {
+        query: &'static str,
+        expected_error_content: &'static str,
+    }
 
-    let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
-        .unwrap()
-        .pipeline;
-    let mut pipeline = Pipeline::new(pipeline_expr);
+    // Admittedly some of the expected errors below are not very user friendly, but in the near
+    // future functionality will be added so these statements no longer produce errors.
 
-    let metrics = vec![
-        Metric::build()
-            .data_gauge(Gauge {
-                data_points: vec![
-                    // flags are not valid flag values but, just need to set some primitive field
-                    // for testing engine behaviour
-                    NumberDataPoint::build()
-                        .flags(5u32)
-                        .attributes(vec![KeyValue::new("x", AnyValue::new_int(3))])
-                        .finish(),
-                    NumberDataPoint::build()
-                        .flags(6u32)
-                        .attributes(vec![KeyValue::new("x", AnyValue::new_int(3))])
-                        .finish(),
-                    NumberDataPoint::build()
-                        .flags(6u32)
-                        .attributes(vec![KeyValue::new("x", AnyValue::new_int(3))])
-                        .finish(),
-                ],
-            })
-            .finish(),
+    let test_cases = [
+        // filtering by attributes is not yet supported
+        TestCase {
+            query: "metrics | apply data_points {
+                where attributes[\"x\"] > 0
+            }",
+            expected_error_content: "DataPoint attribute access not yet supported",
+        },
+        TestCase {
+            query: "metrics | apply data_points {
+                where resource.attributes[\"x\"] > 0
+            }",
+            expected_error_content: "parent struct resource access not yet supported for DataPoint",
+        },
+        TestCase {
+            query: "metrics | apply data_points {
+                where is Log
+            }",
+            expected_error_content: "Checking record type for DataPoint not yet supported",
+        },
+        TestCase {
+            query: "metrics | apply data_points {
+                if (flags > 0) {
+                    drop
+                }
+            }",
+            expected_error_content: "Data expression not supported on Child(DataPoint) stream: Branch(BranchDataExpression",
+        },
+        // the following handful of test cases ensure that we don't try to evaluate unsupported
+        // assignment expressions
+        TestCase {
+            query: "metrics | apply data_points {
+                set flags = 0
+            }",
+            expected_error_content: "Data expression not supported on Child(DataPoint) stream: Transform(Set",
+        },
+        TestCase {
+            query: "metrics | apply data_points {
+                set attributes[\"x\"] = 5
+            }",
+            expected_error_content: "DataPoint attribute access not yet supported",
+        },
+        // nested apply pipeline to modify datapoint attributes is not yet supported
+        TestCase {
+            query: "metrics | apply data_points {
+                    where flags > 5 |
+                    apply attributes {
+                        set value = 5
+                    }
+                }",
+            expected_error_content: "Data expression not supported on Child(DataPoint) stream: Transform(Set",
+        },
     ];
-    let input_batch = otlp_to_otap(&OtlpProtoMessage::Metrics(to_metrics_data(metrics)));
 
-    let result = pipeline.execute(input_batch).await.unwrap();
+    for test_case in test_cases {
+        let metrics = vec![
+            Metric::build()
+                .data_gauge(Gauge {
+                    data_points: vec![
+                        NumberDataPoint::build()
+                            .attributes(vec![KeyValue::new("x", AnyValue::new_int(3))])
+                            .finish(),
+                    ],
+                })
+                .finish(),
+        ];
 
-    let OtlpProtoMessage::Metrics(result_metrics) = otap_to_otlp(&result) else {
-        panic!("invalid result type")
-    };
+        let pipeline_expr =
+            OplParser::parse_with_options(test_case.query, default_parser_options())
+                .unwrap()
+                .pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let input_batch = otlp_to_otap(&OtlpProtoMessage::Metrics(to_metrics_data(metrics)));
+        let err = pipeline.execute(input_batch).await.unwrap_err();
 
-    println!("{:#?}", result_metrics)
-
-    // TODO assert the result
-}
-
-// TODO function call
-// TODO type check (e.g. is NumberDataPoint)
-
-// TODO - shouldn't allow this ...
-#[tokio::test]
-#[ignore]
-async fn test_apply_to_metric_set() {
-    // this is currently a planning error!
-    let query = "metrics | apply data_points {
-        set resource.attributes[\"x\"] = flags as String
-    }";
-
-    let pipeline_expr = OplParser::parse_with_options(query, default_parser_options())
-        .unwrap()
-        .pipeline;
-    let mut pipeline = Pipeline::new(pipeline_expr);
-
-    let metrics = vec![
-        Metric::build()
-            .data_gauge(Gauge {
-                data_points: vec![
-                    // flags are not valid flag values but, just need to set some primitive field
-                    // for testing engine behaviour
-                    NumberDataPoint::build()
-                        .flags(5u32)
-                        .attributes(vec![KeyValue::new("x", AnyValue::new_int(3))])
-                        .finish(),
-                    NumberDataPoint::build()
-                        .flags(6u32)
-                        .attributes(vec![KeyValue::new("x", AnyValue::new_int(3))])
-                        .finish(),
-                    NumberDataPoint::build()
-                        .flags(6u32)
-                        .attributes(vec![KeyValue::new("x", AnyValue::new_int(3))])
-                        .finish(),
-                ],
-            })
-            .finish(),
-    ];
-    let input_batch = otlp_to_otap(&OtlpProtoMessage::Metrics(to_metrics_data(metrics)));
-
-    let result = pipeline.execute(input_batch).await.unwrap();
-
-    let OtlpProtoMessage::Metrics(result_metrics) = otap_to_otlp(&result) else {
-        panic!("invalid result type")
-    };
-
-    println!("{:#?}", result_metrics)
-
-    // TODO assert the result
+        let err_msg = err.to_string();
+        assert!(
+            err_msg.contains(test_case.expected_error_content),
+            "unexpected error for query {}: {}",
+            test_case.query,
+            err_msg
+        )
+    }
 }

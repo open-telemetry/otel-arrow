@@ -253,7 +253,7 @@ impl PipelinePlanner {
                     self.plan_rename(rename_map_keys_expr)
                 }
                 TransformExpression::ReduceMap(reduce_map_exr) => {
-                    Self::plan_reduce_map(reduce_map_exr)
+                    self.plan_reduce_map(reduce_map_exr)
                 }
                 TransformExpression::Set(set_expr) => {
                     self.plan_sets(&[set_expr], functions, session_ctx, otap_batch)
@@ -374,8 +374,14 @@ impl PipelinePlanner {
     ) -> Result<Vec<Box<dyn PipelineStage>>> {
         match (move_expr.get_source(), move_expr.get_destination()) {
             (MutableValueExpression::Source(source), MutableValueExpression::Source(dest)) => {
-                let source = ColumnAccessor::try_from(source.get_value_accessor())?;
-                let dest = ColumnAccessor::try_from(dest.get_value_accessor())?;
+                let source = ColumnAccessor::try_from_value_accessor(
+                    source.get_value_accessor(),
+                    &self.record_type,
+                )?;
+                let dest = ColumnAccessor::try_from_value_accessor(
+                    dest.get_value_accessor(),
+                    &self.record_type,
+                )?;
 
                 match (source, dest) {
                     // currently the only type of move transform supported is renaming attributes
@@ -431,8 +437,14 @@ impl PipelinePlanner {
         let mut resource_attrs_renames = vec![];
 
         for key_rename in rename_map_keys_expr.get_keys() {
-            let source = ColumnAccessor::try_from(key_rename.get_source())?;
-            let dest = ColumnAccessor::try_from(key_rename.get_destination())?;
+            let source = ColumnAccessor::try_from_value_accessor(
+                key_rename.get_source(),
+                &self.record_type,
+            )?;
+            let dest = ColumnAccessor::try_from_value_accessor(
+                key_rename.get_destination(),
+                &self.record_type,
+            )?;
 
             match (source, dest) {
                 // currently the only type of move transform supported is renaming attributes
@@ -510,6 +522,7 @@ impl PipelinePlanner {
     }
 
     fn plan_reduce_map(
+        &self,
         reduce_map_expr: &ReduceMapTransformExpression,
     ) -> Result<Vec<Box<dyn PipelineStage>>> {
         let mut root_attrs_deletes = vec![];
@@ -520,36 +533,45 @@ impl PipelinePlanner {
             ReduceMapTransformExpression::Remove(remove_expr) => {
                 for map_selector in remove_expr.get_selectors() {
                     match map_selector {
-                        MapSelector::ValueAccessor(val) => match ColumnAccessor::try_from(val)? {
-                            // currently the only kind of remove operation we support is on attributes
-                            ColumnAccessor::Attributes(attrs_ident, attrs_key) => match attrs_ident
-                            {
-                                AttributesIdentifier::Root => root_attrs_deletes.push(attrs_key),
-                                AttributesIdentifier::NonRoot(payload_type) => match payload_type {
-                                    ArrowPayloadType::ResourceAttrs => {
-                                        resource_attrs_deletes.push(attrs_key)
+                        MapSelector::ValueAccessor(val) => {
+                            match ColumnAccessor::try_from_value_accessor(val, &self.record_type)? {
+                                // currently the only kind of remove operation we support is on attributes
+                                ColumnAccessor::Attributes(attrs_ident, attrs_key) => {
+                                    match attrs_ident {
+                                        AttributesIdentifier::Root => {
+                                            root_attrs_deletes.push(attrs_key)
+                                        }
+                                        AttributesIdentifier::NonRoot(payload_type) => {
+                                            match payload_type {
+                                                ArrowPayloadType::ResourceAttrs => {
+                                                    resource_attrs_deletes.push(attrs_key)
+                                                }
+                                                ArrowPayloadType::ScopeAttrs => {
+                                                    scope_attrs_deletes.push(attrs_key)
+                                                }
+                                                payload_type => {
+                                                    return Err(Error::NotYetSupportedError {
+                                                        message: format!(
+                                                            "removing map keys from payload type {payload_type:?} not yet supported"
+                                                        ),
+                                                    });
+                                                }
+                                            }
+                                        }
                                     }
-                                    ArrowPayloadType::ScopeAttrs => {
-                                        scope_attrs_deletes.push(attrs_key)
-                                    }
-                                    payload_type => {
-                                        return Err(Error::NotYetSupportedError {
-                                            message: format!(
-                                                "removing map keys from payload type {payload_type:?} not yet supported"
-                                            ),
-                                        });
-                                    }
-                                },
-                            },
-                            column => {
-                                return Err(Error::InvalidPipelineError {
-                                    cause: format!(
-                                        "reduce map remove specified non map column. found {column:?}"
-                                    ),
-                                    query_location: Some(remove_expr.get_query_location().clone()),
-                                });
+                                }
+                                column => {
+                                    return Err(Error::InvalidPipelineError {
+                                        cause: format!(
+                                            "reduce map remove specified non map column. found {column:?}"
+                                        ),
+                                        query_location: Some(
+                                            remove_expr.get_query_location().clone(),
+                                        ),
+                                    });
+                                }
                             }
-                        },
+                        }
                         MapSelector::KeyOrKeyPattern(_) => {
                             return Err(Error::NotYetSupportedError {
                                 message:
@@ -903,7 +925,10 @@ impl PipelinePlanner {
 
             // create new assignment argument
             let assignment = Assignment {
-                dest_column: ColumnAccessor::try_from(dest.get_value_accessor())?,
+                dest_column: ColumnAccessor::try_from_value_accessor(
+                    dest.get_value_accessor(),
+                    &self.record_type,
+                )?,
                 source: scoped_planner.plan_scalar(set_expr.get_source(), functions)?,
                 dest_query_location: Some(dest.get_query_location()),
             };
@@ -1064,6 +1089,7 @@ impl ColumnAccessor {
         struct_column_name: &'static str,
         attrs_payload_type: ArrowPayloadType,
         selectors: &[ScalarExpression],
+        record_type: &RecordType,
     ) -> Result<Self> {
         let Some(struct_selector) = selectors.get(1) else {
             return Err(Error::InvalidPipelineError {
@@ -1073,6 +1099,14 @@ impl ColumnAccessor {
                 query_location: None,
             });
         };
+
+        if let RecordType::Child(child_kind) = record_type {
+            return Err(Error::NotYetSupportedError {
+                message: format!(
+                    "parent struct {struct_column_name} access not yet supported for {child_kind:?}"
+                ),
+            });
+        }
 
         match struct_selector {
             ScalarExpression::Static(StaticScalarExpression::String(struct_field)) => {
@@ -1107,12 +1141,11 @@ impl ColumnAccessor {
             }),
         }
     }
-}
 
-impl TryFrom<&ValueAccessor> for ColumnAccessor {
-    type Error = Error;
-
-    fn try_from(accessor: &ValueAccessor) -> Result<Self> {
+    pub fn try_from_value_accessor(
+        accessor: &ValueAccessor,
+        record_type: &RecordType,
+    ) -> Result<Self> {
         let selectors = accessor.get_selectors();
 
         match &selectors[0] {
@@ -1120,17 +1153,26 @@ impl TryFrom<&ValueAccessor> for ColumnAccessor {
                 let column_name = column.get_value();
                 match column_name {
                     ATTRIBUTES_FIELD_NAME => {
+                        if let RecordType::Child(child_kind) = record_type {
+                            return Err(Error::NotYetSupportedError {
+                                message: format!(
+                                    "{child_kind:?} attribute access not yet supported"
+                                ),
+                            });
+                        }
                         Self::try_from_attrs_key(AttributesIdentifier::Root, &selectors[1..])
                     }
                     RESOURCES_FIELD_NAME => Self::try_from_struct_field(
                         consts::RESOURCE,
                         ArrowPayloadType::ResourceAttrs,
                         selectors,
+                        record_type,
                     ),
                     SCOPE_FIELD_NAME => Self::try_from_struct_field(
                         consts::SCOPE,
                         ArrowPayloadType::ScopeAttrs,
                         selectors,
+                        record_type,
                     ),
                     value => {
                         if let Some(extra_selector) = selectors.get(1) {
