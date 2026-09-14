@@ -481,10 +481,9 @@ impl UnaryService<OtapPdata> for OtapBatchService {
                 otap_batch.set_transport_headers(transport_headers);
             }
         }
-        if let (Some(policy), Some(identity)) = (
-            effect_handler.authorized_identity_policy(),
-            extensions.get::<AuthorizedIdentity>(),
-        ) {
+        if let Some(policy) = effect_handler.authorized_identity_policy()
+            && let Some(identity) = extensions.get::<AuthorizedIdentity>()
+        {
             otap_batch.capture_authorized_identity(policy, identity);
         }
 
@@ -594,6 +593,7 @@ pub struct AuthorizationLayer {
     authorizer: Arc<dyn BearerTokenAuthorizer>,
     metrics: Arc<Mutex<OtlpReceiverMetrics>>,
     timeout: std::time::Duration,
+    forward_authorized_identity: bool,
 }
 
 impl AuthorizationLayer {
@@ -603,11 +603,13 @@ impl AuthorizationLayer {
         authorizer: Arc<dyn BearerTokenAuthorizer>,
         metrics: Arc<Mutex<OtlpReceiverMetrics>>,
         timeout: std::time::Duration,
+        forward_authorized_identity: bool,
     ) -> Self {
         Self {
             authorizer,
             metrics,
             timeout,
+            forward_authorized_identity,
         }
     }
 }
@@ -621,6 +623,7 @@ impl<S> Layer<S> for AuthorizationLayer {
             authorizer: self.authorizer.clone(),
             metrics: self.metrics.clone(),
             timeout: self.timeout,
+            forward_authorized_identity: self.forward_authorized_identity,
         }
     }
 }
@@ -632,6 +635,7 @@ pub struct AuthorizationService<S> {
     authorizer: Arc<dyn BearerTokenAuthorizer>,
     metrics: Arc<Mutex<OtlpReceiverMetrics>>,
     timeout: std::time::Duration,
+    forward_authorized_identity: bool,
 }
 
 impl<S> Service<Request<Body>> for AuthorizationService<S>
@@ -656,6 +660,7 @@ where
         let authorizer = self.authorizer.clone();
         let metrics = self.metrics.clone();
         let timeout = self.timeout;
+        let forward_authorized_identity = self.forward_authorized_identity;
 
         Box::pin(async move {
             let authorized_identity = match authorize_request(
@@ -669,7 +674,9 @@ where
                 Ok(identity) => identity,
                 Err(rejection) => return Ok(authorization_status(rejection).into_http()),
             };
-            _ = req.extensions_mut().insert(authorized_identity);
+            if forward_authorized_identity {
+                _ = req.extensions_mut().insert(authorized_identity);
+            }
             inner.call(req).await
         })
     }
@@ -1121,6 +1128,7 @@ mod tests {
             Arc::new(TestAuthorizer),
             new_test_metrics(),
             TEST_AUTHORIZATION_TIMEOUT,
+            true,
         )
         .layer(inner);
         let authorization = ["Bearer", "allowed"].join(" ");
@@ -1133,6 +1141,35 @@ mod tests {
 
         assert_eq!(response.status(), http::StatusCode::OK);
         assert_eq!(observed_subject.lock().as_deref(), Some("test-subject"));
+    }
+
+    /// Scenario: the gRPC authorization layer admits a request while identity
+    /// context capture is disabled.
+    /// Guarantees: authorization still succeeds without inserting the verified
+    /// identity into request extensions.
+    #[tokio::test]
+    async fn authorization_layer_skips_identity_handoff_when_capture_is_disabled() {
+        let observed_subject = Arc::new(Mutex::new(None));
+        let inner = IdentityObservingService {
+            subject: observed_subject.clone(),
+        };
+        let mut service = AuthorizationLayer::new(
+            Arc::new(TestAuthorizer),
+            new_test_metrics(),
+            TEST_AUTHORIZATION_TIMEOUT,
+            false,
+        )
+        .layer(inner);
+        let authorization = ["Bearer", "allowed"].join(" ");
+        let request = Request::builder()
+            .header(http::header::AUTHORIZATION, authorization)
+            .body(Body::default())
+            .expect("valid request");
+
+        let response = service.call(request).await.expect("infallible service");
+
+        assert_eq!(response.status(), http::StatusCode::OK);
+        assert_eq!(observed_subject.lock().as_deref(), None);
     }
 
     /// Scenario: gRPC authorization is attempted while the authorizer cannot

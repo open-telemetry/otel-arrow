@@ -602,11 +602,13 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                 )
             };
 
+            let forward_authorized_identity = effect_handler.authorized_identity_policy().is_some();
             let authorization_layer = authorizer.clone().map(|authorizer| {
                 AuthorizationLayer::new(
                     authorizer,
                     self.metrics.clone(),
                     grpc_config.timeout.unwrap_or(DEFAULT_AUTHORIZATION_TIMEOUT),
+                    forward_authorized_identity,
                 )
             });
             // ServiceBuilder runs layers in insertion order, so admission limits
