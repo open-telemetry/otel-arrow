@@ -69,7 +69,7 @@ pub fn encode_to_batch_arrow_record_bytes(
 /// (e.g. after `take` reorders keys) and skips bounds validation for those
 /// slots, so this batch is valid to construct but exercises the out-of-range
 /// stale-key path during transport-optimized encoding.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-helpers"))]
 pub(crate) fn logs_otap_records_with_stale_dict_key() -> OtapArrowRecords {
     use arrow::array::NullBufferBuilder;
     use arrow::array::{DictionaryArray, RecordBatch, StringArray, UInt8Array, UInt16Array};
