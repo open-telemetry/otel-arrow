@@ -46,13 +46,14 @@ use crate::terminal_state::TerminalState;
 use async_trait::async_trait;
 use otel_arrow_dfe_channel::error::RecvError;
 use otel_arrow_dfe_config::PortName;
-use otel_arrow_dfe_config::transport_headers_policy::HeaderCapturePolicy;
+use otel_arrow_dfe_config::transport_headers_policy::CompiledHeaderCapturePolicy;
 use otel_arrow_dfe_pdata_codec::CodecService;
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
 use otel_arrow_dfe_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::rc::Rc;
 use std::time::Duration;
 use tokio::net::{TcpListener, UdpSocket};
 
@@ -137,15 +138,14 @@ pub struct EffectHandler<PData> {
     pub(crate) core: EffectHandlerCore<PData>,
     /// Output-port router.
     pub router: OutputRouter<Sender<PData>>,
-    /// Capture policy for extracting transport headers from inbound metadata.
-    /// `None` when no capture policy is configured (zero overhead).
-    capture_policy: Option<HeaderCapturePolicy>,
+    /// Immutable capture policy shared by local handler clones.
+    /// `None` disables capture.
+    capture_policy: Option<Rc<CompiledHeaderCapturePolicy>>,
 }
 
 /// Implementation for the `!Send` effect handler.
 impl<PData> EffectHandler<PData> {
-    /// Creates a new local (!Send) `EffectHandler` with the given receiver configuration and
-    /// pipeline runtime services.
+    /// Creates a local receiver effect handler.
     #[must_use]
     pub fn new(
         node_id: NodeId,
@@ -195,17 +195,17 @@ impl<PData> EffectHandler<PData> {
         self.core.node_interests()
     }
 
-    /// Returns the capture policy if a header capture policy is configured.
+    /// Returns the capture policy.
     ///
-    /// Returns `None` when no capture policy is active (zero overhead).
+    /// `None` disables capture.
     #[must_use]
-    pub fn capture_policy(&self) -> Option<&HeaderCapturePolicy> {
-        self.capture_policy.as_ref()
+    pub fn capture_policy(&self) -> Option<&CompiledHeaderCapturePolicy> {
+        self.capture_policy.as_deref()
     }
 
     /// Sets the capture policy for transport header extraction.
-    pub fn set_capture_policy(&mut self, policy: Option<HeaderCapturePolicy>) {
-        self.capture_policy = policy;
+    pub fn set_capture_policy(&mut self, policy: Option<CompiledHeaderCapturePolicy>) {
+        self.capture_policy = policy.map(Rc::new);
     }
 
     /// Sends a message to the next node(s) in the pipeline using the default port.

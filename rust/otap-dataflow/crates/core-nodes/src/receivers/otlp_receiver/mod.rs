@@ -240,6 +240,7 @@ pub static OTLP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
             receiver_config,
         ))
     },
+    context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<Config>,
 };
@@ -889,7 +890,7 @@ mod tests {
     use super::*;
 
     use otel_arrow_dfe_channel::error::RecvError;
-    use otel_arrow_dfe_config::SignalType;
+    use otel_arrow_dfe_config::{ContextEntryName, SignalType};
     use otel_arrow_dfe_config::node::NodeUserConfig;
     use otel_arrow_dfe_config::policy::{
         MemoryLimiterMode, RateLimitAggregation, RateLimitEnforcement, RateLimitPressure,
@@ -931,12 +932,18 @@ mod tests {
     use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::{
         ExportMetricsServiceRequest, ExportMetricsServiceResponse,
     };
+
+    fn context_name(raw: &str) -> ContextEntryName {
+        ContextEntryName::try_from(raw).expect("valid test context entry name")
+    }
     use otel_arrow_dfe_pdata::proto::opentelemetry::collector::trace::v1::trace_service_client::TraceServiceClient;
     use otel_arrow_dfe_pdata::proto::opentelemetry::collector::trace::v1::{
         ExportTraceServiceRequest, ExportTraceServiceResponse,
     };
     use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{InstrumentationScope, KeyValue};
-    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{
+        LogRecord, ResourceLogs, ScopeLogs,
+    };
     use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{ResourceMetrics, ScopeMetrics};
     use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
     use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans};
@@ -4584,7 +4591,7 @@ mod tests {
             header_names
                 .iter()
                 .map(|name| CaptureRule {
-                    match_names: vec![name.to_string()],
+                    match_names: vec![context_name(name)],
                     store_as: None,
                     sensitive: false,
                     value_kind: None,
@@ -4835,7 +4842,8 @@ mod tests {
                     "should capture exactly one x-trace-bin header"
                 );
                 assert_eq!(
-                    trace_headers[0].value, raw_bytes_for_validation,
+                    trace_headers[0].value.bytes.as_ref(),
+                    raw_bytes_for_validation.as_slice(),
                     "captured binary header should contain raw decoded bytes, not base64 wire form"
                 );
 

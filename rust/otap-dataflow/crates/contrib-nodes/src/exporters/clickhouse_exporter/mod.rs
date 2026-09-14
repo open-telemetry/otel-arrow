@@ -262,6 +262,7 @@ pub static CLICKHOUSE_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
             ))
         },
     validate_config: validate_typed_config::<ConfigPatch>,
+    context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
 };
 
