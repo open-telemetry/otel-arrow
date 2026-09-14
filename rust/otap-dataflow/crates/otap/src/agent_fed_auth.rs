@@ -27,6 +27,8 @@ const TOKEN_REFRESH_RETRY_SECS: u64 = 10;
 /// Upper bound on the retry backoff after repeated failures.
 const MAX_TOKEN_REFRESH_RETRY_SECS: u64 = 300;
 
+const NAME: &str = "AgentFedAuth";
+
 /// Consumer-side bearer-token authenticator: subscribes to a provider's agent
 /// fed credentials caches the built `Authorization` header, and reports
 /// usability.
@@ -63,7 +65,7 @@ impl AgentFedAuth {
         &mut self,
         snapshot: Arc<AgentFedCredentialSnapshot>,
         events: &HttpClientAuthProviderEvents,
-    ) -> Result<(), ()> {
+    ) -> Result<bool, ()> {
         if let Some(cached) = &self.cached_credential
             && Arc::ptr_eq(&cached.snapshot, &snapshot)
         {
@@ -72,14 +74,14 @@ impl AgentFedAuth {
                 return Err(());
             }
             // Continue using the cached credential
-            return Ok(());
+            return Ok(false);
         }
 
         let token = snapshot.token();
         if token.expose_token().trim().is_empty() {
-            (events.invalid)("AgentFedAuth", "Malformed token: Empty");
+            events.emit_invalid(self, "Malformed token: Empty");
             // Keep using the previously cached token (if any)
-            return Ok(());
+            return Ok(false);
         }
 
         match HeaderValue::from_str(&format!("Bearer {}", token.expose_token())) {
@@ -93,19 +95,23 @@ impl AgentFedAuth {
                     expires_on,
                     generation: self.generation,
                 });
+                Ok(true)
             }
             Err(e) => {
                 // Keep using the previously cached token (if any)
-                (events.invalid)("AgentFedAuth", &format!("Malformed token: {e}"));
+                events.emit_invalid(self, &format!("Malformed token: {e}"));
+                Ok(false)
             }
         }
-
-        Ok(())
     }
 }
 
 #[async_trait(?Send)]
 impl HttpClientAuthProvider for AgentFedAuth {
+    fn name(&self) -> HttpClientAuthProviderName {
+        NAME.into()
+    }
+
     fn is_active(&self) -> bool {
         true
     }
@@ -166,37 +172,42 @@ impl HttpClientAuthProvider for AgentFedAuth {
         }
     }
 
-    async fn poll_refresh(&mut self, events: &HttpClientAuthProviderEvents) {
+    async fn poll_refresh(&mut self, events: &HttpClientAuthProviderEvents) -> bool {
         let mut consecutive_failures = 0;
         loop {
             match self.provider.get_credential().await {
                 Ok(credential) => {
-                    if self.try_accept_snapshot(credential, &events).is_err() {
-                        // Previously rejected credential encountered. Need to
-                        // wait for a new credential to arrive.
+                    match self.try_accept_snapshot(credential, events) {
+                        Err(_) => {
+                            // Previously rejected credential encountered. Need to
+                            // wait for a new credential to arrive.
 
-                        (events.retry)(
-                            "AgentFedAuth",
-                            "A previously rejected credential was retrieved; operation will be retried",
-                            consecutive_failures
-                        );
+                            events.emit_retry(
+                                self,
+                                "A previously rejected credential was retrieved; operation will be retried",
+                                consecutive_failures
+                            );
 
-                        let backoff =
-                            jittered_backoff(retry_backoff_secs(consecutive_failures));
+                            let backoff =
+                                jittered_backoff(retry_backoff_secs(consecutive_failures));
 
-                        tokio::time::sleep(backoff).await;
+                            tokio::time::sleep(backoff).await;
 
-                        consecutive_failures = consecutive_failures + 1;
+                            consecutive_failures += 1;
 
-                        continue;
+                            continue;
+                        }
+                        Ok(r) => {
+                            return r;
+                        }
                     }
                 }
                 Err(e) => {
                     // Retrieval error: Keep using the last cached token (if any).
-                    (events.error)("AgentFedAuth", &format!("Error retrieving token: {e}"));
+                    events.emit_error(self, &format!("Error retrieving token: {e}"));
+                    return false;
                 }
             }
-            break;
         }
     }
 }

@@ -16,6 +16,8 @@ use otel_arrow_dfe_engine::local::capability::auth::basic_auth_provider::BasicAu
 
 use crate::http_client_auth_provider::*;
 
+const NAME: &str = "BasicAuth";
+
 /// Consumer-side basic-auth authenticator: subscribes to a provider's credential
 /// stream, caches the built `Authorization` header, and reports usability.
 ///
@@ -57,6 +59,10 @@ impl BasicAuth {
 
 #[async_trait(?Send)]
 impl HttpClientAuthProvider for BasicAuth {
+    fn name(&self) -> HttpClientAuthProviderName {
+        NAME.into()
+    }
+
     fn is_active(&self) -> bool {
         self.stream_active
     }
@@ -100,7 +106,7 @@ impl HttpClientAuthProvider for BasicAuth {
         }
     }
 
-    async fn poll_refresh(&mut self, events: &HttpClientAuthProviderEvents) {
+    async fn poll_refresh(&mut self, events: &HttpClientAuthProviderEvents) -> bool {
         match self.stream.next().await {
             Some(credential) => {
                 let credentials = format!(
@@ -119,10 +125,12 @@ impl HttpClientAuthProvider for BasicAuth {
                         // A new cached credential starts a new generation, so a 401 for
                         // an earlier credential no longer matches and is ignored.
                         self.generation = self.generation.wrapping_add(1);
+                        return true;
                     }
                     Err(e) => {
                         // Malformed credential: keep the previous cached credential (if any).
-                        (events.invalid)("BasicAuth", &format!("Malformed credential: {e}"));
+                        events.emit_invalid(self, &format!("Malformed credential: {e}"));
+                        return false;
                     }
                 }
             }
@@ -131,7 +139,8 @@ impl HttpClientAuthProvider for BasicAuth {
                 // Keep using the last cached credential. Not expected with a
                 // watch-backed provider while we hold its handle, so warn.
                 self.stream_active = false;
-                (events.stream_closed)("BasicAuth");
+                events.emit_stream_closed(self);
+                return false;
             }
         }
     }
@@ -235,7 +244,7 @@ mod tests {
             BasicAuthCredential::new("user", "pass").expect("valid credential"),
         ]);
 
-        auth.poll_refresh(&TEST_EVENTS).await;
+        assert!(auth.poll_refresh(&TEST_EVENTS).await);
 
         assert!(
             auth.is_ready(),
@@ -267,8 +276,8 @@ mod tests {
             BasicAuthCredential::new("user", "pass").expect("valid credential"),
         ]);
 
-        auth.poll_refresh(&TEST_EVENTS).await;
-        auth.poll_refresh(&TEST_EVENTS).await;
+        assert!(auth.poll_refresh(&TEST_EVENTS).await);
+        assert!(!auth.poll_refresh(&TEST_EVENTS).await);
 
         assert_eq!(
             STREAM_CLOSURES.get(),
@@ -312,7 +321,7 @@ mod tests {
                 .with_expiry(Instant::now() + BASIC_AUTH_CREDENTIAL_USABLE_MARGIN / 2),
         ]);
 
-        auth.poll_refresh(&TEST_EVENTS).await;
+        assert!(auth.poll_refresh(&TEST_EVENTS).await);
 
         assert!(
             !auth.is_ready(),
@@ -342,7 +351,7 @@ mod tests {
                 .with_expiry(expires_on),
         ]);
 
-        auth.poll_refresh(&TEST_EVENTS).await;
+        assert!(auth.poll_refresh(&TEST_EVENTS).await);
 
         assert!(auth.is_ready());
         assert_eq!(
@@ -361,7 +370,7 @@ mod tests {
             BasicAuthCredential::new("user", "pass").expect("valid credential"),
         ]);
 
-        auth.poll_refresh(&TEST_EVENTS).await;
+        assert!(auth.poll_refresh(&TEST_EVENTS).await);
 
         assert!(auth.is_ready());
         assert!(auth.refresh_deadline().is_none());

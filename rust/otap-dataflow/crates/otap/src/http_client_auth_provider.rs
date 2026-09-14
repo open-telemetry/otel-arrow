@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::time::Instant;
+use std::{borrow::Cow, time::Instant};
 
 use bitflags::bitflags;
 use http::{HeaderName, HeaderValue};
@@ -25,21 +25,54 @@ use crate::{
 #[derive(Clone, Copy)]
 pub struct HttpClientAuthProviderEvents {
     /// A published credential could not be turned into a header.
-    pub invalid: fn(&str, &str),
+    pub invalid: fn(HttpClientAuthProviderName, &str),
 
     /// An error occured publishing a credential.
-    pub error: fn(&str, &str),
+    pub error: fn(HttpClientAuthProviderName, &str),
 
     /// A credential retrieval will be retried.
-    pub retry: fn(&str, &str, u32),
+    pub retry: fn(HttpClientAuthProviderName, &str, u32),
 
     /// The provider closed its stream; no further refreshes will arrive.
-    pub stream_closed: fn(&str),
+    pub stream_closed: fn(HttpClientAuthProviderName),
 }
+
+impl HttpClientAuthProviderEvents {
+    /// Emit an invalid event.
+    pub fn emit_invalid(&self, source: &dyn HttpClientAuthProvider, error: &str) {
+        (self.invalid)(source.name(), error)
+    }
+
+    /// Emit an error event.
+    pub fn emit_error(&self, source: &dyn HttpClientAuthProvider, error: &str) {
+        (self.error)(source.name(), error)
+    }
+
+    /// Emit a retry event.
+    pub fn emit_retry(
+        &self,
+        source: &dyn HttpClientAuthProvider,
+        error: &str,
+        consecutive_failures: u32,
+    ) {
+        (self.retry)(source.name(), error, consecutive_failures)
+    }
+
+    /// Emit a stream_closed event.
+    pub fn emit_stream_closed(&self, source: &dyn HttpClientAuthProvider) {
+        (self.stream_closed)(source.name())
+    }
+}
+
+/// Human-readble name of a provider.
+pub type HttpClientAuthProviderName = Cow<'static, str>;
 
 /// Manages credentials and injects HTTP Authorization headers.
 #[async_trait(?Send)]
 pub trait HttpClientAuthProvider {
+    /// Human-readable name used in error messages and config validation.
+    fn name(&self) -> HttpClientAuthProviderName;
+
     /// Whether the credential stream is still live and worth polling. Once the
     /// provider closes it, this returns `false` and the last cached credentials
     /// (if any) keeps being used.
@@ -79,7 +112,7 @@ pub trait HttpClientAuthProvider {
     fn invalidate(&mut self, generation: u64);
 
     /// Awaits the next published credential and refreshes the cache.
-    async fn poll_refresh(&mut self, events: &HttpClientAuthProviderEvents);
+    async fn poll_refresh(&mut self, events: &HttpClientAuthProviderEvents) -> bool;
 }
 
 bitflags! {

@@ -370,7 +370,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     // while the guard holds; it pends rather than panics.
                     () = async {
                         match auth.as_mut() {
-                            Some(a) => a.poll_refresh(&GRPC_AUTH_EVENTS).await,
+                            Some(a) => {_ = a.poll_refresh(&GRPC_AUTH_EVENTS).await;},
                             None => std::future::pending().await,
                         }
                     }, if auth.as_ref().is_some_and(|a| a.is_active()) => {

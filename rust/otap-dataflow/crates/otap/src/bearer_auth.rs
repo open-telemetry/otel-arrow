@@ -30,6 +30,8 @@ use otel_arrow_dfe_engine::local::capability::auth::bearer_token_provider::Beare
 
 use crate::http_client_auth_provider::*;
 
+const NAME: &str = "BearerAuth";
+
 /// Consumer-side bearer-token authenticator: subscribes to a provider's token
 /// stream, caches the built `Authorization` header, and reports usability.
 ///
@@ -71,6 +73,10 @@ impl BearerAuth {
 
 #[async_trait(?Send)]
 impl HttpClientAuthProvider for BearerAuth {
+    fn name(&self) -> HttpClientAuthProviderName {
+        NAME.into()
+    }
+
     fn is_active(&self) -> bool {
         self.stream_active
     }
@@ -112,7 +118,7 @@ impl HttpClientAuthProvider for BearerAuth {
         }
     }
 
-    async fn poll_refresh(&mut self, events: &HttpClientAuthProviderEvents) {
+    async fn poll_refresh(&mut self, events: &HttpClientAuthProviderEvents) -> bool {
         match self.stream.next().await {
             Some(token) => {
                 match HeaderValue::from_str(&format!("Bearer {}", token.expose_token())) {
@@ -124,10 +130,12 @@ impl HttpClientAuthProvider for BearerAuth {
                         // A new cached token starts a new generation, so a 401 for
                         // an earlier token no longer matches and is ignored.
                         self.generation = self.generation.wrapping_add(1);
+                        return true;
                     }
                     Err(e) => {
                         // Malformed token: keep the previous cached token (if any).
-                        (events.invalid)("BearerAuth", &format!("Malformed token: {e}"));
+                        events.emit_invalid(self, &format!("Malformed token: {e}"));
+                        return false;
                     }
                 }
             }
@@ -136,7 +144,8 @@ impl HttpClientAuthProvider for BearerAuth {
                 // Keep using the last cached token. Not expected with a
                 // watch-backed provider while we hold its handle, so warn.
                 self.stream_active = false;
-                (events.stream_closed)("BearerAuth");
+                events.emit_stream_closed(self);
+                return false;
             }
         }
     }
@@ -318,7 +327,7 @@ mod tests {
     async fn poll_refresh_caches_the_published_token_as_a_sensitive_header() {
         let mut auth = auth_over(vec![BearerToken::without_expiry("first")]);
 
-        auth.poll_refresh(&TEST_EVENTS).await;
+        assert!(auth.poll_refresh(&TEST_EVENTS).await);
 
         assert!(
             auth.is_ready(),
@@ -349,8 +358,8 @@ mod tests {
             BearerToken::without_expiry("bad\nvalue"),
         ]);
 
-        auth.poll_refresh(&TEST_EVENTS).await;
-        auth.poll_refresh(&TEST_EVENTS).await;
+        assert!(auth.poll_refresh(&TEST_EVENTS).await);
+        assert!(!auth.poll_refresh(&TEST_EVENTS).await);
 
         assert_eq!(
             INVALID.get(),
@@ -373,8 +382,8 @@ mod tests {
     async fn a_closed_stream_is_reported_and_the_last_token_stays_usable() {
         let mut auth = auth_over(vec![BearerToken::without_expiry("last")]);
 
-        auth.poll_refresh(&TEST_EVENTS).await;
-        auth.poll_refresh(&TEST_EVENTS).await;
+        assert!(auth.poll_refresh(&TEST_EVENTS).await);
+        assert!(!auth.poll_refresh(&TEST_EVENTS).await);
 
         assert_eq!(
             STREAM_CLOSURES.get(),
@@ -417,7 +426,7 @@ mod tests {
             Some(Instant::now() + TOKEN_USABLE_MARGIN / 2),
         )]);
 
-        auth.poll_refresh(&TEST_EVENTS).await;
+        assert!(auth.poll_refresh(&TEST_EVENTS).await);
 
         assert!(
             !auth.is_ready(),
@@ -446,7 +455,7 @@ mod tests {
             Some(expires_on),
         )]);
 
-        auth.poll_refresh(&TEST_EVENTS).await;
+        assert!(auth.poll_refresh(&TEST_EVENTS).await);
 
         assert!(auth.is_ready());
         assert_eq!(
@@ -463,7 +472,7 @@ mod tests {
     async fn a_non_expiring_token_arms_no_refresh_deadline() {
         let mut auth = auth_over(vec![BearerToken::without_expiry("forever")]);
 
-        auth.poll_refresh(&TEST_EVENTS).await;
+        assert!(auth.poll_refresh(&TEST_EVENTS).await);
 
         assert!(auth.is_ready());
         assert!(auth.refresh_deadline().is_none());

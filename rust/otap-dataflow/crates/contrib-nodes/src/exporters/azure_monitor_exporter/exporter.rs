@@ -584,7 +584,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                     continue;
                 }
 
-                () = auth.poll_refresh(&AZURE_MONITOR_AUTH_EVENTS), if auth.is_active() => {
+                () = async {_ = auth.poll_refresh(&AZURE_MONITOR_AUTH_EVENTS).await;}, if auth.is_active() => {
                     continue;
                 }
 
@@ -822,7 +822,7 @@ mod tests {
 
     async fn auth_with_cached_token() -> BearerAuth {
         let mut auth = BearerAuth::new(Box::new(MockTokenProvider));
-        auth.poll_refresh(&AZURE_MONITOR_AUTH_EVENTS).await;
+        assert!(auth.poll_refresh(&AZURE_MONITOR_AUTH_EVENTS).await);
         assert!(auth.is_ready());
         auth
     }
@@ -941,7 +941,7 @@ mod tests {
         let mut exporter =
             AzureMonitorExporter::new(pipeline_ctx, config, Box::new(MockTokenProvider)).unwrap();
         let mut auth = BearerAuth::new(Box::new(MockTokenProvider));
-        auth.poll_refresh(&AZURE_MONITOR_AUTH_EVENTS).await;
+        assert!(auth.poll_refresh(&AZURE_MONITOR_AUTH_EVENTS).await);
         let (_, _, token_generation) = auth.header().expect("mock provider publishes a token");
 
         let (_, reporter) = MetricsReporter::create_new_and_receiver(10);
@@ -1238,17 +1238,6 @@ mod tests {
             .unwrap();
 
         assert!(exporter.state.msg_to_data.is_empty());
-    }
-
-    /// Scenario: the bearer-auth adapter reports an unusable token and a closed
-    /// token stream.
-    /// Guarantees: both hooks are wired to Azure Monitor's event namespace and
-    /// can be raised without panicking.
-    #[test]
-    fn bearer_auth_events_are_reportable() {
-        (AZURE_MONITOR_AUTH_EVENTS.invalid)("", "");
-        (AZURE_MONITOR_AUTH_EVENTS.error)("", "");
-        (AZURE_MONITOR_AUTH_EVENTS.stream_closed)("");
     }
 
     // Azure Monitor can temporarily stop accepting new pdata while it is at

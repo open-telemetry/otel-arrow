@@ -159,8 +159,6 @@ impl OtlpHttpExporter {
         config: &serde_json::Value,
         capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
     ) -> Result<Self, ConfigError> {
-        let metrics = OtlpHttpExporterMetrics::register(&pipeline_ctx);
-
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
             otel_arrow_dfe_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
@@ -231,15 +229,20 @@ impl OtlpHttpExporter {
             }
         }
 
+        let auth_provider = new_http_client_auth_provider(
+            capabilities,
+            HttpClientAuthProviders::BEARER_TOKEN
+                | HttpClientAuthProviders::API_KEY
+                | HttpClientAuthProviders::BASIC,
+        )?;
+
+        let metrics =
+            OtlpHttpExporterMetrics::register(&pipeline_ctx, auth_provider.as_deref());
+
         Ok(Self {
             config,
             metrics,
-            auth_provider: new_http_client_auth_provider(
-                capabilities,
-                HttpClientAuthProviders::BEARER_TOKEN
-                    | HttpClientAuthProviders::API_KEY
-                    | HttpClientAuthProviders::BASIC,
-            )?,
+            auth_provider,
         })
     }
 }
@@ -385,7 +388,11 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                 // while the guard holds; it pends rather than panics.
                 () = async {
                     match auth.as_mut() {
-                        Some(a) => a.poll_refresh(&HTTP_AUTH_EVENTS).await,
+                        Some(a) => {
+                            if !a.poll_refresh(&HTTP_AUTH_EVENTS).await {
+                                self.metrics.record_auth_failure();
+                            }
+                        },
                         None => std::future::pending().await,
                     }
                 }, if auth.as_ref().is_some_and(|a| a.is_active()) => {
@@ -1735,7 +1742,7 @@ mod test {
         ExporterWrapper::local(
             OtlpHttpExporter {
                 config,
-                metrics: OtlpHttpExporterMetrics::register(&pipeline_ctx),
+                metrics: OtlpHttpExporterMetrics::register(&pipeline_ctx, None),
                 auth_provider: Some(provider.into()),
             },
             node_id,
@@ -2255,7 +2262,7 @@ mod test {
         let exporter = ExporterWrapper::local(
             OtlpHttpExporter {
                 config,
-                metrics: OtlpHttpExporterMetrics::register(&pipeline_ctx),
+                metrics: OtlpHttpExporterMetrics::register(&pipeline_ctx, None),
                 auth_provider: None,
             },
             node_id.clone(),
@@ -2774,7 +2781,7 @@ mod test {
         let controller = ControllerContext::new(registry);
         let pipeline_ctx =
             controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
-        let mut metrics = OtlpHttpExporterMetrics::register(&pipeline_ctx);
+        let mut metrics = OtlpHttpExporterMetrics::register(&pipeline_ctx, None);
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let effect_handler = EffectHandler::new(
@@ -2851,7 +2858,7 @@ mod test {
         let controller = ControllerContext::new(registry);
         let pipeline_ctx =
             controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
-        let mut metrics = OtlpHttpExporterMetrics::register(&pipeline_ctx);
+        let mut metrics = OtlpHttpExporterMetrics::register(&pipeline_ctx, None);
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let mut effect_handler = EffectHandler::new(
