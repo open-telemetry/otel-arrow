@@ -66,6 +66,9 @@ use transport_headers::capture_transport_headers;
 /// URN for the Kafka Receiver
 pub const KAFKA_RECEIVER_URN: &str = "urn:otel:receiver:kafka";
 
+/// Max character limit for kafka group instance id
+const MAX_GROUP_INSTANCE_ID_LEN: usize = 249;
+
 /// Kafka receiver for OpenTelemetry data.
 ///
 /// Receives telemetry data (traces, metrics, logs) from Apache Kafka topics using the rdkafka client.
@@ -139,13 +142,40 @@ impl KafkaReceiver {
         mut config: KafkaReceiverConfig,
     ) -> Result<Self, ConfigError> {
         // Kafka static membership requires each consumer-group member to have a
-        // unique group.instance.id. On a multi-core pipeline every core would
-        // otherwise share the configured ID and fence one another, so suffix it
-        // with the pipeline core ID.
-        if pipeline_ctx.num_cores() > 1
-            && let Some(base_id) = config.group_instance_id()
-        {
-            let resolved = format!("{base_id}-{}", pipeline_ctx.core_id());
+        // unique group.instance.id. Two situations would otherwise make separate
+        // members share the configured ID and fence one another:
+        //   1. On a multi-core pipeline every core would share the ID -- suffix
+        //      with the pipeline core ID.
+        //   2. During a live-reconfiguration cutover the engine starts a NEW
+        //      pipeline instance (a new deployment generation) whose receiver
+        //      reuses the same configured ID while the OLD instance is still
+        //      draining. The duplicate static member causes the group coordinator
+        //      to fence the old member's offset commits, dropping acked offsets
+        //      (they are re-delivered on the new instance, but progress is lost).
+        //      Suffix with the deployment generation so each generation is a
+        //      distinct static member for the overlap window.
+        // Both suffixes are applied so a multi-core, multi-generation deployment
+        // still yields a unique ID per (generation, core).
+        if let Some(base_id) = config.group_instance_id() {
+            let generation = pipeline_ctx.deployment_generation();
+            let resolved = if pipeline_ctx.num_cores() > 1 {
+                format!("{base_id}-g{generation}-{}", pipeline_ctx.core_id())
+            } else {
+                format!("{base_id}-g{generation}")
+            };
+
+            if resolved.len() > MAX_GROUP_INSTANCE_ID_LEN {
+                return Err(ConfigError::InvalidUserConfig {
+                    error: format!(
+                        "resolved group.instance.id '{resolved}' is {} characters, \
+                         exceeding the Kafka maximum of {MAX_GROUP_INSTANCE_ID_LEN}; \
+                         shorten the configured group_instance_id (the pipeline \
+                         appends a generation and, on multi-core pipelines, a core \
+                         suffix)",
+                        resolved.len()
+                    ),
+                });
+            }
             config.set_group_instance_id(resolved);
         }
 

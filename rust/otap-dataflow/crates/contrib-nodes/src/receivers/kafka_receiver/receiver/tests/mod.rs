@@ -335,6 +335,34 @@ fn manual_traces_config_no_timer(
     KafkaReceiverConfig::try_from(builder).expect("test config valid")
 }
 
+/// Like [`manual_traces_config_no_timer`] but with an explicit `client_id`
+/// and an optional `group.instance.id` (static membership). Used by the
+/// live-reconfiguration cutover tests that run two receivers concurrently and
+/// need to control each member's identity within a shared consumer group.
+fn cutover_traces_config(
+    brokers: &str,
+    group_id: &str,
+    client_id: &str,
+    traces_topic: &str,
+    group_instance_id: Option<&str>,
+) -> KafkaReceiverConfig {
+    let mut builder = KafkaReceiverConfigBuilder::new(brokers, group_id, client_id)
+        .with_traces(
+            SignalConfig::new(vec![traces_topic.to_string()])
+                .with_encoding(MessageFormat::OtlpProto),
+        )
+        .with_commit(CommitConfig {
+            mode: ConfigCommitMode::Manual,
+            interval_ms: None,
+        })
+        .with_auto_offset_reset(AutoOffsetReset::Earliest)
+        .with_isolation_level(IsolationLevel::ReadUncommitted);
+    if let Some(id) = group_instance_id {
+        builder = builder.with_group_instance_id(id);
+    }
+    KafkaReceiverConfig::try_from(builder).expect("test config valid")
+}
+
 /// Like [`manual_traces_config_no_timer`] but arms the opt-in consumer-lag
 /// refresh timer at `lag_refresh_interval_ms`, so a lag-refresh worker is
 /// periodically spawned and can be in flight when a shutdown arrives.
@@ -414,6 +442,23 @@ fn make_pipeline_ctx_with(core_id: usize, num_cores: usize) -> PipelineContext {
     let registry = TelemetryRegistryHandle::new();
     let controller_ctx = ControllerContext::new(registry);
     controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), core_id, num_cores, 0)
+}
+
+fn make_pipeline_ctx_with_generation(
+    core_id: usize,
+    num_cores: usize,
+    deployment_generation: u64,
+) -> PipelineContext {
+    let registry = TelemetryRegistryHandle::new();
+    let controller_ctx = ControllerContext::new(registry);
+    controller_ctx.pipeline_context_with_generation(
+        "grp".into(),
+        "pipeline".into(),
+        core_id,
+        num_cores,
+        0,
+        deployment_generation,
+    )
 }
 
 fn make_config_with_group_instance_id(instance_id: &str) -> KafkaReceiverConfig {

@@ -10,8 +10,9 @@ use super::*;
 
 /// Scenario (construction and configuration): a receiver is built on a multi-core
 /// pipeline with a configured `group.instance.id`.
-/// Guarantees: the instance id is suffixed with the core id so each core joins the
-/// consumer group as a distinct static member.
+/// Guarantees: the instance id is suffixed with the deployment generation and
+/// the core id so each (generation, core) joins the consumer group as a
+/// distinct static member.
 #[test]
 fn new_suffixes_group_instance_id_with_core_id_when_multi_core() {
     let cfg = make_config_with_group_instance_id("instance-1");
@@ -19,24 +20,140 @@ fn new_suffixes_group_instance_id_with_core_id_when_multi_core() {
     let receiver = KafkaReceiver::new(ctx, cfg).expect("receiver should build");
     assert_eq!(
         receiver.config.group_instance_id(),
-        Some("instance-1-3"),
-        "multi-core pipeline should suffix group.instance.id with core id"
+        Some("instance-1-g0-3"),
+        "multi-core pipeline should suffix group.instance.id with generation \
+         and core id"
     );
 }
 
 /// Scenario (construction and configuration): a receiver is built on a single-core
 /// pipeline with a configured `group.instance.id`.
-/// Guarantees: the instance id is left unchanged, so a single-core deployment keeps the
-/// operator-provided static member id.
+/// Guarantees: the instance id is suffixed with the deployment generation (but
+/// not a core id on a single-core pipeline), so a new pipeline generation
+/// during a live-reconfiguration cutover is a distinct static member from the
+/// draining old generation.
 #[test]
-fn new_keeps_group_instance_id_unchanged_when_single_core() {
+fn new_suffixes_group_instance_id_with_generation_when_single_core() {
     let cfg = make_config_with_group_instance_id("instance-1");
     let ctx = make_pipeline_ctx_with(0, 1);
     let receiver = KafkaReceiver::new(ctx, cfg).expect("receiver should build");
     assert_eq!(
         receiver.config.group_instance_id(),
-        Some("instance-1"),
-        "single-core pipeline should leave group.instance.id unchanged"
+        Some("instance-1-g0"),
+        "single-core pipeline should suffix group.instance.id with the \
+         deployment generation"
+    );
+}
+
+/// Scenario (construction and configuration): two receivers are built from the
+/// same operator `group.instance.id` but different deployment generations, as
+/// happens during a live-reconfiguration cutover (old generation draining, new
+/// generation starting).
+/// Guarantees: the resolved `group.instance.id`s differ by generation suffix,
+/// so the new instance is a distinct static member and does not fence the old
+/// instance's offset commits during the drain overlap.
+#[test]
+fn new_distinct_generations_yield_distinct_group_instance_ids() {
+    let cfg_old = make_config_with_group_instance_id("instance-1");
+    let ctx_old = make_pipeline_ctx_with_generation(0, 1, 7);
+    let old = KafkaReceiver::new(ctx_old, cfg_old).expect("old receiver should build");
+
+    let cfg_new = make_config_with_group_instance_id("instance-1");
+    let ctx_new = make_pipeline_ctx_with_generation(0, 1, 8);
+    let new = KafkaReceiver::new(ctx_new, cfg_new).expect("new receiver should build");
+
+    assert_eq!(old.config.group_instance_id(), Some("instance-1-g7"));
+    assert_eq!(new.config.group_instance_id(), Some("instance-1-g8"));
+    assert_ne!(
+        old.config.group_instance_id(),
+        new.config.group_instance_id(),
+        "distinct generations must resolve to distinct static member ids so a \
+         cutover does not fence the draining old instance",
+    );
+}
+
+/// Scenario (construction and configuration): the configured `group.instance.id`
+/// is short enough on its own, but appending the single-core generation suffix
+/// pushes the resolved id one character past Kafka's 249-character limit.
+/// Guarantees: receiver construction fails with a clear configuration error
+/// (naming group.instance.id and the 249-character limit) instead of deferring
+/// an opaque static-member join rejection to the broker.
+#[test]
+fn new_rejects_group_instance_id_when_resolved_exceeds_kafka_limit() {
+    // Single-core suffix is "-g0" (3 chars); a 247-char base resolves to 250.
+    let base = "a".repeat(247);
+    let cfg = make_config_with_group_instance_id(&base);
+    let ctx = make_pipeline_ctx_with(0, 1);
+    let err = match KafkaReceiver::new(ctx, cfg) {
+        Ok(_) => panic!("resolved group.instance.id over 249 chars must be rejected"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        err.contains("group.instance.id"),
+        "error should name group.instance.id: {err}"
+    );
+    assert!(
+        err.contains("249"),
+        "error should cite the 249-character Kafka limit: {err}"
+    );
+}
+
+/// Scenario (construction and configuration): the configured `group.instance.id`
+/// is sized so that appending the single-core generation suffix resolves to
+/// exactly Kafka's 249-character limit.
+/// Guarantees: the boundary value is accepted (the limit is inclusive), so the
+/// off-by-one is guarded -- 249 builds while 250 is rejected.
+#[test]
+fn new_accepts_group_instance_id_at_kafka_limit_boundary() {
+    // Single-core suffix is "-g0" (3 chars); a 246-char base resolves to 249.
+    let base = "a".repeat(246);
+    let cfg = make_config_with_group_instance_id(&base);
+    let ctx = make_pipeline_ctx_with(0, 1);
+    let receiver =
+        KafkaReceiver::new(ctx, cfg).expect("resolved id of exactly 249 chars must build");
+    let resolved = receiver
+        .config
+        .group_instance_id()
+        .expect("resolved id present");
+    assert_eq!(
+        resolved.len(),
+        249,
+        "resolved id should sit exactly on the inclusive 249-character limit"
+    );
+    assert_eq!(resolved, format!("{base}-g0"));
+}
+
+/// Scenario (construction and configuration): a receiver is built on a multi-core
+/// pipeline whose deployment generation and core id are both multi-digit values.
+/// Guarantees: the resolved `group.instance.id` embeds the full multi-digit
+/// generation and core id (`-g{gen}-{core}`), so wide deployments still yield a
+/// correctly formatted distinct static member per (generation, core).
+#[test]
+fn new_suffixes_group_instance_id_with_multi_digit_generation_and_core() {
+    let cfg = make_config_with_group_instance_id("instance-1");
+    let ctx = make_pipeline_ctx_with_generation(12, 16, 123);
+    let receiver = KafkaReceiver::new(ctx, cfg).expect("receiver should build");
+    assert_eq!(
+        receiver.config.group_instance_id(),
+        Some("instance-1-g123-12"),
+        "multi-digit generation and core id must both appear in full"
+    );
+}
+
+/// Scenario (construction and configuration): a receiver is built on a single-core
+/// pipeline whose deployment generation is a multi-digit value.
+/// Guarantees: the resolved `group.instance.id` embeds the full multi-digit
+/// generation with no core suffix (`-g{gen}`), so a long-lived pipeline that has
+/// been reconfigured many times still resolves to a correctly formatted id.
+#[test]
+fn new_suffixes_group_instance_id_with_multi_digit_generation_single_core() {
+    let cfg = make_config_with_group_instance_id("instance-1");
+    let ctx = make_pipeline_ctx_with_generation(0, 1, 1024);
+    let receiver = KafkaReceiver::new(ctx, cfg).expect("receiver should build");
+    assert_eq!(
+        receiver.config.group_instance_id(),
+        Some("instance-1-g1024"),
+        "single-core pipeline embeds the full multi-digit generation and no core"
     );
 }
 
