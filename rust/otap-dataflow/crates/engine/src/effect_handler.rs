@@ -14,6 +14,7 @@ use crate::control::{
 use crate::error::Error;
 use crate::node::NodeId;
 use crate::node_local_scheduler::NodeLocalSchedulerHandle;
+use crate::runtime_services::PipelineRuntimeServices;
 use crate::{WakeupError, WakeupSetOutcome};
 use otel_arrow_dfe_channel::error::SendError;
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
@@ -64,11 +65,17 @@ pub(crate) struct EffectHandlerCore<PData> {
     node_interests: Interests,
     /// Optional processor-local delayed-resume and wakeup scheduler.
     pub(crate) local_scheduler: Option<NodeLocalSchedulerHandle<PData>>,
+    /// Services owned by the containing pipeline runtime.
+    pub(crate) runtime_services: PipelineRuntimeServices,
 }
 
 impl<PData> EffectHandlerCore<PData> {
     /// Creates a new EffectHandlerCore with node_id and a metrics reporter.
-    pub(crate) const fn new(node_id: NodeId, metrics_reporter: MetricsReporter) -> Self {
+    pub(crate) const fn new(
+        node_id: NodeId,
+        metrics_reporter: MetricsReporter,
+        runtime_services: PipelineRuntimeServices,
+    ) -> Self {
         Self {
             node_id,
             runtime_ctrl_msg_sender: None,
@@ -78,6 +85,7 @@ impl<PData> EffectHandlerCore<PData> {
             source_tag: SourceTagging::Disabled,
             node_interests: Interests::empty(),
             local_scheduler: None,
+            runtime_services,
         }
     }
 
