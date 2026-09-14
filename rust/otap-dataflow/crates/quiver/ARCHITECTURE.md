@@ -923,6 +923,11 @@ and subscriber progress entry. After investigating the storage failure, an
 operator may remove the sidecar only if accepting the resulting risk of
 sequence reuse.
 
+Subscriber progress is handled with the same fail-closed rule. If a discovered
+progress file cannot be read or validated, startup refuses to allocate segment
+sequences because the file may contain a higher historical sequence floor than
+the remaining segment files or sidecar.
+
 #### Bounding the Open Segment
 
 Bundles live in memory until a segment is finalized. When finalization fails
