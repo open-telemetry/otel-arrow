@@ -559,8 +559,9 @@ fn framing_profile_fixtures_match_codec() {
     }
 }
 
-/// Scenario: Idle flush is disabled in an otherwise identical newline profile.
-/// Guarantees: Zero milliseconds matches independent canonical bytes and digest, differs from the 500 ms profile, and changes only the encoded timeout field.
+/// Scenario: The same newline profile is encoded with idle flush disabled.
+/// Guarantees: Bytes and digest match the independent fixture. Only the timeout
+/// field changes from the 500 ms profile, producing a different digest.
 #[test]
 fn disabled_idle_flush_profile_matches_independent_fixture() {
     let enabled = idle_flush_500ms_profile(false);
