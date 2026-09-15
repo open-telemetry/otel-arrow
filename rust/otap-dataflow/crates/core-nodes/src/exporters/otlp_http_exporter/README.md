@@ -246,7 +246,7 @@ successes, and Ack/Nack notification failures do not emit this metric.
 
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
-| `exporter.otlp_http.authentication` | `{attempt}` | `source` | Auth credential polls that did not produce a usable credential, including failures before a signal batch is admitted. |
+| `exporter.otlp_http.authentication.failures` | `{attempt}` | `source` | Auth credential polls that did not produce a usable credential, including failures before a signal batch is admitted. |
 
 Authentication `source` is the registered provider name.
 

@@ -43,7 +43,7 @@ impl HttpClientAuthProviderEvents {
     }
 }
 
-/// Human-readble name of a provider.
+/// Human-readable name of a provider.
 pub type HttpClientAuthProviderName = Cow<'static, str>;
 
 /// Manages credentials and injects HTTP Authorization headers.

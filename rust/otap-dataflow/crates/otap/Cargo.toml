@@ -37,7 +37,6 @@ parking_lot = { workspace = true }
 base64 = { workspace = true }
 cfg-if.workspace = true
 bitflags.workspace = true
-rand.workspace = true
 
 otel-arrow-dfe-engine = { workspace = true }
 otel-arrow-dfe-engine-macros = { workspace = true }

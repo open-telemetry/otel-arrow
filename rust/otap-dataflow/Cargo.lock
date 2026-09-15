@@ -7715,7 +7715,6 @@ dependencies = [
  "pretty_assertions",
  "prost 0.14.4",
  "prost-types 0.14.4",
- "rand 0.10.2",
  "reqwest 0.13.5",
  "rustls",
  "rustls-native-certs",
