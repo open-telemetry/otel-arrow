@@ -262,7 +262,7 @@ without one use `node.output` plus node-specific collection metrics. A future
 | Work shape | Receiver boundary | Exporter boundary |
 | --- | --- | --- |
 | `1:1` | Record one `receiver.received` observation for the external message. | Record one `exporter.attempted` observation for the node-local delivery attempt, including a preparation-only terminal outcome. |
-| `1:N` fan-out | Record one terminal local outcome for the external message; `node.output` records each emitted PData message. | Record one attempt per external submission when fan-out succeeds. A failure before submissions are discovered records one preparation-only attempt. |
+| `1:N` fan-out | Record one terminal local outcome for the external message; `node.output` records each emitted PData message. | Record one attempt per external submission when fan-out succeeds. A failure before a submission starts (i.e. during encoding or compression) records one preparation-only attempt. |
 | `N:1` aggregation | Record each external message independently; the later aggregate PData emission belongs to `node.output`. | Record one attempt for the external batch, using batch-level items and payload size rather than repeating an input PData count. |
 | `N:M` regrouping | Track external messages and PData emissions independently. Maintain explicit ownership when one external message contributes to several outputs or one output combines several messages. | Track logical batch ownership independently from attempts. ACK/NACK follows the PData-to-batch mapping; record each submission and retry when physical submission is the attempt boundary. |
 
