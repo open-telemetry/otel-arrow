@@ -1157,6 +1157,7 @@ mod test {
     use arrow::array::Int32Array;
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
+    use http::header;
     use http_body_util::Full;
     use hyper::Response;
     use hyper::server::conn::http1;
@@ -1202,7 +1203,7 @@ mod test {
 
     use super::*;
 
-    use otel_arrow_dfe_otap::bearer_auth::test_support::MockTokenProvider;
+    use otel_arrow_dfe_otap::http_client_auth_provider::test_support::MockHttpClientAuthProvider;
     use otel_arrow_dfe_otap::otap_grpc::common::AckRegistry;
     use otel_arrow_dfe_otap::otlp_http::client_settings::HttpClientSettings;
     use otel_arrow_dfe_otap::otlp_http::{HttpServerSettings, serve, tune_max_concurrent_requests};
@@ -1536,10 +1537,16 @@ mod test {
 
         let config = default_test_config(endpoint);
         let test_runtime = TestRuntime::<OtapPdata>::new();
-        // A valid (non-expiring) token so the request is actually sent and the
+        // A valid (non-expiring) auth so the request is actually sent and the
         // server's 401 drives the auth-failure path.
-        let exporter =
-            exporter_with_provider(&test_runtime, config, MockTokenProvider::new("token"));
+        let exporter = exporter_with_provider(
+            &test_runtime,
+            config,
+            MockHttpClientAuthProvider::new(
+                header::AUTHORIZATION,
+                vec![("Bearer token".into(), None)],
+            ),
+        );
 
         let (logs_batch, _, _) = gen_batches_for_each_signal_type();
         let mut bytes = Vec::new();
@@ -1589,7 +1596,7 @@ mod test {
         cancel.cancel();
     }
 
-    // Scenario: A bound bearer provider is present and the backend answers 403 Forbidden.
+    // Scenario: A bound auth provider is present and the backend answers 403 Forbidden.
     // Guarantees: 403 is NACK'd as permanent (not retryable), because a scope or
     // permission problem is not fixed by refreshing the token.
     #[test]
@@ -1605,8 +1612,14 @@ mod test {
 
         let config = default_test_config(endpoint);
         let test_runtime = TestRuntime::<OtapPdata>::new();
-        let exporter =
-            exporter_with_provider(&test_runtime, config, MockTokenProvider::new("token"));
+        let exporter = exporter_with_provider(
+            &test_runtime,
+            config,
+            MockHttpClientAuthProvider::new(
+                header::AUTHORIZATION,
+                vec![("Bearer token".into(), None)],
+            ),
+        );
 
         let (logs_batch, _, _) = gen_batches_for_each_signal_type();
         let mut bytes = Vec::new();
@@ -1705,21 +1718,17 @@ mod test {
         assert_eq!(headers.get("x-test").unwrap().to_str().unwrap(), "abc");
         // Protocol headers are still applied and take precedence.
         assert_eq!(
-            headers
-                .get(http::header::CONTENT_TYPE)
-                .unwrap()
-                .to_str()
-                .unwrap(),
+            headers.get(header::CONTENT_TYPE).unwrap().to_str().unwrap(),
             PROTOBUF_CONTENT_TYPE
         );
     }
 
     /// Build an `OtlpHttpExporter` wrapped for the test runtime with a bound
-    /// bearer token provider.
+    /// auth provider.
     fn exporter_with_provider(
         test_runtime: &TestRuntime<OtapPdata>,
         config: Config,
-        provider: MockTokenProvider,
+        provider: MockHttpClientAuthProvider,
     ) -> ExporterWrapper<OtapPdata> {
         otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTLP_HTTP_EXPORTER_URN));
@@ -1737,7 +1746,7 @@ mod test {
             OtlpHttpExporter {
                 config,
                 metrics: OtlpHttpExporterMetrics::register(&pipeline_ctx, None),
-                auth_provider: Some(provider.into()),
+                auth_provider: Some(Box::new(provider)),
             },
             node_id,
             node_config,
@@ -1746,11 +1755,10 @@ mod test {
     }
 
     #[test]
-    fn test_bearer_token_injected_on_wire() {
-        // End-to-end proof that a bound `bearer_token_provider` injects a fresh
-        // `authorization` bearer token on the outbound request, and that the
-        // token takes precedence over a statically configured `authorization`
-        // header.
+    fn test_auth_injected_on_wire() {
+        // End-to-end proof that a bound auth provider injects auth on the
+        // outbound request, and that the token takes precedence over a
+        // statically configured header.
         otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let tokio_rt = Runtime::new().unwrap();
         let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
@@ -1777,7 +1785,10 @@ mod test {
         let exporter = exporter_with_provider(
             &test_runtime,
             config,
-            MockTokenProvider::new("provider-token"),
+            MockHttpClientAuthProvider::new(
+                header::AUTHORIZATION,
+                vec![("Bearer provider-token".into(), None)],
+            ),
         );
 
         let (logs_batch, _, _) = gen_batches_for_each_signal_type();
@@ -1822,8 +1833,8 @@ mod test {
     }
 
     #[test]
-    fn test_bearer_token_unavailable_nacks_and_sends_nothing() {
-        // Provider is bound but never publishes a token: batches must be NACK'd
+    fn test_auth_unavailable_nacks_and_sends_nothing() {
+        // Provider is bound but never publishes an auth: batches must be NACK'd
         // as retryable and no request may reach the server.
         otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let tokio_rt = Runtime::new().unwrap();
@@ -1838,15 +1849,11 @@ mod test {
 
         let config = default_test_config(endpoint);
         let test_runtime = TestRuntime::<OtapPdata>::new();
-        // Stream stays open but never yields a token.
+        // Stream stays open but never yields an auth.
         let exporter = exporter_with_provider(
             &test_runtime,
             config,
-            MockTokenProvider {
-                tokens: vec![],
-                keep_open: true,
-                expires_on: None,
-            },
+            MockHttpClientAuthProvider::never_publishes(),
         );
 
         let (logs_batch, _, _) = gen_batches_for_each_signal_type();
@@ -1885,7 +1892,7 @@ mod test {
                         PipelineCompletionMsg::DeliverNack { nack } => {
                             assert!(!nack.permanent, "unavailable-token NACK must be retryable");
                             assert!(
-                                nack.reason.contains("bearer token unavailable"),
+                                nack.reason.contains("auth unavailable"),
                                 "unexpected NACK reason: {}",
                                 nack.reason
                             );
@@ -1905,10 +1912,10 @@ mod test {
     }
 
     #[test]
-    fn test_expired_bearer_token_nacks_retryable_while_stream_open() {
-        // The provider publishes a token already within the usability margin of
+    fn test_expired_auth_nacks_retryable_while_stream_open() {
+        // The provider publishes an auth already within the usability margin of
         // expiry and keeps its stream open. The exporter must refuse to send it (a
-        // request could outlive the token), NACK retryably (a refresh may still
+        // request could outlive the auth), NACK retryably (a refresh may still
         // arrive), and send nothing to the server.
         otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let tokio_rt = Runtime::new().unwrap();
@@ -1923,15 +1930,17 @@ mod test {
 
         let config = default_test_config(endpoint);
         let test_runtime = TestRuntime::<OtapPdata>::new();
-        // Token already expired (expiry in the past, so within the usability margin).
+        // Auth already expired (expiry in the past, so within the usability margin).
         let exporter = exporter_with_provider(
             &test_runtime,
             config,
-            MockTokenProvider {
-                tokens: vec!["stale-token".to_string()],
-                keep_open: true,
-                expires_on: Some(Instant::now()),
-            },
+            MockHttpClientAuthProvider::new(
+                header::AUTHORIZATION,
+                vec![(
+                    "Bearer stale-token".to_string(),
+                    Some(Duration::from_secs(0)),
+                )],
+            ),
         );
 
         let (logs_batch, _, _) = gen_batches_for_each_signal_type();
@@ -1992,9 +2001,9 @@ mod test {
     }
 
     #[test]
-    fn test_invalid_bearer_token_is_skipped_and_valid_used() {
-        // A malformed token (header-invalid bytes) is dropped via the error arm
-        // (incrementing `auth_token_errors`); the subsequent valid token is what
+    fn test_invalid_aith_is_skipped_and_valid_used() {
+        // A malformed auth (header-invalid bytes) is dropped via the error arm
+        // (incrementing `auth_token_errors`); the subsequent valid auth is what
         // reaches the wire.
         otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let tokio_rt = Runtime::new().unwrap();
@@ -2009,15 +2018,17 @@ mod test {
 
         let config = default_test_config(endpoint);
         let test_runtime = TestRuntime::<OtapPdata>::new();
-        // First token is header-invalid (embedded newline), second is valid.
+        // First auth is header-invalid (embedded newline), second is valid.
         let exporter = exporter_with_provider(
             &test_runtime,
             config,
-            MockTokenProvider {
-                tokens: vec!["bad\ntoken".to_string(), "good-token".to_string()],
-                keep_open: true,
-                expires_on: None,
-            },
+            MockHttpClientAuthProvider::new(
+                header::AUTHORIZATION,
+                vec![
+                    ("Bearer bad\ntoken".to_string(), None),
+                    ("Bearer good-token".to_string(), None),
+                ],
+            ),
         );
 
         let (logs_batch, _, _) = gen_batches_for_each_signal_type();
@@ -2061,9 +2072,9 @@ mod test {
     }
 
     #[test]
-    fn test_last_token_reused_after_stream_closes() {
-        // The provider publishes one token then closes its stream; subsequent
-        // batches must keep using the cached token.
+    fn test_last_auth_reused_after_stream_closes() {
+        // The provider publishes one auth then closes its stream; subsequent
+        // batches must keep using the cached auth.
         otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
         let tokio_rt = Runtime::new().unwrap();
         let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
@@ -2077,15 +2088,14 @@ mod test {
 
         let config = default_test_config(endpoint);
         let test_runtime = TestRuntime::<OtapPdata>::new();
-        // One token, then the stream ends.
+        // One auth, then the stream ends.
         let exporter = exporter_with_provider(
             &test_runtime,
             config,
-            MockTokenProvider {
-                tokens: vec!["provider-token".to_string()],
-                keep_open: false,
-                expires_on: None,
-            },
+            MockHttpClientAuthProvider::new(
+                header::AUTHORIZATION,
+                vec![("Bearer provider-token".to_string(), None)],
+            ),
         );
 
         let (logs_batch, _, _) = gen_batches_for_each_signal_type();
@@ -4454,7 +4464,7 @@ mod test {
                                 async move {
                                     let content_encoding = req
                                         .headers()
-                                        .get(http::header::CONTENT_ENCODING)
+                                        .get(header::CONTENT_ENCODING)
                                         .and_then(|v| v.to_str().ok())
                                         .map(|s| s.to_string());
                                     let body_bytes = req.into_body().collect().await.unwrap().to_bytes();

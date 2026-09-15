@@ -214,6 +214,150 @@ impl<T: BearerTokenProvider + 'static> From<T> for Box<dyn HttpClientAuthProvide
     }
 }
 
+#[cfg(any(test, feature = "test-utils"))]
+pub mod test_support {
+    //! Test doubles shared by the nodes that consume this adapter, so every
+    //! consumer's test suite drives the same provider behavior instead of each
+    //! maintaining its own copy.
+
+    use futures::{Stream, StreamExt};
+    use http::header;
+    use std::{pin::Pin, time::Duration};
+
+    use super::*;
+
+    const NAME: &str = "MockAuth";
+
+    const AUTH_USABLE_MARGIN: Duration = Duration::from_secs(30);
+
+    type AuthStream = Pin<Box<dyn Stream<Item = (String, Option<Duration>)> + 'static>>;
+
+    /// Test double for the `HttpClientAuthProvider` with configurable behavior.
+    pub struct MockHttpClientAuthProvider {
+        stream: AuthStream,
+        header_name: HeaderName,
+        cached_header: Option<HeaderValue>,
+        cached_expiry: Option<Instant>,
+        generation: u64,
+        stream_active: bool,
+    }
+
+    impl MockHttpClientAuthProvider {
+        /// Create a provider from a list of values with optional expiry.
+        #[must_use]
+        pub fn new(
+            header_name: HeaderName,
+            header_values: Vec<(String, Option<Duration>)>,
+        ) -> MockHttpClientAuthProvider {
+            let published = futures::stream::iter(header_values);
+
+            Self {
+                stream: published.chain(futures::stream::pending()).boxed(),
+                header_name,
+                cached_header: None,
+                cached_expiry: None,
+                generation: 0,
+                stream_active: true,
+            }
+        }
+
+        /// Create a provider which never publishes.
+        #[must_use]
+        pub fn never_publishes() -> MockHttpClientAuthProvider {
+            let published = futures::stream::iter(vec![]);
+
+            Self {
+                stream: published.chain(futures::stream::pending()).boxed(),
+                header_name: header::AUTHORIZATION,
+                cached_header: None,
+                cached_expiry: None,
+                generation: 0,
+                stream_active: true,
+            }
+        }
+    }
+
+    #[async_trait(?Send)]
+    impl HttpClientAuthProvider for MockHttpClientAuthProvider {
+        fn name(&self) -> HttpClientAuthProviderName {
+            NAME.into()
+        }
+
+        fn is_active(&self) -> bool {
+            self.stream_active
+        }
+
+        fn is_ready(&self) -> bool {
+            match (self.cached_header.is_some(), self.cached_expiry) {
+                (false, _) => false,
+                (true, None) => true, // non-expiring token
+                (true, Some(expires_on)) => expires_on > Instant::now() + AUTH_USABLE_MARGIN,
+            }
+        }
+
+        fn not_ready_reason(&self) -> &'static str {
+            if self.cached_header.is_some() {
+                "auth at/near expiry; awaiting refresh"
+            } else {
+                "auth unavailable"
+            }
+        }
+
+        fn header(&self) -> Option<(HeaderName, HeaderValue, u64)> {
+            self.cached_header
+                .clone()
+                .map(|header| (self.header_name.clone(), header, self.generation))
+        }
+
+        fn refresh_deadline(&self) -> Option<Instant> {
+            if !self.is_ready() {
+                return None;
+            }
+            self.cached_expiry
+                .and_then(|expires_on| expires_on.checked_sub(AUTH_USABLE_MARGIN))
+        }
+
+        fn invalidate(&mut self, generation: u64) {
+            if generation == self.generation && self.cached_header.is_some() {
+                self.cached_header = None;
+                self.cached_expiry = None;
+            }
+        }
+
+        async fn poll_refresh(&mut self, events: &HttpClientAuthProviderEvents) -> bool {
+            match self.stream.next().await {
+                Some((value, duration)) => {
+                    match HeaderValue::from_str(&value) {
+                        Ok(mut value) => {
+                            // Redact in `Debug`, exclude from HPACK indexing.
+                            value.set_sensitive(true);
+                            self.cached_header = Some(value);
+                            self.cached_expiry = duration.map(|v| Instant::now() + v);
+                            // A new cached token starts a new generation, so a 401 for
+                            // an earlier token no longer matches and is ignored.
+                            self.generation = self.generation.wrapping_add(1);
+                            return true;
+                        }
+                        Err(e) => {
+                            // Malformed token: keep the previous cached token (if any).
+                            events.emit_invalid(self, &format!("Malformed token: {e}"));
+                            return false;
+                        }
+                    }
+                }
+                None => {
+                    // Provider closed its stream; no further refreshes will arrive.
+                    // Keep using the last cached token. Not expected with a
+                    // watch-backed provider while we hold its handle, so warn.
+                    self.stream_active = false;
+                    events.emit_stream_closed(self);
+                    return false;
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use otel_arrow_dfe_engine::{

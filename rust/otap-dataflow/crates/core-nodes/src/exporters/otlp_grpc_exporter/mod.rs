@@ -1423,10 +1423,10 @@ struct CompletedExport {
 mod tests {
     use super::*;
 
+    use http::header;
     use otel_arrow_dfe_config::ContextEntryName;
     use otel_arrow_dfe_config::node::NodeUserConfig;
-    use otel_arrow_dfe_engine::local::capability::auth::bearer_token_provider::BearerTokenProvider;
-    use otel_arrow_dfe_otap::bearer_auth::test_support::MockTokenProvider;
+    use otel_arrow_dfe_otap::http_client_auth_provider::test_support::MockHttpClientAuthProvider;
     use std::collections::HashMap;
 
     use otel_arrow_dfe_config::transport_headers::{
@@ -1874,8 +1874,8 @@ mod tests {
     /// Returns every `authorization` metadata value the server observed, in
     /// arrival order, so a test can assert both which credential arrived and
     /// that exactly one did per request.
-    fn run_bearer_wire_test(
-        provider: MockTokenProvider,
+    fn run_auth_wire_test(
+        provider: MockHttpClientAuthProvider,
         static_headers: &[(&str, &str)],
     ) -> Vec<String> {
         let test_runtime = TestRuntime::new();
@@ -1959,7 +1959,7 @@ mod tests {
                     num_connections: default_num_connections(),
                 },
                 metrics: OtlpGrpcExporterMetrics::register(&pipeline_ctx, None),
-                auth_provider: Some(provider.into()),
+                auth_provider: Some(Box::new(provider)),
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -1992,15 +1992,18 @@ mod tests {
         captured_auth.lock().unwrap().clone()
     }
 
-    /// Scenario: a `bearer_token_provider` is bound and has published a token,
+    /// Scenario: an auth provider is bound and has published a header,
     /// while the config also carries a static `authorization` header.
     /// Guarantees: every outbound export carries the provider's refreshed token
     /// as its only `authorization` metadata, so a stale configured credential
     /// can neither override the live token nor be sent alongside it.
     #[test]
-    fn bearer_token_reaches_the_grpc_server_and_overrides_a_static_header() {
-        let captured = run_bearer_wire_test(
-            MockTokenProvider::new("provider-token"),
+    fn auth_reaches_the_grpc_server_and_overrides_a_static_header() {
+        let captured = run_auth_wire_test(
+            MockHttpClientAuthProvider::new(
+                header::AUTHORIZATION,
+                vec![("Bearer provider-token".into(), None)],
+            ),
             &[("authorization", "Basic static")],
         );
 
@@ -2012,18 +2015,20 @@ mod tests {
     }
 
     /// Scenario: the provider's first publication cannot form a header value
-    /// (it contains a newline) and a valid token follows on the same stream.
-    /// Guarantees: the malformed token is skipped rather than aborting the
+    /// (it contains a newline) and a valid auth follows on the same stream.
+    /// Guarantees: the malformed auth is skipped rather than aborting the
     /// exporter or being sent, and exports proceed with the next valid token, so
     /// one bad publication costs a refresh rather than the pipeline.
     #[test]
-    fn an_invalid_bearer_token_is_skipped_and_the_next_valid_one_is_used() {
-        let captured = run_bearer_wire_test(
-            MockTokenProvider {
-                tokens: vec!["bad\nvalue".to_string(), "good-token".to_string()],
-                keep_open: true,
-                expires_on: None,
-            },
+    fn an_invalid_auth_is_skipped_and_the_next_valid_one_is_used() {
+        let captured = run_auth_wire_test(
+            MockHttpClientAuthProvider::new(
+                header::AUTHORIZATION,
+                vec![
+                    ("Bearer bad\nvalue".to_string(), None),
+                    ("Bearer good-token".to_string(), None),
+                ],
+            ),
             &[],
         );
 
@@ -2034,19 +2039,18 @@ mod tests {
         );
     }
 
-    /// Scenario: the provider publishes one token and then closes its stream, so
+    /// Scenario: the provider publishes one auth and then closes its stream, so
     /// no further refreshes can arrive.
-    /// Guarantees: the exporter keeps using the last token instead of treating
+    /// Guarantees: the exporter keeps using the last auth instead of treating
     /// the closure as a loss of credentials, so a provider that stops refreshing
     /// degrades to a static credential rather than stalling the pipeline.
     #[test]
-    fn the_last_bearer_token_is_reused_after_the_provider_closes_its_stream() {
-        let captured = run_bearer_wire_test(
-            MockTokenProvider {
-                tokens: vec!["final-token".to_string()],
-                keep_open: false,
-                expires_on: None,
-            },
+    fn the_last_auth_is_reused_after_the_provider_closes_its_stream() {
+        let captured = run_auth_wire_test(
+            MockHttpClientAuthProvider::new(
+                header::AUTHORIZATION,
+                vec![("Bearer final-token".to_string(), None)],
+            ),
             &[],
         );
 
@@ -2057,14 +2061,14 @@ mod tests {
         );
     }
 
-    /// Scenario: a `bearer_token_provider` is bound but never publishes a token,
+    /// Scenario: a provider is bound but never publishes an auth,
     /// then the pipeline shuts down with a batch still buffered.
     /// Guarantees: nothing is sent unauthenticated -- intake stays gated so the
     /// server sees no request at all -- and the batch shutdown force-drains is
     /// NACK'd retryably with its payload intact, so it is deferred rather than
     /// dropped.
     #[test]
-    fn an_unavailable_token_gates_intake_and_shutdown_nacks_retryably() {
+    fn an_unavailable_auth_gates_intake_and_shutdown_nacks_retryably() {
         let test_runtime = TestRuntime::new();
         let (sender, mut receiver) = tokio::sync::mpsc::channel(32);
         let (shutdown_sender, shutdown_signal) = tokio::sync::oneshot::channel();
@@ -2109,7 +2113,7 @@ mod tests {
                     num_connections: default_num_connections(),
                 },
                 metrics: OtlpGrpcExporterMetrics::register(&pipeline_ctx, None),
-                auth_provider: Some(MockTokenProvider::never_publishes().into()),
+                auth_provider: Some(Box::new(MockHttpClientAuthProvider::never_publishes())),
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -2162,7 +2166,7 @@ mod tests {
                                 "a batch refused for a missing token must stay retryable"
                             );
                             assert!(
-                                nack.reason.contains("bearer token unavailable"),
+                                nack.reason.contains("auth unavailable"),
                                 "unexpected NACK reason: {}",
                                 nack.reason
                             );
@@ -2777,13 +2781,13 @@ mod tests {
         run_grpc_error_status_test_with_provider(code, detail_bytes, None)
     }
 
-    /// As [`run_grpc_error_status_test`], but with an optional bound bearer
-    /// token provider, so a status code whose classification depends on whether
-    /// the credential is refreshable can be exercised both ways.
+    /// As [`run_grpc_error_status_test`], but with an optional bound auth
+    /// provider, so a status code whose classification depends on whether the
+    /// credential is refreshable can be exercised both ways.
     fn run_grpc_error_status_test_with_provider(
         code: Code,
         detail_bytes: Option<Bytes>,
-        token_provider: Option<Box<dyn BearerTokenProvider>>,
+        auth_provider: Option<MockHttpClientAuthProvider>,
     ) -> bool {
         use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::logs_service_server::LogsServiceServer;
 
@@ -2801,9 +2805,8 @@ mod tests {
         let node_id = test_node(test_runtime.config().name.clone());
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
-        let auth_provider = token_provider.map(|provider| {
-            let a: Box<dyn HttpClientAuthProvider> =
-                Box::new(new_http_client_auth_provider_from_token_provider(provider));
+        let auth_provider = auth_provider.map(|provider| {
+            let a: Box<dyn HttpClientAuthProvider> = Box::new(provider);
             a
         });
         let mut exporter = ExporterWrapper::local(
@@ -3042,18 +3045,21 @@ mod tests {
         );
     }
 
-    /// Scenario: the server rejects an export with `UNAUTHENTICATED` while a
-    /// bearer token provider is bound and has published a token.
-    /// Guarantees: the token generation stamped into the request metadata
+    /// Scenario: the server rejects an export with `UNAUTHENTICATED` while an
+    /// auth provider is bound and has published an auth.
+    /// Guarantees: the auth generation stamped into the request metadata
     /// survives all the way to the completion, so the failure is classified as
     /// refreshable and the batch is NACK'd retryably instead of being dropped
-    /// because a token lapsed or a refresh raced.
+    /// because an auth lapsed or a refresh raced.
     #[test]
     fn unauthenticated_with_a_bound_provider_produces_retryable_nack() {
         let permanent = run_grpc_error_status_test_with_provider(
             Code::Unauthenticated,
             None,
-            Some(Box::new(MockTokenProvider::new("provider-token"))),
+            Some(MockHttpClientAuthProvider::new(
+                header::AUTHORIZATION,
+                vec![("Bearer provider-token".into(), None)],
+            )),
         );
         assert!(
             !permanent,
@@ -3418,7 +3424,7 @@ mod tests {
             &context,
             None,
             Some((
-                http::header::AUTHORIZATION,
+                header::AUTHORIZATION,
                 HeaderValue::from_static("Bearer refreshed"),
             )),
         )
@@ -3462,7 +3468,7 @@ mod tests {
             &context,
             Some(&static_metadata),
             Some((
-                http::header::AUTHORIZATION,
+                header::AUTHORIZATION,
                 HeaderValue::from_static("Bearer refreshed"),
             )),
         )
@@ -3498,7 +3504,7 @@ mod tests {
             &handler,
             &context,
             None,
-            Some((http::header::AUTHORIZATION, token)),
+            Some((header::AUTHORIZATION, token)),
         )
         .expect("a cached bearer token must produce request metadata");
 
