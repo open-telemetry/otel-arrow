@@ -108,14 +108,7 @@ consecutive rows share one timestamp, which verifies that the composite
 timestamp plus tie-breaker cursor neither skips nor duplicates rows at page
 boundaries. `--reset` recreates the table before loading it.
 
-The Docker Compose demo builds the generator into the receiver image and runs
-it from `oracle-demo-entrypoint.sh` before starting `df_engine`:
-
-```powershell
-docker compose -f docker-compose.oracle-demo.yaml up --build
-```
-
-It can also be run directly against an existing Oracle instance using
+Run it directly against an existing Oracle instance using
 `ORACLE_USERNAME`, `ORACLE_PWD`, and `ORACLE_CONNECT_STRING`:
 
 ```powershell

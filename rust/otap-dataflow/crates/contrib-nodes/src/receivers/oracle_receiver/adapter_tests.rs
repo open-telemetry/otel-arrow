@@ -6,10 +6,7 @@ use super::{
     finite_float, read_credential, validate_described_cursor_columns, validate_types,
 };
 use oracle::sql_type::Timestamp;
-use otel_arrow_dfe_scraper::database::{
-    CheckpointConfig, CompiledQuery, CompositeCursor, CompositeWatermark, DriverAdapter, OnNack,
-    OutputConfig, PollingConfig, TieBreakerCursorConfig, TimestampCursorConfig, WatermarkConfig,
-};
+use otel_arrow_dfe_scraper::database::{CompositeCursor, CompositeWatermark};
 use secrecy::ExposeSecret;
 use std::fs;
 use std::str::FromStr;
@@ -31,110 +28,6 @@ fn columns(timestamp: OracleType, tie_breaker: OracleType) -> Vec<(String, Oracl
         ("EVENT_TS".to_owned(), timestamp),
         ("EVENT_ID".to_owned(), tie_breaker),
     ]
-}
-
-/// Scenario: The listener-agent wide composite dataset is fetched after an eight-page warmup.
-/// Guarantees: Query/fetch throughput is reported with the same row, byte, and timing boundaries
-/// as the db-listener-agent Oracle benchmark.
-#[tokio::test(flavor = "current_thread")]
-#[ignore = "requires the db-listener-agent Oracle performance dataset"]
-async fn benchmark_wide_composite_query_fetch() {
-    const PAGE_ROWS: usize = 1_024;
-    const PAGE_BYTES: u64 = 64 * 1024 * 1024;
-    const WARMUP_PAGES: usize = 8;
-
-    let query = CompiledQuery::compile(
-        "SELECT event_time, id, tenant_id, source, reading, payload, body \
-         FROM db_listener_perf_wide \
-         WHERE event_time > :last_timestamp OR \
-         (event_time = :last_timestamp AND id > :last_tie_breaker) \
-         ORDER BY event_time ASC, id ASC"
-            .to_owned(),
-        PollingConfig {
-            interval: Duration::from_millis(1),
-            timeout: Duration::from_secs(60),
-            max_rows_per_poll: PAGE_ROWS,
-            fetch_size: PAGE_ROWS,
-            max_batch_bytes: PAGE_BYTES,
-        },
-        &WatermarkConfig::Composite {
-            timestamp: TimestampCursorConfig {
-                column: "EVENT_TIME".to_owned(),
-                bind: "last_timestamp".to_owned(),
-                initial: "1970-01-01 00:00:00".to_owned(),
-                timezone: "UTC".to_owned(),
-            },
-            tie_breaker: TieBreakerCursorConfig {
-                column: "ID".to_owned(),
-                bind: "last_tie_breaker".to_owned(),
-                initial: 0,
-            },
-        },
-        &CheckpointConfig {
-            directory: ".benchmark".to_owned(),
-            on_nack: OnNack::Rewind,
-            nack_backoff: Duration::from_secs(1),
-            max_consecutive_failures: 1,
-        },
-        OutputConfig::default(),
-    )
-    .expect("benchmark query");
-    let config = super::OracleAdapterConfig {
-        connect_string: std::env::var("DB_ORACLE_LIVE_CONNECT_STRING")
-            .expect("DB_ORACLE_LIVE_CONNECT_STRING"),
-        instant_client_dir: std::env::var("ORACLE_INSTANT_CLIENT_DIR")
-            .expect("ORACLE_INSTANT_CLIENT_DIR"),
-        username_file: std::env::var("DB_ORACLE_LIVE_USERNAME_FILE")
-            .expect("DB_ORACLE_LIVE_USERNAME_FILE"),
-        password_file: std::env::var("DB_ORACLE_LIVE_PASSWORD_FILE")
-            .expect("DB_ORACLE_LIVE_PASSWORD_FILE"),
-    };
-    let mut adapter = super::OracleAdapter::new(config);
-    _ = adapter.begin_operation().expect("begin validation");
-    _ = adapter
-        .validate_query(&query)
-        .await
-        .expect("validate query");
-
-    let initial = query.watermark().initial.clone();
-    let mut cursor = initial.clone();
-    for _ in 0..WARMUP_PAGES {
-        _ = adapter.begin_operation().expect("begin warmup");
-        let page = adapter.execute(&query, &cursor).await.expect("warmup page");
-        if page.rows.is_empty() {
-            break;
-        }
-        cursor = page.rows.last().expect("warmup row").cursor.clone();
-    }
-
-    let started = std::time::Instant::now();
-    let mut cursor = initial;
-    let mut rows = 0usize;
-    let mut bytes = 0u64;
-    loop {
-        _ = adapter.begin_operation().expect("begin fetch");
-        let page = adapter
-            .execute(&query, &cursor)
-            .await
-            .expect("benchmark page");
-        if page.rows.is_empty() {
-            break;
-        }
-        rows += page.rows.len();
-        bytes += page
-            .rows
-            .iter()
-            .map(|row| row.row.normalized_size())
-            .sum::<u64>();
-        cursor = page.rows.last().expect("benchmark row").cursor.clone();
-    }
-    let elapsed = started.elapsed();
-    println!(
-        "otel-arrow wide composite: query_fetch_rows={rows} elapsed_s={:.3} rows_per_s={:.0} decoded_mib_per_s={:.2}",
-        elapsed.as_secs_f64(),
-        rows as f64 / elapsed.as_secs_f64(),
-        bytes as f64 / (1024.0 * 1024.0) / elapsed.as_secs_f64()
-    );
 }
 
 /// Scenario: live metadata reports supported cursor types under differing identifier case.
