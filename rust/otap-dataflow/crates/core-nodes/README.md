@@ -81,6 +81,7 @@ through a pipeline.
 | [`processor:durable_buffer`](src/processors/durable_buffer_processor/README.md)                 | default | experimental | Adds crash-resilient buffering through a local durable queue.    |
 | [`processor:fanout`](src/processors/fanout_processor/README.md)                                 | default | experimental | Clones incoming data to multiple downstream destinations.        |
 | [`processor:filter`](src/processors/filter_processor/README.md)                                 | default | experimental | Drops logs or traces according to include and exclude rules.     |
+| [`processor:log_parser`](src/processors/log_parser_processor/README.md)                         | default | experimental | Parses framed log bodies with regex, JSON Pointers, or CSV.      |
 | [`processor:log_sampling`](src/processors/log_sampling_processor/README.md)                     | default | experimental | Reduces log volume by discarding selected log records.           |
 | [`processor:partition`](src/processors/partition_processor/)                                    | default | experimental | Splits by expression and adds a partition transport header.      |
 | [`processor:retry`](src/processors/retry_processor/README.md)                                   | default | experimental | Retries downstream delivery when it receives a NACK.             |
