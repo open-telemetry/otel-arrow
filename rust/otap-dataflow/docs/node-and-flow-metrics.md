@@ -30,7 +30,7 @@ configuration.
 | Which node changed the count of logs, metrics, or traces? | Node item metrics |
 | What is the aggregate compute time for selected processor stages? | Flow metrics |
 | Which decision processor dropped items within a processor range? | Flow metrics |
-| How many items did a receiver admit or exporter emit? | Node item metrics |
+| How many items entered or left a node as PData? | Node item metrics |
 
 ## Node Metrics
 
@@ -76,24 +76,18 @@ node.input        = consumed PData messages
 exporter.attempted = node-local export attempts
 ```
 
-A receiver can emit several PData messages from one external message or combine
-several external messages into one PData batch. An exporter can split one PData
-message across several external submissions or combine several PData messages
-into one external batch. Retries add exporter attempts without adding input
-PData messages.
+Fan-out, aggregation, batching, and retries can make these counts differ.
+Receivers without classifiable external messages may omit
+`receiver.received`.
 
-Receivers without an independently classifiable external message, including
-some source and generator receivers, may emit `node.output` without emitting
-`receiver.received`. Buffered exporters may complete an attempt when a
-node-owned writer accepts the data while reporting later flush or storage
-operations through node-specific telemetry.
+`receiver.received` success means receiver acceptance; `node.output` describes
+the resulting PData lifecycle. For exporters, `node.input` success means the
+node ACKed the PData under its policy; `exporter.attempted` describes external
+attempts. Do not subtract counts unless the node documents a 1:1 mapping.
 
-Interpret each metric at its own boundary rather than expecting equality across
-these mappings. Node-specific documentation should state whether the work is
-1:1, fan-out, aggregation, or many-to-many. The full implementation rules are
-in the telemetry
+See
 [`Shared receiver and exporter boundary metrics`](telemetry/metrics-guide.md#shared-receiver-and-exporter-boundary-metrics)
-guide.
+for topology and buffering rules.
 
 Engine-managed node message, item, and size counters have bounded `signal` and
 `outcome` data-point attributes. `signal` is one of `logs`, `metrics`, or

@@ -11,7 +11,7 @@
 //! [Shared receiver and exporter boundary metrics][boundary-metrics] before
 //! instrumenting fan-out, aggregation, many-to-many batching, or retries.
 //!
-//! [boundary-metrics]: ../../../docs/telemetry/metrics-guide.md#shared-receiver-and-exporter-boundary-metrics
+//! [boundary-metrics]: https://github.com/open-telemetry/otel-arrow/blob/main/rust/otap-dataflow/docs/telemetry/metrics-guide.md#shared-receiver-and-exporter-boundary-metrics
 
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_engine::Interests;

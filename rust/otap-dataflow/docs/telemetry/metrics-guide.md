@@ -231,7 +231,7 @@ metrics.
 | `receiver.received.messages` | Record one classified external message when receiver-local handling reaches its terminal local outcome. |
 | `receiver.received.payload.size` | Record the encoded application payload bytes observed at the receiver boundary. |
 | `receiver.processing.duration` | Measure the receiver's documented local processing boundary, ending before downstream handoff or channel wait. |
-| `exporter.attempted.messages` | Record every node-local delivery attempt, including attempts that fail during preparation and each backend retry, grouped by terminal attempt outcome. |
+| `exporter.attempted.messages` | Record each node-local delivery attempt, including preparation failures and retries represented as attempts. |
 | `exporter.attempted.duration` | Measure from attempt start through the terminal local or backend result, excluding Ack/Nack notification delivery. |
 | `exporter.attempted.payload.size` | Record the encoded application payload bytes produced or submitted by the attempt when available. |
 | `exporter.attempted.items` | Record the signal items handled by the attempt. |
@@ -251,66 +251,30 @@ N:1   several inputs aggregate into one output
 N:M   inputs and outputs are regrouped across independently owned batches
 ```
 
-Receiver boundary metrics count external messages. Exporter boundary metrics
-count node-local attempts to deliver externally, including attempts that end
-during preparation before a physical submission exists. Node metrics count the
-PData side. Do not force these cardinalities to match.
+Boundary metrics count external work; node metrics count PData. Do not force
+their cardinalities to match.
 
 `receiver.received` applies to ingress receivers with independently
-classifiable external messages. Receivers without such a message, such as
-periodic scrapers or synthetic traffic generators, do not invent received
-messages to use this metric. They use `node.output` for emitted PData and
-node-specific collection or generation metrics. A future shared
-`receiver.pulled` contract could represent receiver-initiated collection
-operations separately from externally pushed messages.
+classifiable external messages. Scrapers, generators, and similar receivers
+without one use `node.output` plus node-specific collection metrics. A future
+`receiver.pulled` contract could cover receiver-initiated collection.
 
 | Work shape | Receiver boundary | Exporter boundary |
 | --- | --- | --- |
 | `1:1` | Record one `receiver.received` observation for the external message. | Record one `exporter.attempted` observation for the node-local delivery attempt, including a preparation-only terminal outcome. |
 | `1:N` fan-out | Record one terminal local outcome for the external message; `node.output` records each emitted PData message. | Record one attempt per external submission when fan-out succeeds. A failure before submissions are discovered records one preparation-only attempt. |
 | `N:1` aggregation | Record each external message independently; the later aggregate PData emission belongs to `node.output`. | Record one attempt for the external batch, using batch-level items and payload size rather than repeating an input PData count. |
-| `N:M` regrouping | Track external messages and PData emissions independently. Maintain explicit ownership when one external message contributes to several outputs or one output combines several messages. | Track logical batch ownership independently from attempts. ACK/NACK follows the PData-to-batch mapping; `exporter.attempted` records physical submissions, retries, and preparation-only terminal outcomes. |
+| `N:M` regrouping | Track external messages and PData emissions independently. Maintain explicit ownership when one external message contributes to several outputs or one output combines several messages. | Track logical batch ownership independently from attempts. ACK/NACK follows the PData-to-batch mapping; record each submission and retry when physical submission is the attempt boundary. |
 
-For any shape, define stable identities for the external message or submission,
-the PData messages involved, and any internal batch. Document when each identity
-is created, which work it owns, and how partial success is aggregated.
+Document stable external, PData, and batch identities where ownership is not
+1:1. Receiver duration excludes batching and handoff wait. Exporter duration
+covers attempt-owned preparation and backend work, but excludes batch buildup,
+retry backoff, and Ack/Nack notification.
 
-Each node must document a stable processing or attempt boundary. Receiver
-processing excludes downstream processing, batching wait, channel handoff
-wait, and Ack/Nack completion. An exporter attempt starts when the node
-begins work owned by that attempt and ends at its terminal local or backend
-result. It includes attempt-owned encoding and backend latency when those
-stages are reached, but excludes logical batch buildup, retry backoff, and the
-time needed to notify upstream after the result is known.
-
-Node metrics use bounded `signal` and `outcome` attributes. Nodes may
-retain additional bounded diagnostic metrics, such as protocol-specific
-rejection or failure categories, but should not redefine the shared message,
-duration, payload-size, or item instruments.
-
-The `failed` and `refused` helpers return an error wrapper carrying its outcome.
-If a node handles that error and continues, discarding the wrapper also
-discards its classification; it cannot affect a later error returned by the
-operation.
-
-Shared metric helpers own optional-measurement policy checks. Node code
-must not independently inspect telemetry interests before reading the clock,
-counting items, or recording payload size. `PipelineContext` provides the
-effective node interests when the helper is registered. Constructing an
-exporter attempt starts its optional duration measurement so synchronous work
-owned by that attempt is included.
-
-`runtime_metrics: detailed` enables all shared optional node
-measurements. A node can instead opt into messages, local duration, item
-counts, and/or payload size at any runtime metric level with its
-`policies.telemetry` flags. `completion_duration` independently enables
-`node.completion.duration`. Each opt-in enables only its corresponding
-measurements.
-
-Nodes with additional diagnostics should compose the shared helper into
-their metrics aggregate under a `boundary` field. The aggregate owns
-combined reporting and terminal snapshots, while operation lifecycle calls go
-directly through `boundary`.
+Shared helpers own optional-measurement policy checks. `runtime_metrics:
+detailed` enables all optional measurements; per-node `policies.telemetry`
+flags enable them individually. Compose the helper under a `boundary` field
+when the node also has diagnostic metrics.
 
 ### Receiver implementation
 
@@ -340,33 +304,31 @@ let decoded = result?;
 effect_handler.send_message(decoded).await?;
 ```
 
-The receiver runs exactly one processing closure and records its completed
-observation before awaiting downstream handoff. The closure receives the
-processing context so it can add payload size when that value becomes
-available. Successful processing returns the classified signal with its value,
-so the signal cannot be omitted. Return classified errors through
-`processing.failed(signal, error)` or `processing.refused(signal, error)`.
-A failure returned before signal classification does not emit shared receiver
-metrics; use a node-specific rejection metric for that condition.
+Receiver outcomes describe receiver-local work:
 
-Apply the following rules when external messages and emitted PData are not 1:1:
+- `success` means classification, processing, and local admission completed and
+  the message became eligible for downstream handoff.
+- `refused` means validation, policy, admission, or capacity explicitly
+  rejected the message.
+- `failure` means decoding or other receiver-local processing was attempted but
+  did not complete because of an internal error.
 
-- For `1:N` fan-out, record one terminal local outcome for the external message
-  before downstream handoff. Do not aggregate later PData handoff outcomes into
-  an observation that has already completed; `node.output` and node-specific
-  diagnostics own those outcomes.
-- For `N:1` aggregation, record each external message independently rather than
-  delaying or duplicating observations to align them with a later PData batch.
-- For `N:M` regrouping, maintain explicit external-message-to-PData ownership
-  so rejection, replay, and partial handoff behavior remain deterministic.
-- For asynchronous batching, record success when the external message is
-  accepted into its node-owned batch. Do not retain an unfinished receiver
-  observation until that batch eventually flushes. The later PData emission
-  belongs to `node.output`; flush and handoff diagnostics remain
-  node-specific.
-- For source and generator receivers without an external message, do not emit
-  `receiver.received`. Record emitted PData through `node.output` and use
-  node-specific metrics for scrape, collection, or generation operations.
+For request protocols, classify by protocol semantics rather than status-code
+class alone.
+
+> [!IMPORTANT]
+> An outcome reports whether the work owned by that metric completed.
+> `receiver.received` success means the receiver accepted the external message,
+> not that the resulting PData completed downstream handoff or delivery. This
+> avoids duplicating `node.output` and retaining per-message metric state
+> through batching. Use `node.output` and node-specific diagnostics for the
+> later PData lifecycle.
+
+Record the completed observation before downstream handoff. Return classified
+errors through `processing.failed` or `processing.refused`; failures before
+signal classification require node-specific diagnostics. For asynchronous
+batching, record success when the external message enters the node-owned batch,
+not when the batch flushes.
 
 ### Exporter implementation
 
@@ -406,47 +368,39 @@ if let Err(error_type) = result {
 effect_handler.notify_ack(AckMsg::new(data)).await?;
 ```
 
-The attempt context records encoded application payload size when the exporter
-produces or submits one. Nodes leave it unset when payload size is not
-meaningful or unavailable. Encoding structure, retries, node-specific failure
-metrics, and Ack/Nack behavior remain owned by the node.
-Return ordinary failures through `attempt.failed(error)`. Use
-`attempt.refused(error)` instead for a validation, policy, admission, or
-capacity rejection.
+Record payload size when encoded bytes are available. Use `attempt.failed` for
+ordinary failures and `attempt.refused` for explicit validation, policy,
+admission, or capacity rejection.
 
 `exporter.attempted.messages` counts node-local delivery attempts,
 including attempts that fail before a backend call. Each physical retry starts
-a new attempt and records the items and any available encoded payload bytes
-again. Use `node.input.messages` to count PData messages entering the exporter;
-do not use the attempt metric as a duplicate input-message count.
+a new attempt when physical submission is the node's documented attempt
+boundary. Use `node.input.messages` to count PData messages entering the
+exporter; do not use the attempt metric as a duplicate input-message count.
 
-Apply the following rules when PData and external submissions are not 1:1:
+> [!IMPORTANT]
+> `exporter.attempted` outcomes describe one node-local attempt. Success means
+> that attempt reached its documented completion boundary; it does not imply
+> that sibling attempts succeeded or that the contributing PData was ACKed.
+> Use `node.input` for the PData lifecycle.
 
-- For `1:N` fan-out, create one attempt per external submission, with
-  independent item count, payload size, outcome, and attempt-owned timing.
-  Measure preparation shared before sibling attempt identities exist through
-  node-specific telemetry.
-- For `N:1` aggregation, create one attempt for the external batch and record
-  batch-level items and payload size. Do not emit one attempt per contributing
-  PData message.
-- For `N:M` batching, maintain explicit PData-to-logical-batch ownership for
-  ACK/NACK. Emit one attempt for every physical submission of those batches and
-  for preparation-only work that terminates before submission.
-- Treat a logical batch and an attempt as separate identities. One logical
-  batch can produce several attempts when it is retried, and each attempt
-  repeats that batch's item count and payload size.
+Additional exporter rules:
+
+- Logical batches own PData ACK/NACK mapping; attempts own submissions and
+  retries. Fan-out siblings have independent measurements and outcomes.
 - For asynchronous buffering, document whether completion means acceptance
   into a node-owned writer or completion of a physical sink operation. If the
-  PData completes when the writer accepts it, end its attempt there. Later
-  background flush, synchronization, file closure, or object-store operations
-  are node-specific and must not create duplicate attempts for completed
-  PData. Omit payload size when encoded bytes cannot be attributed naturally to
-  the attempt.
+  writer acceptance is the attempt boundary, later background flush, retry,
+  synchronization, file closure, or object-store operations are node-specific
+  and do not create shared attempts. If physical sink completion is the attempt
+  boundary, record each submission and retry while retaining the ownership
+  needed to complete the contributing PData. Omit payload size when encoded
+  bytes cannot be attributed naturally to the attempt.
 - Record one failed or refused attempt when preparation fails before a
   submission exists. Record a successful no-op when the node accepts and
   completes the work without a submission.
-- Give every internal retry a fresh timing origin. Reusing the original timing
-  origin incorrectly includes earlier attempts and backoff.
+- Give every retry recorded as a shared attempt a fresh timing origin. Reusing
+  the original timing origin incorrectly includes earlier attempts and backoff.
 
 ## Performance considerations
 

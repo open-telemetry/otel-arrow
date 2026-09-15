@@ -37,9 +37,9 @@ metrics.
 
 The complete contract, including 1:1, fan-out, aggregation, many-to-many,
 retry, timing, payload-size, and outcome guidance, is in the
-[Internal Telemetry Metrics Guide](../../docs/telemetry/metrics-guide.md#shared-receiver-and-exporter-boundary-metrics).
-See [Node and Flow Metrics](../../docs/node-and-flow-metrics.md) for operator
-interpretation.
+[Internal Telemetry Metrics Guide](https://github.com/open-telemetry/otel-arrow/blob/main/rust/otap-dataflow/docs/telemetry/metrics-guide.md#shared-receiver-and-exporter-boundary-metrics).
+See [Node and Flow Metrics](https://github.com/open-telemetry/otel-arrow/blob/main/rust/otap-dataflow/docs/node-and-flow-metrics.md)
+for operator interpretation.
 
 ## Node Implementations Using This Crate
 
