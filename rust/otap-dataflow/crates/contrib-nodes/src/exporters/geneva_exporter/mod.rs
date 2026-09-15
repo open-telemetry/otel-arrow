@@ -1274,13 +1274,22 @@ impl GenevaExporter {
         let batches_encoded = batches.len();
         let max_concurrent = self.config.max_concurrent_uploads.max(1);
         let client = &self.geneva_client;
-        let attempts = (0..batches.len())
-            .map(|_| self.metrics.boundary.attempt(signal_type))
-            .collect::<Vec<_>>();
-        let mut batches = batches.iter().zip(attempts);
+        // Pre-start queued attempts only when their queueing duration is observable.
+        // Otherwise create attempts as uploads are scheduled to bound retained state.
+        let mut prestarted_attempts = self.metrics.measures_duration().then(|| {
+            (0..batches.len())
+                .map(|_| self.metrics.boundary.attempt(signal_type))
+                .collect::<Vec<_>>()
+                .into_iter()
+        });
+        let mut batches = batches.iter();
         let mut uploads = futures::stream::FuturesUnordered::new();
 
-        for (batch, attempt) in batches.by_ref().take(max_concurrent) {
+        for batch in batches.by_ref().take(max_concurrent) {
+            let attempt = prestarted_attempts
+                .as_mut()
+                .and_then(|attempts| attempts.next())
+                .unwrap_or_else(|| self.metrics.boundary.attempt(signal_type));
             uploads.push(upload_batch_attempt(client, batch, signal_type, attempt));
         }
 
@@ -1289,7 +1298,11 @@ impl GenevaExporter {
         while let Some(completed) = uploads.next().await {
             record_completed_upload(&mut self.metrics, signal_type, completed, &mut first_error);
 
-            if let Some((batch, attempt)) = batches.next() {
+            if let Some(batch) = batches.next() {
+                let attempt = prestarted_attempts
+                    .as_mut()
+                    .and_then(|attempts| attempts.next())
+                    .unwrap_or_else(|| self.metrics.boundary.attempt(signal_type));
                 uploads.push(upload_batch_attempt(client, batch, signal_type, attempt));
             }
         }

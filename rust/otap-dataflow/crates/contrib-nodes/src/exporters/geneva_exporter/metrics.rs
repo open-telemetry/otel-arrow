@@ -159,6 +159,11 @@ impl GenevaExporterMetrics {
         self.measure_duration.then(Instant::now)
     }
 
+    /// Returns whether node-local duration telemetry is enabled.
+    pub(super) const fn measures_duration(&self) -> bool {
+        self.measure_duration
+    }
+
     /// Records one completed Geneva encoding operation.
     pub(super) fn record_encoding(
         &mut self,
