@@ -3279,6 +3279,54 @@ mod test {
         assert!(neg_counts.is_empty(), "expected no negative bucket counts");
     }
 
+    /// Scenario: A metric exemplar has no timestamp set (time_unix_nano defaults to 0).
+    /// Guarantees: Encoding does not fail with `MissingRequiredFields`, and the zero
+    /// timestamp round-trips as a real (non-null) value. Regression test for
+    /// https://github.com/open-telemetry/otel-arrow/issues/4056.
+    #[test]
+    fn test_exemplar_with_no_timestamp() {
+        use crate::proto::opentelemetry::metrics::v1::{
+            AggregationTemporality, Exemplar, ExponentialHistogram, ExponentialHistogramDataPoint,
+            Metric, MetricsData, ResourceMetrics, ScopeMetrics,
+        };
+
+        let metrics_data = MetricsData {
+            resource_metrics: vec![ResourceMetrics {
+                scope_metrics: vec![ScopeMetrics {
+                    metrics: vec![
+                        Metric::build()
+                            .data_exponential_histogram(ExponentialHistogram {
+                                aggregation_temporality: AggregationTemporality::Cumulative as i32,
+                                data_points: vec![
+                                    ExponentialHistogramDataPoint::build()
+                                        .exemplars(vec![Exemplar::build().finish()])
+                                        .finish(),
+                                ],
+                            })
+                            .finish(),
+                    ],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let otap_batch = encode_metrics_otap_batch(&metrics_data)
+            .expect("encoding an exemplar with no timestamp should not fail (issue #4056)");
+
+        let exemplars_batch = otap_batch
+            .get(ArrowPayloadType::ExpHistogramDpExemplars)
+            .expect("ExpHistogramDpExemplars payload should be present");
+        let time_col = exemplars_batch
+            .column_by_name(consts::TIME_UNIX_NANO)
+            .expect("time_unix_nano column should be present, not elided");
+        assert_eq!(
+            time_col.null_count(),
+            0,
+            "time_unix_nano must never be null since it is a required field"
+        );
+    }
+
     /// Scenario: Two metrics without a resource precede one metric with resource metadata.
     /// Guarantees: Each metric receives aligned resource IDs, schema URLs, and dropped counts.
     #[test]
