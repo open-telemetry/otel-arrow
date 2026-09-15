@@ -19,7 +19,5 @@ issues: [4056]
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
 subtext: |
-  The exemplars schema declared time_unix_nano as required, but the
-  encoder's Arrow builder treated it as optional, causing the column to
-  be elided (and validation to fail) when every exemplar in a batch had
-  a zero/unset timestamp.
+  OTLP metrics data containing exemplars with no timestamp set now
+  converts to OTAP successfully instead of failing.

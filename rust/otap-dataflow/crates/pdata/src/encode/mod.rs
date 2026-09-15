@@ -3333,6 +3333,26 @@ mod test {
             0,
             "the proto3 default (unset) timestamp should round-trip as 0, not be lost"
         );
+
+        // Complete the round trip: decode the OTAP batch back to OTLP and confirm the
+        // exemplar's timestamp survives as 0 rather than being dropped or defaulted
+        // to something else.
+        let decoded = crate::testing::round_trip::decode_metrics(otap_batch);
+        let decoded_exemplar_ts = decoded.resource_metrics[0].scope_metrics[0].metrics[0]
+            .data
+            .as_ref()
+            .and_then(|d| match d {
+                crate::proto::opentelemetry::metrics::v1::metric::Data::ExponentialHistogram(
+                    eh,
+                ) => eh.data_points[0].exemplars.first(),
+                _ => None,
+            })
+            .expect("decoded metric should be an exponential histogram with an exemplar")
+            .time_unix_nano;
+        assert_eq!(
+            decoded_exemplar_ts, 0,
+            "the exemplar's time_unix_nano should decode back to 0 after a full OTLP -> OTAP -> OTLP round trip"
+        );
     }
 
     /// Scenario: Two metrics without a resource precede one metric with resource metadata.
