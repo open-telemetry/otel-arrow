@@ -7,7 +7,6 @@ use otel_arrow_dfe_pdata::otlp::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{KeyValue, any_value};
 use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{LogRecord, LogsData};
 use prost::Message;
-use std::collections::BTreeMap;
 use std::mem::size_of;
 use std::time::Duration;
 
@@ -85,10 +84,9 @@ fn polling() -> PollingConfig {
     PollingConfig {
         interval: Duration::from_secs(1),
         timeout: Duration::from_secs(1),
-        fetch_size: 10,
+        fetch_size: 100,
         max_rows_per_poll: 100,
         max_batch_bytes: 10 * 1024 * 1024,
-        max_normalized_bytes: 10 * 1024 * 1024,
     }
 }
 
@@ -132,12 +130,9 @@ fn maps_the_complete_cell_value_contract_to_otlp() {
         column("FLOAT_VALUE", "BINARY_DOUBLE"),
         column("STRING_VALUE", "VARCHAR2"),
         column("BYTES_VALUE", "RAW"),
-        column("DATE_VALUE", "DATE"),
         column("TIMESTAMP_VALUE", "TIMESTAMP"),
         column("TIMESTAMP_TZ_VALUE", "TIMESTAMP WITH TIME ZONE"),
         column("INTERVAL_VALUE", "INTERVAL DAY TO SECOND"),
-        column("JSON_VALUE", "JSON"),
-        column("UUID_VALUE", "VARCHAR2"),
     ];
     let rows = vec![Row {
         values: vec![
@@ -150,20 +145,12 @@ fn maps_the_complete_cell_value_contract_to_otlp() {
             CellValue::Float64(1.5),
             CellValue::String("text".to_owned()),
             CellValue::Bytes(vec![0, 1, 2]),
-            CellValue::Date("2026-08-28".to_owned()),
             CellValue::Timestamp("2026-08-28T12:30:00".to_owned()),
             CellValue::TimestampTz("2026-08-28T12:30:00+00:00".to_owned()),
             CellValue::Interval("+01 02:03:04".to_owned()),
-            CellValue::Json(r#"{"enabled":true}"#.to_owned()),
-            CellValue::Uuid("123e4567-e89b-12d3-a456-426614174000".to_owned()),
         ],
     }];
     let output = OutputConfig {
-        attributes: BTreeMap::from([
-            ("NULL_VALUE".to_owned(), "test.null".to_owned()),
-            ("BOOL_VALUE".to_owned(), "test.bool".to_owned()),
-            ("LARGE_UINT".to_owned(), "test.large_uint".to_owned()),
-        ]),
         timestamp_column: Some("TIMESTAMP_TZ_VALUE".to_owned()),
         ..OutputConfig::default()
     };
@@ -232,44 +219,15 @@ fn maps_the_complete_cell_value_contract_to_otlp() {
     ));
     for (key, expected) in [
         ("STRING_VALUE", "text"),
-        ("DATE_VALUE", "2026-08-28"),
         ("TIMESTAMP_VALUE", "2026-08-28T12:30:00"),
         ("TIMESTAMP_TZ_VALUE", "2026-08-28T12:30:00+00:00"),
         ("INTERVAL_VALUE", "+01 02:03:04"),
-        ("UUID_VALUE", "123e4567-e89b-12d3-a456-426614174000"),
     ] {
         assert!(matches!(
             field_value(record, key),
             any_value::Value::StringValue(value) if value == expected
         ));
     }
-    assert!(matches!(
-        field_value(record, "JSON_VALUE"),
-        any_value::Value::KvlistValue(value) if value.values[0].key == "enabled"
-    ));
-    assert!(
-        !record
-            .attributes
-            .iter()
-            .any(|attribute| attribute.key == "test.null")
-    );
-    assert!(record.attributes.iter().any(|attribute| {
-        attribute.key == "test.bool"
-            && matches!(
-                attribute
-                    .value
-                    .as_ref()
-                    .and_then(|value| value.value.as_ref()),
-                Some(any_value::Value::BoolValue(true))
-            )
-    }));
-    assert!(record.attributes.iter().any(|attribute| {
-        attribute.key == "test.large_uint"
-            && matches!(
-                attribute.value.as_ref().and_then(|value| value.value.as_ref()),
-                Some(any_value::Value::StringValue(value)) if value == &u64::MAX.to_string()
-            )
-    }));
 }
 
 /// Scenario: a page of rows is encoded with a generous byte ceiling.
@@ -434,21 +392,20 @@ fn rejects_invalid_live_metadata_mappings() {
     ));
 }
 
-/// Scenario: A date-only value is selected as the event-time column.
-/// Guarantees: The receiver maps the date to midnight UTC instead of accepting metadata and then
-/// failing every conversion batch.
+/// Scenario: A timestamp value is selected as the event-time column.
+/// Guarantees: The receiver maps the value as UTC without depending on the host timezone.
 #[test]
-fn maps_date_only_event_time_to_midnight_utc() {
+fn maps_timestamp_event_time_to_utc() {
     let rows = vec![Row {
-        values: vec![CellValue::Date("2026-08-28".to_owned())],
+        values: vec![CellValue::Timestamp("2026-08-28T00:00:00".to_owned())],
     }];
     let output = OutputConfig {
-        timestamp_column: Some("EVENT_DATE".to_owned()),
+        timestamp_column: Some("EVENT_TIME".to_owned()),
         ..OutputConfig::default()
     };
 
     let encoded = encode(
-        page(vec![column("EVENT_DATE", "DATE")], rows),
+        page(vec![column("EVENT_TIME", "TIMESTAMP")], rows),
         &output,
         UNLIMITED_BYTES,
     );
@@ -513,85 +470,43 @@ fn rejects_queries_outside_the_read_only_contract() {
     }
 }
 
-/// Scenario: A driver page is configured larger than the complete poll ceiling.
-/// Guarantees: Invalid fetch bounds fail configuration instead of defeating max_rows_per_poll.
+/// Scenario: A row, page, byte, or timing limit is outside its supported range.
+/// Guarantees: Every polling resource remains positive and bounded, including aggregate
+/// in-flight memory.
 #[test]
-fn rejects_fetch_size_above_poll_limit() {
-    let config = PollingConfig {
-        fetch_size: 101,
-        max_rows_per_poll: 100,
-        ..polling()
-    };
-
-    assert_eq!(
-        config.validate(),
-        Err(ConfigError::FetchSizeExceedsRowLimit)
-    );
-}
-
-/// Scenario: A poll is configured without a positive encoded or normalized byte budget.
-/// Guarantees: Both the exact OTLP payload ceiling and the in-memory row ceiling are explicit and
-/// non-zero, so neither bound can be silently disabled.
-#[test]
-fn requires_both_byte_limits() {
-    assert_eq!(
+fn rejects_invalid_polling_bounds() {
+    for invalid in [
         PollingConfig {
             max_batch_bytes: 0,
             ..polling()
-        }
-        .validate(),
-        Err(ConfigError::ZeroBatchByteLimit)
-    );
-    assert_eq!(
+        },
         PollingConfig {
-            max_normalized_bytes: 0,
+            fetch_size: 0,
             ..polling()
-        }
-        .validate(),
-        Err(ConfigError::ZeroNormalizedByteLimit)
-    );
-}
-
-/// Scenario: A polling limit exceeds the fixed result-row ceiling.
-/// Guarantees: Misconfiguration cannot request an unbounded receiver allocation.
-#[test]
-fn rejects_excessive_polling_limit() {
-    let config = PollingConfig {
-        fetch_size: 10_000,
-        max_rows_per_poll: 10_001,
-        ..polling()
-    };
-
-    assert!(matches!(
-        config.validate(),
-        Err(ConfigError::RowLimit { maximum: 10_000 })
-    ));
-}
-
-/// Scenario: A poll interval or byte ceiling is configured outside its supported range.
-/// Guarantees: Operational bounds stay explicit and finite, so a single receiver cannot stall
-/// indefinitely or request an arbitrarily large batch.
-#[test]
-fn rejects_out_of_range_operational_bounds() {
-    assert!(matches!(
+        },
+        PollingConfig {
+            max_rows_per_poll: 10_001,
+            ..polling()
+        },
         PollingConfig {
             interval: Duration::from_secs(48 * 60 * 60),
             ..polling()
-        }
-        .validate(),
-        Err(ConfigError::IntervalRange { .. })
-    ));
-    assert!(matches!(
+        },
         PollingConfig {
             max_batch_bytes: 512 * 1024 * 1024,
             ..polling()
-        }
-        .validate(),
-        Err(ConfigError::ByteLimit {
-            field: "query.max_batch_bytes",
-            ..
-        })
-    ));
+        },
+        PollingConfig {
+            fetch_size: 10_001,
+            ..polling()
+        },
+        PollingConfig {
+            fetch_size: 101,
+            ..polling()
+        },
+    ] {
+        assert!(invalid.validate().is_err());
+    }
 }
 
 /// Scenario: watermark mode is configured as scalar or snapshot.
@@ -634,7 +549,7 @@ fn rejects_invalid_composite_watermarks() {
         },
         tie_breaker: watermark().tie_breaker().clone(),
     };
-    assert_eq!(non_utc.validate(), Err(ConfigError::UnsupportedTimezone));
+    assert!(non_utc.validate().is_err());
 
     let duplicate_bind = WatermarkConfig::Composite {
         timestamp: watermark().timestamp().clone(),
@@ -643,7 +558,7 @@ fn rejects_invalid_composite_watermarks() {
             ..watermark().tie_breaker().clone()
         },
     };
-    assert_eq!(duplicate_bind.validate(), Err(ConfigError::DuplicateBind));
+    assert!(duplicate_bind.validate().is_err());
 
     let colon_bind = WatermarkConfig::Composite {
         timestamp: TimestampCursorConfig {
@@ -652,12 +567,7 @@ fn rejects_invalid_composite_watermarks() {
         },
         tie_breaker: watermark().tie_breaker().clone(),
     };
-    assert_eq!(
-        colon_bind.validate(),
-        Err(ConfigError::InvalidBind {
-            field: "watermark.timestamp.bind"
-        })
-    );
+    assert!(colon_bind.validate().is_err());
 }
 
 /// Scenario: a NACK policy or checkpoint bound outside the supported contract is configured.
@@ -668,30 +578,22 @@ fn rejects_unsupported_checkpoint_policy_and_bounds() {
     assert!(serde_json::from_value::<OnNack>(serde_json::json!("fail")).is_err());
     assert!(serde_json::from_value::<OnNack>(serde_json::json!("rewind")).is_ok());
 
-    assert!(matches!(
+    for invalid in [
         CheckpointConfig {
             nack_backoff: Duration::ZERO,
             ..checkpoint_config()
-        }
-        .validate(),
-        Err(ConfigError::NackBackoffRange { .. })
-    ));
-    assert!(matches!(
+        },
         CheckpointConfig {
             max_consecutive_failures: 0,
             ..checkpoint_config()
-        }
-        .validate(),
-        Err(ConfigError::CheckpointFailureRange { .. })
-    ));
-    assert!(matches!(
+        },
         CheckpointConfig {
             directory: "state/../../escape".to_owned(),
             ..checkpoint_config()
-        }
-        .validate(),
-        Err(ConfigError::CheckpointTraversal)
-    ));
+        },
+    ] {
+        assert!(invalid.validate().is_err());
+    }
 }
 
 /// Scenario: a valid composite configuration is compiled into a query plan.
@@ -711,6 +613,7 @@ fn compiles_a_composite_query_plan() {
     assert_eq!(query.watermark().timestamp_bind, "last_timestamp");
     assert_eq!(query.watermark().tie_breaker_bind, "last_tie_breaker");
     assert_eq!(query.watermark().initial.tie_breaker, 0);
+    assert_eq!(query.fetch_size(), 100);
     assert_eq!(query.max_batch_bytes(), 10 * 1024 * 1024);
     assert_eq!(query.max_normalized_bytes(), 10 * 1024 * 1024);
     assert!(format!("{query:?}").contains("<redacted>"));

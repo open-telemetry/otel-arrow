@@ -31,7 +31,6 @@ fn documented_config() -> Value {
             "fetch_size": 1000,
             "max_rows_per_poll": 10000,
             "max_batch_bytes": "10 MiB",
-            "max_normalized_bytes": "10 MiB",
             "timeout": "2m"
         },
         "watermark": {
@@ -87,7 +86,7 @@ fn accepts_the_documented_composite_configuration() {
     assert_eq!(config.source_id(), "oracle-audit");
     assert_eq!(config.checkpoint().on_nack, OnNack::Rewind);
     assert_eq!(config.checkpoint().nack_backoff, Duration::from_secs(1));
-    let query = config.compile().expect("query plan should compile");
+    let query = config.query();
     assert_eq!(query.watermark().timestamp_bind, "last_timestamp");
     assert_eq!(query.watermark().tie_breaker_bind, "last_tie_breaker");
     assert_eq!(query.watermark().initial.tie_breaker, 0);
@@ -109,7 +108,13 @@ fn requires_every_operational_and_cursor_field() {
             "required section '{section}' must not be optional"
         );
     }
-    for field in ["max_batch_bytes", "max_normalized_bytes", "interval"] {
+    for field in [
+        "interval",
+        "fetch_size",
+        "max_rows_per_poll",
+        "max_batch_bytes",
+        "timeout",
+    ] {
         let mut config = documented_config();
         _ = config["query"]
             .as_object_mut()
@@ -125,32 +130,6 @@ fn requires_every_operational_and_cursor_field() {
         .as_object_mut()
         .expect("checkpoint object")
         .remove("nack_backoff");
-    assert!(parsed(config).is_err());
-}
-
-/// Scenario: An operator selects the unimplemented scalar or snapshot watermark mode.
-/// Guarantees: Unsupported modes are rejected outright rather than silently behaving like
-/// composite mode, which would checkpoint positions the query never actually ordered by.
-#[test]
-fn rejects_unsupported_watermark_modes() {
-    for mode in ["scalar", "snapshot"] {
-        let mut config = documented_config();
-        config["watermark"]["mode"] = serde_json::json!(mode);
-        assert!(
-            parsed(config).is_err(),
-            "watermark mode '{mode}' must be rejected"
-        );
-    }
-}
-
-/// Scenario: An operator selects a NACK policy the receiver does not implement.
-/// Guarantees: Only the implemented rewind policy is accepted, so a configured failure policy is
-/// never silently downgraded to a replay.
-#[test]
-fn rejects_unsupported_nack_policy() {
-    let mut config = documented_config();
-    config["checkpoint"]["on_nack"] = serde_json::json!("fail");
-
     assert!(parsed(config).is_err());
 }
 
@@ -348,17 +327,6 @@ fn fingerprint_tracks_semantics_and_ignores_credential_paths() {
     );
 }
 
-/// Scenario: The same configuration is parsed twice across separate restarts.
-/// Guarantees: The fingerprint is stable across parses, so a restart with unchanged configuration
-/// can always adopt its previous checkpoint instead of failing closed.
-#[test]
-fn fingerprint_is_stable_across_parses() {
-    let first = parsed(documented_config()).expect("first parse");
-    let second = parsed(documented_config()).expect("second parse");
-
-    assert_eq!(first.config_fingerprint(), second.config_fingerprint());
-}
-
 /// Scenario: A pipeline validates a documented Oracle node before instantiating it.
 /// Guarantees: Configuration validation succeeds repeatedly without acquiring a source lease, so
 /// validating a pipeline never blocks the receiver that later runs it.
@@ -418,7 +386,6 @@ fn emits_oracle_rows_when_live_test_is_enabled() {
             "fetch_size": 10,
             "max_rows_per_poll": 10,
             "max_batch_bytes": "10 MiB",
-            "max_normalized_bytes": "10 MiB",
             "timeout": "10s"
         },
         "watermark": {

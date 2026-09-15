@@ -4,10 +4,10 @@
 //! Database-neutral polling, watermark, and checkpoint configuration.
 
 use serde::Deserialize;
-use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 const MAX_ROWS_PER_POLL: usize = 10_000;
+const MAX_FETCH_SIZE: usize = 10_000;
 const MIN_INTERVAL: Duration = Duration::from_millis(1);
 const MAX_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 const MAX_NACK_BACKOFF: Duration = Duration::from_secs(5 * 60);
@@ -24,17 +24,12 @@ pub struct PollingConfig {
     /// Native database call timeout.
     #[serde(with = "humantime_serde")]
     pub timeout: Duration,
-    /// Initial row capacity reserved for one driver result.
-    ///
-    /// Adapters may apply a smaller native fetch size when vendor metadata is
-    /// required to calculate a safe allocation.
-    pub fetch_size: usize,
     /// Hard row limit for one poll.
     pub max_rows_per_poll: usize,
+    /// Target number of rows fetched per native driver round trip.
+    pub fetch_size: usize,
     /// Exact serialized OTLP payload ceiling for one emitted page.
     pub max_batch_bytes: u64,
-    /// Hard normalized in-memory byte limit for one poll before encoding.
-    pub max_normalized_bytes: u64,
 }
 
 /// Watermark mode selected by the operator.
@@ -106,17 +101,9 @@ pub struct CheckpointConfig {
     pub max_consecutive_failures: u32,
 }
 
-/// Database-row to OTLP log mapping selected before ingestion.
-///
-/// This models the generic database design's output contract. The initial
-/// Oracle public schema does not expose these controls, so Oracle uses the
-/// default all-column body and watermark-derived event time.
+/// Required output columns for the initial all-column body mapping.
 #[derive(Clone, Debug, Default)]
 pub struct OutputConfig {
-    /// Source columns included in the body. An empty list includes every column.
-    pub include_columns: Vec<String>,
-    /// Source-column to typed OTLP attribute-name mappings.
-    pub attributes: BTreeMap<String, String>,
     /// Optional result column used as the OTLP event timestamp.
     pub timestamp_column: Option<String>,
     /// Result columns that must exist even when not emitted specially.
@@ -126,12 +113,6 @@ pub struct OutputConfig {
 impl OutputConfig {
     /// Validates mappings that do not require live result metadata.
     pub fn validate(&self) -> Result<(), ConfigError> {
-        validate_unique_names(
-            "query.output.include_columns",
-            self.include_columns.iter().map(String::as_str),
-        )?;
-        validate_mapping_names("query.output.attributes", &self.attributes)?;
-
         if let Some(column) = &self.timestamp_column {
             validate_name("query.output.timestamp_column", column)?;
         }
@@ -146,47 +127,51 @@ impl PollingConfig {
     /// Validates timing, row, and byte bounds.
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.interval.is_zero() {
-            return Err(ConfigError::ZeroInterval);
+            return Err(ConfigError::new("query.interval must be greater than zero"));
         }
         if !(MIN_INTERVAL..=MAX_INTERVAL).contains(&self.interval) {
-            return Err(ConfigError::IntervalRange {
-                maximum_seconds: MAX_INTERVAL.as_secs(),
-            });
+            return Err(ConfigError::new(format!(
+                "query.interval must be between 1ms and {}s",
+                MAX_INTERVAL.as_secs()
+            )));
         }
         if self.timeout.is_zero() {
-            return Err(ConfigError::ZeroTimeout);
-        }
-        if self.fetch_size == 0 {
-            return Err(ConfigError::ZeroFetchSize);
+            return Err(ConfigError::new("query.timeout must be greater than zero"));
         }
         if self.max_rows_per_poll == 0 {
-            return Err(ConfigError::ZeroRowLimit);
+            return Err(ConfigError::new(
+                "query.max_rows_per_poll must be greater than zero",
+            ));
+        }
+        if self.fetch_size == 0 {
+            return Err(ConfigError::new(
+                "query.fetch_size must be greater than zero",
+            ));
         }
         if self.max_batch_bytes == 0 {
-            return Err(ConfigError::ZeroBatchByteLimit);
-        }
-        if self.max_normalized_bytes == 0 {
-            return Err(ConfigError::ZeroNormalizedByteLimit);
+            return Err(ConfigError::new(
+                "query.max_batch_bytes must be greater than zero",
+            ));
         }
         if self.max_batch_bytes > MAX_BYTE_LIMIT {
-            return Err(ConfigError::ByteLimit {
-                field: "query.max_batch_bytes",
-                maximum: MAX_BYTE_LIMIT,
-            });
+            return Err(ConfigError::new(format!(
+                "query.max_batch_bytes must not exceed {MAX_BYTE_LIMIT} bytes"
+            )));
         }
-        if self.max_normalized_bytes > MAX_BYTE_LIMIT {
-            return Err(ConfigError::ByteLimit {
-                field: "query.max_normalized_bytes",
-                maximum: MAX_BYTE_LIMIT,
-            });
-        }
-        if self.max_rows_per_poll > MAX_ROWS_PER_POLL {
-            return Err(ConfigError::RowLimit {
-                maximum: MAX_ROWS_PER_POLL,
-            });
+        if self.fetch_size > MAX_FETCH_SIZE {
+            return Err(ConfigError::new(format!(
+                "query.fetch_size must not exceed {MAX_FETCH_SIZE}"
+            )));
         }
         if self.fetch_size > self.max_rows_per_poll {
-            return Err(ConfigError::FetchSizeExceedsRowLimit);
+            return Err(ConfigError::new(
+                "query.fetch_size must not exceed query.max_rows_per_poll",
+            ));
+        }
+        if self.max_rows_per_poll > MAX_ROWS_PER_POLL {
+            return Err(ConfigError::new(format!(
+                "query.max_rows_per_poll must not exceed {MAX_ROWS_PER_POLL}"
+            )));
         }
         Ok(())
     }
@@ -204,18 +189,20 @@ impl WatermarkConfig {
         validate_bind("watermark.timestamp.bind", &timestamp.bind)?;
         validate_bind("watermark.tie_breaker.bind", &tie_breaker.bind)?;
         if timestamp.initial.trim().is_empty() {
-            return Err(ConfigError::EmptyName {
-                field: "watermark.timestamp.initial",
-            });
+            return Err(ConfigError::new(
+                "watermark.timestamp.initial must not be empty",
+            ));
         }
         if !timestamp.timezone.eq_ignore_ascii_case("UTC") {
-            return Err(ConfigError::UnsupportedTimezone);
+            return Err(ConfigError::new("watermark.timestamp.timezone must be UTC"));
         }
         if timestamp.bind.eq_ignore_ascii_case(&tie_breaker.bind) {
-            return Err(ConfigError::DuplicateBind);
+            return Err(ConfigError::new("watermark bind names must be distinct"));
         }
         if timestamp.column.eq_ignore_ascii_case(&tie_breaker.column) {
-            return Err(ConfigError::DuplicateCursorColumn);
+            return Err(ConfigError::new(
+                "watermark cursor columns must be distinct",
+            ));
         }
         Ok(())
     }
@@ -243,49 +230,30 @@ impl CheckpointConfig {
             .components()
             .any(|component| matches!(component, std::path::Component::ParentDir))
         {
-            return Err(ConfigError::CheckpointTraversal);
+            return Err(ConfigError::new(
+                "checkpoint.directory must not contain '..' components",
+            ));
         }
         if self.nack_backoff.is_zero() || self.nack_backoff > MAX_NACK_BACKOFF {
-            return Err(ConfigError::NackBackoffRange {
-                maximum_seconds: MAX_NACK_BACKOFF.as_secs(),
-            });
+            return Err(ConfigError::new(format!(
+                "checkpoint.nack_backoff must be between 1ms and {}s",
+                MAX_NACK_BACKOFF.as_secs()
+            )));
         }
         if self.max_consecutive_failures == 0
             || self.max_consecutive_failures > MAX_CONSECUTIVE_FAILURES
         {
-            return Err(ConfigError::CheckpointFailureRange {
-                maximum: MAX_CONSECUTIVE_FAILURES,
-            });
+            return Err(ConfigError::new(format!(
+                "checkpoint.max_consecutive_failures must be between 1 and {MAX_CONSECUTIVE_FAILURES}"
+            )));
         }
         Ok(())
     }
 }
 
-fn validate_mapping_names(
-    field: &'static str,
-    mappings: &BTreeMap<String, String>,
-) -> Result<(), ConfigError> {
-    validate_unique_names(field, mappings.keys().map(String::as_str))?;
-    validate_unique_names(field, mappings.values().map(String::as_str))
-}
-
-fn validate_unique_names<'a>(
-    field: &'static str,
-    names: impl IntoIterator<Item = &'a str>,
-) -> Result<(), ConfigError> {
-    let mut normalized = BTreeSet::new();
-    for name in names {
-        validate_name(field, name)?;
-        if !normalized.insert(name.to_ascii_lowercase()) {
-            return Err(ConfigError::DuplicateName { field });
-        }
-    }
-    Ok(())
-}
-
 fn validate_name(field: &'static str, name: &str) -> Result<(), ConfigError> {
     if name.trim().is_empty() {
-        Err(ConfigError::EmptyName { field })
+        Err(ConfigError::new(format!("{field} names must not be empty")))
     } else {
         Ok(())
     }
@@ -299,95 +267,20 @@ fn validate_bind(field: &'static str, name: &str) -> Result<(), ConfigError> {
     if !(first.is_ascii_alphabetic() || first == b'_')
         || !bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
     {
-        return Err(ConfigError::InvalidBind { field });
+        return Err(ConfigError::new(format!(
+            "{field} must omit ':' and contain only ASCII alphanumerics or '_'"
+        )));
     }
     Ok(())
 }
 
 /// Invalid database receiver configuration.
 #[derive(Debug, thiserror::Error, Eq, PartialEq)]
-pub enum ConfigError {
-    /// Poll interval is zero.
-    #[error("query.interval must be greater than zero")]
-    ZeroInterval,
-    /// Poll interval is outside the supported range.
-    #[error("query.interval must be between 1ms and {maximum_seconds}s")]
-    IntervalRange {
-        /// Longest supported interval in seconds.
-        maximum_seconds: u64,
-    },
-    /// Query timeout is zero.
-    #[error("query.timeout must be greater than zero")]
-    ZeroTimeout,
-    /// Driver fetch size is zero.
-    #[error("query.fetch_size must be greater than zero")]
-    ZeroFetchSize,
-    /// Per-poll row limit is zero.
-    #[error("query.max_rows_per_poll must be greater than zero")]
-    ZeroRowLimit,
-    /// Per-page encoded byte limit is zero.
-    #[error("query.max_batch_bytes must be greater than zero")]
-    ZeroBatchByteLimit,
-    /// Per-poll normalized byte limit is zero.
-    #[error("query.max_normalized_bytes must be greater than zero")]
-    ZeroNormalizedByteLimit,
-    /// A configured byte limit exceeds the supported ceiling.
-    #[error("{field} must not exceed {maximum} bytes")]
-    ByteLimit {
-        /// Invalid configuration field.
-        field: &'static str,
-        /// Largest supported byte value.
-        maximum: u64,
-    },
-    /// Per-poll row limit exceeds the fixed receiver allocation ceiling.
-    #[error("query.max_rows_per_poll must not exceed {maximum}")]
-    RowLimit {
-        /// Largest supported row count per poll.
-        maximum: usize,
-    },
-    /// Fetch size exceeds the poll ceiling.
-    #[error("query.fetch_size must not exceed query.max_rows_per_poll")]
-    FetchSizeExceedsRowLimit,
-    /// A configured mapping name is empty.
-    #[error("{field} names must not be empty")]
-    EmptyName {
-        /// Invalid configuration field.
-        field: &'static str,
-    },
-    /// Configured names collide under OTLP's case-insensitive matching policy.
-    #[error("{field} contains duplicate names")]
-    DuplicateName {
-        /// Invalid configuration field.
-        field: &'static str,
-    },
-    /// A bind name is not a plain identifier without a leading colon.
-    #[error("{field} must omit ':' and contain only ASCII alphanumerics or '_'")]
-    InvalidBind {
-        /// Invalid configuration field.
-        field: &'static str,
-    },
-    /// Both cursor components share one bind name.
-    #[error("watermark bind names must be distinct")]
-    DuplicateBind,
-    /// Both cursor components reference the same result column.
-    #[error("watermark cursor columns must be distinct")]
-    DuplicateCursorColumn,
-    /// Cursor semantics outside UTC are not supported.
-    #[error("watermark.timestamp.timezone must be UTC")]
-    UnsupportedTimezone,
-    /// The checkpoint directory escapes its configured root.
-    #[error("checkpoint.directory must not contain '..' components")]
-    CheckpointTraversal,
-    /// The negative-acknowledgement backoff is outside the supported range.
-    #[error("checkpoint.nack_backoff must be between 1ms and {maximum_seconds}s")]
-    NackBackoffRange {
-        /// Longest supported backoff in seconds.
-        maximum_seconds: u64,
-    },
-    /// The consecutive checkpoint failure budget is outside the supported range.
-    #[error("checkpoint.max_consecutive_failures must be between 1 and {maximum}")]
-    CheckpointFailureRange {
-        /// Largest supported failure budget.
-        maximum: u32,
-    },
+#[error("{0}")]
+pub struct ConfigError(String);
+
+impl ConfigError {
+    fn new(message: impl Into<String>) -> Self {
+        Self(message.into())
+    }
 }

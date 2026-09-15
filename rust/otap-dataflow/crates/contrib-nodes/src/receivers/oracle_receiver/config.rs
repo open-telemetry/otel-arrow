@@ -12,7 +12,7 @@
 
 use super::adapter::{OracleAdapter, OracleAdapterConfig};
 use otel_arrow_dfe_scraper::database::{
-    CheckpointConfig, CompiledQuery, OutputConfig, PollingConfig, QueryError, WatermarkConfig,
+    CheckpointConfig, CompiledQuery, OutputConfig, PollingConfig, WatermarkConfig,
 };
 use serde::de::Error as DeError;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -30,8 +30,7 @@ pub struct OracleReceiverConfig {
     source_id: String,
     connection: OracleConnectionConfig,
     authentication: OracleAuthenticationConfig,
-    query: OracleQueryConfig,
-    watermark: WatermarkConfig,
+    query: CompiledQuery,
     checkpoint: CheckpointConfig,
     config_fingerprint: String,
 }
@@ -59,20 +58,9 @@ impl OracleReceiverConfig {
     }
 
     /// Compiles the shared query plan.
-    pub fn compile(&self) -> Result<CompiledQuery, QueryError> {
-        CompiledQuery::compile(
-            self.query.statement.clone(),
-            self.query.polling(),
-            &self.watermark,
-            &self.checkpoint,
-            OutputConfig {
-                // Composite mode derives OTLP event time from the cursor
-                // timestamp and validates the tie-breaker column exists.
-                timestamp_column: Some(self.watermark.timestamp().column.clone()),
-                validation_columns: vec![self.watermark.tie_breaker().column.clone()],
-                ..OutputConfig::default()
-            },
-        )
+    #[must_use]
+    pub fn query(&self) -> CompiledQuery {
+        self.query.clone()
     }
 
     /// Builds the Oracle adapter for this configuration.
@@ -90,6 +78,7 @@ impl OracleReceiverConfig {
 impl TryFrom<RawOracleConfig> for OracleReceiverConfig {
     type Error = OracleConfigError;
 
+    /// Validates the native schema and compiles the immutable query plan.
     fn try_from(config: RawOracleConfig) -> Result<Self, Self::Error> {
         required("source_id", &config.source_id)?;
         if config.source_id.len() > MAX_SOURCE_ID_BYTES {
@@ -138,6 +127,16 @@ impl TryFrom<RawOracleConfig> for OracleReceiverConfig {
             },
         )?;
         let statement = validate_statement(&config.query.statement, &config.watermark)?;
+        let query = CompiledQuery::compile(
+            statement.clone(),
+            config.query.polling(),
+            &config.watermark,
+            &config.checkpoint,
+            OutputConfig {
+                timestamp_column: Some(config.watermark.timestamp().column.clone()),
+                validation_columns: vec![config.watermark.tie_breaker().column.clone()],
+            },
+        )?;
 
         let fingerprint = FingerprintInput {
             source_id: &config.source_id,
@@ -161,11 +160,7 @@ impl TryFrom<RawOracleConfig> for OracleReceiverConfig {
             source_id: config.source_id,
             connection: config.connection,
             authentication: config.authentication,
-            query: OracleQueryConfig {
-                statement,
-                ..config.query
-            },
-            watermark: config.watermark,
+            query,
             checkpoint: config.checkpoint,
             config_fingerprint,
         })
@@ -224,13 +219,12 @@ struct OracleQueryConfig {
     max_rows_per_poll: usize,
     #[serde(deserialize_with = "deserialize_byte_size")]
     max_batch_bytes: u64,
-    #[serde(deserialize_with = "deserialize_byte_size")]
-    max_normalized_bytes: u64,
     #[serde(with = "humantime_serde")]
     timeout: Duration,
 }
 
 impl OracleQueryConfig {
+    /// Converts Oracle query settings into the vendor-neutral polling contract.
     fn polling(&self) -> PollingConfig {
         PollingConfig {
             interval: self.interval,
@@ -238,11 +232,11 @@ impl OracleQueryConfig {
             fetch_size: self.fetch_size,
             max_rows_per_poll: self.max_rows_per_poll,
             max_batch_bytes: self.max_batch_bytes,
-            max_normalized_bytes: self.max_normalized_bytes,
         }
     }
 }
 
+/// Accepts human-readable byte sizes while storing an exact byte count.
 fn deserialize_byte_size<'de, D>(deserializer: D) -> Result<u64, D::Error>
 where
     D: Deserializer<'de>,
@@ -336,6 +330,7 @@ fn validate_statement(
         )));
     }
 
+    /// Finds a required cursor comparison at any parenthesis depth.
     fn contains_comparison(tokens: &[SqlToken], column: &str, operator: &str, bind: &str) -> bool {
         let expected_column = column.to_ascii_uppercase();
         let expected_bind = format!(":{}", bind.to_ascii_uppercase());
@@ -414,6 +409,7 @@ fn sql_tokens(sql: &str) -> Result<Vec<SqlToken>, OracleConfigError> {
     Ok(tokens)
 }
 
+/// Restricts cursor columns and binds to simple Oracle identifiers.
 fn validate_oracle_identifier(
     field: &'static str,
     identifier: &str,
@@ -430,6 +426,7 @@ fn validate_oracle_identifier(
     Ok(())
 }
 
+/// Finishes the current SQL token while retaining its parenthesis depth.
 fn push_token(tokens: &mut Vec<SqlToken>, current: &mut String, depth: usize) {
     if !current.is_empty() {
         tokens.push(SqlToken {
@@ -439,6 +436,7 @@ fn push_token(tokens: &mut Vec<SqlToken>, current: &mut String, depth: usize) {
     }
 }
 
+/// Produces a field-specific error for an empty required string.
 fn required(field: &'static str, value: &str) -> Result<(), OracleConfigError> {
     if value.trim().is_empty() {
         Err(OracleConfigError::new(format!("{field} must not be empty")))
@@ -468,8 +466,8 @@ impl From<otel_arrow_dfe_scraper::database::ConfigError> for OracleConfigError {
     }
 }
 
-impl From<QueryError> for OracleConfigError {
-    fn from(error: QueryError) -> Self {
+impl From<otel_arrow_dfe_scraper::database::QueryError> for OracleConfigError {
+    fn from(error: otel_arrow_dfe_scraper::database::QueryError) -> Self {
         Self::new(error.to_string())
     }
 }

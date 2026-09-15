@@ -108,6 +108,7 @@ oracle-receiver = [
     "dep:blake3",
     "dep:humantime-serde",
     "dep:oracle",
+    "dep:secrecy",
 ]
 kafka-exporter = [
     "dep:rdkafka",

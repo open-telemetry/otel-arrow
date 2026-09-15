@@ -25,18 +25,12 @@ pub enum CellValue {
     String(String),
     /// Binary bytes.
     Bytes(Vec<u8>),
-    /// Calendar date text.
-    Date(String),
     /// Timestamp without source timezone.
     Timestamp(String),
     /// Timestamp with source timezone.
     TimestampTz(String),
     /// Database interval text.
     Interval(String),
-    /// Valid JSON text.
-    Json(String),
-    /// UUID text.
-    Uuid(String),
 }
 
 impl CellValue {
@@ -48,12 +42,9 @@ impl CellValue {
             Self::Int64(_) | Self::UInt64(_) | Self::Float64(_) => 8,
             Self::Decimal(value)
             | Self::String(value)
-            | Self::Date(value)
             | Self::Timestamp(value)
             | Self::TimestampTz(value)
-            | Self::Interval(value)
-            | Self::Json(value)
-            | Self::Uuid(value) => value.len() as u64,
+            | Self::Interval(value) => value.len() as u64,
             Self::Bytes(value) => value.len() as u64,
         }
     }
@@ -73,12 +64,9 @@ impl fmt::Debug for CellValue {
                 .debug_tuple("Bytes")
                 .field(&format_args!("<redacted:{} bytes>", value.len()))
                 .finish(),
-            Self::Date(value) => redacted_text(formatter, "Date", value),
             Self::Timestamp(value) => redacted_text(formatter, "Timestamp", value),
             Self::TimestampTz(value) => redacted_text(formatter, "TimestampTz", value),
             Self::Interval(value) => redacted_text(formatter, "Interval", value),
-            Self::Json(value) => redacted_text(formatter, "Json", value),
-            Self::Uuid(value) => redacted_text(formatter, "Uuid", value),
         }
     }
 }

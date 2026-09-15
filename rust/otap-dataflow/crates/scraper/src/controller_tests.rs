@@ -141,14 +141,12 @@ fn fake_query(checkpoint: &CheckpointConfig) -> CompiledQuery {
             fetch_size: 10,
             max_rows_per_poll: 10,
             max_batch_bytes: 1024 * 1024,
-            max_normalized_bytes: 1024 * 1024,
         },
         &watermark,
         checkpoint,
         OutputConfig {
             timestamp_column: Some("EVENT_TS".to_owned()),
             validation_columns: vec!["EVENT_ID".to_owned()],
-            ..OutputConfig::default()
         },
     )
     .expect("fake query should compile")

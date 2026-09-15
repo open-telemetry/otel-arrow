@@ -11,7 +11,9 @@ use otel_arrow_dfe_scraper::database::{
     CellValue, ColumnMetadata, CompiledQuery, CompositeCursor, CursorRow, DatabaseSystem,
     DriverAdapter, DriverCancellation, QueryPage, Row,
 };
+use secrecy::{ExposeSecret, SecretString};
 use std::io::Read;
+use std::mem::size_of;
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -20,6 +22,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 // the one-time directory choice when multiple pipeline instances start.
 static ORACLE_CLIENT_DIRECTORY: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 const MAX_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const MAX_CREDENTIAL_BYTES: u64 = 64 * 1024;
 
 #[derive(Clone)]
 pub(crate) struct OracleAdapterConfig {
@@ -32,47 +35,64 @@ pub(crate) struct OracleAdapterConfig {
 /// Oracle adapter that reuses one connection across non-overlapping polls.
 pub struct OracleAdapter {
     config: OracleAdapterConfig,
-    connection: Option<Arc<Connection>>,
+    session: Option<OracleSession>,
     cancellation: OracleCancellation,
 }
 
+/// One exclusively owned Oracle connection and the query artifacts prepared on it.
+struct OracleSession {
+    connection: Arc<Connection>,
+    prepared: Option<OraclePreparedQuery>,
+}
+
+/// Cached statement and immutable decode plan derived from its first result metadata.
+struct OraclePreparedQuery {
+    statement: oracle::Statement,
+    columns: Vec<ColumnMetadata>,
+    types: Vec<OracleType>,
+    timestamp_index: usize,
+    tie_breaker_index: usize,
+}
+
 impl OracleAdapter {
+    /// Creates an adapter whose connection is opened lazily on first use.
     pub(crate) fn new(config: OracleAdapterConfig) -> Self {
         Self {
             config,
-            connection: None,
+            session: None,
             cancellation: OracleCancellation::default(),
         }
     }
 
+    /// Runs one synchronous Oracle operation without blocking the local engine core.
     async fn run_blocking<T>(
         &mut self,
         query: &CompiledQuery,
         cursor: &CompositeCursor,
         operation: fn(
-            Option<Arc<Connection>>,
+            Option<OracleSession>,
             &OracleAdapterConfig,
             &CompiledQuery,
             &CompositeCursor,
             &OracleCancellation,
-        ) -> Result<(Arc<Connection>, T), OracleAdapterError>,
+        ) -> Result<(OracleSession, T), OracleAdapterError>,
     ) -> Result<T, OracleAdapterError>
     where
         T: Send + 'static,
     {
         // Ownership moves into the blocking worker and returns only after the
         // operation, preventing concurrent use of one Oracle connection.
-        let connection = self.connection.take();
+        let session = self.session.take();
         let config = self.config.clone();
         let query = query.clone();
         let cursor = cursor.clone();
         let cancellation = self.cancellation.clone();
-        let (connection, value) = tokio::task::spawn_blocking(move || {
-            operation(connection, &config, &query, &cursor, &cancellation)
+        let (session, value) = tokio::task::spawn_blocking(move || {
+            operation(session, &config, &query, &cursor, &cancellation)
         })
         .await
         .map_err(OracleAdapterError::Worker)??;
-        self.connection = Some(connection);
+        self.session = Some(session);
         Ok(value)
     }
 }
@@ -94,6 +114,7 @@ struct ActiveConnection {
 }
 
 impl ActiveConnection {
+    /// Publishes the active connection so cancellation can interrupt only this operation.
     fn register(
         cancellation: &OracleCancellation,
         connection: Arc<Connection>,
@@ -114,6 +135,7 @@ impl ActiveConnection {
 
 impl Drop for ActiveConnection {
     fn drop(&mut self) {
+        // The guard scopes cancellation to the operation that registered this connection.
         if let Ok(mut state) = self.cancellation.state.lock() {
             state.connection = None;
         }
@@ -121,6 +143,7 @@ impl Drop for ActiveConnection {
 }
 
 impl OracleCancellation {
+    /// Prevents a cancelled operation from opening a connection after cancellation won.
     fn ensure_not_requested(&self) -> Result<(), OracleAdapterError> {
         let state = self
             .state
@@ -138,6 +161,7 @@ impl OracleCancellation {
 impl DriverCancellation for OracleCancellation {
     type Error = OracleAdapterError;
 
+    /// Interrupts the currently published Oracle call on the blocking pool.
     async fn cancel(&self) -> Result<(), Self::Error> {
         let connection = {
             let mut state = self
@@ -162,10 +186,12 @@ impl DriverAdapter for OracleAdapter {
     type Error = OracleAdapterError;
     type Cancellation = OracleCancellation;
 
+    /// Identifies rows from this adapter as Oracle data.
     fn system(&self) -> DatabaseSystem {
         DatabaseSystem::Oracle
     }
 
+    /// Resets operation-local cancellation state before starting native work.
     fn begin_operation(&mut self) -> Result<Self::Cancellation, Self::Error> {
         let mut state = self
             .cancellation
@@ -178,6 +204,7 @@ impl DriverAdapter for OracleAdapter {
         Ok(self.cancellation.clone())
     }
 
+    /// Prepares the query and validates its live result metadata without fetching rows.
     async fn validate_query(
         &mut self,
         query: &CompiledQuery,
@@ -188,6 +215,7 @@ impl DriverAdapter for OracleAdapter {
         self.run_blocking(query, &initial, validate_blocking).await
     }
 
+    /// Fetches and normalizes one bounded page after the supplied cursor.
     async fn execute(
         &mut self,
         query: &CompiledQuery,
@@ -196,11 +224,13 @@ impl DriverAdapter for OracleAdapter {
         self.run_blocking(query, cursor, execute_blocking).await
     }
 
+    /// Maps adapter failures into stable receiver error categories.
     fn classify_error(error: &Self::Error) -> ReceiverErrorKind {
         match error {
             OracleAdapterError::Connect(_) => ReceiverErrorKind::Connect,
             OracleAdapterError::Credential { .. }
             | OracleAdapterError::CredentialNotRegularFile(_)
+            | OracleAdapterError::CredentialTooLarge(_)
             | OracleAdapterError::InvalidCredentialEncoding(_)
             | OracleAdapterError::EmptyCredential(_)
             | OracleAdapterError::Initialize(_)
@@ -216,6 +246,7 @@ impl DriverAdapter for OracleAdapter {
             | OracleAdapterError::UnsupportedCursorTieBreaker { .. }
             | OracleAdapterError::InvalidCursorTimestamp(_)
             | OracleAdapterError::NormalizedByteLimit { .. }
+            | OracleAdapterError::ResultMetadataChanged
             | OracleAdapterError::UnsupportedType(_) => ReceiverErrorKind::Configuration,
             OracleAdapterError::Configure(_)
             | OracleAdapterError::Prepare(_)
@@ -234,62 +265,57 @@ impl DriverAdapter for OracleAdapter {
     }
 }
 
+/// Performs startup preparation and returns the validated public column metadata.
 fn validate_blocking(
-    connection: Option<Arc<Connection>>,
+    session: Option<OracleSession>,
     config: &OracleAdapterConfig,
     query: &CompiledQuery,
     cursor: &CompositeCursor,
     cancellation: &OracleCancellation,
-) -> Result<(Arc<Connection>, Vec<ColumnMetadata>), OracleAdapterError> {
+) -> Result<(OracleSession, Vec<ColumnMetadata>), OracleAdapterError> {
     // Executing the prepared SELECT is required because Oracle exposes result
     // metadata on the result set. No row is fetched during startup validation.
-    let (connection, _active) = prepare_session(connection, config, query, cancellation)?;
-    // One row is the only safe native bound before rust-oracle exposes current
-    // result metadata.
-    let mut statement = connection
-        .statement(query.sql())
-        .fetch_array_size(1)
-        .prefetch_rows(0)
-        .build()
-        .map_err(OracleAdapterError::Prepare)?;
-    let result_set = bind_cursor(&mut statement, query, cursor)?;
-    let (columns, _) = result_metadata(result_set.column_info())?;
-    _ = validate_cursor_columns(result_set.column_info(), query)?;
-    drop(result_set);
-    drop(statement);
-    finish_session(&connection)?;
-    Ok((connection, columns))
+    let (mut session, _active) = prepare_session(session, config, query, cancellation)?;
+    ensure_prepared(&mut session, query, cursor)?;
+    let columns = session
+        .prepared
+        .as_ref()
+        .expect("query was prepared")
+        .columns
+        .clone();
+    finish_session(&session.connection)?;
+    Ok((session, columns))
 }
 
+/// Executes one prepared page fetch and enforces row and normalized-byte bounds.
 fn execute_blocking(
-    connection: Option<Arc<Connection>>,
+    session: Option<OracleSession>,
     config: &OracleAdapterConfig,
     query: &CompiledQuery,
     cursor: &CompositeCursor,
     cancellation: &OracleCancellation,
-) -> Result<(Arc<Connection>, QueryPage), OracleAdapterError> {
-    let (connection, _active) = prepare_session(connection, config, query, cancellation)?;
-    let mut statement = connection
-        .statement(query.sql())
-        // Rebuilding a statement can expose changed view or column widths.
-        // A one-row native buffer is the only safe bound before rust-oracle
-        // reveals current result metadata.
-        .fetch_array_size(1)
-        .prefetch_rows(0)
-        .build()
-        .map_err(OracleAdapterError::Prepare)?;
-    let mut result_set = bind_cursor(&mut statement, query, cursor)?;
-    let (columns, types) = result_metadata(result_set.column_info())?;
-    let (timestamp_index, tie_breaker_index) =
-        validate_cursor_columns(result_set.column_info(), query)?;
+) -> Result<(OracleSession, QueryPage), OracleAdapterError> {
+    let (mut session, _active) = prepare_session(session, config, query, cancellation)?;
+    ensure_prepared(&mut session, query, cursor)?;
+    let prepared = session.prepared.as_mut().expect("query was prepared");
+    let mut result_set = bind_cursor(&mut prepared.statement, query, cursor)?;
+    if !metadata_matches(result_set.column_info(), &prepared.columns, &prepared.types) {
+        return Err(OracleAdapterError::ResultMetadataChanged);
+    }
+    let columns = prepared.columns.clone();
 
     let watermark = query.watermark();
-    let mut rows = Vec::with_capacity(query.fetch_size().min(query.max_rows()));
+    let mut rows = Vec::with_capacity(query.max_rows().min(256));
     let mut normalized_bytes = 0_u64;
     for row in result_set.by_ref().take(query.max_rows()) {
         let row = row.map_err(OracleAdapterError::Fetch)?;
-        let cursor = extract_cursor(&row, timestamp_index, tie_breaker_index, watermark)?;
-        let normalized = normalize_row(&row, &types)?;
+        let cursor = extract_cursor(
+            &row,
+            prepared.timestamp_index,
+            prepared.tie_breaker_index,
+            watermark,
+        )?;
+        let normalized = normalize_row(&row, &prepared.types)?;
         let next_bytes = normalized_bytes.saturating_add(normalized.normalized_size());
         if next_bytes > query.max_normalized_bytes() {
             if rows.is_empty() {
@@ -309,17 +335,15 @@ fn execute_blocking(
         });
     }
     drop(result_set);
-    drop(statement);
-    finish_session(&connection)?;
+    finish_session(&session.connection)?;
 
-    Ok((connection, QueryPage { columns, rows }))
+    Ok((session, QueryPage { columns, rows }))
 }
 
 /// Binds the committed cursor through Oracle named parameters.
 ///
 /// The cursor is never interpolated into SQL text, and the timestamp bind uses
-/// an explicit timezone-naive type so a session offset cannot shift the
-/// boundary between polls.
+/// an explicit timezone-aware type so its source offset survives round trips.
 fn bind_cursor<'a>(
     statement: &'a mut oracle::Statement,
     query: &CompiledQuery,
@@ -343,8 +367,96 @@ fn bind_cursor<'a>(
         .map_err(OracleAdapterError::Query)
 }
 
+/// Uses a timezone-aware bind so checkpoint offsets survive round trips.
 fn cursor_bind_type() -> OracleType {
     OracleType::TimestampTZ(9)
+}
+
+/// Builds and caches the statement and decode plan once per connection.
+fn ensure_prepared(
+    session: &mut OracleSession,
+    query: &CompiledQuery,
+    cursor: &CompositeCursor,
+) -> Result<(), OracleAdapterError> {
+    if session.prepared.is_some() {
+        return Ok(());
+    }
+
+    // Oracle exposes result metadata only after execution. Discover it with a
+    // one-row buffer, then rebuild once with a byte-bounded fetch array.
+    let mut discovery = session
+        .connection
+        .statement(query.sql())
+        .fetch_array_size(1)
+        .prefetch_rows(0)
+        .build()
+        .map_err(OracleAdapterError::Prepare)?;
+    let result_set = bind_cursor(&mut discovery, query, cursor)?;
+    let (columns, types) = result_metadata(result_set.column_info())?;
+    let (timestamp_index, tie_breaker_index) =
+        validate_cursor_columns(result_set.column_info(), query)?;
+    drop(result_set);
+    drop(discovery);
+
+    let fetch_rows = bounded_fetch_array_size(&types, query);
+    let statement = session
+        .connection
+        .statement(query.sql())
+        .fetch_array_size(fetch_rows)
+        // Prefetch owns a second native row buffer outside the calculated byte budget.
+        .prefetch_rows(0)
+        .build()
+        .map_err(OracleAdapterError::Prepare)?;
+    session.prepared = Some(OraclePreparedQuery {
+        statement,
+        columns,
+        types,
+        timestamp_index,
+        tie_breaker_index,
+    });
+    Ok(())
+}
+
+/// Caps native fetch rows by configured row, fetch, and normalized-memory limits.
+fn bounded_fetch_array_size(types: &[OracleType], query: &CompiledQuery) -> u32 {
+    let row_bytes = types.iter().fold(
+        (size_of::<Row>() + types.len() * size_of::<CellValue>()) as u64,
+        |total, data_type| total.saturating_add(max_normalized_value_bytes(data_type)),
+    );
+    let byte_limited = query.max_normalized_bytes() / row_bytes.max(1);
+    let rows = (query.max_rows() as u64)
+        .min(query.fetch_size() as u64)
+        .min(byte_limited)
+        .max(1);
+    rows as u32
+}
+
+/// Returns a conservative maximum normalized payload for one supported Oracle value.
+fn max_normalized_value_bytes(data_type: &OracleType) -> u64 {
+    match data_type {
+        OracleType::Varchar2(bytes) | OracleType::Char(bytes) | OracleType::Raw(bytes) => {
+            u64::from(*bytes)
+        }
+        OracleType::NVarchar2(characters) | OracleType::NChar(characters) => {
+            u64::from(*characters).saturating_mul(4)
+        }
+        OracleType::Rowid => 128,
+        OracleType::Number(_, _)
+        | OracleType::Float(_)
+        | OracleType::Date
+        | OracleType::Timestamp(_)
+        | OracleType::TimestampTZ(_)
+        | OracleType::TimestampLTZ(_)
+        | OracleType::IntervalDS(_, _)
+        | OracleType::IntervalYM(_) => 128,
+        OracleType::BinaryFloat
+        | OracleType::BinaryDouble
+        | OracleType::Int64
+        | OracleType::UInt64 => 8,
+        OracleType::Boolean => 1,
+        // Unsupported types are rejected before this estimate is used.
+        _ => 0,
+    }
 }
 
 /// Validates that both cursor columns exist with deterministic supported types.
@@ -392,6 +504,7 @@ fn validate_described_cursor_columns(
     Ok((timestamp_index, tie_breaker_index))
 }
 
+/// Resolves a configured cursor column using Oracle's case-insensitive identifier rules.
 fn cursor_column_index(
     columns: &[(String, OracleType)],
     name: &str,
@@ -422,27 +535,33 @@ fn extract_cursor(
     Ok(CompositeCursor::new(timestamp.to_string(), tie_breaker))
 }
 
+/// Opens or reuses the single session, publishes it for cancellation, and starts read-only work.
 fn prepare_session(
-    connection: Option<Arc<Connection>>,
+    session: Option<OracleSession>,
     config: &OracleAdapterConfig,
     query: &CompiledQuery,
     cancellation: &OracleCancellation,
-) -> Result<(Arc<Connection>, ActiveConnection), OracleAdapterError> {
-    let connection = match connection {
-        Some(connection) => connection,
+) -> Result<(OracleSession, ActiveConnection), OracleAdapterError> {
+    let session = match session {
+        Some(session) => session,
         None => {
             cancellation.ensure_not_requested()?;
-            Arc::new(connect(config, query.timeout())?)
+            OracleSession {
+                connection: Arc::new(connect(config, query.timeout())?),
+                prepared: None,
+            }
         }
     };
-    let active = ActiveConnection::register(cancellation, Arc::clone(&connection))?;
-    connection
+    let active = ActiveConnection::register(cancellation, Arc::clone(&session.connection))?;
+    session
+        .connection
         .set_call_timeout(Some(query.timeout()))
         .map_err(OracleAdapterError::Configure)?;
-    begin_read_only(&connection)?;
-    Ok((connection, active))
+    begin_read_only(&session.connection)?;
+    Ok((session, active))
 }
 
+/// Compiles stable public metadata and the per-column Oracle decode types.
 fn result_metadata(
     columns: &[oracle::ColumnInfo],
 ) -> Result<(Vec<ColumnMetadata>, Vec<OracleType>), OracleAdapterError> {
@@ -455,10 +574,27 @@ fn result_metadata(
     Ok((metadata, types))
 }
 
+/// Detects result-shape changes before applying a cached decode plan.
+fn metadata_matches(
+    columns: &[oracle::ColumnInfo],
+    metadata: &[ColumnMetadata],
+    types: &[OracleType],
+) -> bool {
+    columns.len() == metadata.len()
+        && columns
+            .iter()
+            .zip(metadata.iter().zip(types))
+            .all(|(column, (metadata, data_type))| {
+                column.name() == metadata.name && column.oracle_type() == data_type
+            })
+}
+
+/// Ends the read-only transaction without retaining database-side state between polls.
 fn finish_session(connection: &Connection) -> Result<(), OracleAdapterError> {
     connection.rollback().map_err(OracleAdapterError::Configure)
 }
 
+/// Converts Oracle metadata into the vendor-neutral scraper representation.
 fn column_metadata(column: &oracle::ColumnInfo) -> ColumnMetadata {
     ColumnMetadata {
         name: column.name().to_owned(),
@@ -467,6 +603,7 @@ fn column_metadata(column: &oracle::ColumnInfo) -> ColumnMetadata {
     }
 }
 
+/// Initializes the client, reads mounted credentials, and establishes a UTC Oracle session.
 fn connect(
     config: &OracleAdapterConfig,
     timeout: std::time::Duration,
@@ -477,8 +614,12 @@ fn connect(
     let username = read_credential(&config.username_file, "username")?;
     let password = read_credential(&config.password_file, "password")?;
     let connect_string = bounded_connect_string(&config.connect_string, timeout)?;
-    let connection = Connection::connect(username, password, connect_string)
-        .map_err(OracleAdapterError::Connect)?;
+    let connection = Connection::connect(
+        username.expose_secret(),
+        password.expose_secret(),
+        connect_string,
+    )
+    .map_err(OracleAdapterError::Connect)?;
     connection
         .set_call_timeout(Some(timeout))
         .map_err(OracleAdapterError::Configure)?;
@@ -489,6 +630,7 @@ fn connect(
     Ok(connection)
 }
 
+/// Makes the database enforce the receiver's read-only query contract.
 fn begin_read_only(connection: &Connection) -> Result<(), OracleAdapterError> {
     // Static SQL inspection is intentionally conservative but cannot classify
     // every Oracle function; the database enforces the final read-only boundary.
@@ -498,6 +640,7 @@ fn begin_read_only(connection: &Connection) -> Result<(), OracleAdapterError> {
     Ok(())
 }
 
+/// Injects fixed startup timeouts while rejecting options that could multiply attempts.
 fn bounded_connect_string(
     connect_string: &str,
     timeout: std::time::Duration,
@@ -531,6 +674,7 @@ fn bounded_connect_string(
     ))
 }
 
+/// Applies the process-global Instant Client directory exactly once.
 fn initialize_client(directory: &str) -> Result<(), OracleAdapterError> {
     let selected = ORACLE_CLIENT_DIRECTORY.get_or_init(|| Mutex::new(None));
     let mut selected = selected
@@ -555,14 +699,18 @@ fn initialize_client(directory: &str) -> Result<(), OracleAdapterError> {
     Ok(())
 }
 
-fn read_credential(path: &str, kind: &'static str) -> Result<String, OracleAdapterError> {
+/// Reads one bounded UTF-8 credential and zeroizes its storage on drop.
+fn read_credential(path: &str, kind: &'static str) -> Result<SecretString, OracleAdapterError> {
     let path = Path::new(path);
     let metadata = std::fs::metadata(path)
         .map_err(|source| OracleAdapterError::Credential { kind, source })?;
     if !metadata.is_file() {
         return Err(OracleAdapterError::CredentialNotRegularFile(kind));
     }
-    let mut file = std::fs::File::open(path)
+    if metadata.len() > MAX_CREDENTIAL_BYTES {
+        return Err(OracleAdapterError::CredentialTooLarge(kind));
+    }
+    let file = std::fs::File::open(path)
         .map_err(|source| OracleAdapterError::Credential { kind, source })?;
     if !file
         .metadata()
@@ -571,10 +719,14 @@ fn read_credential(path: &str, kind: &'static str) -> Result<String, OracleAdapt
     {
         return Err(OracleAdapterError::CredentialNotRegularFile(kind));
     }
-    let mut bytes = Vec::new();
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
     _ = file
+        .take(MAX_CREDENTIAL_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(|source| OracleAdapterError::Credential { kind, source })?;
+    if bytes.len() as u64 > MAX_CREDENTIAL_BYTES {
+        return Err(OracleAdapterError::CredentialTooLarge(kind));
+    }
     let mut value = String::from_utf8(bytes)
         .map_err(|_| OracleAdapterError::InvalidCredentialEncoding(kind))?;
     while value.ends_with(['\r', '\n']) {
@@ -583,9 +735,10 @@ fn read_credential(path: &str, kind: &'static str) -> Result<String, OracleAdapt
     if value.is_empty() {
         return Err(OracleAdapterError::EmptyCredential(kind));
     }
-    Ok(value)
+    Ok(value.into())
 }
 
+/// Rejects result types that lack a precision-preserving normalization path.
 fn validate_types(types: &[OracleType]) -> Result<(), OracleAdapterError> {
     // There is no catch-all string fallback. Every admitted vendor type has an
     // explicit, precision-preserving CellValue conversion below.
@@ -618,6 +771,7 @@ fn validate_types(types: &[OracleType]) -> Result<(), OracleAdapterError> {
     Ok(())
 }
 
+/// Applies the cached type plan to every cell in one Oracle row.
 fn normalize_row(row: &OracleRow, types: &[OracleType]) -> Result<Row, OracleAdapterError> {
     let values = types
         .iter()
@@ -627,6 +781,7 @@ fn normalize_row(row: &OracleRow, types: &[OracleType]) -> Result<Row, OracleAda
     Ok(Row { values })
 }
 
+/// Converts one nullable Oracle scalar into the closed neutral value model.
 fn normalize_cell(
     row: &OracleRow,
     index: usize,
@@ -683,6 +838,7 @@ fn normalize_cell(
     }
 }
 
+/// Formats full timestamp precision and includes an offset only for zoned source types.
 fn format_oracle_timestamp(value: &Timestamp, with_timezone: bool) -> String {
     let base = format!(
         "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:09}",
@@ -705,6 +861,7 @@ fn format_oracle_timestamp(value: &Timestamp, with_timezone: bool) -> String {
     )
 }
 
+/// Rejects NaN and infinity because OTLP cannot preserve them portably.
 fn finite_float(value: CellValue) -> Result<CellValue, OracleAdapterError> {
     match value {
         CellValue::Float64(value) if !value.is_finite() => Err(OracleAdapterError::NonFiniteFloat),
@@ -727,6 +884,9 @@ pub enum OracleAdapterError {
     /// A mounted credential path is not a regular file.
     #[error("Oracle {0} path must reference a regular file")]
     CredentialNotRegularFile(&'static str),
+    /// A mounted credential file exceeds the fixed allocation bound.
+    #[error("Oracle {0} file must not exceed 64 KiB")]
+    CredentialTooLarge(&'static str),
     /// A mounted credential file is not UTF-8.
     #[error("Oracle {0} file must contain valid UTF-8")]
     InvalidCredentialEncoding(&'static str),
@@ -781,6 +941,9 @@ pub enum OracleAdapterError {
     /// The result type does not have bounded conversion support.
     #[error("Oracle result type '{0}' is not supported")]
     UnsupportedType(String),
+    /// A cached statement was invalidated with a different result shape.
+    #[error("Oracle query result metadata changed after startup validation")]
+    ResultMetadataChanged,
     /// A configured cursor column is absent from live result metadata.
     #[error("watermark cursor column '{0}' is not present in the query result")]
     MissingCursorColumn(String),
@@ -812,7 +975,7 @@ pub enum OracleAdapterError {
     InvalidCursorTimestamp(String),
     /// The first row alone exceeds the normalized in-memory ceiling.
     #[error(
-        "the first database row normalizes to {normalized_bytes} bytes, exceeding the {limit}-byte query.max_normalized_bytes limit"
+        "the first database row normalizes to {normalized_bytes} bytes, exceeding the {limit}-byte query.max_batch_bytes limit"
     )]
     NormalizedByteLimit {
         /// Normalized size of the single row.

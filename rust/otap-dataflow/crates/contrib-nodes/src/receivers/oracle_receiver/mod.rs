@@ -47,7 +47,7 @@ fn build(
     config: &Value,
 ) -> Result<Receiver, ConfigError> {
     let config = parse(config)?;
-    let query = config.compile().map_err(invalid_config)?;
+    let query = config.query();
     let checkpoint = config.checkpoint();
     let store = CheckpointStore::new(
         Path::new(&checkpoint.directory),
@@ -73,9 +73,7 @@ fn build(
 
 /// Validates configuration without acquiring a source lease.
 fn validate(config: &Value) -> Result<(), ConfigError> {
-    let config = parse(config)?;
-    _ = config.compile().map_err(invalid_config)?;
-    Ok(())
+    parse(config).map(|_| ())
 }
 
 fn invalid_config(error: impl std::fmt::Display) -> ConfigError {

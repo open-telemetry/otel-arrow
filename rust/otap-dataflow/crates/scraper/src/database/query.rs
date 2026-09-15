@@ -34,7 +34,6 @@ pub struct CompiledQuery {
     fetch_size: usize,
     max_rows: usize,
     max_batch_bytes: u64,
-    max_normalized_bytes: u64,
     watermark: CompositeWatermark,
     output: OutputConfig,
 }
@@ -69,7 +68,6 @@ impl CompiledQuery {
             fetch_size: config.fetch_size,
             max_rows: config.max_rows_per_poll,
             max_batch_bytes: config.max_batch_bytes,
-            max_normalized_bytes: config.max_normalized_bytes,
             watermark: CompositeWatermark {
                 timestamp_column: timestamp.column.clone(),
                 timestamp_bind: timestamp.bind.clone(),
@@ -99,19 +97,16 @@ impl CompiledQuery {
         self.timeout
     }
 
-    /// Returns the requested initial row capacity for one driver page.
-    ///
-    /// Adapters may use a smaller native fetch array when result metadata is
-    /// needed to prove that the allocation remains bounded.
-    #[must_use]
-    pub const fn fetch_size(&self) -> usize {
-        self.fetch_size
-    }
-
     /// Returns the hard row ceiling for one poll.
     #[must_use]
     pub const fn max_rows(&self) -> usize {
         self.max_rows
+    }
+
+    /// Returns the target native driver fetch size.
+    #[must_use]
+    pub const fn fetch_size(&self) -> usize {
+        self.fetch_size
     }
 
     /// Returns the exact serialized OTLP ceiling for one emitted page.
@@ -120,10 +115,10 @@ impl CompiledQuery {
         self.max_batch_bytes
     }
 
-    /// Returns the normalized in-memory ceiling for one poll before encoding.
+    /// Returns the shared normalized and encoded byte ceiling.
     #[must_use]
     pub const fn max_normalized_bytes(&self) -> u64 {
-        self.max_normalized_bytes
+        self.max_batch_bytes
     }
 
     /// Returns the composite cursor binds and columns.
@@ -149,7 +144,6 @@ impl fmt::Debug for CompiledQuery {
             .field("fetch_size", &self.fetch_size)
             .field("max_rows", &self.max_rows)
             .field("max_batch_bytes", &self.max_batch_bytes)
-            .field("max_normalized_bytes", &self.max_normalized_bytes)
             .field("watermark", &self.watermark)
             .field("output", &self.output)
             .finish()

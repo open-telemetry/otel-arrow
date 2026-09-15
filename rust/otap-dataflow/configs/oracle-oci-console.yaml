@@ -37,8 +37,6 @@ groups:
                 max_rows_per_poll: 10000
                 # Exact serialized OTLP ceiling for one emitted page.
                 max_batch_bytes: 10 MiB
-                # Normalized in-memory ceiling for one poll before encoding.
-                max_normalized_bytes: 10 MiB
                 timeout: 2m
               watermark:
                 mode: composite

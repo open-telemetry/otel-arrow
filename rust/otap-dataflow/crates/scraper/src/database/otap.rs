@@ -18,7 +18,6 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{
 };
 use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
 use prost::Message;
-use std::collections::{BTreeMap, BTreeSet};
 
 const DATABASE_SCOPE: &str = "otel-arrow.database_receiver";
 const SOURCE_ID_ATTRIBUTE: &str = "receiver.database.source_id";
@@ -31,20 +30,15 @@ pub fn validate_mapping(
 ) -> Result<(), OtlpMappingError> {
     // Column matching is case-insensitive because database drivers can change
     // identifier case based on quoting and vendor defaults.
-    let mut available = BTreeSet::new();
-    for column in columns {
-        if !available.insert(column.name.to_ascii_lowercase()) {
+    for (index, column) in columns.iter().enumerate() {
+        if columns[..index]
+            .iter()
+            .any(|other| other.name.eq_ignore_ascii_case(&column.name))
+        {
             return Err(OtlpMappingError::DuplicateColumn {
                 name: column.name.clone(),
             });
         }
-    }
-
-    for column in &output.include_columns {
-        require_column(&available, column)?;
-    }
-    for column in output.attributes.keys() {
-        require_column(&available, column)?;
     }
     if let Some(column) = &output.timestamp_column {
         let metadata = columns
@@ -61,7 +55,7 @@ pub fn validate_mapping(
         }
     }
     for column in &output.validation_columns {
-        require_column(&available, column)?;
+        require_column(columns, column)?;
     }
     Ok(())
 }
@@ -79,18 +73,17 @@ fn supports_event_time(source_type: &str) -> bool {
         || source_type == "TEXT"
 }
 
-fn require_column(available: &BTreeSet<String>, name: &str) -> Result<(), OtlpMappingError> {
-    if available.contains(&name.to_ascii_lowercase()) {
+fn require_column(columns: &[ColumnMetadata], name: &str) -> Result<(), OtlpMappingError> {
+    if columns
+        .iter()
+        .any(|column| column.name.eq_ignore_ascii_case(name))
+    {
         Ok(())
     } else {
         Err(OtlpMappingError::UnknownColumn {
             name: name.to_owned(),
         })
     }
-}
-
-fn normalized_names(names: &[String]) -> BTreeSet<String> {
-    names.iter().map(|name| name.to_ascii_lowercase()).collect()
 }
 
 /// One encoded OTLP page plus the cursor of its last emitted row.
@@ -129,9 +122,6 @@ pub fn encode_page(
     if page.rows.is_empty() {
         return Ok(None);
     }
-    let included = normalized_names(&output.include_columns);
-    let include_all = included.is_empty();
-
     // Prost encodes nested messages as tag + length-delimited payload. Building
     // the empty envelope once lets each candidate prefix be sized exactly
     // without re-encoding the whole payload for every row.
@@ -162,8 +152,6 @@ pub fn encode_page(
             &page.columns,
             source_id,
             output,
-            include_all,
-            &included,
             observed_time_unix_nano,
         )?;
         let record_bytes = record.encoded_len();
@@ -212,21 +200,18 @@ pub fn encode_page(
     }))
 }
 
-#[allow(clippy::too_many_arguments)]
 fn row_to_record(
     row: &Row,
     columns: &[ColumnMetadata],
     source_id: &str,
     output: &OutputConfig,
-    include_all: bool,
-    included: &BTreeSet<String>,
     observed_time_unix_nano: u64,
 ) -> Result<(LogRecord, bool), OtlpMappingError> {
     if row.values.len() != columns.len() {
         return Err(OtlpMappingError::ColumnCount);
     }
     let mut body = Vec::with_capacity(columns.len());
-    let mut attributes = vec![
+    let attributes = vec![
         KeyValue {
             key: SOURCE_ID_ATTRIBUTE.to_owned(),
             value: Some(string_value(source_id)),
@@ -241,22 +226,10 @@ fn row_to_record(
     let mut event_time = None;
     let mut used_event_time_fallback = false;
     for (column, value) in columns.iter().zip(&row.values) {
-        if include_all || included.contains(&column.name.to_ascii_lowercase()) {
-            body.push(KeyValue {
-                key: column.name.clone(),
-                value: Some(cell_to_body(value)?),
-            });
-        }
-        if let Some(attribute_name) = configured_value(&output.attributes, &column.name)
-            && !matches!(value, CellValue::Null)
-        {
-            // Null attributes are omitted by policy; body fields retain an
-            // empty AnyValue so the row shape remains observable.
-            attributes.push(KeyValue {
-                key: attribute_name.clone(),
-                value: Some(cell_to_any(value)?),
-            });
-        }
+        body.push(KeyValue {
+            key: column.name.clone(),
+            value: Some(cell_to_body(value)?),
+        });
         if output
             .timestamp_column
             .as_ref()
@@ -319,21 +292,7 @@ fn logs_envelope(system: DatabaseSystem, source_id: &str, records: Vec<LogRecord
     }
 }
 
-fn configured_value<'a>(
-    mappings: &'a BTreeMap<String, String>,
-    source: &str,
-) -> Option<&'a String> {
-    mappings
-        .iter()
-        .find_map(|(column, target)| column.eq_ignore_ascii_case(source).then_some(target))
-}
-
 fn cell_to_body(value: &CellValue) -> Result<AnyValue, OtlpMappingError> {
-    // OTLP KeyValueList is the typed representation of the required JSON
-    // object body. JSON cells can therefore remain structured in the body.
-    if let CellValue::Json(value) = value {
-        return json_to_any(&serde_json::from_str(value)?);
-    }
     cell_to_any(value)
 }
 
@@ -359,61 +318,9 @@ fn cell_to_any(value: &CellValue) -> Result<AnyValue, OtlpMappingError> {
         }
         CellValue::Decimal(value)
         | CellValue::String(value)
-        | CellValue::Date(value)
         | CellValue::Timestamp(value)
         | CellValue::TimestampTz(value)
-        | CellValue::Interval(value)
-        | CellValue::Json(value)
-        | CellValue::Uuid(value) => string_value(value),
-    })
-}
-
-fn json_to_any(value: &serde_json::Value) -> Result<AnyValue, OtlpMappingError> {
-    Ok(match value {
-        serde_json::Value::Null => AnyValue::default(),
-        serde_json::Value::Bool(value) => AnyValue {
-            value: Some(any_value::Value::BoolValue(*value)),
-        },
-        serde_json::Value::String(value) => string_value(value),
-        serde_json::Value::Number(value) if value.is_i64() => {
-            int_value(value.as_i64().ok_or(OtlpMappingError::InvalidJsonNumber)?)
-        }
-        serde_json::Value::Number(value) if value.is_u64() => {
-            let value = value.as_u64().ok_or(OtlpMappingError::InvalidJsonNumber)?;
-            i64::try_from(value)
-                .map(int_value)
-                .unwrap_or_else(|_| string_value(value.to_string()))
-        }
-        serde_json::Value::Number(value) => AnyValue {
-            value: Some(any_value::Value::DoubleValue(
-                value
-                    .as_f64()
-                    .filter(|value| value.is_finite())
-                    .ok_or(OtlpMappingError::InvalidJsonNumber)?,
-            )),
-        },
-        serde_json::Value::Array(values) => AnyValue {
-            value: Some(any_value::Value::ArrayValue(
-                values
-                    .iter()
-                    .map(json_to_any)
-                    .collect::<Result<Vec<_>, _>>()?
-                    .into(),
-            )),
-        },
-        serde_json::Value::Object(values) => AnyValue {
-            value: Some(any_value::Value::KvlistValue(KeyValueList {
-                values: values
-                    .iter()
-                    .map(|(key, value)| {
-                        Ok(KeyValue {
-                            key: key.clone(),
-                            value: Some(json_to_any(value)?),
-                        })
-                    })
-                    .collect::<Result<Vec<_>, OtlpMappingError>>()?,
-            })),
-        },
+        | CellValue::Interval(value) => string_value(value),
     })
 }
 
@@ -421,10 +328,9 @@ fn parse_event_time(value: &CellValue, column: &str) -> Result<Option<u64>, Otlp
     // Timezone-aware text is normalized by chrono. Naive values are interpreted
     // as UTC because Oracle sessions are configured to UTC by the adapter.
     let text = match value {
-        CellValue::Date(value)
-        | CellValue::Timestamp(value)
-        | CellValue::TimestampTz(value)
-        | CellValue::String(value) => value,
+        CellValue::Timestamp(value) | CellValue::TimestampTz(value) | CellValue::String(value) => {
+            value
+        }
         _ => {
             return Err(OtlpMappingError::InvalidEventTimeType {
                 column: column.to_owned(),
@@ -492,12 +398,6 @@ pub enum OtlpMappingError {
     /// A float cannot be represented in OTLP.
     #[error("non-finite floating-point values are not supported")]
     NonFiniteFloat,
-    /// JSON source text is invalid.
-    #[error("JSON row mapping failed")]
-    Json(#[from] serde_json::Error),
-    /// A JSON number cannot be represented.
-    #[error("JSON number is outside the supported OTLP range")]
-    InvalidJsonNumber,
     /// Configured event-time column has an unsupported type.
     #[error("event-time column '{column}' is not a date, timestamp, or string")]
     InvalidEventTimeType {

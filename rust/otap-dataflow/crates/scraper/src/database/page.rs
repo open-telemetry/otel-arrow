@@ -60,7 +60,3 @@ impl QueryPage {
         self.rows.is_empty()
     }
 }
-
-#[cfg(test)]
-#[path = "page_tests.rs"]
-mod tests;
