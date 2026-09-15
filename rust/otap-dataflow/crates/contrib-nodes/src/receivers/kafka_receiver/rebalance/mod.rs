@@ -16,12 +16,9 @@
 //! tracker directly: they only record facts into the shared state below, which
 //! the loop reconciles on its next turn.
 //!
-//! NOTE: because the callbacks run on the pipeline thread, the synchronous
-//! commit-before-revoke in `RebalanceState::handle_revoke` (a
-//! `CommitMode::Sync` broker round-trip) executes on the single-threaded runtime
-//! and can block it while a rebalance is processed inside `recv()`. It is
-//! bounded by librdkafka's internal commit timeout; moving this commit off the
-//! pipeline thread is future work.
+//! The commit-before-revoke in `RebalanceState::handle_revoke` uses
+//! `CommitMode::Async`: the commit is enqueued before the callback returns and
+//! the broker outcome arrives later on the commit callback.
 //!
 //! This module bridges the two concerns with a small amount of shared,
 //! synchronized state ([`RebalanceState`]):
@@ -411,7 +408,8 @@ impl RebalanceState {
     /// Record the outcome of an offset commit reported by librdkafka on the
     /// commit callback. The commit callback is served inline by
     /// `consumer.recv()`, so this runs on the pipeline thread for both the
-    /// receiver's async commits and the synchronous pre-rebalance commit.
+    /// receiver's steady-state async commits and the async pre-rebalance
+    /// commit-before-revoke.
     pub(super) fn record_commit_result(&self, result: &rdkafka::error::KafkaResult<()>) {
         match result {
             Ok(()) => {
@@ -485,13 +483,10 @@ impl RebalanceState {
     /// revoked partitions, queue them for tracker purge, and drop them from the
     /// assigned set.
     ///
-    /// The commit below is synchronous (`CommitMode::Sync`) so owned partitions
-    /// are persisted before they leave the member. Because `pre_rebalance` is
-    /// served inline by `consumer.recv()` (see the module docs), this runs on
-    /// the single-threaded pipeline thread and can block the receive loop for
-    /// the duration of the broker round-trip during a rebalance. It is bounded
-    /// by librdkafka's internal commit timeout; moving it off the pipeline
-    /// thread is future work.
+    /// The commit below is asynchronous (`CommitMode::Async`): it is enqueued
+    /// before this callback returns so owned offsets are submitted before the
+    /// partitions leave the member, and the broker outcome is folded into commit
+    /// metrics later on the commit callback.
     pub(super) fn handle_revoke<C: ConsumerContext>(
         &self,
         consumer: &BaseConsumer<C>,
@@ -509,8 +504,12 @@ impl RebalanceState {
             build_commit_tpl(&committable, &revoked)
         };
 
+        // Commit asynchronously; the error handled here is a rare local
+        // *enqueue* failure, while the broker outcome arrives later on the
+        // commit callback (the single source of truth for commit
+        // success/failure).
         if commit_tpl.count() > 0
-            && let Err(e) = consumer.commit(&commit_tpl, CommitMode::Sync)
+            && let Err(e) = consumer.commit(&commit_tpl, CommitMode::Async)
         {
             let _ = self.rebalance_commit_errors.fetch_add(1, Ordering::Relaxed);
             otel_error!(
