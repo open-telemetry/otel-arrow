@@ -18,10 +18,6 @@ use crate::{
     schema::consts,
 };
 
-/// Re-export of the `arrow` crate so callers can downcast OTAP record batches
-/// to the exact Arrow version pdata built them with.
-pub use ::arrow;
-
 pub mod batching;
 
 #[cfg(test)]
