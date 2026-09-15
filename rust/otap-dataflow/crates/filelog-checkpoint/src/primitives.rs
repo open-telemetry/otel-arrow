@@ -531,12 +531,15 @@ impl CommittedFrontierGuard {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommittedFrontierWindow {
     end_offset: u64,
-    bytes: Vec<u8>,
+    // The unused suffix stays zero, making derived equality canonical.
+    buf: [u8; COMMITTED_FRONTIER_GUARD_WINDOW_BYTES as usize],
+    len: u8,
 }
 
 impl CommittedFrontierWindow {
-    /// Constructs a window whose bytes end at `end_offset`.
-    pub fn new(end_offset: u64, bytes: Vec<u8>) -> Result<Self, EncodeError> {
+    /// Copies the exact required window into inline storage ending at `end_offset`.
+    /// Incorrect lengths are rejected without truncation.
+    pub fn new(end_offset: u64, bytes: &[u8]) -> Result<Self, EncodeError> {
         let expected = end_offset.min(u64::from(COMMITTED_FRONTIER_GUARD_WINDOW_BYTES)) as usize;
         if bytes.len() != expected {
             return Err(EncodeError::InvalidFieldValue {
@@ -544,7 +547,13 @@ impl CommittedFrontierWindow {
                 reason: "length must equal min(end_offset, 64)",
             });
         }
-        Ok(Self { end_offset, bytes })
+        let mut buf = [0; COMMITTED_FRONTIER_GUARD_WINDOW_BYTES as usize];
+        buf[..expected].copy_from_slice(bytes);
+        Ok(Self {
+            end_offset,
+            buf,
+            len: expected as u8,
+        })
     }
 
     /// Returns the empty offset-zero window.
@@ -552,7 +561,8 @@ impl CommittedFrontierWindow {
     pub fn empty() -> Self {
         Self {
             end_offset: 0,
-            bytes: Vec::new(),
+            buf: [0; COMMITTED_FRONTIER_GUARD_WINDOW_BYTES as usize],
+            len: 0,
         }
     }
 
@@ -565,12 +575,12 @@ impl CommittedFrontierWindow {
     /// Returns the retained exact bytes.
     #[must_use]
     pub fn bytes(&self) -> &[u8] {
-        &self.bytes
+        &self.buf[..usize::from(self.len)]
     }
 
     /// Computes the corresponding durable guard.
     pub fn guard(&self) -> Result<CommittedFrontierGuard, EncodeError> {
-        CommittedFrontierGuard::compute(self.end_offset, &self.bytes)
+        CommittedFrontierGuard::compute(self.end_offset, self.bytes())
     }
 }
 

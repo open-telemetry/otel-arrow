@@ -182,6 +182,14 @@ pub enum DecodeError {
         /// Artifact name.
         context: &'static str,
     },
+    /// The snapshot generation differs from the selected authoritative generation.
+    #[error("snapshot generation mismatch: expected {expected}, found {found}")]
+    GenerationMismatch {
+        /// Generation selected by the caller from CURRENT.
+        expected: u64,
+        /// Generation declared by the validated snapshot header.
+        found: u64,
+    },
     /// A snapshot declared more records than the caller permits.
     #[error("snapshot declares {declared} records, caller maximum is {max}")]
     SnapshotRecordCountExceedsLimit {

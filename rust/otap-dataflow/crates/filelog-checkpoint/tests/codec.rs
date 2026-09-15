@@ -4,9 +4,9 @@
 //! Positive conformance tests against independently generated fixtures.
 
 use otel_arrow_dfe_filelog_checkpoint::{
-    AdvisoryPath, AdvisoryPathKind, CommittedFrontierGuard, DecodeError, EncodeError,
-    FRAMING_PROFILE_VERSION, FileId, FramingEncoding, FramingOnDecodeError, FramingProfileParams,
-    FramingResume, LifecycleState, Locator, MAX_PROGRESS_TX_BODY_BYTES,
+    AdvisoryPath, AdvisoryPathKind, CommittedFrontierGuard, CommittedFrontierWindow, DecodeError,
+    EncodeError, FRAMING_PROFILE_VERSION, FileId, FramingEncoding, FramingOnDecodeError,
+    FramingProfileParams, FramingResume, LifecycleState, Locator, MAX_PROGRESS_TX_BODY_BYTES,
     MAX_PROGRESS_TX_FRAME_BYTES, MaxLogSizeBehavior, MultilineMode, Operation, QuarantineEvidence,
     RegisterFile, ResetQuarantineAction, SNAPSHOT_FOOTER_BYTES, SNAPSHOT_HEADER_BYTES,
     SNAPSHOT_MAX_RECORD_FRAME_BYTES, SnapshotRecord, TX_HEADER_BYTES, TX_MIN_BODY_BYTES,
@@ -163,7 +163,7 @@ fn register_file_uses_independent_framing_profile_version() {
 #[test]
 fn empty_snapshot_fixture_matches_codec() {
     let namespace = namespace_digest("app-logs").unwrap();
-    let snapshot = decode_snapshot(EMPTY_SNAPSHOT, &namespace, u32::MAX).unwrap();
+    let snapshot = decode_snapshot(EMPTY_SNAPSHOT, &namespace, 0, u32::MAX).unwrap();
     assert_eq!(snapshot.generation, 0);
     assert!(snapshot.records.is_empty());
     assert_eq!(encode_snapshot(0, "app-logs", &[]).unwrap(), EMPTY_SNAPSHOT);
@@ -179,7 +179,7 @@ fn lifecycle_snapshot_fixtures_match_codec() {
         (QUARANTINED_SNAPSHOT, LifecycleState::Quarantined),
         (FINALIZED_SNAPSHOT, LifecycleState::RotatedFinalized),
     ] {
-        let snapshot = decode_snapshot(bytes, &namespace, u32::MAX).unwrap();
+        let snapshot = decode_snapshot(bytes, &namespace, 7, u32::MAX).unwrap();
         assert_eq!(snapshot.records.len(), 1);
         assert_eq!(snapshot.records[0].lifecycle_state, expected_state);
         assert_eq!(
@@ -194,7 +194,7 @@ fn lifecycle_snapshot_fixtures_match_codec() {
 #[test]
 fn long_advisory_path_snapshot_is_bounded() {
     let namespace = namespace_digest("app-logs").unwrap();
-    let snapshot = decode_snapshot(LONG_PATH_SNAPSHOT, &namespace, u32::MAX).unwrap();
+    let snapshot = decode_snapshot(LONG_PATH_SNAPSHOT, &namespace, 7, u32::MAX).unwrap();
     let path = &snapshot.records[0].advisory_path;
     assert!(path.is_truncated());
     assert_eq!(path.full_path_len(), 5000);
@@ -498,7 +498,7 @@ fn maximum_snapshot_record_frame_is_accepted() {
     assert_eq!(record_frame.len() as u64, SNAPSHOT_MAX_RECORD_FRAME_BYTES);
 
     let namespace = namespace_digest("maximum-record").unwrap();
-    let decoded = decode_snapshot(&encoded, &namespace, 1).unwrap();
+    let decoded = decode_snapshot(&encoded, &namespace, 9, 1).unwrap();
     assert_eq!(decoded.records, vec![record]);
     assert_eq!(decoded.records[0].fingerprint.len(), u16::MAX as usize);
     assert_eq!(
@@ -747,6 +747,42 @@ fn frontier_guard_window_boundary_is_exact() {
         assert_eq!(guard.window_len, window_len as u16);
     }
     assert!(CommittedFrontierGuard::compute(65, &[0xA5; 65]).is_err());
+}
+
+/// Scenario: Frontier windows copy source slices at zero, below, at, and above the offset cap.
+/// Guarantees: Each window owns exactly the required bytes and computes the same guard after the source changes.
+#[test]
+fn frontier_window_copies_exact_source_bytes() {
+    for (offset, len) in [(0, 0), (1, 1), (63, 63), (64, 64), (65, 64), (u64::MAX, 64)] {
+        let mut source = [0xA5; 64];
+        let window = CommittedFrontierWindow::new(offset, &source[..len]).unwrap();
+        source.fill(0);
+        assert_eq!(window.end_offset(), offset);
+        assert_eq!(window.bytes(), &[0xA5; 64][..len]);
+        assert_eq!(
+            window.guard().unwrap(),
+            CommittedFrontierGuard::compute(offset, &[0xA5; 64][..len]).unwrap()
+        );
+    }
+}
+
+/// Scenario: Frontier windows are constructed from equal used bytes in different backing buffers.
+/// Guarantees: Equality depends on the retained window and offset, and both empty constructors agree.
+#[test]
+fn frontier_window_equality_is_canonical() {
+    assert_eq!(
+        CommittedFrontierWindow::new(0, &[]).unwrap(),
+        CommittedFrontierWindow::empty()
+    );
+    let mut source = [0xFF; 128];
+    source[..3].copy_from_slice(b"abc");
+    let window = CommittedFrontierWindow::new(3, &source[..3]).unwrap();
+    assert_eq!(window, CommittedFrontierWindow::new(3, b"abc").unwrap());
+    assert_ne!(window, CommittedFrontierWindow::new(3, b"abd").unwrap());
+    assert_ne!(
+        CommittedFrontierWindow::new(64, &[0; 64]).unwrap(),
+        CommittedFrontierWindow::new(65, &[0; 64]).unwrap()
+    );
 }
 
 /// Scenario: Framing profiles exercise exact pattern length and invalid version boundaries.

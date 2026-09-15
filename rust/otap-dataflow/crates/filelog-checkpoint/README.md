@@ -59,7 +59,10 @@ case where `resulting_epoch` differs from `expected_quarantine_epoch`. Replay
 must still compare the offset, frontier guard, fingerprint, framing state, and
 all other stored quarantined state exactly.
 
-Snapshot decoding takes the caller's current tracked-file limit. Before record
+Snapshot decoding takes the generation selected by `CURRENT`, the expected
+namespace digest, and the caller's current tracked-file limit. Header CRC and
+namespace checks precede generation matching, which rejects a mismatched
+snapshot before record-count validation or record decoding. Before record
 storage is allocated or a body is decoded, the authenticated count must fit
 both that limit and the maximum number of minimum-width record frames
 physically possible in the supplied snapshot bytes.

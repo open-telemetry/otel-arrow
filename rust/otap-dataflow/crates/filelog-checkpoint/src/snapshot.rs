@@ -347,14 +347,17 @@ pub fn encode_snapshot(
     Ok(out.finish())
 }
 
-/// Decodes one complete version 1 snapshot for `expected_namespace_digest`.
+/// Decodes one complete version 1 snapshot for the selected namespace and generation.
 ///
-/// The authenticated header count is checked against both `max_records` and
+/// After header CRC and namespace validation, the generation must match
+/// `expected_generation` selected by CURRENT. The validated header count is
+/// then checked against both `max_records` and
 /// the maximum number of minimum-width frames physically possible in `bytes`
 /// before any record storage is allocated or any record body is decoded.
 pub fn decode_snapshot(
     bytes: &[u8],
     expected_namespace_digest: &[u8; 32],
+    expected_generation: u64,
     max_records: u32,
 ) -> Result<Snapshot, DecodeError> {
     if bytes.len() < SNAPSHOT_HEADER_BYTES {
@@ -398,6 +401,12 @@ pub fn decode_snapshot(
     if &namespace != expected_namespace_digest {
         return Err(DecodeError::NamespaceMismatch {
             context: "snapshot",
+        });
+    }
+    if generation != expected_generation {
+        return Err(DecodeError::GenerationMismatch {
+            expected: expected_generation,
+            found: generation,
         });
     }
     if record_count > max_records {
