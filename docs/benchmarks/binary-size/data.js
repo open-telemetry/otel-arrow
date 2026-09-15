@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789438457405,
+  "lastUpdate": 1789491778395,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -38213,6 +38213,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 103.6,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "mmaratov@microsoft.com",
+            "name": "Maksat Maratov",
+            "username": "maksmara"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "9241c02ac872145b4db877764e5320d12167a794",
+          "message": "feat(context): add authorized identity context policy (#4066)\n\n# Change summary\n\nAdds an opt-in `policies.authorized_identity` policy that projects\nselected verified claims into strongly typed pdata context entries for\nauthorized OTLP HTTP and gRPC requests.\n\nReviewer callouts:\n\n- This PR intentionally uses a typed sidecar; generic packed registers\nare not required for #3920.\n- Authorized identity remains separate from untrusted transport headers\nto preserve provenance.\n- The nearest pipeline, group, or top-level policy replaces the broader\nidentity policy rather than merging with it.\n- The sidecar adds one pointer to pdata context, increasing `OtapPdata`\nfrom 152 to 160 bytes on 64-bit targets.\n- When capture is disabled, no identity extension handoff, entry\nallocation, or claim copying occurs.\n- Outbound identity-to-header propagation is deferred to a separate PR\nand should occur at the exporter boundary.\n\n## Related issue\n\n* Closes #3920\n* Part of #3872\n\n## Validation\n\n- Added end-to-end tests across the real OTLP HTTP and tonic gRPC\nboundaries.\n- Verified enabled and disabled gRPC identity handoff.\n- Verified no-authorizer, missing-claim, single-valued, and multi-valued\nbehavior.\n- Verified identity preservation across detached pdata contexts.\n- Verified claim values are excluded from `Debug` output.\n- Verified invalid, empty, absent, and changed policies.\n- Retained the 160-byte `OtapPdata` layout assertion.\n- Affected tests, checks, clippy, formatting, Markdown lint, ASCII\nchecks, and changelog validation pass.\n\nFull native-Windows `cargo xtask check` remains blocked by `rdkafka-sys`\nattempting to execute a Unix `configure` script.\n\n## User-facing changes\n\nUsers can select verified authorization claims for storage in pdata\ncontext:\n\n```yaml\npolicies:\n  authorized_identity:\n    - claim: sub\n      store_as: customer_id\n    - claim: groups\n      store_as: access_groups\n```\n\nCapture requires an OTLP HTTP or gRPC receiver with a bound\n`bearer_token_authorizer`. The `sub` claim represents the authorized\nsubject, multi-valued claims preserve their cardinality, and missing\nclaims are omitted without rejecting the request.\n\nUnsupported receivers, or OTLP receivers without an authorizer, produce\nno identity entries. Routing, predicates, composites, generic consumers,\nand outbound propagation are outside this change.",
+          "timestamp": "2026-09-15T15:10:11Z",
+          "tree_id": "c0905d3c87bf7855cd0b4b52d2a9566d57355d7c",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/9241c02ac872145b4db877764e5320d12167a794"
+        },
+        "date": 1789491760487,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 84.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 4.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_array",
+            "value": 3.71,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 3.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 3.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_common",
+            "value": 3.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-[Unknown]",
+            "value": 2.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 2.92,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.68,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 71.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 4.86,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_array",
+            "value": 3.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 3.3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 3.16,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_common",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 2.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 2.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-[Unknown]",
+            "value": 2.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 116.38,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 103.66,
             "unit": "MB"
           }
         ]
