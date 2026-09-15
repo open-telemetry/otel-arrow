@@ -179,6 +179,12 @@ pub fn new_http_client_auth_provider(
         }
     }
 
+    new_http_client_auth_provider_from_providers(providers)
+}
+
+fn new_http_client_auth_provider_from_providers(
+    providers: Vec<Box<dyn HttpClientAuthProvider>>,
+) -> Result<Option<Box<dyn HttpClientAuthProvider>>, otel_arrow_dfe_config::error::Error> {
     let mut providers = providers.into_iter();
 
     Ok(if let Some(first_provider) = providers.next() {
@@ -205,5 +211,57 @@ pub fn new_http_client_auth_provider_from_token_provider(
 impl<T: BearerTokenProvider + 'static> From<T> for Box<dyn HttpClientAuthProvider> {
     fn from(value: T) -> Self {
         Box::new(BearerAuth::new(Box::new(value)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use otel_arrow_dfe_engine::{
+        capability::{
+            CapabilityError,
+            auth::{api_key_provider::ApiKeyStream, bearer_token_provider::TokenStream, *},
+        },
+        local::capability::auth::api_key_provider::ApiKeyProvider,
+    };
+
+    use super::*;
+    use futures::StreamExt;
+    use futures::stream;
+
+    struct MockBearerTokenProvider {}
+
+    #[async_trait(?Send)]
+    impl BearerTokenProvider for MockBearerTokenProvider {
+        async fn get_token(&self) -> Result<BearerToken, CapabilityError> {
+            unreachable!()
+        }
+
+        fn token_stream(&self) -> TokenStream {
+            stream::empty().boxed_local()
+        }
+    }
+
+    struct MockApiKeyProvider {}
+
+    #[async_trait(?Send)]
+    impl ApiKeyProvider for MockApiKeyProvider {
+        async fn get_api_key(&self) -> Result<ApiKey, CapabilityError> {
+            unreachable!()
+        }
+
+        fn api_key_stream(&self) -> ApiKeyStream {
+            stream::empty().boxed_local()
+        }
+    }
+
+    #[test]
+    fn new_http_client_auth_provider_rejects_multiple_providers() {
+        assert!(
+            new_http_client_auth_provider_from_providers(vec![
+                Box::new(BearerAuth::new(Box::new(MockBearerTokenProvider {}))),
+                Box::new(ApiKeyAuth::new(Box::new(MockApiKeyProvider {}))),
+            ])
+            .is_err()
+        )
     }
 }
