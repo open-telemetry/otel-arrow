@@ -520,10 +520,10 @@ async fn reject_open_stream_for_memory_pressure(
         .send(Err(grpc_memory_pressure_status(admission_state)))
         .await
         .map_err(|e| {
-            otel_error!(
+            otel_warn!(
                 "otap.response.send_failed",
-                error = ?e,
-                message = "Error sending streamed memory pressure response"
+                error = %e,
+                message = "Memory pressure response not sent because the gRPC response stream is closed"
             );
         })
         .ok();
@@ -565,7 +565,12 @@ where
         }))
         .await
         .map_err(|e| {
-            otel_error!("otap.response.send_failed", error = ?e, message = "Error sending BatchStatus response");
+            otel_warn!(
+                "otap.response.send_failed",
+                error = %e,
+                batch_id = batch_id,
+                message = "BatchStatus response not sent because the gRPC response stream is closed"
+            );
         })?;
 
         return Ok(None);
@@ -631,7 +636,12 @@ where
                 }))
                 .await
                 .map_err(|e| {
-                    otel_error!("otap.response.send_failed", error = ?e, message = "Error sending BatchStatus response");
+                    otel_warn!(
+                        "otap.response.send_failed",
+                        error = %e,
+                        batch_id = batch_id,
+                        message = "BatchStatus response not sent because the gRPC response stream is closed"
+                    );
                 })?;
 
                 return Ok(None);
@@ -686,7 +696,12 @@ where
     }))
     .await
     .map_err(|e| {
-        otel_error!("otap.response.send_failed", error = ?e, message = "Error sending BatchStatus response");
+        otel_warn!(
+            "otap.response.send_failed",
+            error = %e,
+            batch_id = batch_id,
+            message = "BatchStatus response not sent because the gRPC response stream is closed"
+        );
     })?;
 
     Ok(None)
@@ -756,8 +771,14 @@ async fn send_pending_response(
         }
     };
 
+    let batch_id = status.batch_id;
     tx.send(Ok(status)).await.map_err(|e| {
-        otel_error!("otap.response.send_failed", error = ?e, message = "Error sending BatchStatus response");
+        otel_warn!(
+            "otap.response.send_failed",
+            error = %e,
+            batch_id = batch_id,
+            message = "BatchStatus response not sent because the gRPC response stream is closed"
+        );
     })
 }
 
