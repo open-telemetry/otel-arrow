@@ -11,7 +11,7 @@
 //! that requirement.
 
 use super::adapter::{OracleAdapter, OracleAdapterConfig};
-use crate::receivers::database::{
+use otel_arrow_dfe_scraper::database::{
     CheckpointConfig, CompiledQuery, OutputConfig, PollingConfig, QueryError, WatermarkConfig,
 };
 use serde::de::Error as DeError;
@@ -462,8 +462,8 @@ impl OracleConfigError {
     }
 }
 
-impl From<crate::receivers::database::ConfigError> for OracleConfigError {
-    fn from(error: crate::receivers::database::ConfigError) -> Self {
+impl From<otel_arrow_dfe_scraper::database::ConfigError> for OracleConfigError {
+    fn from(error: otel_arrow_dfe_scraper::database::ConfigError) -> Self {
         Self::new(error.to_string())
     }
 }

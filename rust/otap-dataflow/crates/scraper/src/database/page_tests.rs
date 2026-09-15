@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::*;
-use crate::receivers::database::CellValue;
+use crate::database::CellValue;
 
 fn cursor_row(timestamp: &str, tie_breaker: i64) -> CursorRow {
     CursorRow {

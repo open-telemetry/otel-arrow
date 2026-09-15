@@ -3,14 +3,14 @@
 
 //! Oracle implementation of the database adapter contract.
 
-use crate::receivers::database::{
-    CellValue, ColumnMetadata, CompiledQuery, CompositeCursor, CursorRow, DatabaseSystem,
-    DriverAdapter, DriverCancellation, QueryPage, Row,
-};
 use async_trait::async_trait;
 use oracle::sql_type::{IntervalDS, IntervalYM, OracleType, Timestamp};
 use oracle::{Connection, Row as OracleRow};
 use otel_arrow_dfe_engine::error::ReceiverErrorKind;
+use otel_arrow_dfe_scraper::database::{
+    CellValue, ColumnMetadata, CompiledQuery, CompositeCursor, CursorRow, DatabaseSystem,
+    DriverAdapter, DriverCancellation, QueryPage, Row,
+};
 use std::io::Read;
 use std::path::Path;
 use std::str::FromStr;
@@ -362,7 +362,7 @@ fn validate_cursor_columns(
 /// Pure cursor-metadata validation over adapter-independent column descriptions.
 fn validate_described_cursor_columns(
     columns: &[(String, OracleType)],
-    watermark: &crate::receivers::database::CompositeWatermark,
+    watermark: &otel_arrow_dfe_scraper::database::CompositeWatermark,
 ) -> Result<(usize, usize), OracleAdapterError> {
     let timestamp_index = cursor_column_index(columns, &watermark.timestamp_column)?;
     let tie_breaker_index = cursor_column_index(columns, &watermark.tie_breaker_column)?;
@@ -407,7 +407,7 @@ fn extract_cursor(
     row: &OracleRow,
     timestamp_index: usize,
     tie_breaker_index: usize,
-    watermark: &crate::receivers::database::CompositeWatermark,
+    watermark: &otel_arrow_dfe_scraper::database::CompositeWatermark,
 ) -> Result<CompositeCursor, OracleAdapterError> {
     let timestamp = row
         .get::<_, Option<Timestamp>>(timestamp_index)

@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::*;
-use crate::receivers::database::OnNack;
 use otel_arrow_dfe_engine::context::ControllerContext;
 use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
 use otel_arrow_dfe_engine::testing::{receiver::TestRuntime, test_node};
+use otel_arrow_dfe_scraper::database::OnNack;
 use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 use std::time::{Duration, Instant};
 

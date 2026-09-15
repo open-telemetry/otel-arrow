@@ -5,10 +5,6 @@
 #[cfg(all(feature = "etw-receiver", target_os = "windows"))]
 pub mod etw_receiver;
 
-/// Shared, database-neutral receiver building blocks.
-#[cfg(feature = "database-receiver")]
-pub mod database;
-
 /// Kafka receiver.
 #[cfg(feature = "kafka-receiver")]
 pub mod kafka_receiver;

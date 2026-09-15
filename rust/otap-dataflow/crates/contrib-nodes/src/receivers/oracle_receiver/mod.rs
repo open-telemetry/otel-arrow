@@ -11,9 +11,6 @@ otel_arrow_dfe_telemetry::otel_component_scope!(
 mod adapter;
 mod config;
 
-use crate::receivers::database::{
-    CheckpointStore, DatabaseReceiver, DatabaseReceiverMetrics, SourceLease,
-};
 use linkme::distributed_slice;
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_config::node::NodeUserConfig;
@@ -24,6 +21,9 @@ use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
 use otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_scraper::{
+    CheckpointStore, DatabaseReceiver, DatabaseReceiverMetrics, SourceLease,
+};
 use serde_json::Value;
 use std::path::Path;
 use std::sync::Arc;

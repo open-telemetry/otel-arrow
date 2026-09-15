@@ -12,21 +12,25 @@
 //! Every filesystem call in this module blocks. Callers must run it off the
 //! local async engine core (see `DatabaseReceiver`).
 
-use super::page::CompositeCursor;
+use crate::database::CompositeCursor;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+#[cfg(not(test))]
+use std::sync::atomic::Ordering;
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{LazyLock, Mutex};
 
 const ENVELOPE_VERSION: u8 = 1;
 const MAX_CHECKPOINT_BYTES: u64 = 16 * 1024;
+const MAX_READABLE_SOURCE_SEGMENT_BYTES: usize = 128;
 const RETAINED_REVISIONS: usize = 2;
+const TEMP_FILE_ATTEMPTS: usize = 16;
+static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -65,6 +69,7 @@ pub struct WriteOutcome {
 #[derive(Clone, Debug)]
 pub struct CheckpointStore {
     prefix: PathBuf,
+    legacy_prefix: Option<PathBuf>,
     source_id: String,
     config_fingerprint: String,
     // Test-only injection point for a post-install failure. `Arc` is required
@@ -202,6 +207,15 @@ pub enum CheckpointError {
         #[source]
         source: io::Error,
     },
+    /// A stale or failed temporary checkpoint file could not be removed.
+    #[error("failed to remove checkpoint temporary file {path}")]
+    RemoveTemporary {
+        /// Temporary file path.
+        path: PathBuf,
+        /// Underlying filesystem error.
+        #[source]
+        source: io::Error,
+    },
     /// The intended revision path already exists.
     #[error("checkpoint revision already exists at {path}")]
     RevisionExists {
@@ -277,9 +291,12 @@ impl CheckpointStore {
         prefix.push(encode_path_segment(pipeline_group_id));
         prefix.push(encode_path_segment(pipeline_id));
         prefix.push(encode_path_segment(receiver_name));
-        prefix.push(format!("{}.checkpoint", encode_path_segment(source_id)));
+        let (source_name, legacy_source_name) = source_checkpoint_names(source_id);
+        let legacy_prefix = legacy_source_name.map(|name| prefix.join(name));
+        prefix.push(source_name);
         Self {
             prefix,
+            legacy_prefix,
             source_id: source_id.to_owned(),
             config_fingerprint,
             #[cfg(test)]
@@ -295,9 +312,19 @@ impl CheckpointStore {
 
     /// Reads the newest installed revision, or `None` when no state exists.
     pub fn read(&self) -> Result<Option<CheckpointState>, CheckpointError> {
-        let Some(parent) = self.prefix.parent() else {
+        if let Some(checkpoint) = self.read_from_prefix(&self.prefix)? {
+            return Ok(Some(checkpoint));
+        }
+        if let Some(legacy_prefix) = self.legacy_prefix.as_ref() {
+            return self.read_from_prefix(legacy_prefix);
+        }
+        Ok(None)
+    }
+
+    fn read_from_prefix(&self, prefix: &Path) -> Result<Option<CheckpointState>, CheckpointError> {
+        let Some(parent) = prefix.parent() else {
             return Err(CheckpointError::NoParent {
-                path: self.prefix.clone(),
+                path: prefix.to_path_buf(),
             });
         };
         let entries = match std::fs::read_dir(parent) {
@@ -310,9 +337,9 @@ impl CheckpointStore {
                 });
             }
         };
-        let Some(prefix_name) = self.prefix.file_name().and_then(OsStr::to_str) else {
+        let Some(prefix_name) = prefix.file_name().and_then(OsStr::to_str) else {
             return Err(CheckpointError::NoParent {
-                path: self.prefix.clone(),
+                path: prefix.to_path_buf(),
             });
         };
         let mut revisions = Vec::new();
@@ -431,7 +458,7 @@ impl CheckpointStore {
             source,
         })?;
         let final_path = revision_path(&self.prefix, revision);
-        let install_result = self.install(&bytes, revision, &final_path, parent);
+        let install_result = self.install(&bytes, &final_path, parent);
         if let Err(error) = install_result
             && (!error.could_have_installed()
                 || !self.reconcile_installed(&final_path, revision, cursor, parent))
@@ -451,46 +478,92 @@ impl CheckpointStore {
     fn install(
         &self,
         bytes: &[u8],
-        revision: u64,
         final_path: &Path,
         parent: &Path,
     ) -> Result<(), CheckpointError> {
+        self.cleanup_temporary_files(parent)?;
         if final_path.exists() {
             return Err(CheckpointError::RevisionExists {
                 path: final_path.to_path_buf(),
             });
         }
-        // The temporary file lives in the same directory so the rename that
-        // installs it is atomic on every supported filesystem.
-        let tmp = self
-            .prefix
-            .with_extension(format!("checkpoint.{revision:020}.tmp"));
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .open(&tmp)
-            .map_err(|source| CheckpointError::CreateTemporary {
-                path: tmp.clone(),
-                source,
-            })?;
-        file.write_all(bytes)
-            .map_err(|source| CheckpointError::Write {
-                path: tmp.clone(),
-                source,
-            })?;
-        file.sync_all()
-            .map_err(|source| CheckpointError::FsyncFile {
-                path: tmp.clone(),
-                source,
-            })?;
+        let (tmp, mut file) = self.create_temporary(parent)?;
+        if let Err(source) = file.write_all(bytes) {
+            drop(file);
+            _ = std::fs::remove_file(&tmp);
+            return Err(CheckpointError::Write { path: tmp, source });
+        }
+        if let Err(source) = file.sync_all() {
+            drop(file);
+            _ = std::fs::remove_file(&tmp);
+            return Err(CheckpointError::FsyncFile { path: tmp, source });
+        }
         drop(file);
-        std::fs::rename(&tmp, final_path).map_err(|source| CheckpointError::Rename {
-            tmp,
-            path: final_path.to_path_buf(),
-            source,
-        })?;
+        if let Err(source) = std::fs::rename(&tmp, final_path) {
+            _ = std::fs::remove_file(&tmp);
+            return Err(CheckpointError::Rename {
+                tmp,
+                path: final_path.to_path_buf(),
+                source,
+            });
+        }
         self.sync_parent(parent, final_path)
+    }
+
+    fn create_temporary(&self, parent: &Path) -> Result<(PathBuf, std::fs::File), CheckpointError> {
+        let process_id = std::process::id();
+        let prefix = self.temporary_prefix();
+        let mut last_error = None;
+        for _ in 0..TEMP_FILE_ATTEMPTS {
+            let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let tmp = parent.join(format!("{prefix}{process_id}.{sequence}.tmp"));
+            match std::fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&tmp)
+            {
+                Ok(file) => return Ok((tmp, file)),
+                Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {
+                    last_error = Some((tmp, source));
+                }
+                Err(source) => {
+                    return Err(CheckpointError::CreateTemporary { path: tmp, source });
+                }
+            }
+        }
+        let (path, source) = last_error.expect("temporary file attempts must be nonzero");
+        Err(CheckpointError::CreateTemporary { path, source })
+    }
+
+    fn temporary_prefix(&self) -> String {
+        let identity = self.prefix.to_string_lossy();
+        let digest = blake3::hash(identity.as_bytes()).to_hex();
+        format!(".otel-arrow-checkpoint-{digest}.")
+    }
+
+    fn cleanup_temporary_files(&self, parent: &Path) -> Result<(), CheckpointError> {
+        let prefix = self.temporary_prefix();
+        for entry in
+            std::fs::read_dir(parent).map_err(|source| CheckpointError::CreateTemporary {
+                path: parent.to_path_buf(),
+                source,
+            })?
+        {
+            let entry = entry.map_err(|source| CheckpointError::CreateTemporary {
+                path: parent.to_path_buf(),
+                source,
+            })?;
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if name.starts_with(&prefix) && name.ends_with(".tmp") {
+                let path = entry.path();
+                std::fs::remove_file(&path)
+                    .map_err(|source| CheckpointError::RemoveTemporary { path, source })?;
+            }
+        }
+        Ok(())
     }
 
     /// Confirms an uncertain install by reading back the exact intended state.
@@ -571,6 +644,16 @@ fn revision_path(prefix: &Path, revision: u64) -> PathBuf {
     PathBuf::from(name)
 }
 
+fn source_checkpoint_names(source_id: &str) -> (String, Option<String>) {
+    let encoded = encode_path_segment(source_id);
+    let legacy = format!("{encoded}.checkpoint");
+    if encoded.len() <= MAX_READABLE_SOURCE_SEGMENT_BYTES {
+        return (legacy, None);
+    }
+    let digest = blake3::hash(source_id.as_bytes()).to_hex();
+    (format!("source-{digest}.checkpoint"), Some(legacy))
+}
+
 fn parse_revision(prefix: &str, name: &str) -> Option<u64> {
     let revision = name
         .strip_prefix(prefix)?
@@ -644,54 +727,6 @@ fn sync_parent_directory(_parent: &Path) -> Result<(), CheckpointError> {
     // temporary file plus atomic rename still guarantees a reader never sees a
     // partially written revision.
     Ok(())
-}
-
-// Process-local registry preventing two receivers in one process from
-// advancing the same durable checkpoint. `Mutex` is required because factory
-// construction happens before any pipeline core is assigned, so this registry
-// is inherently cross-thread; it is touched only at construction and drop.
-static SOURCE_LEASES: LazyLock<Mutex<HashSet<String>>> =
-    LazyLock::new(|| Mutex::new(HashSet::new()));
-
-/// Exclusive process-local ownership of one checkpoint source identity.
-///
-/// This complements, and does not replace, the deployment requirement that
-/// exactly one collector replica owns a checkpoint source.
-#[derive(Debug)]
-pub struct SourceLease {
-    key: String,
-}
-
-impl SourceLease {
-    /// Acquires the lease for one canonical checkpoint source identity.
-    pub fn acquire(key: &str) -> Result<Self, LeaseError> {
-        let mut leases = SOURCE_LEASES.lock().map_err(|_| LeaseError::Unavailable)?;
-        if !leases.insert(key.to_owned()) {
-            return Err(LeaseError::AlreadyOwned);
-        }
-        Ok(Self {
-            key: key.to_owned(),
-        })
-    }
-}
-
-impl Drop for SourceLease {
-    fn drop(&mut self) {
-        if let Ok(mut leases) = SOURCE_LEASES.lock() {
-            _ = leases.remove(&self.key);
-        }
-    }
-}
-
-/// Failure while acquiring a process-local checkpoint source lease.
-#[derive(Debug, thiserror::Error)]
-pub enum LeaseError {
-    /// Another receiver in this process already owns the source.
-    #[error("another database receiver already owns this checkpoint source")]
-    AlreadyOwned,
-    /// The lease registry was poisoned by a panicking owner.
-    #[error("database checkpoint source lease registry is unavailable")]
-    Unavailable,
 }
 
 #[cfg(test)]

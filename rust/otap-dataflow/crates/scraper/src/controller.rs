@@ -8,12 +8,13 @@
 //! successful checkpoint write. A NACK keeps the durable cursor and replays the
 //! same page after a fixed backoff, so an unacknowledged row is never skipped.
 
-use super::checkpoint::{CheckpointState, CheckpointStore, SourceLease};
-use super::driver::{DriverAdapter, DriverCancellation};
-use super::metrics::DatabaseReceiverMetrics;
-use super::otlp::{EncodedPage, encode_page, validate_mapping};
-use super::page::CompositeCursor;
-use super::query::CompiledQuery;
+use crate::checkpoint::{CheckpointState, CheckpointStore};
+use crate::database::{
+    CompiledQuery, CompositeCursor, DriverAdapter, DriverCancellation, EncodedPage, encode_page,
+    validate_mapping,
+};
+use crate::partition::SourceLease;
+use crate::telemetry::DatabaseReceiverMetrics;
 use async_trait::async_trait;
 use otel_arrow_dfe_channel::error::SendError;
 use otel_arrow_dfe_engine::control::{CallData, Context8u8, NodeControlMsg};
@@ -36,8 +37,8 @@ pub struct DatabaseReceiver<A> {
     nack_backoff: Duration,
     max_consecutive_failures: u32,
     source_id: String,
-    // The lease is released when the receiver is dropped, so no second
-    // receiver in this process can advance the same durable checkpoint.
+    // The lease is held for the receiver lifetime so no competing receiver
+    // can advance the same durable checkpoint.
     _lease: SourceLease,
     metrics: Option<MetricSet<DatabaseReceiverMetrics>>,
 }
@@ -195,7 +196,7 @@ where
             nack_backoff,
             max_consecutive_failures,
             source_id,
-            _lease,
+            _lease: lease,
             mut metrics,
         } = *self;
 
@@ -215,7 +216,8 @@ where
             "database_receiver.start",
             source_id = source_id.as_str(),
             db_system = adapter.system().as_str(),
-            checkpoint_revision = state.revision
+            checkpoint_revision = state.revision,
+            ownership_generation = lease.generation()
         );
 
         // Prepare the live query before entering the ingestion loop. Selecting
@@ -847,5 +849,5 @@ fn receiver_error(
 }
 
 #[cfg(test)]
-#[path = "receiver_tests.rs"]
+#[path = "controller_tests.rs"]
 mod tests;

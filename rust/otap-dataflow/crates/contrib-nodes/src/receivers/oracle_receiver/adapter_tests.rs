@@ -5,8 +5,8 @@ use super::{
     CellValue, OracleAdapterError, OracleType, bounded_connect_string, cursor_bind_type,
     finite_float, read_credential, validate_described_cursor_columns, validate_types,
 };
-use crate::receivers::database::{CompositeCursor, CompositeWatermark};
 use oracle::sql_type::Timestamp;
+use otel_arrow_dfe_scraper::database::{CompositeCursor, CompositeWatermark};
 use std::fs;
 use std::str::FromStr;
 use std::time::Duration;

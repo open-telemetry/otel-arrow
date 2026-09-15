@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::*;
+use crate::{LeaseError, SourceLease};
 
 fn cursor(timestamp: &str, tie_breaker: i64) -> CompositeCursor {
     CompositeCursor::new(timestamp.to_owned(), tie_breaker)
@@ -271,21 +272,119 @@ fn retains_only_the_two_newest_revisions() {
     assert_eq!(retained, RETAINED_REVISIONS);
 }
 
+/// Scenario: a stale temporary file from an interrupted checkpoint write already exists.
+/// Guarantees: the source lease allows a new checkpoint to prune its abandoned temporary file
+/// before creating another, keeping failed attempts bounded on disk.
+#[test]
+fn stale_temporary_file_is_pruned() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let store = store(directory.path(), "fingerprint");
+    let parent = store.prefix.parent().expect("checkpoint parent");
+    let stale = parent.join(format!("{}stale.tmp", store.temporary_prefix()));
+    std::fs::create_dir_all(parent).expect("create checkpoint directory");
+    std::fs::write(&stale, b"unfinished checkpoint").expect("write stale temporary file");
+
+    _ = store
+        .write(0, &cursor("2026-01-01 00:00:00", 1))
+        .expect("commit through a unique temporary file");
+
+    assert!(!stale.exists());
+}
+
+/// Scenario: a source identifier would exceed common filesystem component limits after encoding.
+/// Guarantees: both temporary and final checkpoint names use fixed-length digests, while the
+/// checkpoint payload retains the full source identity for compatibility validation.
+#[test]
+fn long_source_uses_bounded_checkpoint_filenames() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let source_id = "s".repeat(256);
+    let store = CheckpointStore::new(
+        directory.path(),
+        "group",
+        "pipeline",
+        "oracle-audit",
+        &source_id,
+        "fingerprint".to_owned(),
+    );
+
+    let (state, _) = store
+        .write(0, &cursor("2026-01-01 00:00:00", 1))
+        .expect("write checkpoint for long source");
+    let final_path = revision_path(&store.prefix, state.revision);
+
+    assert!(final_path.exists());
+    assert!(
+        final_path
+            .file_name()
+            .expect("checkpoint file name")
+            .to_string_lossy()
+            .len()
+            <= 255
+    );
+    assert_eq!(
+        store.read().expect("read checkpoint"),
+        Some(state),
+        "the full source identity in the payload must still validate"
+    );
+}
+
+/// Scenario: an earlier build wrote a long source ID under the readable legacy filename.
+/// Guarantees: startup validates and resumes that checkpoint, then the next acknowledged cursor
+/// is installed under the bounded digest name without replaying from the initial cursor.
+#[test]
+fn long_source_resumes_legacy_checkpoint_before_migration() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let source_id = "s".repeat(150);
+    let store = CheckpointStore::new(
+        directory.path(),
+        "group",
+        "pipeline",
+        "oracle-audit",
+        &source_id,
+        "fingerprint".to_owned(),
+    );
+    let mut legacy_store = store.clone();
+    legacy_store.prefix = store
+        .legacy_prefix
+        .clone()
+        .expect("long source should have a legacy path");
+    legacy_store.legacy_prefix = None;
+    let (legacy, _) = legacy_store
+        .write(0, &cursor("2026-01-01 00:00:00", 1))
+        .expect("write legacy checkpoint");
+    let legacy_revision = legacy.revision;
+
+    assert_eq!(store.read().expect("read legacy checkpoint"), Some(legacy));
+
+    let (migrated, _) = store
+        .write(legacy_revision, &cursor("2026-01-01 00:00:01", 2))
+        .expect("write bounded checkpoint");
+    assert!(revision_path(&store.prefix, migrated.revision).exists());
+    assert_eq!(
+        store.read().expect("read bounded checkpoint"),
+        Some(migrated)
+    );
+}
+
 /// Scenario: two receivers in one process target the same canonical checkpoint source.
 /// Guarantees: only one owner holds the lease at a time, and releasing it makes the source
-/// available again so a restarted receiver is not permanently locked out.
+/// available with a higher durable ownership generation.
 #[test]
 fn source_lease_rejects_duplicate_owner() {
-    let key = "database-checkpoint-test-source-lease";
-    let first = SourceLease::acquire(key).expect("first lease");
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let key = directory.path().join("source");
+    let key = key.to_string_lossy();
+    let first = SourceLease::acquire(&key).expect("first lease");
+    assert_eq!(first.generation(), 1);
 
     assert!(matches!(
-        SourceLease::acquire(key),
+        SourceLease::acquire(&key),
         Err(LeaseError::AlreadyOwned)
     ));
 
     drop(first);
-    assert!(SourceLease::acquire(key).is_ok());
+    let restarted = SourceLease::acquire(&key).expect("restarted lease");
+    assert_eq!(restarted.generation(), 2);
 }
 
 /// Scenario: two different checkpoint sources are configured in one process.

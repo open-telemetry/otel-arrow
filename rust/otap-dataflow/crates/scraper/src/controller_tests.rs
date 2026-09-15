@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::*;
-use crate::receivers::database::{
-    CellValue, CheckpointConfig, ColumnMetadata, CursorRow, OnNack, OutputConfig, PollingConfig,
-    QueryPage, Row, SourceLease, TieBreakerCursorConfig, TimestampCursorConfig, WatermarkConfig,
+use crate::SourceLease;
+use crate::database::{
+    CellValue, CheckpointConfig, ColumnMetadata, CursorRow, DatabaseSystem, OnNack, OutputConfig,
+    PollingConfig, QueryPage, Row, TieBreakerCursorConfig, TimestampCursorConfig, WatermarkConfig,
 };
 use otel_arrow_dfe_channel::mpsc::Channel;
 use otel_arrow_dfe_config::node::NodeUserConfig;
@@ -80,8 +81,8 @@ impl DriverAdapter for FakeAdapter {
     type Error = TestCancellationError;
     type Cancellation = TestCancellation;
 
-    fn system(&self) -> super::super::DatabaseSystem {
-        super::super::DatabaseSystem::Oracle
+    fn system(&self) -> DatabaseSystem {
+        DatabaseSystem::Oracle
     }
 
     fn begin_operation(&mut self) -> Result<Self::Cancellation, Self::Error> {

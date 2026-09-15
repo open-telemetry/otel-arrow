@@ -70,6 +70,7 @@ otel-arrow-dfe-dev-nodes = { path = "crates/dev-nodes" }
 otel-arrow-dfe-engine = { version = "0.53.0", path = "crates/engine" }
 otel-arrow-dfe-expohisto = { version = "0.53.0", path = "crates/expohisto" }
 otel-arrow-dfe-otap = { path = "crates/otap" }
+otel-arrow-dfe-scraper = { path = "crates/scraper" }
 otel-arrow-dfe-wasm-host = { path = "crates/wasm-host" }
 otel-arrow-dfe-test-tls-certs = { path = "crates/otap-test-tls-certs" }
 otel-arrow-dfe-test-net = { path = "crates/otap-test-net" }
@@ -117,6 +118,7 @@ datafusion = { version = "53.0.0", default-features = false }
 dhat = "0.3.3"
 fluke-hpack = "0.3.1"
 flume = { version = "0.12.0", default-features = false, features = ["async"] }
+fs2 = "0.4.3"
 futures = "0.3.32"
 futures-core = "0.3.32"
 futures-channel = "0.3.32"

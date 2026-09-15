@@ -20,6 +20,7 @@ otel-arrow-dfe-engine = { workspace = true }
 otel-arrow-dfe-otap = { workspace = true }
 otel-arrow-dfe-pdata = { workspace = true }
 otel-arrow-dfe-pdata-views = { workspace = true }
+otel-arrow-dfe-scraper = { workspace = true, optional = true }
 otel-arrow-dfe-telemetry = { workspace = true }
 otel-arrow-dfe-telemetry-macros = { workspace = true }
 
@@ -100,13 +101,12 @@ kafka-receiver = [
     "dep:tokio-util",
 ]
 database-receiver = [
-    "dep:base64",
-    "dep:blake3",
-    "dep:chrono",
-    "dep:humantime-serde",
+    "dep:otel-arrow-dfe-scraper",
 ]
 oracle-receiver = [
     "database-receiver",
+    "dep:blake3",
+    "dep:humantime-serde",
     "dep:oracle",
 ]
 kafka-exporter = [
