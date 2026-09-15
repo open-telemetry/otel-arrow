@@ -471,7 +471,7 @@ completed. `outcome=refused` means local validation or admission rejected the
 message, and `outcome=failure` means receiver-local processing failed. Batch
 buffering, downstream handoff, and Ack/Nack do not change this outcome.
 
-#### Component Diagnostics
+#### Node Diagnostics
 
 | Metric | Unit | Description |
 | --- | --- | --- |
