@@ -1,0 +1,6 @@
+change_type: enhancement
+component: otap
+note: "Allow OTLP receivers to store selected verified authorization claims in typed pdata context entries."
+issues: [3920]
+subtext: |
+  Configure policies.authorized_identity with claim and store_as fields. Missing claims are omitted, and multi-valued claims preserve their values.
