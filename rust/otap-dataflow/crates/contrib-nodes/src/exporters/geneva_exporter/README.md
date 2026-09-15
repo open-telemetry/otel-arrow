@@ -146,6 +146,9 @@ You should see `urn:microsoft:exporter:geneva` in the Exporters list.
 
 ## Internal telemetry
 
+Input PData message volume is reported by the engine through
+`channel.receiver.messages` and is not duplicated by the exporter.
+
 The exporter uses the shared `exporter.attempted` contract for each encoded
 Geneva batch submitted to the uploader. A message that terminates during
 preparation, or produces no uploadable batch, records one attempt instead.
@@ -159,6 +162,10 @@ preparation, or produces no uploadable batch, records one attempt instead.
 
 All fields use `signal` and `outcome`. Duration, payload size, and item counts
 are emitted only when their corresponding component telemetry is enabled.
+The default `runtime_metrics: basic` omits these metrics. Set
+`runtime_metrics: normal` for attempted messages or `detailed` for all
+measurements. To opt in only this exporter, set the corresponding
+`policies.telemetry` fields: `messages`, `duration`, `item_counts`, and `size`.
 
 Geneva LZ4 chunking is part of the backend's application payload format, so
 `payload.size` measures the encoded batch after LZ4 encoding. It excludes HTTP
@@ -286,20 +293,6 @@ Gotcha: because OBO keys on the destination, keying an entry on the source value
 silently disables OBO. If you wrote `obo.events.audit` instead of
 `obo.events.AuditLogs`, the post-routing lookup (`AuditLogs`) would miss and the
 `audit` records would upload without OBO -- no error, just silently omitted.
-
-## Telemetry
-
-Input PData message volume is reported by the engine through
-`channel.receiver.messages` and is not duplicated by the exporter.
-
-<!-- markdownlint-disable MD013 -->
-
-| Metric | Unit | Attributes | Description |
-| --- | --- | --- | --- |
-| `exporter.exports.messages` | `{message}` | `signal`, `outcome` | Number of PData messages whose Geneva export reached a terminal outcome. |
-| `exporter.exports.duration` | `s` | `signal`, `outcome` | Time from dequeuing PData through the terminal Geneva upload result, including conversion and upload preparation but excluding Ack/Nack notification. |
-
-<!-- markdownlint-enable MD013 -->
 
 ## Test Configuration
 
