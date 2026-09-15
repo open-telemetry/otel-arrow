@@ -1,0 +1,6 @@
+change_type: breaking
+component: pipeline
+note: "Replace Syslog CEF component counters with shared receiver lifecycle metrics."
+issues: [3822]
+subtext: |
+  Migration: Replace `receiver.syslog_cef.received.items` and `receiver.syslog_cef.forwards.items` queries and alerts with `receiver.received.messages{signal="logs",outcome=...}`. Use `receiver.syslog_cef.rejections.items` for refusal reasons.
