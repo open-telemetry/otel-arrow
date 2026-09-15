@@ -147,11 +147,6 @@ impl Scenario {
 
         self.update_configs()?;
         let admin_base = format!("http://{}", self.admin_addr);
-        let generator_signals: HashMap<String, u64> = self
-            .generators
-            .iter()
-            .map(|(label, g)| (label.clone(), g.max_signal_count as u64))
-            .collect();
 
         let rendered_group = self.render_template()?;
         let containers = self.containers;
@@ -170,7 +165,6 @@ impl Scenario {
             let result = run_pipelines_with_timeout(
                 rendered_group,
                 admin_base,
-                generator_signals,
                 timeout,
                 ready_max_attempts,
                 ready_backoff,
