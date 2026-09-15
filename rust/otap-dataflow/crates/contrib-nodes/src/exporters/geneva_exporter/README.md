@@ -153,7 +153,7 @@ preparation, or produces no uploadable batch, records one attempt instead.
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
 | `exporter.attempted.messages` | `{message}` | `signal`, `outcome` | Number of Geneva delivery attempts, including preparation-only outcomes. |
-| `exporter.attempted.duration` | `s` | `signal`, `outcome` | Time from starting message preparation through the batch's terminal backend result, including concurrency queueing. Emitted when component duration is enabled. |
+| `exporter.attempted.duration` | `s` | `signal`, `outcome` | Time from identifying an encoded batch through its terminal backend result, including concurrency queueing. Emitted when component duration is enabled. |
 | `exporter.attempted.payload.size` | `By` | `signal`, `outcome` | LZ4 chunk-compressed Geneva application-payload bytes submitted to the uploader. Emitted when size measurement is enabled. |
 | `exporter.attempted.items` | `{item}` | `signal`, `outcome` | Log records or spans carried by the attempted batch. Emitted when item counting is enabled. |
 

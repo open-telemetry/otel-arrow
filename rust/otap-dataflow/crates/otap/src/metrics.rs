@@ -436,24 +436,6 @@ impl ExporterMetrics {
 }
 
 impl ExporterAttempt {
-    /// Creates another attempt with the same signal, timing origin, and
-    /// optional-measurement interests.
-    ///
-    /// This supports exporters that discover multiple external submissions
-    /// while preparing one input message. Each fork records an independent
-    /// terminal outcome while including the shared preparation time.
-    #[must_use]
-    pub fn fork(&self) -> Self {
-        Self {
-            signal: self.signal,
-            started_at: self.started_at,
-            items: None,
-            accepts_item_count: self.accepts_item_count,
-            payload_size: None,
-            accepts_payload_size: self.accepts_payload_size,
-        }
-    }
-
     /// Classifies and returns an error from the attempt closure as failed.
     pub fn failed<E>(&self, error: E) -> ErrorWithOutcome<E> {
         ErrorWithOutcome {
@@ -931,28 +913,6 @@ mod tests {
                         .any(|metric| metric.name == metric_name)
             }));
         }
-    }
-
-    /// Scenario: One exporter input fans out into multiple external submissions after preparation.
-    /// Guarantees: Forked attempts preserve the original timing boundary and reset per-submission measurements.
-    #[test]
-    fn exporter_attempt_forks_preserve_the_preparation_boundary() {
-        let interests =
-            Interests::NODE_LOCAL_DURATION | Interests::NODE_ITEM_COUNTS | Interests::NODE_SIZE;
-        let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(interests);
-        let metrics = ExporterMetrics::register(&pipeline_ctx);
-        let mut attempt = metrics.attempt(SignalType::Logs);
-        attempt.set_item_count_with(|| 10);
-        attempt.set_payload_size_with(|| 1_024);
-
-        let fork = attempt.fork();
-
-        assert_eq!(fork.signal, attempt.signal);
-        assert_eq!(fork.started_at, attempt.started_at);
-        assert_eq!(fork.accepts_item_count, attempt.accepts_item_count);
-        assert_eq!(fork.accepts_payload_size, attempt.accepts_payload_size);
-        assert_eq!(fork.items, None);
-        assert_eq!(fork.payload_size, None);
     }
 
     /// Scenario: all receiver measurements are disabled for one node.

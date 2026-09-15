@@ -1270,21 +1270,18 @@ impl GenevaExporter {
         &mut self,
         batches: &[EncodedBatch],
         signal_type: SignalType,
-        attempt: &otel_arrow_dfe_otap::metrics::ExporterAttempt,
     ) -> Result<usize, GenevaExportError> {
         let batches_encoded = batches.len();
         let max_concurrent = self.config.max_concurrent_uploads.max(1);
         let client = &self.geneva_client;
-        let mut batches = batches.iter();
+        let attempts = (0..batches.len())
+            .map(|_| self.metrics.boundary.attempt(signal_type))
+            .collect::<Vec<_>>();
+        let mut batches = batches.iter().zip(attempts);
         let mut uploads = futures::stream::FuturesUnordered::new();
 
-        for batch in batches.by_ref().take(max_concurrent) {
-            uploads.push(upload_batch_attempt(
-                client,
-                batch,
-                signal_type,
-                attempt.fork(),
-            ));
+        for (batch, attempt) in batches.by_ref().take(max_concurrent) {
+            uploads.push(upload_batch_attempt(client, batch, signal_type, attempt));
         }
 
         let mut first_error: Option<String> = None;
@@ -1292,13 +1289,8 @@ impl GenevaExporter {
         while let Some(completed) = uploads.next().await {
             record_completed_upload(&mut self.metrics, signal_type, completed, &mut first_error);
 
-            if let Some(batch) = batches.next() {
-                uploads.push(upload_batch_attempt(
-                    client,
-                    batch,
-                    signal_type,
-                    attempt.fork(),
-                ));
+            if let Some((batch, attempt)) = batches.next() {
+                uploads.push(upload_batch_attempt(client, batch, signal_type, attempt));
             }
         }
 
@@ -1323,7 +1315,7 @@ impl GenevaExporter {
     async fn export_payload(
         &mut self,
         payload: OtapPayload,
-        attempt: &otel_arrow_dfe_otap::metrics::ExporterAttempt,
+        _effect_handler: &EffectHandler<OtapPdata>,
     ) -> Result<usize, GenevaExportError> {
         let signal_type = payload.signal_type();
         if payload.is_empty() {
@@ -1374,7 +1366,7 @@ impl GenevaExporter {
                         })?;
 
                         let batches_uploaded = self
-                            .upload_batches_concurrent(&batches, SignalType::Logs, attempt)
+                            .upload_batches_concurrent(&batches, SignalType::Logs)
                             .await?;
 
                         otel_info!(
@@ -1437,7 +1429,7 @@ impl GenevaExporter {
                         })?;
 
                         let batches_uploaded = self
-                            .upload_batches_concurrent(&batches, SignalType::Traces, attempt)
+                            .upload_batches_concurrent(&batches, SignalType::Traces)
                             .await?;
 
                         otel_info!(
@@ -1487,7 +1479,7 @@ impl GenevaExporter {
                         })?;
 
                         let batches_uploaded = self
-                            .upload_batches_concurrent(&batches, SignalType::Logs, attempt)
+                            .upload_batches_concurrent(&batches, SignalType::Logs)
                             .await?;
 
                         otel_info!(
@@ -1523,7 +1515,7 @@ impl GenevaExporter {
                         })?;
 
                         let batches_uploaded = self
-                            .upload_batches_concurrent(&batches, SignalType::Traces, attempt)
+                            .upload_batches_concurrent(&batches, SignalType::Traces)
                             .await?;
 
                         otel_info!(
@@ -1645,7 +1637,7 @@ impl Exporter<OtapPdata> for GenevaExporter {
                         OtapPayload::empty(signal_type)
                     };
 
-                    match self.export_payload(payload, &unsubmitted_attempt).await {
+                    match self.export_payload(payload, &effect_handler).await {
                         Ok(batches_uploaded) => {
                             if batches_uploaded == 0 {
                                 self.metrics
@@ -1995,21 +1987,23 @@ mod tests {
     async fn completed_batch_attempts_record_mixed_outcomes() {
         let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::NODE_INPUT_METRICS);
         let mut metrics = GenevaExporterMetrics::register(&pipeline_ctx);
-        let attempt = metrics.boundary.attempt(SignalType::Logs);
         let completed = [
-            attempt
-                .fork()
+            metrics
+                .boundary
+                .attempt(SignalType::Logs)
                 .run(async |_| Ok::<_, otel_arrow_dfe_otap::metrics::ErrorWithOutcome<_>>(1))
                 .await,
-            attempt
-                .fork()
+            metrics
+                .boundary
+                .attempt(SignalType::Logs)
                 .run(async |attempt| {
                     Err(attempt
                         .refused((GenevaExporterErrorType::Throttled, "throttled".to_string())))
                 })
                 .await,
-            attempt
-                .fork()
+            metrics
+                .boundary
+                .attempt(SignalType::Logs)
                 .run(async |attempt| {
                     Err(attempt
                         .failed((GenevaExporterErrorType::Transport, "transport".to_string())))
