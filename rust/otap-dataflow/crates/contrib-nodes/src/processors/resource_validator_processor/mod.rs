@@ -52,6 +52,7 @@ pub use metrics::ResourceValidatorMetrics;
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use metrics::RejectReason;
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_config::node::NodeUserConfig;
@@ -79,7 +80,7 @@ use otel_arrow_dfe_pdata_views::views::logs::{LogsDataView, ResourceLogsView};
 use otel_arrow_dfe_pdata_views::views::metrics::{MetricsView, ResourceMetricsView};
 use otel_arrow_dfe_pdata_views::views::resource::ResourceView;
 use otel_arrow_dfe_pdata_views::views::trace::{ResourceSpansView, TracesView};
-use otel_arrow_dfe_telemetry::metrics::MetricSet;
+use otel_arrow_dfe_telemetry::common_attributes::Outcome;
 use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::HashSet;
@@ -155,7 +156,7 @@ pub struct ResourceValidatorProcessor {
     /// Whether to perform case-sensitive comparison
     case_sensitive: bool,
     /// Telemetry metrics
-    metrics: MetricSet<ResourceValidatorMetrics>,
+    metrics: ResourceValidatorMetrics,
 }
 
 /// Factory function to create a Resource Validator processor
@@ -197,7 +198,7 @@ pub static RESOURCE_VALIDATOR_PROCESSOR_FACTORY: otel_arrow_dfe_engine::Processo
 impl ResourceValidatorProcessor {
     /// Creates a new ResourceValidatorProcessor from configuration
     pub fn from_config(pipeline_ctx: PipelineContext, config: &Value) -> Result<Self, ConfigError> {
-        let metrics = pipeline_ctx.register_metrics::<ResourceValidatorMetrics>();
+        let metrics = ResourceValidatorMetrics::new(&pipeline_ctx);
         let config: Config =
             serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
                 error: e.to_string(),
@@ -222,7 +223,7 @@ impl ResourceValidatorProcessor {
         case_sensitive: bool,
         pipeline_ctx: PipelineContext,
     ) -> Self {
-        let metrics = pipeline_ctx.register_metrics::<ResourceValidatorMetrics>();
+        let metrics = ResourceValidatorMetrics::new(&pipeline_ctx);
         Self {
             required_attribute_key,
             allowed_values,
@@ -440,8 +441,8 @@ impl ResourceValidatorProcessor {
     fn update_metrics(&mut self, result: &Result<(), (ValidationFailure, String)>, num_items: u64) {
         match result {
             Ok(()) => {
-                self.metrics.batches_accepted.add(1);
-                self.metrics.items_accepted.add(num_items);
+                self.metrics.record_batch(Outcome::Success, None);
+                self.metrics.record_items(Outcome::Success, num_items);
             }
             Err((failure, msg)) => {
                 otel_warn!(
@@ -449,21 +450,14 @@ impl ResourceValidatorProcessor {
                     failure_reason = %failure,
                     message = msg.as_str()
                 );
-                self.metrics.items_rejected.add(num_items);
-                match failure {
-                    ValidationFailure::MissingAttribute => {
-                        self.metrics.batches_rejected_missing.add(1);
-                    }
-                    ValidationFailure::InvalidAttributeType => {
-                        self.metrics.batches_rejected_invalid_type.add(1);
-                    }
-                    ValidationFailure::ConversionError => {
-                        self.metrics.batches_rejected_conversion_error.add(1);
-                    }
-                    ValidationFailure::NotInAllowedList => {
-                        self.metrics.batches_rejected_not_allowed.add(1);
-                    }
-                }
+                self.metrics.record_items(Outcome::Failure, num_items);
+                let reason = match failure {
+                    ValidationFailure::MissingAttribute => RejectReason::Missing,
+                    ValidationFailure::InvalidAttributeType => RejectReason::InvalidType,
+                    ValidationFailure::ConversionError => RejectReason::ConversionError,
+                    ValidationFailure::NotInAllowedList => RejectReason::NotAllowed,
+                };
+                self.metrics.record_batch(Outcome::Failure, Some(reason));
             }
         }
     }
