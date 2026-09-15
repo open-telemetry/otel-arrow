@@ -1650,3 +1650,174 @@ async fn inflight_records_on_revoke_are_redelivered_with_bounded_duplication() {
     )
     .await;
 }
+
+/// Scenario (consumer-group rebalancing): replica A owns both partitions of a
+/// manual-commit group and consumes and acks every record (advancing its
+/// committable watermark so a commit-before-revoke is issued during the
+/// rebalance), but the broker is configured to reject every `OffsetCommit`
+/// request, so no commit -- steady-state or commit-before-revoke -- ever
+/// persists. Replica B then joins the same group (scale-up), forcing A to
+/// revoke a partition to B, whose async commit-before-revoke is rejected too.
+/// Guarantees: because no commit reached the broker, the revoked partition's
+/// committed offset never advanced, and B (the new owner) redelivers every
+/// un-committed record for that partition -- so the asynchronous
+/// commit-before-revoke never sacrifices at-least-once delivery, and once the
+/// failure clears and the redelivered records are acked, each partition's
+/// committed offset converges to exactly the produced total (nothing is
+/// committed past un-persisted data).
+#[tokio::test]
+async fn revoke_with_failed_commit_redelivers_uncommitted_records_to_new_owner_at_least_once() {
+    const TOPIC: &str = "rebalance-failed-commit-traces";
+    let group = "rebalance-failed-commit-group";
+    // Two waves per partition: wave 1 drained+acked by A alone (its commit is
+    // rejected), wave 2 produced after B joins so B's newly-assigned partition
+    // has fresh records that make its assignment observable.
+    let per_partition_total = 2 * REBALANCE_RECORDS_PER_PARTITION;
+    let wave = (REBALANCE_RECORDS_PER_PARTITION * REBALANCE_TEST_PARTITIONS) as usize;
+    with_cluster(
+        KafkaTestCluster::builder().topic_with(TOPIC, REBALANCE_TEST_PARTITIONS, 1),
+        |cluster| async move {
+            let producer = cluster.producer().build();
+            let req = create_traces_with_spans();
+            let mut bytes = vec![];
+            req.encode(&mut bytes).expect("encode");
+            let brokers = cluster.bootstrap_servers().to_string();
+
+            // Reject every offset commit for the whole scenario: a long error
+            // sequence blankets each commit attempt (steady-state, safety-net,
+            // and commit-before-revoke) so no commit can persist until cleared.
+            cluster.faults().fail_offset_commits(&vec![
+                    RDKafkaRespErr::RD_KAFKA_RESP_ERR_REQUEST_TIMED_OUT;
+                    512
+                ]);
+
+            // Step 1: produce wave 1 and let replica A (alone) drain and ack it
+            // all, advancing A's committable watermark on both partitions.
+            producer
+                .produce_per_partition(
+                    TOPIC,
+                    REBALANCE_TEST_PARTITIONS,
+                    REBALANCE_RECORDS_PER_PARTITION,
+                    &bytes,
+                )
+                .await;
+            let cfg_a = manual_traces_config(cluster.bootstrap_servers(), group, TOPIC, 500, None);
+            let mut receiver_a = KafkaReceiverHarness::start(&cluster, cfg_a);
+            for _ in 0..wave {
+                let pdata = receiver_a.recv_pdata().await;
+                receiver_a.ack(pdata);
+            }
+
+            // Step 2: the rejected commits must leave the broker with no
+            // committed progress for either partition (acked offsets were never
+            // durably committed). Wait past A's safety-net interval so its
+            // (rejected) commit attempts have fired.
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            for partition in 0..REBALANCE_TEST_PARTITIONS {
+                let committed = committed_offset(&brokers, group, TOPIC, partition)
+                    .expect("kafka-test: committed-offset probe failed");
+                assert!(
+                    committed.is_none_or(|o| o < REBALANCE_RECORDS_PER_PARTITION as i64),
+                    "no partition should have a committed offset while all commits are \
+                         rejected (partition {partition} committed {committed:?})",
+                );
+            }
+
+            // Step 3: scale up B into the same group (forcing A to revoke a
+            // partition), then produce wave 2 so B's assigned partition has
+            // fresh records to deliver.
+            let cfg_b = manual_traces_config(cluster.bootstrap_servers(), group, TOPIC, 500, None);
+            let mut receiver_b = KafkaReceiverHarness::start(&cluster, cfg_b);
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            producer
+                .produce_per_partition(
+                    TOPIC,
+                    REBALANCE_TEST_PARTITIONS,
+                    REBALANCE_RECORDS_PER_PARTITION,
+                    &bytes,
+                )
+                .await;
+
+            // Step 4: drain B first and exclusively (A left idle so the eager
+            // assignor does not let A re-win B's partition). Record each
+            // (partition, offset) B delivers. B must redeliver at least one
+            // wave-1 offset (offset < REBALANCE_RECORDS_PER_PARTITION) that A had
+            // acked but whose commit was rejected -- the direct proof that a lost
+            // commit-before-revoke never drops data: the new owner re-reads from
+            // the un-advanced committed offset. Bounded by a deadline so a
+            // failure to redeliver fails loudly instead of hanging.
+            let mut b_redelivered_wave1 = false;
+            let mut b_delivered = 0usize;
+            let expected_b = REBALANCE_RECORDS_PER_PARTITION as usize;
+            let b_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+            while tokio::time::Instant::now() < b_deadline
+                && !(b_redelivered_wave1 && b_delivered >= expected_b)
+            {
+                if let Some(pdata) = receiver_b.try_recv_pdata(Duration::from_millis(250)).await {
+                    let route = pdata
+                        .source_route()
+                        .expect("delivered pdata carries source calldata");
+                    let (_topic_id, _partition, offset, _generation) =
+                        decode_calldata(&route.calldata);
+                    if offset < REBALANCE_RECORDS_PER_PARTITION as i64 {
+                        b_redelivered_wave1 = true;
+                    }
+                    receiver_b.ack(pdata);
+                    b_delivered += 1;
+                }
+            }
+            assert!(
+                b_redelivered_wave1,
+                "the new owner (replica B) must redeliver at least one wave-1 offset that \
+                     replica A acked but never committed (commit rejected); a lost \
+                     commit-before-revoke must never drop data (at-least-once)",
+            );
+
+            // Step 5: clear the commit failure so progress can persist, then
+            // drain the whole group until every partition's committed offset
+            // converges to exactly the produced total. This proves nothing was
+            // committed past un-persisted data and that progress is ultimately
+            // preserved (no loss, no rollback, no over-commit).
+            cluster.faults().clear_offset_commit_failures();
+            let all_committed = |b: &str| {
+                (0..REBALANCE_TEST_PARTITIONS).all(|p| {
+                    committed_offset(b, group, TOPIC, p)
+                        .expect("kafka-test: committed-offset probe failed")
+                        == Some(per_partition_total as i64)
+                })
+            };
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+            while tokio::time::Instant::now() < deadline && !all_committed(&brokers) {
+                if let Some(pdata) = receiver_b.try_recv_pdata(Duration::from_millis(150)).await {
+                    receiver_b.ack(pdata);
+                }
+                if let Some(pdata) = receiver_a.try_recv_pdata(Duration::from_millis(150)).await {
+                    receiver_a.ack(pdata);
+                }
+            }
+            assert!(
+                all_committed(&brokers),
+                "after clearing the commit failure the group must commit every partition to \
+                     the produced total {per_partition_total}; committed offsets did not converge",
+            );
+
+            // No loss on the broker side: every produced record is durably
+            // retained (message_count is high - low).
+            let inspector = cluster.inspect();
+            for partition in 0..REBALANCE_TEST_PARTITIONS {
+                assert_eq!(
+                    inspector.message_count(TOPIC, partition),
+                    per_partition_total as i64,
+                    "partition {partition} should durably retain all produced records",
+                );
+            }
+
+            // Teardown (fault already cleared, so closes are clean).
+            receiver_b.shutdown(Duration::from_secs(5));
+            receiver_b.await_stopped().await;
+            receiver_a.shutdown(Duration::from_secs(5));
+            receiver_a.await_stopped().await;
+        },
+    )
+    .await;
+}
