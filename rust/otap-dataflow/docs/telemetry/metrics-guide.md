@@ -321,8 +321,9 @@ class alone.
 > `receiver.received` success means the receiver accepted the external message,
 > not that the resulting PData completed downstream handoff or delivery. This
 > avoids duplicating `node.output` and retaining per-message metric state
-> through batching. Use `node.output` and node-specific diagnostics for the
-> later PData lifecycle.
+> through batching. Channel handoff can therefore fail after receiver success.
+> `node.output` covers emitted PData; use node-specific diagnostics for failed
+> handoff.
 
 Record the completed observation before downstream handoff. Return classified
 errors through `processing.failed` or `processing.refused`; failures before
