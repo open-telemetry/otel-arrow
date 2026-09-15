@@ -199,9 +199,9 @@ mod tests {
         }
     }
 
-    // Scenario: a 401 names the credential generation currently cached.
-    // Guarantees: the rejected credential is dropped so intake back-pressures until the
-    // provider's next publication, instead of the rejected credential being sent again.
+    /// Scenario: a 401 names the credential generation currently cached.
+    /// Guarantees: the rejected credential is dropped so intake back-pressures until the
+    /// provider's next publication, instead of the rejected credential being sent again.
     #[test]
     fn invalidate_drops_the_matching_generation() {
         let mut auth = auth_with_cached_credential(7);
@@ -215,10 +215,10 @@ mod tests {
         );
     }
 
-    // Scenario: a 401 names an older generation than the one now cached, i.e. a
-    // newer credential was published after the failing request was sent.
-    // Guarantees: the still-valid current credential is kept, so a stale rejection
-    // does not stall exports until an unnecessary extra refresh.
+    /// Scenario: a 401 names an older generation than the one now cached, i.e. a
+    /// newer credential was published after the failing request was sent.
+    /// Guarantees: the still-valid current credential is kept, so a stale rejection
+    /// does not stall exports until an unnecessary extra refresh.
     #[test]
     fn invalidate_ignores_a_stale_generation() {
         let mut auth = auth_with_cached_credential(7);
@@ -231,11 +231,11 @@ mod tests {
         );
     }
 
-    // Scenario: the provider publishes its first credential on the subscription.
-    // Guarantees: the adapter caches an `<name>: <value>` header,
-    // marks it sensitive so it is redacted in `Debug` and excluded from the
-    // HPACK dynamic table, reports readiness, and stamps a non-zero generation
-    // so a later rejection can name exactly this credential.
+    /// Scenario: the provider publishes its first credential on the subscription.
+    /// Guarantees: the adapter caches an `<name>: <value>` header,
+    /// marks it sensitive so it is redacted in `Debug` and excluded from the
+    /// HPACK dynamic table, reports readiness, and stamps a non-zero generation
+    /// so a later rejection can name exactly this credential.
     #[tokio::test]
     async fn poll_refresh_caches_the_published_credential_as_a_sensitive_header() {
         let mut auth = auth_over(vec![
@@ -264,10 +264,10 @@ mod tests {
         );
     }
 
-    // Scenario: the provider closes its credential stream after publishing a credential.
-    // Guarantees: the closure is reported, the adapter stops advertising itself
-    // as pollable so the exporter's `select!` arm goes quiet instead of
-    // busy-looping on a dead stream, and the last credential stays usable.
+    /// Scenario: the provider closes its credential stream after publishing a credential.
+    /// Guarantees: the closure is reported, the adapter stops advertising itself
+    /// as pollable so the exporter's `select!` arm goes quiet instead of
+    /// busy-looping on a dead stream, and the last credential stays usable.
     #[tokio::test]
     async fn closed_stream_is_reported_and_the_last_credential_stays_usable() {
         let mut auth = auth_over(vec![
@@ -292,10 +292,10 @@ mod tests {
         );
     }
 
-    // Scenario: no credential has been published yet.
-    // Guarantees: the adapter is not ready, hands back no header to stamp, arms
-    // no refresh timer, and reports the reason that distinguishes "never
-    // arrived" from "expiring", so the NACK text tells an operator which it is.
+    /// Scenario: no credential has been published yet.
+    /// Guarantees: the adapter is not ready, hands back no header to stamp, arms
+    /// no refresh timer, and reports the reason that distinguishes "never
+    /// arrived" from "expiring", so the NACK text tells an operator which it is.
     #[test]
     fn adapter_without_a_credential_is_unusable_and_says_why() {
         let auth = auth_over(vec![]);
@@ -306,11 +306,11 @@ mod tests {
         assert_eq!(auth.not_ready_reason(), "credential unavailable");
     }
 
-    // Scenario: the cached credential is still valid but expires inside the
-    // usability margin.
-    // Guarantees: it is treated as unusable so the exporter back-pressures
-    // rather than sending a request that could outlive its credential, no refresh
-    // timer is armed for an already-lapsed margin, and the reason names expiry.
+    /// Scenario: the cached credential is still valid but expires inside the
+    /// usability margin.
+    /// Guarantees: it is treated as unusable so the exporter back-pressures
+    /// rather than sending a request that could outlive its credential, no refresh
+    /// timer is armed for an already-lapsed margin, and the reason names expiry.
     #[tokio::test]
     async fn credential_inside_the_usability_margin_is_not_usable() {
         let mut auth = auth_over(vec![
@@ -335,11 +335,11 @@ mod tests {
         );
     }
 
-    // Scenario: the cached credential expires comfortably beyond the usability
-    // margin.
-    // Guarantees: it is usable now, and the reported deadline is exactly the
-    // instant readiness flips, so the exporter wakes to gate intake before a
-    // near-expiry batch is admitted rather than after.
+    /// Scenario: the cached credential expires comfortably beyond the usability
+    /// margin.
+    /// Guarantees: it is usable now, and the reported deadline is exactly the
+    /// instant readiness flips, so the exporter wakes to gate intake before a
+    /// near-expiry batch is admitted rather than after.
     #[tokio::test]
     async fn refresh_deadline_is_the_instant_readiness_lapses() {
         let expires_on = Instant::now() + BASIC_AUTH_CREDENTIAL_USABLE_MARGIN * 10;
@@ -359,9 +359,9 @@ mod tests {
         );
     }
 
-    // Scenario: the provider publishes a credential with no known expiry.
-    // Guarantees: it is usable and arms no refresh timer, so the exporter does
-    // not register a timer that can never be justified by an expiry.
+    /// Scenario: the provider publishes a credential with no known expiry.
+    /// Guarantees: it is usable and arms no refresh timer, so the exporter does
+    /// not register a timer that can never be justified by an expiry.
     #[tokio::test]
     async fn non_expiring_credential_arms_no_refresh_deadline() {
         let mut auth = auth_over(vec![
@@ -374,10 +374,10 @@ mod tests {
         assert!(auth.refresh_deadline().is_none());
     }
 
-    // Scenario: a completed export reports the generation the server rejected.
-    // Guarantees: the exporter's rejection hand-off drops exactly that credential, so
-    // the retry waits for the provider's next publication instead of replaying
-    // the rejected credential.
+    /// Scenario: a completed export reports the generation the server rejected.
+    /// Guarantees: the exporter's rejection hand-off drops exactly that credential, so
+    /// the retry waits for the provider's next publication instead of replaying
+    /// the rejected credential.
     #[test]
     fn apply_auth_rejection_drops_the_reported_generation() {
         let mut auth: Option<Box<dyn HttpClientAuthProvider>> =
@@ -388,10 +388,10 @@ mod tests {
         assert!(!auth.expect("the adapter is retained").is_ready());
     }
 
-    // Scenario: an export completes without naming a rejected generation (it
-    // succeeded, or failed for a non-auth reason).
-    // Guarantees: the cached credential survives, so ordinary transport failures do
-    // not stall intake behind an unnecessary refresh.
+    /// Scenario: an export completes without naming a rejected generation (it
+    /// succeeded, or failed for a non-auth reason).
+    /// Guarantees: the cached credential survives, so ordinary transport failures do
+    /// not stall intake behind an unnecessary refresh.
     #[test]
     fn apply_auth_rejection_keeps_the_credential_when_nothing_was_rejected() {
         let mut auth: Option<Box<dyn HttpClientAuthProvider>> =
@@ -402,10 +402,10 @@ mod tests {
         assert!(auth.expect("the adapter is retained").is_ready());
     }
 
-    // Scenario: no provider is bound, so the exporter holds no adapter.
-    // Guarantees: the shared rejection hand-off is a no-op rather than a panic,
-    // which is what lets the exporter call it unconditionally on every
-    // completion.
+    /// Scenario: no provider is bound, so the exporter holds no adapter.
+    /// Guarantees: the shared rejection hand-off is a no-op rather than a panic,
+    /// which is what lets the exporter call it unconditionally on every
+    /// completion.
     #[test]
     fn apply_auth_rejection_without_a_bound_provider_is_a_no_op() {
         let mut auth: Option<Box<dyn HttpClientAuthProvider>> = None;

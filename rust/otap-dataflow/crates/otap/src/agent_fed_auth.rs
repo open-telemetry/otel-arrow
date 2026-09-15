@@ -193,9 +193,9 @@ mod tests {
         AgentFedCredentialSnapshot::new(token, Default::default())
     }
 
-    // Scenario: a 401 names the token generation currently cached.
-    // Guarantees: the rejected token is dropped so intake back-pressures until the
-    // provider's next publication, instead of the rejected token being sent again.
+    /// Scenario: a 401 names the token generation currently cached.
+    /// Guarantees: the rejected token is dropped so intake back-pressures until the
+    /// provider's next publication, instead of the rejected token being sent again.
     #[test]
     fn invalidate_drops_the_matching_generation() {
         let mut auth = auth_with_cached_token(7);
@@ -209,10 +209,10 @@ mod tests {
         );
     }
 
-    // Scenario: a 401 names an older generation than the one now cached, i.e. a
-    // newer token was published after the failing request was sent.
-    // Guarantees: the still-valid current token is kept, so a stale rejection
-    // does not stall exports until an unnecessary extra refresh.
+    /// Scenario: a 401 names an older generation than the one now cached, i.e. a
+    /// newer token was published after the failing request was sent.
+    /// Guarantees: the still-valid current token is kept, so a stale rejection
+    /// does not stall exports until an unnecessary extra refresh.
     #[test]
     fn invalidate_ignores_a_stale_generation() {
         let mut auth = auth_with_cached_token(7);
@@ -225,11 +225,11 @@ mod tests {
         );
     }
 
-    // Scenario: the provider publishes its first token on the subscription.
-    // Guarantees: the adapter caches an `Authorization: Bearer <token>` header,
-    // marks it sensitive so it is redacted in `Debug` and excluded from the
-    // HPACK dynamic table, reports readiness, and stamps a non-zero generation
-    // so a later rejection can name exactly this token.
+    /// Scenario: the provider publishes its first token on the subscription.
+    /// Guarantees: the adapter caches an `Authorization: Bearer <token>` header,
+    /// marks it sensitive so it is redacted in `Debug` and excluded from the
+    /// HPACK dynamic table, reports readiness, and stamps a non-zero generation
+    /// so a later rejection can name exactly this token.
     #[tokio::test]
     async fn poll_refresh_caches_the_published_token_as_a_sensitive_header() {
         let mut auth = auth_over(vec![create_credential(BearerToken::without_expiry(
@@ -255,11 +255,11 @@ mod tests {
         );
     }
 
-    // Scenario: a refresh publishes a token whose bytes cannot form a header
-    // value, while a usable token is already cached.
-    // Guarantees: the malformed publication is reported and dropped, and the
-    // previously cached token keeps being used at its own generation, so a
-    // single bad refresh cannot stall exports.
+    /// Scenario: a refresh publishes a token whose bytes cannot form a header
+    /// value, while a usable token is already cached.
+    /// Guarantees: the malformed publication is reported and dropped, and the
+    /// previously cached token keeps being used at its own generation, so a
+    /// single bad refresh cannot stall exports.
     #[tokio::test]
     async fn a_malformed_refresh_is_reported_and_leaves_the_cached_token_intact() {
         let mut auth = auth_over(vec![
@@ -283,10 +283,10 @@ mod tests {
         );
     }
 
-    // Scenario: the provider closes its token stream after publishing a token.
-    // Guarantees: the closure is reported, the adapter stops advertising itself
-    // as pollable so the exporter's `select!` arm goes quiet instead of
-    // busy-looping on a dead stream, and the last token stays usable.
+    /// Scenario: the provider closes its token stream after publishing a token.
+    /// Guarantees: the closure is reported, the adapter stops advertising itself
+    /// as pollable so the exporter's `select!` arm goes quiet instead of
+    /// busy-looping on a dead stream, and the last token stays usable.
     #[tokio::test]
     async fn a_closed_stream_is_reported_and_the_last_token_stays_usable() {
         let mut auth = auth_over(vec![create_credential(BearerToken::without_expiry("last"))]);
@@ -309,10 +309,10 @@ mod tests {
         );
     }
 
-    // Scenario: no token has been published yet.
-    // Guarantees: the adapter is not ready, hands back no header to stamp, arms
-    // no refresh timer, and reports the reason that distinguishes "never
-    // arrived" from "expiring", so the NACK text tells an operator which it is.
+    /// Scenario: no token has been published yet.
+    /// Guarantees: the adapter is not ready, hands back no header to stamp, arms
+    /// no refresh timer, and reports the reason that distinguishes "never
+    /// arrived" from "expiring", so the NACK text tells an operator which it is.
     #[test]
     fn an_adapter_without_a_token_is_unusable_and_says_why() {
         let auth = auth_over(vec![]);
@@ -323,11 +323,11 @@ mod tests {
         assert_eq!(auth.not_ready_reason(), "bearer token unavailable");
     }
 
-    // Scenario: the cached token is still valid but expires inside the
-    // usability margin.
-    // Guarantees: it is treated as unusable so the exporter back-pressures
-    // rather than sending a request that could outlive its token, no refresh
-    // timer is armed for an already-lapsed margin, and the reason names expiry.
+    /// Scenario: the cached token is still valid but expires inside the
+    /// usability margin.
+    /// Guarantees: it is treated as unusable so the exporter back-pressures
+    /// rather than sending a request that could outlive its token, no refresh
+    /// timer is armed for an already-lapsed margin, and the reason names expiry.
     #[tokio::test]
     async fn a_token_inside_the_usability_margin_is_not_usable() {
         let mut auth = auth_over(vec![create_credential(BearerToken::with_expiry(
@@ -351,11 +351,11 @@ mod tests {
         );
     }
 
-    // Scenario: the cached token expires comfortably beyond the usability
-    // margin.
-    // Guarantees: it is usable now, and the reported deadline is exactly the
-    // instant readiness flips, so the exporter wakes to gate intake before a
-    // near-expiry batch is admitted rather than after.
+    /// Scenario: the cached token expires comfortably beyond the usability
+    /// margin.
+    /// Guarantees: it is usable now, and the reported deadline is exactly the
+    /// instant readiness flips, so the exporter wakes to gate intake before a
+    /// near-expiry batch is admitted rather than after.
     #[tokio::test]
     async fn refresh_deadline_is_the_instant_readiness_lapses() {
         let expires_on = Instant::now() + TOKEN_USABLE_MARGIN * 10;
@@ -374,9 +374,9 @@ mod tests {
         );
     }
 
-    // Scenario: the provider publishes a token with no known expiry.
-    // Guarantees: it is usable and arms no refresh timer, so the exporter does
-    // not register a timer that can never be justified by an expiry.
+    /// Scenario: the provider publishes a token with no known expiry.
+    /// Guarantees: it is usable and arms no refresh timer, so the exporter does
+    /// not register a timer that can never be justified by an expiry.
     #[tokio::test]
     async fn a_non_expiring_token_arms_no_refresh_deadline() {
         let mut auth = auth_over(vec![create_credential(BearerToken::without_expiry(
@@ -389,10 +389,10 @@ mod tests {
         assert!(auth.refresh_deadline().is_none());
     }
 
-    // Scenario: a completed export reports the generation the server rejected.
-    // Guarantees: the exporter's rejection hand-off drops exactly that token, so
-    // the retry waits for the provider's next publication instead of replaying
-    // the rejected credential.
+    /// Scenario: a completed export reports the generation the server rejected.
+    /// Guarantees: the exporter's rejection hand-off drops exactly that token, so
+    /// the retry waits for the provider's next publication instead of replaying
+    /// the rejected credential.
     #[test]
     fn apply_auth_rejection_drops_the_reported_generation() {
         let mut auth: Option<Box<dyn HttpClientAuthProvider>> =
@@ -403,10 +403,10 @@ mod tests {
         assert!(!auth.expect("the adapter is retained").is_ready());
     }
 
-    // Scenario: an export completes without naming a rejected generation (it
-    // succeeded, or failed for a non-auth reason).
-    // Guarantees: the cached token survives, so ordinary transport failures do
-    // not stall intake behind an unnecessary refresh.
+    /// Scenario: an export completes without naming a rejected generation (it
+    /// succeeded, or failed for a non-auth reason).
+    /// Guarantees: the cached token survives, so ordinary transport failures do
+    /// not stall intake behind an unnecessary refresh.
     #[test]
     fn apply_auth_rejection_keeps_the_token_when_nothing_was_rejected() {
         let mut auth: Option<Box<dyn HttpClientAuthProvider>> =
@@ -417,10 +417,10 @@ mod tests {
         assert!(auth.expect("the adapter is retained").is_ready());
     }
 
-    // Scenario: no provider is bound, so the exporter holds no adapter.
-    // Guarantees: the shared rejection hand-off is a no-op rather than a panic,
-    // which is what lets the exporter call it unconditionally on every
-    // completion.
+    /// Scenario: no provider is bound, so the exporter holds no adapter.
+    /// Guarantees: the shared rejection hand-off is a no-op rather than a panic,
+    /// which is what lets the exporter call it unconditionally on every
+    /// completion.
     #[test]
     fn apply_auth_rejection_without_a_bound_provider_is_a_no_op() {
         let mut auth: Option<Box<dyn HttpClientAuthProvider>> = None;
