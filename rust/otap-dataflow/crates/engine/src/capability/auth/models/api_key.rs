@@ -68,7 +68,10 @@ impl ApiKey {
             .attributes
             .map(Arc::unwrap_or_clone)
             .unwrap_or_default();
-        attributes[HTTP_HEADER_NAME_ATTRIBUTE] = Value::String(header_name.into());
+        _ = attributes.insert(
+            HTTP_HEADER_NAME_ATTRIBUTE.into(),
+            Value::String(header_name.into()),
+        );
         self.attributes = Some(Arc::new(attributes));
         self
     }
@@ -80,7 +83,10 @@ impl ApiKey {
             .attributes
             .map(Arc::unwrap_or_clone)
             .unwrap_or_default();
-        attributes[HTTP_HEADER_SCHEME_ATTRIBUTE] = Value::String(header_scheme.into());
+        _ = attributes.insert(
+            HTTP_HEADER_SCHEME_ATTRIBUTE.into(),
+            Value::String(header_scheme.into()),
+        );
         self.attributes = Some(Arc::new(attributes));
         self
     }
