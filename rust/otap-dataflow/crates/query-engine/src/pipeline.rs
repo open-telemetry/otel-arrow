@@ -41,6 +41,14 @@ pub mod partition;
 pub mod routing;
 pub mod state;
 
+#[cfg(feature = "bench")]
+#[doc(hidden)]
+pub mod bench_support {
+    pub mod join {
+        pub use crate::pipeline::expr::join::bench_support::*;
+    }
+}
+
 /// A stage in the pipeline.
 ///
 /// Used for the physical execution of one or more pipeline expressions. Stages are compiled

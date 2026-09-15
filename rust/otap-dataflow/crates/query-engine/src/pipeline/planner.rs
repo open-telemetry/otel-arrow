@@ -33,7 +33,7 @@ use crate::pipeline::assign::{AssignPipelineStage, Assignment};
 use crate::pipeline::attributes::AttributeTransformPipelineStage;
 use crate::pipeline::conditional::{ConditionalPipelineStage, ConditionalPipelineStageBranch};
 use crate::pipeline::expr::planner::ExprPlanner;
-use crate::pipeline::expr::{ChildRecordKind, DataScope, ScopedExpr};
+use crate::pipeline::expr::{ChildRecordKind, DataScope, RecordScope, ScopedExpr};
 use crate::pipeline::filter::FilterPipelineStage;
 use crate::pipeline::fork::{ForkPipelineStage, ForkPipelineStageBranch};
 use crate::pipeline::routing::RouteToPipelineStage;
@@ -433,7 +433,7 @@ impl PipelinePlanner {
         &self,
         rename_map_keys_expr: &RenameMapKeysTransformExpression,
     ) -> Result<Vec<Box<dyn PipelineStage>>> {
-        let mut root_attrs_renames = vec![];
+        let mut record_attr_renames = vec![];
         let mut scope_attrs_renames = vec![];
         let mut resource_attrs_renames = vec![];
 
@@ -467,8 +467,8 @@ impl PipelinePlanner {
                     let rename = (src_key, dest_key);
 
                     match src_attrs_id {
-                        AttributesIdentifier::Root => root_attrs_renames.push(rename),
-                        AttributesIdentifier::NonRoot(payload_type) => match payload_type {
+                        AttributesIdentifier::Record(_) => record_attr_renames.push(rename),
+                        AttributesIdentifier::NonRecord(payload_type) => match payload_type {
                             ArrowPayloadType::ResourceAttrs => resource_attrs_renames.push(rename),
                             ArrowPayloadType::ScopeAttrs => scope_attrs_renames.push(rename),
                             other => {
@@ -492,16 +492,27 @@ impl PipelinePlanner {
 
         let mut pipeline_stages: Vec<Box<dyn PipelineStage>> = vec![];
 
+        let record_scope = match self.record_type {
+            RecordType::Signal => RecordScope::Signal,
+            RecordType::Child(child) => RecordScope::Child(child),
+            RecordType::Attributes => {
+                todo!("can't do rename attrs on attributes soi meme")
+            }
+        };
+
         // build up a pipeline stage for each type set of attributes in the expression
         for (renames, attrs_id) in [
-            (root_attrs_renames, AttributesIdentifier::Root),
+            (
+                record_attr_renames,
+                AttributesIdentifier::Record(record_scope),
+            ),
             (
                 scope_attrs_renames,
-                AttributesIdentifier::NonRoot(ArrowPayloadType::ScopeAttrs),
+                AttributesIdentifier::NonRecord(ArrowPayloadType::ScopeAttrs),
             ),
             (
                 resource_attrs_renames,
-                AttributesIdentifier::NonRoot(ArrowPayloadType::ResourceAttrs),
+                AttributesIdentifier::NonRecord(ArrowPayloadType::ResourceAttrs),
             ),
         ] {
             if !renames.is_empty() {
@@ -526,7 +537,7 @@ impl PipelinePlanner {
         &self,
         reduce_map_expr: &ReduceMapTransformExpression,
     ) -> Result<Vec<Box<dyn PipelineStage>>> {
-        let mut root_attrs_deletes = vec![];
+        let mut record_attr_renames = vec![];
         let mut scope_attrs_deletes = vec![];
         let mut resource_attrs_deletes = vec![];
 
@@ -539,10 +550,10 @@ impl PipelinePlanner {
                                 // currently the only kind of remove operation we support is on attributes
                                 ColumnAccessor::Attributes(attrs_ident, attrs_key) => {
                                     match attrs_ident {
-                                        AttributesIdentifier::Root => {
-                                            root_attrs_deletes.push(attrs_key)
+                                        AttributesIdentifier::Record(_) => {
+                                            record_attr_renames.push(attrs_key)
                                         }
-                                        AttributesIdentifier::NonRoot(payload_type) => {
+                                        AttributesIdentifier::NonRecord(payload_type) => {
                                             match payload_type {
                                                 ArrowPayloadType::ResourceAttrs => {
                                                     resource_attrs_deletes.push(attrs_key)
@@ -593,16 +604,27 @@ impl PipelinePlanner {
 
         let mut pipeline_stages: Vec<Box<dyn PipelineStage>> = vec![];
 
+        let record_scope = match self.record_type {
+            RecordType::Signal => RecordScope::Signal,
+            RecordType::Child(child) => RecordScope::Child(child),
+            RecordType::Attributes => {
+                todo!("can't do reduce_map on attributes")
+            }
+        };
+
         // build up a pipeline stage for each type set of attributes in the expression
         for (deletes, attrs_id) in [
-            (root_attrs_deletes, AttributesIdentifier::Root),
+            (
+                record_attr_renames,
+                AttributesIdentifier::Record(record_scope),
+            ),
             (
                 scope_attrs_deletes,
-                AttributesIdentifier::NonRoot(ArrowPayloadType::ScopeAttrs),
+                AttributesIdentifier::NonRecord(ArrowPayloadType::ScopeAttrs),
             ),
             (
                 resource_attrs_deletes,
-                AttributesIdentifier::NonRoot(ArrowPayloadType::ResourceAttrs),
+                AttributesIdentifier::NonRecord(ArrowPayloadType::ResourceAttrs),
             ),
         ] {
             if !deletes.is_empty() {
@@ -641,16 +663,18 @@ impl PipelinePlanner {
         let mut assignments = Vec::new();
         let scoped_planner = ExprPlanner::new(
             self.filter_attribute_keys_case_sensitive,
-            // FIXME - when we support assigning fields on metric data points, we may need to pass in
-            // self.record_type.clone() here instead of just copying RecordType::Signal. When we
-            // make this change, it will break some behaviour of assigning attribute value in
-            // nested `apply attribute { ... }` pipelines, especially when there are missing
-            // attributes. This is because the planner tries to be "smart" and figure out that
-            // an expression like "value = values + 2" _only_ makes sense for the "int" column,
-            // and plans an expression referencing "int", but if this field is missing, the
-            // AssignPipelineStage doesn't handle it correctly. Luckily regressions of this are
-            // covered by unit tests.
-            RecordType::Signal,
+            // TODO now that it's fixed - actually fix the bug!
+            self.record_type.clone(),
+            // // FIXME - when we support assigning fields on metric data points, we may need to pass in
+            // // self.record_type.clone() here instead of just copying RecordType::Signal. When we
+            // // make this change, it will break some behaviour of assigning attribute value in
+            // // nested `apply attribute { ... }` pipelines, especially when there are missing
+            // // attributes. This is because the planner tries to be "smart" and figure out that
+            // // an expression like "value = values + 2" _only_ makes sense for the "int" column,
+            // // and plans an expression referencing "int", but if this field is missing, the
+            // // AssignPipelineStage doesn't handle it correctly. Luckily regressions of this are
+            // // covered by unit tests.
+            // RecordType::Signal,
         );
 
         // TODO - currently the logic for coalescing multiple assignments isn't as intelligent
@@ -895,12 +919,21 @@ impl PipelinePlanner {
                         inner_pipeline_data_exprs.push(data_expr);
                     }
 
-                    let apply_source = source_expr_to_apply_source(dest).ok_or_else(|| {
-                        Error::InvalidPipelineError {
-                            cause: format!("Invalid source for apply pipeline {:?}", dest,),
-                            query_location: Some(dest.get_query_location().clone()),
+                    let record_scope = match &self.record_type {
+                        RecordType::Child(child) => RecordScope::Child(*child),
+                        RecordType::Signal => RecordScope::Signal,
+                        RecordType::Attributes => {
+                            todo!("shouldn't be allowed to call \"apply\" in this case");
                         }
-                    })?;
+                    };
+
+                    let apply_source =
+                        source_expr_to_apply_source(dest, record_scope).ok_or_else(|| {
+                            Error::InvalidPipelineError {
+                                cause: format!("Invalid source for apply pipeline {:?}", dest,),
+                                query_location: Some(dest.get_query_location().clone()),
+                            }
+                        })?;
 
                     let nested_pipeline_record_type = match apply_source {
                         ApplySource::Attributes(_) => RecordType::Attributes,
@@ -968,32 +1001,39 @@ impl PipelinePlanner {
 /// derives the source for which to apply some nested pipeline from the expression that identifies
 /// the source. E.g. in an operator invocation like `apply <source> { ... }`, supported may be
 /// some attributes or metric data points.
-fn source_expr_to_apply_source(source_expr: &SourceScalarExpression) -> Option<ApplySource> {
+fn source_expr_to_apply_source(
+    source_expr: &SourceScalarExpression,
+    record_scope: RecordScope,
+) -> Option<ApplySource> {
     let values_accessor = source_expr.get_value_accessor();
     let selectors = values_accessor.get_selectors();
     match selectors.len() {
         1 => match &selectors[0] {
             ScalarExpression::Static(StaticScalarExpression::String(column)) => {
                 match column.get_value() {
-                    ATTRIBUTES_FIELD_NAME => {
-                        Some(ApplySource::Attributes(AttributesIdentifier::Root))
+                    ATTRIBUTES_FIELD_NAME => Some(ApplySource::Attributes(
+                        AttributesIdentifier::Record(record_scope),
+                    )),
+                    DATA_POINTS_FIELD_NAME => {
+                        // TODO - if record_scope isn't Signal, this would be invalid
+                        Some(ApplySource::DataPoints)
                     }
-                    DATA_POINTS_FIELD_NAME => Some(ApplySource::DataPoints),
                     _ => None,
                 }
             }
             _ => None,
         },
         2 => match (&selectors[0], &selectors[1]) {
+            // TODO - if record scope isn't signal, these would be invalid
             (
                 ScalarExpression::Static(StaticScalarExpression::String(column0)),
                 ScalarExpression::Static(StaticScalarExpression::String(column1)),
             ) => match (column0.get_value(), column1.get_value()) {
                 (RESOURCES_FIELD_NAME, ATTRIBUTES_FIELD_NAME) => Some(ApplySource::Attributes(
-                    AttributesIdentifier::NonRoot(ArrowPayloadType::ResourceAttrs),
+                    AttributesIdentifier::NonRecord(ArrowPayloadType::ResourceAttrs),
                 )),
                 (SCOPE_FIELD_NAME, ATTRIBUTES_FIELD_NAME) => Some(ApplySource::Attributes(
-                    AttributesIdentifier::NonRoot(ArrowPayloadType::ScopeAttrs),
+                    AttributesIdentifier::NonRecord(ArrowPayloadType::ScopeAttrs),
                 )),
                 _ => None,
             },
@@ -1115,7 +1155,7 @@ impl ColumnAccessor {
             ScalarExpression::Static(StaticScalarExpression::String(struct_field)) => {
                 match struct_field.get_value() {
                     ATTRIBUTES_FIELD_NAME => Self::try_from_attrs_key(
-                        AttributesIdentifier::NonRoot(attrs_payload_type),
+                        AttributesIdentifier::NonRecord(attrs_payload_type),
                         &selectors[2..],
                     ),
                     struct_field => {
@@ -1156,14 +1196,18 @@ impl ColumnAccessor {
                 let column_name = column.get_value();
                 match column_name {
                     ATTRIBUTES_FIELD_NAME => {
-                        if let RecordType::Child(child_kind) = record_type {
-                            return Err(Error::NotYetSupportedError {
-                                message: format!(
-                                    "{child_kind:?} attribute access not yet supported"
-                                ),
-                            });
-                        }
-                        Self::try_from_attrs_key(AttributesIdentifier::Root, &selectors[1..])
+                        let record_scope = match record_type {
+                            RecordType::Signal => RecordScope::Signal,
+                            RecordType::Child(child) => RecordScope::Child(*child),
+                            RecordType::Attributes => {
+                                todo!("invalid pipeline?")
+                            }
+                        };
+
+                        Self::try_from_attrs_key(
+                            AttributesIdentifier::Record(record_scope),
+                            &selectors[1..],
+                        )
                     }
                     RESOURCES_FIELD_NAME => Self::try_from_struct_field(
                         consts::RESOURCE,
@@ -1201,12 +1245,15 @@ impl ColumnAccessor {
 
 /// Identifier of a batch of attributes
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[allow(variant_size_differences)]
 pub enum AttributesIdentifier {
-    /// Attributes for the root record type. E.g. LogAttrs for a batch of log records
-    Root,
+    /// Attributes for the record type in the expression E.g. LogAttrs for a batch of log records,
+    /// or attributes of metric datapoints
+    Record(RecordScope),
 
-    /// Attributes for something that isn't the root record type. E.g. ScopeAttrs, ResourceAttrs
-    NonRoot(ArrowPayloadType),
+    /// Attributes for something that isn't the root record type, identified by the specific
+    /// payload type. E.g. ScopeAttrs, ResourceAttrs,
+    NonRecord(ArrowPayloadType),
 }
 
 #[cfg(test)]

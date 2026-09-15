@@ -147,9 +147,8 @@ impl PipelineStage for ConditionalPipelineStage {
             // batch specifically containing the rows that have not already been selected and
             // feeding that into next iterations. This is extra overhead, but the resulting batch
             // would have less rows which could make filter faster.
-            let predicate_result = branch
-                .condition
-                .execute_as_value(&otap_batch, &EvalContext::new(session_ctx))?;
+            let eval_ctx = EvalContext::new(session_ctx);
+            let predicate_result = branch.condition.execute_as_value(&otap_batch, &eval_ctx)?;
 
             let predicate_selection_vec = match predicate_result {
                 None => BooleanArray::new(BooleanBuffer::new_unset(root_batch.num_rows()), None),
@@ -159,7 +158,7 @@ impl PipelineStage for ConditionalPipelineStage {
                         DataScope::Record(_) | DataScope::RootParent(_)
                     )) && scoped_value.scope != DataScope::StaticScalar
                     {
-                        align_selection_to_root(Some(scoped_value), &otap_batch)?
+                        align_selection_to_root(Some(scoped_value), &otap_batch, &eval_ctx)?
                     } else {
                         // extract the BooleanArray from the ScopedValue
                         scoped_value_to_boolean_array(scoped_value.values, root_batch.num_rows())?

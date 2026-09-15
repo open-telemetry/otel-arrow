@@ -3668,7 +3668,7 @@ fn apply_inserts_upserts_and_updates<T: ArrowPrimitiveType>(
         Vec::with_capacity(num_inserts + num_upserts + num_updates + num_hashes);
 
     let mut parent_id_set = IdBitmap::new();
-    populate_parent_id_set(&mut parent_id_set, id_column)?;
+    parent_id_set.try_populate_from_id_column(id_column)?;
     let key_column = get_required_array(&attrs_record_batch, consts::ATTRIBUTE_KEY)?;
     let parent_ids_col = get_required_array(&attrs_record_batch, consts::PARENT_ID)?;
 
@@ -3684,7 +3684,7 @@ fn apply_inserts_upserts_and_updates<T: ArrowPrimitiveType>(
                 })?;
             let existing_parent_ids = filter(&parent_ids_col, &existing_key_mask)
                 .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
-            populate_parent_id_set(&mut existing_id_set, &existing_parent_ids)?;
+            existing_id_set.try_populate_from_id_column(&existing_parent_ids)?;
 
             let mut parent_ids =
                 Vec::with_capacity((parent_id_set.len() - existing_id_set.len()) as usize);
@@ -3723,7 +3723,7 @@ fn apply_inserts_upserts_and_updates<T: ArrowPrimitiveType>(
                 })?;
             let existing_parent_ids = filter(&parent_ids_col, &existing_key_mask)
                 .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
-            populate_parent_id_set(&mut existing_id_set, &existing_parent_ids)?;
+            existing_id_set.try_populate_from_id_column(&existing_parent_ids)?;
 
             let mut parent_ids = Vec::with_capacity(parent_id_set.len() as usize);
             populate_parent_id_vec::<T>(&mut parent_ids, &existing_parent_ids)?;
@@ -4041,79 +4041,6 @@ fn populate_parent_id_vec<T: ArrowPrimitiveType>(
                     data_type: dt.clone(),
                 });
             }
-        }
-    }
-
-    Ok(())
-}
-
-/// set the bitmap to true for each ID in the passed ID column.
-fn populate_parent_id_set(parent_id_set: &mut IdBitmap, id_column: &ArrayRef) -> Result<()> {
-    parent_id_set.clear();
-    match id_column.data_type() {
-        DataType::UInt16 => {
-            let id_column = id_column
-                .as_any()
-                .downcast_ref::<UInt16Array>()
-                // safety: we've checked the type
-                .expect("can downcast to u16");
-            if id_column.nulls().is_some() {
-                parent_id_set.populate(id_column.iter().flatten().map(|i| i as u32));
-            } else {
-                parent_id_set.populate(id_column.values().iter().map(|i| *i as u32));
-            }
-        }
-        DataType::UInt32 => {
-            let id_column = id_column
-                .as_any()
-                .downcast_ref::<UInt32Array>()
-                // safety: we've checked the type
-                .expect("can downcast to u32");
-            if id_column.nulls().is_some() {
-                parent_id_set.populate(id_column.iter().flatten());
-            } else {
-                parent_id_set.populate(id_column.values().iter().copied());
-            }
-        }
-        DataType::Dictionary(k, _) => match k.as_ref() {
-            DataType::UInt8 => {
-                let dict_arr = id_column
-                    .as_any()
-                    .downcast_ref::<DictionaryArray<UInt8Type>>()
-                    // safety: we've checked the type
-                    .expect("can downcast to dict");
-
-                let ids = dict_arr.downcast_dict::<UInt32Array>().ok_or_else(|| {
-                    Error::InvalidIdColumnType {
-                        data_type: id_column.data_type().clone(),
-                    }
-                })?;
-                parent_id_set.populate(ids.into_iter().flatten());
-            }
-            DataType::UInt16 => {
-                let dict_arr = id_column
-                    .as_any()
-                    .downcast_ref::<DictionaryArray<UInt16Type>>()
-                    // safety: we've checked the type
-                    .expect("can downcast to dict");
-
-                let ids = dict_arr.downcast_dict::<UInt32Array>().ok_or_else(|| {
-                    Error::InvalidIdColumnType {
-                        data_type: id_column.data_type().clone(),
-                    }
-                })?;
-                parent_id_set.populate(ids.into_iter().flatten());
-            }
-            _ => {
-                return Err(Error::InvalidIdColumnType {
-                    data_type: id_column.data_type().clone(),
-                });
-            }
-        },
-        dt => {
-            return Err(Error::InvalidIdColumnType {
-                data_type: dt.clone(),
-            });
         }
     }
 

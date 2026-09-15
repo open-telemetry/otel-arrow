@@ -17,12 +17,12 @@ use std::sync::Arc;
 
 use arrow::array::{
     Array, ArrayRef, AsArray, BooleanArray, BooleanBufferBuilder, NullArray, RecordBatch,
-    StringArray, StructArray, UInt16Array,
+    StringArray, StructArray, UInt16Array, UInt32Array,
 };
 use arrow::buffer::BooleanBuffer;
 use arrow::compute::filter_record_batch;
 use arrow::compute::kernels::cmp::eq;
-use arrow::datatypes::{Field, Schema};
+use arrow::datatypes::{DataType, Field, Schema, UInt8Type, UInt16Type, UInt32Type};
 use datafusion::common::DFSchema;
 use datafusion::logical_expr::{ColumnarValue, Expr};
 use datafusion::physical_expr::{PhysicalExprRef, create_physical_expr};
@@ -150,7 +150,7 @@ impl ScopedExpr {
                         ..
                     },
                 ..
-            } => evaluate_df_expr(logical_expr, physical_expr, eval_ctx, record_batch),
+            } => evaluate_df_expr(logical_expr, physical_expr, eval_ctx, &record_batch),
             _ => Err(Error::InvalidPipelineError {
                 cause: "only Eval(DatafusionExpr) can be evaluated on a provided batch".into(),
                 query_location: None,
@@ -194,7 +194,8 @@ pub(super) fn eval_datafusion_expr_value(
                     },
                 },
                 DataScope::Attribute(attrs_id, key) => {
-                    let attrs_payload_type = resolve_attrs_payload_type(attrs_id, otap_batch);
+                    let attrs_payload_type =
+                        resolve_attrs_payload_type(attrs_id, otap_batch, eval_ctx)?;
                     otap_batch
                         .get(attrs_payload_type)
                         .map(|rb| project_attrs(rb, key.as_str(), *attr_key_case_sensitive))
@@ -203,7 +204,8 @@ pub(super) fn eval_datafusion_expr_value(
                         .map(Cow::Owned)
                 }
                 DataScope::AttributesAll(attrs_id) => {
-                    let attrs_payload_type = resolve_attrs_payload_type(attrs_id, otap_batch);
+                    let attrs_payload_type =
+                        resolve_attrs_payload_type(attrs_id, otap_batch, eval_ctx)?;
                     otap_batch.get(attrs_payload_type).map(Cow::Borrowed)
                 }
                 DataScope::StaticScalar => Some(Cow::Borrowed(SCALAR_RECORD_BATCH_INPUT.deref())),
@@ -529,13 +531,15 @@ fn execute_bitmap_and_as_value(
 
     // short-circuit: if left is all-false, skip right
     if left_result.mask == IdMask::None {
-        return materialize_id_mask_to_value(IdMask::None, None, otap_batch);
+        return materialize_id_mask_to_value(IdMask::None, None, otap_batch, eval_ctx);
     }
 
     let right_result = right.execute_as_id_mask(otap_batch, eval_ctx, &mut pool)?;
+    println!("here=\nleft:{left_result:?}\nright:{right_result:?}");
+
     let combined_scope = combine_scope(left_result.scope, right_result.scope);
     let combined = left_result.mask.combine_and(right_result.mask, &mut pool);
-    materialize_id_mask_to_value(combined, combined_scope, otap_batch)
+    materialize_id_mask_to_value(combined, combined_scope, otap_batch, eval_ctx)
 }
 
 /// Execute a `BitmapOr` node as a value.
@@ -553,13 +557,13 @@ fn execute_bitmap_or_as_value(
     // short-circuit: if left is all-true, skip right
     // TODO - should we also be checking if it's weirdly IdMask::Some(x) where x.false() == 0 ? or w/e? (same for NotSome)
     if left_result.mask == IdMask::All {
-        return materialize_id_mask_to_value(IdMask::All, None, otap_batch);
+        return materialize_id_mask_to_value(IdMask::All, None, otap_batch, eval_ctx);
     }
 
     let right_result = right.execute_as_id_mask(otap_batch, eval_ctx, &mut pool)?;
     let combined_scope = combine_scope(left_result.scope, right_result.scope);
     let combined = left_result.mask.combine_or(right_result.mask, &mut pool);
-    materialize_id_mask_to_value(combined, combined_scope, otap_batch)
+    materialize_id_mask_to_value(combined, combined_scope, otap_batch, eval_ctx)
 }
 
 /// Execute a `BitmapNot` node as a value.
@@ -571,7 +575,7 @@ fn execute_bitmap_not_as_value(
     let mut pool = IdBitmapPool::new();
     let child_result = child.execute_as_id_mask(otap_batch, eval_ctx, &mut pool)?;
     let inverted = invert_id_mask(child_result.mask);
-    materialize_id_mask_to_value(inverted, child_result.scope, otap_batch)
+    materialize_id_mask_to_value(inverted, child_result.scope, otap_batch, eval_ctx)
 }
 
 /// Evaluate a DataFusion expression on a RecordBatch.
@@ -635,14 +639,22 @@ fn evaluate_with_anyval_partitions(
 pub(crate) fn resolve_attrs_payload_type(
     attrs_id: &AttributesIdentifier,
     otap_batch: &OtapArrowRecords,
-) -> ArrowPayloadType {
+    eval_ctx: &EvalContext<'_>,
+) -> Result<ArrowPayloadType> {
     match *attrs_id {
-        AttributesIdentifier::Root => match otap_batch.root_payload_type() {
+        AttributesIdentifier::Record(RecordScope::Signal) => Ok(match otap_batch.root_payload_type() {
             ArrowPayloadType::Logs => ArrowPayloadType::LogAttrs,
             ArrowPayloadType::Spans => ArrowPayloadType::SpanAttrs,
             _ => ArrowPayloadType::MetricAttrs,
+        }),
+        AttributesIdentifier::Record(RecordScope::Child(ChildRecordKind::DataPoint)) => {
+            eval_ctx.data_point_type.as_ref().map(MetricDataPointType::dp_attrs_payload_type).ok_or(Error::ExecutionError {
+                                cause: format!(
+                                    "Attr access planned with source attrs_id {attrs_id:?} but no data_point_type in eval context",
+                                ),
+                            })
         },
-        AttributesIdentifier::NonRoot(payload_type) => payload_type,
+        AttributesIdentifier::NonRecord(payload_type) => Ok(payload_type),
     }
 }
 
@@ -704,103 +716,236 @@ pub(super) fn invert_id_mask(mask: IdMask) -> IdMask {
 ///
 /// The `mask_scope`, if passed, parameter will be used to determine which ID column
 /// (`id`, `scope.id` or `resource.id`) will be checked for membership in the `mask`.
-/// When `mask_scope` is `None`, the `id` column will be used by default.
+/// This function considers a scope not associated with an ID column (like a scalar)
+/// an invalid argument.
+///
+/// This function expects that if the `IdMask`` variant is `Some` or `NotSome` that the
+/// `mask_scope` wil be `Some` to avoid any ambiguity about which Id column to use when
+/// creating the boolean `ScoopedValue`.
 fn materialize_id_mask_to_value(
     mask: IdMask,
     mask_scope: Option<DataScope>,
     otap_batch: &OtapArrowRecords,
+    eval_ctx: &EvalContext<'_>,
 ) -> Result<Option<ScopedValue>> {
+    let scalar_val = match mask {
+        IdMask::All => Some(true),
+        IdMask::None => Some(false),
+        _ => None,
+    };
+
+    if let Some(scalar_val) = scalar_val {
+        return Ok(Some(ScopedValue::new_scalar(ScalarValue::Boolean(Some(
+            scalar_val,
+        )))));
+    }
+
     let root_rb = match otap_batch.root_record_batch() {
         Some(rb) => rb,
         None => return Ok(None),
     };
 
-    let num_rows = root_rb.num_rows();
+    let missing_dp_error = || {
+        Error::ExecutionError {
+            cause: "missing metric datapoint type in eval ctx when materializing Id bitmask as scoped value".into()
+        }
+    };
 
-    let boolean_arr = match &mask {
-        IdMask::All => BooleanArray::new(BooleanBuffer::new_set(num_rows), None),
-        IdMask::None => BooleanArray::new(BooleanBuffer::new_unset(num_rows), None),
-        IdMask::Some(_) | IdMask::NotSome(_) => {
-            let id_col = match mask_scope {
-                Some(
-                    DataScope::Attribute(AttributesIdentifier::NonRoot(payload_type), _)
-                    | DataScope::AttributesAll(AttributesIdentifier::NonRoot(payload_type)),
-                ) => match payload_type {
-                    ArrowPayloadType::ResourceAttrs => {
-                        get_optional_array_from_struct_array_from_record_batch(
-                            root_rb,
-                            consts::RESOURCE,
-                            consts::ID,
-                        )?
-                    }
-                    ArrowPayloadType::ScopeAttrs => {
-                        get_optional_array_from_struct_array_from_record_batch(
-                            root_rb,
-                            consts::SCOPE,
-                            consts::ID,
-                        )?
-                    }
-                    other => {
-                        return Err(Error::ExecutionError {
-                            cause: format!("invalid payload type from IdMask scope: {other:?}"),
-                        });
-                    }
-                },
-                _ => root_rb.column_by_name(consts::ID),
-            }
-            .and_then(|arr| arr.as_any().downcast_ref::<UInt16Array>());
+    let (id_col, result_record_scope) = match mask_scope {
+        None => {
+            Err(Error::ExecutionError {
+                cause: "cannot materialize value from ID mask of variant Some/NotSome without specified data scope".into()
+            })
+        }
+        Some(DataScope::StaticScalar) => {
+            Err(Error::ExecutionError {
+                cause: "invalid scalar scope encountered when materializing expression value from bitmap".into(),
+            })
+        }
+        Some(DataScope::Attribute(attrs_id, _)) | Some(DataScope::AttributesAll(attrs_id)) => {
+            match attrs_id {
+                AttributesIdentifier::Record(RecordScope::Signal) => {
+                    Ok((root_rb.column_by_name(consts::ID), RecordScope::Signal))
+                }
+                AttributesIdentifier::Record(RecordScope::Child(ChildRecordKind::DataPoint)) => {
+                    let metric_dp_type = eval_ctx.data_point_type.as_ref().ok_or_else(missing_dp_error)?;
+                    let Some(metric_dp_batch) = otap_batch.get(metric_dp_type.payload_type())
+                    else {
+                        return Ok(None);
+                    };
 
-            match id_col {
-                Some(id_col) => {
-                    // For NotSome masks, a null ID means "no attributes exist for this row",
-                    // which means the row is NOT in the bitmap -- so it passes.
-                    // For Some masks, null ID means no match.
-                    let null_id_passes = matches!(mask, IdMask::NotSome(_));
-
-                    let mut builder = BooleanBufferBuilder::new(num_rows);
-                    let mut segment_val = false;
-                    let mut segment_len = 0usize;
-
-                    for idx in 0..id_col.len() {
-                        let row_val = if id_col.is_valid(idx) {
-                            mask.contains(id_col.value(idx) as u32)
-                        } else {
-                            null_id_passes
-                        };
-
-                        if segment_val != row_val {
-                            if segment_len > 0 {
-                                builder.append_n(segment_len, segment_val);
-                            }
-                            segment_val = row_val;
-                            segment_len = 0;
+                    Ok((
+                        metric_dp_batch.column_by_name(consts::ID),
+                        RecordScope::Child(ChildRecordKind::DataPoint),
+                    ))
+                }
+                AttributesIdentifier::NonRecord(payload_type) => Ok((
+                    match payload_type {
+                        ArrowPayloadType::ResourceAttrs => {
+                            get_optional_array_from_struct_array_from_record_batch(
+                                root_rb,
+                                consts::RESOURCE,
+                                consts::ID,
+                            )?
                         }
-                        segment_len += 1;
-                    }
-                    if segment_len > 0 {
-                        builder.append_n(segment_len, segment_val);
-                    }
-
-                    BooleanArray::new(builder.finish(), None)
-                }
-                None => {
-                    // This shouldn't happen, unless we somehow got an invalid batch. Basically it
-                    // means we did some filtering on a child batch that was present, but there is
-                    // no ID column to join with it
-                    return Err(Error::InvalidPipelineError {
-                        cause: "materialize_id_mask_to_value expected id column for materializing id bitmap".into(),
-                        query_location: None
-                    });
-                }
+                        ArrowPayloadType::ScopeAttrs => {
+                            get_optional_array_from_struct_array_from_record_batch(
+                                root_rb,
+                                consts::SCOPE,
+                                consts::ID,
+                            )?
+                        }
+                        other => {
+                            return Err(Error::ExecutionError {
+                                cause: format!("invalid payload type from IdMask scope: {other:?}"),
+                            });
+                        }
+                    },
+                    RecordScope::Signal,
+                )),
             }
+        }
+        Some(DataScope::Record(RecordScope::Signal)) | Some(DataScope::RootParent(_)) => {
+            Ok((root_rb.column_by_name(consts::ID), RecordScope::Signal))
+        }
+        Some(DataScope::Record(RecordScope::Child(ChildRecordKind::DataPoint))) => {
+            let metric_dp_type = eval_ctx.data_point_type.as_ref().ok_or_else(missing_dp_error)?;
+            let Some(metric_dp_batch) = otap_batch.get(metric_dp_type.payload_type()) else {
+                return Ok(None);
+            };
+
+            Ok((
+                metric_dp_batch.column_by_name(consts::ID),
+                RecordScope::Child(ChildRecordKind::DataPoint),
+            ))
+        }
+    }?;
+
+    let selection_vec = match id_col {
+        Some(id_col) => selection_vec_for_ids(id_col, &mask)?,
+        None => {
+            // This shouldn't happen, unless we somehow got an invalid batch. Basically it
+            // means we did some filtering on a child batch that was present, but there is
+            // no ID column to join with it
+            return Err(Error::InvalidPipelineError {
+                cause:
+                    "materialize_id_mask_to_value expected id column for materializing id bitmap"
+                        .into(),
+                query_location: None,
+            });
+        }
+    };
+
+    let result_rb = match result_record_scope {
+        RecordScope::Signal => root_rb,
+        RecordScope::Child(ChildRecordKind::DataPoint) => {
+            let metric_dp_type = eval_ctx
+                .data_point_type
+                .as_ref()
+                .ok_or_else(missing_dp_error)?;
+            let Some(metric_dp_batch) = otap_batch.get(metric_dp_type.payload_type()) else {
+                return Ok(None);
+            };
+            metric_dp_batch
         }
     };
 
     Ok(Some(ScopedValue::new(
-        ColumnarValue::Array(Arc::new(boolean_arr)),
-        DataScope::Record(RecordScope::Signal),
-        root_rb,
+        ColumnarValue::Array(Arc::new(selection_vec)),
+        DataScope::Record(result_record_scope),
+        result_rb,
     )))
+}
+
+fn selection_vec_for_ids(id_col: &ArrayRef, selected_ids: &IdMask) -> Result<BooleanArray> {
+    match id_col.data_type() {
+        DataType::UInt16 => {
+            let id_col = id_col.as_primitive::<UInt16Type>();
+            Ok(selection_vec_vec_from_id_iter(
+                id_col.iter().map(|i| i.map(|i| i as u32)),
+                selected_ids,
+            ))
+        }
+        DataType::UInt32 => {
+            let id_col = id_col.as_primitive::<UInt32Type>();
+            Ok(selection_vec_vec_from_id_iter(id_col.iter(), selected_ids))
+        }
+        DataType::Dictionary(k, _) => match k.as_ref() {
+            DataType::UInt8 => {
+                let dict_arr = id_col.as_dictionary::<UInt8Type>();
+                let Some(typed_dict) = dict_arr.downcast_dict::<UInt32Array>() else {
+                    return Err(otel_arrow_dfe_pdata::error::Error::InvalidIdColumnType {
+                        data_type: id_col.data_type().clone(),
+                    }
+                    .into());
+                };
+                Ok(selection_vec_vec_from_id_iter(
+                    typed_dict.into_iter(),
+                    selected_ids,
+                ))
+            }
+            DataType::UInt16 => {
+                let dict_arr = id_col.as_dictionary::<UInt16Type>();
+                let Some(typed_dict) = dict_arr.downcast_dict::<UInt32Array>() else {
+                    return Err(otel_arrow_dfe_pdata::error::Error::InvalidIdColumnType {
+                        data_type: id_col.data_type().clone(),
+                    }
+                    .into());
+                };
+                Ok(selection_vec_vec_from_id_iter(
+                    typed_dict.into_iter(),
+                    selected_ids,
+                ))
+            }
+            _ => {
+                return Err(otel_arrow_dfe_pdata::error::Error::InvalidIdColumnType {
+                    data_type: id_col.data_type().clone(),
+                }
+                .into());
+            }
+        },
+        _ => {
+            return Err(otel_arrow_dfe_pdata::error::Error::InvalidIdColumnType {
+                data_type: id_col.data_type().clone(),
+            }
+            .into());
+        }
+    }
+}
+
+fn selection_vec_vec_from_id_iter<I: ExactSizeIterator<Item = Option<u32>>>(
+    id_iter: I,
+    selected_ids: &IdMask,
+) -> BooleanArray {
+    // For NotSome masks, a null ID means "no attributes exist for this row",
+    // which means the row is NOT in the bitmap -- so it passes.
+    // For Some masks, null ID means no match.
+    let null_id_passes = matches!(selected_ids, IdMask::NotSome(_));
+
+    let mut builder = BooleanBufferBuilder::new(id_iter.len());
+    let mut segment_val = false;
+    let mut segment_len = 0usize;
+
+    for id in id_iter {
+        let row_val = match id {
+            Some(id) => selected_ids.contains(id),
+            None => null_id_passes,
+        };
+
+        if segment_val != row_val {
+            if segment_len > 0 {
+                builder.append_n(segment_len, segment_val);
+            }
+            segment_val = row_val;
+            segment_len = 0;
+        }
+        segment_len += 1;
+    }
+    if segment_len > 0 {
+        builder.append_n(segment_len, segment_val);
+    }
+
+    BooleanArray::new(builder.finish(), None)
 }
 
 /// Filter an attributes RecordBatch by key and project it into the canonical
@@ -894,7 +1039,7 @@ fn build_case_insensitive_mask(key_col: &dyn Array, key_lower: &str) -> Result<B
         DataType::Dictionary(_, value_type) if matches!(value_type.as_ref(), DataType::Utf8) => {
             let dict_arr = key_col
                 .as_any()
-                .downcast_ref::<arrow::array::DictionaryArray<arrow::datatypes::UInt8Type>>()
+                .downcast_ref::<arrow::array::DictionaryArray<UInt8Type>>()
                 .ok_or_else(|| Error::ExecutionError {
                     cause: format!(
                         "expected Dict<UInt8, Utf8> for attribute key column, found {:?}",
@@ -1001,11 +1146,54 @@ pub(crate) fn align_value_to_root(
         Some(rb) => rb,
         None => return Ok(value),
     };
+    align_value_to_record(value, RecordScope::Signal, root_batch, otap_batch)
 
+    // let left_input = JoinInput::new(
+    //     ColumnarValue::Array(Arc::new(NullArray::new(root_batch.num_rows()))),
+    //     Rc::new(DataScope::Record(RecordScope::Signal)),
+    //     root_batch,
+    // );
+
+    // let right_input = scoped_value_to_join_input(value, otap_batch)?;
+
+    // let (result_rb, result_scope) = join(&left_input, &right_input, otap_batch)?;
+    // let result_col_name = arg_column_name(1);
+    // let col = result_rb
+    //     .column_by_name(&result_col_name)
+    //     .ok_or_else(|| Error::ExecutionError {
+    //         // shouldn't happen - we expect the join to always produce the column with the
+    //         // correct name, but returning the error here is just being defensive
+    //         cause: format!("unexpected join result - expected column {result_col_name}"),
+    //     })?
+    //     .clone();
+
+    // debug_assert!(matches!(
+    //     result_scope.as_ref(),
+    //     DataScope::Record(RecordScope::Signal)
+    // ));
+
+    // Ok(ScopedValue::new(
+    //     ColumnarValue::Array(col),
+    //     result_scope.as_ref().clone(),
+    //     root_batch,
+    // ))
+}
+
+// TODO comment on what this is doing
+// TODO - reuse this in assign.rs
+// TODO - reuse this in filter.rs for filtering root batch
+pub(crate) fn align_value_to_record(
+    value: ScopedValue,
+    record_scope: RecordScope,
+    record_rb: &RecordBatch,
+    otap_batch: &OtapArrowRecords,
+) -> Result<ScopedValue> {
     let left_input = JoinInput::new(
-        ColumnarValue::Array(Arc::new(NullArray::new(root_batch.num_rows()))),
-        Rc::new(DataScope::Record(RecordScope::Signal)),
-        root_batch,
+        // TODO - fix all the tests, change this to ScalarNull, and if it passes
+        // keep this as a scalar to avoid the heap allocation for the Arc
+        ColumnarValue::Array(Arc::new(NullArray::new(record_rb.num_rows()))),
+        Rc::new(DataScope::Record(record_scope)),
+        record_rb,
     );
 
     let right_input = scoped_value_to_join_input(value, otap_batch)?;
@@ -1023,12 +1211,12 @@ pub(crate) fn align_value_to_root(
 
     debug_assert!(matches!(
         result_scope.as_ref(),
-        DataScope::Record(RecordScope::Signal)
+        DataScope::Record(result_record_scope) if record_scope == *result_record_scope
     ));
 
     Ok(ScopedValue::new(
         ColumnarValue::Array(col),
         result_scope.as_ref().clone(),
-        root_batch,
+        record_rb,
     ))
 }
