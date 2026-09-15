@@ -331,18 +331,6 @@ fn warn_tcp_rate_limit_drop_once(peer_addr: SocketAddr, warned: &mut bool) {
     }
 }
 
-async fn send_tcp_batch(
-    effect_handler: &local::EffectHandler<OtapPdata>,
-    shutdown_rx: &mut tokio::sync::watch::Receiver<bool>,
-    data: OtapPdata,
-) {
-    tokio::select! {
-        biased;
-        _ = shutdown_rx.changed() => {},
-        _ = effect_handler.send_message_with_source_node(data) => {},
-    }
-}
-
 #[cfg(test)]
 fn local_rate_gate(
     policy: otel_arrow_dfe_config::policy::RateLimiterPolicy,
@@ -434,10 +422,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                 let max_batch_duration = self.config.max_batch_duration();
                 let max_batch_size = self.config.max_batch_size();
 
-                // Wake blocked connection reads so tasks stop within the shutdown deadline.
-                // The watch channel stays core-local and retains the shutdown state.
-                let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-                let flush_on_shutdown = Rc::new(Cell::new(false));
+                let shutdown_flag = Rc::new(Cell::new(false));
                 // Counter to track active connection tasks for graceful shutdown
                 let active_task_count = Rc::new(Cell::new(0usize));
 
@@ -453,8 +438,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     // for TCP we still wait for already accepted connection tasks
                                     // to flush their per-connection buffers before reporting
                                     // ReceiverDrained to the runtime.
-                                    flush_on_shutdown.set(true);
-                                    let _ = shutdown_tx.send_replace(true);
+                                    shutdown_flag.set(true); // Signal all connection tasks to flush and exit
 
                                     // Wait for active tasks to finish flushing.
                                     // Use 90% of remaining time (keeping 10% buffer for cleanup),
@@ -483,22 +467,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     return Ok(TerminalState::new(deadline, snapshots));
                                 }
                                 Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
-                                    flush_on_shutdown.set(false);
-                                    let _ = shutdown_tx.send_replace(true);
-                                    let time_until_deadline = deadline.saturating_duration_since(Instant::now());
-                                    let shutdown_wait = std::cmp::min(time_until_deadline * 9 / 10, MAX_TASK_DRAIN_WAIT);
-                                    let shutdown_result = tokio::time::timeout(shutdown_wait, async {
-                                        while active_task_count.get() > 0 {
-                                            tokio::task::yield_now().await;
-                                        }
-                                    }).await;
-                                    if shutdown_result.is_err() {
-                                        otel_warn!(
-                                            "syslog_cef_receiver.shutdown.timeout",
-                                            active_tasks = active_task_count.get(),
-                                            message = "Shutdown deadline expired with tasks still active"
-                                        );
-                                    }
+                                    shutdown_flag.set(true);
                                     let snapshots = self.metrics.borrow_mut().terminal_snapshots();
                                     return Ok(TerminalState::new(deadline, snapshots));
                                 }
@@ -537,8 +506,8 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     let tls_acceptor = maybe_tls_acceptor.clone();
                                     let tls_handshake_timeout = maybe_handshake_timeout;
 
-                                    let mut task_shutdown_rx = shutdown_rx.clone();
-                                    let task_flush_on_shutdown = flush_on_shutdown.clone();
+                                    // Clone shutdown flag for the spawned task
+                                    let task_shutdown_flag = shutdown_flag.clone();
                                     // Clone active task counter for the spawned task
                                     let task_active_count = active_task_count.clone();
 
@@ -546,7 +515,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     // ToDo should this be abstracted and exposed a method in the effect handler?
                                     _ = tokio::task::spawn_local(async move {
                                         // If already shutting down, exit immediately (nothing to process yet)
-                                        if *task_shutdown_rx.borrow() {
+                                        if task_shutdown_flag.get() {
                                             return;
                                         }
 
@@ -596,10 +565,9 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                         let mut interval = tokio::time::interval_at(start, max_batch_duration);
 
                                         loop {
-                                            if *task_shutdown_rx.borrow() {
-                                                if task_flush_on_shutdown.get()
-                                                    && arrow_records_builder.len() > 0
-                                                {
+                                            // Check for shutdown signal (simple bool check - very cheap)
+                                            if task_shutdown_flag.get() {
+                                                if arrow_records_builder.len() > 0 {
                                                     match arrow_records_builder.build() {
                                                         Ok(arrow_records) => {
                                                             let _ = effect_handler.try_send_message_with_source_node(
@@ -634,10 +602,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 
                                             tokio::select! {
                                                 biased; // Prioritize incoming data over timeout
-
-                                                _ = task_shutdown_rx.changed() => {
-                                                    continue;
-                                                }
 
                                                 // Handle incoming data
                                                 read_result = read_line_bounded(&mut reader, &mut line_bytes, MAX_MESSAGE_SIZE) => {
@@ -692,10 +656,8 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             if arrow_records_builder.len() > 0 {
                                                                 match arrow_records_builder.build() {
                                                                     Ok(arrow_records) => {
-                                                                        send_tcp_batch(
-                                                                            &effect_handler,
-                                                                            &mut task_shutdown_rx,
-                                                                            OtapPdata::new_todo_context(arrow_records.into()).with_peer_addr(peer_addr),
+                                                                        let _ = effect_handler.send_message_with_source_node(
+                                                                            OtapPdata::new_todo_context(arrow_records.into()).with_peer_addr(peer_addr)
                                                                         ).await;
                                                                     }
                                                                     Err(e) => {
@@ -792,10 +754,8 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                         // Reset the timer since we already built an arrow record batch due to size constraint
                                                                         interval.reset();
 
-                                                                        send_tcp_batch(
-                                                                            &effect_handler,
-                                                                            &mut task_shutdown_rx,
-                                                                            OtapPdata::new_todo_context(arrow_records.into()).with_peer_addr(peer_addr),
+                                                                        let _ = effect_handler.send_message_with_source_node(
+                                                                            OtapPdata::new_todo_context(arrow_records.into()).with_peer_addr(peer_addr)
                                                                         ).await;
                                                                     }
                                                                     Err(e) => {
@@ -811,10 +771,8 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             if arrow_records_builder.len() > 0 {
                                                                 match arrow_records_builder.build() {
                                                                     Ok(arrow_records) => {
-                                                                        send_tcp_batch(
-                                                                            &effect_handler,
-                                                                            &mut task_shutdown_rx,
-                                                                            OtapPdata::new_todo_context(arrow_records.into()).with_peer_addr(peer_addr),
+                                                                        let _ = effect_handler.send_message_with_source_node(
+                                                                            OtapPdata::new_todo_context(arrow_records.into()).with_peer_addr(peer_addr)
                                                                         ).await;
                                                                     }
                                                                     Err(e) => {
@@ -840,10 +798,8 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                 // Reset the builder for the next batch
                                                                 arrow_records_builder = ArrowRecordsBuilder::new();
 
-                                                                send_tcp_batch(
-                                                                    &effect_handler,
-                                                                    &mut task_shutdown_rx,
-                                                                    OtapPdata::new_todo_context(arrow_records.into()).with_peer_addr(peer_addr),
+                                                                let _ = effect_handler.send_message_with_source_node(
+                                                                    OtapPdata::new_todo_context(arrow_records.into()).with_peer_addr(peer_addr)
                                                                 ).await;
                                                             }
                                                             Err(e) => {
@@ -2811,90 +2767,6 @@ mod telemetry_tests {
                 pipe_rx.recv().await,
                 Ok(otel_arrow_dfe_engine::control::RuntimeControlMsg::ReceiverDrained { .. })
             ));
-        }));
-    }
-
-    /// Scenario: TCP batch handoff is blocked by a full downstream channel when shutdown begins.
-    /// Guarantees: shutdown interrupts the send without rewriting node-local processing success.
-    #[test]
-    fn tcp_shutdown_interrupts_blocked_downstream_send() {
-        let (rt, local) = setup_test_runtime();
-        rt.block_on(local.run_until(async move {
-            let pipeline = test_pipeline_context();
-            let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
-            let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
-            let receiver = SyslogCefReceiver::with_pipeline(
-                pipeline,
-                Config {
-                    protocol: Protocol::Tcp(TcpConfig {
-                        listening_addr: addr,
-                        tls: None,
-                    }),
-                    batch: Some(BatchConfig {
-                        max_batch_duration_ms: NonZeroU64::new(10_000),
-                        max_size: NonZeroU16::new(1),
-                    }),
-                },
-            );
-
-            let (out_tx, out_rx) = otel_arrow_dfe_channel::mpsc::Channel::new(1);
-            let mut blocker_builder = ArrowRecordsBuilder::new();
-            blocker_builder.append_syslog(
-                parser::parse(b"<34>1 2024-01-15T10:30:45.123Z host app - ID0 blocker").unwrap(),
-            );
-            out_tx
-                .send(OtapPdata::new_todo_context(
-                    blocker_builder.build().unwrap().into(),
-                ))
-                .unwrap();
-            let mut senders = std::collections::HashMap::new();
-            let _ = senders.insert(
-                "".into(),
-                Sender::Local(otel_arrow_dfe_engine::local::message::LocalSender::mpsc(
-                    out_tx,
-                )),
-            );
-            let (pipe_tx, _pipe_rx) = otel_arrow_dfe_engine::control::runtime_ctrl_msg_channel(10);
-            let (_metrics_rx, reporter) = MetricsReporter::create_new_and_receiver(2);
-            let effect_handler = otel_arrow_dfe_engine::local::receiver::EffectHandler::new(
-                test_node("syslog_tcp_blocked_shutdown"),
-                senders,
-                None,
-                pipe_tx,
-                reporter,
-                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
-            );
-            let (ctrl_tx, ctrl_rx) = otel_arrow_dfe_channel::mpsc::Channel::new(8);
-            let ctrl_rx = otel_arrow_dfe_engine::message::Receiver::Local(
-                otel_arrow_dfe_engine::local::message::LocalReceiver::mpsc(ctrl_rx),
-            );
-            let ctrl_chan = otel_arrow_dfe_engine::local::receiver::ControlChannel::new(ctrl_rx);
-            let handle = tokio::task::spawn_local(async move {
-                Box::new(receiver).start(ctrl_chan, effect_handler).await
-            });
-
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            let mut stream = TcpStream::connect(addr).await.unwrap();
-            stream
-                .write_all(b"<34>1 2024-01-15T10:30:45.123Z host app - ID1 msg\n")
-                .await
-                .unwrap();
-            stream.flush().await.unwrap();
-            tokio::time::sleep(Duration::from_millis(50)).await;
-
-            let _ = ctrl_tx.send(NodeControlMsg::Shutdown {
-                deadline: Instant::now() + Duration::from_secs(1),
-                reason: "test".into(),
-            });
-            let terminal_state = tokio::time::timeout(Duration::from_millis(500), handle)
-                .await
-                .expect("shutdown should interrupt the blocked send")
-                .unwrap()
-                .unwrap();
-
-            assert_eq!(received_count(terminal_state.metrics(), Some("success")), 1);
-            assert!(out_rx.recv().await.is_ok());
-            assert!(out_rx.try_recv().is_err());
         }));
     }
 
