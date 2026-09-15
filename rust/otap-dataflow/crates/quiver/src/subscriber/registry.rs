@@ -240,8 +240,10 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
                             subscriber_id = %sub_id,
                             error = %e,
                             error_type = "io",
-                            message = "subscriber will start fresh with potential re-delivery or gaps",
+                            message = "cannot verify subscriber progress sequence floor, \
+                                       refusing to open",
                         );
+                        return Err(e);
                     }
                 }
             }
@@ -754,6 +756,23 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
                 }
             })
             .min()
+    }
+
+    /// Returns the highest segment sequence tracked by any subscriber,
+    /// including inactive ones.
+    ///
+    /// Restored progress is a record of segments that once existed, so this
+    /// acts as a floor for future sequence allocation: reusing one of these
+    /// sequence numbers would collide with stale progress and suppress the
+    /// new data (issue #4024). Inactive subscribers are included because
+    /// their state is retained and can be reactivated.
+    #[must_use]
+    pub fn highest_tracked_segment_any(&self) -> Option<SegmentSeq> {
+        self.subscribers
+            .read()
+            .values()
+            .filter_map(|state_lock| state_lock.read().highest_tracked_segment())
+            .max()
     }
 
     /// Returns debug info about subscriber segment counts (for debugging).
@@ -1481,6 +1500,29 @@ mod tests {
         assert_eq!(progress[&SegmentSeq::new(1)].resolved_count(), 1);
         assert_eq!(progress[&SegmentSeq::new(2)].resolved_count(), 0);
         assert_eq!(progress[&SegmentSeq::new(2)].bundle_count(), 2);
+    }
+
+    /// Scenario: a discovered subscriber progress file is corrupt and its
+    /// highest previously tracked segment cannot be recovered.
+    /// Guarantees: registry startup fails closed instead of starting the
+    /// subscriber fresh and permitting a stale sequence number to be reused.
+    #[test]
+    fn open_rejects_corrupt_progress_file() {
+        let dir = tempdir().unwrap();
+        let config = RegistryConfig::new(dir.path());
+        let provider = Arc::new(MockSegmentProvider::new());
+        let id = SubscriberId::new("test-sub").unwrap();
+        std::fs::write(progress_file_path(dir.path(), &id), b"corrupt").unwrap();
+
+        let err = match SubscriberRegistry::open(config, provider) {
+            Ok(_) => panic!("corrupt progress must prevent registry startup"),
+            Err(err) => err,
+        };
+
+        assert!(
+            matches!(err, SubscriberError::ProgressCorrupted { .. }),
+            "expected corrupt progress error, got {err:?}"
+        );
     }
 
     #[tokio::test]

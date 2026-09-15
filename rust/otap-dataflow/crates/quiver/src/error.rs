@@ -9,7 +9,11 @@ use std::borrow::Cow;
 pub type Result<T> = std::result::Result<T, QuiverError>;
 
 /// Errors that can be produced by Quiver APIs.
+///
+/// Marked `#[non_exhaustive]` so callers must include a wildcard arm when
+/// matching and future variants can be added under that API contract.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum QuiverError {
     /// Raised when a caller provides an invalid configuration.
     #[error("invalid configuration: {message}")]
@@ -42,6 +46,37 @@ pub enum QuiverError {
         available: u64,
         /// The configured soft cap (ingest threshold).
         soft_cap: u64,
+    },
+    /// Raised when the open segment cannot be finalized and has grown past
+    /// its in-memory limit (backpressure signal).
+    ///
+    /// Bundles accumulate in memory until a segment is finalized, so a
+    /// persistent failure to reserve sequence numbers (for example an
+    /// unwritable segment directory) would otherwise grow the accumulator
+    /// without bound: that failure happens before anything is written, so the
+    /// accumulated bundles are retained for a later attempt rather than
+    /// discarded. Callers should pause ingestion and retry once finalization
+    /// recovers.
+    #[error(
+        "open segment at capacity: {accumulated_bytes} bytes accumulated (limit: {limit}); \
+         finalization is not keeping up or is failing"
+    )]
+    OpenSegmentAtCapacity {
+        /// Estimated bytes currently held in the open segment.
+        accumulated_bytes: u64,
+        /// The in-memory limit for the open segment.
+        limit: u64,
+    },
+    /// Raised when the 64-bit segment sequence space has been exhausted.
+    ///
+    /// Sequence numbers are allocated monotonically and never reused, so this
+    /// is unreachable in practice (it requires more than `u64::MAX` segments).
+    /// It is reported rather than wrapped around, because reuse is exactly the
+    /// failure this crate guards against.
+    #[error("segment sequence space exhausted at {next_seq}")]
+    SegmentSequenceExhausted {
+        /// The next sequence number that would have been allocated.
+        next_seq: u64,
     },
     /// Wrapper for WAL-specific failures.
     #[error("wal error: {source}")]
@@ -100,7 +135,7 @@ impl QuiverError {
     #[must_use]
     pub const fn is_at_capacity(&self) -> bool {
         match self {
-            Self::StorageAtCapacity { .. } => true,
+            Self::StorageAtCapacity { .. } | Self::OpenSegmentAtCapacity { .. } => true,
             Self::Wal { source } => source.is_at_capacity(),
             _ => false,
         }

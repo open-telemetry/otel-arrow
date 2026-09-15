@@ -675,6 +675,11 @@ impl WalWriter {
         self.coordinator.purge_count
     }
 
+    /// Returns the WAL bytes currently charged to the shared disk budget.
+    pub(crate) const fn tracked_disk_bytes(&self) -> u64 {
+        self.coordinator.aggregate_bytes
+    }
+
     /// Returns the cumulative bytes written to WAL since this writer opened.
     /// This value never decreases, even as WAL files are rotated and purged.
     pub(crate) const fn cumulative_bytes_written(&self) -> u64 {

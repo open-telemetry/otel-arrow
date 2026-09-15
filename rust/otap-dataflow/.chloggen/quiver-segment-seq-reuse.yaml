@@ -1,0 +1,6 @@
+change_type: bug_fix
+component: pipeline
+note: Fix Quiver silently skipping new telemetry after a restart reuses a segment sequence number cleaned up by a previous run.
+issues: [4024]
+subtext: |
+  Quiver now durably reserves segment sequence numbers before using them, so restarts never reallocate one that stale subscriber progress could mistake for delivered data. It refuses to start if the recorded floor is damaged, and applies backpressure instead of growing memory.

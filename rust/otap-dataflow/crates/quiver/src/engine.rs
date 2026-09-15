@@ -111,6 +111,58 @@ pub type WalItemCounter = Arc<dyn Fn(&dyn RecordBundle) -> Option<u64> + Send + 
 /// Counts logical payload bytes in a decoded WAL bundle during startup expiry.
 pub type WalByteCounter = Arc<dyn Fn(&dyn RecordBundle) -> Option<u64> + Send + Sync + 'static>;
 
+/// Number of segment sequence numbers claimed by a single sidecar write.
+///
+/// The floor is persisted *before* any of the reserved numbers is used, so a
+/// segment file never exists without a durable floor above it. Reserving a
+/// block amortizes the sidecar fsync over many finalizations (one write per
+/// 64 segments, i.e. roughly 2 GB of data at the default segment size).
+/// Sequence numbers reserved but unused at shutdown are simply skipped;
+/// gaps are expected and harmless, only reuse is unsafe (issue #4024).
+const SEQ_RESERVATION_BATCH: u64 = 64;
+
+/// Multiple of the configured segment target size at which ingestion is
+/// rejected because the open segment could not be finalized.
+///
+/// Bundles live in memory until a segment is finalized, and finalization is
+/// triggered as soon as the accumulator reaches the target size, so healthy
+/// operation never approaches this limit. It only matters when finalization
+/// keeps failing (an unwritable segment directory, a full disk): the
+/// accumulator is deliberately retained across such failures so no accepted
+/// data is dropped, and this cap is what keeps that retention bounded.
+///
+/// The cap is enforced on the ingestion path only. WAL replay restores what
+/// the WAL already holds, so rejecting there would strand durable data; that
+/// accumulation is bounded by the configured WAL size instead.
+const MAX_OPEN_SEGMENT_SIZE_MULTIPLE: u64 = 4;
+
+/// State mutated by the write path, guarded by a single lock.
+///
+/// Grouping these fields makes the ingest and finalization decisions
+/// indivisible: the bundle that is appended, the WAL cursor covering it, and
+/// the sequence number assigned to the resulting segment can never be
+/// observed out of step with each other.
+struct WriteState {
+    /// Current open segment accumulator.
+    open_segment: OpenSegment,
+    /// Estimated in-memory size of `open_segment`, refreshed on every append.
+    ///
+    /// Cached because `OpenSegment::estimated_size_bytes` is linear in the
+    /// number of stream accumulators, and the ingest path consults the size
+    /// on every bundle.
+    open_segment_bytes: u64,
+    /// Cursor representing all entries in the current open segment.
+    /// Updated after each WAL append, used to advance WAL after finalization.
+    cursor: WalConsumerCursor,
+    /// Next segment sequence number to assign.
+    next_seq: u64,
+    /// Exclusive upper bound of the sequence numbers durably reserved in the
+    /// sidecar. Finalization refreshes the reservation before allocating from
+    /// it, so `next_seq < reserved_through` holds whenever a segment file is
+    /// created.
+    reserved_through: u64,
+}
+
 /// Primary entry point for the persistence engine.
 ///
 /// The engine coordinates:
@@ -136,13 +188,32 @@ pub struct QuiverEngine {
     metrics: PersistenceMetrics,
     /// Write-ahead log writer (uses tokio mutex for async lock across await points).
     wal_writer: TokioMutex<WalWriter>,
-    /// Current open segment accumulator.
-    open_segment: Mutex<OpenSegment>,
-    /// Cursor representing all entries in the current open segment.
-    /// Updated after each WAL append, used to advance WAL after finalization.
-    segment_cursor: Mutex<WalConsumerCursor>,
-    /// Next segment sequence number to assign.
-    next_segment_seq: AtomicU64,
+    /// Serializes the segment finalization transaction.
+    ///
+    /// Finalization reserves sequence numbers, writes the segment file,
+    /// advances the WAL cursor, and registers the segment. Those steps are
+    /// ordered by segment sequence, so they run one transaction at a time.
+    /// The cost is amortized over a whole segment (32 MB or 5 s of ingest by
+    /// default), no-op flushes return before taking this lock, and the sole
+    /// production caller (`durable_buffer_processor`) already drives ingest,
+    /// flush, maintenance, and shutdown from a single task.
+    ///
+    /// Lock order: this lock is always taken before
+    /// [`write_state`](Self::write_state), which is never held across an
+    /// `await`.
+    segment_finalize_lock: TokioMutex<()>,
+    /// All state mutated by the write path, under one lock.
+    ///
+    /// The open accumulator, its WAL cursor, and the sequence allocator are a
+    /// single unit: a bundle is appended, its cursor recorded, and its
+    /// sequence assigned as one indivisible decision. Keeping them under one
+    /// lock removes any ordering question between them.
+    write_state: Mutex<WriteState>,
+    /// Count of segments this process has actually written to disk (recovered
+    /// at startup plus finalized since). Distinct from the sequence allocator,
+    /// which can advance past sequence numbers with no corresponding segment
+    /// file (see issue #4024).
+    segments_finalized: AtomicU64,
     /// Cumulative bytes written to WAL (never decreases, even after rotation/purge).
     cumulative_wal_bytes: AtomicU64,
     /// Cumulative bytes written to segments (never decreases, even after cleanup).
@@ -309,8 +380,24 @@ impl std::fmt::Debug for QuiverEngine {
         f.debug_struct("QuiverEngine")
             .field("config", &self.config)
             .field("metrics", &self.metrics)
-            .field("next_segment_seq", &self.next_segment_seq)
+            // `try_lock` keeps formatting from deadlocking if the engine is
+            // ever formatted from inside a `write_state` critical section.
+            .field(
+                "next_segment_seq",
+                &self.write_state.try_lock().map(|state| state.next_seq),
+            )
             .finish_non_exhaustive()
+    }
+}
+
+/// Converts a subscriber-layer error into a [`SegmentError`], preserving the
+/// path and [`std::io::ErrorKind`] when the source is a segment I/O failure.
+///
+/// Other variants carry no I/O source, so they are flattened to a message.
+fn segment_error_from_subscriber(e: SubscriberError) -> SegmentError {
+    match e {
+        SubscriberError::SegmentIo { path, source } => SegmentError::io(path, source),
+        other => SegmentError::io_no_path(std::io::Error::other(other.to_string())),
     }
 }
 
@@ -441,10 +528,53 @@ impl QuiverEngine {
         let mut deleted_during_scan = Vec::new();
         let mut startup_expired = RetentionLossCounts::default();
         let startup_expired_items_by_shape = HashMap::new();
+        let recovered_segments;
         match segment_store.scan_existing_with_max_age(config.retention.max_age) {
             Ok(scan_result) => {
+                // A sidecar that is present but unverifiable -- unreadable,
+                // or readable but failing validation -- may hold a higher
+                // floor than any other source. Continuing would risk
+                // reallocating a sequence number that is already in use, which
+                // silently suppresses new data (issue #4024), so refuse to
+                // open instead. Only a *missing* sidecar is benign.
+                if scan_result.seq_sidecar_unreadable {
+                    let path = segment_store.seq_sidecar_path();
+                    otel_error!(
+                        "quiver.engine.init",
+                        path = %path.display(),
+                        error_type = "io",
+                        reason = "seq_sidecar_unreadable",
+                        message = "cannot verify the segment sequence floor, \
+                                   refusing to open; remove the sidecar only \
+                                   if sequence reuse is acceptable",
+                    );
+                    rollback_startup_budget(&budget, &wal_writer, &segment_store);
+                    return Err(SegmentError::io(
+                        path,
+                        std::io::Error::other("unverifiable segment sequence sidecar"),
+                    )
+                    .into());
+                }
                 if let Some(highest) = scan_result.highest_seen {
-                    next_segment_seq = highest.raw() + 1;
+                    let Some(next_seq) = highest.raw().checked_add(1) else {
+                        otel_error!(
+                            "quiver.engine.init",
+                            next_seq = highest.raw(),
+                            reason = "sequence_space_exhausted",
+                            message = "segment sequence space exhausted at startup",
+                        );
+                        rollback_startup_budget(&budget, &wal_writer, &segment_store);
+                        return Err(QuiverError::SegmentSequenceExhausted {
+                            next_seq: highest.raw(),
+                        });
+                    };
+                    next_segment_seq = next_seq;
+                }
+                // The sidecar counter survives deletion of all segment files
+                // (e.g. after cleanup), so it must never be overridden by a
+                // lower filename-derived floor.
+                if let Some(persisted) = scan_result.persisted_next_seq {
+                    next_segment_seq = next_segment_seq.max(persisted);
                 }
 
                 if !scan_result.found.is_empty() {
@@ -462,6 +592,12 @@ impl QuiverEngine {
                         next_segment_seq,
                     );
                 }
+                // Both groups were actually written to disk by a previous
+                // run: `found` are still present, `deleted` were removed by
+                // this scan's age-based expiry. Counted before `deleted` is
+                // consumed below.
+                recovered_segments =
+                    scan_result.found.len() as u64 + scan_result.deleted.len() as u64;
                 for (seq, bytes) in scan_result.deleted {
                     startup_expired.segments += 1;
                     startup_expired.reclaimed_bytes += bytes;
@@ -469,27 +605,40 @@ impl QuiverEngine {
                 }
             }
             Err(e) => {
+                // A scan failure means neither the filename-derived floor nor
+                // the sidecar floor is known. Continuing with an empty store
+                // would use next_segment_seq = 0, which could reallocate a
+                // sequence number already in use and silently suppress new
+                // data (issue #4024), so refuse to open instead.
                 otel_error!(
                     "quiver.segment.scan",
                     error = %e,
                     error_type = "io",
-                    message = "continuing with empty store, previously finalized data may be inaccessible",
+                    message = "cannot verify the segment sequence floor, \
+                               refusing to open",
                 );
+                rollback_startup_budget(&budget, &wal_writer, &segment_store);
+                return Err(segment_error_from_subscriber(e).into());
             }
         }
 
         // Create subscriber registry with segment store as provider
         let registry_config = RegistryConfig::new(&config.data_dir);
-        let registry =
-            SubscriberRegistry::open(registry_config, segment_store.clone()).map_err(|e| {
+        let registry = match SubscriberRegistry::open(registry_config, segment_store.clone()) {
+            Ok(registry) => registry,
+            Err(e) => {
                 otel_error!(
                     "quiver.engine.init",
                     error = %e,
                     error_type = "io",
                     reason = "registry_open_failed",
                 );
-                SegmentError::io(config.data_dir.clone(), std::io::Error::other(e))
-            })?;
+                rollback_startup_budget(&budget, &wal_writer, &segment_store);
+                return Err(
+                    SegmentError::io(config.data_dir.clone(), std::io::Error::other(e)).into(),
+                );
+            }
+        };
 
         // If any segments were deleted during scan, force-complete them in the
         // registry so that subscribers restored from progress.json don't try to
@@ -498,15 +647,44 @@ impl QuiverEngine {
             registry.force_complete_segments(&deleted_during_scan);
         }
 
+        // Restored subscriber progress is a third record of sequence numbers
+        // already in use. It matters when the sidecar is unavailable (notably
+        // on the first start after upgrading, or if the segments directory was
+        // cleared wholesale), since progress files live outside that directory
+        // and survive independently.
+        if let Some(highest) = registry.highest_tracked_segment_any() {
+            let Some(next_seq) = highest.raw().checked_add(1) else {
+                otel_error!(
+                    "quiver.engine.init",
+                    next_seq = highest.raw(),
+                    reason = "sequence_space_exhausted",
+                    message = "segment sequence space exhausted at startup",
+                );
+                rollback_startup_budget(&budget, &wal_writer, &segment_store);
+                return Err(QuiverError::SegmentSequenceExhausted {
+                    next_seq: highest.raw(),
+                });
+            };
+            next_segment_seq = next_segment_seq.max(next_seq);
+        }
+
         // Start with empty open segment and default cursor
         // WAL replay will populate these through the normal ingest path
         let engine = Arc::new(Self {
             config,
             metrics: PersistenceMetrics::new(),
             wal_writer: TokioMutex::new(wal_writer),
-            open_segment: Mutex::new(OpenSegment::new()),
-            segment_cursor: Mutex::new(WalConsumerCursor::default()),
-            next_segment_seq: AtomicU64::new(next_segment_seq),
+            segment_finalize_lock: TokioMutex::new(()),
+            write_state: Mutex::new(WriteState {
+                open_segment: OpenSegment::new(),
+                open_segment_bytes: 0,
+                cursor: WalConsumerCursor::default(),
+                next_seq: next_segment_seq,
+                // Nothing is reserved yet: the recovered floor is exactly the
+                // next usable sequence, so the first finalization reserves.
+                reserved_through: next_segment_seq,
+            }),
+            segments_finalized: AtomicU64::new(recovered_segments),
             cumulative_wal_bytes: AtomicU64::new(0),
             cumulative_segment_bytes: AtomicU64::new(0),
             force_dropped_segments: AtomicU64::new(0),
@@ -538,15 +716,25 @@ impl QuiverEngine {
 
         // Apply startup max-age retention only after persisted subscriber
         // progress is loaded, so logical loss excludes already-resolved bundles.
-        let _ = engine.cleanup_expired_segments().map_err(|e| {
-            SegmentError::io(engine.config.data_dir.clone(), std::io::Error::other(e))
-        })?;
+        if let Err(e) = engine.cleanup_expired_segments() {
+            engine.rollback_startup_budget().await;
+            return Err(
+                SegmentError::io(engine.config.data_dir.clone(), std::io::Error::other(e)).into(),
+            );
+        }
 
         // Replay WAL entries that weren't finalized to segments before shutdown/crash
         // This uses the same ingest path as live ingestion (minus WAL writes)
-        let replayed = engine
+        let replayed = match engine
             .replay_wal(wal_item_counter.as_ref(), wal_byte_counter.as_ref())
-            .await?;
+            .await
+        {
+            Ok(replayed) => replayed,
+            Err(e) => {
+                engine.rollback_startup_budget().await;
+                return Err(e);
+            }
+        };
         if replayed > 0 {
             otel_info!("quiver.wal.replay", replayed,);
         }
@@ -591,8 +779,13 @@ impl QuiverEngine {
     /// This is a monotonically increasing counter, unlike `segment_store().segment_count()`
     /// which only shows currently-loaded segments (after cleanup, count decreases).
     /// Useful for tracking total segments written during a test run.
+    ///
+    /// Counts only segments that were actually written to disk; it is
+    /// distinct from the internal sequence allocation floor, which may
+    /// advance past sequence numbers that were reserved but never written
+    /// (see issue #4024).
     pub fn total_segments_written(&self) -> u64 {
-        self.next_segment_seq.load(Ordering::Relaxed)
+        self.segments_finalized.load(Ordering::Relaxed)
     }
 
     /// Returns the total number of segments that have been force-dropped
@@ -694,7 +887,8 @@ impl QuiverEngine {
     /// snapshot is useful for telemetry collection and observability without
     /// blocking ingest operations for long.
     pub fn open_segment_bundle_summaries(&self) -> Vec<super::segment::OpenSegmentBundleSummary> {
-        let open_seg = self.open_segment.lock();
+        let state = self.write_state.lock();
+        let open_seg = &state.open_segment;
         open_seg.snapshot_bundles()
     }
 
@@ -724,7 +918,7 @@ impl QuiverEngine {
     ///
     /// - WAL appends are serialized (`TokioMutex`), so entries are added
     ///   one at a time.
-    /// - Finalization is serialized (`Mutex<OpenSegment>`), so at most one
+    /// - Finalization is serialized (`segment_finalize_lock`), so at most one
     ///   segment writes to disk at a time.
     /// - The `hard_cap - soft_cap = segment_target_size` headroom absorbs
     ///   the overshoot from racing callers, since individual WAL entries
@@ -737,11 +931,59 @@ impl QuiverEngine {
     /// # Errors
     ///
     /// Returns an error if:
+    /// - The open segment could not be finalized and has grown past its
+    ///   in-memory limit (`OpenSegmentAtCapacity`)
     /// - The disk budget is over the soft cap (`StorageAtCapacity`)
     /// - WAL append fails
     /// - Segment finalization fails
+    ///
+    /// # Behavior when finalization fails
+    ///
+    /// A finalization failure is always reported to the caller, but what
+    /// happens to the accumulated bundles depends on how far finalization got:
+    ///
+    /// - Failing to reserve sequence numbers happens before anything is
+    ///   written, so the open segment is left intact and a later successful
+    ///   finalization writes it.
+    /// - Failing to write the segment file consumes the accumulator, so those
+    ///   bundles are lost unless [`DurabilityMode::Wal`] is enabled, in which
+    ///   case they are recovered by WAL replay on restart.
+    ///
+    /// Ingestion is rejected with `OpenSegmentAtCapacity` once retained data
+    /// reaches its limit, so a persistent reservation failure applies
+    /// backpressure instead of growing memory without bound.
+    ///
+    /// # Duplicates
+    ///
+    /// An error is returned even when the bundle was retained, because the
+    /// engine cannot promise the bundle is durable yet and reporting success
+    /// would risk silent loss under [`DurabilityMode::SegmentOnly`]. Callers
+    /// that retry (as the durable buffer processor does) may therefore produce
+    /// duplicates if the retained data is later written successfully. Quiver
+    /// is at-least-once by design; downstream consumers must tolerate
+    /// duplicate bundles.
     pub async fn ingest<B: RecordBundle>(&self, bundle: &B) -> Result<()> {
         self.metrics.record_ingest_attempt();
+
+        // Step 0a: Reject if the open segment has grown past its in-memory
+        // limit, which means finalization is failing (see
+        // `MAX_OPEN_SEGMENT_SIZE_MULTIPLE`). Checked before the WAL append so
+        // a rejected bundle is not left in the WAL to be replayed later.
+        // Like the budget gate below this is a best-effort watermark, not a
+        // barrier: racing callers may each add one bundle past the limit.
+        let open_segment_limit = self
+            .config
+            .segment
+            .target_size_bytes
+            .get()
+            .saturating_mul(MAX_OPEN_SEGMENT_SIZE_MULTIPLE);
+        let accumulated_bytes = self.write_state.lock().open_segment_bytes;
+        if accumulated_bytes >= open_segment_limit {
+            return Err(QuiverError::OpenSegmentAtCapacity {
+                accumulated_bytes,
+                limit: open_segment_limit,
+            });
+        }
 
         // Step 0: Check budget watermark before doing any work.
         // This is a best-effort gate -- see "Budget gating" in the doc comment.
@@ -810,15 +1052,16 @@ impl QuiverEngine {
         bundle: &B,
         cursor: Option<WalConsumerCursor>,
     ) -> Result<()> {
-        // Update cursor if provided (tracks WAL position for segment finalization)
-        if let Some(c) = cursor {
-            let mut cp = self.segment_cursor.lock();
-            *cp = c;
-        }
-
-        // Append to open segment accumulator
+        // Record the WAL cursor and append to the open segment as one
+        // indivisible step: the cursor must cover exactly the bundles the
+        // accumulator holds, or finalization could advance the WAL past
+        // records that were never written to a segment.
         let should_finalize = {
-            let mut segment = self.open_segment.lock();
+            let mut state = self.write_state.lock();
+            if let Some(c) = cursor {
+                state.cursor = c;
+            }
+            let segment = &mut state.open_segment;
             let _manifest_entry = segment.append(bundle)?;
 
             // Check if we should finalize based on size threshold
@@ -837,6 +1080,9 @@ impl QuiverEngine {
             let stream_count = segment.stream_count();
             let max_streams = self.config.segment.max_stream_count as usize;
             let streams_exceeded = stream_count >= max_streams;
+
+            // Refresh the cached size the ingest capacity gate reads.
+            state.open_segment_bytes = estimated_size as u64;
 
             size_exceeded || time_exceeded || streams_exceeded
         };
@@ -1090,8 +1336,7 @@ impl QuiverEngine {
                     // Advance cursor past this entry so it won't be retried.
                     let cursor = WalConsumerCursor::after(&entry);
                     {
-                        let mut cp = self.segment_cursor.lock();
-                        *cp = cursor;
+                        self.write_state.lock().cursor = cursor;
                     }
                     continue;
                 }
@@ -1111,8 +1356,7 @@ impl QuiverEngine {
                     // Still update cursor past this entry so we don't retry it
                     let cursor = WalConsumerCursor::after(&entry);
                     {
-                        let mut cp = self.segment_cursor.lock();
-                        *cp = cursor;
+                        self.write_state.lock().cursor = cursor;
                     }
                     continue;
                 }
@@ -1181,7 +1425,7 @@ impl QuiverEngine {
             // If we only skipped entries (nothing replayed), persist the cursor
             // so subsequent restarts don't re-scan the same expired WAL tail.
             if replayed_count == 0 {
-                let cursor = *self.segment_cursor.lock();
+                let cursor = self.write_state.lock().cursor;
                 let mut wal_writer = self.wal_writer.lock().await;
                 wal_writer.persist_cursor(&cursor).await?;
             }
@@ -1299,35 +1543,88 @@ impl QuiverEngine {
     ///
     /// Uses async I/O for segment writing and WAL cursor persistence.
     ///
+    /// Ordering: the sequence floor is reserved durably *before* a sequence
+    /// number is allocated and a file is created, so a sidecar failure never
+    /// leaves a segment on disk whose sequence could be reallocated after a
+    /// restart (issue #4024). The caller simply sees an error and the open
+    /// segment is left intact for the next attempt.
+    ///
     /// Budget accounting: the segment is written first, then its size is
     /// recorded via `budget.add()`. The `soft_cap` (= `hard_cap - segment_size`)
     /// guarantees that even if `used` was at the soft cap before finalization,
     /// the resulting `used` won't exceed `hard_cap`.
     async fn finalize_segment_impl(&self) -> Result<()> {
-        // Check if there's anything to finalize
-        {
-            let segment_guard = self.open_segment.lock();
-            if segment_guard.is_empty() {
-                return Ok(());
-            }
-        }
-
-        // Swap out the segment and cursor
-        let (segment, cursor) = {
-            let mut segment_guard = self.open_segment.lock();
-            let mut cursor_guard = self.segment_cursor.lock();
-            let segment = std::mem::take(&mut *segment_guard);
-            let cursor = std::mem::take(&mut *cursor_guard);
-            (segment, cursor)
-        };
-
-        // Double-check segment isn't empty (race condition guard)
-        if segment.is_empty() {
+        // Nothing to finalize: return without taking the transaction lock.
+        // Periodic flushes hit this path most of the time, so keeping them
+        // off the lock avoids needless contention with a finalization that
+        // is writing a segment. Re-checked under the lock below, which is
+        // what actually decides whether this call finalizes anything.
+        if self.write_state.lock().open_segment.is_empty() {
             return Ok(());
         }
 
-        // Assign a segment sequence number
-        let seq = SegmentSeq::new(self.next_segment_seq.fetch_add(1, Ordering::SeqCst));
+        let _finalize_guard = self.segment_finalize_lock.lock().await;
+
+        // Refresh the durable sequence reservation if it is exhausted. This
+        // happens before anything is written, and the transaction lock keeps
+        // any other finalization from consuming the reservation in between.
+        let reservation = {
+            let state = self.write_state.lock();
+            if state.open_segment.is_empty() {
+                return Ok(());
+            }
+            if state.next_seq >= state.reserved_through {
+                Some(state.next_seq.checked_add(SEQ_RESERVATION_BATCH).ok_or(
+                    QuiverError::SegmentSequenceExhausted {
+                        next_seq: state.next_seq,
+                    },
+                )?)
+            } else {
+                None
+            }
+        };
+        if let Some(reserve_through) = reservation {
+            self.segment_store
+                .persist_next_seq(reserve_through)
+                .await
+                .map_err(|e| {
+                    self.metrics.record_flush_failure();
+                    let sidecar_path = self.segment_store.seq_sidecar_path();
+                    otel_error!(
+                        "quiver.segment.flush",
+                        path = %sidecar_path.display(),
+                        error = %e,
+                        error_type = "io",
+                        message = "failed to reserve segment sequence numbers, \
+                                   nothing was written, open segment retained",
+                    );
+                    segment_error_from_subscriber(e)
+                })?;
+            self.write_state.lock().reserved_through = reserve_through;
+        }
+
+        // Swap out the segment and cursor and allocate the segment's sequence
+        // number from the reservation, all in one critical section.
+        let (segment, cursor, seq) = {
+            let mut state = self.write_state.lock();
+            if state.open_segment.is_empty() {
+                return Ok(());
+            }
+            // Enforced, not asserted: allocating a sequence number that was
+            // not durably reserved is the reuse bug this design exists to
+            // prevent, so the check must hold in release builds too.
+            if state.next_seq >= state.reserved_through {
+                return Err(QuiverError::SegmentSequenceExhausted {
+                    next_seq: state.next_seq,
+                });
+            }
+            let seq = SegmentSeq::new(state.next_seq);
+            state.next_seq += 1;
+            let segment = std::mem::take(&mut state.open_segment);
+            let cursor = std::mem::take(&mut state.cursor);
+            state.open_segment_bytes = 0;
+            (segment, cursor, seq)
+        };
 
         // Write the segment file (streaming serialization - no intermediate buffer)
         let segment_path = self.segment_path(seq);
@@ -1386,6 +1683,10 @@ impl QuiverEngine {
 
         otel_debug!("quiver.segment.flush", segment = seq.raw(), bytes_written,);
 
+        // Counts the file as written now that it is durably on disk
+        // (see `total_segments_written`).
+        let _ = self.segments_finalized.fetch_add(1, Ordering::Relaxed);
+
         // Track cumulative bytes (never decreases, for accurate throughput measurement)
         let _ = self
             .cumulative_segment_bytes
@@ -1395,7 +1696,7 @@ impl QuiverEngine {
         // This is safe: the soft_cap reserves headroom for exactly this.
         self.budget.add(bytes_written);
 
-        // Step 5: Advance WAL cursor now that segment is durable
+        // Advance WAL cursor now that segment is durable
         {
             let mut wal_writer = self.wal_writer.lock().await;
             wal_writer.persist_cursor(&cursor).await.map_err(|e| {
@@ -1410,7 +1711,7 @@ impl QuiverEngine {
             })?;
         }
 
-        // Step 6: Register segment with store (triggers subscriber notification).
+        // Register segment with store (triggers subscriber notification).
         // Budget was already recorded above, so register_segment will skip
         // duplicate accounting (the file size was already added).
         let _ = self.segment_store.register_new_segment(seq);
@@ -1984,16 +2285,62 @@ impl QuiverEngine {
         segment_dir(&self.config).join(format!("{}.qseg", seq.to_filename_component()))
     }
 
+    /// Returns the number of bundles currently held in the open segment.
+    #[cfg(test)]
+    pub(crate) fn open_segment_bundle_count(&self) -> usize {
+        self.write_state.lock().open_segment.bundle_count()
+    }
+
+    /// Returns the estimated in-memory size of the open segment.
+    #[cfg(test)]
+    pub(crate) fn open_segment_estimated_size_bytes(&self) -> u64 {
+        self.write_state.lock().open_segment.estimated_size_bytes() as u64
+    }
+
+    /// Returns the next sequence number that finalization will allocate.
+    #[cfg(test)]
+    pub(crate) fn next_segment_seq(&self) -> u64 {
+        self.write_state.lock().next_seq
+    }
+
+    /// Returns the exclusive upper bound of the durable sequence reservation.
+    #[cfg(test)]
+    pub(crate) fn reserved_through(&self) -> u64 {
+        self.write_state.lock().reserved_through
+    }
+
     /// Subtracts `offset` from the open segment's `opened_at` timestamp,
     /// making it appear older for time-based finalization tests.
     #[cfg(test)]
     pub(crate) fn test_backdate_open_segment(&self, offset: Duration) {
-        self.open_segment.lock().test_backdate_opened_at(offset);
+        self.write_state
+            .lock()
+            .open_segment
+            .test_backdate_opened_at(offset);
+    }
+
+    /// Removes disk bytes charged during a startup that will return an error.
+    async fn rollback_startup_budget(&self) {
+        let wal_writer = self.wal_writer.lock().await;
+        rollback_startup_budget(&self.budget, &wal_writer, &self.segment_store);
     }
 }
 
 fn segment_dir(config: &QuiverConfig) -> PathBuf {
     config.data_dir.join("segments")
+}
+
+/// Removes bytes charged while opening an engine that will not be returned.
+fn rollback_startup_budget(
+    budget: &crate::budget::DiskBudget,
+    wal_writer: &WalWriter,
+    segment_store: &SegmentStore,
+) {
+    budget.remove(
+        wal_writer
+            .tracked_disk_bytes()
+            .saturating_add(segment_store.tracked_disk_bytes()),
+    );
 }
 
 async fn initialize_wal_writer(
@@ -5742,6 +6089,1202 @@ mod tests {
         }
     }
 
+    /// Scenario: reproduction of issue #4024. A subscriber acks all delivered
+    /// bundles, progress is persisted, and `cleanup_completed_segments` then
+    /// removes every segment file (the prior startup-deletion test only
+    /// covers files removed during *this* run's scan, not files already
+    /// deleted by a previous run). The store restarts with zero segment
+    /// files but the subscriber's persisted progress still references the
+    /// reused sequence number.
+    /// Guarantees: post-restart data written under the reused sequence
+    /// number is still delivered, i.e. segment sequence numbers are never
+    /// reused once allocated, regardless of file/progress cleanup.
+    #[tokio::test]
+    async fn reused_segment_seq_is_not_skipped_by_restored_progress() {
+        let dir = tempdir().expect("tempdir");
+        let sub_id = SubscriberId::new("s1").expect("id");
+
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes: NonZeroU64::new(100).unwrap(),
+                ..Default::default()
+            })
+            .build()
+            .expect("config");
+
+        // First run: ingest, ack everything, persist progress, delete all segments.
+        {
+            let engine = QuiverEngine::open(config.clone(), test_budget())
+                .await
+                .expect("engine");
+            engine
+                .register_subscriber(sub_id.clone())
+                .expect("register");
+            engine.activate_subscriber(&sub_id).expect("activate");
+
+            engine
+                .ingest(&DummyBundle::with_rows(50))
+                .await
+                .expect("ingest");
+            engine.flush().await.expect("flush");
+
+            let mut acked = 0;
+            while let Some(h) = engine.poll_next_bundle(&sub_id).expect("poll") {
+                h.ack();
+                acked += 1;
+            }
+            assert!(acked > 0);
+            let _ = engine.flush_progress().await.expect("flush progress");
+
+            assert!(engine.cleanup_completed_segments().expect("cleanup") > 0);
+            assert_eq!(engine.segment_store().segment_count(), 0);
+        }
+
+        // Restart: no segment files remain, but subscriber progress does.
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine");
+        engine.activate_subscriber(&sub_id).expect("activate");
+
+        engine
+            .ingest(&DummyBundle::with_rows(50))
+            .await
+            .expect("ingest");
+        engine.flush().await.expect("flush");
+
+        let mut delivered = 0;
+        while let Some(h) = engine.poll_next_bundle(&sub_id).expect("poll") {
+            h.ack();
+            delivered += 1;
+        }
+        assert!(delivered > 0, "post-restart data must be delivered");
+    }
+
+    /// Scenario: a sequence-sidecar I/O failure is converted into the
+    /// `SegmentError` returned by segment finalization.
+    /// Guarantees: the sidecar path and the underlying `io::ErrorKind` survive
+    /// the conversion, so operators can see which file failed and callers can
+    /// still match on the kind rather than parsing a flattened string.
+    #[test]
+    fn subscriber_segment_io_error_preserves_path_and_kind() {
+        let path = PathBuf::from("/tmp/quiver.segment.seq");
+        let source = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
+
+        let converted =
+            segment_error_from_subscriber(SubscriberError::segment_io(path.clone(), source));
+
+        match converted {
+            SegmentError::Io {
+                path: Some(actual),
+                source,
+            } => {
+                assert_eq!(actual, path);
+                assert_eq!(source.kind(), std::io::ErrorKind::PermissionDenied);
+            }
+            other => panic!("expected Io with a path, got {other:?}"),
+        }
+    }
+
+    /// Scenario: in `SegmentOnly` mode (no WAL), the sequence sidecar becomes
+    /// unwritable after the engine is open (a directory is placed at its
+    /// path) and a finalization is triggered.
+    /// Guarantees: the reservation is refreshed before any sequence number is
+    /// used, so the failure leaves no segment file on disk and no data is
+    /// lost: the bundles stay in the open segment and are delivered once the
+    /// sidecar is writable again. A sequence number is never assigned to a
+    /// file whose floor is not already durable (issue #4024).
+    #[tokio::test]
+    async fn finalize_writes_no_segment_when_sequence_reservation_fails() {
+        let dir = tempdir().expect("tempdir");
+        let sub_id = SubscriberId::new("s1").expect("id");
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes: NonZeroU64::new(100).unwrap(),
+                ..Default::default()
+            })
+            .durability(DurabilityMode::SegmentOnly)
+            .build()
+            .expect("config");
+
+        let segment_dir = dir.path().join("segments");
+        let blocker = segment_dir.join(crate::segment_store::SEQ_SIDECAR_FILENAME);
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine");
+        engine
+            .register_subscriber(sub_id.clone())
+            .expect("register subscriber");
+        engine.activate_subscriber(&sub_id).expect("activate");
+
+        // No sidecar exists yet, so open succeeded. Make the sidecar path
+        // unwritable now that the engine is running.
+        fs::create_dir(&blocker).expect("create dir at sidecar path");
+
+        // Finalization can be triggered by the size threshold during ingest
+        // or by the explicit flush; either way it must fail.
+        let ingest_result = engine.ingest(&DummyBundle::with_rows(50)).await;
+        let failed = if ingest_result.is_err() {
+            true
+        } else {
+            engine.flush().await.is_err()
+        };
+        assert!(
+            failed,
+            "finalization must fail when sequence numbers cannot be reserved"
+        );
+
+        let segment_files = fs::read_dir(&segment_dir)
+            .expect("read segments dir")
+            .filter_map(std::result::Result::ok)
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "qseg"))
+            .count();
+        assert_eq!(
+            segment_files, 0,
+            "no segment file may exist without a durable sequence floor"
+        );
+        assert!(
+            engine.open_segment_bundle_count() > 0,
+            "the bundles must be retained in the open segment for a retry"
+        );
+        assert_eq!(
+            engine.next_segment_seq(),
+            engine.reserved_through(),
+            "a failed reservation must not hand out sequence numbers"
+        );
+
+        // The failure is transient: once the sidecar is writable the same
+        // data finalizes and is delivered, with no restart required.
+        fs::remove_dir(&blocker).expect("clear sidecar path");
+        engine.flush().await.expect("flush after the fault clears");
+        let delivered = engine
+            .poll_next_bundle(&sub_id)
+            .expect("poll")
+            .expect("retained bundles must be delivered after a successful retry");
+        delivered.ack();
+    }
+
+    /// Scenario: a `SegmentOnly` flush is paused while reserving sequence
+    /// numbers, another bundle is ingested, and the reservation then fails.
+    /// Guarantees: admission during the in-flight flush appends to the same
+    /// unswapped open segment, so both accepted bundles remain available and
+    /// are delivered after the sidecar failure clears.
+    #[tokio::test]
+    async fn ingest_during_failed_sequence_reservation_is_retained() {
+        let dir = tempdir().expect("tempdir");
+        let sub_id = SubscriberId::new("s1").expect("id");
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes: NonZeroU64::new(1024 * 1024).expect("non-zero"),
+                ..Default::default()
+            })
+            .durability(DurabilityMode::SegmentOnly)
+            .build()
+            .expect("config");
+
+        let segment_dir = dir.path().join("segments");
+        let blocker = segment_dir.join(crate::segment_store::SEQ_SIDECAR_FILENAME);
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine");
+        engine
+            .register_subscriber(sub_id.clone())
+            .expect("register subscriber");
+        engine.activate_subscriber(&sub_id).expect("activate");
+        engine
+            .ingest(&DummyBundle::with_rows(1))
+            .await
+            .expect("initial ingest");
+
+        let (persist_entered, persist_resume) = engine.segment_store().pause_next_seq_persist();
+        let flush = async { engine.flush().await };
+        let concurrent_ingest = async {
+            persist_entered.notified().await;
+            let result = engine.ingest(&DummyBundle::with_rows(1)).await;
+            fs::create_dir(&blocker).expect("block sidecar path");
+            persist_resume.notify_one();
+            result
+        };
+
+        let (flush_result, ingest_result) = tokio::join!(flush, concurrent_ingest);
+        ingest_result.expect("concurrent ingest remains accepted");
+        assert!(
+            flush_result.is_err(),
+            "flush must fail after the sidecar path is blocked"
+        );
+        assert_eq!(
+            engine.open_segment_bundle_count(),
+            2,
+            "both bundles must remain in the unswapped open segment"
+        );
+        assert!(
+            engine.segment_store().segment_sequences().is_empty(),
+            "no segment may be written when sequence reservation fails"
+        );
+
+        fs::remove_dir(&blocker).expect("clear sidecar path");
+        engine.flush().await.expect("retry flush");
+
+        let mut delivered = 0;
+        while let Some(handle) = engine.poll_next_bundle(&sub_id).expect("poll") {
+            handle.ack();
+            delivered += 1;
+        }
+        assert_eq!(
+            delivered, 2,
+            "both accepted bundles must be delivered after retry"
+        );
+    }
+
+    /// Scenario: the same sidecar-unwritable failure occurs under
+    /// `DurabilityMode::Wal`, and the engine restarts without ever completing
+    /// the finalization.
+    /// Guarantees: the WAL cursor is advanced only by a completed
+    /// finalization, so bundles held in the open segment when the reservation
+    /// failed are still covered by the WAL and replay delivers them after
+    /// restart.
+    #[tokio::test]
+    async fn wal_mode_replays_bundles_when_sequence_reservation_fails() {
+        let dir = tempdir().expect("tempdir");
+        let sub_id = SubscriberId::new("s1").expect("id");
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes: NonZeroU64::new(100).unwrap(),
+                ..Default::default()
+            })
+            .durability(DurabilityMode::Wal)
+            .build()
+            .expect("config");
+
+        let segment_dir = dir.path().join("segments");
+        let blocker = segment_dir.join(crate::segment_store::SEQ_SIDECAR_FILENAME);
+        {
+            let engine = QuiverEngine::open(config.clone(), test_budget())
+                .await
+                .expect("engine");
+            engine
+                .register_subscriber(sub_id.clone())
+                .expect("register subscriber");
+            engine.activate_subscriber(&sub_id).expect("activate");
+
+            fs::create_dir(&blocker).expect("create dir at sidecar path");
+
+            let ingest_result = engine.ingest(&DummyBundle::with_rows(50)).await;
+            let failed = if ingest_result.is_err() {
+                true
+            } else {
+                engine.flush().await.is_err()
+            };
+            assert!(
+                failed,
+                "finalization must fail when sequence numbers cannot be reserved"
+            );
+            assert!(
+                engine.poll_next_bundle(&sub_id).expect("poll").is_none(),
+                "nothing may become visible when finalization failed"
+            );
+        }
+
+        fs::remove_dir(&blocker).expect("clear sidecar path");
+
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("reopen");
+        // Subscribers are re-registered by the application on startup.
+        let _ = engine.register_subscriber(sub_id.clone());
+        engine.activate_subscriber(&sub_id).expect("activate");
+        engine.flush().await.expect("flush replayed bundles");
+        let mut delivered = 0usize;
+        while let Some(handle) = engine.poll_next_bundle(&sub_id).expect("poll") {
+            handle.ack();
+            delivered += 1;
+        }
+        assert!(
+            delivered > 0,
+            "bundles held when the reservation failed must be replayed from the WAL"
+        );
+    }
+
+    /// Scenario: the engine opens against a data directory whose sequence
+    /// sidecar exists but cannot be read (a directory occupies its path).
+    /// Guarantees: `open` fails instead of falling back to a lower floor,
+    /// which could reallocate an in-use sequence number and silently suppress
+    /// newly ingested data (issue #4024).
+    #[tokio::test]
+    async fn open_fails_when_seq_sidecar_is_unreadable() {
+        let dir = tempdir().expect("tempdir");
+        let segment_dir = dir.path().join("segments");
+        fs::create_dir_all(&segment_dir).expect("create segments dir");
+        // A directory at the sidecar path fails `read` for every user,
+        // including root, so this is deterministic in CI.
+        fs::create_dir(segment_dir.join(crate::segment_store::SEQ_SIDECAR_FILENAME))
+            .expect("create dir at sidecar path");
+
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .build()
+            .expect("config");
+
+        let budget = test_budget();
+        let result = QuiverEngine::open(config, budget.clone()).await;
+        assert!(
+            result.is_err(),
+            "open must fail closed when the sequence floor cannot be verified"
+        );
+        assert_eq!(
+            budget.used(),
+            0,
+            "failed startup must roll back WAL bytes charged during initialization"
+        );
+    }
+
+    /// Scenario: the engine opens against a data directory whose sequence
+    /// sidecar exists and is readable but fails validation (its CRC was
+    /// damaged), so the floor it recorded cannot be recovered.
+    /// Guarantees: a corrupt sidecar fails closed exactly like an unreadable
+    /// one. Falling back to the filename and progress floors would reallocate
+    /// sequence numbers whenever those sources are lower -- for example after
+    /// retention deleted every segment file -- silently suppressing newly
+    /// ingested data (issue #4024).
+    #[tokio::test]
+    async fn open_fails_when_seq_sidecar_is_corrupt() {
+        let dir = tempdir().expect("tempdir");
+        let segment_dir = dir.path().join("segments");
+        fs::create_dir_all(&segment_dir).expect("create segments dir");
+        let store = SegmentStore::new(&segment_dir);
+        store.persist_next_seq(500).await.expect("persist floor");
+
+        let sidecar_path = segment_dir.join(crate::segment_store::SEQ_SIDECAR_FILENAME);
+        let mut bytes = fs::read(&sidecar_path).expect("read sidecar");
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0xFF;
+        fs::write(&sidecar_path, bytes).expect("corrupt sidecar");
+
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .build()
+            .expect("config");
+
+        let budget = test_budget();
+        let result = QuiverEngine::open(config, budget.clone()).await;
+        assert!(
+            result.is_err(),
+            "open must fail closed when the persisted sequence floor is corrupt"
+        );
+        assert_eq!(
+            budget.used(),
+            0,
+            "failed startup must roll back WAL bytes charged during initialization"
+        );
+    }
+
+    /// Scenario: the engine opens against a data directory containing a segment
+    /// file with sequence `u64::MAX`.
+    /// Guarantees: startup fails closed with `SegmentSequenceExhausted` instead
+    /// of overflowing sequence calculations.
+    #[tokio::test]
+    async fn open_fails_when_highest_seen_segment_seq_is_max() {
+        let dir = tempdir().expect("tempdir");
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes: NonZeroU64::new(100).expect("non-zero"),
+                ..Default::default()
+            })
+            .build()
+            .expect("config");
+
+        {
+            let engine = QuiverEngine::open(config.clone(), test_budget())
+                .await
+                .expect("seed engine");
+            engine
+                .ingest(&DummyBundle::with_rows(50))
+                .await
+                .expect("seed segment");
+            engine.flush().await.expect("flush seed segment");
+        }
+
+        let segment_dir = dir.path().join("segments");
+        let max_seq_file = segment_dir.join(format!(
+            "{}.qseg",
+            SegmentSeq::new(u64::MAX).to_filename_component()
+        ));
+        fs::write(&max_seq_file, b"corrupt").expect("write segment file");
+
+        let budget = test_budget();
+        let result = QuiverEngine::open(config, budget.clone()).await;
+        assert!(
+            matches!(result, Err(QuiverError::SegmentSequenceExhausted { next_seq }) if next_seq == u64::MAX),
+            "open must fail with SegmentSequenceExhausted when highest segment sequence is u64::MAX, got {result:?}"
+        );
+        assert_eq!(
+            budget.used(),
+            0,
+            "failed startup must roll back WAL and registered segment bytes"
+        );
+    }
+
+    /// Scenario: the engine opens against a data directory where restored
+    /// subscriber progress tracks a segment with sequence `u64::MAX`.
+    /// Guarantees: startup fails closed with `SegmentSequenceExhausted` instead
+    /// of overflowing sequence calculations.
+    #[tokio::test]
+    async fn open_fails_when_highest_tracked_subscriber_seq_is_max() {
+        let dir = tempdir().expect("tempdir");
+        let sub_id = SubscriberId::new("sub-max").expect("subscriber id");
+        let entry = crate::subscriber::SegmentProgressEntry::new(SegmentSeq::new(u64::MAX), 1);
+        crate::subscriber::write_progress_file(
+            dir.path(),
+            &sub_id,
+            SegmentSeq::new(u64::MAX),
+            &[entry],
+        )
+        .await
+        .expect("write progress file");
+
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .build()
+            .expect("config");
+
+        let budget = test_budget();
+        let result = QuiverEngine::open(config, budget.clone()).await;
+        assert!(
+            matches!(result, Err(QuiverError::SegmentSequenceExhausted { next_seq }) if next_seq == u64::MAX),
+            "open must fail with SegmentSequenceExhausted when subscriber progress tracks u64::MAX, got {result:?}"
+        );
+        assert_eq!(
+            budget.used(),
+            0,
+            "failed startup must roll back WAL and registered segment bytes"
+        );
+    }
+
+    /// Scenario: engine startup discovers a corrupt subscriber progress file
+    /// after WAL and segment files have been charged to a shared disk budget.
+    /// Guarantees: failing closed on the unverifiable progress floor removes
+    /// only the startup charges, so retrying with the same budget does not
+    /// inherit abandoned WAL or segment usage.
+    #[tokio::test]
+    async fn corrupt_subscriber_progress_rolls_back_startup_budget() {
+        let dir = tempdir().expect("tempdir");
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes: NonZeroU64::new(100).expect("non-zero"),
+                ..Default::default()
+            })
+            .build()
+            .expect("config");
+
+        {
+            let engine = QuiverEngine::open(config.clone(), test_budget())
+                .await
+                .expect("seed engine");
+            engine
+                .ingest(&DummyBundle::with_rows(50))
+                .await
+                .expect("seed segment");
+            engine.flush().await.expect("flush seed segment");
+        }
+
+        let sub_id = SubscriberId::new("corrupt-progress").expect("subscriber id");
+        fs::write(
+            crate::subscriber::progress_file_path(dir.path(), &sub_id),
+            b"corrupt",
+        )
+        .expect("write corrupt progress");
+
+        let budget = test_budget();
+        let baseline_usage = 1234;
+        budget.add(baseline_usage);
+        let result = QuiverEngine::open(config, budget.clone()).await;
+
+        assert!(
+            result.is_err(),
+            "open must fail closed when subscriber progress is corrupt"
+        );
+        assert_eq!(
+            budget.used(),
+            baseline_usage,
+            "failed startup must preserve only unrelated shared-budget usage"
+        );
+    }
+
+    /// Scenario: WAL durability is enabled and finalization is failing, so the
+    /// open segment fills up and ingestion is rejected with
+    /// `OpenSegmentAtCapacity`.
+    /// Guarantees: the rejected bundle leaves no WAL entry behind. If the
+    /// capacity gate ran after the WAL append, a bundle the caller was told to
+    /// retry would still be replayed on restart, duplicating data that the
+    /// engine explicitly refused.
+    #[tokio::test]
+    async fn ingest_rejected_at_open_segment_capacity_writes_no_wal_entry() {
+        let dir = tempdir().expect("tempdir");
+        let target_size_bytes = NonZeroU64::new(2048).expect("non-zero");
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes,
+                ..Default::default()
+            })
+            .durability(DurabilityMode::Wal)
+            .build()
+            .expect("config");
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine");
+
+        // Block the sidecar so every finalization attempt fails and the open
+        // segment grows to its limit.
+        let blocker = dir
+            .path()
+            .join("segments")
+            .join(crate::segment_store::SEQ_SIDECAR_FILENAME);
+        fs::create_dir(&blocker).expect("create dir at sidecar path");
+
+        let mut rejected = false;
+        for _ in 0..200 {
+            if let Err(QuiverError::OpenSegmentAtCapacity { .. }) =
+                engine.ingest(&DummyBundle::with_rows(50)).await
+            {
+                rejected = true;
+                break;
+            }
+        }
+        assert!(
+            rejected,
+            "the open segment limit must eventually reject ingestion"
+        );
+
+        let wal_bytes_before = engine.wal_bytes_written();
+        for _ in 0..5 {
+            assert!(
+                engine
+                    .ingest(&DummyBundle::with_rows(50))
+                    .await
+                    .is_err_and(|e| matches!(e, QuiverError::OpenSegmentAtCapacity { .. })),
+                "ingestion must stay rejected while the open segment is full"
+            );
+        }
+        assert_eq!(
+            engine.wal_bytes_written(),
+            wal_bytes_before,
+            "a bundle rejected at the capacity gate must not be appended to the WAL"
+        );
+    }
+
+    /// Returns whether the current process ignores Unix permission bits (e.g.
+    /// running as root), by checking whether a mode-000 file remains
+    /// readable. Used to skip permission-based fault injection instead of
+    /// silently passing for the wrong reason under such a process.
+    #[cfg(unix)]
+    fn permissions_are_enforced(dir: &Path) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        let probe = dir.join("perm_probe");
+        fs::write(&probe, b"x").expect("write probe file");
+        fs::set_permissions(&probe, fs::Permissions::from_mode(0o000)).expect("chmod probe file");
+        let enforced = fs::read(&probe).is_err();
+        fs::set_permissions(&probe, fs::Permissions::from_mode(0o644))
+            .expect("restore probe permissions");
+        let _ = fs::remove_file(&probe);
+        enforced
+    }
+
+    /// Scenario: the segments directory cannot be listed at startup (e.g. its
+    /// permissions were removed), so neither the filename-derived floor nor
+    /// the sidecar floor can be determined.
+    /// Guarantees: `open` fails instead of falling back to `next_segment_seq
+    /// = 0`, which could reallocate an in-use sequence number and silently
+    /// suppress newly ingested data, and startup WAL accounting is rolled back
+    /// without removing unrelated shared-budget usage (issue #4024).
+    #[tokio::test]
+    async fn open_fails_when_segment_directory_scan_errors() {
+        #[cfg(not(unix))]
+        {
+            // Directory permission enforcement is exercised on Unix only.
+            return;
+        }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let dir = tempdir().expect("tempdir");
+            if !permissions_are_enforced(dir.path()) {
+                // Running with elevated privileges (e.g. root in CI) that
+                // ignore permission bits; the fault cannot be injected here.
+                return;
+            }
+
+            let segment_dir = dir.path().join("segments");
+            fs::create_dir_all(&segment_dir).expect("create segments dir");
+
+            let config = QuiverConfig::builder()
+                .data_dir(dir.path())
+                .build()
+                .expect("config");
+            // Establish the directory via a normal open, then write a valid
+            // sidecar so execute-only permissions still allow the known file
+            // to be read while preventing the directory from being listed.
+            drop(
+                QuiverEngine::open(config.clone(), test_budget())
+                    .await
+                    .expect("initial engine open"),
+            );
+            SegmentStore::new(&segment_dir)
+                .persist_next_seq(1)
+                .await
+                .expect("persist sequence sidecar");
+            let sidecar_path = segment_dir.join(crate::segment_store::SEQ_SIDECAR_FILENAME);
+
+            fs::set_permissions(&segment_dir, fs::Permissions::from_mode(0o111))
+                .expect("make segment directory execute-only");
+            assert!(
+                fs::read(&sidecar_path).is_ok(),
+                "known sidecar path must remain readable"
+            );
+            assert!(
+                fs::read_dir(&segment_dir).is_err(),
+                "execute-only directory must reject listing"
+            );
+
+            let budget = test_budget();
+            let baseline_usage = 1234;
+            budget.add(baseline_usage);
+            let result = QuiverEngine::open(config, budget.clone()).await;
+
+            // Restore permissions so the tempdir can be cleaned up.
+            fs::set_permissions(&segment_dir, fs::Permissions::from_mode(0o755))
+                .expect("restore segment directory permissions");
+
+            assert!(
+                result.is_err(),
+                "open must fail closed when the segment directory cannot be scanned"
+            );
+            assert_eq!(
+                budget.used(),
+                baseline_usage,
+                "failed startup must preserve unrelated shared-budget usage"
+            );
+        }
+    }
+
+    /// Scenario: the sequence sidecar is unavailable after all segments were
+    /// cleaned up, as on the first start after an upgrade or when the segments
+    /// directory is cleared wholesale. Subscriber progress files live outside
+    /// that directory and still record the reused sequence numbers.
+    /// Guarantees: the floor derived from restored subscriber progress alone
+    /// prevents sequence reuse, so post-restart data is still delivered
+    /// instead of being suppressed (issue #4024).
+    #[tokio::test]
+    async fn reused_segment_seq_is_not_skipped_without_sidecar() {
+        let dir = tempdir().expect("tempdir");
+        let sub_id = SubscriberId::new("s1").expect("id");
+
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes: NonZeroU64::new(100).unwrap(),
+                ..Default::default()
+            })
+            .build()
+            .expect("config");
+
+        {
+            let engine = QuiverEngine::open(config.clone(), test_budget())
+                .await
+                .expect("engine");
+            engine
+                .register_subscriber(sub_id.clone())
+                .expect("register");
+            engine.activate_subscriber(&sub_id).expect("activate");
+
+            engine
+                .ingest(&DummyBundle::with_rows(50))
+                .await
+                .expect("ingest");
+            engine.flush().await.expect("flush");
+
+            while let Some(h) = engine.poll_next_bundle(&sub_id).expect("poll") {
+                h.ack();
+            }
+
+            let _ = engine.maintain().await.expect("maintain");
+            assert_eq!(engine.segment_store().segment_count(), 0);
+        }
+
+        // Remove the sidecar, leaving only the filename-derived floor (zero,
+        // with no segment files) and subscriber progress.
+        let sidecar = dir
+            .path()
+            .join("segments")
+            .join(crate::segment_store::SEQ_SIDECAR_FILENAME);
+        fs::remove_file(&sidecar).expect("remove sidecar");
+
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine");
+        engine.activate_subscriber(&sub_id).expect("activate");
+
+        engine
+            .ingest(&DummyBundle::with_rows(50))
+            .await
+            .expect("ingest");
+        engine.flush().await.expect("flush");
+
+        for seq in engine.segment_store().segment_sequences() {
+            assert!(
+                seq.raw() > 0,
+                "the new segment's seq {} must not reuse sequence 0, which \
+                 subscriber progress already recorded as delivered",
+                seq.raw()
+            );
+        }
+
+        let mut delivered = 0;
+        while let Some(h) = engine.poll_next_bundle(&sub_id).expect("poll") {
+            h.ack();
+            delivered += 1;
+        }
+        assert!(
+            delivered > 0,
+            "post-restart data must be delivered without the sidecar"
+        );
+    }
+
+    /// Scenario: the same cleanup-then-restart sequence as the previous test,
+    /// but driven through a full `maintain()` cycle (flush progress, clean up
+    /// completed segments, apply retention) rather than the individual calls,
+    /// covering the path an embedding layer actually runs periodically.
+    /// Guarantees: the durable sequence sidecar records a non-zero floor even
+    /// after every segment file is gone, and post-restart data is delivered
+    /// rather than being suppressed by restored progress.
+    #[tokio::test]
+    async fn reused_segment_seq_is_not_skipped_after_maintenance_cycle() {
+        let dir = tempdir().expect("tempdir");
+        let sub_id = SubscriberId::new("s1").expect("id");
+
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes: NonZeroU64::new(100).unwrap(),
+                ..Default::default()
+            })
+            .build()
+            .expect("config");
+
+        {
+            let engine = QuiverEngine::open(config.clone(), test_budget())
+                .await
+                .expect("engine");
+            engine
+                .register_subscriber(sub_id.clone())
+                .expect("register");
+            engine.activate_subscriber(&sub_id).expect("activate");
+
+            engine
+                .ingest(&DummyBundle::with_rows(50))
+                .await
+                .expect("ingest");
+            engine.flush().await.expect("flush");
+
+            while let Some(h) = engine.poll_next_bundle(&sub_id).expect("poll") {
+                h.ack();
+            }
+
+            // A full maintenance cycle flushes progress, then deletes every
+            // completed segment file.
+            let _ = engine.maintain().await.expect("maintain");
+            assert_eq!(engine.segment_store().segment_count(), 0);
+
+            // With no segment files left, the sidecar is the only remaining
+            // record of which sequence numbers have been used.
+            assert!(
+                engine
+                    .segment_store()
+                    .read_persisted_next_seq()
+                    .is_some_and(|next| next > 0),
+                "sidecar must retain a non-zero floor after all segments are deleted"
+            );
+        }
+
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine");
+        engine.activate_subscriber(&sub_id).expect("activate");
+
+        engine
+            .ingest(&DummyBundle::with_rows(50))
+            .await
+            .expect("ingest");
+        engine.flush().await.expect("flush");
+
+        let mut delivered = 0;
+        while let Some(h) = engine.poll_next_bundle(&sub_id).expect("poll") {
+            h.ack();
+            delivered += 1;
+        }
+        assert!(
+            delivered > 0,
+            "post-restart data must be delivered even with an empty progress file"
+        );
+    }
+
+    /// Scenario: the persisted sequence floor is ahead of every `.qseg` file
+    /// on disk -- e.g. cleanup removed the segments a finalization persisted
+    /// past. The store then restarts and ingests.
+    /// Guarantees: the gap is harmless; the skipped sequence number is never
+    /// reallocated, and post-restart data is still delivered to a subscriber
+    /// restored from progress written before the gap.
+    #[tokio::test]
+    async fn sequence_gap_above_segment_files_is_safe() {
+        let dir = tempdir().expect("tempdir");
+        let sub_id = SubscriberId::new("s1").expect("id");
+
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes: NonZeroU64::new(100).unwrap(),
+                ..Default::default()
+            })
+            .build()
+            .expect("config");
+
+        {
+            let engine = QuiverEngine::open(config.clone(), test_budget())
+                .await
+                .expect("engine");
+            engine
+                .register_subscriber(sub_id.clone())
+                .expect("register");
+            engine.activate_subscriber(&sub_id).expect("activate");
+
+            engine
+                .ingest(&DummyBundle::with_rows(50))
+                .await
+                .expect("ingest");
+            engine.flush().await.expect("flush");
+
+            while let Some(h) = engine.poll_next_bundle(&sub_id).expect("poll") {
+                h.ack();
+            }
+            let _ = engine.flush_progress().await.expect("flush progress");
+            let _ = engine.cleanup_completed_segments().expect("cleanup");
+
+            // Simulate a crash after the floor was reserved but before the
+            // corresponding segment file was written: advance the persisted
+            // counter well past anything on disk.
+            engine
+                .segment_store()
+                .persist_next_seq(500)
+                .await
+                .expect("persist gap");
+        }
+
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine");
+        engine.activate_subscriber(&sub_id).expect("activate");
+
+        engine
+            .ingest(&DummyBundle::with_rows(50))
+            .await
+            .expect("ingest");
+        engine.flush().await.expect("flush");
+
+        for seq in engine.segment_store().segment_sequences() {
+            assert!(
+                seq.raw() >= 500,
+                "new segment seq {} must respect the persisted floor",
+                seq.raw()
+            );
+        }
+
+        let mut delivered = 0;
+        while let Some(h) = engine.poll_next_bundle(&sub_id).expect("poll") {
+            h.ack();
+            delivered += 1;
+        }
+        assert!(
+            delivered > 0,
+            "data written after a sequence gap must still be delivered"
+        );
+    }
+
+    /// Scenario: the sequence allocation floor jumps ahead of any file on
+    /// disk (as in `sequence_gap_above_segment_files_is_safe`), leaving a gap
+    /// of sequence numbers that were reserved but never written, and the
+    /// store then restarts so the floor is loaded from the sidecar.
+    /// Guarantees: `total_segments_written` reports only segments actually
+    /// written to disk; it does not count the skipped sequence numbers, since
+    /// it is used as a literal segment count by callers (issue #4024).
+    #[tokio::test]
+    async fn total_segments_written_excludes_gap_in_allocation_floor() {
+        let dir = tempdir().expect("tempdir");
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes: NonZeroU64::new(100).unwrap(),
+                ..Default::default()
+            })
+            .build()
+            .expect("config");
+
+        {
+            let engine = QuiverEngine::open(config.clone(), test_budget())
+                .await
+                .expect("engine");
+
+            // Advance the persisted floor far past anything ever written, as
+            // a crash between reserving a sequence and writing its segment
+            // would.
+            engine
+                .segment_store()
+                .persist_next_seq(500)
+                .await
+                .expect("persist gap");
+        }
+
+        // Reopen so the floor is loaded from the sidecar into
+        // `next_segment_seq`, which must not be conflated with the count of
+        // segments actually written.
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("reopen");
+
+        assert_eq!(
+            engine.total_segments_written(),
+            0,
+            "no segment was ever written, so the count must be 0 \
+             regardless of the allocation floor"
+        );
+    }
+
+    /// Scenario: finalization keeps failing (the sequence sidecar path is
+    /// blocked) while a caller keeps ingesting, so bundles accumulate in the
+    /// open segment across repeated failed attempts.
+    /// Guarantees: accumulation is bounded -- once the open segment reaches
+    /// its in-memory limit, ingestion is rejected with a retryable capacity
+    /// error instead of growing without bound, and the retained data is still
+    /// delivered after the fault clears. Without the limit, a persistent
+    /// finalization failure would grow the accumulator until the process ran
+    /// out of memory.
+    #[tokio::test]
+    async fn ingest_is_rejected_once_unfinalizable_open_segment_reaches_its_limit() {
+        let dir = tempdir().expect("tempdir");
+        let target_size_bytes = NonZeroU64::new(2048).expect("non-zero");
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes,
+                ..Default::default()
+            })
+            .durability(DurabilityMode::SegmentOnly)
+            .build()
+            .expect("config");
+        let sub_id = SubscriberId::new("s1").expect("id");
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine");
+        engine
+            .register_subscriber(sub_id.clone())
+            .expect("register subscriber");
+        engine.activate_subscriber(&sub_id).expect("activate");
+
+        // Block the sidecar so every finalization attempt fails.
+        let blocker = dir
+            .path()
+            .join("segments")
+            .join(crate::segment_store::SEQ_SIDECAR_FILENAME);
+        fs::create_dir(&blocker).expect("create dir at sidecar path");
+
+        let limit = target_size_bytes.get() * MAX_OPEN_SEGMENT_SIZE_MULTIPLE;
+        let mut rejected_at_capacity = false;
+        for _ in 0..200 {
+            match engine.ingest(&DummyBundle::with_rows(50)).await {
+                Err(e) if matches!(e, QuiverError::OpenSegmentAtCapacity { .. }) => {
+                    assert!(
+                        e.is_at_capacity() && e.is_recoverable(),
+                        "the limit must signal retryable backpressure, not a fatal error"
+                    );
+                    rejected_at_capacity = true;
+                    break;
+                }
+                // Finalization failures are expected while the sidecar is
+                // blocked; they retain the data rather than dropping it.
+                Ok(()) | Err(_) => {}
+            }
+        }
+        assert!(
+            rejected_at_capacity,
+            "ingestion must be rejected once the unfinalizable open segment \
+             reaches its limit"
+        );
+
+        let accumulated = engine.open_segment_estimated_size_bytes();
+        assert!(
+            accumulated >= limit,
+            "the limit must only trigger once the accumulator actually reached it: \
+             {accumulated} < {limit}"
+        );
+        assert!(
+            accumulated < limit.saturating_mul(2),
+            "accumulation must stay close to the limit, got {accumulated} for a \
+             limit of {limit}"
+        );
+
+        // Further attempts keep being rejected without accumulating more.
+        for _ in 0..5 {
+            assert!(
+                engine
+                    .ingest(&DummyBundle::with_rows(50))
+                    .await
+                    .is_err_and(|e| matches!(e, QuiverError::OpenSegmentAtCapacity { .. })),
+                "ingestion must stay rejected while the open segment is full"
+            );
+        }
+        assert_eq!(
+            engine.open_segment_estimated_size_bytes(),
+            accumulated,
+            "a rejected ingest must not accumulate more data"
+        );
+
+        // The retained bundles are not lost: once finalization works again
+        // they are written and delivered, and ingestion resumes.
+        fs::remove_dir(&blocker).expect("clear sidecar path");
+        engine.flush().await.expect("flush after the fault clears");
+        assert!(
+            engine.poll_next_bundle(&sub_id).expect("poll").is_some(),
+            "retained bundles must be delivered once finalization recovers"
+        );
+        engine
+            .ingest(&DummyBundle::with_rows(50))
+            .await
+            .expect("ingestion resumes once the open segment drains");
+    }
+
+    /// Scenario: several segments are finalized in a row after a fresh start.
+    /// Guarantees: sequence numbers are reserved in durable blocks -- the
+    /// persisted floor stays strictly above every sequence in use, and the
+    /// sidecar is rewritten only when a block is exhausted rather than once
+    /// per segment. The floor above every used sequence is what prevents
+    /// reuse after cleanup plus restart (issue #4024).
+    #[tokio::test]
+    async fn sequence_numbers_are_reserved_in_durable_blocks_before_use() {
+        let dir = tempdir().expect("tempdir");
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes: NonZeroU64::new(100).unwrap(),
+                ..Default::default()
+            })
+            .durability(DurabilityMode::SegmentOnly)
+            .build()
+            .expect("config");
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine");
+
+        assert_eq!(
+            engine.segment_store().read_persisted_next_seq(),
+            None,
+            "a fresh engine reserves nothing until it finalizes"
+        );
+
+        for _ in 0..3 {
+            engine
+                .ingest(&DummyBundle::with_rows(50))
+                .await
+                .expect("ingest");
+            engine.flush().await.expect("flush");
+        }
+
+        let persisted = engine
+            .segment_store()
+            .read_persisted_next_seq()
+            .expect("a reservation must be persisted once segments are written");
+        assert_eq!(
+            persisted, SEQ_RESERVATION_BATCH,
+            "one block must be reserved up front, covering later finalizations \
+             without another sidecar write"
+        );
+        assert_eq!(
+            engine.reserved_through(),
+            persisted,
+            "the in-memory reservation must match what is durable"
+        );
+        assert!(
+            engine.next_segment_seq() < persisted,
+            "every sequence handed out must be below the durable floor"
+        );
+    }
+
+    /// Scenario: an engine exhausts its sequence reservation block and keeps
+    /// finalizing, then restarts.
+    /// Guarantees: the reservation is refreshed durably before the exhausted
+    /// block's last number is reused, and the restarted engine allocates
+    /// strictly above every sequence the previous run used, even though the
+    /// unused tail of a reservation leaves gaps.
+    #[tokio::test]
+    async fn exhausting_a_reservation_refreshes_the_floor_before_reuse() {
+        let dir = tempdir().expect("tempdir");
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes: NonZeroU64::new(100).unwrap(),
+                ..Default::default()
+            })
+            .durability(DurabilityMode::SegmentOnly)
+            .build()
+            .expect("config");
+
+        let highest_used;
+        {
+            let engine = QuiverEngine::open(config.clone(), test_budget())
+                .await
+                .expect("engine");
+            for _ in 0..(SEQ_RESERVATION_BATCH + 2) {
+                engine
+                    .ingest(&DummyBundle::with_rows(50))
+                    .await
+                    .expect("ingest");
+                engine.flush().await.expect("flush");
+                // The reservation is refreshed at the start of the next
+                // finalization, so between finalizations the allocator may sit
+                // exactly at the block boundary but never past it. The
+                // strict inequality at allocation time is asserted inside
+                // `finalize_segment_impl`.
+                assert!(
+                    engine.next_segment_seq() <= engine.reserved_through(),
+                    "a sequence must never be used outside the durable reservation"
+                );
+            }
+            highest_used = engine.next_segment_seq() - 1;
+            assert!(
+                highest_used >= SEQ_RESERVATION_BATCH,
+                "the test must cross a reservation boundary"
+            );
+            assert_eq!(
+                engine.segment_store().read_persisted_next_seq(),
+                Some(SEQ_RESERVATION_BATCH * 2),
+                "crossing the boundary must persist exactly one more block"
+            );
+        }
+
+        let reopened = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("reopen");
+        assert!(
+            reopened.next_segment_seq() > highest_used,
+            "a restarted engine must never reallocate a used sequence number"
+        );
+    }
+
     // -----------------------------------------------------------------------------
     // WAL Replay Tests
     // -----------------------------------------------------------------------------
@@ -5787,7 +7330,7 @@ mod tests {
             );
 
             // Check open segment has our bundles
-            let open_segment_bundles = engine.open_segment.lock().bundle_count();
+            let open_segment_bundles = engine.open_segment_bundle_count();
             assert_eq!(
                 open_segment_bundles, bundles_ingested,
                 "open segment should have {} bundles",
@@ -5831,7 +7374,7 @@ mod tests {
             );
 
             // Check open segment has our replayed bundles
-            let open_segment_bundles = engine.open_segment.lock().bundle_count();
+            let open_segment_bundles = engine.open_segment_bundle_count();
             assert_eq!(
                 open_segment_bundles, bundles_ingested,
                 "open segment should have {} replayed bundles after recovery, got {}",
@@ -5881,7 +7424,7 @@ mod tests {
             );
 
             // Record the exact count in open segment before shutdown
-            bundles_in_open_segment_before_shutdown = engine.open_segment.lock().bundle_count();
+            bundles_in_open_segment_before_shutdown = engine.open_segment_bundle_count();
             assert!(
                 bundles_in_open_segment_before_shutdown > 0,
                 "open segment should have at least one bundle to replay; \
@@ -5899,7 +7442,7 @@ mod tests {
 
             // Open segment should have EXACTLY the same count as before shutdown
             // (only the un-finalized bundles are replayed)
-            let open_segment_bundles = engine.open_segment.lock().bundle_count();
+            let open_segment_bundles = engine.open_segment_bundle_count();
 
             assert_eq!(
                 open_segment_bundles, bundles_in_open_segment_before_shutdown,
@@ -5932,7 +7475,7 @@ mod tests {
                 .await
                 .expect("engine reopen");
 
-            let open_segment_bundles = engine.open_segment.lock().bundle_count();
+            let open_segment_bundles = engine.open_segment_bundle_count();
             assert_eq!(
                 open_segment_bundles, 0,
                 "open segment should be empty after reopening with empty WAL"
@@ -5955,7 +7498,7 @@ mod tests {
             .await
             .expect("engine should open even without existing WAL");
 
-        let open_segment_bundles = engine.open_segment.lock().bundle_count();
+        let open_segment_bundles = engine.open_segment_bundle_count();
         assert_eq!(
             open_segment_bundles, 0,
             "open segment should be empty on fresh start"
@@ -6018,7 +7561,7 @@ mod tests {
                 "no segments should be finalized with large segment config"
             );
 
-            bundles_in_open_segment = engine.open_segment.lock().bundle_count();
+            bundles_in_open_segment = engine.open_segment_bundle_count();
             assert_eq!(
                 bundles_in_open_segment, bundles_to_ingest,
                 "all bundles should be in open segment"
@@ -6054,7 +7597,7 @@ mod tests {
             );
 
             // Also verify the math: segments written + bundles remaining = total ingested
-            let bundles_remaining = engine.open_segment.lock().bundle_count();
+            let bundles_remaining = engine.open_segment_bundle_count();
             // The total bundles across all segments plus open segment should equal what we ingested
             // Note: we can't easily count bundles in finalized segments, but we can verify
             // that the open segment has fewer bundles than before (some were finalized)
@@ -6365,7 +7908,7 @@ mod tests {
                 .expect("engine reopen");
 
             // Check open segment has all replayed bundles
-            let open_segment_bundles = engine.open_segment.lock().bundle_count();
+            let open_segment_bundles = engine.open_segment_bundle_count();
             assert_eq!(
                 open_segment_bundles, bundles_ingested,
                 "open segment should have all {} replayed bundles after recovery from rotated files, got {}",
@@ -6423,7 +7966,7 @@ mod tests {
                 .expect("engine should open despite truncated WAL");
 
             // We should have recovered at least some bundles (the complete ones)
-            let recovered = engine.open_segment.lock().bundle_count();
+            let recovered = engine.open_segment_bundle_count();
             assert!(
                 recovered > 0 && recovered <= bundles_before_crash,
                 "should recover some but not all bundles after truncation; got {}",
@@ -6479,7 +8022,7 @@ mod tests {
                 .expect("engine should open despite corrupted WAL");
 
             // We should have recovered some bundles (before the corruption)
-            let recovered = engine.open_segment.lock().bundle_count();
+            let recovered = engine.open_segment_bundle_count();
             // Corruption in the middle means we'll get entries before the corrupt one
             assert!(
                 recovered < bundles_ingested,
@@ -6533,7 +8076,7 @@ mod tests {
 
             // Since cursor was clamped to WAL end, no entries should be replayed
             // The open segment should be empty
-            let recovered = engine.open_segment.lock().bundle_count();
+            let recovered = engine.open_segment_bundle_count();
             assert_eq!(
                 recovered, 0,
                 "should replay zero bundles when cursor is clamped to WAL end; got {}",
@@ -6583,7 +8126,7 @@ mod tests {
                 .expect("engine should open despite corrupted sidecar");
 
             // Since cursor decode failed, should replay from position 0 (all entries)
-            let recovered = engine.open_segment.lock().bundle_count();
+            let recovered = engine.open_segment_bundle_count();
             assert_eq!(
                 recovered, bundles_ingested,
                 "should replay all {} bundles when cursor is corrupted; got {}",
@@ -6634,7 +8177,7 @@ mod tests {
                 .expect("engine should open without sidecar");
 
             // Since cursor sidecar is missing, should replay from position 0 (all entries)
-            let recovered = engine.open_segment.lock().bundle_count();
+            let recovered = engine.open_segment_bundle_count();
             assert_eq!(
                 recovered, bundles_ingested,
                 "should replay all {} bundles when sidecar is missing; got {}",
@@ -6685,7 +8228,7 @@ mod tests {
             }
 
             // Verify all bundles are in the open segment
-            let total = engine.open_segment.lock().bundle_count();
+            let total = engine.open_segment_bundle_count();
             assert_eq!(total, old_bundles + fresh_bundles);
 
             // Drop engine without flushing -- simulates crash
@@ -6719,7 +8262,7 @@ mod tests {
                 .expect("engine");
 
             // Only the fresh bundles should have been replayed
-            let recovered = engine.open_segment.lock().bundle_count();
+            let recovered = engine.open_segment_bundle_count();
             assert_eq!(
                 recovered, fresh_bundles,
                 "expected {} fresh bundles after replay, got {} (old entries should be skipped)",
@@ -6779,7 +8322,7 @@ mod tests {
                 engine.ingest(&bundle).await.expect("ingest old");
             }
 
-            assert_eq!(engine.open_segment.lock().bundle_count(), total_bundles);
+            assert_eq!(engine.open_segment_bundle_count(), total_bundles);
             // Drop without flush -- simulates crash
         }
 
@@ -6803,7 +8346,7 @@ mod tests {
 
             // Open segment should be empty -- nothing was replayed
             assert_eq!(
-                engine.open_segment.lock().bundle_count(),
+                engine.open_segment_bundle_count(),
                 0,
                 "open segment should be empty when all WAL entries are expired"
             );
@@ -6836,7 +8379,7 @@ mod tests {
                 .expect("engine");
 
             assert_eq!(
-                engine.open_segment.lock().bundle_count(),
+                engine.open_segment_bundle_count(),
                 0,
                 "open segment should still be empty on second reopen"
             );
