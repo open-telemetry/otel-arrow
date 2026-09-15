@@ -1,0 +1,5 @@
+change_type: enhancement
+component: otap
+note: Re-export the `arrow` crate from pdata as `otel_arrow_dfe_pdata::otap::arrow` so downstream code can downcast OTAP record batches to the exact Arrow version pdata built them with
+issues: [4078]
+subtext:
