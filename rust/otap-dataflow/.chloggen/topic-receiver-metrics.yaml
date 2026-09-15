@@ -1,0 +1,7 @@
+change_type: breaking
+component: pipeline
+note: >-
+  Migrated topic receiver telemetry from flat counters to dimensioned metric populations with enum attributes.
+issues: [3530]
+subtext: |
+  Migration: Update queries for dimensioned metrics: forward -> `forward.messages{outcome}`, lag -> `lag.events{event.type}`, bridge -> `bridge.controls{control, result}`. Units for forward metrics and lagged_messages changed from `{item}` to `{message}`.
