@@ -4,6 +4,17 @@ This document lists telemetry emitted directly by the
 `azure_monitor_exporter` crate. It includes metric instruments registered
 by the crate and log events emitted via `otel_*` log macros.
 
+## Metric cardinality
+
+This exporter has the **N:M** work shape described in the
+[metrics guide](../../../../../docs/telemetry/metrics-guide.md). The crate-local
+metrics that realize it are:
+
+- PData-to-batch ownership for Ack/Nack: `exporter.azure_monitor.state.mappings`.
+- Terminal per-batch outcome and size: `exporter.azure_monitor.batches`,
+  `exporter.azure_monitor.batch_size`, `exporter.azure_monitor.batch_uncompressed_size`.
+- Per-attempt (each submission and retry): `exporter.attempted.messages`.
+
 ## Metrics
 
 | Metric name | Description | Produced in file |

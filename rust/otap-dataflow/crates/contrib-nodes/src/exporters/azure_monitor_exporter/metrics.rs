@@ -44,7 +44,10 @@ pub struct AzureMonitorExporterOperationalMetrics {
     pub log_entries_too_large: Counter<u64>,
 }
 
-/// Batch metrics partitioned by signal and outcome.
+/// Logical-batch metrics partitioned by signal and outcome.
+///
+/// Counted once per batch at terminal Ack/Nack, distinct from the per-attempt
+/// `exporter.attempted.messages` observations recorded in `client.rs`.
 #[metric_set(
     name = "exporter.azure_monitor",
     registration_attributes = SignalRegistrationAttributes,
@@ -92,6 +95,8 @@ struct StateMappingAttributes {
 }
 
 /// Exporter state-map entry counts partitioned by mapping type.
+///
+/// Tracks the PData-to-batch ownership used to route Ack/Nack.
 #[metric_set(
     name = "exporter.azure_monitor.state",
     measurement_attributes = StateMappingAttributes
