@@ -64,6 +64,36 @@ The `node.input.*` metrics apply to processors and exporters.
 metrics require the implementation to use the corresponding shared
 instrumentation.
 
+### Interpret Boundary Cardinality
+
+Receiver and exporter boundary counts do not necessarily match PData message
+counts:
+
+```text
+receiver.received = classified external messages
+node.output       = emitted PData messages
+node.input        = consumed PData messages
+exporter.attempted = external submission attempts
+```
+
+A receiver can emit several PData messages from one external message or combine
+several external messages into one PData batch. An exporter can split one PData
+message across several external submissions or combine several PData messages
+into one external batch. Retries add exporter attempts without adding input
+PData messages.
+
+Source and generator receivers have no external received message, so they may
+emit `node.output` without emitting `receiver.received`. Buffered exporters may
+complete an attempt when a node-owned writer accepts the data while reporting
+later flush or storage operations through node-specific telemetry.
+
+Interpret each metric at its own boundary rather than expecting equality across
+these mappings. Node-specific documentation should state whether the work is
+1:1, fan-out, aggregation, or many-to-many. The full implementation rules are
+in the telemetry
+[`Shared receiver and exporter boundary metrics`](telemetry/metrics-guide.md#shared-receiver-and-exporter-boundary-metrics)
+guide.
+
 Message, item, and size counters have bounded `signal` and `outcome` data-point
 attributes. `signal` is one of `logs`, `metrics`, or `traces`; `outcome` is
 `success`, `failure`, or `refused`, recorded during terminal ACK/NACK
