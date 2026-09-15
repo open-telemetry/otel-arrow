@@ -5,7 +5,8 @@
 
 use super::config::ReplayBackoffConfig;
 use super::identity::{DeliveryGeneration, OwnershipGeneration};
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use super::scheduling::{DeadlineIndex, capped_exponential_backoff, checked_deadline};
+use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
 /// Maximum revoked delivery identities retained for late-feedback classification.
@@ -73,13 +74,8 @@ struct FeedbackTombstone {
     delivery_generation: DeliveryGeneration,
 }
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct ScheduledReplay {
-    deadline: Instant,
-    topic: String,
-    partition: i32,
-    delivery_generation: DeliveryGeneration,
-}
+/// Scheduling key for the replay deadline index: one entry per partition.
+type ReplayKey = (String, i32);
 
 /// Named input for starting or restarting one partition replay.
 pub(crate) struct BeginRetry<'a> {
@@ -96,8 +92,10 @@ pub(crate) struct BeginRetry<'a> {
 #[derive(Debug)]
 pub(crate) struct RetryManager {
     partitions: HashMap<String, HashMap<i32, PartitionState>>,
-    /// Ordered, one-entry-per-partition replay schedule.
-    scheduled_replays: BTreeSet<ScheduledReplay>,
+    /// Ordered, one-entry-per-partition replay schedule. The deadline ordering
+    /// is provided by the shared [`DeadlineIndex`]; the delivery generation is
+    /// the staleness token so a due entry from a superseded replay is skipped.
+    scheduled_replays: DeadlineIndex<ReplayKey, DeliveryGeneration>,
     /// Bounded identities for classifying feedback received after revocation.
     feedback_tombstones: VecDeque<FeedbackTombstone>,
     next_delivery_generation: DeliveryGeneration,
@@ -110,7 +108,7 @@ impl RetryManager {
     pub(crate) fn new() -> Self {
         Self {
             partitions: HashMap::new(),
-            scheduled_replays: BTreeSet::new(),
+            scheduled_replays: DeadlineIndex::new(),
             feedback_tombstones: VecDeque::with_capacity(MAX_FEEDBACK_TOMBSTONES),
             next_delivery_generation: DeliveryGeneration::FIRST,
             paused_partitions: 0,
@@ -168,12 +166,11 @@ impl RetryManager {
             self.paused_partitions = self.paused_partitions.saturating_sub(1);
         }
         if let Some(deadline) = retry.phase.deadline() {
-            let _ = self.scheduled_replays.remove(&ScheduledReplay {
+            let _ = self.scheduled_replays.remove(
+                &(topic.to_string(), partition),
+                state.delivery_generation,
                 deadline,
-                topic: topic.to_string(),
-                partition,
-                delivery_generation: state.delivery_generation,
-            });
+            );
         }
     }
 
@@ -185,12 +182,11 @@ impl RetryManager {
             self.paused_partitions = self.paused_partitions.saturating_add(1);
         }
         if let Some(deadline) = retry.phase.deadline() {
-            let _ = self.scheduled_replays.insert(ScheduledReplay {
+            self.scheduled_replays.insert(
+                (topic.to_string(), partition),
+                state.delivery_generation,
                 deadline,
-                topic: topic.to_string(),
-                partition,
-                delivery_generation: state.delivery_generation,
-            });
+            );
         }
     }
 
@@ -300,48 +296,44 @@ impl RetryManager {
     /// Returns the earliest scheduled replay deadline.
     #[must_use]
     pub(crate) fn next_deadline(&self) -> Option<Instant> {
-        self.scheduled_replays.first().map(|replay| replay.deadline)
+        self.scheduled_replays.next_deadline()
     }
 
     /// Returns at most `limit` replay attempts whose deadlines have elapsed.
+    ///
+    /// Each due entry from the shared deadline index is re-validated against the
+    /// caller-owned partition state: the delivery generation must still match
+    /// (not superseded by a newer replay), the phase must still be `Backoff`,
+    /// and the recorded deadline must equal the one scheduled. A stale entry is
+    /// dropped (already removed from the index by `take_due`).
     #[must_use]
     pub(crate) fn due_replays(&mut self, now: Instant, limit: usize) -> Vec<DueReplay> {
         let mut due = Vec::with_capacity(limit);
-        let mut examined = 0;
-        while examined < limit {
-            let Some(scheduled) = self.scheduled_replays.first() else {
-                break;
-            };
-            if scheduled.deadline > now {
-                break;
-            }
-            let Some(scheduled) = self.scheduled_replays.pop_first() else {
-                break;
-            };
-            examined += 1;
-            let Some(mut state) = self.take_state(&scheduled.topic, scheduled.partition) else {
+        for entry in self.scheduled_replays.take_due(now, limit) {
+            let (topic, partition) = entry.key;
+            let Some(mut state) = self.take_state(&topic, partition) else {
                 continue;
             };
-            if state.delivery_generation != scheduled.delivery_generation {
-                self.put_state(&scheduled.topic, scheduled.partition, state);
+            if state.delivery_generation != entry.token {
+                self.put_state(&topic, partition, state);
                 continue;
             }
             let Some(retry) = state.retry.as_mut() else {
-                self.put_state(&scheduled.topic, scheduled.partition, state);
+                self.put_state(&topic, partition, state);
                 continue;
             };
             let RetryPhase::Backoff { deadline, paused } = retry.phase else {
-                self.put_state(&scheduled.topic, scheduled.partition, state);
+                self.put_state(&topic, partition, state);
                 continue;
             };
-            if deadline != scheduled.deadline {
-                self.put_state(&scheduled.topic, scheduled.partition, state);
+            if deadline != entry.deadline {
+                self.put_state(&topic, partition, state);
                 continue;
             }
             retry.phase = RetryPhase::Due { paused };
             let replay = DueReplay {
-                topic: scheduled.topic,
-                partition: scheduled.partition,
+                topic,
+                partition,
                 ownership_generation: state.ownership_generation,
                 delivery_generation: state.delivery_generation,
                 rewind_offset: retry.rewind_offset,
@@ -485,8 +477,10 @@ impl RetryManager {
 
     #[cfg(test)]
     fn assert_indexes_consistent(&self) {
+        use std::collections::BTreeSet;
         let mut expected_paused = 0;
-        let mut expected_schedule = BTreeSet::new();
+        let mut expected_schedule: BTreeSet<(Instant, DeliveryGeneration, ReplayKey)> =
+            BTreeSet::new();
         for (topic, partitions) in &self.partitions {
             for (&partition, state) in partitions {
                 let Some(retry) = state.retry.as_ref() else {
@@ -496,17 +490,16 @@ impl RetryManager {
                     expected_paused += 1;
                 }
                 if let Some(deadline) = retry.phase.deadline() {
-                    let _ = expected_schedule.insert(ScheduledReplay {
+                    let _ = expected_schedule.insert((
                         deadline,
-                        topic: topic.clone(),
-                        partition,
-                        delivery_generation: state.delivery_generation,
-                    });
+                        state.delivery_generation,
+                        (topic.clone(), partition),
+                    ));
                 }
             }
         }
         assert_eq!(self.paused_partitions, expected_paused);
-        assert_eq!(self.scheduled_replays, expected_schedule);
+        assert_eq!(self.scheduled_replays.snapshot(), expected_schedule);
     }
 }
 
@@ -517,22 +510,15 @@ impl Default for RetryManager {
 }
 
 fn retry_backoff(config: &ReplayBackoffConfig, attempts: u32) -> Duration {
-    let multiplier = 1_u64.checked_shl(attempts.min(63)).unwrap_or(u64::MAX);
-    let millis = config
-        .initial_backoff_ms()
-        .saturating_mul(multiplier)
-        .min(config.max_backoff_ms());
-    Duration::from_millis(millis)
+    capped_exponential_backoff(
+        Duration::from_millis(config.initial_backoff_ms()),
+        Duration::from_millis(config.max_backoff_ms()),
+        attempts,
+    )
 }
 
 fn retry_deadline(now: Instant, config: &ReplayBackoffConfig, attempts: u32) -> Instant {
-    let mut delay = retry_backoff(config, attempts);
-    loop {
-        if let Some(deadline) = now.checked_add(delay) {
-            return deadline;
-        }
-        delay /= 2;
-    }
+    checked_deadline(now, retry_backoff(config, attempts))
 }
 
 #[cfg(test)]
