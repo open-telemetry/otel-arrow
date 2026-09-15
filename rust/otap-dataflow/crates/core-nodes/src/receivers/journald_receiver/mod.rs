@@ -179,7 +179,7 @@ fn create_journald_receiver(
         receiver_config.name.as_ref(),
         &receiver.config.source_id,
     );
-    receiver.metrics = Some(pipeline.register_metrics::<JournaldReceiverMetrics>());
+    receiver.metrics = Some(JournaldReceiverMetrics::register(&pipeline));
     Ok(ReceiverWrapper::local(
         receiver,
         node,
