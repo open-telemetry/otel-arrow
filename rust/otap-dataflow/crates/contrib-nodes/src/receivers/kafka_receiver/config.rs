@@ -322,6 +322,19 @@ pub struct KafkaReceiverConfigBuilder {
     client_id: String,
 
     /// Static group instance ID for Kafka static membership.
+    ///
+    /// At receiver construction the configured value is automatically suffixed
+    /// with the pipeline deployment generation (`-g{generation}`), and on a
+    /// multi-core pipeline also with the core ID (`-{core_id}`), so each
+    /// generation and core is a distinct static member (e.g. `instance-1`
+    /// becomes `instance-1-g0`, or `instance-1-g0-1` on multiple cores). The
+    /// generation suffix keeps a new pipeline instance from being fenced as a
+    /// duplicate static member of the old instance during a live-reconfiguration
+    /// cutover.
+    ///
+    /// Kafka limits `group.instance.id` to 249 characters, and the limit applies
+    /// to the resolved value (configured value plus suffixes); receiver
+    /// construction fails if the resolved id exceeds it.
     #[serde(default)]
     group_instance_id: Option<String>,
 
@@ -537,12 +550,12 @@ impl TryFrom<KafkaReceiverConfigBuilder> for KafkaReceiverConfig {
         }
 
         // Reject empty optional string fields when explicitly set
-        if let Some(ref id) = builder.group_instance_id {
-            if id.is_empty() {
-                return Err(KafkaReceiverError::ConfigEmptyField {
-                    field: "group_instance_id".to_string(),
-                });
-            }
+        if let Some(ref id) = builder.group_instance_id
+            && id.is_empty()
+        {
+            return Err(KafkaReceiverError::ConfigEmptyField {
+                field: "group_instance_id".to_string(),
+            });
         }
         if builder.message_format_header.is_empty() {
             return Err(KafkaReceiverError::ConfigEmptyField {
@@ -568,6 +581,19 @@ impl TryFrom<KafkaReceiverConfigBuilder> for KafkaReceiverConfig {
             && builder.logs.topics().is_empty()
         {
             return Err(KafkaReceiverError::ConfigNoSignalTopics);
+        }
+
+        if builder.traces.encoding() == MessageFormat::Syslog {
+            return Err(KafkaReceiverError::ConfigUnsupportedEncoding {
+                signal: "traces".to_string(),
+                encoding: "syslog".to_string(),
+            });
+        }
+        if builder.metrics.encoding() == MessageFormat::Syslog {
+            return Err(KafkaReceiverError::ConfigUnsupportedEncoding {
+                signal: "metrics".to_string(),
+                encoding: "syslog".to_string(),
+            });
         }
 
         // Topics must be disjoint across signals
@@ -1043,10 +1069,8 @@ impl KafkaReceiverConfigBuilder {
 
         // Commit settings derived from CommitConfig
         let auto_commit = matches!(self.commit.mode, CommitMode::Auto);
-        if auto_commit {
-            if let Some(interval) = self.commit.interval_ms {
-                _ = config.set("auto.commit.interval.ms", interval.to_string());
-            }
+        if auto_commit && let Some(interval) = self.commit.interval_ms {
+            _ = config.set("auto.commit.interval.ms", interval.to_string());
         }
         _ = config.set(
             "enable.auto.commit",
@@ -2578,6 +2602,41 @@ mod tests {
                 ..Default::default()
             });
         assert!(KafkaReceiverConfig::try_from(cfg).is_ok());
+    }
+
+    /// Scenario (routing and payload correctness): a logs signal selects Syslog encoding.
+    /// Guarantees: validation accepts Syslog for logs so Kafka records can use the shared
+    /// Syslog decoder.
+    #[test]
+    fn validate_syslog_encoding_for_logs_is_valid() {
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_logs(
+            SignalConfig::new(vec!["logs-topic".to_string()]).with_encoding(MessageFormat::Syslog),
+        );
+        assert!(KafkaReceiverConfig::try_from(cfg).is_ok());
+    }
+
+    /// Scenario (routing and payload correctness): a traces signal selects Syslog encoding.
+    /// Guarantees: validation rejects the logs-only encoding before the receiver starts.
+    #[test]
+    fn validate_syslog_encoding_for_traces_is_invalid() {
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_traces(
+            SignalConfig::new(vec!["traces-topic".to_string()])
+                .with_encoding(MessageFormat::Syslog),
+        );
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
+        assert!(err.contains("syslog encoding is not supported for traces"));
+    }
+
+    /// Scenario (routing and payload correctness): a metrics signal selects Syslog encoding.
+    /// Guarantees: validation rejects the logs-only encoding before the receiver starts.
+    #[test]
+    fn validate_syslog_encoding_for_metrics_is_invalid() {
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_metrics(
+            SignalConfig::new(vec!["metrics-topic".to_string()])
+                .with_encoding(MessageFormat::Syslog),
+        );
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
+        assert!(err.contains("syslog encoding is not supported for metrics"));
     }
 
     /// Scenario (routing and payload correctness): no signal has any topic configured.

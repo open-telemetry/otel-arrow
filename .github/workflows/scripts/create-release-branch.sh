@@ -66,7 +66,7 @@ git add .
 git commit -m "Prepare release v$VERSION
 
 - Render chloggen entries into go/CHANGELOG.md and rust/otap-dataflow/CHANGELOG.md
-- Bump rust/otap-dataflow/Cargo.toml workspace + root package version to v$VERSION
+- Bump selected Rust workspace crate versions to v$VERSION
 
 This commit prepares the repository for release v$VERSION."
 

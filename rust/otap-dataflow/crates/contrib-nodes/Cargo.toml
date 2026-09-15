@@ -1,11 +1,14 @@
 [package]
 name = "otel-arrow-dfe-contrib-nodes"
-description = "OTAP Contrib nodes"
+description = "Contrib receivers, processors, and exporters for the OTel Arrow Dataflow Engine"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true
 license.workspace = true
-publish.workspace = true
+readme = "README.md"
+publish = true
+keywords = ["telemetry", "opentelemetry", "otlp", "otap", "dataflow"]
+categories = ["asynchronous"]
 edition.workspace = true
 rust-version.workspace = true
 
@@ -17,6 +20,7 @@ workspace = true
 otel-arrow-dfe-channel = { workspace = true }
 otel-arrow-dfe-config = { workspace = true }
 otel-arrow-dfe-engine = { workspace = true }
+otel-arrow-dfe-core-nodes = { workspace = true, optional = true }
 otel-arrow-dfe-otap = { workspace = true }
 otel-arrow-dfe-pdata = { workspace = true }
 otel-arrow-dfe-pdata-views = { workspace = true }
@@ -92,6 +96,7 @@ tracepoint_decode = { workspace = true, optional = true }
 [features]
 etw-receiver = ["dep:one_collect", "dep:humantime-serde"]
 kafka-receiver = [
+    "dep:otel-arrow-dfe-core-nodes",
     "dep:rdkafka",
     "dep:smallvec",
     "dep:regex",

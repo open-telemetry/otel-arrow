@@ -160,7 +160,7 @@ impl TraceFilter {
         {
             include_config.create_filters(&traces_payload, false)?
         } else {
-            // both include and exclude is none
+            // Both include and exclude are absent, so every span is kept.
             let num_rows = traces_payload
                 .get(ArrowPayloadType::Spans)
                 // Safety: We check at the top of this function whether the
@@ -168,7 +168,7 @@ impl TraceFilter {
                 // root record batch is present.
                 .expect("Traces payload has a root record")
                 .num_rows() as u64;
-            return Ok((traces_payload, num_rows, num_rows));
+            return Ok((traces_payload, num_rows, 0));
         };
 
         let (span_filter, child_record_batch_filters) = self.sync_up_filters(
@@ -469,27 +469,26 @@ impl TraceFilter {
             );
         }
 
-        if let Some(span_link_attrs_record_batch) = span_link_attrs {
-            if let Some(link_filter) = &span_link_filter {
-                let span_link_ids_column = if let Some(span_links_record_batch) = span_links {
-                    get_required_array(span_links_record_batch, consts::ID)?
-                } else {
-                    return Err(Error::UnexpectedRecordBatchState {
-                        reason:
-                            "Span Link Attribute Record Batch found without Span Link Record Batch"
-                                .to_string(),
-                    });
-                };
-                _ = child_record_batch_filters.insert(
-                    ArrowPayloadType::SpanLinkAttrs,
-                    update_child_record_batch_filter(
-                        span_link_attrs_record_batch,
-                        span_link_ids_column,
-                        &span_link_attr_filter,
-                        link_filter,
-                    )?,
-                );
-            }
+        if let Some(span_link_attrs_record_batch) = span_link_attrs
+            && let Some(link_filter) = &span_link_filter
+        {
+            let span_link_ids_column = if let Some(span_links_record_batch) = span_links {
+                get_required_array(span_links_record_batch, consts::ID)?
+            } else {
+                return Err(Error::UnexpectedRecordBatchState {
+                    reason: "Span Link Attribute Record Batch found without Span Link Record Batch"
+                        .to_string(),
+                });
+            };
+            _ = child_record_batch_filters.insert(
+                ArrowPayloadType::SpanLinkAttrs,
+                update_child_record_batch_filter(
+                    span_link_attrs_record_batch,
+                    span_link_ids_column,
+                    &span_link_attr_filter,
+                    link_filter,
+                )?,
+            );
         }
 
         Ok((span_filter, child_record_batch_filters))
@@ -818,6 +817,41 @@ mod test {
             }],
         }));
 
+        assert_equivalent(&[otap_to_otlp(&result)], &[otap_to_otlp(&expected)]);
+    }
+
+    /// Scenario: A trace filter has neither an include nor an exclude rule.
+    /// Guarantees: All spans pass through and the reported filtered count is zero.
+    #[test]
+    fn test_filter_pass_through_reports_no_filtered_spans() {
+        let filter = TraceFilter::new(None, None);
+        let spans = vec![
+            Span::build().name("span_name_1").finish(),
+            Span::build().name("span_name_2").finish(),
+        ];
+        let input = otlp_to_otap(&OtlpProtoMessage::Traces(TracesData {
+            resource_spans: vec![ResourceSpans {
+                scope_spans: vec![ScopeSpans {
+                    spans: spans.clone(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        }));
+
+        let (result, spans_consumed, spans_filtered) = filter.filter(input).unwrap();
+
+        assert_eq!(spans_consumed, 2);
+        assert_eq!(spans_filtered, 0);
+        let expected = otlp_to_otap(&OtlpProtoMessage::Traces(TracesData {
+            resource_spans: vec![ResourceSpans {
+                scope_spans: vec![ScopeSpans {
+                    spans,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        }));
         assert_equivalent(&[otap_to_otlp(&result)], &[otap_to_otlp(&expected)]);
     }
 }

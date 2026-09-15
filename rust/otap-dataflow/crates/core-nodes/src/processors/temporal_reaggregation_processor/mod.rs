@@ -139,6 +139,7 @@ pub static TEMPORAL_REAGGREGATION_PROCESSOR_FACTORY: otel_arrow_dfe_engine::Proc
          _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
             create_temporal_reaggregation_processor(pipeline_ctx, node, node_config, proc_cfg)
         },
+    context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<Config>,
 };
@@ -1485,10 +1486,10 @@ fn has_aggregatable_metrics<V: MetricsView>(view: &V) -> bool {
     for resource_metrics in view.resources() {
         for scope_metrics in resource_metrics.scopes() {
             for metric in scope_metrics.metrics() {
-                if let Some(data) = metric.data() {
-                    if is_data_aggregatable(&data) {
-                        return true;
-                    }
+                if let Some(data) = metric.data()
+                    && is_data_aggregatable(&data)
+                {
+                    return true;
                 }
             }
         }
@@ -3941,20 +3942,20 @@ mod tests {
                 let mut match_reason = true;
                 let mut match_error = true;
 
-                if let Some(o) = outcome {
-                    if s.measurement_attribute_value("outcome") != Some(o) {
-                        match_outcome = false;
-                    }
+                if let Some(o) = outcome
+                    && s.measurement_attribute_value("outcome") != Some(o)
+                {
+                    match_outcome = false;
                 }
-                if let Some(r) = reason {
-                    if s.measurement_attribute_value("reason") != Some(r) {
-                        match_reason = false;
-                    }
+                if let Some(r) = reason
+                    && s.measurement_attribute_value("reason") != Some(r)
+                {
+                    match_reason = false;
                 }
-                if let Some(e) = error_type {
-                    if s.measurement_attribute_value("error.type") != Some(e) {
-                        match_error = false;
-                    }
+                if let Some(e) = error_type
+                    && s.measurement_attribute_value("error.type") != Some(e)
+                {
+                    match_error = false;
                 }
 
                 if match_outcome && match_reason && match_error {

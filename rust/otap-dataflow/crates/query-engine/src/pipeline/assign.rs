@@ -238,15 +238,14 @@ impl AssignPipelineStage {
             // ambiguous, which is the case for attributes/AnyValues, but we've handled AnyValue
             // above, so the remaining types are all concrete and safe to expect here
             .expect("dest column data type");
-
         // if we've received an AnyValue as the assignment source, but the destination is not an
         // AnyValue, we coerce attempt to coerce it into a single value
-        if let ColumnarValue::Array(values) = &scoped_value.values {
-            if is_any_value_data_type(values.data_type()) {
-                let coerced_value_col =
-                    attempt_coerce_value_column_from_any_value_struct_column(values)?;
-                scoped_value.values = ColumnarValue::Array(coerced_value_col);
-            }
+        if let ColumnarValue::Array(values) = &scoped_value.values
+            && is_any_value_data_type(values.data_type())
+        {
+            let coerced_value_col =
+                attempt_coerce_value_column_from_any_value_struct_column(values)?;
+            scoped_value.values = ColumnarValue::Array(coerced_value_col);
         }
 
         // coerce static scalar int: if the result was a static scalar integer, it will have been
@@ -268,12 +267,12 @@ impl AssignPipelineStage {
 
         // if it's dict encoded, check if the dict values match the expected type
         let column_supports_dict_encoding = root_field_supports_dict_encoding(dest_column_name);
-        if !type_compatible && column_supports_dict_encoding {
-            if let DataType::Dictionary(_, dict_val_type) = &eval_result_column_type {
-                if dict_val_type.as_ref() == &expected_column_data_type {
-                    type_compatible = true
-                }
-            }
+        if !type_compatible
+            && column_supports_dict_encoding
+            && let DataType::Dictionary(_, dict_val_type) = &eval_result_column_type
+            && dict_val_type.as_ref() == &expected_column_data_type
+        {
+            type_compatible = true
         }
 
         // if result is not type compatible, return error
@@ -522,24 +521,22 @@ impl AssignPipelineStage {
         let column_supports_dict_encoding =
             nested_struct_field_supports_dict_encoding(dest_column_name, dest_field_name);
 
-        if let ColumnarValue::Array(values) = &scoped_value.values {
-            if is_any_value_data_type(values.data_type()) {
-                let coerced = attempt_coerce_value_column_from_any_value_struct_column(values)?;
-                scoped_value.values = ColumnarValue::Array(coerced);
-            }
+        if let ColumnarValue::Array(values) = &scoped_value.values
+            && is_any_value_data_type(values.data_type())
+        {
+            let coerced = attempt_coerce_value_column_from_any_value_struct_column(values)?;
+            scoped_value.values = ColumnarValue::Array(coerced);
         }
 
         // Coerce static scalar integers to the destination field type (e.g. AnyInt literal -> UInt32).
         // Mirrors the same cast done in assign_to_root.
-        if let Some(dest_logical_type) = nested_struct_field_type(dest_field_name) {
-            if let Some(dest_arrow_type) = dest_logical_type.datatype() {
-                if scoped_value.scope == DataScope::StaticScalar
-                    && scoped_value.values.data_type().is_integer()
-                    && dest_arrow_type.is_integer()
-                {
-                    scoped_value.values = scoped_value.values.cast_to(&dest_arrow_type, None)?;
-                }
-            }
+        if let Some(dest_logical_type) = nested_struct_field_type(dest_field_name)
+            && let Some(dest_arrow_type) = dest_logical_type.datatype()
+            && scoped_value.scope == DataScope::StaticScalar
+            && scoped_value.values.data_type().is_integer()
+            && dest_arrow_type.is_integer()
+        {
+            scoped_value.values = scoped_value.values.cast_to(&dest_arrow_type, None)?;
         }
 
         let mut values = eval_result_to_array(
@@ -643,8 +640,20 @@ impl AssignPipelineStage {
         };
 
         let attrs_record_batch = match otap_batch.get(attrs_payload_type) {
-            Some(attrs_batch) => attrs_batch,
-            None => EMPTY_U16_ATTRS_RECORD_BATCH.deref(),
+            Some(attrs_batch) => Cow::Borrowed(attrs_batch),
+            None => {
+                // add an indicator to the parent id column that it is not transport/delta encoded.
+                // the upsert_attrs function assumes that transport/delta encoding has already been
+                // removed from the parent ID.
+                let batch = EMPTY_U16_ATTRS_RECORD_BATCH.deref();
+                let schema = batch.schema_ref();
+                Cow::Owned(RecordBatch::new_empty(Arc::new(update_field_metadata(
+                    schema,
+                    consts::PARENT_ID,
+                    metadata::COLUMN_ENCODING,
+                    metadata::encodings::PLAIN,
+                ))))
+            }
         };
 
         let mut parent_id_set = self.id_bitmap_pool.acquire();
@@ -737,12 +746,12 @@ impl AssignPipelineStage {
             // Attempt to coerce the AnyValue into a single column. In this case, we do this as an
             // optimization: this makes the join faster because we can take fewer columns, and it
             // also makes it so we avoid entering `decompose_any_value_upsert` upsert.
-            if let ColumnarValue::Array(ref arr) = scoped_value.values {
-                if is_any_value_data_type(arr.data_type()) {
-                    let coerced_value_col =
-                        attempt_coerce_value_column_from_any_value_struct_column(arr)?;
-                    scoped_value.values = ColumnarValue::Array(coerced_value_col);
-                }
+            if let ColumnarValue::Array(ref arr) = scoped_value.values
+                && is_any_value_data_type(arr.data_type())
+            {
+                let coerced_value_col =
+                    attempt_coerce_value_column_from_any_value_struct_column(arr)?;
+                scoped_value.values = ColumnarValue::Array(coerced_value_col);
             }
 
             let aligned_values = if let ColumnarValue::Scalar(s) = scoped_value.values {
@@ -795,19 +804,18 @@ impl AssignPipelineStage {
             // If the expression produced an AnyValue struct and we were not already able to
             // coerce it into a single array of a single concrete type array, we split the upsert
             // for this attribute into multiple upserts for each type:
-            if let ColumnarValue::Array(ref arr) = aligned_values {
-                if is_any_value_data_type(arr.data_type()) {
-                    let type_filled_arr = fill_null_type_as_empty(arr)?;
-                    let per_type = decompose_any_value_upsert(
-                        attrs_key,
-                        &existing_key_mask,
-                        &type_filled_arr,
-                        &parent_ids,
-                    )?;
-                    attrs_upserts.extend(per_type);
-
-                    continue;
-                }
+            if let ColumnarValue::Array(ref arr) = aligned_values
+                && is_any_value_data_type(arr.data_type())
+            {
+                let type_filled_arr = fill_null_type_as_empty(arr)?;
+                let per_type = decompose_any_value_upsert(
+                    attrs_key,
+                    &existing_key_mask,
+                    &type_filled_arr,
+                    &parent_ids,
+                )?;
+                attrs_upserts.extend(per_type);
+                continue;
             }
 
             attrs_upserts.push(AttributeUpsert {
@@ -821,7 +829,7 @@ impl AssignPipelineStage {
         self.id_bitmap_pool.release(parent_id_set);
 
         // replace attributes batch
-        let new_attrs = upsert_attributes(attrs_record_batch, &attrs_upserts)?;
+        let new_attrs = upsert_attributes(&attrs_record_batch, &attrs_upserts)?;
         otap_batch.set(attrs_payload_type, new_attrs)?;
 
         Ok(otap_batch)
@@ -899,12 +907,12 @@ impl AssignPipelineStage {
                 .take()
                 .unwrap_or_else(|| ScopedValue::new_scalar(ScalarValue::Null));
 
-            if let ColumnarValue::Array(ref arr) = scoped_value.values {
-                if is_any_value_data_type(arr.data_type()) {
-                    let coerced_value_col =
-                        attempt_coerce_value_column_from_any_value_struct_column(arr)?;
-                    scoped_value.values = ColumnarValue::Array(coerced_value_col);
-                }
+            if let ColumnarValue::Array(ref arr) = scoped_value.values
+                && is_any_value_data_type(arr.data_type())
+            {
+                let coerced_value_col =
+                    attempt_coerce_value_column_from_any_value_struct_column(arr)?;
+                scoped_value.values = ColumnarValue::Array(coerced_value_col);
             }
 
             let aligned_values = if let ColumnarValue::Scalar(s) = scoped_value.values {
@@ -1469,13 +1477,12 @@ impl PipelineStage for AssignPipelineStage {
         // this pipeline stage may be seeing a different subset of the overall batch, but we need
         // to ensure the IDs that are assigned are not duplicated across branches. That is why we
         // add this extension.
-        if let ColumnAccessor::Attributes(attrs_id, _) = &self.dest_columns[0] {
-            if *attrs_id == AttributesIdentifier::Root
-                && exec_state.get_extension::<NextIdTracker>().is_none()
-            {
-                let next_id_tracker = NextIdTracker::try_new(otap_batch)?;
-                exec_state.set_extension(next_id_tracker);
-            }
+        if let ColumnAccessor::Attributes(attrs_id, _) = &self.dest_columns[0]
+            && *attrs_id == AttributesIdentifier::Root
+            && exec_state.get_extension::<NextIdTracker>().is_none()
+        {
+            let next_id_tracker = NextIdTracker::try_new(otap_batch)?;
+            exec_state.set_extension(next_id_tracker);
         }
 
         Ok(())
@@ -2474,7 +2481,7 @@ mod test {
                 trace::v1::Span,
             },
         },
-        schema::consts,
+        schema::{consts, is_parent_id_plain_encoded},
         testing::round_trip::{
             otap_to_otlp, otlp_to_otap, to_logs_data, to_metrics_data, to_traces_data,
         },
@@ -4794,6 +4801,7 @@ mod test {
         let logs_data = to_logs_data(vec![
             LogRecord::build().event_name("event1").finish(),
             LogRecord::build().event_name("event2").finish(),
+            LogRecord::build().event_name("event2").finish(),
         ]);
 
         // there is no attribute z
@@ -5567,9 +5575,66 @@ mod test {
         );
     }
 
+    /// Scenario: inserting an attribute to the root record when there are no existing attributes
+    /// Guarantees: a new attribute record batch is created containing the new attributes and with
+    /// the correct ID column encoding to ensure attrs can be decoded to OTLP.
+    #[tokio::test]
+    async fn test_insert_root_attribute_no_existing_batch() {
+        // use three logs - these should get assigned ids [0, 1, 2], so if for some reason the
+        // new attrs parent_id column wasn't plain encoded, we'd have trouble associating the IDs
+        // because the decoder may consider them delta encoded.
+        let log_records = vec![
+            LogRecord::build().finish(),
+            LogRecord::build().finish(),
+            LogRecord::build().finish(),
+        ];
+        let query = "logs 
+            | extend attributes[\"x\"] = \"a\"
+            | extend attributes[\"y\"] = \"b\"
+            | extend attributes[\"z\"] = \"c\"
+            ";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records)));
+        assert!(input.get(ArrowPayloadType::LogAttrs).is_none());
+
+        let result = pipeline.execute(input).await.unwrap();
+        let log_attrs = result.get(ArrowPayloadType::LogAttrs).unwrap();
+        assert!(is_parent_id_plain_encoded(log_attrs));
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let result_log_records = &result_logs_data.resource_logs[0].scope_logs[0].log_records;
+        assert_eq!(result_log_records.len(), 3);
+        for log_record in result_log_records {
+            assert_eq!(
+                log_record.attributes,
+                vec![
+                    KeyValue::new("x", AnyValue::new_string("a")),
+                    KeyValue::new("y", AnyValue::new_string("b")),
+                    KeyValue::new("z", AnyValue::new_string("c")),
+                ]
+            )
+        }
+    }
+
+    /// Scenario: inserting an attribute to the root record when there are no existing attributes
+    /// Guarantees: a new attribute record batch is created containing the new attributes and with
+    /// the correct ID column encoding to ensure attrs can be decoded to OTLP.
     #[tokio::test]
     async fn test_insert_non_root_attribute_no_existing_batch() {
+        // use three resources - these should get assigned ids [0, 1, 2], so if for some reason the
+        // new attrs parent_id column wasn't plain encoded, we'd have trouble associating the IDs
+        // because the decoder may consider them delta encoded.
         let logs_data = LogsData::new(vec![
+            ResourceLogs::new(
+                Resource::build().finish(),
+                vec![ScopeLogs::new(
+                    InstrumentationScope::default(),
+                    vec![LogRecord::build().finish()],
+                )],
+            ),
             ResourceLogs::new(
                 Resource::build().finish(),
                 vec![ScopeLogs::new(
@@ -5593,6 +5658,9 @@ mod test {
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         assert!(input.get(ArrowPayloadType::ResourceAttrs).is_none());
         let result = pipeline.execute(input).await.unwrap();
+
+        let resource_attrs = result.get(ArrowPayloadType::ResourceAttrs).unwrap();
+        assert!(is_parent_id_plain_encoded(resource_attrs));
         let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
             panic!("invalid signal type");
         };
@@ -5602,6 +5670,11 @@ mod test {
             vec![KeyValue::new("y", AnyValue::new_string("b")),]
         );
         let resource = &result_logs_data.resource_logs[1].resource.as_ref().unwrap();
+        assert_eq!(
+            resource.attributes,
+            vec![KeyValue::new("y", AnyValue::new_string("b")),]
+        );
+        let resource = &result_logs_data.resource_logs[2].resource.as_ref().unwrap();
         assert_eq!(
             resource.attributes,
             vec![KeyValue::new("y", AnyValue::new_string("b")),]

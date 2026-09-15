@@ -99,15 +99,15 @@ impl MapValue for InstrumentationScope {
     }
 
     fn get_items<'a>(&'a self, item_callback: &mut MapValueIteratorCallback<'a, '_>) -> bool {
-        if let Some(v) = &self.name {
-            if !(item_callback)("Name", Value::String(v)) {
-                return false;
-            }
+        if let Some(v) = &self.name
+            && !(item_callback)("Name", Value::String(v))
+        {
+            return false;
         }
-        if let Some(v) = &self.version {
-            if !(item_callback)("Version", Value::String(v)) {
-                return false;
-            }
+        if let Some(v) = &self.version
+            && !(item_callback)("Version", Value::String(v))
+        {
+            return false;
         }
         (item_callback)("Attributes", Value::Map(&self.attributes))
     }

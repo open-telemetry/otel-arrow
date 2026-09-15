@@ -73,6 +73,17 @@ pub enum KafkaReceiverError {
     #[error("invalid kafka receiver configuration: kafka topics overlap across signals")]
     ConfigOverlappingTopics,
 
+    /// A signal was configured with an encoding that it does not support.
+    #[error(
+        "invalid kafka receiver configuration: {encoding} encoding is not supported for {signal}"
+    )]
+    ConfigUnsupportedEncoding {
+        /// The signal with the unsupported encoding.
+        signal: String,
+        /// The configured encoding.
+        encoding: String,
+    },
+
     /// A literal topic name failed Kafka topic-name validation.
     #[error("invalid kafka receiver configuration: {signal}.topics: {message}")]
     ConfigInvalidTopicName {
