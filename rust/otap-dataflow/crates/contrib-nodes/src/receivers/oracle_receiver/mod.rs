@@ -112,6 +112,7 @@ pub static ORACLE_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
             ))
         },
     validate_config: validate,
+    context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
 };
 
