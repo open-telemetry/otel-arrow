@@ -3,6 +3,7 @@
 
 //! Engine and pipeline policy declarations.
 
+use crate::authorized_identity_policy::AuthorizedIdentityPolicy;
 use crate::byte_units;
 use crate::health::HealthPolicy;
 use crate::transport_headers_policy::TransportHeadersPolicy;
@@ -55,6 +56,9 @@ pub struct Policies {
     /// (the feature is entirely opt-in).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) transport_headers: Option<TransportHeadersPolicy>,
+    /// Authorized identity policy selecting verified claims for context storage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) authorized_identity: Option<AuthorizedIdentityPolicy>,
 }
 
 impl Policies {
@@ -79,6 +83,7 @@ impl Policies {
         let mut core_allocation = None;
         let mut memory_limiter = None;
         let mut transport_headers = None;
+        let mut authorized_identity = None;
         let mut effective_rate_limiters = None;
         let mut rate_limiters_resolved = false;
         for scope in scopes {
@@ -105,6 +110,9 @@ impl Policies {
             if transport_headers.is_none() {
                 transport_headers = scope.transport_headers.as_ref();
             }
+            if authorized_identity.is_none() {
+                authorized_identity = scope.authorized_identity.as_ref();
+            }
             if !rate_limiters_resolved
                 && let Some(rate_limiters) = scope
                     .resources
@@ -125,6 +133,7 @@ impl Policies {
                 memory_limiter: memory_limiter.cloned(),
             },
             transport_headers: transport_headers.cloned(),
+            authorized_identity: authorized_identity.cloned(),
             rate_limiters: effective_rate_limiters.unwrap_or_default(),
             rate_limiter_scope: None,
         }
@@ -233,6 +242,11 @@ impl Policies {
                 "{path_prefix}.transport_headers.header_propagation.default.selector: {e}"
             ));
         }
+        if let Some(authorized_identity) = &self.authorized_identity
+            && let Err(e) = authorized_identity.validate()
+        {
+            errors.push(format!("{path_prefix}.authorized_identity: {e}"));
+        }
         if let Some(rate_limiters) = self
             .resources
             .as_ref()
@@ -269,6 +283,8 @@ pub struct ResolvedPolicies {
     /// Transport headers policy. `None` when the feature is not configured
     /// (opt-in only -- no headers are captured or propagated by default).
     pub transport_headers: Option<TransportHeadersPolicy>,
+    /// Authorized identity claim projection policy.
+    pub authorized_identity: Option<AuthorizedIdentityPolicy>,
     /// Effective named pressure-aware receiver admission rate limiters.
     ///
     /// Names remain available to planning for node bindings, telemetry, and
@@ -287,6 +303,7 @@ impl PartialEq for ResolvedPolicies {
             runtime_recovery,
             resources,
             transport_headers,
+            authorized_identity,
             rate_limiters,
             rate_limiter_scope: _,
         } = self;
@@ -297,6 +314,7 @@ impl PartialEq for ResolvedPolicies {
             runtime_recovery: other_runtime_recovery,
             resources: other_resources,
             transport_headers: other_transport_headers,
+            authorized_identity: other_authorized_identity,
             rate_limiters: other_rate_limiters,
             rate_limiter_scope: _,
         } = other;
@@ -307,6 +325,7 @@ impl PartialEq for ResolvedPolicies {
             && runtime_recovery == other_runtime_recovery
             && resources == other_resources
             && transport_headers == other_transport_headers
+            && authorized_identity == other_authorized_identity
             && rate_limiters == other_rate_limiters
         // Declaration scope is retained for future shared-state planning but
         // has no V1 runtime effect. Include it when scope changes runtime shape.
@@ -350,6 +369,7 @@ impl ResolvedPolicies {
             runtime_recovery: self_runtime_recovery,
             resources: _,
             transport_headers: self_transport_headers,
+            authorized_identity: self_authorized_identity,
             rate_limiters: self_rate_limiters,
             rate_limiter_scope: _,
         } = self;
@@ -360,6 +380,7 @@ impl ResolvedPolicies {
             runtime_recovery: other_runtime_recovery,
             resources: _,
             transport_headers: other_transport_headers,
+            authorized_identity: other_authorized_identity,
             rate_limiters: other_rate_limiters,
             rate_limiter_scope: _,
         } = other;
@@ -369,6 +390,7 @@ impl ResolvedPolicies {
             && self_telemetry == other_telemetry
             && self_runtime_recovery == other_runtime_recovery
             && self_transport_headers == other_transport_headers
+            && self_authorized_identity == other_authorized_identity
             // Declaration scope is preserved for future shared-state planning,
             // but has no V1 runtime effect. Re-add it when scope changes runtime shape.
             && self_rate_limiters == other_rate_limiters
@@ -1328,6 +1350,41 @@ mod tests {
         );
     }
 
+    /// Scenario: a pipeline-level authorized identity policy overrides an
+    /// engine-level policy.
+    /// Guarantees: policy resolution uses the same nearest-scope precedence as
+    /// the other optional context policy families.
+    #[test]
+    fn authorized_identity_policy_resolves_by_scope() {
+        let engine: Policies = serde_yaml::from_str(
+            r#"
+authorized_identity:
+  - claim: sub
+    store_as: engine_tenant
+"#,
+        )
+        .expect("valid engine policy");
+        let pipeline: Policies = serde_yaml::from_str(
+            r#"
+authorized_identity:
+  - claim: groups
+    store_as: pipeline_groups
+"#,
+        )
+        .expect("valid pipeline policy");
+
+        let resolved = Policies::resolve([&pipeline, &engine]);
+        let policy = resolved
+            .authorized_identity
+            .expect("authorized identity policy resolved");
+        let entries = policy
+            .iter()
+            .map(|entry| (entry.claim.as_ref(), entry.store_as.as_str()))
+            .collect::<Vec<_>>();
+
+        assert_eq!(entries, vec![("groups", "pipeline_groups")]);
+    }
+
     /// Scenario: pipeline and parent scopes specify different runtime recovery policies.
     /// Guarantees: policy resolution selects the complete lower-scope policy family.
     #[test]
@@ -2198,6 +2255,27 @@ hard_limit: 2 GiB
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("transport_headers.header_propagation.default.selector"));
         assert!(errors[0].contains("'named' list is required"));
+    }
+
+    /// Scenario: an authorized identity policy contains duplicate destination names.
+    /// Guarantees: policy validation reports the error with the authorized identity path.
+    #[test]
+    fn validates_authorized_identity_policy() {
+        let authorized_identity = serde_json::from_value(serde_json::json!([
+            {"claim": "sub", "store_as": "tenant"},
+            {"claim": "groups", "store_as": "tenant"}
+        ]))
+        .expect("policy parses before semantic validation");
+        let policies = Policies {
+            authorized_identity: Some(authorized_identity),
+            ..Default::default()
+        };
+
+        let errors = policies.validation_errors("policies");
+
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("policies.authorized_identity"));
+        assert!(errors[0].contains("destination `tenant` is configured more than once"));
     }
 
     #[test]
