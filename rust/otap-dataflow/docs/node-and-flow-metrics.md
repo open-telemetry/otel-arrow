@@ -73,7 +73,7 @@ counts:
 receiver.received = classified external messages
 node.output       = emitted PData messages
 node.input        = consumed PData messages
-exporter.attempted = external submission attempts
+exporter.attempted = node-local export attempts
 ```
 
 A receiver can emit several PData messages from one external message or combine
@@ -82,10 +82,11 @@ message across several external submissions or combine several PData messages
 into one external batch. Retries add exporter attempts without adding input
 PData messages.
 
-Source and generator receivers have no external received message, so they may
-emit `node.output` without emitting `receiver.received`. Buffered exporters may
-complete an attempt when a node-owned writer accepts the data while reporting
-later flush or storage operations through node-specific telemetry.
+Receivers without an independently classifiable external message, including
+some source and generator receivers, may emit `node.output` without emitting
+`receiver.received`. Buffered exporters may complete an attempt when a
+node-owned writer accepts the data while reporting later flush or storage
+operations through node-specific telemetry.
 
 Interpret each metric at its own boundary rather than expecting equality across
 these mappings. Node-specific documentation should state whether the work is
@@ -94,11 +95,13 @@ in the telemetry
 [`Shared receiver and exporter boundary metrics`](telemetry/metrics-guide.md#shared-receiver-and-exporter-boundary-metrics)
 guide.
 
-Message, item, and size counters have bounded `signal` and `outcome` data-point
-attributes. `signal` is one of `logs`, `metrics`, or `traces`; `outcome` is
-`success`, `failure`, or `refused`, recorded during terminal ACK/NACK
-unwinding. The metric-set entity attributes identify the pipeline and node, so
-group by those attributes when comparing nodes.
+Engine-managed node message, item, and size counters have bounded `signal` and
+`outcome` data-point attributes. `signal` is one of `logs`, `metrics`, or
+`traces`; `outcome` is `success`, `failure`, or `refused`, recorded during
+terminal ACK/NACK unwinding. Receiver and exporter boundary metrics record
+outcomes at their node-defined boundaries instead. The metric-set entity
+attributes identify the pipeline and node, so group by those attributes when
+comparing nodes.
 
 ### Enable Optional Measurements
 

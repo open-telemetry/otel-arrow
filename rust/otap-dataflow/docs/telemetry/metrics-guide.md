@@ -243,7 +243,7 @@ identify how external work maps to PData:
 
 ```text
 receiver ratio: external messages : emitted PData messages
-exporter ratio: input PData messages : external submissions
+exporter ratio: input PData messages : node-local export attempts
 
 1:1   one input maps to one output
 1:N   one input fans out to several outputs
@@ -251,11 +251,13 @@ N:1   several inputs aggregate into one output
 N:M   inputs and outputs are regrouped across independently owned batches
 ```
 
-Shared boundary metrics count the external side of this mapping. Node metrics
-count the PData side. Do not force the two cardinalities to match.
+Receiver boundary metrics count external messages. Exporter boundary metrics
+count node-local attempts to deliver externally, including attempts that end
+during preparation before a physical submission exists. Node metrics count the
+PData side. Do not force these cardinalities to match.
 
 `receiver.received` applies to ingress receivers with independently
-classifiable external messages. Source and generator receivers, such as
+classifiable external messages. Receivers without such a message, such as
 periodic scrapers or synthetic traffic generators, do not invent received
 messages to use this metric. They use `node.output` for emitted PData and
 node-specific collection or generation metrics. A future shared
@@ -264,10 +266,10 @@ operations separately from externally pushed messages.
 
 | Work shape | Receiver boundary | Exporter boundary |
 | --- | --- | --- |
-| `1:1` | Record one `receiver.received` observation for the external message. | Record one `exporter.attempted` observation for the external submission. |
-| `1:N` fan-out | Record one terminal received outcome for the external message; `node.output` records each emitted PData message. | Record one attempt per external submission. Sibling attempts may share a preparation timing origin, but each owns its items, payload size, and outcome. |
+| `1:1` | Record one `receiver.received` observation for the external message. | Record one `exporter.attempted` observation for the node-local delivery attempt, including a preparation-only terminal outcome. |
+| `1:N` fan-out | Record one terminal local outcome for the external message; `node.output` records each emitted PData message. | Record one attempt per external submission when fan-out succeeds. A failure before submissions are discovered records one preparation-only attempt. |
 | `N:1` aggregation | Record each external message independently; the later aggregate PData emission belongs to `node.output`. | Record one attempt for the external batch, using batch-level items and payload size rather than repeating an input PData count. |
-| `N:M` regrouping | Track external messages and PData emissions independently. Maintain explicit ownership when one external message contributes to several outputs or one output combines several messages. | Track logical batch ownership independently from physical submissions. ACK/NACK follows the PData-to-batch mapping; `exporter.attempted` follows every physical submission, including retries. |
+| `N:M` regrouping | Track external messages and PData emissions independently. Maintain explicit ownership when one external message contributes to several outputs or one output combines several messages. | Track logical batch ownership independently from attempts. ACK/NACK follows the PData-to-batch mapping; `exporter.attempted` records physical submissions, retries, and preparation-only terminal outcomes. |
 
 For any shape, define stable identities for the external message or submission,
 the PData messages involved, and any internal batch. Document when each identity
@@ -276,10 +278,10 @@ is created, which work it owns, and how partial success is aggregated.
 Each node must document a stable processing or attempt boundary. Receiver
 processing excludes downstream processing, batching wait, channel handoff
 wait, and Ack/Nack completion. An exporter attempt starts when the node
-begins work owned by one physical submission and ends at its terminal local or
-backend result. It includes submission-owned encoding and backend latency when
-those stages are reached, but excludes logical batch buildup, retry backoff, and
-the time needed to notify upstream after the result is known.
+begins work owned by that attempt and ends at its terminal local or backend
+result. It includes attempt-owned encoding and backend latency when those
+stages are reached, but excludes logical batch buildup, retry backoff, and the
+time needed to notify upstream after the result is known.
 
 Node metrics use bounded `signal` and `outcome` attributes. Nodes may
 retain additional bounded diagnostic metrics, such as protocol-specific
@@ -295,8 +297,8 @@ Shared metric helpers own optional-measurement policy checks. Node code
 must not independently inspect telemetry interests before reading the clock,
 counting items, or recording payload size. `PipelineContext` provides the
 effective node interests when the helper is registered. Constructing an
-exporter attempt starts its optional duration measurement so synchronous
-preparation before an in-flight request is included.
+exporter attempt starts its optional duration measurement so synchronous work
+owned by that attempt is included.
 
 `runtime_metrics: detailed` enables all shared optional node
 measurements. A node can instead opt into messages, local duration, item
@@ -349,8 +351,10 @@ metrics; use a node-specific rejection metric for that condition.
 
 Apply the following rules when external messages and emitted PData are not 1:1:
 
-- For `1:N` fan-out, record one terminal received outcome for the external
-  message and aggregate all required local handoffs into it.
+- For `1:N` fan-out, record one terminal local outcome for the external message
+  before downstream handoff. Do not aggregate later PData handoff outcomes into
+  an observation that has already completed; `node.output` and node-specific
+  diagnostics own those outcomes.
 - For `N:1` aggregation, record each external message independently rather than
   delaying or duplicating observations to align them with a later PData batch.
 - For `N:M` regrouping, maintain explicit external-message-to-PData ownership
@@ -418,14 +422,16 @@ do not use the attempt metric as a duplicate input-message count.
 
 Apply the following rules when PData and external submissions are not 1:1:
 
-- For `1:N` fan-out, create one attempt per external submission. If preparation
-  is shared, preserve its timing origin for every sibling while keeping item
-  count, payload size, and outcome independent.
+- For `1:N` fan-out, create one attempt per external submission, with
+  independent item count, payload size, outcome, and attempt-owned timing.
+  Measure preparation shared before sibling attempt identities exist through
+  node-specific telemetry.
 - For `N:1` aggregation, create one attempt for the external batch and record
   batch-level items and payload size. Do not emit one attempt per contributing
   PData message.
 - For `N:M` batching, maintain explicit PData-to-logical-batch ownership for
-  ACK/NACK. Emit one attempt for every physical submission of those batches.
+  ACK/NACK. Emit one attempt for every physical submission of those batches and
+  for preparation-only work that terminates before submission.
 - Treat a logical batch and an attempt as separate identities. One logical
   batch can produce several attempts when it is retried, and each attempt
   repeats that batch's item count and payload size.

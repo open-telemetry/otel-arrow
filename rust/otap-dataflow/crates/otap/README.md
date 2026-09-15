@@ -32,7 +32,8 @@ optional contrib processors) live in `crates/contrib-nodes`.
 
 This crate provides the shared `ReceiverMetrics` and `ExporterMetrics` helpers
 for external node boundaries. These metrics count external messages and
-submissions independently from engine-managed PData node metrics.
+node-local export attempts independently from engine-managed PData node
+metrics.
 
 The complete contract, including 1:1, fan-out, aggregation, many-to-many,
 retry, timing, payload-size, and outcome guidance, is in the

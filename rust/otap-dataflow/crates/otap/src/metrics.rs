@@ -348,11 +348,12 @@ impl ExporterAttemptedItemsMetrics {
     }
 }
 
-/// Prepared instrumentation for one external submission attempt.
+/// Prepared instrumentation for one node-local export attempt.
 ///
-/// An attempt is not inherently one input PData message. Fan-out creates one
-/// attempt per external submission; aggregation creates one attempt per
-/// external batch; retries create new attempts.
+/// An attempt usually owns one external submission, but it can terminate
+/// during preparation or as a successful no-op. Fan-out creates one attempt
+/// per external submission; aggregation creates one attempt per external
+/// batch; retries create new attempts.
 #[derive(Debug)]
 pub struct ExporterAttempt {
     signal: SignalType,
@@ -398,12 +399,12 @@ impl ExporterMetrics {
         }
     }
 
-    /// Starts instrumentation for one external submission attempt.
+    /// Starts instrumentation for one node-local export attempt.
     ///
-    /// Start before preparation owned by the submission. If one preparation
-    /// phase fans out, each sibling submission needs an independent attempt
-    /// with the shared preparation timing origin. A retry instead starts with a
-    /// fresh timing origin.
+    /// Start before preparation owned by this attempt. Shared preparation that
+    /// precedes discovery of fan-out submissions requires separate
+    /// node-specific telemetry. A retry starts a new attempt with a fresh
+    /// timing origin.
     #[must_use]
     pub fn attempt(&self, signal: SignalType) -> ExporterAttempt {
         ExporterAttempt {
