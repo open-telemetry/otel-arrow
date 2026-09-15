@@ -581,8 +581,9 @@ impl Context {
         &self.stack
     }
 
-    /// Clone the request-scoped metadata (transport headers, peer address) and
-    /// leave the Ack/Nack routing state behind.
+    /// Clone the request-scoped metadata (transport headers, authorized
+    /// identity entries, and peer address) and leave the Ack/Nack routing state
+    /// behind.
     ///
     /// Frames are not copied: a processor that splits a batch parks the inbound
     /// context and subscribes each outbound batch separately, so copied frames
@@ -813,9 +814,10 @@ impl OtapPdata {
     /// pipelines) where in-process Ack/Nack routing state must not leak across
     /// boundaries.
     ///
-    /// Transport headers and peer address are **preserved** because they
-    /// represent request-scoped metadata (tenant ID, auth, trace context,
-    /// originating peer) that should survive cross-pipeline hops.
+    /// Transport headers, authorized identity entries, and peer address are
+    /// **preserved** because they represent request-scoped metadata (tenant ID,
+    /// verified identity, trace context, originating peer) that should survive
+    /// cross-pipeline hops.
     #[must_use]
     pub fn clone_without_context(&self) -> Self {
         Self {
