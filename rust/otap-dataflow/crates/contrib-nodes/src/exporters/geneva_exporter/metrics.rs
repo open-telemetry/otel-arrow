@@ -5,6 +5,7 @@
 
 use geneva_uploader::client::UploadError;
 use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_engine::Interests;
 use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_otap::metrics::{ExporterAttempt, ExporterMetrics};
 use otel_arrow_dfe_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
@@ -13,7 +14,7 @@ use otel_arrow_dfe_telemetry::instrument::{Counter, HistogramNormal};
 use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
-use std::time::Duration;
+use std::time::Instant;
 
 /// Bounded reason that Geneva exporter processing failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
@@ -59,7 +60,7 @@ impl GenevaExporterErrorType {
     /// Returns whether the failure explicitly rejected the attempted payload.
     #[must_use]
     pub(super) const fn is_refusal(self) -> bool {
-        matches!(self, Self::Throttled | Self::Client | Self::AccountRouting)
+        matches!(self, Self::Throttled | Self::Client)
     }
 }
 
@@ -110,7 +111,7 @@ struct GenevaEncodingMetrics {
 )]
 #[derive(Debug, Default, Clone)]
 struct GenevaFailureMetrics {
-    /// Number of failed or refused delivery attempts.
+    /// Number of failed Geneva processing operations.
     #[metric(unit = "{message}")]
     messages: Counter<u64>,
 }
@@ -135,6 +136,7 @@ pub(super) struct GenevaExporterMetrics {
     encoding: MeasurementMetricSet<GenevaEncodingMetrics>,
     failures: MeasurementMetricSet<GenevaFailureMetrics>,
     skipped: MeasurementMetricSet<GenevaSkippedMetrics>,
+    measure_duration: bool,
 }
 
 impl GenevaExporterMetrics {
@@ -146,7 +148,15 @@ impl GenevaExporterMetrics {
             encoding: GenevaEncodingMetrics::register(pipeline_ctx),
             failures: GenevaFailureMetrics::register(pipeline_ctx),
             skipped: GenevaSkippedMetrics::register(pipeline_ctx),
+            measure_duration: pipeline_ctx
+                .node_interests()
+                .contains(Interests::NODE_LOCAL_DURATION),
         }
+    }
+
+    /// Starts an encoding timer only when duration telemetry is enabled.
+    pub(super) fn start_encoding(&self) -> Option<Instant> {
+        self.measure_duration.then(Instant::now)
     }
 
     /// Records one completed Geneva encoding operation.
@@ -154,12 +164,14 @@ impl GenevaExporterMetrics {
         &mut self,
         signal: SignalType,
         outcome: Outcome,
-        duration: Duration,
+        started_at: Option<Instant>,
     ) {
-        let metrics = self
-            .encoding
-            .with(SignalOutcomeAttributes { signal, outcome });
-        metrics.duration.record(duration.as_secs_f64());
+        if let Some(started_at) = started_at {
+            self.encoding
+                .with(SignalOutcomeAttributes { signal, outcome })
+                .duration
+                .record(started_at.elapsed().as_secs_f64());
+        }
     }
 
     /// Records one bounded Geneva-specific failure category.
@@ -265,11 +277,8 @@ mod tests {
         let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(interests);
         let mut metrics = GenevaExporterMetrics::register(&pipeline_ctx);
 
-        metrics.record_encoding(
-            SignalType::Logs,
-            Outcome::Success,
-            Duration::from_millis(10),
-        );
+        let encoding_started_at = metrics.start_encoding();
+        metrics.record_encoding(SignalType::Logs, Outcome::Success, encoding_started_at);
         let completed = metrics
             .boundary
             .attempt(SignalType::Logs)
@@ -325,6 +334,16 @@ mod tests {
             ),
             128
         );
+        assert!(snapshots.iter().any(|snapshot| {
+            snapshot.descriptor().name == "exporter.geneva.encoding"
+                && snapshot.measurement_attribute_value("signal") == Some("logs")
+                && snapshot.measurement_attribute_value("outcome") == Some("success")
+                && snapshot
+                    .descriptor()
+                    .metrics
+                    .iter()
+                    .any(|metric| metric.name == "duration")
+        }));
         assert_eq!(
             metric_value(
                 &snapshots,
@@ -369,6 +388,25 @@ mod tests {
                 1
             );
         }
+    }
+
+    /// Scenario: Geneva encoding duration telemetry is disabled for a node.
+    /// Guarantees: Starting an encoding operation does not read the clock or emit a duration.
+    #[test]
+    fn encoding_timer_respects_duration_interest() {
+        let (pipeline_ctx, _) = test_pipeline_ctx_with_interests(Interests::NODE_INPUT_METRICS);
+        let mut metrics = GenevaExporterMetrics::register(&pipeline_ctx);
+
+        let started_at = metrics.start_encoding();
+        assert!(started_at.is_none());
+        metrics.record_encoding(SignalType::Logs, Outcome::Success, started_at);
+
+        assert!(
+            metrics
+                .terminal_snapshots()
+                .iter()
+                .all(|snapshot| snapshot.descriptor().name != "exporter.geneva.encoding")
+        );
     }
 
     /// Scenario: Geneva uploader failures span HTTP, transport, routing, and fallback variants.
@@ -423,17 +461,17 @@ mod tests {
     }
 
     /// Scenario: Geneva uploader failures are assigned a shared exporter outcome.
-    /// Guarantees: Capacity, client, and routing rejections are refused while transport and server errors are failures.
+    /// Guarantees: Capacity and client rejections are refused while routing, transport, and server errors are failures.
     #[test]
     fn upload_error_outcomes_match_shared_attempt_semantics() {
         for error_type in [
             GenevaExporterErrorType::Throttled,
             GenevaExporterErrorType::Client,
-            GenevaExporterErrorType::AccountRouting,
         ] {
             assert!(error_type.is_refusal());
         }
         for error_type in [
+            GenevaExporterErrorType::AccountRouting,
             GenevaExporterErrorType::Server,
             GenevaExporterErrorType::Transport,
             GenevaExporterErrorType::Other,
