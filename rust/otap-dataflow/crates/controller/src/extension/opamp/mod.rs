@@ -193,6 +193,10 @@ struct SessionState {
     /// [`RemoteConfigStats::status`] and any associated errors.
     last_reconcile_result: Option<Result<EngineConfigReconcileStatus, ControlPlaneError>>,
 
+    /// A remote config rejected before reconcile could run. This remains authoritative until a
+    /// different config is accepted so the server does not repeatedly push the rejected config.
+    last_rejected: Option<ReplyError>,
+
     /// Phase of message exchange. When connected, the client runs a simple loop and this
     /// phase determines the behaviour of each iteration. See [`Phase`] enum.
     phase: Phase,
@@ -231,6 +235,7 @@ impl SessionState {
             last_sent_message: None,
             last_config_hash: None,
             last_reconcile_result: None,
+            last_rejected: None,
             retry_backoff_ns: None,
             start_time_unix_nano: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -1146,6 +1151,7 @@ where
                 session_state.last_sent_message = Some(reconcile_result_message);
                 session_state.last_reconcile_result = Some(reconcile_result);
                 session_state.last_config_hash = Some(engine_config.config_hash.clone());
+                session_state.last_rejected = None;
 
                 session_state.phase = Phase::ExchangeMessages
             } else if reply.report_full_state
@@ -1158,11 +1164,11 @@ where
                 session_state.sequence_num += 1;
                 let mut message = full_state_reply_message(session_state, config, context);
 
-                if let Some(error) = reply.reply_error {
+                if let Some(error) = reply.reply_error.as_ref() {
                     message.remote_config_status = Some(RemoteConfigStatus {
-                        last_remote_config_hash: error.config_hash,
+                        last_remote_config_hash: error.config_hash.clone(),
                         status: RemoteConfigStatuses::Failed as i32,
-                        error_message: error.message,
+                        error_message: error.message.clone(),
                     })
                 }
 
@@ -1171,6 +1177,10 @@ where
                     return false;
                 }
                 session_state.last_sent_message = Some(message);
+                if let Some(error) = reply.reply_error {
+                    session_state.last_config_hash = Some(error.config_hash.clone());
+                    session_state.last_rejected = Some(error);
+                }
             }
 
             true
@@ -1334,14 +1344,7 @@ fn full_state_reply_message(
     context: &ControllerExtensionContext,
 ) -> AgentToServer {
     let status_snapshot = context.observed_state.snapshot();
-    let mut remote_config_status = RemoteConfigStatus {
-        last_remote_config_hash: session_state.last_config_hash.clone().unwrap_or_default(),
-        ..Default::default()
-    };
-    set_remote_config_status_from_reconcile_result(
-        &mut remote_config_status,
-        session_state.last_reconcile_result.as_ref(),
-    );
+    let remote_config_status = remote_config_status(session_state);
     AgentToServer {
         instance_uid: session_state.instance_uid.to_vec(),
         sequence_num: session_state.sequence_num,
@@ -1365,14 +1368,7 @@ fn heartbeat_message(
     context: &ControllerExtensionContext,
 ) -> AgentToServer {
     let status_snapshot = context.observed_state.snapshot();
-    let mut remote_config_status = RemoteConfigStatus {
-        last_remote_config_hash: session_state.last_config_hash.clone().unwrap_or_default(),
-        ..Default::default()
-    };
-    set_remote_config_status_from_reconcile_result(
-        &mut remote_config_status,
-        session_state.last_reconcile_result.as_ref(),
-    );
+    let remote_config_status = remote_config_status(session_state);
     AgentToServer {
         instance_uid: session_state.instance_uid.to_vec(),
         sequence_num: session_state.sequence_num,
@@ -1382,6 +1378,26 @@ fn heartbeat_message(
         remote_config_status: Some(remote_config_status),
         ..Default::default()
     }
+}
+
+fn remote_config_status(session_state: &SessionState) -> RemoteConfigStatus {
+    if let Some(rejected) = session_state.last_rejected.as_ref() {
+        return RemoteConfigStatus {
+            last_remote_config_hash: rejected.config_hash.clone(),
+            status: RemoteConfigStatuses::Failed as i32,
+            error_message: rejected.message.clone(),
+        };
+    }
+
+    let mut remote_config_status = RemoteConfigStatus {
+        last_remote_config_hash: session_state.last_config_hash.clone().unwrap_or_default(),
+        ..Default::default()
+    };
+    set_remote_config_status_from_reconcile_result(
+        &mut remote_config_status,
+        session_state.last_reconcile_result.as_ref(),
+    );
+    remote_config_status
 }
 
 fn set_remote_config_status_from_reconcile_result(
@@ -2104,6 +2120,84 @@ mod test {
             "status should explain that the existing config remains active: {}",
             status.error_message
         );
+    }
+
+    /// Scenario: a rejected config is re-pushed, followed by full-state and valid config flows.
+    /// Guarantees: re-push is suppressed and failure persists until the valid config is applied.
+    #[tokio::test]
+    async fn test_rejected_config_status_persists_until_valid_config_is_applied() {
+        let control_plane = Arc::new(MockControlPlane::new(empty_engine_config()));
+        let rejected_hash = vec![0, 1, 2];
+        let accepted_hash = vec![5, 1, 4];
+        let responses = vec![
+            Some(ServerToAgent {
+                remote_config: Some(AgentRemoteConfig {
+                    config_hash: rejected_hash.clone(),
+                    config: Some(AgentConfigMap {
+                        config_map: HashMap::from_iter([(
+                            "".into(),
+                            AgentConfigFile {
+                                content_type: "application/json".into(),
+                                body: "not valid json".to_string().encode_to_vec(),
+                            },
+                        )]),
+                    }),
+                }),
+                instance_uid: EXPECTED_INSTANCE_UID_BYTES.to_vec(),
+                ..Default::default()
+            }),
+            None,
+            Some(ServerToAgent {
+                remote_config: Some(AgentRemoteConfig {
+                    config_hash: rejected_hash.clone(),
+                    config: Some(AgentConfigMap {
+                        config_map: HashMap::from_iter([(
+                            "".into(),
+                            AgentConfigFile {
+                                content_type: "application/json".into(),
+                                body: "not valid json".to_string().encode_to_vec(),
+                            },
+                        )]),
+                    }),
+                }),
+                instance_uid: EXPECTED_INSTANCE_UID_BYTES.to_vec(),
+                ..Default::default()
+            }),
+            Some(ServerToAgent {
+                flags: ServerToAgentFlags::ReportFullState as u64,
+                instance_uid: EXPECTED_INSTANCE_UID_BYTES.to_vec(),
+                ..Default::default()
+            }),
+            Some(server_to_agent_with_config(
+                &test_config(),
+                accepted_hash.clone(),
+            )),
+            None,
+            None,
+        ];
+
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "instance_uid": EXPECTED_INSTANCE_UID_STR,
+            "endpoint": "",
+            "heartbeat_interval": "200ms",
+        }))
+        .unwrap();
+
+        let requests =
+            run_web_socket_test_with_config(responses, control_plane, 7, config, None).await;
+        assert_eq!(requests.len(), 7);
+
+        for request in [&requests[2], &requests[3], &requests[4]] {
+            let status = request.remote_config_status.as_ref().unwrap();
+            assert_eq!(status.status, RemoteConfigStatuses::Failed as i32);
+            assert_eq!(status.last_remote_config_hash, rejected_hash);
+            assert!(!status.error_message.is_empty());
+        }
+
+        let applied_status = requests[6].remote_config_status.as_ref().unwrap();
+        assert_eq!(applied_status.status, RemoteConfigStatuses::Applied as i32);
+        assert_eq!(applied_status.last_remote_config_hash, accepted_hash);
+        assert!(applied_status.error_message.is_empty());
     }
 
     /// Scenario: an OpAMP config file declares a standard YAML media type.
