@@ -1270,14 +1270,14 @@ mod tests {
         let logs = static_otlp_logs_with_config(5, Some(1024), None, false, None);
         let records = &logs.resource_logs[0].scope_logs[0].log_records;
         assert_eq!(records.len(), 5);
-        if let Some(body) = &records[0].body {
-            if let Some(ref value) = body.value {
-                match value {
-                    otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(s) => {
-                        assert_eq!(s.len(), 1024);
-                    }
-                    _ => panic!("Expected string body"),
+        if let Some(body) = &records[0].body
+            && let Some(ref value) = body.value
+        {
+            match value {
+                otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(s) => {
+                    assert_eq!(s.len(), 1024);
                 }
+                _ => panic!("Expected string body"),
             }
         }
         // Default attributes (2) should be used

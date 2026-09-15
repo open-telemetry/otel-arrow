@@ -91,17 +91,16 @@ Demonstrates metric-name filtering:
 - Generates synthetic metrics -> filter processor by metric name -> debug processor
   -> noop exporter
 
-### `trafficgen-input-output-metrics.yaml`
+### `trafficgen-node-metrics.yaml`
 
-Compares universal node and flow input/output message, item, and logical
-payload size metrics:
+Compares node and flow input/output message, item, logical size, completion
+duration, and local duration metrics:
 
-- Runs three pipelines: a mixed-signal sampling flow with detailed metrics, the
-  same topology with per-node opt-ins, and a deterministic drop-all filter that
-  ACKs without sending
-- `runtime_metrics: detailed` enables item and size measurements for every
-  node; the second pipeline demonstrates per-node `item_counts: true` and
-  `size: true` opt-ins at the normal level.
+- Runs three pipelines: a mixed-signal sampling flow with detailed metrics, a
+  basic-level pipeline that assigns each per-node opt-in to a different node,
+  and a deterministic drop-all filter that ACKs without sending.
+- The `opt_in` pipeline demonstrates `messages`, `item_counts`,
+  `completion_duration`, `duration`, and `size` independently.
 - The `full` pipeline compares a sampler's `node.input` / `node.output`
   terminal outcomes with `flow.input` / `flow.output` forward-path
   measurements for the same processor range.

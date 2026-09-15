@@ -57,36 +57,35 @@ pub fn encode_span_event(
     attrs_arrays: Option<&Attribute32Arrays<'_>>,
     result_buf: &mut ProtoBuffer,
 ) -> Result<()> {
-    if let Some(col) = &event_arrays.time_unix_nano {
-        if let Some(val) = col.value_at(index) {
-            result_buf.encode_field_tag(SPAN_EVENT_TIME_UNIX_NANO, wire_types::FIXED64)?;
-            result_buf.extend_from_slice(&val.to_le_bytes())?;
+    if let Some(col) = &event_arrays.time_unix_nano
+        && let Some(val) = col.value_at(index)
+    {
+        result_buf.encode_field_tag(SPAN_EVENT_TIME_UNIX_NANO, wire_types::FIXED64)?;
+        result_buf.extend_from_slice(&val.to_le_bytes())?;
+    }
+
+    if let Some(col) = &event_arrays.name
+        && let Some(val) = col.str_at(index)
+    {
+        result_buf.encode_string(SPAN_EVENT_NAME, val)?;
+    }
+
+    if let Some(attrs) = attrs_arrays
+        && let Some(id) = event_arrays.id.value_at(index)
+    {
+        let attrs_index_iter = ChildIndexIter::new(id, &attrs.parent_id, attrs_cursor);
+        for attrs_index in attrs_index_iter {
+            result_buf.encode_len_delimited(SPAN_EVENT_ATTRIBUTES, |result_buf| {
+                encode_key_value(attrs, attrs_index, result_buf)
+            })?;
         }
     }
 
-    if let Some(col) = &event_arrays.name {
-        if let Some(val) = col.str_at(index) {
-            result_buf.encode_string(SPAN_EVENT_NAME, val)?;
-        }
-    }
-
-    if let Some(attrs) = attrs_arrays {
-        if let Some(id) = event_arrays.id.value_at(index) {
-            let attrs_index_iter = ChildIndexIter::new(id, &attrs.parent_id, attrs_cursor);
-            for attrs_index in attrs_index_iter {
-                result_buf.encode_len_delimited(SPAN_EVENT_ATTRIBUTES, |result_buf| {
-                    encode_key_value(attrs, attrs_index, result_buf)
-                })?;
-            }
-        }
-    }
-
-    if let Some(col) = &event_arrays.dropped_attributes_count {
-        if let Some(val) = col.value_at(index) {
-            result_buf
-                .encode_field_tag(SPAN_EVENT_DROPPED_ATTRIBUTES_COUNTS, wire_types::VARINT)?;
-            result_buf.encode_varint(val as u64)?;
-        }
+    if let Some(col) = &event_arrays.dropped_attributes_count
+        && let Some(val) = col.value_at(index)
+    {
+        result_buf.encode_field_tag(SPAN_EVENT_DROPPED_ATTRIBUTES_COUNTS, wire_types::VARINT)?;
+        result_buf.encode_varint(val as u64)?;
     }
 
     Ok(())

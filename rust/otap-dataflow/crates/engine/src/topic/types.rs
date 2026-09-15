@@ -203,11 +203,11 @@ impl TrackedPublishTracker {
     /// acked (via [`TrackedPublishTracker::resolve_ack_from`]); a Nack or a
     /// required subscriber disappearing (via
     /// [`TrackedPublishTracker::nack_pending_for_subscriber`]) resolves it as
-    /// Nack. `pending` must be non-empty; callers resolve the zero-subscriber
-    /// case as an immediate Ack without registering.
+    /// Nack.
     ///
-    /// As a defensive measure the primitive also resolves an empty `pending` set
-    /// immediately as Ack (without registering or arming a timeout).
+    /// An empty `pending` set resolves immediately as Nack without registering
+    /// or arming a timeout, preventing a publish with no eligible subscribers
+    /// from reporting successful delivery.
     ///
     /// As with [`TrackedPublishTracker::register`], a closed tracker resolves the
     /// returned receipt immediately as [`TrackedPublishOutcome::TopicClosed`].
@@ -238,7 +238,9 @@ impl TrackedPublishTracker {
                 members,
                 seq,
             ));
-            let _resolved = entry.resolve(TrackedPublishOutcome::Ack);
+            let _resolved = entry.resolve(TrackedPublishOutcome::Nack {
+                reason: Arc::from("broadcast publish had no eligible subscribers"),
+            });
             return TrackedPublishReceipt::new(message_id, entry);
         }
 

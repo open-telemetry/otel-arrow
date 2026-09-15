@@ -48,7 +48,8 @@ jobs:
       - name: Block merge during active release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: ./.github/workflows/scripts/check-release-freeze.sh "${{ steps.merge_group.outputs.pr_number }}"
+          STEPS_MERGE_GROUP_OUTPUTS_PR_NUMBER: ${{ steps.merge_group.outputs.pr_number }}
+        run: ./.github/workflows/scripts/check-release-freeze.sh "${STEPS_MERGE_GROUP_OUTPUTS_PR_NUMBER}"
 
   changelog-bot-pull-request:
     name: changelog
@@ -101,7 +102,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: ./.github/workflows/scripts/check-release-freeze.sh "${{ github.event.pull_request.number }}"
 
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         if: ${{ steps.detect_bypass.outputs.skip != 'true' }}
         with:
           go-version: stable
