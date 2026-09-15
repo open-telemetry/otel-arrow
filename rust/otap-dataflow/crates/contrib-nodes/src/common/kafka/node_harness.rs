@@ -732,7 +732,8 @@ mod receiver_harness {
         /// Returns whether the receiver currently owns `(topic, partition)`.
         ///
         /// Non-panicking point-in-time check (unlike
-        /// [`wait_for_partition_assignment`]); used by cutover tests that must
+        /// [`wait_for_partition_assignment`]); lets a test assert a draining
+        /// receiver has released a partition and does not re-acquire it, or
         /// observe which of several partitions a newly started receiver has
         /// acquired without knowing in advance which one the rebalance grants.
         pub(crate) fn is_partition_assigned(&self, topic: &str, partition: i32) -> bool {
