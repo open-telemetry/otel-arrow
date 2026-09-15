@@ -86,6 +86,16 @@ queries:
         (rows_after - rows_before) / observation_seconds AS rows_per_second
       FROM clickhouse_validation;
 
+  - name: Calculate component core counts
+    sql: |
+      CREATE TABLE component_core_counts AS
+      SELECT
+        "metric_attributes.component_name" AS component_name,
+        MAX(value) AS core_count
+      FROM metrics
+      WHERE metric_name = 'container.cpu.allocated'
+      GROUP BY "metric_attributes.component_name";
+
   - name: Create benchmark data
     sql: |
       CREATE TABLE gh_actions_benchmark AS
@@ -112,16 +122,16 @@ queries:
       UNION ALL
 
       SELECT
-        component_name || '_cpu_percentage_normalized_avg',
+        component_resources.component_name || '_cpu_percentage_normalized_avg',
         '%',
-        avg_value * 100 /
-          CASE WHEN component_name = 'clickhouse' THEN 4 ELSE 1 END,
+        avg_value * 100 / COALESCE(core_count, 1),
         metadata_row."test.suite" || '/' || metadata_row."test.name" ||
-          ' - ' || component_name || ' CPU'
+          ' - ' || component_resources.component_name || ' CPU'
       FROM component_resources
+      LEFT JOIN component_core_counts USING (component_name)
       CROSS JOIN metadata_row
       WHERE metric_name = 'container.cpu.usage'
-        AND component_name IN ('go-collector', 'clickhouse')
+        AND component_resources.component_name IN ('go-collector', 'clickhouse')
 
       UNION ALL
 
@@ -140,4 +150,5 @@ result_tables:
   - name: generated_throughput
   - name: clickhouse_throughput
   - name: component_resources
+  - name: component_core_counts
   - name: gh_actions_benchmark
