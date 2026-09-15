@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789415996177,
+  "lastUpdate": 1789451087341,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -6676,6 +6676,112 @@ window.BENCHMARK_DATA = {
           {
             "name": "test_duration",
             "value": 60.004125,
+            "unit": "seconds",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - Test Duration"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "uros-stefanovic-db",
+            "username": "uros-stefanovic-db",
+            "email": "uros.stefanovic@databricks.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "a474e8eea1a453412af50247f009141a6052e947",
+          "message": "Implement resource and scope metadata in the OTAP logs view (#3993)\n\n# Change summary\n\n`OtapLogsView` never implemented the resource- and scope-level metadata\naccessors. `name()`, `version()`, `schema_url()` and\n`dropped_attributes_count()` on the resource and scope views just\nreturned `None` or `0` behind `// TODO`s, even though `OtapTracesView`\nand `OtapMetricsView` already read these straight from the batch. So a\nlogs batch traversed through the OTAP view silently dropped the\ninstrumentation-scope name and version, the resource and scope schema\nURLs, and the resource/scope dropped-attribute counts.\n\nThis fills them in the same way the traces and metrics views already do.\nThe resource and scope struct columns (plus the root `schema_url`\ncolumn) are cached once when the view is built, and each\n`OtapResourceLogsView` / `OtapScopeLogsView` already holds the\n`RowGroup` for its id, so the accessors just read the shared value from\nthat group's first row. Lookups stay O(1) with no extra maps and no\nderived state to keep in sync.\n\nTwo details worth a look.\n\n- The `ScopeLogs` `schema_url` comes from the root logs batch column,\nand the resource `schema_url` from the resource struct column, matching\nthe traces view. (The old stub comment hinted at a scope-id lookup,\nwhich would have been wrong.)\n- Resource and scope ids are assigned monotonically per batch, so each\nid maps to exactly one group and that group's first row is the\nrepresentative row.\n\nI mirrored the trace (#3936) and metrics (#3964) view changes rather\nthan introducing anything new. Only the previously stubbed\nresource/scope metadata is filled in; the log-record fields are\nunchanged.\n\n## Related issue\n\nNo dedicated tracking issue. This is the logs counterpart to the trace\n(#3936) and metrics (#3964) view work.\n\n## Validation\n\nMirrors the already-merged `OtapTracesView` / `OtapMetricsView`\naccessors. The existing `views::otap::logs` unit tests exercise\nmulti-resource and multi-scope traversal, and CI runs the full\n`otap-df-pdata` test suite.\n\n## User-facing changes\n\nConsumers of the OTAP logs view now get real instrumentation-scope\n`name` and `version`, resource and scope `schema_url`, and\nresource/scope `dropped_attributes_count` instead of `None` or `0`. A\nchangelog entry is included\n(`.chloggen/implement-otap-logs-scope-resource-metadata.yaml`).\n\n---------\n\nSigned-off-by: Uros Stefanovic <uros.stefanovic@databricks.com>\nCo-authored-by: albertlockett <a.lockett@f5.com>",
+          "timestamp": "2026-09-15T01:08:57Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/a474e8eea1a453412af50247f009141a6052e947"
+        },
+        "date": 1789451086515,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "clickhouse_cpu_percentage_normalized_avg",
+            "value": 50.24267096244803,
+            "unit": "%",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - clickhouse CPU"
+          },
+          {
+            "name": "go-collector_cpu_percentage_normalized_avg",
+            "value": 87.90366972980533,
+            "unit": "%",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - go-collector CPU"
+          },
+          {
+            "name": "clickhouse_ram_mib_max",
+            "value": 1202.06640625,
+            "unit": "MiB",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - clickhouse RAM"
+          },
+          {
+            "name": "go-collector_ram_mib_max",
+            "value": 191.9296875,
+            "unit": "MiB",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - go-collector RAM"
+          },
+          {
+            "name": "df-engine_cpu_percentage_normalized_avg",
+            "value": 25.859571557218825,
+            "unit": "%",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - df-engine CPU"
+          },
+          {
+            "name": "clickhouse_cpu_percentage_normalized_avg",
+            "value": 48.41808773565124,
+            "unit": "%",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - clickhouse CPU"
+          },
+          {
+            "name": "clickhouse_ram_mib_max",
+            "value": 1178.96484375,
+            "unit": "MiB",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - clickhouse RAM"
+          },
+          {
+            "name": "df-engine_ram_mib_max",
+            "value": 52.59765625,
+            "unit": "MiB",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - df-engine RAM"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.011002,
+            "unit": "seconds",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - Test Duration"
+          },
+          {
+            "name": "df-engine_cpu_percentage_normalized_avg",
+            "value": 45.38538706076127,
+            "unit": "%",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - df-engine CPU"
+          },
+          {
+            "name": "clickhouse_cpu_percentage_normalized_avg",
+            "value": 51.88854917011392,
+            "unit": "%",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - clickhouse CPU"
+          },
+          {
+            "name": "clickhouse_ram_mib_max",
+            "value": 1214.31640625,
+            "unit": "MiB",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - clickhouse RAM"
+          },
+          {
+            "name": "df-engine_ram_mib_max",
+            "value": 56.2109375,
+            "unit": "MiB",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - df-engine RAM"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.004144,
             "unit": "seconds",
             "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - Test Duration"
           }
