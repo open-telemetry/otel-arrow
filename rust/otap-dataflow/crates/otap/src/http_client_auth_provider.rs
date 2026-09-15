@@ -255,6 +255,23 @@ mod tests {
     }
 
     #[test]
+    fn new_http_client_auth_provider_allows_empty_providers() {
+        let auth = new_http_client_auth_provider_from_providers(vec![]).expect("success");
+
+        assert!(auth.is_none())
+    }
+
+    #[test]
+    fn new_http_client_auth_provider_allows_single_provider() {
+        let auth = new_http_client_auth_provider_from_providers(vec![Box::new(BearerAuth::new(
+            Box::new(MockBearerTokenProvider {}),
+        ))])
+        .expect("success");
+
+        assert!(auth.is_some())
+    }
+
+    #[test]
     fn new_http_client_auth_provider_rejects_multiple_providers() {
         assert!(
             new_http_client_auth_provider_from_providers(vec![
