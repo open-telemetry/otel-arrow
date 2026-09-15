@@ -144,6 +144,34 @@ You should see `urn:microsoft:exporter:geneva` in the Exporters list.
 - `max_buffer_size` is currently reserved for a future buffering/flush implementation.
   It is accepted by config parsing but does not change runtime behavior yet.
 
+## Internal telemetry
+
+The exporter uses the shared `exporter.attempted` contract for each encoded
+Geneva batch submitted to the uploader. A message that terminates during
+preparation, or produces no uploadable batch, records one attempt instead.
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `exporter.attempted.messages` | `{message}` | `signal`, `outcome` | Number of Geneva delivery attempts, including preparation-only outcomes. |
+| `exporter.attempted.duration` | `s` | `signal`, `outcome` | Time from identifying an encoded batch through its terminal backend result, including concurrency queueing. Emitted when component duration is enabled. |
+| `exporter.attempted.payload.size` | `By` | `signal`, `outcome` | LZ4 chunk-compressed Geneva application-payload bytes submitted to the uploader. Emitted when size measurement is enabled. |
+| `exporter.attempted.items` | `{item}` | `signal`, `outcome` | Log records or spans carried by the attempted batch. Emitted when item counting is enabled. |
+
+All fields use `signal` and `outcome`. Duration, payload size, and item counts
+are emitted only when their corresponding component telemetry is enabled.
+
+Geneva LZ4 chunking is part of the backend's application payload format, so
+`payload.size` measures the encoded batch after LZ4 encoding. It excludes HTTP
+headers, framing, TLS overhead, and any other transport-layer amplification.
+
+Geneva-specific metrics retain details that are outside the shared contract:
+
+| Metric | Attributes | Description |
+| --- | --- | --- |
+| `exporter.geneva.encoding.duration` | `signal`, `outcome` | Geneva encoding duration in seconds. |
+| `exporter.geneva.failures.messages` | `signal`, `error.type` | Bounded conversion, decoding, encoding, upload, and unsupported-signal failures. |
+| `exporter.geneva.skipped.messages` | `signal`, `reason` | Messages skipped because the payload is empty. |
+
 ## Configuration
 
 ```yaml
