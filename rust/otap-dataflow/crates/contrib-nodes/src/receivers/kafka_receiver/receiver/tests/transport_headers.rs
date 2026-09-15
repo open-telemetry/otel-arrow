@@ -331,13 +331,25 @@ async fn test_kafka_receiver_capture_policy_captures_headers() {
                 CaptureDefaults::default(),
                 vec![
                     CaptureRule {
-                        match_names: vec!["X-Tenant-Id".to_string()],
-                        store_as: Some("tenant_id".to_string()),
+                        match_names: vec![
+                            "X-Tenant-Id"
+                                .try_into()
+                                .expect("valid test context entry name"),
+                        ],
+                        store_as: Some(
+                            "tenant_id"
+                                .try_into()
+                                .expect("valid test context entry name"),
+                        ),
                         sensitive: false,
                         value_kind: None,
                     },
                     CaptureRule {
-                        match_names: vec!["X-Request-Id".to_string()],
+                        match_names: vec![
+                            "X-Request-Id"
+                                .try_into()
+                                .expect("valid test context entry name"),
+                        ],
                         store_as: None, // defaults to lowercased wire name
                         sensitive: false,
                         value_kind: None,
@@ -380,7 +392,8 @@ async fn test_kafka_receiver_capture_policy_captures_headers() {
                 "tenant_id value mismatch"
             );
             assert_eq!(
-                tenant_headers[0].wire_name, "X-Tenant-Id",
+                tenant_headers[0].wire_name(),
+                "X-Tenant-Id",
                 "wire_name should be preserved"
             );
 
@@ -492,8 +505,16 @@ async fn test_kafka_receiver_capture_policy_coexists_with_resource_attrs_from_he
             let capture_policy = HeaderCapturePolicy::new(
                 CaptureDefaults::default(),
                 vec![CaptureRule {
-                    match_names: vec!["X-Tenant-Id".to_string()],
-                    store_as: Some("tenant_id".to_string()),
+                    match_names: vec![
+                        "X-Tenant-Id"
+                            .try_into()
+                            .expect("valid test context entry name"),
+                    ],
+                    store_as: Some(
+                        "tenant_id"
+                            .try_into()
+                            .expect("valid test context entry name"),
+                    ),
                     sensitive: false,
                     value_kind: None,
                 }],
@@ -584,8 +605,16 @@ async fn test_kafka_receiver_capture_policy_otap_format() {
             let capture_policy = HeaderCapturePolicy::new(
                 CaptureDefaults::default(),
                 vec![CaptureRule {
-                    match_names: vec!["X-Tenant-Id".to_string()],
-                    store_as: Some("tenant_id".to_string()),
+                    match_names: vec![
+                        "X-Tenant-Id"
+                            .try_into()
+                            .expect("valid test context entry name"),
+                    ],
+                    store_as: Some(
+                        "tenant_id"
+                            .try_into()
+                            .expect("valid test context entry name"),
+                    ),
                     sensitive: false,
                     value_kind: None,
                 }],

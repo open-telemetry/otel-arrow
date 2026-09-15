@@ -20,6 +20,8 @@ use linkme::distributed_slice;
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_config::transport_headers_policy::CompiledHeaderCapturePolicy;
+#[cfg(test)]
 use otel_arrow_dfe_config::transport_headers_policy::HeaderCapturePolicy;
 use otel_arrow_dfe_config::validation::validate_typed_config;
 use otel_arrow_dfe_engine::config::ReceiverConfig;
@@ -63,6 +65,9 @@ use transport_headers::capture_transport_headers;
 
 /// URN for the Kafka Receiver
 pub const KAFKA_RECEIVER_URN: &str = "urn:otel:receiver:kafka";
+
+/// Max character limit for kafka group instance id
+const MAX_GROUP_INSTANCE_ID_LEN: usize = 249;
 
 /// Kafka receiver for OpenTelemetry data.
 ///
@@ -123,6 +128,7 @@ pub static KAFKA_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
             ))
         },
     validate_config: validate_typed_config::<KafkaReceiverConfig>,
+    context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
 };
 
@@ -136,13 +142,40 @@ impl KafkaReceiver {
         mut config: KafkaReceiverConfig,
     ) -> Result<Self, ConfigError> {
         // Kafka static membership requires each consumer-group member to have a
-        // unique group.instance.id. On a multi-core pipeline every core would
-        // otherwise share the configured ID and fence one another, so suffix it
-        // with the pipeline core ID.
-        if pipeline_ctx.num_cores() > 1
-            && let Some(base_id) = config.group_instance_id()
-        {
-            let resolved = format!("{base_id}-{}", pipeline_ctx.core_id());
+        // unique group.instance.id. Two situations would otherwise make separate
+        // members share the configured ID and fence one another:
+        //   1. On a multi-core pipeline every core would share the ID -- suffix
+        //      with the pipeline core ID.
+        //   2. During a live-reconfiguration cutover the engine starts a NEW
+        //      pipeline instance (a new deployment generation) whose receiver
+        //      reuses the same configured ID while the OLD instance is still
+        //      draining. The duplicate static member causes the group coordinator
+        //      to fence the old member's offset commits, dropping acked offsets
+        //      (they are re-delivered on the new instance, but progress is lost).
+        //      Suffix with the deployment generation so each generation is a
+        //      distinct static member for the overlap window.
+        // Both suffixes are applied so a multi-core, multi-generation deployment
+        // still yields a unique ID per (generation, core).
+        if let Some(base_id) = config.group_instance_id() {
+            let generation = pipeline_ctx.deployment_generation();
+            let resolved = if pipeline_ctx.num_cores() > 1 {
+                format!("{base_id}-g{generation}-{}", pipeline_ctx.core_id())
+            } else {
+                format!("{base_id}-g{generation}")
+            };
+
+            if resolved.len() > MAX_GROUP_INSTANCE_ID_LEN {
+                return Err(ConfigError::InvalidUserConfig {
+                    error: format!(
+                        "resolved group.instance.id '{resolved}' is {} characters, \
+                         exceeding the Kafka maximum of {MAX_GROUP_INSTANCE_ID_LEN}; \
+                         shorten the configured group_instance_id (the pipeline \
+                         appends a generation and, on multi-core pipelines, a core \
+                         suffix)",
+                        resolved.len()
+                    ),
+                });
+            }
             config.set_group_instance_id(resolved);
         }
 
@@ -228,20 +261,15 @@ impl KafkaReceiver {
         }
     }
 
-    /// Process a Kafka message into [`OtapPdata`].
+    /// Decodes a Kafka message into [`OtapPdata`].
     ///
-    /// Offset tracking is handled by the caller, not inside this method. This
-    /// allows the caller to track the offset even when decoding fails (poison
-    /// pill handling).
-    ///
-    /// When a [`HeaderCapturePolicy`] is provided, matching Kafka message
-    /// headers are captured into [`TransportHeaders`] and attached to the
-    /// returned [`OtapPdata`] context. This is independent of the
-    /// `resource_attrs_from_headers` config which injects headers into resource attributes.
+    /// The caller tracks offsets, including decode failures.
+    /// A capture policy attaches matching headers to the returned context.
+    /// `resource_attrs_from_headers` separately controls resource attributes.
     fn process_kafka(
         &mut self,
         kafka_message: BorrowedMessage<'_>,
-        capture_policy: Option<&HeaderCapturePolicy>,
+        capture_policy: Option<&CompiledHeaderCapturePolicy>,
     ) -> Result<OtapPdata, KafkaReceiverError> {
         let topic = kafka_message.topic();
 

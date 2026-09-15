@@ -387,9 +387,7 @@ async fn multi_signal_topics_route_to_correct_decoders() {
         |cluster| async move {
             let producer = cluster.producer().build();
 
-            let traces_req = create_traces_with_spans();
-            let mut traces_bytes = vec![];
-            traces_req.encode(&mut traces_bytes).expect("encode traces");
+            let traces_bytes = encoded_trace_fixture();
             let metrics_req = create_metrics_service_request();
             let mut metrics_bytes = vec![];
             metrics_req

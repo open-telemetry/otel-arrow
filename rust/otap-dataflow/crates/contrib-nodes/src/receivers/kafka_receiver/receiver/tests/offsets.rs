@@ -215,16 +215,7 @@ fn commit_path_purges_revoked_partitions_first() {
 /// offsets and the manual purge path is inert.
 #[test]
 fn purge_revoked_partitions_is_noop_under_auto_commit() {
-    let cfg = KafkaReceiverConfig::try_from(
-        KafkaReceiverConfigBuilder::new("b:9092", "g", "c")
-            .with_traces(SignalConfig::new(vec!["traces".to_string()]))
-            .with_commit(CommitConfig {
-                mode: ConfigCommitMode::Auto,
-                interval_ms: Some(1000),
-            })
-            .with_isolation_level(IsolationLevel::ReadUncommitted),
-    )
-    .expect("test config should be valid");
+    let cfg = auto_traces_config("b:9092", "g", "c", "traces");
     let ctx = make_pipeline_ctx();
     let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
 
@@ -245,16 +236,7 @@ fn purge_revoked_partitions_is_noop_under_auto_commit() {
 /// rebalance-reconcile path is inert.
 #[test]
 fn reconcile_is_noop_under_auto_commit() {
-    let cfg = KafkaReceiverConfig::try_from(
-        KafkaReceiverConfigBuilder::new("b:9092", "g", "c")
-            .with_traces(SignalConfig::new(vec!["traces".to_string()]))
-            .with_commit(CommitConfig {
-                mode: ConfigCommitMode::Auto,
-                interval_ms: Some(1000),
-            })
-            .with_isolation_level(IsolationLevel::ReadUncommitted),
-    )
-    .expect("test config should be valid");
+    let cfg = auto_traces_config("b:9092", "g", "c", "traces");
     let ctx = make_pipeline_ctx();
     let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
 

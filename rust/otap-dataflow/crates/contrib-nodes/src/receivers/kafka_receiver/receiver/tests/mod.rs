@@ -156,19 +156,10 @@ fn create_metrics_service_request() -> ExportMetricsServiceRequest {
 
 /// Helper to create a trace request with actual spans containing trace_id and attributes.
 fn create_traces_with_spans() -> ExportTraceServiceRequest {
-    create_traces_with_spans_with_resource_attrs(vec![])
-}
-
-/// Like [`create_traces_with_spans`] but seeds the single resource with the
-/// given attributes, so suites that differ only by resource attributes can
-/// share one fixture instead of maintaining divergent copies.
-fn create_traces_with_spans_with_resource_attrs(
-    resource_attrs: Vec<KeyValue>,
-) -> ExportTraceServiceRequest {
     ExportTraceServiceRequest {
         resource_spans: vec![ResourceSpans {
             resource: Some(Resource {
-                attributes: resource_attrs,
+                attributes: vec![],
                 ..Default::default()
             }),
             scope_spans: vec![ScopeSpans {
@@ -269,18 +260,25 @@ fn encoded_trace_fixture() -> Vec<u8> {
     bytes
 }
 
-/// Produce `count` keyed OTLP-proto trace records (keys `rec-{i}`) carrying
-/// `bytes` to `topic`, matching the canonical produce loop. `count` accepts any
-/// integer type (e.g. `usize` or `i64`) used by the calling test's record
-/// constant.
-async fn produce_traces<C>(producer: &TestProducer, topic: &str, count: C, bytes: &[u8])
-where
+/// Produce `count` keyed OTLP-proto trace records (keys `{key_prefix}-{i}`)
+/// carrying `bytes` to `topic`, matching the canonical produce loop. The
+/// `key_prefix` only distinguishes records within Kafka (e.g. `rec`, or
+/// `pre`/`post` for multi-phase tests); no test asserts on the key value.
+/// `count` accepts any integer type (e.g. `usize` or `i64`) used by the calling
+/// test's record constant.
+async fn produce_traces<C>(
+    producer: &TestProducer,
+    topic: &str,
+    count: C,
+    key_prefix: &str,
+    bytes: &[u8],
+) where
     C: TryInto<usize>,
     C::Error: std::fmt::Debug,
 {
     let count = count.try_into().expect("record count fits in usize");
     for i in 0..count {
-        let key = format!("rec-{i}");
+        let key = format!("{key_prefix}-{i}");
         producer
             .send_full(SendRecord::new(topic, bytes).key(key.as_bytes()))
             .await
@@ -316,6 +314,24 @@ async fn shutdown_and_terminal(
 ) -> TerminalState {
     receiver.shutdown(deadline);
     receiver.await_terminal_state().await
+}
+
+/// Request shutdown with `deadline`, then await terminal state bounded by an
+/// outer `timeout`, panicking if the receiver does not terminate in time.
+/// Returns the wall-clock time elapsed since the shutdown request so the caller
+/// can assert termination was bounded by the deadline rather than an unrelated
+/// broker stall. Consumes the harness.
+async fn shutdown_bounded_terminal(
+    receiver: KafkaReceiverHarness,
+    deadline: Duration,
+    timeout: Duration,
+) -> Duration {
+    let shutdown_at = tokio::time::Instant::now();
+    receiver.shutdown(deadline);
+    let _terminal = tokio::time::timeout(timeout, receiver.await_terminal_state())
+        .await
+        .expect("receiver must terminate within the bounded outer timeout");
+    shutdown_at.elapsed()
 }
 
 /// Receive `n` pdata batches in order, acking each immediately. Used by tests
@@ -395,6 +411,28 @@ fn auto_config(
     .expect("test config valid")
 }
 
+/// Builds an auto-commit [`KafkaReceiverConfig`] for a single traces topic
+/// (default encoding, 1s commit interval, read-uncommitted). Used by tests
+/// that exercise the librdkafka-owned commit path where the receiver's manual
+/// commit logic is inert.
+fn auto_traces_config(
+    brokers: &str,
+    group_id: &str,
+    client_id: &str,
+    traces_topic: &str,
+) -> KafkaReceiverConfig {
+    KafkaReceiverConfig::try_from(
+        KafkaReceiverConfigBuilder::new(brokers, group_id, client_id)
+            .with_traces(SignalConfig::new(vec![traces_topic.to_string()]))
+            .with_commit(CommitConfig {
+                mode: ConfigCommitMode::Auto,
+                interval_ms: Some(1000),
+            })
+            .with_isolation_level(IsolationLevel::ReadUncommitted),
+    )
+    .expect("test config should be valid")
+}
+
 /// Base manual-commit [`KafkaReceiverConfigBuilder`] shared by the single-topic
 /// traces helpers: a single OTLP-proto traces topic, manual commit with NO
 /// safety-net timer, earliest offset reset, and read-uncommitted isolation.
@@ -450,6 +488,25 @@ fn manual_traces_config_no_timer(
 ) -> KafkaReceiverConfig {
     KafkaReceiverConfig::try_from(manual_traces_builder(brokers, group_id, traces_topic))
         .expect("test config valid")
+}
+
+/// Like [`manual_traces_config_no_timer`] but with an explicit `client_id`
+/// and an optional `group.instance.id` (static membership). Used by the
+/// live-reconfiguration cutover tests that run two receivers concurrently and
+/// need to control each member's identity within a shared consumer group.
+fn cutover_traces_config(
+    brokers: &str,
+    group_id: &str,
+    client_id: &str,
+    traces_topic: &str,
+    group_instance_id: Option<&str>,
+) -> KafkaReceiverConfig {
+    let mut builder =
+        manual_traces_builder(brokers, group_id, traces_topic).with_client_id(client_id);
+    if let Some(id) = group_instance_id {
+        builder = builder.with_group_instance_id(id);
+    }
+    KafkaReceiverConfig::try_from(builder).expect("test config valid")
 }
 
 /// Like [`manual_traces_config_no_timer`] but arms the opt-in consumer-lag
@@ -513,6 +570,23 @@ fn make_pipeline_ctx_with(core_id: usize, num_cores: usize) -> PipelineContext {
     let registry = TelemetryRegistryHandle::new();
     let controller_ctx = ControllerContext::new(registry);
     controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), core_id, num_cores, 0)
+}
+
+fn make_pipeline_ctx_with_generation(
+    core_id: usize,
+    num_cores: usize,
+    deployment_generation: u64,
+) -> PipelineContext {
+    let registry = TelemetryRegistryHandle::new();
+    let controller_ctx = ControllerContext::new(registry);
+    controller_ctx.pipeline_context_with_generation(
+        "grp".into(),
+        "pipeline".into(),
+        core_id,
+        num_cores,
+        0,
+        deployment_generation,
+    )
 }
 
 fn make_config_with_group_instance_id(instance_id: &str) -> KafkaReceiverConfig {
