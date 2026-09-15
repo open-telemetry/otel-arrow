@@ -3319,11 +3319,19 @@ mod test {
             .expect("ExpHistogramDpExemplars payload should be present");
         let time_col = exemplars_batch
             .column_by_name(consts::TIME_UNIX_NANO)
-            .expect("time_unix_nano column should be present, not elided");
+            .expect("time_unix_nano column should be present, not elided")
+            .as_any()
+            .downcast_ref::<TimestampNanosecondArray>()
+            .expect("time_unix_nano should be a TimestampNanosecondArray");
         assert_eq!(
             time_col.null_count(),
             0,
             "time_unix_nano must never be null since it is a required field"
+        );
+        assert_eq!(
+            time_col.value(0),
+            0,
+            "the proto3 default (unset) timestamp should round-trip as 0, not be lost"
         );
     }
 
