@@ -283,7 +283,8 @@ fn process_syslog_message(
     rate_limiter: &Option<LocalAdmissionGate>,
     arrow_records_builder: &mut ArrowRecordsBuilder,
 ) -> Result<(), ReceiverRejectionErrorType> {
-    let completed = metrics.borrow().received.processing().run(|processing| {
+    let processing = metrics.borrow().received.processing();
+    let completed = processing.run(|processing| {
         processing.set_payload_size_with(|| message.len());
         if admission_state.should_shed_ingress() {
             return Err(
@@ -299,11 +300,10 @@ fn process_syslog_message(
         arrow_records_builder.append_syslog(parsed);
         Ok((SignalType::Logs, ()))
     });
-    let result = metrics.borrow_mut().received.record(completed);
+    let mut metrics = metrics.borrow_mut();
+    let result = metrics.received.record(completed);
     if let Err(error_type) = result {
-        metrics
-            .borrow_mut()
-            .record_rejection(protocol, error_type, 1);
+        metrics.record_rejection(protocol, error_type, 1);
     }
     result
 }
