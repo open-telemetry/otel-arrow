@@ -19,6 +19,13 @@ a filelog variant: its progress unit is an opaque journald cursor and its
 source API is `sd-journal`, not file discovery and byte offsets. It should not
 depend on the #2844 filelog assignment extension landing first.
 
+The proposed [shared source-receiver contract](source-receiver-shared-contract.md)
+aligns Ack-correlated commit, state-root resolution, ownership, lifecycle/readiness,
+administration, and future fencing with Filelog. It is an API-alignment proposal,
+not a claim that the current Journald implementation satisfies these requirements.
+Source cursors, payloads, and recovery remain Journald-specific; concrete behavior
+and any differences require explicit integration review.
+
 ## Core Decisions
 
 | Decision | Choice |
