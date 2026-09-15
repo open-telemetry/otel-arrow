@@ -62,7 +62,7 @@ use otel_arrow_dfe_pdata::schema::{consts, get_field_metadata, update_field_meta
 
 use crate::error::{Error, Result};
 use crate::pipeline::PipelineStage;
-use crate::pipeline::expr::eval::scoped_value_to_join_input;
+use crate::pipeline::expr::eval::{EvalContext, scoped_value_to_join_input};
 use crate::pipeline::expr::join::JoinInput;
 use crate::pipeline::expr::join::{
     AttributeToDifferentAttributeJoin, AttributeToSameAttributeJoin, JoinExec, RootAttrsToRootJoin,
@@ -73,10 +73,10 @@ use crate::pipeline::expr::types::{
     ExprLogicalType, nested_struct_field_type, root_field_supports_dict_encoding, root_field_type,
 };
 use crate::pipeline::expr::{
-    DataScope, LeafEval, RootParentStruct, SCALAR_RECORD_BATCH_INPUT, ScopedExpr, ScopedValue,
-    VALUE_COLUMN_NAME,
+    DataScope, LeafEval, RecordScope, RootParentStruct, SCALAR_RECORD_BATCH_INPUT, ScopedExpr,
+    ScopedValue, VALUE_COLUMN_NAME,
 };
-use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
+use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor, RecordType};
 use crate::pipeline::project::anyval::{
     attempt_coerce_value_column_from_any_value_struct_column, fill_null_type_as_empty,
     is_any_value_data_type, wrap_as_any_value_struct,
@@ -127,7 +127,10 @@ pub(crate) struct AssignPipelineStage {
 
 impl AssignPipelineStage {
     /// Create a new instance of [`AssignPipelineStage`]
-    pub fn try_new(assignments: &mut Vec<Assignment<'_>>) -> Result<Self> {
+    pub fn try_new(
+        assignments: &mut Vec<Assignment<'_>>,
+        record_type: &RecordType,
+    ) -> Result<Self> {
         if assignments.is_empty() {
             return Err(Error::InvalidPipelineError {
                 cause: "assignments cannot be empty".into(),
@@ -186,7 +189,7 @@ impl AssignPipelineStage {
         Ok(Self {
             dest_scopes: dest_columns
                 .iter()
-                .map(DataScope::from)
+                .map(|col| DataScope::from_record_column(col, record_type))
                 .map(Rc::new)
                 .collect(),
             dest_columns,
@@ -554,7 +557,7 @@ impl AssignPipelineStage {
             || &scoped_value.scope == dest_scope.as_ref()
             || matches!(
                 scoped_value.scope,
-                DataScope::Root | DataScope::RootParent(_)
+                DataScope::Record(RecordScope::Signal) | DataScope::RootParent(_)
             );
 
         if !already_aligned {
@@ -788,8 +791,25 @@ impl AssignPipelineStage {
                                 .rows_to_take(left_join_input, &eval_result, &otap_batch)?
                         }
                     }
-                    DataScope::Root | DataScope::RootParent(_) => RootAttrsToRootJoin::new()
-                        .rows_to_take(left_join_input, &eval_result, &otap_batch)?,
+                    DataScope::Record(RecordScope::Signal) | DataScope::RootParent(_) => {
+                        RootAttrsToRootJoin::new().rows_to_take(
+                            left_join_input,
+                            &eval_result,
+                            &otap_batch,
+                        )?
+                    }
+                    DataScope::Record(RecordScope::Child(_child)) => {
+                        // In the current implementation, we shouldn't end up here. The planner
+                        // should not allow us to create an expression that would evaluate on some
+                        // child record (like metric data points), and assign the result to an
+                        // attribute. Returning this error to be defensive
+                        return Err(Error::ExecutionError {
+                            cause: format!(
+                                "unexpected DataScope for attribute assignment `{:?}`",
+                                eval_result.data_scope
+                            ),
+                        });
+                    }
                     DataScope::StaticScalar => {
                         // safety: if the data scope was scalar, the result would have also been a
                         // Scalar which would have been handled above where we checked the
@@ -943,8 +963,25 @@ impl AssignPipelineStage {
                                 .rows_to_take(left_join_input, &eval_result, &otap_batch)?
                         }
                     }
-                    DataScope::Root | DataScope::RootParent(_) => RootAttrsToRootJoin::new()
-                        .rows_to_take(left_join_input, &eval_result, &otap_batch)?,
+                    DataScope::Record(RecordScope::Signal) | DataScope::RootParent(_) => {
+                        RootAttrsToRootJoin::new().rows_to_take(
+                            left_join_input,
+                            &eval_result,
+                            &otap_batch,
+                        )?
+                    }
+                    DataScope::Record(RecordScope::Child(_child)) => {
+                        // In the current implementation, we shouldn't end up here. The planner
+                        // should not allow us to create an expression that would evaluate on some
+                        // child record (like metric data points), and assign the result to an
+                        // attribute. Returning this error to be defensive
+                        return Err(Error::ExecutionError {
+                            cause: format!(
+                                "unexpected DataScope for attribute assignment `{:?}`",
+                                eval_result.data_scope
+                            ),
+                        });
+                    }
                     DataScope::StaticScalar => unreachable!("unexpected array for scalar scope"),
                 };
 
@@ -1093,7 +1130,8 @@ impl PipelineStage for AssignPipelineStage {
 
             let mut eval_results = Vec::new();
             for source in &mut self.sources {
-                let eval_result = source.execute_as_value(&otap_batch, session_context)?;
+                let eval_result =
+                    source.execute_as_value(&otap_batch, &EvalContext::new(session_context))?;
                 eval_results.push(eval_result);
             }
             let result = self.assign_to_attributes(otap_batch, &mut eval_results, *attrs_id)?;
@@ -1104,7 +1142,8 @@ impl PipelineStage for AssignPipelineStage {
         if let ColumnAccessor::NestedAttribute(attrs_id, _, _) = &self.dest_columns[0] {
             let mut eval_results = Vec::new();
             for source in &mut self.sources {
-                let eval_result = source.execute_as_value(&otap_batch, session_context)?;
+                let eval_result =
+                    source.execute_as_value(&otap_batch, &EvalContext::new(session_context))?;
                 eval_results.push(eval_result);
             }
             let result =
@@ -1117,7 +1156,8 @@ impl PipelineStage for AssignPipelineStage {
         // support bulk assignment so we just evaluate the expressions and update the columns
         // one at a time
         for i in 0..self.sources.len() {
-            let eval_result = self.sources[i].execute_as_value(&otap_batch, session_context)?;
+            let eval_result = self.sources[i]
+                .execute_as_value(&otap_batch, &EvalContext::new(session_context))?;
             let dest_scope = &self.dest_scopes[i];
             match &self.dest_columns[i] {
                 ColumnAccessor::ColumnName(dest_col_name) => {
@@ -1345,7 +1385,7 @@ impl PipelineStage for AssignPipelineStage {
 
         // evaluate the expression
         let mut result = self.sources[0]
-            .evaluate_on_batch(session_context, &projected_rb)?
+            .evaluate_on_batch(&projected_rb, &EvalContext::new(session_context))?
             .to_array(attrs_record_batch.num_rows())?;
 
         // determine the "logical" type of the result (e.g. the array type, or the values if the
@@ -1463,8 +1503,8 @@ impl PipelineStage for AssignPipelineStage {
         )?)
     }
 
-    fn supports_exec_on_attributes(&self) -> bool {
-        true
+    fn supports_exec_on(&self, record_type: &RecordType) -> bool {
+        matches!(record_type, RecordType::Attributes | RecordType::Signal)
     }
 
     fn init_state_for_conditional_branch(
@@ -2026,7 +2066,17 @@ fn validate_expr_cardinality(
                 // we've already determined we're not assigning to a root attribute, so the
                 // destination must be something that has a one:many relationship with root like
                 // resource or scope
-                DataScope::Root | DataScope::RootParent(_) => false,
+                DataScope::Record(RecordScope::Signal) | DataScope::RootParent(_) => false,
+                DataScope::Record(RecordScope::Child(_child)) => {
+                    // If we end up here, it would mean we're trying to assign to something like
+                    // a resource attribute or scope attribute from the value of some nested child
+                    // record like a metric data point. The planner shouldn't be creating plans like
+                    // this, but we'll reject it here if that's what has been passed as an argument
+                    return Err(Error::InvalidPipelineError {
+                        cause: "Cannot assign non-record attribute from non-signal record".into(),
+                        query_location: dest_query_location.cloned(),
+                    });
+                }
 
                 DataScope::Attribute(source_attrs_id, _)
                 | DataScope::AttributesAll(source_attrs_id) => {
@@ -2108,7 +2158,17 @@ fn validate_struct_col_assign_cardinality(
             let is_valid = match scope {
                 DataScope::StaticScalar => true,
                 // root (log/span/metric level) is always lower than resource or scope
-                DataScope::Root => false,
+                DataScope::Record(RecordScope::Signal) => false,
+                DataScope::Record(RecordScope::Child(_child)) => {
+                    // If we end up here, it would mean we're trying to assign to something like
+                    // a resource or scope field from the value of some nested child record like
+                    // a metric data point. The planner shouldn't be creating plans like this, but
+                    // we'll reject it here if that's what has been passed as an argument
+                    return Err(Error::InvalidPipelineError {
+                        cause: "Cannot assign struct column from non-signal record".into(),
+                        query_location: dest_query_location.cloned(),
+                    });
+                }
                 DataScope::RootParent(source_parent) => match dest_struct_name {
                     consts::RESOURCE => {
                         matches!(source_parent, RootParentStruct::Resource)
@@ -3888,7 +3948,7 @@ mod test {
         let err = pipeline.execute(input).await.unwrap_err();
         assert!(
             err.to_string()
-                .contains("cannot assign data scope Root to struct column scope"),
+                .contains("cannot assign data scope Record(Signal) to struct column scope"),
             "unexpected error: {}",
             err
         );
@@ -6475,7 +6535,9 @@ mod test {
         let err = pipeline.execute(input.clone()).await.unwrap_err();
         let err_msg = err.to_string();
         assert!(
-            err_msg.contains("cannot assign data scope Root to attributes NonRoot(ResourceAttrs)"),
+            err_msg.contains(
+                "cannot assign data scope Record(Signal) to attributes NonRoot(ResourceAttrs)"
+            ),
             "unexpected error message {}",
             err_msg
         );
@@ -6533,7 +6595,9 @@ mod test {
         let err = pipeline.execute(input.clone()).await.unwrap_err();
         let err_msg = err.to_string();
         assert!(
-            err_msg.contains("cannot assign data scope Root to attributes NonRoot(ScopeAttrs)"),
+            err_msg.contains(
+                "cannot assign data scope Record(Signal) to attributes NonRoot(ScopeAttrs)"
+            ),
             "unexpected error message {}",
             err_msg
         );
